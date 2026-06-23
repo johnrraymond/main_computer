@@ -1754,6 +1754,11 @@ class ViewportEnergyRoutesMixin:
             if profile_hub_url and hub_url != self._clean_hub_url(profile_hub_url):
                 raise ValueError(f"Signed worker connect order hub {hub_url!r} does not match selected network hub {profile_hub_url!r}.")
             chain_id = str(profile.get("chain_id") or body.get("chain_id") or "")
+            active_multisession_key_id = str(
+                body.get("active_multisession_key_id")
+                or body.get("multisession_key_id")
+                or ""
+            ).strip()
             message_payload: dict[str, Any] = {}
             try:
                 parsed_message = json.loads(message)
@@ -1838,12 +1843,20 @@ class ViewportEnergyRoutesMixin:
             settings = self._save_worker_settings(settings)
 
             try:
+                connect_payload = {
+                    "signed_connection": signed_connection,
+                    "worker": registration_payload,
+                }
+                if active_multisession_key_id:
+                    connect_payload["multisession_authorization"] = self._worker_multisession_authorization_for_wallet(
+                        hub_url=hub_url,
+                        wallet_address=wallet_address,
+                        chain_id=chain_id,
+                        requested_key_id=active_multisession_key_id,
+                    )
                 registration = self._post_worker_connect_order_to_hub(
                     hub_url=hub_url,
-                    payload={
-                        "signed_connection": signed_connection,
-                        "worker": registration_payload,
-                    },
+                    payload=connect_payload,
                 )
             except Exception as register_exc:
                 registration_error = str(register_exc)
@@ -2179,6 +2192,42 @@ class ViewportEnergyRoutesMixin:
             records.append(record)
         records.sort(key=lambda item: (item.get("status") != "active", item.get("created_at", ""), item.get("id", "")), reverse=False)
         return records
+
+    def _worker_multisession_authorization_for_wallet(
+        self,
+        *,
+        hub_url: str,
+        wallet_address: str,
+        chain_id: str = "",
+        requested_key_id: str = "",
+    ) -> dict[str, Any]:
+        normalized_wallet = self._normalize_worker_wallet_address(wallet_address)
+        key_id = str(requested_key_id or "").strip()
+        records = self._worker_multisession_keys_for_wallet(wallet_address=normalized_wallet, hub_url=hub_url)
+        active_records = [record for record in records if str(record.get("status") or "").strip().lower() == "active"]
+        if key_id:
+            active_records = [record for record in active_records if str(record.get("id") or "") == key_id]
+        if not active_records:
+            if key_id:
+                raise ValueError(
+                    "No active saved multi-session key with that id was found for this wallet and Hub. "
+                    "Request a multi-session key for this network's Hub before connecting."
+                )
+            raise ValueError(
+                "No active saved multi-session key was found for this wallet and Hub. "
+                "Request a multi-session key for this network's Hub before connecting."
+            )
+        record = active_records[0]
+        resolved_key_id = str(record.get("id") or "").strip()
+        if not resolved_key_id:
+            raise ValueError("Saved multi-session key record is missing its key id.")
+        return {
+            "kind": "multisession_key",
+            "wallet_address": normalized_wallet,
+            "multisession_key_id": resolved_key_id,
+            "key_id": resolved_key_id,
+            "chain_id": str(record.get("chain_id") or chain_id or "").strip(),
+        }
 
     def _handle_worker_multisession_keys_load(self) -> None:
         try:
@@ -3076,6 +3125,33 @@ class ViewportEnergyRoutesMixin:
 
         raise RuntimeError("Hub wallet funding import failed: " + " ; ".join(route_errors))
 
+    def _worker_multisession_connect_error_message(self, error_body: str) -> str:
+        text = str(error_body or "")
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                text = str(payload.get("error") or payload.get("user_message") or text)
+        except Exception:
+            pass
+        lowered = text.lower()
+        if "multi-session" not in lowered and "multisession" not in lowered:
+            return ""
+        if "not active" in lowered or "not found" in lowered or "unknown" in lowered:
+            return (
+                "The saved multi-session key is not active on this Hub. "
+                "Request a new multi-session key for this network's Hub before connecting."
+            )
+        if "different wallet" in lowered or "does not belong" in lowered or "wallet" in lowered and "match" in lowered:
+            return (
+                "The saved multi-session key belongs to a different wallet. "
+                "Connect the matching wallet or request a new multi-session key for this network's Hub."
+            )
+        return (
+            "Worker Hub connection requires a valid saved multi-session key for this network's Hub. "
+            "Request a multi-session key before connecting. Hub said: "
+            + text
+        )
+
     def _post_worker_connect_order_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = Request(
             self._clean_hub_url(hub_url) + "/api/hub/v1/workers/connect",
@@ -3088,13 +3164,17 @@ class ViewportEnergyRoutesMixin:
                 data = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            message = self._worker_multisession_connect_error_message(body) if exc.code == HTTPStatus.FORBIDDEN else ""
+            if message:
+                raise RuntimeError(message) from exc
             raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
         except URLError as exc:
             raise RuntimeError(f"Hub is unreachable: {exc}") from exc
         if not isinstance(data, dict):
             raise RuntimeError("Hub returned a non-object worker connect response.")
         if data.get("error"):
-            raise RuntimeError(str(data["error"]))
+            message = self._worker_multisession_connect_error_message(str(data.get("error") or ""))
+            raise RuntimeError(message or str(data["error"]))
         return data
 
     def _post_worker_registration_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:

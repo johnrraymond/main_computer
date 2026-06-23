@@ -3295,6 +3295,7 @@
         && workerNetworkSession.connection_status === "connected"
         && workerWalletValidAddress(walletAddress)
         && workerNetworkWalletConnectedToSelected()
+        && Boolean(workerActiveMultisessionKey())
         && !workerNetworkSignatureInFlight
       );
     }
@@ -3627,8 +3628,14 @@
 
     async function signWorkerNetworkConnectOrder(event) {
       event?.preventDefault?.();
+      const activeMultisessionKey = workerActiveMultisessionKey();
+      if (!activeMultisessionKey) {
+        if (workerSaveStatus) workerSaveStatus.textContent = "Request or load a multi-session key for this Hub before connecting the worker.";
+        renderWorkerNetworkSurface();
+        return;
+      }
       if (!workerNetworkCanSign()) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network and connect a wallet before signing the worker connection order.";
+        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network, connect a wallet, and load a multi-session key before signing the worker connection order.";
         renderWorkerNetworkSurface();
         return;
       }
@@ -3642,7 +3649,11 @@
         const signature = await signer.signMessage(message);
         const data = await workerPostJson(
           WORKER_NETWORK_CONNECT_ORDER_ENDPOINT,
-          buildWorkerNetworkRegistrationPayload({message, signature, walletAddress})
+          {
+            ...buildWorkerNetworkRegistrationPayload({message, signature, walletAddress}),
+            active_multisession_key_id: activeMultisessionKey.id,
+            multisession_key_id: activeMultisessionKey.id
+          }
         );
         workerApplyNetworkPayload(data);
         workerSetSaveStatus(`Signed fresh ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order and submitted it to the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`);

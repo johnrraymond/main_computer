@@ -2290,6 +2290,28 @@ class HubServerHandler(_JsonHandler):
             signed_connection=signed_connection,
             worker_payload=worker_payload,
         )
+        worker_authorization: dict[str, Any] = {}
+        authorization = self._multisession_authorization_from_body(body)
+        require_auth = bool(getattr(self.server.config, "hub_require_multisession_auth", False))
+        if not authorization:
+            if require_auth:
+                raise HubCreditAuthorizationError(
+                    "Worker Hub connection requires a saved multi-session key authorization for this network's Hub."
+                )
+        else:
+            try:
+                worker_authorization = self._validate_multisession_authorization(
+                    authorization,
+                    required_wallet_address=str(verification["credit_wallet"]),
+                )
+            except HubCreditAuthorizationError as exc:
+                message = str(exc)
+                if "not active" in message:
+                    raise HubCreditAuthorizationError(
+                        "The saved multi-session key is not active on this Hub. "
+                        "Request a new multi-session key for this network's Hub before connecting."
+                    ) from exc
+                raise
         assigned_ring = str(verification["requested_ring"])
         ring_decision = self.server.ring_admission_config.evaluate(
             wallet_address=verification["wallet_address"],
@@ -2359,6 +2381,16 @@ class HubServerHandler(_JsonHandler):
                 "worker_instance_id": worker_instance_id,
             }
         )
+        if worker_authorization:
+            capabilities.update(
+                {
+                    "multisession_key_id": worker_authorization["multisession_key_id"],
+                    "multisession_key_authorized": True,
+                    "auth_mode": "multisession-wallet",
+                }
+            )
+            if worker_authorization.get("chain_id"):
+                capabilities["chain_id"] = worker_authorization["chain_id"]
 
         raw_price = worker_payload.get("credits_per_request")
         if raw_price is None and pricing:
@@ -2398,6 +2430,14 @@ class HubServerHandler(_JsonHandler):
                 "lease_expires_at": worker_data.get("lease_expires_at", ""),
             }
         )
+        if worker_authorization:
+            worker_data.update(
+                {
+                    "multisession_key_id": worker_authorization["multisession_key_id"],
+                    "multisession_key_authorized": True,
+                    "auth_mode": "multisession-wallet",
+                }
+            )
         pool = self._worker_pool_summary(assigned_ring=assigned_ring)
         return {
             "ok": True,
@@ -3551,6 +3591,8 @@ class HubServerHandler(_JsonHandler):
                     result = self._handle_worker_connect_order(self._read_json())
                     status = HTTPStatus.FORBIDDEN if result.get("error") == "ring_not_allowed" else HTTPStatus.OK
                     self._send_json(result, status=status)
+                except HubCreditAuthorizationError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 except Exception as exc:
                     self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return

@@ -212,6 +212,7 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_contracts_path=contracts_path,
         hub_allow_missing_bridge_signer=allow_missing_bridge_signer,
         hub_enable_smoke_bridge=enable_smoke_bridge,
+        hub_require_multisession_auth=bool(getattr(args, "require_multisession_auth", False)),
         hub_ring_config_path=ring_config_path,
         chain_id=chain_id,
         chain_id_source="arg" if chain_id_arg is not None else base.chain_id_source,
@@ -877,6 +878,7 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
             thread.start()
             threads.append(thread)
         print(f"Experimental FDB hub ports listening: {', '.join(str(port) for port in live_ports)}")
+        print(f"Multi-session auth required: {'yes' if getattr(args, 'require_multisession_auth', False) else 'no'}")
         if args.docker:
             _ensure_scheduler_lab_run_id(args)
             hub_urls = docker_hub_base_urls(args, live_ports)
@@ -955,6 +957,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable explicit admin-only smoke bridge mode that may load smoke_client wallet metadata from a private deployment manifest.",
     )
     parser.add_argument("--ring-config-path", type=Path, default=None, help="JSON ring admission config path. Bad explicit configs fail startup.")
+    parser.add_argument(
+        "--require-multisession-auth",
+        action="store_true",
+        help=(
+            "Require multi-session key authorization on wallet-backed requester and worker Hub routes. "
+            "Use this for local golden-path MSK tests against the dev chain."
+        ),
+    )
     parser.add_argument("--namespace", default=DEFAULT_EXP_FDB_NAMESPACE, help="FDB tuple namespace for this experiment.")
     parser.add_argument("--api-version", type=int, default=740, help="FoundationDB API version to request.")
     parser.add_argument("--repo-root", type=Path, help="Repository root. Defaults to the current working directory.")
