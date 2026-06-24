@@ -68,6 +68,21 @@ class ExportMainComputerTestTests(unittest.TestCase):
         self.assertIn("runtime/websites/*/.main-computer/local-platform/docker-compose.yml", gitignore)
 
 
+    def test_export_script_includes_neutral_hub_topology_fixtures(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+        self.assertIn('"deploy/hub-topology"', script)
+        old_topology_dir = "deploy/" + "stable-hub-lab"
+        self.assertNotIn(old_topology_dir, script)
+        self.assertIn("!deploy/hub-topology/", gitignore)
+        self.assertIn("!deploy/hub-topology/*.json", gitignore)
+        self.assertTrue((ROOT / "deploy" / "hub-topology" / "dev-topology.json").exists())
+        self.assertTrue((ROOT / "deploy" / "hub-topology" / "smoke-topology.json").exists())
+        self.assertTrue((ROOT / "deploy" / "hub-topology" / "test-topology.json").exists())
+
+
+
     def test_export_script_includes_network_deployment_latest_manifests_without_unblocking_all_runtime(self) -> None:
         script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
 

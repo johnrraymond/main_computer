@@ -23,7 +23,7 @@ from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.multisession_key_signing import build_personal_sign_blob, private_key_to_address
 
 
-DEFAULT_TOPOLOGY = Path("deploy/stable-hub-lab/smoke-topology.json")
+DEFAULT_TOPOLOGY = Path("deploy/hub-topology/smoke-topology.json")
 DEFAULT_HUB_URLS = "http://127.0.0.1:8870,http://127.0.0.1:8871,http://127.0.0.1:8872"
 DEFAULT_REQUESTER_ACCOUNT = "exp-handoff-lab-requester"
 DEFAULT_DEV_CHAIN_STATE_FILE = Path("runtime/deployments/dev/latest.json")
@@ -47,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TOPOLOGY,
         help=(
             "Stable-Hub-compatible topology document used to derive default exp Hub URLs. "
-            "Defaults to deploy/stable-hub-lab/smoke-topology.json so labs do not claim the normal dev topology."
+            "Defaults to deploy/hub-topology/smoke-topology.json so labs do not claim the normal dev topology."
         ),
     )
     parser.add_argument(

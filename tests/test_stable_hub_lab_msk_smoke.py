@@ -11,7 +11,7 @@ from main_computer.stable_hub_topology import load_stable_hub_topology
 from tools.stable_hub_lab.run_lab import build_stable_msk_smoke_result
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 DEV_PRIVATE_KEY = "0x" + "22" * 32
 TEST_USER_SLUG = "user_slug_" + "s" * 40
 

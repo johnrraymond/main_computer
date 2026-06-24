@@ -15,7 +15,7 @@ from main_computer.stable_hub_worker_sessions import (
 )
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 
 
 def _owner(*, worker_id: str, connection_id: str, hub_id: str = "dev-hub3") -> dict:

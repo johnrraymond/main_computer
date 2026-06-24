@@ -149,6 +149,21 @@ These files are generated local runtime state. They can include host-specific
 metadata or local development account material, so they stay ignored by Git and
 should not be copied into source control.
 
+
+Local Hub topology fixtures are source-controlled under `deploy/hub-topology/`.
+That neutral directory is shared by local dev, local smoke, and local Besu/QBFT
+test Hub topologies:
+
+```text
+deploy/hub-topology/dev-topology.json
+deploy/hub-topology/smoke-topology.json
+deploy/hub-topology/test-topology.json
+```
+
+`test-topology.json` targets the local QBFT test chain at
+`http://127.0.0.1:30010` with chain id `42424241`.
+
+
 After the dev-chain reset succeeds, restart the app so it reloads
 `runtime/deployments/dev/latest.json`:
 

@@ -250,5 +250,6 @@ supercut_smoke_output/
 # Don't need the hub lab output.
 deploy/scheduler-lab/output
 
-# Local developemnt topology is part of "dev mode."
-!deploy/stable-hub-lab/dev-topology.json
+# Local Hub topology fixtures are part of dev/test/smoke mode.
+!deploy/hub-topology/
+!deploy/hub-topology/*.json

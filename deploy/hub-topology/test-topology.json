@@ -1,0 +1,66 @@
+{
+  "kind": "main_computer.stable_hub_topology.v1",
+  "cluster_id": "main-computer-test-qbft-hub",
+  "network": {
+    "network_key": "test",
+    "network_display_name": "Main Computer Local QBFT Test",
+    "network_kind": "test",
+    "chain_id": "42424241",
+    "chain_rpc_url": "http://127.0.0.1:30010"
+  },
+  "storage": {
+    "backend": "foundationdb",
+    "cluster_file": ".foundationdb/docker.cluster",
+    "namespace": "main-computer-hub-test",
+    "api_version": 740
+  },
+  "entry_urls": [
+    "http://127.0.0.1:8780",
+    "http://127.0.0.1:8781",
+    "http://127.0.0.1:8782"
+  ],
+  "selection": {
+    "default_mode": "random",
+    "lab_mode": "fixed"
+  },
+  "hubs": [
+    {
+      "hub_id": "test-hub1",
+      "hub_url": "http://127.0.0.1:8780",
+      "public_url": "http://127.0.0.1:8780",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    },
+    {
+      "hub_id": "test-hub2",
+      "hub_url": "http://127.0.0.1:8781",
+      "public_url": "http://127.0.0.1:8781",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    },
+    {
+      "hub_id": "test-hub3",
+      "hub_url": "http://127.0.0.1:8782",
+      "public_url": "http://127.0.0.1:8782",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    }
+  ],
+  "contract": {
+    "auth": "multisession-wallet",
+    "worker_connection": "long-lived-msk-session",
+    "heartbeat": "connection-ping-pong",
+    "availability_source": "live-worker-session-owner",
+    "routing": "entry-hub-reserves-with-worker-home-hub-then-returns-concrete-execution-hub-url",
+    "worker_live_session_transport": "websocket",
+    "worker_heartbeat": "live-connection-ping-pong",
+    "rest_worker_heartbeat": "forbidden",
+    "topology_scope": "local-besu-qbft-test"
+  }
+}

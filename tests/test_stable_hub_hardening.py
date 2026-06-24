@@ -25,7 +25,7 @@ from main_computer.stable_hub_worker_sessions import (
 )
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 WORKER_PRIVATE_KEY = "0x" + "66" * 32
 REQUESTER_PRIVATE_KEY = "0x" + "77" * 32
 WORKER_USER_SLUG = "user_slug_" + "h" * 40

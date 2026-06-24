@@ -13,7 +13,7 @@ from main_computer.stable_hub_msk import InMemoryStableMultiSessionKeyStore
 from main_computer.stable_hub_topology import load_stable_hub_topology
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 DEV_PRIVATE_KEY = "0x" + "11" * 32
 DEFAULT_USER_SLUG = "user_slug_" + "a" * 40
 

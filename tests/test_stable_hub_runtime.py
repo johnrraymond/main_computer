@@ -10,7 +10,7 @@ from main_computer.stable_hub_topology import load_stable_hub_topology, stable_h
 from tools.stable_hub_lab.run_lab import _child_command
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 
 
 def test_stable_hub_identity_resolves_concrete_hub_from_topology() -> None:

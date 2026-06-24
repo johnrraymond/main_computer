@@ -14,7 +14,9 @@ from main_computer.stable_hub_topology import (
 )
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
+SMOKE_TOPOLOGY = Path("deploy/hub-topology/smoke-topology.json")
+TEST_TOPOLOGY = Path("deploy/hub-topology/test-topology.json")
 
 
 def _document() -> dict:
@@ -98,3 +100,30 @@ def test_stable_hub_lab_rejects_entry_url_that_is_not_a_concrete_hub_url() -> No
 
     with pytest.raises(StableHubTopologyError, match="entry_urls must be concrete hub URLs"):
         normalize_stable_hub_topology(document)
+
+
+def test_neutral_hub_topology_directory_contains_local_dev_smoke_and_qbft_test_topologies() -> None:
+    assert DEV_TOPOLOGY.exists()
+    assert SMOKE_TOPOLOGY.exists()
+    assert TEST_TOPOLOGY.exists()
+
+    smoke_topology = load_stable_hub_topology(SMOKE_TOPOLOGY)
+    test_topology = load_stable_hub_topology(TEST_TOPOLOGY)
+
+    assert smoke_topology.network["network_key"] == "dev"
+    assert smoke_topology.network["network_kind"] == "smoke"
+    assert smoke_topology.network["chain_rpc_url"] == "http://127.0.0.1:18545"
+    assert smoke_topology.hub_ids() == ("smoke-hub1", "smoke-hub2", "smoke-hub3")
+
+    assert test_topology.cluster_id == "main-computer-test-qbft-hub"
+    assert test_topology.network["network_key"] == "test"
+    assert test_topology.network["network_kind"] == "test"
+    assert test_topology.network["chain_id"] == "42424241"
+    assert test_topology.network["chain_rpc_url"] == "http://127.0.0.1:30010"
+    assert test_topology.storage["namespace"] == "main-computer-hub-test"
+    assert test_topology.hub_ids() == ("test-hub1", "test-hub2", "test-hub3")
+    assert test_topology.entry_urls == (
+        "http://127.0.0.1:8780",
+        "http://127.0.0.1:8781",
+        "http://127.0.0.1:8782",
+    )

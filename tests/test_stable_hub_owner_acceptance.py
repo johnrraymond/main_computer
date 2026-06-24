@@ -18,7 +18,7 @@ from main_computer.stable_hub_topology import load_stable_hub_topology
 from main_computer.stable_hub_worker_sessions import InMemoryStableWorkerSessionStore
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 WORKER_PRIVATE_KEY = "0x" + "44" * 32
 REQUESTER_PRIVATE_KEY = "0x" + "55" * 32
 WORKER_USER_SLUG = "user_slug_" + "l" * 40

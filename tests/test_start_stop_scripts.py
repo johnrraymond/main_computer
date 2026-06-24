@@ -250,7 +250,7 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert 'MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH' in helper
     assert 'MAIN_COMPUTER_HUB_CONTRACTS_PATH' in helper
     assert 'MAIN_COMPUTER_HUB_TOPOLOGY' in helper
-    assert 'deploy\\stable-hub-lab\\dev-topology.json' in helper
+    assert 'deploy\\hub-topology\\dev-topology.json' in helper
     assert '"-noverbose"' in helper
     assert 'Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII' in helper
 

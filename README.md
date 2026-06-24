@@ -100,6 +100,22 @@ with `environment=test`, chain id `42424241`, and RPC URL
 `http://127.0.0.1:30010`.
 
 
+Local Hub topology fixtures live under `deploy/hub-topology/` so they are not
+tied to the stable-Hub lab or exp/FDB implementation names:
+
+```text
+deploy/hub-topology/dev-topology.json
+deploy/hub-topology/smoke-topology.json
+deploy/hub-topology/test-topology.json
+```
+
+The `test` topology is the local Besu/QBFT topology. It uses chain id
+`42424241`, RPC `http://127.0.0.1:30010`, and Hub entry URLs
+`http://127.0.0.1:8780`, `http://127.0.0.1:8781`, and
+`http://127.0.0.1:8782`.
+
+
+
 Each dev/test deployment also publishes a chain-funded smoke client wallet in the
 network-scoped deployment directory. Use the network-aware Hub client smoke to
 verify the Hub, chain RPC, deployment manifest, contract code, smoke wallet

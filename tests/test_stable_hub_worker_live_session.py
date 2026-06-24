@@ -19,7 +19,7 @@ from main_computer.stable_hub_worker_sessions import InMemoryStableWorkerSession
 from tools.stable_hub_lab.run_lab import build_worker_live_session_smoke_result
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 DEV_PRIVATE_KEY = "0x" + "33" * 32
 TEST_USER_SLUG = "user_slug_" + "w" * 40
 

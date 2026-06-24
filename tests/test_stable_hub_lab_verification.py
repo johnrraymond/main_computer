@@ -15,7 +15,7 @@ from tools.stable_hub_lab.run_lab import (
 )
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 
 
 def _free_port() -> int:

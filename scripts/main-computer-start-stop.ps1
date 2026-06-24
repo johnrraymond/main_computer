@@ -1282,7 +1282,7 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   $topologyPath = Get-LaunchEnvironmentValue `
     $LaunchContext `
     "MAIN_COMPUTER_HUB_TOPOLOGY" `
-    (Join-Path $RootPath "deploy\stable-hub-lab\dev-topology.json")
+    (Join-Path $RootPath "deploy\hub-topology\dev-topology.json")
   $hubId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_ID" "dev-hub1"
   $hubStartTimeoutSeconds = Get-MainComputerDevHubStartTimeoutSeconds $LaunchContext $hubKind
 

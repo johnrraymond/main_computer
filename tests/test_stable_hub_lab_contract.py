@@ -7,7 +7,7 @@ from pathlib import Path
 from tools.stable_hub_lab.run_lab import build_validate_only_result
 
 
-DEV_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 
 
 def test_stable_hub_lab_uses_dev_topology_and_reuses_exp_fdb_cluster_file() -> None:
