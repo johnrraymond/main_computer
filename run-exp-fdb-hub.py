@@ -209,6 +209,7 @@ def build_exp_fdb_hub_command(
         profile.kind,
         "--no-fdb-autostart",
         "--no-activate-cached-native-client",
+        "--require-multisession-auth",
         "--bridge-backend",
         bridge_backend,
     ]

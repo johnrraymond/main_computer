@@ -918,6 +918,7 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
         profile.kind,
         "--no-fdb-autostart",
         "--no-activate-cached-native-client",
+        "--require-multisession-auth",
         "--bridge-backend",
         hub_bridge_backend(args),
     ]

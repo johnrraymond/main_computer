@@ -355,6 +355,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["dev_chain_deployment_path"], "/app/runtime/deployments/test/latest.json")
         self.assertIn("--bridge-backend", compose)
         self.assertIn("dev-chain", compose)
+        self.assertIn("--require-multisession-auth", compose)
         self.assertIn("--dev-chain-deployment-path", compose)
         self.assertIn("/app/runtime/deployments/test/latest.json", compose)
         self.assertIn(":ro", compose)
@@ -495,6 +496,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("--chain-id 42424240", command)
         self.assertIn("--chain-rpc-url https://mainnet-rpc.greatlibrary.io", command)
         self.assertIn("--no-fdb-autostart", command)
+        self.assertIn("--require-multisession-auth", command)
 
     def test_replace_regular_hub_flag_is_deprecated_noop_for_exp_fdb(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
@@ -890,6 +892,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(command[command.index("--namespace") + 1], "main-computer-testnet-exp-fdb")
         self.assertEqual(command[command.index("--dev-chain-deployment-path") + 1], "/app/runtime/deployments/testnet/latest.json")
         self.assertEqual(command[command.index("--contracts-path") + 1], "/app/main_computer/config/testnet_contracts.json")
+        self.assertIn("--require-multisession-auth", command)
 
     def test_runtime_launcher_can_enable_unsigned_contract_startup_from_env(self) -> None:
         args = run_exp_fdb_hub.parse_args([])
