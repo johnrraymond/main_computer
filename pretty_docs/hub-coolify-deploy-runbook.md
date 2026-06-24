@@ -228,6 +228,73 @@ If `--fdb-cluster-file` is omitted, the remote deployer defaults to:
 /data/main-computer/hub/<network>-exp-fdb/fdb.cluster
 ```
 
+### Shared testnet FoundationDB cluster layer
+
+For the two-Coolify-host testnet topology, deploy the FoundationDB layer before
+deploying the Hub processes. The placement file is committed at:
+
+```text
+deploy/hub-topology/testnet-coolify-deployment.json
+```
+
+The placement file uses symbolic Coolify names (`coolify-a`, `coolify-b`) and
+private droplet VPN `10.*` addresses. Bind the symbols to actual Coolify API URLs
+at runtime:
+
+```powershell
+$env:MAIN_COMPUTER_COOLIFY_TOKEN = "<token-visible-to-both-coolify-servers>"
+
+python .\tools\coolify_fdb_cluster.py plan `
+  --placement deploy\hub-topology\testnet-coolify-deployment.json `
+  --set-coolify-url "coolify-a:https://ipaddress1:8000" `
+  --set-coolify-url "coolify-b:https://ipaddress2:8000" `
+  --coolify-project-name "Main Computer"
+```
+
+Apply the FoundationDB layer:
+
+```powershell
+python .\tools\coolify_fdb_cluster.py apply `
+  --placement deploy\hub-topology\testnet-coolify-deployment.json `
+  --set-coolify-url "coolify-a:https://ipaddress1:8000" `
+  --set-coolify-url "coolify-b:https://ipaddress2:8000" `
+  --coolify-project-name "Main Computer" `
+  --coolify-environment-name "testnet-fdb"
+```
+
+The FDB deployer creates one Coolify Service per symbolic host:
+
+```text
+main-computer-testnet-fdb-coolify-a
+main-computer-testnet-fdb-coolify-b
+```
+
+The rendered Compose publishes FDB only on the configured VPN/private IP and
+ports, for example:
+
+```text
+10.10.0.5:4550
+10.10.0.5:4551
+10.124.0.3:4550
+```
+
+It writes the same cluster file on each host:
+
+```text
+/data/main-computer/hub/testnet-exp-fdb/fdb.cluster
+```
+
+Hub services must mount/read that exact file and must use the namespace from the
+placement file:
+
+```text
+main-computer-testnet-exp-fdb-stable-live-sessions
+```
+
+Do not publish FDB through Traefik or public DNS. The FDB service ports should be
+reachable only over the private droplet VPN interface.
+
+
 ## Render the plan
 
 Mainnet:

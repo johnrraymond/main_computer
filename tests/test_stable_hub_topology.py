@@ -17,6 +17,7 @@ from main_computer.stable_hub_topology import (
 DEV_TOPOLOGY = Path("deploy/hub-topology/dev-topology.json")
 SMOKE_TOPOLOGY = Path("deploy/hub-topology/smoke-topology.json")
 TEST_TOPOLOGY = Path("deploy/hub-topology/test-topology.json")
+TESTNET_TOPOLOGY = Path("deploy/hub-topology/testnet-topology.json")
 
 
 def _document() -> dict:
@@ -94,21 +95,25 @@ def test_stable_hub_topology_distinguishes_entry_urls_from_concrete_hub_urls() -
     assert plan["contract"]["routing"].startswith("entry-hub-reserves")
 
 
-def test_stable_hub_lab_rejects_entry_url_that_is_not_a_concrete_hub_url() -> None:
+def test_stable_hub_topology_allows_public_entry_alias_that_is_not_a_concrete_hub_url() -> None:
     document = _document()
-    document["entry_urls"].append("http://127.0.0.1:8999")
+    document["entry_urls"] = ["https://testnet-hub.greatlibrary.io"]
 
-    with pytest.raises(StableHubTopologyError, match="entry_urls must be concrete hub URLs"):
-        normalize_stable_hub_topology(document)
+    topology = normalize_stable_hub_topology(document)
+
+    assert topology.entry_urls == ("https://testnet-hub.greatlibrary.io",)
+    assert "https://testnet-hub.greatlibrary.io" not in topology.concrete_hub_urls()
 
 
-def test_neutral_hub_topology_directory_contains_local_dev_smoke_and_qbft_test_topologies() -> None:
+def test_neutral_hub_topology_directory_contains_local_dev_smoke_qbft_test_and_public_testnet_topologies() -> None:
     assert DEV_TOPOLOGY.exists()
     assert SMOKE_TOPOLOGY.exists()
     assert TEST_TOPOLOGY.exists()
+    assert TESTNET_TOPOLOGY.exists()
 
     smoke_topology = load_stable_hub_topology(SMOKE_TOPOLOGY)
     test_topology = load_stable_hub_topology(TEST_TOPOLOGY)
+    testnet_topology = load_stable_hub_topology(TESTNET_TOPOLOGY)
 
     assert smoke_topology.network["network_key"] == "dev"
     assert smoke_topology.network["network_kind"] == "smoke"
@@ -126,4 +131,22 @@ def test_neutral_hub_topology_directory_contains_local_dev_smoke_and_qbft_test_t
         "http://127.0.0.1:8780",
         "http://127.0.0.1:8781",
         "http://127.0.0.1:8782",
+    )
+
+    assert testnet_topology.cluster_id == "main-computer-testnet-hub"
+    assert testnet_topology.network == {
+        "network_key": "testnet",
+        "network_display_name": "Main Computer Testnet",
+        "network_kind": "testnet",
+    }
+    assert "chain_id" not in testnet_topology.network
+    assert "chain_rpc_url" not in testnet_topology.network
+    assert testnet_topology.storage["cluster_file"] == "runtime/hub/testnet/fdb.cluster"
+    assert testnet_topology.storage["namespace"] == "main-computer-testnet-exp-fdb-stable-live-sessions"
+    assert testnet_topology.entry_urls == ("https://testnet-hub.greatlibrary.io",)
+    assert testnet_topology.hub_ids() == ("testnet-hub1", "testnet-hub2", "testnet-hub3")
+    assert testnet_topology.concrete_hub_urls() == (
+        "https://testnet-hub1.greatlibrary.io",
+        "https://testnet-hub2.greatlibrary.io",
+        "https://testnet-hub3.greatlibrary.io",
     )

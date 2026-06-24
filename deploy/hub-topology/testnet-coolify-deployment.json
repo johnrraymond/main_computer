@@ -1,0 +1,92 @@
+{
+  "kind": "main_computer.coolify_hub_cluster_placement.v1",
+  "network_key": "testnet",
+  "topology_path": "deploy/hub-topology/testnet-topology.json",
+  "coolify": {
+    "server_url_source": "command-line",
+    "server_url_argument": "--set-coolify-url",
+    "server_url_argument_format": "<server-name>:<coolify-base-url>",
+    "server_token_source": "environment-or-command-line"
+  },
+  "servers": [
+    {
+      "name": "coolify-a",
+      "vpn_ip": "10.10.0.5"
+    },
+    {
+      "name": "coolify-b",
+      "vpn_ip": "10.124.0.3"
+    }
+  ],
+  "foundationdb": {
+    "image": "foundationdb/foundationdb:7.4.6",
+    "cluster_description": "main-computer-testnet",
+    "cluster_id": "7f0396a2939ca9c6",
+    "cluster_file_path": "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster",
+    "namespace": "main-computer-testnet-exp-fdb-stable-live-sessions",
+    "configure": "double ssd",
+    "network": {
+      "transport": "droplet-vpn-10-network",
+      "bind_address_source": "servers[].vpn_ip",
+      "publish_public_ports": false
+    },
+    "instances": [
+      {
+        "id": "testnet-fdb1",
+        "coolify_server": "coolify-a",
+        "port": 4550,
+        "machine_id": "coolify-a",
+        "zone_id": "coolify-a"
+      },
+      {
+        "id": "testnet-fdb2",
+        "coolify_server": "coolify-a",
+        "port": 4551,
+        "machine_id": "coolify-a",
+        "zone_id": "coolify-a"
+      },
+      {
+        "id": "testnet-fdb3",
+        "coolify_server": "coolify-b",
+        "port": 4550,
+        "machine_id": "coolify-b",
+        "zone_id": "coolify-b"
+      }
+    ]
+  },
+  "hubs": [
+    {
+      "hub_id": "testnet-hub1",
+      "coolify_server": "coolify-a",
+      "public_url": "https://testnet-hub1.greatlibrary.io",
+      "runtime_dir": "/data/main-computer/hub/testnet-exp-fdb",
+      "cluster_file_path": "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster",
+      "namespace": "main-computer-testnet-exp-fdb-stable-live-sessions"
+    },
+    {
+      "hub_id": "testnet-hub2",
+      "coolify_server": "coolify-a",
+      "public_url": "https://testnet-hub2.greatlibrary.io",
+      "runtime_dir": "/data/main-computer/hub/testnet-exp-fdb",
+      "cluster_file_path": "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster",
+      "namespace": "main-computer-testnet-exp-fdb-stable-live-sessions"
+    },
+    {
+      "hub_id": "testnet-hub3",
+      "coolify_server": "coolify-b",
+      "public_url": "https://testnet-hub3.greatlibrary.io",
+      "runtime_dir": "/data/main-computer/hub/testnet-exp-fdb",
+      "cluster_file_path": "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster",
+      "namespace": "main-computer-testnet-exp-fdb-stable-live-sessions"
+    }
+  ],
+  "public_entry_urls": [
+    "https://testnet-hub.greatlibrary.io"
+  ],
+  "operator_notes": [
+    "Do not commit Coolify API URLs or tokens in this file; bind symbolic server names with --set-coolify-url at deploy time.",
+    "Replace servers[].vpn_ip values with each droplet's private 10.* VPN address before using this placement file.",
+    "The FoundationDB ports must be reachable only over the VPN/private network, not from the public internet.",
+    "The deployer should generate the same fdb.cluster file for all FoundationDB instances and all three Hub services."
+  ]
+}

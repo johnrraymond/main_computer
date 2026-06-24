@@ -1,0 +1,62 @@
+{
+  "kind": "main_computer.stable_hub_topology.v1",
+  "cluster_id": "main-computer-testnet-hub",
+  "network": {
+    "network_key": "testnet",
+    "network_display_name": "Main Computer Testnet",
+    "network_kind": "testnet"
+  },
+  "storage": {
+    "backend": "foundationdb",
+    "cluster_file": "runtime/hub/testnet/fdb.cluster",
+    "namespace": "main-computer-testnet-exp-fdb-stable-live-sessions",
+    "api_version": 740
+  },
+  "entry_urls": [
+    "https://testnet-hub.greatlibrary.io"
+  ],
+  "selection": {
+    "default_mode": "random",
+    "lab_mode": "fixed"
+  },
+  "hubs": [
+    {
+      "hub_id": "testnet-hub1",
+      "hub_url": "https://testnet-hub1.greatlibrary.io",
+      "public_url": "https://testnet-hub1.greatlibrary.io",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    },
+    {
+      "hub_id": "testnet-hub2",
+      "hub_url": "https://testnet-hub2.greatlibrary.io",
+      "public_url": "https://testnet-hub2.greatlibrary.io",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    },
+    {
+      "hub_id": "testnet-hub3",
+      "hub_url": "https://testnet-hub3.greatlibrary.io",
+      "public_url": "https://testnet-hub3.greatlibrary.io",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    }
+  ],
+  "contract": {
+    "auth": "multisession-wallet",
+    "worker_connection": "long-lived-msk-session",
+    "heartbeat": "connection-ping-pong",
+    "availability_source": "live-worker-session-owner",
+    "routing": "entry-hub-reserves-with-worker-home-hub-then-returns-concrete-execution-hub-url",
+    "worker_live_session_transport": "websocket",
+    "worker_heartbeat": "live-connection-ping-pong",
+    "rest_worker_heartbeat": "forbidden",
+    "topology_scope": "public-testnet-coolify"
+  }
+}

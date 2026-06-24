@@ -129,13 +129,14 @@ def normalize_stable_hub_topology(document: Mapping[str, Any]) -> StableHubTopol
 
     network_key = _require_non_empty_string(network.get("network_key"), field="network.network_key")
     network["network_key"] = network_key
-    chain_id = _require_non_empty_string(network.get("chain_id"), field="network.chain_id")
-    network["chain_id"] = chain_id
+    if network.get("chain_id") is not None:
+        chain_id = _require_non_empty_string(network.get("chain_id"), field="network.chain_id")
+        network["chain_id"] = chain_id
 
     storage_backend = _require_non_empty_string(storage.get("backend"), field="storage.backend")
     storage["backend"] = storage_backend
     if storage_backend != "foundationdb":
-        raise StableHubTopologyError("storage.backend must be 'foundationdb' for the dev stable-Hub lab")
+        raise StableHubTopologyError("storage.backend must be 'foundationdb' for stable Hub topology")
     storage_cluster_file = _require_non_empty_string(
         storage.get("cluster_file"),
         field="storage.cluster_file",
@@ -174,15 +175,9 @@ def normalize_stable_hub_topology(document: Mapping[str, Any]) -> StableHubTopol
     _validate_unique([hub.hub_id for hub in hubs], field="hubs[].hub_id")
     _validate_unique([hub.hub_url for hub in hubs], field="hubs[].hub_url")
 
-    concrete_urls = {hub.hub_url for hub in hubs}
-    missing_entry_urls = [url for url in entry_urls if url not in concrete_urls]
-    if missing_entry_urls:
-        missing = ", ".join(missing_entry_urls)
-        raise StableHubTopologyError(
-            "dev stable-Hub lab entry_urls must be concrete hub URLs from hubs[].hub_url; "
-            f"missing from hubs: {missing}"
-        )
-
+    # Public deployments may use a blind/load-balanced entry URL that is not a
+    # concrete Hub identity.  Local lab helpers still require the selected entry
+    # URLs they use to map to concrete hub_url values.
     return StableHubTopology(
         kind=kind,
         cluster_id=cluster_id,
@@ -261,7 +256,7 @@ def build_lab_plan(
     return {
         "cluster_id": topology.cluster_id,
         "network_key": topology.network["network_key"],
-        "chain_id": topology.network["chain_id"],
+        "chain_id": topology.network.get("chain_id", ""),
         "storage_backend": topology.storage["backend"],
         "fdb_cluster_file": topology.storage["cluster_file"],
         "storage_namespace": topology.storage["namespace"],
