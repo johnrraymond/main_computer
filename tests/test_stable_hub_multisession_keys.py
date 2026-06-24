@@ -321,3 +321,59 @@ def test_stable_hub_rejects_low_entropy_user_slug() -> None:
     assert status == 400
     assert body["ok"] is False
     assert "user_slug must be at least" in body["error"]
+
+
+class _DirectOnlyMskStore:
+    def __init__(self) -> None:
+        self.records: dict[str, dict] = {}
+        self.hash_index: dict[str, str] = {}
+
+    def load(self) -> dict:
+        raise AssertionError("direct MSK hot path must not load the whole store")
+
+    def save(self, data: dict) -> None:
+        raise AssertionError("direct MSK hot path must not save the whole store")
+
+    def create_key_record_if_absent(self, *, signed_request_hash: str, record: dict) -> dict:
+        existing_id = self.hash_index.get(signed_request_hash)
+        if existing_id:
+            return {"record": dict(self.records[existing_id]), "idempotent": True}
+        key_id = str(record["id"])
+        self.records[key_id] = dict(record)
+        self.hash_index[signed_request_hash] = key_id
+        return {"record": dict(record), "idempotent": False}
+
+    def get_key_record(self, key_id: str) -> dict | None:
+        record = self.records.get(key_id)
+        return dict(record) if isinstance(record, dict) else None
+
+
+def test_stable_hub_msk_fdb_style_store_does_not_rewrite_whole_history() -> None:
+    store = _DirectOnlyMskStore()
+    server, thread = _start_server("dev-hub1", store)  # type: ignore[arg-type]
+    signed_request = _signed_msk_request(request_id="direct-record-store")
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        first = _post_json(
+            f"{base_url}/api/hub/v1/credits/multisession-keys/request",
+            {"signed_request": signed_request},
+        )
+        second = _post_json(
+            f"{base_url}/api/hub/v1/credits/multisession-keys/request",
+            {"signed_request": signed_request},
+        )
+        validated = _post_json(
+            f"{base_url}/api/hub/v1/credits/multisession-keys/validate",
+            {"multisession_authorization": {"multisession_key_id": first["key"]["id"]}},
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert first["idempotent"] is False
+    assert second["idempotent"] is True
+    assert second["key"]["id"] == first["key"]["id"]
+    assert validated["valid"] is True
+    assert validated["multisession_key_id"] == first["key"]["id"]
+    assert list(store.records) == [first["key"]["id"]]

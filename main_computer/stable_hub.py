@@ -467,6 +467,12 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         accepted_session = self.server.accepted_work_session_directory.get_session(session_id)
         if accepted_session is None:
             raise StableHubWorkerSessionError("accepted work session does not exist.")
+        message_worker_id = message.get("worker_id")
+        if message_worker_id not in {None, ""} and normalize_worker_id(message_worker_id) != worker_id:
+            raise StableHubWorkerSessionError("worker terminal message worker_id mismatch.")
+        message_run_id = str(message.get("run_id") or "")
+        if message_run_id and message_run_id != str(accepted_session.get("run_id") or ""):
+            raise StableHubWorkerSessionError("worker terminal message run_id mismatch.")
         if str(accepted_session.get("request_id") or "") != request_id:
             raise StableHubWorkerSessionError("worker terminal message request_id mismatch.")
         if str(accepted_session.get("worker_id") or "") != worker_id:
@@ -657,6 +663,12 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     "connection_id": connection_id,
                     "owner": owner,
                     "market": market_record,
+                    "worker_hub": {
+                        "hub_id": self.server.hub.hub_id,
+                        "hub_url": self.server.hub.hub_url,
+                        "local_owner": True,
+                        "handoff": False,
+                    },
                     "heartbeat": {
                         "transport": "websocket",
                         "mode": "hub-ping-worker-pong",
@@ -783,6 +795,62 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
 
 
 
+    def _send_existing_accepted_work_session_response(
+        self,
+        *,
+        accepted_session: dict[str, Any],
+        request_id: str,
+        idempotent: bool = True,
+    ) -> None:
+        session_id = normalize_session_id(accepted_session.get("session_id"))
+        owner_hub_id = str(accepted_session.get("owner_hub_id") or "")
+        owner_hub_url = str(accepted_session.get("owner_hub_url") or "")
+        continuation_url = stable_work_session_continuation_url(owner_hub_url, session_id)
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "accepted": True,
+                "idempotent": idempotent,
+                "duplicate_request_id": True,
+                "session_id": session_id,
+                "run_id": accepted_session.get("run_id"),
+                "request_id": request_id,
+                "worker_id": accepted_session.get("worker_id"),
+                "owner_hub_id": owner_hub_id,
+                "owner_hub_url": owner_hub_url,
+                "partition": accepted_session.get("partition"),
+                "task_queue": accepted_session.get("task_queue"),
+                "execution_hub": {
+                    "hub_id": owner_hub_id,
+                    "hub_url": owner_hub_url,
+                },
+                "continuation_url": continuation_url,
+                "continuation": {
+                    "direct": True,
+                    "stream_path": stable_work_session_stream_path(session_id),
+                    "hub_id": owner_hub_id,
+                    "hub_url": owner_hub_url,
+                },
+                "execution": accepted_session.get("execution", {}),
+                "payout": accepted_session.get("payout", {}),
+                "accepted_session": accepted_session,
+                "hub_id": self.server.hub.hub_id,
+                "cluster_id": self.server.topology.cluster_id,
+            },
+        )
+
+    def _work_payloads_match(self, left: Any, right: Any) -> bool:
+        try:
+            return json.dumps(left, sort_keys=True, separators=(",", ":")) == json.dumps(
+                right,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            return False
+
+
     def _handle_work_session_stream(self, path: str) -> None:
         prefix = "/api/hub/v1/work/sessions/"
         suffix = "/stream"
@@ -790,12 +858,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         try:
             session_id = normalize_session_id(raw_session_id)
         except StableHubWorkerSessionError as exc:
-            if payout_hold:
-                self.server.payout_ledger_directory.release_hold(
-                    hold_id=str(payout_hold.get("hold_id") or ""),
-                    reason="worker_acceptance_rejected",
-                    metadata={"request_id": request_id, "session_id": session_id},
-                )
             self._send_json(
                 400,
                 {
@@ -1063,7 +1125,55 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        requester_account_id = str(validation.get("account_id") or "")
         partition = stable_partition_key_for_work(work)
+        existing_session = self.server.accepted_work_session_directory.get_session_for_request(
+            requester_account_id=requester_account_id,
+            request_id=request_id,
+        )
+        if existing_session is not None:
+            if not self._work_payloads_match(existing_session.get("work", {}), work):
+                self._send_json(
+                    409,
+                    {
+                        "ok": False,
+                        "error": "duplicate_request_id_work_mismatch",
+                        "message": "A stable Hub work session already exists for this requester request_id with different work.",
+                        "request_id": request_id,
+                        "existing_session_id": existing_session.get("session_id"),
+                        "existing_status": existing_session.get("status"),
+                        "hub_id": self.server.hub.hub_id,
+                        "cluster_id": self.server.topology.cluster_id,
+                    },
+                )
+                return
+            self._send_existing_accepted_work_session_response(
+                accepted_session=existing_session,
+                request_id=request_id,
+                idempotent=True,
+            )
+            return
+
+        existing_hold = self.server.payout_ledger_directory.get_hold_for_request(
+            account_id=requester_account_id,
+            request_id=request_id,
+        )
+        if existing_hold is not None:
+            self._send_json(
+                409,
+                {
+                    "ok": False,
+                    "error": "duplicate_request_id_already_reserved",
+                    "message": "Requester request_id already has a payout hold but no accepted session. Use a new request_id to retry.",
+                    "request_id": request_id,
+                    "hold_id": existing_hold.get("hold_id"),
+                    "hold_status": existing_hold.get("status"),
+                    "hub_id": self.server.hub.hub_id,
+                    "cluster_id": self.server.topology.cluster_id,
+                },
+            )
+            return
+
         selected_worker = self.server.worker_market_directory.select_worker_for_work(work)
         if selected_worker is None:
             self._send_json(
@@ -1221,6 +1331,29 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        try:
+            market_record = self.server.worker_market_directory.reserve_worker_capacity(
+                worker_id=worker_id,
+                connection_id=owner_connection_id,
+                lease_epoch=owner_lease_epoch,
+            )
+        except StableHubWorkerSessionError as exc:
+            self._send_json(
+                409,
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "message": "Selected worker no longer has an available live capacity slot.",
+                    "request_id": request_id,
+                    "worker_id": worker_id,
+                    "partition": partition,
+                    "owner": owner,
+                    "hub_id": self.server.hub.hub_id,
+                    "cluster_id": self.server.topology.cluster_id,
+                },
+            )
+            return
+
         session_id = new_session_id()
         run_id = new_run_id()
         task_queue = stable_task_queue_for_partition(partition)
@@ -1243,6 +1376,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 },
             )
         except StableHubWorkerSessionError as exc:
+            self.server.worker_market_directory.record_session_finished(
+                worker_id=worker_id,
+                connection_id=owner_connection_id,
+            )
             self._send_json(
                 402,
                 {
@@ -1281,6 +1418,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     reason="worker_offer_timeout",
                     metadata={"request_id": request_id, "session_id": session_id},
                 )
+            self.server.worker_market_directory.record_session_finished(
+                worker_id=worker_id,
+                connection_id=owner_connection_id,
+            )
             self._send_json(
                 504,
                 {
@@ -1303,6 +1444,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     reason="worker_owner_not_local",
                     metadata={"request_id": request_id, "session_id": session_id},
                 )
+            self.server.worker_market_directory.record_session_finished(
+                worker_id=worker_id,
+                connection_id=owner_connection_id,
+            )
             self._send_json(
                 409,
                 {
@@ -1325,6 +1470,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     reason="worker_acceptance_rejected",
                     metadata={"request_id": request_id, "session_id": session_id},
                 )
+            self.server.worker_market_directory.record_session_finished(
+                worker_id=worker_id,
+                connection_id=owner_connection_id,
+            )
             self._send_json(
                 409,
                 {
@@ -1368,10 +1517,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 "settlement_status": "not_settled",
             },
         )
-        market_record = self.server.worker_market_directory.record_session_accepted(
-            worker_id=worker_id,
-            connection_id=owner_connection_id,
-        )
+        # Capacity was reserved before the offer was sent, so acceptance only
+        # confirms the session record.  Terminal success/failure releases the slot.
+        market_record = self.server.worker_market_directory.get_worker(worker_id) or market_record
 
         continuation_url = stable_work_session_continuation_url(owner_hub_url, session_id)
         self._send_json(
@@ -1492,24 +1640,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/hub/v1/work/sessions/") and path.endswith("/stream"):
             self._handle_work_session_stream(path)
-            return
-        if path.startswith("/api/hub/v1/workers/") and path.endswith("/owner"):
-            worker_id = path[len("/api/hub/v1/workers/") : -len("/owner")]
-            try:
-                owner = self.server.worker_session_directory.get_owner(worker_id)
-            except StableHubWorkerSessionError as exc:
-                self._send_json(400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
-                return
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                    "worker_id": worker_id,
-                    "owner": owner,
-                },
-            )
             return
         if path == "/api/hub/v1/payout/status":
             self._send_json(

@@ -40,6 +40,14 @@ def _get_json(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _get_json_status(url: str) -> tuple[int, dict]:
+    try:
+        with urlopen(url, timeout=3) as response:  # noqa: S310 - local test server
+            return int(response.status), json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        return int(exc.code), json.loads(exc.read().decode("utf-8"))
+
+
 def _signed_msk_request(*, request_id: str = "stable-worker-live-session-msk") -> dict:
     now = datetime.now(timezone.utc)
     wallet_address = private_key_to_address(DEV_PRIVATE_KEY)
@@ -264,12 +272,17 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory()
             == pushed_ping_pong_accepted["owner"]["last_pong_at"]
         )
 
-        owner_seen_from_other_hub = _get_json(
+        public_owner_status, public_owner_body = _get_json_status(
             f"{hub1_url}/api/hub/v1/workers/worker-live-session-1/owner"
         )
-        owner = owner_seen_from_other_hub["owner"]
+        owner = accepted["owner"]
 
-        assert owner_seen_from_other_hub["ok"] is True
+        assert public_owner_status == 404
+        assert public_owner_body["error"] == "not_found"
+        assert accepted["worker_hub"]["hub_id"] == "dev-hub3"
+        assert accepted["worker_hub"]["hub_url"] == "http://127.0.0.1:8873"
+        assert accepted["worker_hub"]["local_owner"] is True
+        assert accepted["worker_hub"]["handoff"] is False
         assert owner["status"] == "live"
         assert owner["owner_hub_id"] == "dev-hub3"
         assert owner["owner_hub_url"] == "http://127.0.0.1:8873"
@@ -277,7 +290,6 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory()
         assert owner["multisession_key_id"] == msk_id
         assert owner["wallet_address"] == issued["key"]["wallet_address"]
         assert owner["account_id"] == issued["key"]["account_id"]
-        assert owner["last_pong_at"]
 
         market_record = hub1.worker_market_directory.get_worker("worker-live-session-1")
         assert market_record is not None
@@ -306,7 +318,7 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory()
         deadline = time.monotonic() + 2.0
         closed = None
         while time.monotonic() < deadline:
-            closed = _get_json(f"{hub1_url}/api/hub/v1/workers/worker-live-session-1/owner")["owner"]
+            closed = hub1.worker_session_directory.get_owner("worker-live-session-1")
             if closed and closed.get("status") == "closed":
                 break
             time.sleep(0.05)
@@ -354,7 +366,7 @@ def test_worker_rest_polling_heartbeat_is_not_exposed() -> None:
     assert body["error"] == "not_found"
 
 
-def test_lab_worker_live_session_smoke_helper_uses_websocket_and_owner_directory(tmp_path: Path) -> None:
+def test_lab_worker_live_session_smoke_helper_uses_authenticated_owner_claim(tmp_path: Path) -> None:
     msk_store = InMemoryStableMultiSessionKeyStore()
     worker_store = InMemoryStableWorkerSessionStore()
     hub1, thread1 = _start_server("dev-hub1", msk_store, worker_store)
@@ -388,10 +400,10 @@ def test_lab_worker_live_session_smoke_helper_uses_websocket_and_owner_directory
 
     assert result["ok"] is True
     assert result["worker_hub"]["hub_id"] == "dev-hub3"
-    assert result["owner_check_hub"]["hub_id"] == "dev-hub1"
     assert result["owner"]["owner_hub_id"] == "dev-hub3"
     assert result["owner"]["status"] == "live"
     assert result["proof"]["websocket_auth_accepted"] is True
     assert result["proof"]["hub_ping_over_open_connection"] is True
     assert result["proof"]["worker_pong_over_same_connection"] is True
-    assert result["proof"]["owner_record_visible_from_other_hub"] is True
+    assert result["proof"]["authenticated_owner_claim_returned"] is True
+    assert result["proof"]["public_worker_owner_lookup_absent"] is True

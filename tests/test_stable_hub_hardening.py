@@ -6,6 +6,8 @@ import os
 import queue
 import socket
 import threading
+
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -17,6 +19,7 @@ from main_computer.stable_hub_msk import InMemoryStableMultiSessionKeyStore
 from main_computer.stable_hub_topology import load_stable_hub_topology
 from main_computer.stable_hub_worker_sessions import (
     InMemoryStableWorkerSessionStore,
+    StableHubPayoutLedgerDirectory,
     StableHubWorkerMarketDirectory,
     StableHubWorkerSessionDirectory,
 )
@@ -488,3 +491,653 @@ def test_owner_hub_times_out_when_worker_does_not_accept_offer(tmp_path: Path) -
         hub3.shutdown()
         hub3.server_close()
         thread3.join(timeout=2)
+
+
+def _get_json_status(url: str) -> tuple[int, dict]:
+    request = Request(url, method="GET")
+    try:
+        with urlopen(request, timeout=5) as response:  # noqa: S310 - local test server
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def _connect_live_worker(
+    *,
+    hub_port: int,
+    worker_msk_id: str,
+    worker_id: str,
+    price: str = "0.01",
+    max_concurrency: int = 1,
+) -> tuple[socket.socket, dict]:
+    sock = _ws_connect("127.0.0.1", hub_port, "/api/hub/v1/workers/live-session")
+    _ws_send_json(
+        sock,
+        {
+            "type": "worker.auth",
+            "worker_id": worker_id,
+            "multisession_authorization": {
+                "kind": "multisession_key",
+                "multisession_key_id": worker_msk_id,
+            },
+            "market": {
+                "rings": ["ring-2"],
+                "price": {"amount": price, "unit": "credit"},
+                "capabilities": ["python"],
+                "max_concurrency": max_concurrency,
+            },
+        },
+    )
+    accepted = _ws_recv_json(sock)
+    assert accepted["type"] == "hub.auth.accepted"
+    ping = _ws_recv_json(sock)
+    assert ping["type"] == "hub.ping"
+    _ws_send_json(
+        sock,
+        {
+            "type": "worker.pong",
+            "connection_id": accepted["connection_id"],
+            "ping_id": ping["ping_id"],
+        },
+    )
+    assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
+    return sock, accepted
+
+
+def _submit_work_async(
+    *,
+    hub_url: str,
+    requester_msk_id: str,
+    request_id: str,
+    max_price: str = "0.10",
+    value: str = "hardening",
+) -> tuple[threading.Thread, queue.Queue[tuple[int, dict] | BaseException]]:
+    result_queue: queue.Queue[tuple[int, dict] | BaseException] = queue.Queue()
+
+    def _submit() -> None:
+        try:
+            body = _valid_request_body(requester_msk_id, request_id=request_id)
+            body["work"]["max_price"] = {"amount": max_price, "unit": "credit"}
+            body["work"]["input"] = {"kind": "echo", "value": value}
+            result_queue.put(_post_json_status(f"{hub_url}/api/hub/v1/work/requests", body))
+        except BaseException as exc:  # pragma: no cover - surfaced by test assertion
+            result_queue.put(exc)
+
+    thread = threading.Thread(target=_submit, daemon=True)
+    thread.start()
+    return thread, result_queue
+
+
+def _accept_current_offer(sock: socket.socket, *, worker_id: str) -> dict:
+    offer = _ws_recv_json(sock)
+    assert offer["type"] == "hub.work.offer"
+    _ws_send_json(
+        sock,
+        {
+            "type": "worker.work.accepted",
+            "worker_id": worker_id,
+            "session_id": offer["session_id"],
+            "run_id": offer["run_id"],
+            "request_id": offer["request_id"],
+        },
+    )
+    return offer
+
+
+def _finish_offer_with_result(sock: socket.socket, offer: dict, *, worker_id: str, value: str = "ok") -> dict:
+    _ws_send_json(
+        sock,
+        {
+            "type": "worker.work.result",
+            "worker_id": worker_id,
+            "session_id": offer["session_id"],
+            "run_id": offer["run_id"],
+            "request_id": offer["request_id"],
+            "result": {"value": value},
+        },
+    )
+    ack = _ws_recv_json(sock)
+    assert ack["type"] == "hub.work.result.accepted"
+    assert ack["ok"] is True
+    return ack
+
+
+def _finish_offer_with_failure(sock: socket.socket, offer: dict, *, worker_id: str, message: str = "boom") -> dict:
+    _ws_send_json(
+        sock,
+        {
+            "type": "worker.work.failed",
+            "worker_id": worker_id,
+            "session_id": offer["session_id"],
+            "run_id": offer["run_id"],
+            "request_id": offer["request_id"],
+            "error": {"message": message},
+        },
+    )
+    ack = _ws_recv_json(sock)
+    assert ack["type"] == "hub.work.failed.accepted"
+    assert ack["ok"] is True
+    return ack
+
+
+def _new_local_hub_with_worker(tmp_path: Path, *, test_name: str, worker_id: str, worker_price: str = "0.01", max_concurrency: int = 1):
+    hub3_port = _free_port()
+    hub3_url = f"http://127.0.0.1:{hub3_port}"
+    topology_path = tmp_path / f"{test_name}-topology.json"
+    _write_test_topology(topology_path, hub1_url=f"http://127.0.0.1:{_free_port()}", hub3_url=hub3_url)
+
+    msk_store = InMemoryStableMultiSessionKeyStore()
+    worker_store = InMemoryStableWorkerSessionStore()
+    hub3, thread3 = _start_server(
+        topology_path=topology_path,
+        hub_id="dev-hub3",
+        bind_port=hub3_port,
+        msk_store=msk_store,
+        worker_store=worker_store,
+    )
+    worker_msk = _issue_msk(
+        hub3_url,
+        private_key=WORKER_PRIVATE_KEY,
+        user_slug=WORKER_USER_SLUG,
+        request_id=f"{test_name}-worker-msk",
+    )
+    requester_msk = _issue_msk(
+        hub3_url,
+        private_key=REQUESTER_PRIVATE_KEY,
+        user_slug=REQUESTER_USER_SLUG,
+        request_id=f"{test_name}-requester-msk",
+    )
+    sock, auth = _connect_live_worker(
+        hub_port=hub3_port,
+        worker_msk_id=worker_msk["key"]["id"],
+        worker_id=worker_id,
+        price=worker_price,
+        max_concurrency=max_concurrency,
+    )
+    return hub3, thread3, hub3_url, sock, auth, requester_msk
+
+
+def test_malformed_continuation_stream_id_returns_400_instead_of_handler_crash(tmp_path: Path) -> None:
+    hub3_port = _free_port()
+    hub3_url = f"http://127.0.0.1:{hub3_port}"
+    topology_path = tmp_path / "stable-hub-malformed-stream-topology.json"
+    _write_test_topology(topology_path, hub1_url=f"http://127.0.0.1:{_free_port()}", hub3_url=hub3_url)
+
+    msk_store = InMemoryStableMultiSessionKeyStore()
+    worker_store = InMemoryStableWorkerSessionStore()
+    hub3, thread3 = _start_server(
+        topology_path=topology_path,
+        hub_id="dev-hub3",
+        bind_port=hub3_port,
+        msk_store=msk_store,
+        worker_store=worker_store,
+    )
+    try:
+        status, body = _get_json_status(f"{hub3_url}/api/hub/v1/work/sessions/bad!/stream")
+    finally:
+        hub3.shutdown()
+        hub3.server_close()
+        thread3.join(timeout=2)
+
+    assert status == 400
+    assert body["ok"] is False
+    assert "session_id" in body["error"]
+
+
+def test_duplicate_request_id_returns_existing_session_without_second_worker_offer(tmp_path: Path) -> None:
+    worker_id = "worker-duplicate-request"
+    hub3, thread3, hub3_url, sock, _auth, requester_msk = _new_local_hub_with_worker(
+        tmp_path,
+        test_name="duplicate-request",
+        worker_id=worker_id,
+    )
+    try:
+        post_thread, result_queue = _submit_work_async(
+            hub_url=hub3_url,
+            requester_msk_id=requester_msk["key"]["id"],
+            request_id="req_duplicate_stable",
+        )
+        offer = _accept_current_offer(sock, worker_id=worker_id)
+        response = result_queue.get(timeout=3)
+        assert not isinstance(response, BaseException), response
+        status, body = response
+        post_thread.join(timeout=2)
+        assert status == 200
+        assert body["session_id"] == offer["session_id"]
+
+        _finish_offer_with_result(sock, offer, worker_id=worker_id)
+
+        duplicate_status, duplicate_body = _post_json_status(
+            f"{hub3_url}/api/hub/v1/work/requests",
+            _valid_request_body(requester_msk["key"]["id"], request_id="req_duplicate_stable"),
+        )
+        assert duplicate_status == 200
+        assert duplicate_body["idempotent"] is True
+        assert duplicate_body["duplicate_request_id"] is True
+        assert duplicate_body["session_id"] == offer["session_id"]
+
+        sock.settimeout(0.2)
+        with pytest.raises((TimeoutError, socket.timeout)):
+            _ws_recv_json(sock)
+        sock.settimeout(None)
+
+        mismatch_body = _valid_request_body(requester_msk["key"]["id"], request_id="req_duplicate_stable")
+        mismatch_body["work"]["input"] = {"kind": "echo", "value": "different"}
+        mismatch_status, mismatch_response = _post_json_status(
+            f"{hub3_url}/api/hub/v1/work/requests",
+            mismatch_body,
+        )
+        assert mismatch_status == 409
+        assert mismatch_response["error"] == "duplicate_request_id_work_mismatch"
+    finally:
+        try:
+            _ws_send_json(sock, {"type": "worker.close"})
+        except OSError:
+            pass
+        sock.close()
+        hub3.shutdown()
+        hub3.server_close()
+        thread3.join(timeout=2)
+
+
+def test_duplicate_request_id_after_timeout_is_rejected_before_new_offer(tmp_path: Path) -> None:
+    hub3_port = _free_port()
+    hub3_url = f"http://127.0.0.1:{hub3_port}"
+    topology_path = tmp_path / "stable-hub-duplicate-after-timeout-topology.json"
+    _write_test_topology(topology_path, hub1_url=f"http://127.0.0.1:{_free_port()}", hub3_url=hub3_url)
+
+    msk_store = InMemoryStableMultiSessionKeyStore()
+    worker_store = InMemoryStableWorkerSessionStore()
+    hub3, thread3 = _start_server(
+        topology_path=topology_path,
+        hub_id="dev-hub3",
+        bind_port=hub3_port,
+        msk_store=msk_store,
+        worker_store=worker_store,
+        work_offer_timeout_seconds=0.15,
+    )
+    sock: socket.socket | None = None
+    try:
+        worker_msk = _issue_msk(
+            hub3_url,
+            private_key=WORKER_PRIVATE_KEY,
+            user_slug=WORKER_USER_SLUG,
+            request_id="duplicate-timeout-worker-msk",
+        )
+        requester_msk = _issue_msk(
+            hub3_url,
+            private_key=REQUESTER_PRIVATE_KEY,
+            user_slug=REQUESTER_USER_SLUG,
+            request_id="duplicate-timeout-requester-msk",
+        )
+        sock, _auth = _connect_live_worker(
+            hub_port=hub3_port,
+            worker_msk_id=worker_msk["key"]["id"],
+            worker_id="worker-duplicate-timeout",
+        )
+        post_thread, result_queue = _submit_work_async(
+            hub_url=hub3_url,
+            requester_msk_id=requester_msk["key"]["id"],
+            request_id="req_duplicate_timeout",
+        )
+        offer = _ws_recv_json(sock)
+        assert offer["type"] == "hub.work.offer"
+        response = result_queue.get(timeout=3)
+        assert not isinstance(response, BaseException), response
+        status, body = response
+        post_thread.join(timeout=2)
+        assert status == 504
+        assert body["error"] == "worker_offer_timeout"
+
+        duplicate_status, duplicate_body = _post_json_status(
+            f"{hub3_url}/api/hub/v1/work/requests",
+            _valid_request_body(requester_msk["key"]["id"], request_id="req_duplicate_timeout"),
+        )
+        assert duplicate_status == 409
+        assert duplicate_body["error"] == "duplicate_request_id_already_reserved"
+        assert duplicate_body["hold_status"] == "released"
+
+        sock.settimeout(0.2)
+        with pytest.raises((TimeoutError, socket.timeout)):
+            _ws_recv_json(sock)
+        sock.settimeout(None)
+    finally:
+        if sock is not None:
+            try:
+                _ws_send_json(sock, {"type": "worker.close"})
+            except OSError:
+                pass
+            sock.close()
+        hub3.shutdown()
+        hub3.server_close()
+        thread3.join(timeout=2)
+
+
+def test_worker_terminal_messages_are_bound_to_session_run_request_and_worker(tmp_path: Path) -> None:
+    worker_id = "worker-terminal-hardening"
+    hub3, thread3, hub3_url, sock, _auth, requester_msk = _new_local_hub_with_worker(
+        tmp_path,
+        test_name="terminal-hardening",
+        worker_id=worker_id,
+    )
+    try:
+        post_thread, result_queue = _submit_work_async(
+            hub_url=hub3_url,
+            requester_msk_id=requester_msk["key"]["id"],
+            request_id="req_terminal_bindings",
+        )
+        offer = _accept_current_offer(sock, worker_id=worker_id)
+        response = result_queue.get(timeout=3)
+        assert not isinstance(response, BaseException), response
+        assert response[0] == 200
+        status_before, continuation_before = _get_json_status(response[1]["continuation_url"])
+        assert status_before == 200
+        assert continuation_before["status"] == "accepted"
+
+        _ws_send_json(
+            sock,
+            {
+                "type": "worker.work.result",
+                "worker_id": worker_id,
+                "session_id": offer["session_id"],
+                "run_id": offer["run_id"],
+                "request_id": "req_wrong",
+                "result": {"value": "bad"},
+            },
+        )
+        wrong_request_ack = _ws_recv_json(sock)
+        assert wrong_request_ack["type"] == "hub.error"
+        assert "request_id mismatch" in wrong_request_ack["error"]
+
+        _ws_send_json(
+            sock,
+            {
+                "type": "worker.work.result",
+                "worker_id": "other-worker",
+                "session_id": offer["session_id"],
+                "run_id": offer["run_id"],
+                "request_id": offer["request_id"],
+                "result": {"value": "bad"},
+            },
+        )
+        wrong_worker_ack = _ws_recv_json(sock)
+        assert wrong_worker_ack["type"] == "hub.error"
+        assert "worker_id mismatch" in wrong_worker_ack["error"]
+
+        _ws_send_json(
+            sock,
+            {
+                "type": "worker.work.result",
+                "worker_id": worker_id,
+                "session_id": offer["session_id"],
+                "run_id": "run_wrong",
+                "request_id": offer["request_id"],
+                "result": {"value": "bad"},
+            },
+        )
+        wrong_run_ack = _ws_recv_json(sock)
+        assert wrong_run_ack["type"] == "hub.error"
+        assert "run_id mismatch" in wrong_run_ack["error"]
+
+        _finish_offer_with_result(sock, offer, worker_id=worker_id)
+        status_after, continuation_after = _get_json_status(response[1]["continuation_url"])
+        assert status_after == 200
+        assert continuation_after["status"] == "succeeded"
+        payout_status = _get_json_status(f"{hub3_url}/api/hub/v1/payout/status")[1]["payout"]
+        assert len(payout_status["charges"]) == 1
+    finally:
+        try:
+            _ws_send_json(sock, {"type": "worker.close"})
+        except OSError:
+            pass
+        sock.close()
+        hub3.shutdown()
+        hub3.server_close()
+        thread3.join(timeout=2)
+
+
+def test_worker_terminal_messages_are_idempotent_after_success_or_failure(tmp_path: Path) -> None:
+    worker_id = "worker-terminal-idempotent"
+    hub3, thread3, hub3_url, sock, _auth, requester_msk = _new_local_hub_with_worker(
+        tmp_path,
+        test_name="terminal-idempotent",
+        worker_id=worker_id,
+    )
+    try:
+        first_thread, first_queue = _submit_work_async(
+            hub_url=hub3_url,
+            requester_msk_id=requester_msk["key"]["id"],
+            request_id="req_terminal_success",
+        )
+        first_offer = _accept_current_offer(sock, worker_id=worker_id)
+        first_response = first_queue.get(timeout=3)
+        assert not isinstance(first_response, BaseException), first_response
+        assert first_response[0] == 200
+        _finish_offer_with_result(sock, first_offer, worker_id=worker_id)
+        _ws_send_json(
+            sock,
+            {
+                "type": "worker.work.failed",
+                "worker_id": worker_id,
+                "session_id": first_offer["session_id"],
+                "run_id": first_offer["run_id"],
+                "request_id": first_offer["request_id"],
+                "error": {"message": "late failure"},
+            },
+        )
+        late_failure = _ws_recv_json(sock)
+        assert late_failure["type"] == "hub.work.terminal.accepted"
+        assert late_failure["idempotent"] is True
+        assert late_failure["status"] == "succeeded"
+
+        second_thread, second_queue = _submit_work_async(
+            hub_url=hub3_url,
+            requester_msk_id=requester_msk["key"]["id"],
+            request_id="req_terminal_failure",
+        )
+        second_offer = _accept_current_offer(sock, worker_id=worker_id)
+        second_response = second_queue.get(timeout=3)
+        assert not isinstance(second_response, BaseException), second_response
+        assert second_response[0] == 200
+        _finish_offer_with_failure(sock, second_offer, worker_id=worker_id)
+        _ws_send_json(
+            sock,
+            {
+                "type": "worker.work.result",
+                "worker_id": worker_id,
+                "session_id": second_offer["session_id"],
+                "run_id": second_offer["run_id"],
+                "request_id": second_offer["request_id"],
+                "result": {"value": "late success"},
+            },
+        )
+        late_result = _ws_recv_json(sock)
+        assert late_result["type"] == "hub.work.terminal.accepted"
+        assert late_result["idempotent"] is True
+        assert late_result["status"] == "failed"
+
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+        payout_status = _get_json_status(f"{hub3_url}/api/hub/v1/payout/status")[1]["payout"]
+        assert len(payout_status["charges"]) == 1
+        assert len([hold for hold in payout_status["holds"] if hold["status"] == "charged"]) == 1
+        assert len([hold for hold in payout_status["holds"] if hold["status"] == "released"]) == 1
+    finally:
+        try:
+            _ws_send_json(sock, {"type": "worker.close"})
+        except OSError:
+            pass
+        sock.close()
+        hub3.shutdown()
+        hub3.server_close()
+        thread3.join(timeout=2)
+
+
+def test_worker_capacity_and_requester_funds_reject_before_offer(tmp_path: Path) -> None:
+    worker_id = "worker-capacity-and-funds"
+    hub3, thread3, hub3_url, sock, _auth, requester_msk = _new_local_hub_with_worker(
+        tmp_path,
+        test_name="capacity-funds",
+        worker_id=worker_id,
+        worker_price="0.01",
+        max_concurrency=1,
+    )
+    try:
+        first_thread, first_queue = _submit_work_async(
+            hub_url=hub3_url,
+            requester_msk_id=requester_msk["key"]["id"],
+            request_id="req_capacity_held",
+        )
+        first_offer = _accept_current_offer(sock, worker_id=worker_id)
+        first_response = first_queue.get(timeout=3)
+        assert not isinstance(first_response, BaseException), first_response
+        assert first_response[0] == 200
+
+        second_status, second_body = _post_json_status(
+            f"{hub3_url}/api/hub/v1/work/requests",
+            _valid_request_body(requester_msk["key"]["id"], request_id="req_capacity_rejected"),
+        )
+        assert second_status == 409
+        assert second_body["error"] == "worker_not_live"
+        sock.settimeout(0.2)
+        with pytest.raises((TimeoutError, socket.timeout)):
+            _ws_recv_json(sock)
+        sock.settimeout(None)
+
+        _finish_offer_with_result(sock, first_offer, worker_id=worker_id)
+
+        account_id = requester_msk["key"]["account_id"]
+        hub3.payout_ledger_directory.fund_account(
+            account_id=account_id,
+            wallet_address=requester_msk["key"]["wallet_address"],
+            credits="0.005",
+            replace=True,
+        )
+        poor_status, poor_body = _post_json_status(
+            f"{hub3_url}/api/hub/v1/work/requests",
+            _valid_request_body(requester_msk["key"]["id"], request_id="req_insufficient_funds"),
+        )
+        assert poor_status == 402
+        assert poor_body["error"] == "requester_funds_unavailable"
+        sock.settimeout(0.2)
+        with pytest.raises((TimeoutError, socket.timeout)):
+            _ws_recv_json(sock)
+        sock.settimeout(None)
+    finally:
+        try:
+            _ws_send_json(sock, {"type": "worker.close"})
+        except OSError:
+            pass
+        sock.close()
+        hub3.shutdown()
+        hub3.server_close()
+        thread3.join(timeout=2)
+
+
+def test_payout_claim_settlement_and_bridge_boundaries_are_worker_scoped() -> None:
+    topology = load_stable_hub_topology(DEV_TOPOLOGY)
+    store = InMemoryStableWorkerSessionStore()
+    ledger = StableHubPayoutLedgerDirectory(topology=topology, hub_id="dev-hub3", store=store)
+
+    empty_claim = ledger.record_worker_claim(worker_id="worker-empty", idempotency_key="empty-claim")
+    assert empty_claim["status"] == "empty"
+    assert empty_claim["earning_ids"] == []
+    assert empty_claim["amount"] == "0"
+
+    ledger.fund_account(
+        account_id="acct-payout-hardening",
+        wallet_address="0x" + "12" * 20,
+        credits="1",
+        replace=True,
+    )
+    hold = ledger.create_hold(
+        account_id="acct-payout-hardening",
+        wallet_address="0x" + "12" * 20,
+        request_id="req_payout_scope",
+        session_id="sess_payout_scope",
+        run_id="run_payout_scope",
+        worker_id="worker-payout-a",
+        selected_price={"amount": "0.25", "unit": "credit"},
+        requester_max_price={"amount": "1", "unit": "credit"},
+        partition="ring-2",
+    )
+    charged = ledger.charge_hold(
+        hold_id=hold["hold_id"],
+        session_id="sess_payout_scope",
+        request_id="req_payout_scope",
+        worker_id="worker-payout-a",
+        result={"value": "ok"},
+    )
+    earning_id = charged["worker_earning"]["earning_id"]
+    with pytest.raises(Exception, match="not claimable"):
+        ledger.record_worker_claim(worker_id="worker-payout-b", earning_ids=[earning_id])
+
+    claim = ledger.record_worker_claim(
+        worker_id="worker-payout-a",
+        earning_ids=[earning_id],
+        idempotency_key="claim-a",
+    )
+    with pytest.raises(Exception, match="not settleable"):
+        ledger.create_worker_settlement_batch(
+            worker_id="worker-payout-b",
+            claim_ids=[claim["claim_id"]],
+        )
+
+    batch = ledger.create_worker_settlement_batch(
+        worker_id="worker-payout-a",
+        claim_ids=[claim["claim_id"]],
+        idempotency_key="settle-a",
+    )
+    with pytest.raises(Exception, match="must be settled"):
+        ledger.request_bridge_payout(
+            worker_id="worker-payout-a",
+            batch_id=batch["batch_id"],
+            idempotency_key="bridge-before-settle",
+        )
+
+    settled = ledger.settle_worker_settlement_batch(
+        batch_id=batch["batch_id"],
+        settlement_reference="settled-a",
+    )
+    assert settled["status"] == "settled"
+    with pytest.raises(Exception, match="not bridgeable"):
+        ledger.request_bridge_payout(
+            worker_id="worker-payout-b",
+            batch_id=batch["batch_id"],
+            idempotency_key="bridge-wrong-worker",
+        )
+
+    bridge = ledger.request_bridge_payout(
+        worker_id="worker-payout-a",
+        batch_id=batch["batch_id"],
+        idempotency_key="bridge-a",
+    )
+    assert bridge["status"] == "requested"
+    failed = ledger.fail_bridge_payout(bridge_payout_id=bridge["bridge_payout_id"], reason="temporary")
+    assert failed["status"] == "failed"
+    recovered = ledger.confirm_bridge_payout(
+        bridge_payout_id=bridge["bridge_payout_id"],
+        settlement_reference="bridge-recovered",
+    )
+    assert recovered["status"] == "confirmed"
+    assert recovered["previous_status"] == "failed"
+    still_confirmed = ledger.fail_bridge_payout(bridge_payout_id=bridge["bridge_payout_id"], reason="late")
+    assert still_confirmed["status"] == "confirmed"
+
+    status = ledger.status()
+    assert status["ledger_version"] == "stable-hub-exp-compatible-credit-ledger-v1"
+    assert status["exp_compatible_golden_path"] is True
+    assert any(tx["transaction_type"] == "hold_created" for tx in status["transactions"])
+    assert any(tx["transaction_type"] == "request_charged" for tx in status["transactions"])
+    assert any(tx["transaction_type"] == "worker_claimed" for tx in status["transactions"])
+    assert any(tx["transaction_type"] == "batch_settled" for tx in status["transactions"])
+    assert any(tx["transaction_type"] == "withdrawal_released" for tx in status["transactions"])
+    assert hold["credit_wei"] == "250000000000000000"
+    assert charged["charge"]["charged_credit_wei"] == hold["credit_wei"]
+    assert charged["worker_earning"]["earned_credit_wei"] == hold["credit_wei"]
+    assert claim["claimed_credit_wei"] == hold["credit_wei"]
+    assert settled["total_credit_wei_published"] == hold["credit_wei"]
+    assert recovered["credit_wei"] == hold["credit_wei"]
+    assert any(event["event_type"] == "hub.hold.created" for event in status["bridge_audit"])
+    assert any(event["event_type"] == "hub.hold.charged" for event in status["bridge_audit"])
+    assert any(event["event_type"] == "hub.worker.earning.recorded" for event in status["bridge_audit"])

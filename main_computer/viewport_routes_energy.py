@@ -82,6 +82,12 @@ class ViewportEnergyRoutesMixin:
             return path
         return self.server.debug_root / path
 
+    def _energy_manifest_display_path(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(self.server.debug_root.resolve()).as_posix()
+        except (OSError, ValueError):
+            return str(path)
+
     def _energy_load_manifest_status(self, profile: Any) -> tuple[Path, dict[str, Any] | None, list[str]]:
         path = self._energy_profile_manifest_path(profile)
         warnings: list[str] = []
@@ -266,7 +272,8 @@ class ViewportEnergyRoutesMixin:
             "expected_chain_id": expected_chain_id,
             "configured_rpc_url": rpc_url,
             "hub_url": profile.hub_url,
-            "deployment_manifest_path": str(manifest_path),
+            "deployment_manifest_path": self._energy_manifest_display_path(manifest_path),
+            "deployment_manifest_absolute_path": str(manifest_path),
             "manifest_present": manifest is not None,
             "manifest_environment": manifest_environment,
             "manifest_chain_id": manifest_chain_id,

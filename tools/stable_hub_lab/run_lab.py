@@ -68,6 +68,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run integrated Stable Hub market, reconnect, and payout entropy verification.",
     )
     parser.add_argument(
+        "--verify-stress-runs",
+        type=int,
+        default=1,
+        help=(
+            "Number of integrated Stable Hub stress iterations to run when --verify-stress is set. "
+            "Use values greater than 1 for long-running golden-path payout/reconnect soak runs."
+        ),
+    )
+    parser.add_argument(
         "--smoke-msk",
         action="store_true",
         help="Issue an MSK on one concrete Hub and validate it on another.",
@@ -666,17 +675,21 @@ def build_worker_live_session_smoke_result(
         if pong.get("type") != "hub.pong.accepted" or pong.get("ok") is not True:
             raise StableHubTopologyError(f"worker live-session pong failed: {pong}")
 
-        owner_payload = _read_json_url(
+        public_owner_status, public_owner_body = _read_json_url_status(
             f"{owner_check_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{resolved_worker_id}/owner",
             timeout=timeout,
         )
-        owner = owner_payload.get("owner") if isinstance(owner_payload.get("owner"), dict) else {}
+        owner = accepted.get("owner") if isinstance(accepted.get("owner"), dict) else {}
+        worker_hub_claim = accepted.get("worker_hub") if isinstance(accepted.get("worker_hub"), dict) else {}
         proof = {
             "websocket_auth_accepted": accepted.get("type") == "hub.auth.accepted",
             "hub_ping_over_open_connection": ping.get("type") == "hub.ping",
             "worker_pong_over_same_connection": pong.get("type") == "hub.pong.accepted" and pong.get("ok") is True,
-            "owner_record_visible_from_other_hub": owner_payload.get("ok") is True and bool(owner),
-            "owner_hub_matches_worker_hub": owner.get("owner_hub_id") == worker_hub.hub_id,
+            "authenticated_owner_claim_returned": bool(owner),
+            "public_worker_owner_lookup_absent": public_owner_status == 404 and public_owner_body.get("error") == "not_found",
+            "owner_hub_matches_worker_hub": owner.get("owner_hub_id") == worker_hub.hub_id
+            and worker_hub_claim.get("hub_id") == worker_hub.hub_id
+            and worker_hub_claim.get("local_owner") is True,
             "owner_record_live": owner.get("status") == "live",
             "owner_uses_msk_id": owner.get("multisession_key_id") == multisession_key_id,
         }
@@ -721,7 +734,8 @@ def _render_worker_live_session_smoke_text(result: dict[str, Any]) -> str:
         f"  websocket auth accepted: {'yes' if proof['websocket_auth_accepted'] else 'no'}",
         f"  Hub ping over open connection: {'yes' if proof['hub_ping_over_open_connection'] else 'no'}",
         f"  worker pong over same connection: {'yes' if proof['worker_pong_over_same_connection'] else 'no'}",
-        f"  owner record visible from other Hub: {'yes' if proof['owner_record_visible_from_other_hub'] else 'no'}",
+        f"  authenticated owner claim returned: {'yes' if proof['authenticated_owner_claim_returned'] else 'no'}",
+        f"  public worker owner lookup absent: {'yes' if proof['public_worker_owner_lookup_absent'] else 'no'}",
         f"  owner Hub matches worker Hub: {'yes' if proof['owner_hub_matches_worker_hub'] else 'no'}",
         f"  owner record live: {'yes' if proof['owner_record_live'] else 'no'}",
         f"  owner uses MSK id: {'yes' if proof['owner_uses_msk_id'] else 'no'}",
@@ -853,13 +867,14 @@ def build_stable_hub_verification_result(
         if pong.get("type") != "hub.pong.accepted" or pong.get("ok") is not True:
             raise StableHubTopologyError(f"worker pong failed during stable verification: {pong}")
 
-        owner_payload = _read_json_url(
+        public_owner_status, public_owner_body = _read_json_url_status(
             f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_id}/owner",
             timeout=timeout,
         )
-        owner = owner_payload.get("owner") if isinstance(owner_payload.get("owner"), dict) else {}
+        owner = accepted.get("owner") if isinstance(accepted.get("owner"), dict) else {}
+        worker_hub_claim = accepted.get("worker_hub") if isinstance(accepted.get("worker_hub"), dict) else {}
         if not owner:
-            raise StableHubTopologyError(f"entry Hub could not read worker owner record: {owner_payload}")
+            raise StableHubTopologyError(f"worker auth did not return owner record: {accepted}")
 
         def _submit_work() -> None:
             try:
@@ -937,9 +952,12 @@ def build_stable_hub_verification_result(
         "worker_connected_over_live_websocket": accepted.get("type") == "hub.auth.accepted"
         and accepted.get("connection_id") == ping.get("connection_id"),
         "worker_pong_over_same_socket": pong.get("type") == "hub.pong.accepted" and pong.get("ok") is True,
-        "owner_directory_visible_across_hubs": owner.get("worker_id") == worker_id
+        "authenticated_worker_owner_claim_matches_worker_hub": owner.get("worker_id") == worker_id
         and owner.get("owner_hub_id") == worker_hub.hub_id
-        and owner.get("status") == "live",
+        and owner.get("status") == "live"
+        and worker_hub_claim.get("hub_id") == worker_hub.hub_id,
+        "public_worker_owner_lookup_absent": public_owner_status == 404
+        and public_owner_body.get("error") == "not_found",
         "worker_market_record_selectable_by_ring_price": offer.get("type") == "hub.work.offer"
         and offer.get("worker_id") == worker_id
         and offer.get("partition") == "ring-2"
@@ -1034,7 +1052,8 @@ def _render_stable_hub_verification_text(result: dict[str, Any]) -> str:
         f"  MSK validation used key id only: {'yes' if proof['msk_validation_key_id_only'] else 'no'}",
         f"  worker connected over live WebSocket: {'yes' if proof['worker_connected_over_live_websocket'] else 'no'}",
         f"  worker pong over same socket: {'yes' if proof['worker_pong_over_same_socket'] else 'no'}",
-        f"  owner directory visible across Hubs: {'yes' if proof['owner_directory_visible_across_hubs'] else 'no'}",
+        f"  authenticated worker owner claim matches worker Hub: {'yes' if proof['authenticated_worker_owner_claim_matches_worker_hub'] else 'no'}",
+        f"  public worker owner lookup absent: {'yes' if proof['public_worker_owner_lookup_absent'] else 'no'}",
         f"  worker selectable by ring/price/capability: {'yes' if proof['worker_market_record_selectable_by_ring_price'] else 'no'}",
         f"  entry Hub handed off to owner Hub: {'yes' if proof['entry_hub_handed_off_to_owner_hub'] else 'no'}",
         f"  owner Hub offered work over live socket: {'yes' if proof['owner_hub_offered_work_over_live_socket'] else 'no'}",
@@ -1180,7 +1199,25 @@ def build_stable_hub_integrated_market_stress_result(
 
         thread = threading.Thread(target=_submit, daemon=True)
         thread.start()
-        offer = _ws_recv_json(sock)
+        try:
+            offer = _ws_recv_json(sock)
+        except TimeoutError as exc:
+            try:
+                queued_before_offer = q.get_nowait()
+            except queue.Empty:
+                queued_before_offer = None
+            if isinstance(queued_before_offer, BaseException):
+                raise StableHubTopologyError(
+                    f"stress requester work failed before the worker received hub.work.offer: {queued_before_offer}"
+                ) from queued_before_offer
+            if isinstance(queued_before_offer, dict):
+                raise StableHubTopologyError(
+                    "stress requester work returned before the worker received hub.work.offer: "
+                    f"{queued_before_offer}"
+                ) from exc
+            raise StableHubTopologyError(
+                "worker did not receive hub.work.offer during stress before the WebSocket read timeout."
+            ) from exc
         if offer.get("type") != "hub.work.offer":
             raise StableHubTopologyError(f"worker did not receive hub.work.offer during stress: {offer}")
         _ws_send_json(
@@ -1204,7 +1241,9 @@ def build_stable_hub_integrated_market_stress_result(
                 {
                     "type": "worker.work.result",
                     "session_id": offer.get("session_id"),
+                    "run_id": offer.get("run_id"),
                     "request_id": offer.get("request_id"),
+                    "worker_id": offer.get("worker_id"),
                     "result": {"echo": payload["work"]["input"]["value"]},
                 },
             )
@@ -1214,7 +1253,9 @@ def build_stable_hub_integrated_market_stress_result(
                 {
                     "type": "worker.work.failed",
                     "session_id": offer.get("session_id"),
+                    "run_id": offer.get("run_id"),
                     "request_id": offer.get("request_id"),
+                    "worker_id": offer.get("worker_id"),
                     "error": {"code": "injected_worker_failure", "message": "stress failure injection"},
                 },
             )
@@ -1252,7 +1293,9 @@ def build_stable_hub_integrated_market_stress_result(
             {
                 "type": "worker.work.result",
                 "session_id": success["response"].get("session_id"),
+                "run_id": success["response"].get("run_id"),
                 "request_id": success["response"].get("request_id"),
+                "worker_id": success["response"].get("worker_id"),
                 "result": {"echo": "duplicate"},
             },
         )
@@ -1349,10 +1392,61 @@ def build_stable_hub_integrated_market_stress_result(
                 pass
 
     payout = payout_status.get("payout") if isinstance(payout_status.get("payout"), dict) else {}
-    holds = [item for item in payout.get("holds", []) if isinstance(item, dict)]
-    charges = [item for item in payout.get("charges", []) if isinstance(item, dict)]
-    earnings = [item for item in payout.get("worker_earnings", []) if isinstance(item, dict)]
-    events.extend(payout.get("events", []))
+    all_holds = [item for item in payout.get("holds", []) if isinstance(item, dict)]
+    all_charges = [item for item in payout.get("charges", []) if isinstance(item, dict)]
+    all_earnings = [item for item in payout.get("worker_earnings", []) if isinstance(item, dict)]
+    all_events = [item for item in payout.get("events", []) if isinstance(item, dict)]
+
+    # The dev FoundationDB namespace is intentionally durable across lab runs.
+    # Global payout status may therefore include holds/charges/earnings from
+    # earlier stress invocations.  The stress proof must measure only the work
+    # created by this scenario, or a second run against the same cluster will
+    # falsely report double charges even when the product path is idempotent.
+    scenario_request_ids = {
+        str(success["response"].get("request_id") or ""),
+        str(failure["response"].get("request_id") or ""),
+        str(reconnect_success["response"].get("request_id") or ""),
+    }
+    scenario_session_ids = {
+        str(success["response"].get("session_id") or ""),
+        str(failure["response"].get("session_id") or ""),
+        str(reconnect_success["response"].get("session_id") or ""),
+    }
+    scenario_request_ids.discard("")
+    scenario_session_ids.discard("")
+
+    def _belongs_to_scenario(record: dict[str, Any]) -> bool:
+        return (
+            str(record.get("worker_id") or "") == worker_id
+            and (
+                str(record.get("request_id") or "") in scenario_request_ids
+                or str(record.get("session_id") or "") in scenario_session_ids
+            )
+        )
+
+    holds = [item for item in all_holds if _belongs_to_scenario(item)]
+    scenario_hold_ids = {str(item.get("hold_id") or "") for item in holds if str(item.get("hold_id") or "")}
+    charges = [
+        item
+        for item in all_charges
+        if _belongs_to_scenario(item) or str(item.get("hold_id") or "") in scenario_hold_ids
+    ]
+    scenario_charge_ids = {str(item.get("charge_id") or "") for item in charges if str(item.get("charge_id") or "")}
+    earnings = [
+        item
+        for item in all_earnings
+        if _belongs_to_scenario(item) or str(item.get("charge_id") or "") in scenario_charge_ids
+    ]
+    events.extend(
+        [
+            item
+            for item in all_events
+            if str(item.get("request_id") or "") in scenario_request_ids
+            or str(item.get("session_id") or "") in scenario_session_ids
+            or str(item.get("hold_id") or "") in scenario_hold_ids
+            or str(item.get("charge_id") or "") in scenario_charge_ids
+        ]
+    )
 
     success_payout = (success["continuation"].get("accepted_session") or {}).get("payout", {})
     failure_payout = (failure["continuation"].get("accepted_session") or {}).get("payout", {})
@@ -1374,7 +1468,8 @@ def build_stable_hub_integrated_market_stress_result(
         "market_price_constraint_rejected_too_low_request": low_price_status == 409
         and low_price_body.get("error") == "worker_not_live",
         "worker_earnings_created_only_for_successes": len(earnings) == 2
-        and all(str(item.get("status")) == "earned" for item in earnings),
+        and all(str(item.get("status")) in {"earned", "claimed", "paid"} for item in earnings)
+        and all(str(item.get("earned_credit_wei") or item.get("amount") or "") not in {"", "0"} for item in earnings),
         "payout_claim_idempotency": claim.get("claim", {}).get("claim_id")
         == duplicate_claim.get("claim", {}).get("claim_id"),
         "settlement_and_bridge_path_completed": settlement.get("settlement", {}).get("status") == "settled"
@@ -1474,6 +1569,94 @@ def _render_stable_hub_integrated_market_stress_text(result: dict[str, Any]) -> 
     ]
     return "\n".join(lines)
 
+
+
+
+def build_stable_hub_integrated_market_stress_runs_result(
+    *,
+    topology_path: str | Path = DEFAULT_TOPOLOGY,
+    requester_wallet_path: str | Path = DEFAULT_REQUESTER_WALLET,
+    worker_wallet_path: str | Path = DEFAULT_WORKER_WALLET,
+    worker_entry_index: int = 2,
+    requester_entry_index: int = 0,
+    origin: str = DEFAULT_MSK_ORIGIN,
+    timeout: float = 10.0,
+    runs: int = 1,
+) -> dict[str, Any]:
+    clean_runs = max(1, int(runs or 1))
+    results: list[dict[str, Any]] = []
+    for index in range(clean_runs):
+        result = build_stable_hub_integrated_market_stress_result(
+            topology_path=topology_path,
+            requester_wallet_path=requester_wallet_path,
+            worker_wallet_path=worker_wallet_path,
+            worker_entry_index=worker_entry_index,
+            requester_entry_index=requester_entry_index,
+            origin=f"{origin}-stress-run-{index + 1}",
+            timeout=timeout,
+        )
+        result["run_index"] = index + 1
+        results.append(result)
+        if result.get("ok") is not True:
+            break
+
+    ok = len(results) == clean_runs and all(result.get("ok") is True for result in results)
+    aggregate_metrics = {
+        "runs_requested": clean_runs,
+        "runs_completed": len(results),
+        "runs_ok": sum(1 for result in results if result.get("ok") is True),
+        "requests_attempted": sum(int((result.get("metrics") or {}).get("requests_attempted", 0) or 0) for result in results),
+        "accepted_sessions": sum(int((result.get("metrics") or {}).get("accepted_sessions", 0) or 0) for result in results),
+        "completed_sessions": sum(int((result.get("metrics") or {}).get("completed_sessions", 0) or 0) for result in results),
+        "failed_sessions": sum(int((result.get("metrics") or {}).get("failed_sessions", 0) or 0) for result in results),
+        "valid_market_rejections": sum(int((result.get("metrics") or {}).get("valid_market_rejections", 0) or 0) for result in results),
+        "holds": sum(int((result.get("metrics") or {}).get("holds", 0) or 0) for result in results),
+        "charges": sum(int((result.get("metrics") or {}).get("charges", 0) or 0) for result in results),
+        "worker_earnings": sum(int((result.get("metrics") or {}).get("worker_earnings", 0) or 0) for result in results),
+        "invariant_violations": sum(int((result.get("metrics") or {}).get("invariant_violations", 0) or 0) for result in results),
+    }
+    failed = next((result for result in results if result.get("ok") is not True), None)
+    return {
+        "ok": ok,
+        "mode": "verify-stress-runs",
+        "topology_path": str(topology_path),
+        "cluster_id": str(results[-1].get("cluster_id") if results else ""),
+        "metrics": aggregate_metrics,
+        "proof": {
+            "all_runs_ok": ok,
+            "failed_run_index": int(failed.get("run_index", 0)) if isinstance(failed, dict) else 0,
+            "long_running_stable_hub_golden_path": ok and clean_runs > 1,
+        },
+        "runs": results,
+    }
+
+
+def _render_stable_hub_integrated_market_stress_runs_text(result: dict[str, Any]) -> str:
+    metrics = result["metrics"]
+    proof = result["proof"]
+    lines = [
+        f"Stable Hub integrated market stress runs: {'ok' if result['ok'] else 'failed'}",
+        f"Topology: {result['topology_path']}",
+        f"Cluster: {result['cluster_id']}",
+        f"Runs: {metrics['runs_ok']}/{metrics['runs_requested']} ok",
+        "Aggregate traffic:",
+        f"  requests attempted: {metrics['requests_attempted']}",
+        f"  accepted sessions: {metrics['accepted_sessions']}",
+        f"  completed sessions: {metrics['completed_sessions']}",
+        f"  failed sessions: {metrics['failed_sessions']}",
+        f"  valid market rejections: {metrics['valid_market_rejections']}",
+        "Aggregate payout:",
+        f"  holds observed: {metrics['holds']}",
+        f"  charges observed: {metrics['charges']}",
+        f"  worker earnings observed: {metrics['worker_earnings']}",
+        f"  invariant violations: {metrics['invariant_violations']}",
+        "Proof:",
+        f"  all runs ok: {'yes' if proof['all_runs_ok'] else 'no'}",
+        f"  long-running stable golden path: {'yes' if proof['long_running_stable_hub_golden_path'] else 'no'}",
+    ]
+    if proof.get("failed_run_index"):
+        lines.append(f"  failed run index: {proof['failed_run_index']}")
+    return "\n".join(lines)
 
 def check_cluster(
     *,
@@ -1644,6 +1827,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(_render_check_text(result))
             return 0 if result["ok"] else 1
         if args.verify_stress:
+            if int(args.verify_stress_runs or 1) > 1:
+                result = build_stable_hub_integrated_market_stress_runs_result(
+                    topology_path=args.topology,
+                    requester_wallet_path=args.requester_wallet,
+                    worker_wallet_path=args.worker_wallet,
+                    worker_entry_index=args.worker_entry_index,
+                    requester_entry_index=args.requester_entry_index,
+                    origin=args.origin,
+                    timeout=args.startup_timeout,
+                    runs=args.verify_stress_runs,
+                )
+                if args.json:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                else:
+                    print(_render_stable_hub_integrated_market_stress_runs_text(result))
+                return 0 if result["ok"] else 1
+
             result = build_stable_hub_integrated_market_stress_result(
                 topology_path=args.topology,
                 requester_wallet_path=args.requester_wallet,

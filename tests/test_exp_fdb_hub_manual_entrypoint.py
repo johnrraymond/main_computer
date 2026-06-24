@@ -88,25 +88,57 @@ def test_exp_fdb_hub_unsigned_contract_startup_does_not_default_private_deployme
     assert config.hub_dev_chain_deployment_path is None
 
 
-def test_exp_fdb_hub_smoke_bridge_requires_explicit_flag(tmp_path, monkeypatch) -> None:
+def test_exp_fdb_hub_dev_chain_lab_auto_uses_dev_deployment_and_smoke_bridge(tmp_path, monkeypatch) -> None:
     from main_computer.exp_fdb_hub import build_experimental_config, build_parser
 
     monkeypatch.delenv("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", raising=False)
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", raising=False)
+    deployment = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
+    deployment.parent.mkdir(parents=True)
+    deployment.write_text(
+        '{"schema":"main-computer.dev-chain-deployment.v1","smoke_client":{"wallet_path":"wallet.json"}}\n',
+        encoding="utf-8",
+    )
+
     args = build_parser().parse_args(
         [
             "--repo-root",
             str(tmp_path),
-            "--network-key",
-            "testnet",
             "--bridge-backend",
             "dev-chain",
-            "--allow-missing-bridge-signer",
+            "--namespace",
+            "exp-handoff-stress-lab",
+            "-ports",
+            "8870,8871,8872",
         ]
     )
 
-    config, _fdb_config = build_experimental_config(args, port=8785)
-    assert config.hub_enable_smoke_bridge is False
+    config, _fdb_config = build_experimental_config(args, port=8870)
+    assert config.hub_network == "dev"
+    assert config.hub_dev_chain_deployment_path == deployment
+    assert config.hub_enable_smoke_bridge is True
 
+    strict_args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--bridge-backend",
+            "dev-chain",
+            "--namespace",
+            "exp-handoff-stress-lab",
+            "--strict-bridge-signer",
+        ]
+    )
+    strict_config, _strict_fdb_config = build_experimental_config(strict_args, port=8870)
+    assert strict_config.hub_network == "dev"
+    assert strict_config.hub_dev_chain_deployment_path == deployment
+    assert strict_config.hub_enable_smoke_bridge is False
+
+
+def test_exp_fdb_hub_smoke_bridge_can_still_be_enabled_explicitly(tmp_path, monkeypatch) -> None:
+    from main_computer.exp_fdb_hub import build_experimental_config, build_parser
+
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", raising=False)
     smoke_args = build_parser().parse_args(
         [
             "--repo-root",
@@ -561,3 +593,13 @@ def test_exp_fdb_hub_hub_earned_source_requires_current_scheduler_activity(tmp_p
 
     with pytest.raises(RuntimeError, match="current scheduler-lab request activity"):
         _prepare_hub_earned_payout_source(args)
+
+
+def test_exp_fdb_hub_uses_stable_worker_session_store_constructor_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    module = (repo / "main_computer" / "exp_fdb_hub.py").read_text(encoding="utf-8")
+
+    assert "FoundationDbStableWorkerSessionStore(" in module
+    assert "cluster_file=fdb_config.cluster_file" in module
+    assert "activate_native_client=fdb_config.activate_native_client" not in module
+

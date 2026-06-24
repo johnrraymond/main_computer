@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from dataclasses import replace
+from http import HTTPStatus
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from main_computer.config import DEFAULT_HUB_BRIDGE_BACKEND, MainComputerConfig
 from main_computer.contract_config import contract_config_path
@@ -28,9 +35,34 @@ from main_computer.exp_fdb_hub_state import (
 from main_computer.hub import (
     DEFAULT_HUB_PORT,
     HUB_SECURITY_PROFILE,
+    HubCreditAuthorizationError,
     HubDispatcher,
     HubHttpServer,
     HubServerHandler,
+)
+from main_computer.stable_hub import LiveWorkerSession, stable_hub_contract
+from main_computer.hub_plex_models import HubAIRequest
+from main_computer.stable_hub_topology import (
+    StableHubNode,
+    StableHubTopology,
+    stable_hub_node_to_dict,
+    stable_hub_topology_to_dict,
+)
+from main_computer.stable_hub_worker_sessions import (
+    FoundationDbStableWorkerSessionStore,
+    StableHubAcceptedWorkSessionDirectory,
+    StableHubWorkerMarketDirectory,
+    StableHubWorkerSessionDirectory,
+    StableHubWorkerSessionError,
+    new_connection_id,
+    new_run_id,
+    new_session_id,
+    normalize_request_id,
+    normalize_session_id,
+    normalize_worker_id,
+    normalize_worker_market_profile,
+    stable_partition_key_for_work,
+    stable_task_queue_for_partition,
 )
 from main_computer.hub_credit_bridge_completion import HubCreditBridgeCompletionService
 from main_computer.hub_credit_indexer import HubCreditIndexer
@@ -52,6 +84,178 @@ DEFAULT_EXP_FDB_SMOKE_NAMESPACE = "main-computer-exp-fdb-autostart-smoke"
 DEFAULT_EXP_FDB_SMOKE_START_TIMEOUT_SECONDS = 45.0
 
 
+
+def experimental_stable_hub_contract() -> dict[str, str]:
+    """Return the stable live-worker connection contract exposed by the exp Hub."""
+
+    contract = dict(stable_hub_contract())
+    contract.update(
+        {
+            "service": "main_computer.exp_fdb_hub",
+            "worker_live_session_transport": "websocket",
+            "worker_liveness": "hub-ping-worker-pong",
+            "hub_to_hub_handoff": "owner-hub-forwarding-v1",
+            "owner_hub_scope": "topology-owner-hub",
+            "requester_connection": "stable-live-session-work-requests-with-continuation-bounce",
+            "routing": "entry-hub-forwards-remote-worker-requests-to-owner-hub",
+        }
+    )
+    return contract
+
+
+def _exp_fdb_stable_hub_id(port: int) -> str:
+    return f"exp-fdb-hub-{int(port)}"
+
+
+def _exp_fdb_stable_namespace(namespace: object) -> str:
+    base = str(namespace or DEFAULT_EXP_FDB_NAMESPACE).strip() or DEFAULT_EXP_FDB_NAMESPACE
+    return f"{base}-stable-live-sessions"
+
+
+def _exp_fdb_cluster_id(namespace: object) -> str:
+    base = str(namespace or DEFAULT_EXP_FDB_NAMESPACE).strip() or DEFAULT_EXP_FDB_NAMESPACE
+    clean = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in base).strip("-_.")
+    return f"{clean or 'exp-fdb'}-stable-cluster"
+
+
+def _exp_fdb_url_for_port(args: argparse.Namespace, port: int) -> str:
+    explicit = str(getattr(args, "hub_url", "") or "").strip().rstrip("/")
+    if explicit:
+        parsed = urlparse(explicit if "://" in explicit else f"http://{explicit}")
+        if parsed.scheme and parsed.hostname:
+            return f"{parsed.scheme}://{parsed.hostname}:{int(port)}"
+    return f"http://{getattr(args, 'host', '127.0.0.1')}:{int(port)}"
+
+
+def _exp_fdb_topology_ports_from_args(args: argparse.Namespace, *, current_port: int) -> list[int]:
+    """Return the concrete exp Hub ports that should share one topology.
+
+    ``exp-fdb-hub.py -ports 8870,8871,8872`` starts all three Hub servers in one
+    process.  Every server must advertise the same topology so remote worker
+    owner records are routable instead of looking like single-local-Hub state.
+    Direct unit tests and ad-hoc server construction still fall back to a
+    single-Hub topology.
+    """
+
+    raw_ports = getattr(args, "ports", None)
+    if raw_ports is None or raw_ports == "":
+        raw_ports = getattr(args, "port", None)
+    ports = parse_ports(raw_ports, default=int(current_port))
+    current = int(current_port)
+    if current not in ports:
+        ports.append(current)
+    return ports
+
+
+def _exp_fdb_network_key_from_args(args: argparse.Namespace, *, bridge_backend: str) -> str:
+    explicit = str(getattr(args, "network_key", "") or "").strip()
+    if explicit:
+        return explicit
+    if bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}:
+        # The manual exp Hub may use an isolated FDB namespace, but the local
+        # dev-chain deployment and contract config are published under the dev
+        # network key.  Defaulting contract-backed startup to "dev" makes:
+        #
+        #   python exp-fdb-hub.py --namespace my-lab --bridge-backend dev-chain -ports 8870,8871,8872
+        #
+        # use runtime/deployments/dev/latest.json instead of incorrectly looking
+        # for runtime/deployments/exp-fdb/latest.json.
+        return "dev"
+    return DEFAULT_EXP_FDB_NAMESPACE
+
+
+def _is_exp_dev_chain_backend(bridge_backend: str) -> bool:
+    return str(bridge_backend or "").strip().lower() in {
+        "dev",
+        "dev-chain",
+        "devchain",
+        "contract",
+        "contract-chain",
+        "credit-bridge-contract",
+        "evm-contract",
+        "real-chain",
+    }
+
+
+def _deployment_manifest_is_smoke_bridge(path: Path | None) -> bool:
+    if path is None or not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return isinstance(payload.get("smoke_client"), dict)
+
+
+def build_experimental_stable_topology(
+    args: argparse.Namespace,
+    *,
+    config: MainComputerConfig,
+    fdb_config: ExperimentalFoundationDbConfig,
+    port: int,
+) -> StableHubTopology:
+    """Build the stable-Hub-compatible topology advertised by exp Hubs.
+
+    A single-port manual startup remains a one-Hub topology.  A multi-port manual
+    startup such as ``-ports 8870,8871,8872`` now advertises all three concrete
+    exp Hubs from every server, which is required for owner-Hub forwarding and
+    the dev-topology stress lab.
+    """
+
+    ports = _exp_fdb_topology_ports_from_args(args, current_port=int(port))
+    hubs = tuple(
+        StableHubNode(
+            hub_id=_exp_fdb_stable_hub_id(int(item)),
+            hub_url=_exp_fdb_url_for_port(args, int(item)),
+            public_url=_exp_fdb_url_for_port(args, int(item)),
+            roles=("entry", "worker-owner", "requester", "execution"),
+        )
+        for item in ports
+    )
+    return StableHubTopology(
+        kind="main_computer.stable_hub_topology.v1",
+        cluster_id=_exp_fdb_cluster_id(fdb_config.namespace),
+        network={
+            "network_key": config.hub_network,
+            "display_name": config.hub_network_display_name,
+            "kind": config.hub_network_kind,
+            "chain_id": config.chain_id,
+            "chain_rpc_url": config.chain_rpc_url,
+        },
+        storage={
+            "backend": "foundationdb",
+            "cluster_file": str(fdb_config.cluster_file),
+            "namespace": _exp_fdb_stable_namespace(fdb_config.namespace),
+            "api_version": int(fdb_config.api_version),
+        },
+        entry_urls=tuple(hub.hub_url for hub in hubs),
+        hubs=hubs,
+    )
+
+
+def build_experimental_hub_identity(topology: StableHubTopology, hub_id: str) -> dict[str, Any]:
+    current = topology.hub_by_id(hub_id)
+    return {
+        "ok": True,
+        "service": "main_computer.exp_fdb_hub",
+        "hub": stable_hub_node_to_dict(current),
+        "hub_id": current.hub_id,
+        "hub_url": current.hub_url,
+        "cluster_id": topology.cluster_id,
+        "network": dict(topology.network),
+        "storage": dict(topology.storage),
+        "entry_urls": list(topology.entry_urls),
+        "peer_hubs": [
+            stable_hub_node_to_dict(hub)
+            for hub in topology.hubs
+            if hub.hub_id != current.hub_id
+        ],
+        "contract": experimental_stable_hub_contract(),
+    }
+
+
 def _optional_int_arg(value: object, *, flag: str) -> int | None:
     text = str(value or "").strip()
     if not text:
@@ -63,6 +267,33 @@ def _optional_int_arg(value: object, *, flag: str) -> int | None:
     if parsed < 0:
         raise SystemExit(f"{flag} must be non-negative")
     return parsed
+
+
+def exp_work_session_stream_path(session_id: str) -> str:
+    return f"/api/hub/v1/work/sessions/{normalize_session_id(session_id)}/stream"
+
+
+def exp_work_session_continuation_url(hub_url: str, session_id: str) -> str:
+    base = str(hub_url or "").rstrip("/")
+    if not base:
+        raise StableHubWorkerSessionError("hub_url is required for exp work session continuation.")
+    return base + exp_work_session_stream_path(session_id)
+
+
+def _exp_legacy_worker_route(path: str) -> bool:
+    legacy_paths = {
+        "/api/hub/workers/register",
+        "/api/hub/v1/workers/register",
+        "/api/hub/workers/heartbeat",
+        "/api/hub/v1/workers/heartbeat",
+        "/api/hub/workers/poll",
+        "/api/hub/v1/workers/poll",
+        "/api/hub/workers/results",
+        "/api/hub/v1/workers/results",
+    }
+    if path in legacy_paths:
+        return True
+    return path.startswith("/api/hub/v1/workers/") and path.endswith("/heartbeat")
 
 
 class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
@@ -95,6 +326,1068 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             flush=True,
         )
 
+    def _ws_send_frame(self, opcode: int, payload: bytes = b"") -> None:
+        length = len(payload)
+        if length < 126:
+            header = bytes([0x80 | opcode, length])
+        elif length < 65536:
+            header = bytes([0x80 | opcode, 126]) + length.to_bytes(2, "big")
+        else:
+            header = bytes([0x80 | opcode, 127]) + length.to_bytes(8, "big")
+        self.wfile.write(header + payload)
+        self.wfile.flush()
+
+    def _ws_send_json(self, payload: dict[str, Any]) -> None:
+        self._ws_send_frame(0x1, json.dumps(payload, sort_keys=True).encode("utf-8"))
+
+    def _ws_read_frame(self) -> tuple[int, bytes]:
+        header = self.rfile.read(2)
+        if len(header) < 2:
+            raise ConnectionError("websocket closed")
+        first, second = header[0], header[1]
+        opcode = first & 0x0F
+        length = second & 0x7F
+        masked = bool(second & 0x80)
+        if length == 126:
+            raw = self.rfile.read(2)
+            if len(raw) < 2:
+                raise ConnectionError("websocket closed during frame length")
+            length = int.from_bytes(raw, "big")
+        elif length == 127:
+            raw = self.rfile.read(8)
+            if len(raw) < 8:
+                raise ConnectionError("websocket closed during frame length")
+            length = int.from_bytes(raw, "big")
+        mask = self.rfile.read(4) if masked else b""
+        if masked and len(mask) < 4:
+            raise ConnectionError("websocket closed during frame mask")
+        payload = self.rfile.read(length) if length else b""
+        if len(payload) < length:
+            raise ConnectionError("websocket closed during frame payload")
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        return opcode, payload
+
+    def _ws_read_json_message(self) -> dict[str, Any]:
+        while True:
+            opcode, payload = self._ws_read_frame()
+            if opcode == 0x8:
+                raise ConnectionError("websocket close frame received")
+            if opcode == 0x9:
+                self._ws_send_frame(0xA, payload)
+                continue
+            if opcode == 0xA:
+                continue
+            if opcode != 0x1:
+                raise StableHubWorkerSessionError(f"unsupported websocket opcode: {opcode}")
+            try:
+                decoded = json.loads(payload.decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                raise StableHubWorkerSessionError(f"websocket text frame is not JSON: {exc}") from exc
+            if not isinstance(decoded, dict):
+                raise StableHubWorkerSessionError("websocket JSON message must be an object")
+            return decoded
+
+    def _accept_websocket(self) -> bool:
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            self._send_json(
+                {"ok": False, "error": "websocket_upgrade_required", "hub_id": self.server.stable_hub_node.hub_id},
+                status=HTTPStatus.UPGRADE_REQUIRED,
+            )
+            return False
+        key = self.headers.get("Sec-WebSocket-Key", "").strip()
+        if not key:
+            self._send_json(
+                {"ok": False, "error": "missing_sec_websocket_key", "hub_id": self.server.stable_hub_node.hub_id},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return False
+        accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.close_connection = True
+        return True
+
+    def _market_profile_from_auth(self, message: dict[str, Any]) -> dict[str, Any]:
+        raw_market = message.get("market")
+        if not isinstance(raw_market, dict):
+            raw_market = message.get("worker_market")
+        market = normalize_worker_market_profile(raw_market if isinstance(raw_market, dict) else None)
+        return market
+
+    def _register_exp_worker_from_live_session(
+        self,
+        *,
+        worker_id: str,
+        worker_instance_id: str,
+        connection_id: str,
+        owner: dict[str, Any],
+        market: dict[str, Any],
+        authorization: dict[str, Any],
+    ) -> None:
+        capabilities = {
+            "transport": "websocket",
+            "worker_connection_mode": "stable-websocket-live-session",
+            "connection_id": connection_id,
+            "lease_epoch": int(owner.get("lease_epoch") or 0),
+            "owner_hub_id": self.server.stable_hub_node.hub_id,
+            "owner_hub_url": self.server.stable_hub_node.hub_url,
+            "multisession_key_id": str(authorization.get("multisession_key_id") or ""),
+            "wallet_address": str(authorization.get("wallet_address") or ""),
+            "credit_wallet": str(authorization.get("wallet_address") or ""),
+            "auth_mode": "multisession-wallet" if authorization else "optional",
+            "market": dict(market),
+            "rings": list(market.get("rings") or []),
+            "partitions": list(market.get("partitions") or []),
+            "capabilities": list(market.get("capabilities") or []),
+            "assigned_ring": (list(market.get("rings") or ["ring-3"])[0]),
+            "execution": {
+                "mode": "stable-websocket-live-session",
+                "route": "/api/hub/v1/workers/live-session",
+            },
+        }
+        price = market.get("price") if isinstance(market.get("price"), dict) else {}
+        amount = price.get("amount", 1) if isinstance(price, dict) else 1
+        capabilities["pricing"] = {
+            "pricing_type": "fixed_per_call_v0",
+            "credits_per_request": amount,
+            "unit": str(price.get("unit") or "compute_credit") if isinstance(price, dict) else "compute_credit",
+        }
+        model = "live-session-worker"
+        endpoint = self.server.stable_hub_node.hub_url.rstrip("/") + "/api/hub/v1/workers/live-session"
+        try:
+            self.server.registry.register_worker(
+                node_id=worker_id,
+                endpoint=endpoint,
+                model=model,
+                models=[model],
+                capabilities=capabilities,
+                credits_per_request=amount,
+                worker_instance_id=worker_instance_id or connection_id,
+            )
+            self.server.energy_ledger.register_node(worker_id, "gpu-worker", endpoint)
+        except Exception:
+            # The durable stable live-session owner record is the source of truth
+            # for keepalive. Registry/energy registration remains best-effort in
+            # this phase so a transient legacy side write cannot kill the socket.
+            pass
+
+    def _exp_request_store(self) -> Any:
+        store = getattr(self.server, "request_store", None)
+        if store is not None:
+            return store
+        return self.server.dispatcher.plex_service.request_store
+
+    def _exp_worker_instance_id_for_connection(self, worker_id: str, connection_id: str) -> str:
+        # The live-session connection is the concrete worker execution slot.
+        # Keeping the exp worker_instance_id equal to connection_id avoids a
+        # second identity namespace and makes worker.work.result bindings match
+        # the accepted live socket.
+        return str(connection_id or worker_id)
+
+    def _exp_request_body_for_worker_pull(
+        self,
+        body: dict[str, Any],
+        *,
+        selected_worker: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(body)
+        metadata = dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {}
+        metadata.setdefault("execution_mode", "exp-live-session-worker-v1")
+        metadata.setdefault("worker_connection_mode", "stable-websocket-live-session")
+        metadata.setdefault("selected_offer", {
+            "worker_node_id": str(selected_worker.get("worker_id") or ""),
+            "worker_instance_id": str(selected_worker.get("connection_id") or ""),
+            "credits_per_request": max(1, int(float((selected_worker.get("price") or {}).get("amount") or 1))),
+            "unit": str((selected_worker.get("price") or {}).get("unit") or "compute_credit"),
+            "execution_mode": "exp-live-session-worker-v1",
+            "price_source": "exp_live_worker_market",
+        })
+        if payload.get("request_id") and not payload.get("idempotency_key"):
+            payload["idempotency_key"] = str(payload.get("request_id"))
+        if not payload.get("messages"):
+            input_payload = payload.get("input") if isinstance(payload.get("input"), dict) else {}
+            prompt = (
+                payload.get("prompt")
+                or input_payload.get("prompt")
+                or input_payload.get("text")
+                or input_payload.get("message")
+                or "exp live-session work request"
+            )
+            payload["messages"] = [{"role": "user", "content": str(prompt)}]
+        if not payload.get("model"):
+            payload["model"] = "live-session-worker"
+        if not payload.get("requested_worker_node_id"):
+            payload["requested_worker_node_id"] = str(selected_worker.get("worker_id") or "")
+        max_credits = payload.get("max_credits", payload.get("max_price_credits"))
+        if max_credits is None:
+            max_price = payload.get("max_price") if isinstance(payload.get("max_price"), dict) else {}
+            max_credits = max_price.get("amount", 1) if isinstance(max_price, dict) else 1
+        try:
+            payload["max_credits"] = max(1, int(float(max_credits or 1)))
+        except (TypeError, ValueError):
+            payload["max_credits"] = 1
+        payload["metadata"] = metadata
+        payload, metadata = self._apply_request_multisession_authorization(
+            body=payload,
+            metadata=metadata,
+            required=bool(getattr(self.server.config, "hub_require_multisession_auth", False)),
+        )
+        return payload
+
+    def _exp_live_session_response(
+        self,
+        *,
+        accepted_session: dict[str, Any],
+        request_status: dict[str, Any] | None = None,
+        idempotent: bool = False,
+    ) -> dict[str, Any]:
+        session_id = normalize_session_id(accepted_session.get("session_id"))
+        continuation_url = exp_work_session_continuation_url(self.server.stable_hub_node.hub_url, session_id)
+        execution_hub = {
+            "hub_id": self.server.stable_hub_node.hub_id,
+            "hub_url": self.server.stable_hub_node.hub_url,
+            "local_owner": True,
+            "handoff": False,
+        }
+        return {
+            "ok": True,
+            "accepted": True,
+            "idempotent": bool(idempotent),
+            "service": "main_computer.exp_fdb_hub",
+            "session_id": session_id,
+            "run_id": accepted_session.get("run_id"),
+            "request_id": accepted_session.get("request_id"),
+            "worker_id": accepted_session.get("worker_id"),
+            "execution_hub": execution_hub,
+            "worker_hub": dict(execution_hub),
+            "continuation_url": continuation_url,
+            "continuation": {
+                "direct": True,
+                "bounce_required": True,
+                "reason": "continue_on_execution_hub",
+                "stream_path": exp_work_session_stream_path(session_id),
+                "hub_id": self.server.stable_hub_node.hub_id,
+                "hub_url": self.server.stable_hub_node.hub_url,
+            },
+            "bounce": {
+                "required": True,
+                "reason": "continue_on_execution_hub",
+                "same_hub": True,
+            },
+            "execution": accepted_session.get("execution", {}),
+            "payout": accepted_session.get("payout", {}),
+            "request": request_status or {},
+            "accepted_session": accepted_session,
+            "hub_to_hub_handoff": False,
+            "hub_id": self.server.stable_hub_node.hub_id,
+            "cluster_id": self.server.stable_topology.cluster_id,
+        }
+
+    def _post_same_request_to_owner_hub(
+        self,
+        *,
+        owner_hub_id: str,
+        owner_hub_url: str,
+        body: dict[str, Any],
+        timeout_seconds: float = 15.0,
+    ) -> tuple[int, dict[str, Any]]:
+        """Forward a requester-shaped exp work request to the worker owner Hub.
+
+        The entry exp Hub remains a router only. The owner Hub receives the same
+        public work-request payload, revalidates the current worker owner locally,
+        and owns the exp request hold, lease, result, earning, and continuation.
+        """
+
+        base_url = str(owner_hub_url or "").rstrip("/")
+        if not base_url:
+            raise StableHubWorkerSessionError("owner_hub_url is required for remote exp handoff.")
+        if str(owner_hub_id or "") == self.server.stable_hub_node.hub_id:
+            raise StableHubWorkerSessionError("remote exp handoff target must be a different Hub.")
+
+        handoff_url = f"{base_url}/api/hub/v1/work/requests"
+        payload = json.dumps(body, sort_keys=True).encode("utf-8")
+        request = Request(
+            handoff_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Main-Computer-Exp-Hub-Handoff-From": self.server.stable_hub_node.hub_id,
+                "X-Main-Computer-Exp-Hub-Handoff-To": str(owner_hub_id),
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - topology-owned Hub URL
+                response_body = response.read().decode("utf-8") or "{}"
+                decoded = json.loads(response_body)
+                if not isinstance(decoded, dict):
+                    decoded = {"ok": False, "error": "owner_hub_response_not_object"}
+                return int(response.status), decoded
+        except HTTPError as exc:
+            response_body = exc.read().decode("utf-8") or "{}"
+            try:
+                decoded = json.loads(response_body)
+                if not isinstance(decoded, dict):
+                    decoded = {"ok": False, "error": "owner_hub_response_not_object"}
+            except json.JSONDecodeError:
+                decoded = {"ok": False, "error": "owner_hub_response_not_json", "body": response_body}
+            return int(exc.code), decoded
+        except (URLError, TimeoutError, OSError) as exc:
+            raise ConnectionError(f"exp owner Hub handoff failed: {exc}") from exc
+
+    def _handle_exp_live_work_request(self) -> None:
+        body = self._read_json()
+        selected_worker = self.server.stable_worker_market_directory.select_worker_for_work(body)
+        if selected_worker is None:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "worker_not_live",
+                    "message": "No locally connected exp live-session worker matched the request.",
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                    "cluster_id": self.server.stable_topology.cluster_id,
+                },
+                status=HTTPStatus.CONFLICT,
+            )
+            return
+        owner_hub_id = str(selected_worker.get("owner_hub_id") or "")
+        owner_hub_url = str(selected_worker.get("owner_hub_url") or "")
+        if owner_hub_id != self.server.stable_hub_node.hub_id:
+            if self.headers.get("X-Main-Computer-Exp-Hub-Handoff-From"):
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "remote_handoff_target_not_local",
+                        "message": "Forwarded exp handoff reached a Hub that still does not own the selected worker.",
+                        "worker_id": selected_worker.get("worker_id"),
+                        "owner_hub": {
+                            "hub_id": owner_hub_id,
+                            "hub_url": owner_hub_url,
+                        },
+                        "hub_id": self.server.stable_hub_node.hub_id,
+                        "cluster_id": self.server.stable_topology.cluster_id,
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+            try:
+                owner_status, owner_response = self._post_same_request_to_owner_hub(
+                    owner_hub_id=owner_hub_id,
+                    owner_hub_url=owner_hub_url,
+                    body=body,
+                )
+            except (ConnectionError, StableHubWorkerSessionError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "owner_hub_handoff_failed",
+                        "message": str(exc),
+                        "worker_id": selected_worker.get("worker_id"),
+                        "owner_hub": {
+                            "hub_id": owner_hub_id,
+                            "hub_url": owner_hub_url,
+                        },
+                        "selected_worker": selected_worker,
+                        "hub_id": self.server.stable_hub_node.hub_id,
+                        "cluster_id": self.server.stable_topology.cluster_id,
+                    },
+                    status=HTTPStatus.BAD_GATEWAY,
+                )
+                return
+
+            if owner_response.get("ok") is True and owner_response.get("accepted") is True:
+                entry_response = dict(owner_response)
+                accepted_session_id = normalize_session_id(entry_response.get("session_id"))
+                entry_response["hub_id"] = self.server.stable_hub_node.hub_id
+                entry_response["entry_hub_id"] = self.server.stable_hub_node.hub_id
+                entry_response["accepted_by_hub_id"] = str(owner_response.get("hub_id") or owner_hub_id)
+                entry_response["execution_hub"] = {
+                    "hub_id": owner_hub_id,
+                    "hub_url": owner_hub_url,
+                    "local_owner": False,
+                    "handoff": True,
+                }
+                entry_response["worker_hub"] = dict(entry_response["execution_hub"])
+                entry_response["continuation_url"] = exp_work_session_continuation_url(
+                    owner_hub_url,
+                    accepted_session_id,
+                )
+                entry_response["continuation"] = {
+                    "direct": True,
+                    "bounce_required": True,
+                    "reason": "continue_on_execution_hub",
+                    "stream_path": exp_work_session_stream_path(accepted_session_id),
+                    "hub_id": owner_hub_id,
+                    "hub_url": owner_hub_url,
+                }
+                entry_response["bounce"] = {
+                    "required": True,
+                    "reason": "continue_on_execution_hub",
+                    "same_hub": False,
+                }
+                entry_response["hub_to_hub_handoff"] = True
+                entry_response["handoff"] = {
+                    "routed": True,
+                    "from_hub_id": self.server.stable_hub_node.hub_id,
+                    "to_hub_id": owner_hub_id,
+                    "to_hub_url": owner_hub_url,
+                    "request_shape": "exp-live-session-work",
+                }
+                self._send_json(entry_response)
+                return
+
+            handoff_error = dict(owner_response)
+            handoff_error.setdefault("ok", False)
+            handoff_error["entry_hub_id"] = self.server.stable_hub_node.hub_id
+            handoff_error["hub_id"] = self.server.stable_hub_node.hub_id
+            handoff_error["owner_hub"] = {
+                "hub_id": owner_hub_id,
+                "hub_url": owner_hub_url,
+            }
+            handoff_error["handoff"] = {
+                "routed": True,
+                "from_hub_id": self.server.stable_hub_node.hub_id,
+                "to_hub_id": owner_hub_id,
+                "to_hub_url": owner_hub_url,
+                "request_shape": "exp-live-session-work",
+            }
+            self._send_json(
+                handoff_error,
+                status=HTTPStatus(owner_status) if 400 <= owner_status <= 599 else HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        connection_id = str(selected_worker.get("connection_id") or "")
+        live_session = self.server.get_live_worker_session(connection_id)
+        if live_session is None or not live_session.is_live:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "worker_socket_missing",
+                    "message": "Selected worker market record does not have a local live socket.",
+                    "worker_id": selected_worker.get("worker_id"),
+                    "connection_id": connection_id,
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                },
+                status=HTTPStatus.CONFLICT,
+            )
+            return
+
+        request_payload = self._exp_request_body_for_worker_pull(body, selected_worker=selected_worker)
+        request = HubAIRequest.from_payload(
+            request_payload,
+            default_model=str(request_payload.get("model") or "live-session-worker"),
+            default_client_node_id=str(request_payload.get("client_node_id") or "exp-live-requester"),
+        )
+        queued_status = self.server.dispatcher.submit_worker_pull(request)
+        queued_request = dict(queued_status.get("request") or queued_status)
+        request_id = str(queued_request.get("request_id") or "")
+        worker_id = str(selected_worker.get("worker_id") or "")
+        worker_instance_id = self._exp_worker_instance_id_for_connection(worker_id, connection_id)
+        lease_response = self.server.dispatcher.poll_worker(
+            worker_node_id=worker_id,
+            worker_instance_id=worker_instance_id,
+            lease_seconds=float(request_payload.get("lease_seconds") or self.server.config.hub_timeout_s or 600.0),
+        )
+        lease = dict(lease_response.get("lease") or {})
+        if not lease:
+            self.server.dispatcher.cancel_request(request_id)
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "worker_lease_unavailable",
+                    "message": "The selected exp live-session worker could not claim the paid request lease.",
+                    "request_id": request_id,
+                    "worker_id": worker_id,
+                    "connection_id": connection_id,
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                },
+                status=HTTPStatus.CONFLICT,
+            )
+            return
+
+        session_id = new_session_id()
+        run_id = new_run_id()
+        partition = stable_partition_key_for_work(body)
+        task_queue = stable_task_queue_for_partition(partition)
+        offer = {
+            "type": "hub.work.offer",
+            "service": "main_computer.exp_fdb_hub",
+            "session_id": session_id,
+            "run_id": run_id,
+            "request_id": request_id,
+            "lease_id": str(lease.get("lease_id") or ""),
+            "worker_id": worker_id,
+            "connection_id": connection_id,
+            "worker_instance_id": worker_instance_id,
+            "work": {
+                "messages": lease.get("messages", []),
+                "input": body.get("input", {}),
+                "model": lease.get("model") or request.model,
+                "ring": body.get("ring", body.get("partition", partition)),
+                "capabilities": body.get("capabilities", body.get("required_capabilities", [])),
+            },
+            "pricing": lease.get("pricing", {}),
+            "selected_offer": lease.get("selected_offer", {}),
+            "execution_hub": {
+                "hub_id": self.server.stable_hub_node.hub_id,
+                "hub_url": self.server.stable_hub_node.hub_url,
+                "local_owner": True,
+                "handoff": False,
+            },
+        }
+        try:
+            acceptance = live_session.offer_work_and_wait_for_acceptance(
+                offer,
+                timeout_seconds=float(body.get("accept_timeout_seconds") or 10.0),
+            )
+        except Exception as exc:
+            try:
+                self.server.dispatcher.submit_worker_result(
+                    worker_node_id=worker_id,
+                    worker_instance_id=worker_instance_id,
+                    request_id=request_id,
+                    lease_id=str(lease.get("lease_id") or ""),
+                    result={"status": "failed", "error": f"worker did not accept offer: {exc}"},
+                )
+            except Exception:
+                pass
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "worker_accept_timeout",
+                    "message": str(exc),
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                },
+                status=HTTPStatus.GATEWAY_TIMEOUT,
+            )
+            return
+
+        try:
+            self._exp_request_store().update(
+                request_id,
+                session_id=session_id,
+                event_type="exp_live_session.accepted",
+                event={
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "worker_id": worker_id,
+                    "connection_id": connection_id,
+                    "lease_id": str(lease.get("lease_id") or ""),
+                    "bounce_required": True,
+                },
+            )
+        except Exception:
+            pass
+        self.server.stable_worker_market_directory.record_session_accepted(
+            worker_id=worker_id,
+            connection_id=connection_id,
+        )
+        leased_request = dict(lease_response.get("request") or {})
+        payout = {
+            "backend": "exp_fdb_credit_ledger",
+            "hold_id": str(leased_request.get("hold_id") or queued_request.get("hold_id") or ""),
+            "charge_id": "",
+            "worker_earning_id": "",
+            "unit": "compute_credit",
+            "status": "held",
+            "lease_id": str(lease.get("lease_id") or ""),
+        }
+        accepted = self.server.exp_accepted_work_session_directory.record_accepted(
+            session_id=session_id,
+            run_id=run_id,
+            request_id=request_id,
+            requester_msk_id=str((request_payload.get("metadata") or {}).get("multisession_key_id") or ""),
+            requester_account_id=str(request.account_id or ""),
+            requester_wallet_address=str((request_payload.get("metadata") or {}).get("wallet_address") or ""),
+            worker_id=worker_id,
+            worker_connection_id=connection_id,
+            owner_hub_id=self.server.stable_hub_node.hub_id,
+            owner_hub_url=self.server.stable_hub_node.hub_url,
+            partition=partition,
+            task_queue=task_queue,
+            work={
+                "request": body,
+                "exp_request_payload": request_payload,
+                "lease": lease,
+                "worker_instance_id": worker_instance_id,
+            },
+            worker_acceptance=acceptance,
+            payout=payout,
+        )
+        self._send_json(self._exp_live_session_response(accepted_session=accepted, request_status=lease_response.get("request") if isinstance(lease_response.get("request"), dict) else queued_request))
+
+    def _handle_exp_worker_terminal_message(
+        self,
+        *,
+        session: LiveWorkerSession,
+        worker_id: str,
+        connection_id: str,
+        message: dict[str, Any],
+    ) -> None:
+        message_type = str(message.get("type") or "")
+        session_id = normalize_session_id(message.get("session_id"))
+        request_id = normalize_request_id(message.get("request_id"))
+        accepted = self.server.exp_accepted_work_session_directory.get_session(session_id)
+        if accepted is None:
+            raise StableHubWorkerSessionError("accepted exp work session does not exist.")
+        if str(accepted.get("request_id") or "") != request_id:
+            raise StableHubWorkerSessionError("worker terminal message request_id mismatch.")
+        if str(accepted.get("worker_id") or "") != worker_id:
+            raise StableHubWorkerSessionError("worker terminal message worker_id mismatch.")
+        if str(accepted.get("worker_connection_id") or "") != connection_id:
+            raise StableHubWorkerSessionError("worker terminal message connection_id mismatch.")
+        expected_run_id = str(accepted.get("run_id") or "")
+        if message.get("run_id") and str(message.get("run_id")) != expected_run_id:
+            raise StableHubWorkerSessionError("worker terminal message run_id mismatch.")
+        if str(accepted.get("status") or "") in {"succeeded", "failed", "cancelled"}:
+            session.send_json(
+                {
+                    "type": "hub.work.terminal.accepted",
+                    "ok": True,
+                    "idempotent": True,
+                    "session_id": session_id,
+                    "request_id": request_id,
+                    "status": accepted.get("status"),
+                    "accepted_session": accepted,
+                }
+            )
+            return
+        work = dict(accepted.get("work") or {})
+        lease = dict(work.get("lease") or {})
+        worker_instance_id = str(work.get("worker_instance_id") or connection_id)
+        lease_id = str(message.get("lease_id") or lease.get("lease_id") or "")
+        if message_type == "worker.work.result":
+            result_payload = message.get("result")
+            if not isinstance(result_payload, dict):
+                result_payload = {"response": {"content": str(result_payload or "")}}
+            result_payload.setdefault("status", "success")
+            result_response = self.server.dispatcher.submit_worker_result(
+                worker_node_id=worker_id,
+                worker_instance_id=worker_instance_id,
+                request_id=request_id,
+                lease_id=lease_id,
+                result=result_payload,
+            )
+            request_status = dict(result_response.get("request") or {})
+            payout = dict(accepted.get("payout") or {})
+            payout.update(
+                {
+                    "status": "charged",
+                    "charge_id": str(request_status.get("charge_id") or ""),
+                    "worker_earning_id": str(request_status.get("worker_earning_id") or ""),
+                    "charged_credits": int(request_status.get("charged_credits") or 0),
+                    "released_credits": int(request_status.get("released_credits") or 0),
+                    "lease_id": lease_id,
+                }
+            )
+            updated = self.server.exp_accepted_work_session_directory.record_succeeded(
+                session_id=session_id,
+                worker_connection_id=connection_id,
+                worker_result={"type": message_type, "result": result_payload, "request": request_status},
+                payout=payout,
+            )
+            self.server.stable_worker_market_directory.record_session_finished(
+                worker_id=worker_id,
+                connection_id=connection_id,
+            )
+            session.send_json(
+                {
+                    "type": "hub.work.result.accepted",
+                    "ok": True,
+                    "session_id": session_id,
+                    "request_id": request_id,
+                    "status": updated.get("status"),
+                    "payout": updated.get("payout", {}),
+                    "request": request_status,
+                }
+            )
+            return
+        if message_type == "worker.work.failed":
+            error = message.get("error")
+            error_text = str(error.get("error") if isinstance(error, dict) else error or message.get("message") or "worker_failed")
+            result_response = self.server.dispatcher.submit_worker_result(
+                worker_node_id=worker_id,
+                worker_instance_id=worker_instance_id,
+                request_id=request_id,
+                lease_id=lease_id,
+                result={"status": "failed", "error": error_text},
+            )
+            request_status = dict(result_response.get("request") or {})
+            payout = dict(accepted.get("payout") or {})
+            payout.update(
+                {
+                    "status": "released",
+                    "charge_id": "",
+                    "worker_earning_id": "",
+                    "charged_credits": int(request_status.get("charged_credits") or 0),
+                    "released_credits": int(request_status.get("released_credits") or 0),
+                    "lease_id": lease_id,
+                    "release_reason": "worker_failed",
+                }
+            )
+            updated = self.server.exp_accepted_work_session_directory.record_failed(
+                session_id=session_id,
+                worker_connection_id=connection_id,
+                worker_failure={"type": message_type, "error": error_text, "request": request_status},
+                payout=payout,
+            )
+            self.server.stable_worker_market_directory.record_session_finished(
+                worker_id=worker_id,
+                connection_id=connection_id,
+            )
+            session.send_json(
+                {
+                    "type": "hub.work.failed.accepted",
+                    "ok": True,
+                    "session_id": session_id,
+                    "request_id": request_id,
+                    "status": updated.get("status"),
+                    "payout": updated.get("payout", {}),
+                    "request": request_status,
+                }
+            )
+            return
+        raise StableHubWorkerSessionError("unsupported worker terminal message.")
+
+    def _handle_exp_work_session_stream(self, path: str) -> None:
+        prefix = "/api/hub/v1/work/sessions/"
+        suffix = "/stream"
+        raw_session_id = path[len(prefix) : -len(suffix)]
+        try:
+            session_id = normalize_session_id(raw_session_id)
+        except StableHubWorkerSessionError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        accepted = self.server.exp_accepted_work_session_directory.get_session(session_id)
+        if accepted is None:
+            self._send_json({"ok": False, "error": "work_session_not_found", "session_id": session_id}, status=HTTPStatus.NOT_FOUND)
+            return
+        request_record = None
+        try:
+            request_record = self._exp_request_store().get(str(accepted.get("request_id") or ""))
+        except Exception:
+            request_record = None
+        request_status = request_record.as_dict() if request_record is not None and hasattr(request_record, "as_dict") else {}
+        continuation_url = exp_work_session_continuation_url(self.server.stable_hub_node.hub_url, session_id)
+        self._send_json(
+            {
+                "ok": True,
+                "service": "main_computer.exp_fdb_hub",
+                "session_id": session_id,
+                "run_id": accepted.get("run_id"),
+                "request_id": accepted.get("request_id"),
+                "status": accepted.get("status"),
+                "execution_hub": {
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                    "hub_url": self.server.stable_hub_node.hub_url,
+                    "local_owner": True,
+                    "handoff": False,
+                },
+                "continuation_url": continuation_url,
+                "bounce": {
+                    "required": True,
+                    "reason": "continue_on_execution_hub",
+                    "same_hub": True,
+                },
+                "payout": accepted.get("payout", {}),
+                "execution": accepted.get("execution", {}),
+                "accepted_session": accepted,
+                "request": request_status,
+                "stream": {
+                    "transport": "exp-hub-session-stream",
+                    "mode": "accepted-session-state",
+                    "source": "exp-accepted-session-record",
+                },
+                "hub_to_hub_handoff": False,
+                "hub_id": self.server.stable_hub_node.hub_id,
+                "cluster_id": self.server.stable_topology.cluster_id,
+            }
+        )
+
+    def _handle_worker_live_session_websocket(self) -> None:
+        if not self._accept_websocket():
+            return
+
+        worker_id = ""
+        connection_id = ""
+        session: LiveWorkerSession | None = None
+        try:
+            auth_message = self._ws_read_json_message()
+            if auth_message.get("type") != "worker.auth":
+                raise StableHubWorkerSessionError("first worker live-session message must be worker.auth")
+            worker_id = normalize_worker_id(auth_message.get("worker_id"))
+            worker_instance_id = str(auth_message.get("worker_instance_id") or "").strip()
+            authorization = self._authorize_worker_route(
+                body=auth_message,
+                worker_id=worker_id,
+                registration=True,
+            )
+            connection_id = new_connection_id()
+            market = self._market_profile_from_auth(auth_message)
+            owner = self.server.stable_worker_session_directory.record_connected(
+                worker_id=worker_id,
+                connection_id=connection_id,
+                multisession_key_id=str(authorization.get("multisession_key_id") or ""),
+                wallet_address=str(authorization.get("wallet_address") or ""),
+                account_id=str(authorization.get("account_id") or ""),
+            )
+            market_record = self.server.stable_worker_market_directory.record_worker_live(
+                worker_id=worker_id,
+                owner=owner,
+                market_profile=market,
+                worker_msk_id=str(authorization.get("multisession_key_id") or ""),
+                worker_wallet_address=str(authorization.get("wallet_address") or ""),
+                worker_account_id=str(authorization.get("account_id") or ""),
+            )
+            self._register_exp_worker_from_live_session(
+                worker_id=worker_id,
+                worker_instance_id=self._exp_worker_instance_id_for_connection(worker_id, connection_id),
+                connection_id=connection_id,
+                owner=owner,
+                market=market,
+                authorization=authorization,
+            )
+            session = LiveWorkerSession(
+                worker_id=worker_id,
+                connection_id=connection_id,
+                handler=self,
+                opened_at=str(owner.get("connected_at") or ""),
+                multisession_key_id=str(authorization.get("multisession_key_id") or ""),
+                market_profile=market,
+            )
+            self.server.register_live_worker_session(session)
+            session.send_json(
+                {
+                    "type": "hub.auth.accepted",
+                    "ok": True,
+                    "service": "main_computer.exp_fdb_hub",
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                    "hub_url": self.server.stable_hub_node.hub_url,
+                    "cluster_id": self.server.stable_topology.cluster_id,
+                    "worker_id": worker_id,
+                    "connection_id": connection_id,
+                    "owner": owner,
+                    "market": market_record,
+                    "worker_hub": {
+                        "hub_id": self.server.stable_hub_node.hub_id,
+                        "hub_url": self.server.stable_hub_node.hub_url,
+                        "local_owner": True,
+                        "handoff": False,
+                    },
+                    "execution_hub": {
+                        "hub_id": self.server.stable_hub_node.hub_id,
+                        "hub_url": self.server.stable_hub_node.hub_url,
+                    },
+                    "heartbeat": {
+                        "transport": "websocket",
+                        "mode": "hub-ping-worker-pong",
+                    },
+                    "contract": experimental_stable_hub_contract(),
+                }
+            )
+
+            ping_id = "ping_" + secrets.token_urlsafe(12).rstrip("=")
+            session.send_json({"type": "hub.ping", "ping_id": ping_id, "connection_id": connection_id})
+            while True:
+                message = self._ws_read_json_message()
+                message_type = str(message.get("type") or "")
+                if message_type == "worker.pong":
+                    if str(message.get("connection_id") or connection_id) != connection_id:
+                        session.send_json(
+                            {
+                                "type": "hub.error",
+                                "ok": False,
+                                "error": "connection_id_mismatch",
+                                "connection_id": connection_id,
+                            }
+                        )
+                        continue
+                    owner = self.server.stable_worker_session_directory.record_pong(
+                        worker_id=worker_id,
+                        connection_id=connection_id,
+                    )
+                    session.record_pong(owner)
+                    self.server.stable_worker_market_directory.record_worker_live(
+                        worker_id=worker_id,
+                        owner=owner,
+                        market_profile=market,
+                        worker_msk_id=str(authorization.get("multisession_key_id") or ""),
+                        worker_wallet_address=str(authorization.get("wallet_address") or ""),
+                        worker_account_id=str(authorization.get("account_id") or ""),
+                    )
+                    session.send_json(
+                        {
+                            "type": "hub.pong.accepted",
+                            "ok": True,
+                            "worker_id": worker_id,
+                            "connection_id": connection_id,
+                            "owner": owner,
+                        }
+                    )
+                    continue
+                if message_type == "worker.work.accepted":
+                    try:
+                        session.record_work_accepted(message)
+                    except StableHubWorkerSessionError as exc:
+                        session.send_json(
+                            {
+                                "type": "hub.error",
+                                "ok": False,
+                                "error": str(exc),
+                                "received_type": message_type,
+                            }
+                        )
+                    continue
+                if message_type in {"worker.work.result", "worker.work.failed"}:
+                    try:
+                        self._handle_exp_worker_terminal_message(
+                            session=session,
+                            worker_id=worker_id,
+                            connection_id=connection_id,
+                            message=message,
+                        )
+                    except StableHubWorkerSessionError as exc:
+                        session.send_json(
+                            {
+                                "type": "hub.error",
+                                "ok": False,
+                                "error": str(exc),
+                                "received_type": message_type,
+                                "session_id": message.get("session_id"),
+                                "request_id": message.get("request_id"),
+                            }
+                        )
+                    continue
+                if message_type == "worker.close":
+                    break
+                session.send_json(
+                    {
+                        "type": "hub.error",
+                        "ok": False,
+                        "error": "unsupported_worker_message",
+                        "received_type": message_type,
+                    }
+                )
+        except (ConnectionError, OSError):
+            pass
+        except (StableHubWorkerSessionError, RuntimeError, ValueError) as exc:
+            try:
+                if session is not None:
+                    session.send_json(
+                        {
+                            "type": "hub.error",
+                            "ok": False,
+                            "error": str(exc),
+                            "hub_id": self.server.stable_hub_node.hub_id,
+                        }
+                    )
+                else:
+                    self._ws_send_json(
+                        {
+                            "type": "hub.error",
+                            "ok": False,
+                            "error": str(exc),
+                            "hub_id": self.server.stable_hub_node.hub_id,
+                        }
+                    )
+            except Exception:
+                pass
+        finally:
+            if worker_id and connection_id:
+                closed_owner = self.server.stable_worker_session_directory.record_closed(
+                    worker_id=worker_id,
+                    connection_id=connection_id,
+                    reason="socket_closed",
+                ) or {}
+                self.server.stable_worker_market_directory.record_worker_closed(
+                    worker_id=worker_id,
+                    connection_id=connection_id,
+                    reason="socket_closed",
+                )
+                removed = self.server.remove_live_worker_session(connection_id)
+                if removed is not None:
+                    removed.mark_closed(
+                        reason="socket_closed",
+                        closed_at=str(closed_owner.get("closed_at") or ""),
+                    )
+                try:
+                    self.server.registry.heartbeat_worker(
+                        worker_id,
+                        worker_instance_id=str(closed_owner.get("connection_id") or connection_id),
+                        status="offline",
+                    )
+                except Exception:
+                    pass
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/api/hub/v1/workers/live-session":
+            self._handle_worker_live_session_websocket()
+            return
+        if path.startswith("/api/hub/v1/work/sessions/") and path.endswith("/stream"):
+            self._handle_exp_work_session_stream(path)
+            return
+        if path == "/api/hub/v1/hub-identity":
+            identity = dict(self.server.identity)
+            multisession_required = bool(getattr(self.server.config, "hub_require_multisession_auth", False))
+            identity["multi_session_auth_required"] = multisession_required
+            identity["auth"] = {
+                "multi_session_auth_required": multisession_required,
+                "multisession_auth_required": multisession_required,
+                "worker_routes": "required" if multisession_required else "optional",
+                "requester_routes": "required" if multisession_required else "optional",
+                "scheme": "multisession-wallet",
+            }
+            return self._send_json(identity)
+        if path == "/api/hub/v1/topology":
+            self._send_json(
+                {
+                    "ok": True,
+                    "service": "main_computer.exp_fdb_hub",
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                    "cluster_id": self.server.stable_topology.cluster_id,
+                    "topology": stable_hub_topology_to_dict(self.server.stable_topology),
+                }
+            )
+            return
+        super().do_GET()
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if _exp_legacy_worker_route(path):
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "not_found",
+                    "message": "Deprecated exp worker REST endpoint was removed; use /api/hub/v1/workers/live-session.",
+                    "path": path,
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                },
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        if path == "/api/hub/v1/work/requests":
+            try:
+                self._handle_exp_live_work_request()
+            except HubCreditAuthorizationError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+            except StableHubWorkerSessionError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        super().do_POST()
+
 
 class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
     """Manual-only Hub clone that keeps shared hub state in FoundationDB."""
@@ -105,13 +1398,48 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
         config: MainComputerConfig,
         *,
         fdb_config: ExperimentalFoundationDbConfig,
+        stable_topology: StableHubTopology | None = None,
+        stable_hub_id: str = "",
         verbose: bool = True,
     ) -> None:
         super().__init__(server_address, config, verbose=verbose)
         diagnostics_value = str(os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "0")).strip().lower()
         self.worker_route_diagnostics = verbose and diagnostics_value in {"1", "true", "yes", "on"}
         self.RequestHandlerClass = ExperimentalFoundationDbHubServerHandler
+        self.stable_topology = stable_topology or build_experimental_stable_topology(
+            argparse.Namespace(host=server_address[0], hub_url=""),
+            config=config,
+            fdb_config=fdb_config,
+            port=int(server_address[1]),
+        )
+        self.stable_hub_node = self.stable_topology.hub_by_id(
+            stable_hub_id or self.stable_topology.hubs[0].hub_id
+        )
+        self.identity = build_experimental_hub_identity(self.stable_topology, self.stable_hub_node.hub_id)
+        self.live_worker_sessions: dict[str, LiveWorkerSession] = {}
+        self.live_worker_sessions_lock = threading.Lock()
         self.fdb_state = ExperimentalFoundationDbHubState(fdb_config)
+        self.stable_worker_session_store = FoundationDbStableWorkerSessionStore(
+            cluster_file=fdb_config.cluster_file,
+            namespace=_exp_fdb_stable_namespace(fdb_config.namespace),
+            api_version=fdb_config.api_version,
+            repo_root=fdb_config.repo_root,
+        )
+        self.stable_worker_session_directory = StableHubWorkerSessionDirectory(
+            topology=self.stable_topology,
+            hub_id=self.stable_hub_node.hub_id,
+            store=self.stable_worker_session_store,
+        )
+        self.stable_worker_market_directory = StableHubWorkerMarketDirectory(
+            topology=self.stable_topology,
+            hub_id=self.stable_hub_node.hub_id,
+            store=self.stable_worker_session_store,
+        )
+        self.exp_accepted_work_session_directory = StableHubAcceptedWorkSessionDirectory(
+            topology=self.stable_topology,
+            hub_id=self.stable_hub_node.hub_id,
+            store=self.stable_worker_session_store,
+        )
         self.registry = ExperimentalFoundationDbRegistry(
             self.fdb_state,
             root=self.hub_root,
@@ -142,6 +1470,18 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
             feedback_store=self.feedback_store,
         )
 
+    def register_live_worker_session(self, session: LiveWorkerSession) -> None:
+        with self.live_worker_sessions_lock:
+            self.live_worker_sessions[session.connection_id] = session
+
+    def get_live_worker_session(self, connection_id: str) -> LiveWorkerSession | None:
+        with self.live_worker_sessions_lock:
+            return self.live_worker_sessions.get(str(connection_id))
+
+    def remove_live_worker_session(self, connection_id: str) -> LiveWorkerSession | None:
+        with self.live_worker_sessions_lock:
+            return self.live_worker_sessions.pop(str(connection_id), None)
+
 
 
 
@@ -165,10 +1505,9 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_root = repo_root / hub_root
 
     hub_url = args.hub_url or f"http://{args.host}:{port}"
-    network_key = str(getattr(args, "network_key", "exp-fdb") or "exp-fdb").strip() or "exp-fdb"
     bridge_backend = _hub_bridge_backend_from_args(args, base)
+    network_key = _exp_fdb_network_key_from_args(args, bridge_backend=bridge_backend)
     allow_missing_bridge_signer = bool(getattr(args, "allow_missing_bridge_signer", False)) or base.hub_allow_missing_bridge_signer
-    enable_smoke_bridge = bool(getattr(args, "enable_smoke_bridge", False)) or base.hub_enable_smoke_bridge
     dev_chain_deployment_path = Path(args.dev_chain_deployment_path) if args.dev_chain_deployment_path else base.hub_dev_chain_deployment_path
     if (
         dev_chain_deployment_path is None
@@ -178,6 +1517,14 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         dev_chain_deployment_path = _default_dev_chain_deployment_path(repo_root=repo_root, network_key=network_key)
     if dev_chain_deployment_path is not None and not dev_chain_deployment_path.is_absolute():
         dev_chain_deployment_path = repo_root / dev_chain_deployment_path
+    enable_smoke_bridge = bool(getattr(args, "enable_smoke_bridge", False)) or base.hub_enable_smoke_bridge
+    if (
+        not enable_smoke_bridge
+        and not bool(getattr(args, "strict_bridge_signer", False))
+        and _is_exp_dev_chain_backend(bridge_backend)
+        and _deployment_manifest_is_smoke_bridge(dev_chain_deployment_path)
+    ):
+        enable_smoke_bridge = True
     contracts_path = Path(args.contracts_path) if getattr(args, "contracts_path", None) else base.hub_contracts_path
     if contracts_path is None and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}:
         contracts_path = _default_contracts_path(repo_root=repo_root, network_key=network_key)
@@ -377,10 +1724,18 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
             "  python scripts/smoke_foundationdb_credit_ledger_primitives.py --keep-container"
         )
 
+    stable_topology = build_experimental_stable_topology(
+        args,
+        config=config,
+        fdb_config=fdb_config,
+        port=port,
+    )
     server = ExperimentalFoundationDbHubHttpServer(
         (args.host, port),
         config,
         fdb_config=fdb_config,
+        stable_topology=stable_topology,
+        stable_hub_id=_exp_fdb_stable_hub_id(int(port)),
         verbose=not args.noverbose,
     )
     fdb_health = server.credit_ledger.health_check()
@@ -394,6 +1749,8 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
     print(f"Worker route diagnostics: {'on' if server.worker_route_diagnostics else 'off'} (set HUB_WORKER_ROUTE_DIAGNOSTICS=1 to enable per-stage logging)")
     print(f"FDB cluster file: {fdb_config.cluster_file}")
     print(f"FDB namespace: {fdb_config.namespace}")
+    print(f"Stable live-session identity: {server.stable_hub_node.hub_id} {server.stable_hub_node.hub_url}")
+    print("Stable live-session topology: owner-hub forwarding enabled when topology exposes peer Hubs")
     ring_status = server.ring_admission_config.public_status()
     print(
         "Ring admission config: "
@@ -936,7 +2293,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-ports", "--ports", default=None, help="Comma-separated experimental hub ports to bind, for example 8870,8871,8872. Defaults to 8870.")
     parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--hub-url", help="Public URL advertised for this experimental hub. Defaults per port when omitted.")
-    parser.add_argument("--network-key", default="exp-fdb", help="Hub network key advertised by /api/hub/status.")
+    parser.add_argument("--network-key", default="", help="Hub network key advertised by /api/hub/status. Defaults to dev for dev-chain and exp-fdb for mock-chain.")
     parser.add_argument("--network-display-name", default="Experimental FDB Hub", help="Hub network display name advertised by /api/hub/status.")
     parser.add_argument("--network-kind", default="experimental", help="Hub network kind advertised by /api/hub/status.")
     parser.add_argument("--chain-id", default="", help="Chain ID advertised by /api/hub/status. Defaults to MAIN_COMPUTER_CHAIN_ID/base config.")
@@ -955,6 +2312,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--enable-smoke-bridge",
         action="store_true",
         help="Enable explicit admin-only smoke bridge mode that may load smoke_client wallet metadata from a private deployment manifest.",
+    )
+    parser.add_argument(
+        "--strict-bridge-signer",
+        action="store_true",
+        help=(
+            "Do not auto-enable the local dev-chain smoke bridge for exp-fdb-hub.py. "
+            "Use this when the dev-chain backend must require a non-smoke bridge signer bundle."
+        ),
     )
     parser.add_argument("--ring-config-path", type=Path, default=None, help="JSON ring admission config path. Bad explicit configs fail startup.")
     parser.add_argument(

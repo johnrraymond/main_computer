@@ -118,3 +118,59 @@ def test_stable_hub_integrated_market_stress_includes_payout_entropy(tmp_path: P
     assert "Stable Hub integrated market stress: ok" in rendered
     assert "worker result charged payout hold: yes" in rendered
     assert "worker disconnected and reconnected: yes" in rendered
+
+
+def test_stable_hub_integrated_market_stress_filters_prior_payout_status(tmp_path: Path) -> None:
+    hub1_port = _free_port()
+    hub3_port = _free_port()
+    topology_path = tmp_path / "stable-topology.json"
+    _write_test_topology(
+        topology_path,
+        hub1_url=f"http://127.0.0.1:{hub1_port}",
+        hub3_url=f"http://127.0.0.1:{hub3_port}",
+    )
+    msk_store = InMemoryStableMultiSessionKeyStore()
+    worker_store = InMemoryStableWorkerSessionStore()
+    servers = [
+        _start_server(
+            topology_path=topology_path,
+            hub_id="dev-hub1",
+            bind_port=hub1_port,
+            msk_store=msk_store,
+            worker_store=worker_store,
+        ),
+        _start_server(
+            topology_path=topology_path,
+            hub_id="dev-hub3",
+            bind_port=hub3_port,
+            msk_store=msk_store,
+            worker_store=worker_store,
+        ),
+    ]
+
+    try:
+        first = build_stable_hub_integrated_market_stress_result(
+            topology_path=topology_path,
+            requester_wallet_path=tmp_path / "requester-wallet-1.json",
+            worker_wallet_path=tmp_path / "worker-wallet-1.json",
+            timeout=5.0,
+        )
+        second = build_stable_hub_integrated_market_stress_result(
+            topology_path=topology_path,
+            requester_wallet_path=tmp_path / "requester-wallet-2.json",
+            worker_wallet_path=tmp_path / "worker-wallet-2.json",
+            timeout=5.0,
+        )
+    finally:
+        for server, thread in servers:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1.0)
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second["metrics"]["holds"] == 3
+    assert second["metrics"]["charges"] == 2
+    assert second["metrics"]["worker_earnings"] == 2
+    assert second["proof"]["worker_earnings_created_only_for_successes"] is True
+    assert second["proof"]["no_double_charge_on_duplicate_result"] is True

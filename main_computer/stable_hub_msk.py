@@ -185,8 +185,13 @@ def _configure_fdb_transaction_safety(tr: Any) -> None:
 class FoundationDbStableMultiSessionKeyStore:
     """Shared stable Hub MSK store backed by the topology's FoundationDB cluster.
 
-    The connection is opened lazily so stable Hub identity/health startup remains
-    lightweight even before the dev FDB container is running.
+    MSK issuance is on the hot path for long Stable Hub lab runs.  The first
+    implementation stored every MSK in one logical JSON document, and the
+    follow-up chunked that document.  Chunking fixed the single-value ceiling,
+    but issuing one new key still had to load/rewrite the whole historical MSK
+    document.  Store new keys as independent FDB records plus a signed-request
+    hash index so issuing or validating one MSK stays bounded as the namespace
+    grows.
     """
 
     def __init__(
@@ -246,18 +251,165 @@ class FoundationDbStableMultiSessionKeyStore:
             self._fdb = fdb
             self._opened = True
 
-    def _key(self) -> bytes:
+    def _legacy_key(self) -> bytes:
         self._open()
         return self._fdb.tuple.pack((self.namespace, "stable-hub", "multisession_keys"))
 
-    def load(self) -> dict[str, Any]:
+    def _legacy_chunk_meta_key(self) -> bytes:
         self._open()
-        key = self._key()
+        return self._fdb.tuple.pack((self.namespace, "stable-hub", "multisession_keys", "chunks", "meta"))
+
+    def _legacy_chunk_key(self, index: int) -> bytes:
+        self._open()
+        return self._fdb.tuple.pack((self.namespace, "stable-hub", "multisession_keys", "chunks", int(index)))
+
+    def _record_key(self, key_id: str) -> bytes:
+        self._open()
+        return self._fdb.tuple.pack((self.namespace, "stable-hub", "multisession_keys", "records", str(key_id)))
+
+    def _hash_key(self, signed_request_hash: str) -> bytes:
+        self._open()
+        return self._fdb.tuple.pack(
+            (self.namespace, "stable-hub", "multisession_keys", "signed_request_hash", str(signed_request_hash))
+        )
+
+    def _records_range(self) -> Any:
+        self._open()
+        return self._fdb.tuple.range((self.namespace, "stable-hub", "multisession_keys", "records"))
+
+    def _key(self) -> bytes:
+        # Backward-compatible name for older tests/helpers that referenced the
+        # original single-value store key.
+        return self._legacy_key()
+
+    def _decode_key_id(self, raw: Any) -> str:
+        data = _fdb_value_bytes(raw)
+        if data is None:
+            return ""
+        return data.decode("utf-8")
+
+    def _load_legacy_document_in_transaction(self, tr: Any) -> dict[str, Any]:
+        """Read the old one-document MSK formats for manual migration/status only.
+
+        Hot issue/validate paths do not call this.  It remains here so a lab with
+        pre-record-store data can still be inspected or manually rewritten with
+        save(load()) if needed.
+        """
+
+        meta = _json_loads(tr[self._legacy_chunk_meta_key()].wait()) or {}
+        chunk_count = int(meta.get("chunk_count") or 0) if isinstance(meta, dict) else 0
+        if chunk_count > 0:
+            parts: list[bytes] = []
+            for index in range(chunk_count):
+                chunk = _fdb_value_bytes(tr[self._legacy_chunk_key(index)].wait())
+                if chunk is None:
+                    raise RuntimeError(f"Stable Hub MSK FDB legacy chunk {index} is missing.")
+                parts.append(chunk)
+            payload = json.loads(b"".join(parts).decode("utf-8"))
+            return _normalize_store(payload if isinstance(payload, dict) else {})
+
+        return _normalize_store(_json_loads(tr[self._legacy_key()].wait()) or {})
+
+    def get_key_record(self, key_id: str) -> dict[str, Any] | None:
+        self._open()
+        clean_key_id = str(key_id or "").strip()
+        if not clean_key_id:
+            return None
+
+        @self._fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any] | None:
+            _configure_fdb_transaction_safety(tr)
+            record = _json_loads(tr[self._record_key(clean_key_id)].wait())
+            if isinstance(record, dict):
+                return dict(record)
+            return None
+
+        try:
+            return _tx(self._db)
+        except Exception as exc:  # pragma: no cover - depends on live FDB timing/state
+            raise RuntimeError(
+                "FoundationDB MSK record lookup failed or timed out. "
+                f"cluster_file={self.cluster_file} namespace={self.namespace} "
+                f"timeout_ms={STABLE_MSK_FDB_TRANSACTION_TIMEOUT_MS} key_id={clean_key_id}"
+            ) from exc
+
+    def create_key_record_if_absent(
+        self,
+        *,
+        signed_request_hash: str,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._open()
+        clean_hash = str(signed_request_hash or "").strip()
+        key_id = str(record.get("id") or "").strip()
+        if not clean_hash:
+            raise StableHubMultiSessionKeyError("signed_request_hash is required.")
+        if not key_id:
+            raise StableHubMultiSessionKeyError("multi-session key id is required.")
+
+        payload = dict(record)
+        payload["signed_request_hash"] = clean_hash
 
         @self._fdb.transactional
         def _tx(tr: Any) -> dict[str, Any]:
             _configure_fdb_transaction_safety(tr)
-            return _normalize_store(_json_loads(tr[key].wait()) or {})
+
+            existing_key_id = self._decode_key_id(tr[self._hash_key(clean_hash)].wait())
+            if existing_key_id:
+                existing = _json_loads(tr[self._record_key(existing_key_id)].wait())
+                if isinstance(existing, dict):
+                    return {"record": dict(existing), "idempotent": True}
+
+            existing_same_id = _json_loads(tr[self._record_key(key_id)].wait())
+            if isinstance(existing_same_id, dict):
+                if existing_same_id.get("signed_request_hash") == clean_hash:
+                    return {"record": dict(existing_same_id), "idempotent": True}
+                raise StableHubMultiSessionKeyError("multi-session key id collision.")
+
+            tr[self._record_key(key_id)] = _json_dumps(payload)
+            tr[self._hash_key(clean_hash)] = key_id.encode("utf-8")
+            tr[
+                self._fdb.tuple.pack((self.namespace, "stable-hub", "multisession_keys", "records_meta"))
+            ] = _json_dumps(
+                {
+                    "format": "record-indexed-json-v1",
+                    "updated_at": _utc_now(),
+                }
+            )
+            return {"record": dict(payload), "idempotent": False}
+
+        try:
+            return _tx(self._db)
+        except StableHubMultiSessionKeyError:
+            raise
+        except Exception as exc:  # pragma: no cover - depends on live FDB timing/state
+            raise RuntimeError(
+                "FoundationDB MSK record save failed or timed out. "
+                f"cluster_file={self.cluster_file} namespace={self.namespace} "
+                f"timeout_ms={STABLE_MSK_FDB_TRANSACTION_TIMEOUT_MS} key_id={key_id}"
+            ) from exc
+
+    def load(self) -> dict[str, Any]:
+        self._open()
+
+        @self._fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            _configure_fdb_transaction_safety(tr)
+            records: dict[str, dict[str, Any]] = {}
+            key_range = self._records_range()
+            for item in tr.get_range(key_range.start, key_range.stop):
+                payload = json.loads(bytes(item.value).decode("utf-8"))
+                if isinstance(payload, dict):
+                    key_id = str(payload.get("id") or "")
+                    if key_id:
+                        records[key_id] = payload
+            if records:
+                return _normalize_store({"version": STABLE_MSK_STORE_VERSION, "keys": records})
+
+            # Compatibility path only.  The hot request/validate methods use
+            # record/index methods above and never scan the old whole-document
+            # store.
+            return self._load_legacy_document_in_transaction(tr)
 
         try:
             return _tx(self._db)
@@ -270,21 +422,38 @@ class FoundationDbStableMultiSessionKeyStore:
 
     def save(self, data: dict[str, Any]) -> None:
         self._open()
-        key = self._key()
         clean = _normalize_store(data)
+        keys = clean.get("keys", {}) if isinstance(clean.get("keys"), dict) else {}
 
         @self._fdb.transactional
         def _tx(tr: Any) -> None:
             _configure_fdb_transaction_safety(tr)
-            tr[key] = _json_dumps(clean)
+            for key_id, value in keys.items():
+                if not isinstance(value, dict):
+                    continue
+                record = dict(value)
+                record["id"] = str(record.get("id") or key_id)
+                signed_hash = str(record.get("signed_request_hash") or "").strip()
+                tr[self._record_key(record["id"])] = _json_dumps(record)
+                if signed_hash:
+                    tr[self._hash_key(signed_hash)] = str(record["id"]).encode("utf-8")
+            tr[
+                self._fdb.tuple.pack((self.namespace, "stable-hub", "multisession_keys", "records_meta"))
+            ] = _json_dumps(
+                {
+                    "format": "record-indexed-json-v1",
+                    "updated_at": _utc_now(),
+                    "record_count_hint": len(keys),
+                }
+            )
 
         try:
             _tx(self._db)
         except Exception as exc:  # pragma: no cover - depends on live FDB timing/state
             raise RuntimeError(
-                "FoundationDB MSK store save failed or timed out. "
+                "FoundationDB MSK record-index save failed or timed out. "
                 f"cluster_file={self.cluster_file} namespace={self.namespace} "
-                f"timeout_ms={STABLE_MSK_FDB_TRANSACTION_TIMEOUT_MS}"
+                f"timeout_ms={STABLE_MSK_FDB_TRANSACTION_TIMEOUT_MS} records={len(keys)}"
             ) from exc
 
 
@@ -443,59 +612,110 @@ class StableHubMultiSessionKeyService:
         signed_request_hash = _canonical_hash(signed_request)
         now = _utc_now()
 
-        with self._lock:
-            data = self.store.load()
-            keys = data.setdefault("keys", {})
-            existing = self._key_for_signed_request_hash(data, signed_request_hash)
-            if existing:
-                key_payload = existing
-                idempotent = True
-            else:
-                # The user contributes signed entropy through user_slug; the Hub
-                # contributes independent entropy through hub_slug. The MSK id is
-                # the combination, so neither side is solely responsible for the
-                # bearer identifier entropy.
+        create_record = getattr(self.store, "create_key_record_if_absent", None)
+        if callable(create_record):
+            # FDB-backed stores use this bounded record/index path.  Issuing one
+            # MSK must not load or rewrite every historical MSK in the namespace.
+            with self._lock:
+                result: dict[str, Any] | None = None
                 for _ in range(8):
                     hub_slug = _new_hub_slug()
                     key_id = _multisession_key_id(user_slug=user_slug, hub_slug=hub_slug)
-                    if key_id not in keys:
-                        break
-                else:  # pragma: no cover - practically unreachable with 256-bit hub slug
-                    raise StableHubMultiSessionKeyError("could not allocate a unique multi-session key id.")
-
-                key_payload = {
-                    "id": key_id,
-                    "status": "active",
-                    "created_at": now,
-                    "revoked_at": "",
-                    "replaced_by": "",
-                    "wallet_address": wallet_address,
-                    "account_id": account_id,
-                    "chain_id": chain_id,
-                    "request_id": request_id,
-                    "user_slug": user_slug,
-                    "hub_slug": hub_slug,
-                    "origin": str(verification.get("origin") or ""),
-                    "cluster_id": self.cluster_id,
-                    "issued_by_hub_id": self.hub_id,
-                    "signed_request_hash": signed_request_hash,
-                    "signed_request": json.loads(json.dumps(signed_request)),
-                    "signed_message": json.loads(json.dumps(message)),
-                    "verified": {
+                    candidate = {
+                        "id": key_id,
+                        "status": "active",
+                        "created_at": now,
+                        "revoked_at": "",
+                        "replaced_by": "",
                         "wallet_address": wallet_address,
                         "account_id": account_id,
                         "chain_id": chain_id,
                         "request_id": request_id,
                         "user_slug": user_slug,
+                        "hub_slug": hub_slug,
                         "origin": str(verification.get("origin") or ""),
-                        "issued_at": verification.get("issued_at"),
-                        "expires_at": verification.get("expires_at"),
-                        "recovered_address": verification.get("recovered_address"),
-                    },
-                }
-                keys[key_id] = key_payload
-                self.store.save(data)
-                idempotent = False
+                        "cluster_id": self.cluster_id,
+                        "issued_by_hub_id": self.hub_id,
+                        "signed_request_hash": signed_request_hash,
+                        "signed_request": json.loads(json.dumps(signed_request)),
+                        "signed_message": json.loads(json.dumps(message)),
+                        "verified": {
+                            "wallet_address": wallet_address,
+                            "account_id": account_id,
+                            "chain_id": chain_id,
+                            "request_id": request_id,
+                            "user_slug": user_slug,
+                            "origin": str(verification.get("origin") or ""),
+                            "issued_at": verification.get("issued_at"),
+                            "expires_at": verification.get("expires_at"),
+                            "recovered_address": verification.get("recovered_address"),
+                        },
+                    }
+                    try:
+                        result = create_record(signed_request_hash=signed_request_hash, record=candidate)
+                    except StableHubMultiSessionKeyError as exc:
+                        if "collision" in str(exc).lower():
+                            continue
+                        raise
+                    break
+                if result is None:  # pragma: no cover - practically unreachable with 256-bit hub slug
+                    raise StableHubMultiSessionKeyError("could not allocate a unique multi-session key id.")
+                key_payload = dict(result.get("record") or {})
+                idempotent = bool(result.get("idempotent"))
+        else:
+            with self._lock:
+                data = self.store.load()
+                keys = data.setdefault("keys", {})
+                existing = self._key_for_signed_request_hash(data, signed_request_hash)
+                if existing:
+                    key_payload = existing
+                    idempotent = True
+                else:
+                    # The user contributes signed entropy through user_slug; the Hub
+                    # contributes independent entropy through hub_slug. The MSK id is
+                    # the combination, so neither side is solely responsible for the
+                    # bearer identifier entropy.
+                    for _ in range(8):
+                        hub_slug = _new_hub_slug()
+                        key_id = _multisession_key_id(user_slug=user_slug, hub_slug=hub_slug)
+                        if key_id not in keys:
+                            break
+                    else:  # pragma: no cover - practically unreachable with 256-bit hub slug
+                        raise StableHubMultiSessionKeyError("could not allocate a unique multi-session key id.")
+
+                    key_payload = {
+                        "id": key_id,
+                        "status": "active",
+                        "created_at": now,
+                        "revoked_at": "",
+                        "replaced_by": "",
+                        "wallet_address": wallet_address,
+                        "account_id": account_id,
+                        "chain_id": chain_id,
+                        "request_id": request_id,
+                        "user_slug": user_slug,
+                        "hub_slug": hub_slug,
+                        "origin": str(verification.get("origin") or ""),
+                        "cluster_id": self.cluster_id,
+                        "issued_by_hub_id": self.hub_id,
+                        "signed_request_hash": signed_request_hash,
+                        "signed_request": json.loads(json.dumps(signed_request)),
+                        "signed_message": json.loads(json.dumps(message)),
+                        "verified": {
+                            "wallet_address": wallet_address,
+                            "account_id": account_id,
+                            "chain_id": chain_id,
+                            "request_id": request_id,
+                            "user_slug": user_slug,
+                            "origin": str(verification.get("origin") or ""),
+                            "issued_at": verification.get("issued_at"),
+                            "expires_at": verification.get("expires_at"),
+                            "recovered_address": verification.get("recovered_address"),
+                        },
+                    }
+                    keys[key_id] = key_payload
+                    self.store.save(data)
+                    idempotent = False
 
         key_id = str(key_payload.get("id") or "")
         authorization = {
@@ -541,10 +761,16 @@ class StableHubMultiSessionKeyService:
                 expected_chain_id=expected_chain_id,
             )
 
-        with self._lock:
-            data = self.store.load()
-            record = data.get("keys", {}).get(key_id)
-            record = dict(record) if isinstance(record, dict) else None
+        get_record = getattr(self.store, "get_key_record", None)
+        if callable(get_record):
+            with self._lock:
+                record = get_record(key_id)
+                record = dict(record) if isinstance(record, dict) else None
+        else:
+            with self._lock:
+                data = self.store.load()
+                record = data.get("keys", {}).get(key_id)
+                record = dict(record) if isinstance(record, dict) else None
 
         if not record or record.get("status") != "active":
             return self._invalid(

@@ -252,6 +252,12 @@ class ViewportEnergyRouteTests(unittest.TestCase):
                 self.assertEqual(["mainnet", "testnet", "test", "dev"], [network["network"] for network in payload["networks"]])
                 mainnet = payload["networks"][0]
                 self.assertEqual("mainnet", mainnet["network"])
+                self.assertEqual("runtime/deployments/mainnet/latest.json", mainnet["deployment_manifest_path"])
+                self.assertNotIn(str(root), mainnet["deployment_manifest_path"])
+                self.assertEqual(
+                    str(root / "runtime" / "deployments" / "mainnet" / "latest.json"),
+                    mainnet["deployment_manifest_absolute_path"],
+                )
                 self.assertEqual("unsafe", mainnet["overall_status"])
                 self.assertTrue(mainnet["read_only"])
                 self.assertEqual("monitor-only", mainnet["mutation_policy"])
