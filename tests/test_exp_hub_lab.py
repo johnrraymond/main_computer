@@ -9,9 +9,13 @@ from tools.exp_hub_lab.run_lab import (
     _hub_identity_requires_multisession_auth,
     _hub_urls,
     _lab_multisession_authorization,
+    _dev_chain_captain_and_beta_second,
+    _dev_chain_payout_tx_hash,
+    _worker_earning_items,
     _render_check_text,
     _render_full_e2e_text,
     _render_verify_text,
+    _settlement_payout_units,
     check_cluster,
 )
 
@@ -252,6 +256,78 @@ def test_exp_hub_lab_extracts_live_session_earning_ids_for_full_e2e() -> None:
             ]
         }
     ) == ["earn_1", "earn_2"]
+
+
+def test_exp_hub_lab_reads_current_and_legacy_worker_earning_payload_keys() -> None:
+    assert _worker_earning_items(
+        {
+            "ok": True,
+            "worker_earnings": [
+                {"earning_id": "earn_current"},
+                "not-a-row",
+            ],
+        }
+    ) == [{"earning_id": "earn_current"}]
+    assert _worker_earning_items(
+        {
+            "ok": True,
+            "earnings": [
+                {"earning_id": "earn_legacy"},
+            ],
+        }
+    ) == [{"earning_id": "earn_legacy"}]
+    assert _worker_earning_items({"ok": True}) == []
+
+
+def test_exp_hub_full_e2e_uses_credit_units_not_credit_wei_for_chain_payout() -> None:
+    batch = {
+        "total_credits_published": 49_501_107,
+        "total_credit_wei_published": 49_501_107 * 10**18,
+    }
+
+    assert _settlement_payout_units(
+        batch,
+        credit_key="total_credits_published",
+        credit_wei_key="total_credit_wei_published",
+    ) == 49_501_107
+
+    assert _settlement_payout_units(
+        {"total_credit_wei_published": 49_501_107 * 10**18},
+        credit_key="total_credits_published",
+        credit_wei_key="total_credit_wei_published",
+    ) == 49_501_107
+
+
+
+
+def test_exp_hub_full_e2e_accepts_settlement_tx_hash_from_chain_helper() -> None:
+    tx_hash = "0x" + "4" * 64
+
+    assert _dev_chain_payout_tx_hash(
+        {"settlement_tx_hash": tx_hash},
+        normalize_tx_hash=lambda value: value,
+    ) == tx_hash
+    assert _dev_chain_payout_tx_hash(
+        {"transactions": {"execute": tx_hash}},
+        normalize_tx_hash=lambda value: value,
+    ) == tx_hash
+
+def test_exp_hub_full_e2e_defaults_to_beta_second_officer_for_chain_seconding() -> None:
+    offices = [
+        "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+        "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+        "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+    ]
+
+    captain, beta_second = _dev_chain_captain_and_beta_second(
+        offices,
+        normalize_address=lambda value: str(value).lower(),
+    )
+
+    assert captain == offices[0]
+    assert beta_second == offices[2]
+    assert beta_second != offices[1]
 
 
 def test_exp_hub_lab_full_e2e_renderer_reports_chain_and_payout_proofs() -> None:

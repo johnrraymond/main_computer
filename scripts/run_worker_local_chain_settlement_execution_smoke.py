@@ -20,6 +20,8 @@ DEFAULT_REPORT_PATH = Path("runtime/hub/worker_local_chain_settlement_execution_
 DEFAULT_RPC_URL = "http://127.0.0.1:18545"
 DEFAULT_CHAIN_ID = 31337
 EXECUTED_STATE = 4
+MIN_LOCAL_SENDER_GAS_BALANCE_WEI = 10**17
+TARGET_LOCAL_SENDER_GAS_BALANCE_WEI = 10_000 * 10**18
 
 SELECTORS = {
     "XLagBridgeReserve.nextProposalId()": "2ab09d14",
@@ -450,17 +452,116 @@ def get_balance(url: str, address: str, *, timeout: float) -> int:
     return int(str(rpc(url, "eth_getBalance", [normalize_address(address), "latest"], timeout=timeout)), 16)
 
 
+def set_local_dev_balance(url: str, address: str, balance_wei: int, *, timeout: float) -> dict[str, Any]:
+    """Set a local dev-chain account balance through common local-node RPCs.
+
+    This is intentionally scoped to the local settlement smoke path.  It repairs
+    exhausted deterministic dev accounts without resetting the already-running
+    chain or redeploying contracts.
+    """
+
+    clean_address = normalize_address(address)
+    target = hex_quantity(max(0, int(balance_wei)))
+    errors: dict[str, str] = {}
+    for method in ("anvil_setBalance", "hardhat_setBalance", "evm_setAccountBalance"):
+        try:
+            rpc(url, method, [clean_address, target], timeout=timeout)
+            return {
+                "ok": True,
+                "method": method,
+                "address": clean_address,
+                "target_balance_wei": int(balance_wei),
+            }
+        except Exception as exc:
+            errors[method] = str(exc)
+    return {
+        "ok": False,
+        "address": clean_address,
+        "target_balance_wei": int(balance_wei),
+        "errors": errors,
+    }
+
+
+def ensure_local_sender_gas_balance(
+    url: str,
+    address: str,
+    *,
+    timeout: float,
+    minimum_balance_wei: int = MIN_LOCAL_SENDER_GAS_BALANCE_WEI,
+    target_balance_wei: int = TARGET_LOCAL_SENDER_GAS_BALANCE_WEI,
+) -> dict[str, Any]:
+    clean_address = normalize_address(address)
+    before = get_balance(url, clean_address, timeout=timeout)
+    minimum = max(0, int(minimum_balance_wei))
+    target = max(minimum, int(target_balance_wei))
+    if before >= target:
+        return {
+            "ok": True,
+            "address": clean_address,
+            "refilled": False,
+            "balance_before_wei": before,
+            "balance_after_wei": before,
+            "minimum_balance_wei": minimum,
+            "target_balance_wei": target,
+        }
+
+    refill = set_local_dev_balance(url, clean_address, target, timeout=timeout)
+    after = get_balance(url, clean_address, timeout=timeout)
+    if after < target:
+        details = refill.get("errors") if isinstance(refill, dict) else {}
+        raise RuntimeError(
+            "Local dev-chain sender has insufficient gas balance and could not be refilled "
+            f"through local-node balance RPCs: address={clean_address}, balance={before}, "
+            f"minimum={minimum}, after_refill={after}, errors={details}. "
+            "Reset/redeploy the local dev chain with `python tools/dev-chain-reset.py --yes`, "
+            "then restart the smoke exp Hub cluster."
+        )
+
+    return {
+        "ok": True,
+        "address": clean_address,
+        "refilled": True,
+        "balance_before_wei": before,
+        "balance_after_wei": after,
+        "minimum_balance_wei": minimum,
+        "target_balance_wei": target,
+        "refill": refill,
+    }
+
+
 def get_code(url: str, address: str, *, timeout: float) -> str:
     return str(rpc(url, "eth_getCode", [normalize_address(address), "latest"], timeout=timeout))
 
 
 def send_transaction(url: str, tx: dict[str, Any], *, timeout: float) -> str:
     payload = dict(tx)
+    sender = ""
+    value = 0
     if "from" in payload:
-        payload["from"] = normalize_address(str(payload["from"]))
+        sender = normalize_address(str(payload["from"]))
+        payload["from"] = sender
     if "to" in payload and payload["to"]:
         payload["to"] = normalize_address(str(payload["to"]))
-    return normalize_tx_hash(str(rpc(url, "eth_sendTransaction", [payload], timeout=timeout)))
+    if payload.get("value") is not None:
+        try:
+            value = int(str(payload.get("value")), 16)
+        except (TypeError, ValueError):
+            value = 0
+    try:
+        return normalize_tx_hash(str(rpc(url, "eth_sendTransaction", [payload], timeout=timeout)))
+    except RuntimeError as exc:
+        if sender and "insufficient funds" in str(exc).lower():
+            try:
+                balance = get_balance(url, sender, timeout=timeout)
+            except Exception as balance_exc:  # pragma: no cover - diagnostic fallback
+                balance = f"unavailable: {balance_exc}"
+            raise RuntimeError(
+                "eth_sendTransaction failed with insufficient funds after local sender gas preflight: "
+                f"from={sender}, value_wei={value}, balance_wei={balance}, tx={payload}. "
+                "For a local dev chain, rerun `python tools/dev-chain-reset.py --yes`, "
+                "then restart the smoke exp Hub cluster."
+            ) from exc
+        raise
 
 
 def wait_receipt(url: str, tx_hash: str, *, timeout: float, poll_s: float) -> dict[str, Any]:
@@ -474,6 +575,7 @@ def wait_receipt(url: str, tx_hash: str, *, timeout: float, poll_s: float) -> di
             status = int(str(receipt.get("status", "0x0")), 16)
             if status != 1:
                 raise RuntimeError(f"transaction failed: {clean_hash}: {receipt}")
+            receipt.setdefault("transactionHash", clean_hash)
             return receipt
         time.sleep(poll_s)
     raise TimeoutError(f"timed out waiting for transaction receipt: {clean_hash}")
@@ -566,6 +668,14 @@ def execute_local_chain_payout(
     recipient = normalize_address(recipient_address)
     payout_units = int(payout_units)
     fund_units = int(fund_units)
+
+    sender_gas_topups: list[dict[str, Any]] = []
+    seen_senders: set[str] = set()
+    for sender in (captain, beta_second):
+        if sender in seen_senders:
+            continue
+        seen_senders.add(sender)
+        sender_gas_topups.append(ensure_local_sender_gas_balance(rpc_url, sender, timeout=timeout))
 
     next_id_before = call_uint(rpc_url, contract, "XLagBridgeReserve.nextProposalId()", timeout=timeout)
     payout_delay = call_uint(rpc_url, contract, "XLagBridgeReserve.payoutDelayBlocks()", timeout=timeout)
@@ -668,6 +778,7 @@ def execute_local_chain_payout(
         "recipient_balance_before_units": recipient_before,
         "recipient_balance_after_units": recipient_after,
         "recipient_delta_units": recipient_delta,
+        "sender_gas_topups": sender_gas_topups,
         "transactions": {
             "fund": fund_tx_hash,
             "propose": propose_tx_hash,
@@ -681,7 +792,9 @@ def execute_local_chain_payout(
             "execute": execute_receipt,
         },
         "payout_executed_event": event,
+        "execute_tx_hash": execute_tx_hash,
         "settlement_tx_hash": execute_tx_hash,
+        "tx_hash": execute_tx_hash,
         "block_number": event["block_number"],
         "log_index": event["log_index"],
     }

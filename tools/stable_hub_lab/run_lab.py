@@ -26,7 +26,7 @@ from main_computer.stable_hub_topology import (
 )
 
 
-DEFAULT_TOPOLOGY = Path("deploy/stable-hub-lab/dev-topology.json")
+DEFAULT_TOPOLOGY = Path("deploy/stable-hub-lab/smoke-topology.json")
 DEFAULT_MSK_ORIGIN = "stable-hub-lab-msk-smoke"
 DEFAULT_MSK_SMOKE_WALLET = Path(".main-computer/stable-hub-lab/msk-smoke-wallet.json")
 DEFAULT_REQUESTER_WALLET = Path(".main-computer/stable-hub-lab/requester-wallet.json")

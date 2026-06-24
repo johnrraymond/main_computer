@@ -165,6 +165,19 @@ def test_v2_local_platform_publish_failure_warns_and_allows_supervisor_start() -
     assert 'throw ("Local platform startup failed: {0}" -f $localPlatformStart.state)' not in helper
     assert '$process = Start-Process `' in helper
 
+
+def test_start_path_dev_hub_failure_warns_and_allows_startup_to_continue() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert "function Write-MainComputerDevHubWarning" in helper
+    assert 'Write-Warning ("Dev Hub startup failed ({0}). Continuing Main Computer startup; Hub-dependent features may be unavailable."' in helper
+    assert 'try {\n    $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand' in helper
+    assert 'message = "Start-MainComputerDevHubFresh returned no status."' in helper
+    assert 'if (-not $devHubStart.ok) {\n    Write-MainComputerDevHubWarning $devHubStart\n  }' in helper
+    assert 'throw ("Dev Hub startup failed: {0}" -f $message)' not in helper
+    assert 'throw "Dev Hub startup returned no status."' not in helper
+    assert "New-StartSession $RootPath $launchContext $process.Id" in helper
+
 def test_start_path_defers_dev_chain_reset_to_blockchain_service() -> None:
     helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 
@@ -214,6 +227,12 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert '"MAIN_COMPUTER_HUB_NETWORK" "dev"' in helper
     assert '"MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK", "1", "Process"' in helper
     assert '"/api/hub/status"' in helper
+    assert 'MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb"' in helper
+    assert '"exp-fdb-hub.py"' in helper
+    assert '"--network-key", [string]$endpoint.network' in helper
+    assert '"--topology", [string]$topologyPath' in helper
+    assert '"--hub-id", [string]$hubId' in helper
+    assert '"--require-multisession-auth"' in helper
     assert '"-m", "main_computer.cli"' in helper
     assert '"hub",' in helper
     assert '"--network", [string]$endpoint.network' in helper
@@ -224,23 +243,51 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert '"--contracts-path", [string]$contractsPath' in helper
     assert '"--allow-missing-bridge-signer"' in helper
     assert 'MAIN_COMPUTER_HUB_BRIDGE_BACKEND" "dev-chain"' in helper
-    assert 'MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", "0", "Process"' in helper
-    assert 'MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", "1", "Process"' in helper
+    assert 'MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE" "1"' in helper
+    assert 'MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER" "0"' in helper
     assert 'runtime\\deployments\\' in helper
     assert 'main_computer\\config\\' in helper
     assert 'MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH' in helper
     assert 'MAIN_COMPUTER_HUB_CONTRACTS_PATH' in helper
+    assert 'MAIN_COMPUTER_HUB_TOPOLOGY' in helper
+    assert 'deploy\\stable-hub-lab\\dev-topology.json' in helper
     assert '"-noverbose"' in helper
     assert 'Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII' in helper
 
     assert "Resetting dev Hub on start path" in helper
     assert "Stop-MainComputerDevHubForRestart $RootPath $LaunchContext" in helper
     assert "Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand" in helper
-    assert 'throw ("Dev Hub startup failed: {0}" -f $message)' in helper
+    assert 'Write-MainComputerDevHubWarning $devHubStart' in helper
     assert 'Get-DevHubPidPath $RootPath' in helper
     assert '".main_computer_dev_hub.pid"' in helper
     assert '"MAIN_COMPUTER_HUB_PORT" "8770"' in helper
     assert 'listener on dev Hub port' in helper
     assert 'Dev Hub PID:' in helper
     assert 'dev-hub' in helper
+
+
+def test_exp_fdb_dev_hub_waits_for_executor_prepared_fdb_before_starting() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    start_function = helper[
+        helper.index("function Start-MainComputer("):
+        helper.index('function Stop-MainComputer(', helper.index("function Start-MainComputer("))
+        if 'function Stop-MainComputer(' in helper[helper.index("function Start-MainComputer("):]
+        else len(helper)
+    ]
+
+    assert start_function.index("Start-MainComputerGiteaIfMissing") < start_function.index("Start-MainComputerDevHubFresh")
+    assert start_function.index("Start-MainComputerLocalPlatform") < start_function.index("Start-MainComputerDevHubFresh")
+    assert start_function.index('"main_computer.app_control"') < start_function.index("Start-MainComputerDevHubFresh")
+
+    assert "function Test-MainComputerExpFdbHubPrerequisites" in helper
+    assert "function Test-MainComputerFdbClusterReady" in helper
+    assert "function Wait-MainComputerFdbClusterReady" in helper
+    assert "Wait-MainComputerFdbClusterReady $ClusterFile $TimeoutSeconds" in helper
+    assert "function Wait-MainComputerDevChainRpc" in helper
+    assert '"--no-fdb-autostart"' in helper
+    assert '"--cluster-file", [string]$clusterFile' in helper
+    assert "resident executor service should start or reuse the default Docker/FDB container after Docker is ready" in helper
+    assert "FoundationDB is not ready; waiting for the resident executor service to bootstrap Docker/FDB after Docker becomes ready." in helper
+    assert "The dev-chain RPC is not healthy yet; the exp/FDB Hub starts only after its chain dependency is ready." in helper
 

@@ -45,6 +45,7 @@ from main_computer.hub_plex_models import HubAIRequest
 from main_computer.stable_hub_topology import (
     StableHubNode,
     StableHubTopology,
+    load_stable_hub_topology,
     stable_hub_node_to_dict,
     stable_hub_topology_to_dict,
 )
@@ -189,6 +190,69 @@ def _deployment_manifest_is_smoke_bridge(path: Path | None) -> bool:
     return isinstance(payload.get("smoke_client"), dict)
 
 
+def _exp_fdb_topology_path_from_args(args: argparse.Namespace) -> Path | None:
+    raw = getattr(args, "topology", None)
+    if raw is None or str(raw).strip() == "":
+        return None
+    return Path(raw)
+
+
+def _exp_fdb_hub_id_for_topology(
+    args: argparse.Namespace,
+    topology: StableHubTopology,
+    *,
+    port: int,
+) -> str:
+    explicit = str(getattr(args, "hub_id", "") or "").strip()
+    if explicit:
+        topology.hub_by_id(explicit)
+        return explicit
+    current_port = int(port)
+    for hub in topology.hubs:
+        try:
+            parsed = urlparse(hub.hub_url)
+            if int(parsed.port or 0) == current_port:
+                return hub.hub_id
+        except (TypeError, ValueError):
+            continue
+    return topology.hubs[0].hub_id
+
+
+def _exp_fdb_topology_with_current_hub_url(
+    args: argparse.Namespace,
+    topology: StableHubTopology,
+    *,
+    hub_id: str,
+    port: int,
+) -> StableHubTopology:
+    """Return a topology whose selected Hub advertises the actual bind URL.
+
+    This lets the start.bat path run a single exp/FDB Hub against the dev
+    topology contract even when MAIN_COMPUTER_HUB_PORT overrides the concrete
+    port from the checked-in topology file.
+    """
+
+    current_url = _exp_fdb_url_for_port(args, int(port))
+    old_url = ""
+    hubs: list[StableHubNode] = []
+    for hub in topology.hubs:
+        if hub.hub_id == hub_id:
+            old_url = hub.hub_url
+            hubs.append(
+                StableHubNode(
+                    hub_id=hub.hub_id,
+                    hub_url=current_url,
+                    public_url=current_url,
+                    roles=hub.roles,
+                )
+            )
+        else:
+            hubs.append(hub)
+
+    entry_urls = tuple(current_url if url == old_url else url for url in topology.entry_urls)
+    return replace(topology, entry_urls=entry_urls, hubs=tuple(hubs))
+
+
 def build_experimental_stable_topology(
     args: argparse.Namespace,
     *,
@@ -203,6 +267,12 @@ def build_experimental_stable_topology(
     exp Hubs from every server, which is required for owner-Hub forwarding and
     the dev-topology stress lab.
     """
+
+    topology_path = _exp_fdb_topology_path_from_args(args)
+    if topology_path is not None:
+        topology = load_stable_hub_topology(topology_path)
+        hub_id = _exp_fdb_hub_id_for_topology(args, topology, port=int(port))
+        return _exp_fdb_topology_with_current_hub_url(args, topology, hub_id=hub_id, port=int(port))
 
     ports = _exp_fdb_topology_ports_from_args(args, current_port=int(port))
     hubs = tuple(
@@ -1735,7 +1805,7 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
         config,
         fdb_config=fdb_config,
         stable_topology=stable_topology,
-        stable_hub_id=_exp_fdb_stable_hub_id(int(port)),
+        stable_hub_id=_exp_fdb_hub_id_for_topology(args, stable_topology, port=int(port)),
         verbose=not args.noverbose,
     )
     fdb_health = server.credit_ledger.health_check()
@@ -2293,6 +2363,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-ports", "--ports", default=None, help="Comma-separated experimental hub ports to bind, for example 8870,8871,8872. Defaults to 8870.")
     parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--hub-url", help="Public URL advertised for this experimental hub. Defaults per port when omitted.")
+    parser.add_argument("--topology", type=Path, default=None, help="Optional stable-Hub-compatible topology JSON to advertise.")
+    parser.add_argument("--hub-id", default="", help="Concrete Hub id from --topology for this process/port. Defaults to the topology Hub whose URL port matches --port.")
     parser.add_argument("--network-key", default="", help="Hub network key advertised by /api/hub/status. Defaults to dev for dev-chain and exp-fdb for mock-chain.")
     parser.add_argument("--network-display-name", default="Experimental FDB Hub", help="Hub network display name advertised by /api/hub/status.")
     parser.add_argument("--network-kind", default="experimental", help="Hub network kind advertised by /api/hub/status.")

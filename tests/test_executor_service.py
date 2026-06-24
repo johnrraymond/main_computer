@@ -37,6 +37,11 @@ class FakeRunner:
             return subprocess.CompletedProcess(command, 0, stdout="Docker Compose version ok\n", stderr="")
         if command[:2] and command[0].endswith("docker") and command[1] == "ps":
             return subprocess.CompletedProcess(command, 0, stdout="main-computer-dev-hub-1\n", stderr="")
+        if len(command) >= 2 and command[1].endswith("smoke_foundationdb_credit_ledger_primitives.py"):
+            cluster_file = Path(command[command.index("--cluster-file") + 1])
+            cluster_file.parent.mkdir(parents=True, exist_ok=True)
+            cluster_file.write_text("docker:docker@127.0.0.1:4550\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="FoundationDB smoke bootstrap ok\n", stderr="")
         if "compose" in command and "build" in command and "executor-image" in command:
             return subprocess.CompletedProcess(command, 0, stdout="built executor image\n", stderr="")
         if command[:3] and command[0].endswith("docker") and command[1:3] == ["image", "inspect"]:
@@ -60,6 +65,9 @@ def make_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
         "    profiles: [\"executor\"]\n",
         encoding="utf-8",
     )
+    smoke = repo / "scripts" / "smoke_foundationdb_credit_ledger_primitives.py"
+    smoke.parent.mkdir(parents=True, exist_ok=True)
+    smoke.write_text("# fake FoundationDB smoke bootstrap\n", encoding="utf-8")
     fake_wsl = tmp_path / "wsl.exe"
     fake_wsl.write_text("", encoding="utf-8")
     fake_wsl.chmod(0o755)
@@ -133,6 +141,8 @@ def test_boot_repairs_wsl_shim_to_repo_entrypoint_and_builds_executor_image(tmp_
     assert state["state"] == "ready"
     assert state["wsl"]["entrypoint_contract_ok"] is True
     assert state["docker"]["engine_available"] is True
+    assert state["foundationdb"]["state"] == "ready"
+    assert state["foundationdb"]["bootstrapped"] is True
     assert state["compose"]["built"] is True
     assert state["compose"]["started"] is False
     assert state["compose"]["image"] == "main-computer-executor:latest"
@@ -144,6 +154,11 @@ def test_boot_repairs_wsl_shim_to_repo_entrypoint_and_builds_executor_image(tmp_
     assert "exec /bin/bash" in shim_script
     assert "docker/executor/main-computer-exec" in shim_script
     assert "$@" in shim_script
+
+    fdb_bootstrap_calls = [call for call in runner.calls if len(call) >= 2 and call[1].endswith("smoke_foundationdb_credit_ledger_primitives.py")]
+    assert len(fdb_bootstrap_calls) == 1
+    assert "--keep-container" in fdb_bootstrap_calls[0]
+    assert "--reuse-container" in fdb_bootstrap_calls[0]
 
     compose_build_calls = [call for call in runner.calls if call[:1] == [str(fake_docker)] and "compose" in call and "build" in call]
     assert len(compose_build_calls) == 1
@@ -488,10 +503,12 @@ def test_watch_boot_writes_starting_heartbeat_before_full_reconcile(tmp_path: Pa
         assert starting["service"]["heartbeat_at"]
         assert starting["components"]["wsl"]["state"] == "pending"
         assert starting["components"]["docker"]["state"] == "pending"
+        assert starting["components"]["foundationdb"]["state"] == "pending"
         assert starting["components"]["compose"]["state"] == "pending"
         assert "unknown" not in {
             starting["components"]["wsl"]["state"],
             starting["components"]["docker"]["state"],
+            starting["components"]["foundationdb"]["state"],
             starting["components"]["compose"]["state"],
         }
         assert starting["service"]["pid_claim"]["written"] is True

@@ -23,11 +23,13 @@ from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.multisession_key_signing import build_personal_sign_blob, private_key_to_address
 
 
+DEFAULT_TOPOLOGY = Path("deploy/stable-hub-lab/smoke-topology.json")
 DEFAULT_HUB_URLS = "http://127.0.0.1:8870,http://127.0.0.1:8871,http://127.0.0.1:8872"
 DEFAULT_REQUESTER_ACCOUNT = "exp-handoff-lab-requester"
 DEFAULT_DEV_CHAIN_STATE_FILE = Path("runtime/deployments/dev/latest.json")
 DEFAULT_REPORT_PATH = Path("runtime/exp-hub-lab/full_e2e_report.json")
 DEFAULT_DEV_CHAIN_ID_HEX = "0x28757b2"
+DEFAULT_SMOKE_NAMESPACE = "exp-handoff-smoke-lab"
 CREDIT_WEI_PER_CREDIT = 10**18
 
 
@@ -40,9 +42,18 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Validate and stress the experimental FDB Hub owner-handoff topology.",
     )
     parser.add_argument(
+        "--topology",
+        type=Path,
+        default=DEFAULT_TOPOLOGY,
+        help=(
+            "Stable-Hub-compatible topology document used to derive default exp Hub URLs. "
+            "Defaults to deploy/stable-hub-lab/smoke-topology.json so labs do not claim the normal dev topology."
+        ),
+    )
+    parser.add_argument(
         "--hub-urls",
-        default=DEFAULT_HUB_URLS,
-        help="Comma-separated exp Hub base URLs. Defaults to the three-port dev topology.",
+        default="",
+        help="Comma-separated exp Hub base URLs. When omitted, URLs are loaded from --topology.",
     )
     parser.add_argument("--check-cluster", action="store_true", help="Check that every exp Hub is answering and advertises peers.")
     parser.add_argument(
@@ -51,12 +62,6 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="verify_handoff",
         action="store_true",
         help="Run live-session owner-Hub handoff traffic through the exp Hub topology.",
-    )
-    parser.add_argument(
-        "--stress-requests",
-        type=int,
-        default=3,
-        help="Number of sequential handoff work requests for --verify-handoff/--verify-full-e2e. Defaults to one per Hub URL.",
     )
     parser.add_argument(
         "--verify-full-e2e",
@@ -81,16 +86,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Compatibility escape hatch: allow --verify-full-e2e against Hubs that do not require multi-session auth.",
     )
     parser.add_argument(
+        "--stress-requests",
+        type=int,
+        default=3,
+        help="Number of sequential handoff work requests for --verify-handoff/--verify-full-e2e.",
+    )
+    parser.add_argument(
         "--worker-credits",
         type=int,
         default=5_500_123,
-        help="Per-request live worker price for --verify-full-e2e, in Hub credit units. Defaults to a high-precision amount.",
+        help="Per-request live worker price for --verify-full-e2e, in Hub credit units.",
     )
     parser.add_argument(
         "--precision-places",
         type=int,
         default=3,
-        help="Public worker settlement precision for full E2E settlement. Defaults to 3 decimal places.",
+        help="Public worker settlement precision for full E2E settlement.",
     )
     parser.add_argument("--dev-chain-state", type=Path, default=DEFAULT_DEV_CHAIN_STATE_FILE, help="Deployment state for dev-chain settlement.")
     parser.add_argument("--rpc-url", default=None, help="Dev-chain RPC URL. Defaults to deployment state or the local dev-chain default.")
@@ -120,94 +131,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _new_dev_wallet_private_key() -> tuple[str, str]:
-    """Return an ephemeral dev/test secp256k1 private key and wallet address.
-
-    The key is process-local lab material.  It is never written to the report and
-    should not be reused outside the current local E2E run.
-    """
-
-    while True:
-        private_key = "0x" + secrets.token_hex(32)
-        try:
-            wallet_address = private_key_to_address(private_key)
-        except ValueError:
-            continue
-        return private_key, wallet_address
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
-def _issue_lab_multisession_key(
-    *,
-    hub_url: str,
-    private_key: str,
-    scope: str,
-    actor: str,
-    timeout: float,
-) -> dict[str, Any]:
-    wallet_address = private_key_to_address(private_key)
-    issued_at = datetime.now(timezone.utc)
-    message = {
-        "purpose": "request_multi_session_key",
-        "wallet_address": wallet_address,
-        "chain_id": DEFAULT_DEV_CHAIN_ID_HEX,
-        "request_id": f"{scope}-{actor}-{secrets.token_urlsafe(8).rstrip('=')}",
-        "issued_at": issued_at.isoformat(),
-        "expires_at": (issued_at + timedelta(minutes=15)).isoformat(),
-        "origin": "tools.exp_hub_lab",
-    }
-    response = _post_json_url(
-        f"{hub_url}/api/hub/v1/credits/multisession-keys/request",
-        {"signed_request": build_personal_sign_blob(message=message, private_key=private_key, chain_id=DEFAULT_DEV_CHAIN_ID_HEX)},
-        timeout=timeout,
-    )
-    _require_ok(response, label=f"{actor} multi-session key request")
-    key = response.get("key") if isinstance(response.get("key"), dict) else {}
-    key_id = str(key.get("id") or "")
-    if not key_id:
-        raise ExpHubLabError(f"{actor} multi-session key request did not return a key id: {response}")
-    return {
-        "ok": True,
-        "actor": actor,
-        "wallet_address": wallet_address,
-        "account_id": wallet_account_id(wallet_address),
-        "key_id": key_id,
-        "key": key,
-        "response": response,
-    }
-
-
-def _lab_multisession_authorization(key_info: dict[str, Any], *, max_authorized_credits: int) -> dict[str, Any]:
-    key = key_info.get("key") if isinstance(key_info.get("key"), dict) else {}
-    wallet_address = str(key_info.get("wallet_address") or key.get("wallet_address") or "")
-    key_id = str(key_info.get("key_id") or key.get("id") or "")
-    chain_id = str(key.get("chain_id") or DEFAULT_DEV_CHAIN_ID_HEX)
-    max_credits = max(1, int(max_authorized_credits or 1))
-    return {
-        "kind": "multisession_key",
-        "wallet_address": wallet_address,
-        "multisession_key_id": key_id,
-        "key_id": key_id,
-        "chain_id": chain_id,
-        "max_authorized_credits": max_credits,
-        "max_authorized_credit_wei": str(max_credits * CREDIT_WEI_PER_CREDIT),
-    }
-
-
-def _hub_identity_requires_multisession_auth(identity: dict[str, Any]) -> bool:
-    auth = identity.get("auth") if isinstance(identity.get("auth"), dict) else {}
-    return bool(
-        identity.get("multi_session_auth_required")
-        or identity.get("multisession_auth_required")
-        or auth.get("multi_session_auth_required")
-        or auth.get("multisession_auth_required")
-        or auth.get("required")
-    )
-
+def _clean_scope(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(value or ""))
+    return cleaned.strip("_") or "exp_full_e2e"
 
 
 def _hub_urls(value: str | Sequence[str]) -> list[str]:
@@ -222,6 +152,95 @@ def _hub_urls(value: str | Sequence[str]) -> list[str]:
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ExpHubLabError(f"invalid Hub URL: {url!r}")
     return urls
+
+
+def _hub_urls_from_topology(topology_path: str | Path) -> list[str]:
+    path = Path(topology_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ExpHubLabError(f"topology file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ExpHubLabError(f"topology file is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ExpHubLabError(f"topology file root must be an object: {path}")
+    entry_urls = payload.get("entry_urls")
+    if not isinstance(entry_urls, Sequence) or isinstance(entry_urls, (str, bytes, bytearray)):
+        raise ExpHubLabError(f"topology file does not contain entry_urls: {path}")
+    return _hub_urls([str(item) for item in entry_urls])
+
+
+def _resolve_hub_urls(hub_urls: str | Sequence[str] | None, topology_path: str | Path) -> list[str]:
+    if isinstance(hub_urls, str):
+        if hub_urls.strip():
+            return _hub_urls(hub_urls)
+    elif hub_urls:
+        return _hub_urls(hub_urls)
+    return _hub_urls_from_topology(topology_path)
+
+
+def _ports_from_hub_urls(urls: Sequence[str]) -> str:
+    ports: list[str] = []
+    for url in urls:
+        parsed = urlparse(url)
+        if parsed.port is None:
+            raise ExpHubLabError(f"Hub URL must include a port for setup command generation: {url}")
+        ports.append(str(parsed.port))
+    return ",".join(ports)
+
+
+def _smoke_cluster_setup_command(*, hub_urls: Sequence[str], topology_path: str | Path, namespace: str = DEFAULT_SMOKE_NAMESPACE) -> str:
+    ports = _ports_from_hub_urls(hub_urls)
+    topology = str(topology_path).replace("/", "\\")
+    return "\n".join(
+        [
+            "python exp-fdb-hub.py `",
+            f"  --namespace {namespace} `",
+            "  --bridge-backend dev-chain `",
+            "  --enable-smoke-bridge `",
+            "  --require-multisession-auth `",
+            f"  --topology {topology} `",
+            f"  -ports {ports}",
+        ]
+    )
+
+
+def _paired_lab_commands(*, hub_urls: Sequence[str], topology_path: str | Path) -> dict[str, str]:
+    return {
+        "setup": _smoke_cluster_setup_command(hub_urls=hub_urls, topology_path=topology_path),
+        "verify": "\n".join(
+            [
+                "python -m tools.exp_hub_lab.run_lab `",
+                "  --verify-full-e2e `",
+                "  --stress-requests 9 `",
+                "  --timeout 30",
+            ]
+        ),
+    }
+
+
+def _is_connection_refused_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    if "10061" in text or "actively refused" in text or "connection refused" in text:
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, BaseException):
+        return _is_connection_refused_error(reason)
+    return False
+
+
+def _startup_hint_error(*, exc: BaseException, hub_urls: Sequence[str], topology_path: str | Path) -> dict[str, Any]:
+    pair = _paired_lab_commands(hub_urls=hub_urls, topology_path=topology_path)
+    return {
+        "error": str(exc),
+        "startup_hint": (
+            "The smoke exp Hub cluster is not running on the lab URLs. "
+            "Run the setup command in one terminal, leave it running, then run the verify command in another terminal."
+        ),
+        "setup_command": pair["setup"],
+        "verify_command": pair["verify"],
+        "pair_command_required": True,
+    }
 
 
 def _read_json_url_status(url: str, *, timeout: float) -> tuple[int, dict[str, Any]]:
@@ -240,17 +259,18 @@ def _read_json_url_status(url: str, *, timeout: float) -> tuple[int, dict[str, A
 
 
 def _read_json_url(url: str, *, timeout: float) -> dict[str, Any]:
-    status, payload = _read_json_url_status(url, timeout=timeout)
+    status, body = _read_json_url_status(url, timeout=timeout)
     if not 200 <= status < 300:
-        raise ExpHubLabError(f"GET {url} failed with HTTP {status}: {payload}")
-    return payload
+        raise ExpHubLabError(f"GET {url} failed with HTTP {status}: {body}")
+    return body
 
 
 def _post_json_url_status(url: str, payload: dict[str, Any], *, timeout: float) -> tuple[int, dict[str, Any]]:
+    data = json.dumps(payload, sort_keys=True).encode("utf-8")
     request = Request(
         url,
-        data=json.dumps(payload, sort_keys=True).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        data=data,
+        headers={"Content-Type": "application/json", "User-Agent": "tools.exp_hub_lab/1"},
         method="POST",
     )
     try:
@@ -272,60 +292,6 @@ def _post_json_url(url: str, payload: dict[str, Any], *, timeout: float) -> dict
     if not 200 <= status < 300:
         raise ExpHubLabError(f"POST {url} failed with HTTP {status}: {body}")
     return body
-
-
-def _repo_root() -> Path:
-    current = Path(__file__).resolve()
-    for candidate in (current.parent, *current.parents):
-        if (candidate / "exp-fdb-hub.py").exists() or (candidate / "main_computer").is_dir():
-            return candidate
-    return current.parents[2]
-
-
-def _load_chain_settlement_helpers() -> Any:
-    """Load the existing local-chain settlement smoke helpers without making scripts/ a package."""
-
-    path = _repo_root() / "scripts" / "run_worker_local_chain_settlement_execution_smoke.py"
-    if not path.exists():
-        raise ExpHubLabError(f"missing local-chain settlement helper script: {path}")
-    spec = importlib.util.spec_from_file_location("_exp_hub_lab_chain_settlement_smoke", path)
-    if spec is None or spec.loader is None:
-        raise ExpHubLabError(f"could not load local-chain settlement helper script: {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _positive_int(value: Any, *, default: int = 0) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = int(default)
-    return max(0, parsed)
-
-
-def _clean_scope(value: str) -> str:
-    text = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in str(value or "").strip().lower()).strip("-")
-    return text or f"exp-full-e2e-{int(time.time())}"
-
-
-def _extract_worker_earning_ids(handoff: dict[str, Any]) -> list[str]:
-    ids: list[str] = []
-    for item in handoff.get("requests") or []:
-        if not isinstance(item, dict):
-            continue
-        payout = item.get("terminal_ack", {}).get("payout", {}) if isinstance(item.get("terminal_ack"), dict) else {}
-        if isinstance(payout, dict):
-            earning_id = str(payout.get("worker_earning_id") or "").strip()
-            if earning_id and earning_id not in ids:
-                ids.append(earning_id)
-    return ids
-
-
-def _require_ok(payload: dict[str, Any], *, label: str) -> dict[str, Any]:
-    if payload.get("ok") is not True:
-        raise ExpHubLabError(f"{label} failed: {payload}")
-    return payload
 
 
 def _recv_until_headers(sock: socket.socket) -> bytes:
@@ -414,6 +380,90 @@ def _ws_recv_json(sock: socket.socket) -> dict[str, Any]:
         return decoded
 
 
+def _require_ok(payload: dict[str, Any], *, label: str) -> dict[str, Any]:
+    if payload.get("ok") is not True:
+        raise ExpHubLabError(f"{label} failed: {payload}")
+    return payload
+
+
+def _new_dev_wallet_private_key() -> tuple[str, str]:
+    while True:
+        private_key = "0x" + secrets.token_hex(32)
+        try:
+            wallet_address = private_key_to_address(private_key)
+        except ValueError:
+            continue
+        return private_key, wallet_address
+
+
+def _issue_lab_multisession_key(
+    *,
+    hub_url: str,
+    private_key: str,
+    scope: str,
+    actor: str,
+    timeout: float,
+) -> dict[str, Any]:
+    wallet_address = private_key_to_address(private_key)
+    issued_at = datetime.now(timezone.utc)
+    message = {
+        "purpose": "request_multi_session_key",
+        "wallet_address": wallet_address,
+        "chain_id": DEFAULT_DEV_CHAIN_ID_HEX,
+        "request_id": f"{scope}-{actor}-{secrets.token_urlsafe(8).rstrip('=')}",
+        "issued_at": issued_at.isoformat(),
+        "expires_at": (issued_at + timedelta(minutes=15)).isoformat(),
+        "origin": "tools.exp_hub_lab",
+    }
+    response = _post_json_url(
+        f"{hub_url}/api/hub/v1/credits/multisession-keys/request",
+        {"signed_request": build_personal_sign_blob(message=message, private_key=private_key, chain_id=DEFAULT_DEV_CHAIN_ID_HEX)},
+        timeout=timeout,
+    )
+    _require_ok(response, label=f"{actor} multi-session key request")
+    key = response.get("key") if isinstance(response.get("key"), dict) else {}
+    key_id = str(key.get("id") or "")
+    if not key_id:
+        raise ExpHubLabError(f"{actor} multi-session key request did not return a key id: {response}")
+    return {
+        "ok": True,
+        "actor": actor,
+        "wallet_address": wallet_address,
+        "account_id": wallet_account_id(wallet_address),
+        "key_id": key_id,
+        "key": key,
+        "response": response,
+    }
+
+
+def _lab_multisession_authorization(key_info: dict[str, Any], *, max_authorized_credits: int) -> dict[str, Any]:
+    key = key_info.get("key") if isinstance(key_info.get("key"), dict) else {}
+    wallet_address = str(key_info.get("wallet_address") or key.get("wallet_address") or "")
+    key_id = str(key_info.get("key_id") or key.get("id") or "")
+    chain_id = str(key.get("chain_id") or DEFAULT_DEV_CHAIN_ID_HEX)
+    max_credits = max(1, int(max_authorized_credits or 1))
+    return {
+        "kind": "multisession_key",
+        "wallet_address": wallet_address,
+        "multisession_key_id": key_id,
+        "key_id": key_id,
+        "chain_id": chain_id,
+        "max_authorized_credits": max_credits,
+        "max_authorized_credit_wei": str(max_credits * CREDIT_WEI_PER_CREDIT),
+    }
+
+
+def _hub_identity_requires_multisession_auth(identity: dict[str, Any]) -> bool:
+    auth = identity.get("auth") if isinstance(identity.get("auth"), dict) else {}
+    return bool(
+        identity.get("multi_session_auth_required")
+        or identity.get("multisession_auth_required")
+        or auth.get("multi_session_auth_required")
+        or auth.get("multisession_auth_required")
+        or auth.get("required")
+    )
+
+
 def check_cluster(
     *,
     hub_urls: str | Sequence[str] = DEFAULT_HUB_URLS,
@@ -424,10 +474,6 @@ def check_cluster(
     checks: list[dict[str, Any]] = []
     for url in urls:
         try:
-            # Exp Hubs intentionally do not expose a generic /health route.  The
-            # lab should exercise the actual Hub API surface it needs: identity
-            # and topology.  This also gives a stronger cluster check than a
-            # health probe because it proves each Hub knows about its peers.
             identity = _read_json_url(f"{url}/api/hub/v1/hub-identity", timeout=timeout)
             topology_response = _read_json_url(f"{url}/api/hub/v1/topology", timeout=timeout)
             peers = identity.get("peer_hubs") if isinstance(identity.get("peer_hubs"), list) else []
@@ -512,9 +558,9 @@ def _render_check_text(result: dict[str, Any]) -> str:
         else:
             line += f" error={check.get('error')}"
         lines.append(line)
+    if result.get("setup_command"):
+        lines.extend(["", "Start the paired smoke cluster first:", result["setup_command"]])
     return "\n".join(lines)
-
-
 
 
 def _continuation_points_to_hub(response: dict[str, Any], continuation: dict[str, Any], owner_hub_url: str) -> bool:
@@ -614,6 +660,7 @@ def verify_handoff(
 
     sock: socket.socket | None = None
     submissions: list[dict[str, Any]] = []
+    accepted: dict[str, Any] = {}
     try:
         sock = _ws_connect(worker_url, "/api/hub/v1/workers/live-session", timeout=timeout)
         worker_auth_message: dict[str, Any] = {
@@ -656,34 +703,34 @@ def verify_handoff(
 
             def _submit() -> None:
                 try:
+                    payload: dict[str, Any] = {
+                        "request_id": request_id,
+                        "client_node_id": requester_account,
+                        "account_id": effective_requester_account,
+                        "max_credits": request_max_credits,
+                        "ring": "ring-3",
+                        "capabilities": ["text"],
+                        "input": {"prompt": f"exp handoff lab request {index + 1}"},
+                        "messages": [{"role": "user", "content": f"exp handoff lab request {index + 1}"}],
+                    }
+                    if requester_auth:
+                        payload.update(
+                            {
+                                "chain_id": requester_auth.get("chain_id", DEFAULT_DEV_CHAIN_ID_HEX),
+                                "wallet_address": requester_auth.get("wallet_address", ""),
+                                "multisession_authorization": requester_auth,
+                                "payment_authorization": requester_auth,
+                                "metadata": {
+                                    "auth_mode": "multisession-wallet",
+                                    "wallet_address": requester_auth.get("wallet_address", ""),
+                                    "multisession_key_id": requester_auth.get("multisession_key_id", ""),
+                                    "scenario_id": scenario_id,
+                                },
+                            }
+                        )
                     status, body = _post_json_url_status(
                         f"{submit_url}/api/hub/v1/work/requests",
-                        {
-                            "request_id": request_id,
-                            "client_node_id": requester_account,
-                            "account_id": effective_requester_account,
-                            "max_credits": request_max_credits,
-                            "ring": "ring-3",
-                            "capabilities": ["text"],
-                            "input": {"prompt": f"exp handoff lab request {index + 1}"},
-                            "messages": [{"role": "user", "content": f"exp handoff lab request {index + 1}"}],
-                            **(
-                                {
-                                    "chain_id": requester_auth.get("chain_id", DEFAULT_DEV_CHAIN_ID_HEX),
-                                    "wallet_address": requester_auth.get("wallet_address", ""),
-                                    "multisession_authorization": requester_auth,
-                                    "payment_authorization": requester_auth,
-                                    "metadata": {
-                                        "auth_mode": "multisession-wallet",
-                                        "wallet_address": requester_auth.get("wallet_address", ""),
-                                        "multisession_key_id": requester_auth.get("multisession_key_id", ""),
-                                        "scenario_id": scenario_id,
-                                    },
-                                }
-                                if requester_auth
-                                else {}
-                            ),
-                        },
+                        payload,
                         timeout=max(timeout, 15.0),
                     )
                     if status != 200:
@@ -821,7 +868,6 @@ def verify_handoff(
             "worker_wallet_address": (worker_key_info or {}).get("wallet_address", ""),
             "worker_key_id": (worker_key_info or {}).get("key_id", ""),
         },
-        "worker_credits": live_worker_credits,
         "funding": funding,
         "cluster": cluster,
         "requests": submissions,
@@ -845,396 +891,6 @@ def verify_handoff(
     }
 
 
-
-def verify_full_e2e(
-    *,
-    hub_urls: str | Sequence[str] = DEFAULT_HUB_URLS,
-    requester_account: str = DEFAULT_REQUESTER_ACCOUNT,
-    funding_credits: int = 100,
-    stress_requests: int = 3,
-    timeout: float = 10.0,
-    worker_credits: int = 5_500_123,
-    precision_places: int = 3,
-    dev_chain_state: Path = DEFAULT_DEV_CHAIN_STATE_FILE,
-    rpc_url: str | None = None,
-    chain_id: int | None = None,
-    contract_address: str = "",
-    worker_payout_address: str = "",
-    captain_address: str = "",
-    beta_second_address: str = "",
-    fund_units: int | None = None,
-    expires_blocks: int = 100,
-    mine_extra_blocks: int = 1,
-    poll_s: float = 0.25,
-    report_path: Path = DEFAULT_REPORT_PATH,
-    require_multisession_auth: bool = True,
-) -> dict[str, Any]:
-    """Run exp owner-handoff traffic and settle the resulting live-session earnings on dev-chain."""
-
-    urls = _hub_urls(hub_urls)
-    owner_url = urls[-1]
-    scope = _clean_scope("exp_full_e2e_" + secrets.token_urlsafe(8).rstrip("="))
-    worker_price = max(1, int(worker_credits or 1))
-    request_count = max(1, int(stress_requests or 1))
-    funded_credits = max(int(funding_credits or 0), request_count * (worker_price + 1) + 10)
-
-    chain = _load_chain_settlement_helpers()
-    repo_root = chain.find_repo_root(Path.cwd())
-    state_path, state, env, state_candidates = chain.select_state(repo_root, dev_chain_state, contract_address)
-    chain_args = SimpleNamespace(
-        contract_address=contract_address,
-        worker_payout_address=worker_payout_address,
-    )
-    offices = chain.offices_from_state(state, env)
-    clean_contract = chain.resolve_contract_address(state, env, contract_address)
-    clean_rpc_url = chain.resolve_rpc_url(state, env, rpc_url)
-    clean_chain_id = chain.resolve_chain_id(state, env, chain_id)
-    captain = chain.normalize_address(captain_address) if captain_address else offices[0]
-    beta_second = chain.normalize_address(beta_second_address) if beta_second_address else offices[2]
-    recipient = chain.resolve_worker_payout_address(chain_args, offices)
-
-    steps: list[dict[str, Any]] = []
-    report: dict[str, Any] = {
-        "ok": False,
-        "mode": "verify-full-e2e",
-        "hub_urls": urls,
-        "owner_hub_url": owner_url,
-        "scope": scope,
-        "state_file": str(state_path) if state_path else None,
-        "state_candidates": state_candidates,
-        "rpc_url": clean_rpc_url,
-        "chain_id": clean_chain_id,
-        "contract_address": clean_contract,
-        "worker_payout_address": recipient,
-        "worker_credits": worker_price,
-        "precision_places": int(precision_places),
-        "multi_session_auth_required": bool(require_multisession_auth),
-        "steps": steps,
-    }
-
-    def add_step(name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        step = {"name": name, "ok": bool(payload.get("ok", True)), "payload": payload}
-        steps.append(step)
-        return payload
-
-    try:
-        actual_chain_id = int(str(chain.rpc(clean_rpc_url, "eth_chainId", [], timeout=timeout)), 16)
-        add_step(
-            "dev-chain rpc reachable",
-            {
-                "ok": actual_chain_id == int(clean_chain_id),
-                "rpc_url": clean_rpc_url,
-                "chain_id": actual_chain_id,
-                "expected_chain_id": clean_chain_id,
-            },
-        )
-        if actual_chain_id != int(clean_chain_id):
-            raise ExpHubLabError(f"dev-chain id mismatch: expected {clean_chain_id}, got {actual_chain_id}")
-
-        code = chain.get_code(clean_rpc_url, clean_contract, timeout=timeout)
-        if not code or code == "0x":
-            raise ExpHubLabError(f"XLagBridgeReserve contract address has no code: {clean_contract}")
-        add_step("dev-chain reserve contract has code", {"ok": True, "contract_code_bytes": max(0, (len(code) - 2) // 2)})
-
-        handoff = add_step(
-            "run exp owner-handoff live-session traffic",
-            verify_handoff(
-                hub_urls=urls,
-                requester_account=f"{requester_account}-{scope}",
-                funding_credits=funded_credits,
-                stress_requests=request_count,
-                timeout=timeout,
-                worker_credits=worker_price,
-                require_multisession_auth=require_multisession_auth,
-            ),
-        )
-        _require_ok(handoff, label="owner-handoff traffic")
-
-        worker_id = str(handoff.get("worker_id") or "")
-        earning_ids = _extract_worker_earning_ids(handoff)
-        if not worker_id:
-            raise ExpHubLabError("handoff lab did not return a worker_id")
-        if len(earning_ids) != request_count:
-            raise ExpHubLabError(f"expected {request_count} worker earning ids, got {len(earning_ids)}: {earning_ids}")
-
-        earnings_view = add_step(
-            "query owner Hub worker earnings",
-            _read_json_url(
-                f"{owner_url}/api/hub/v1/credits/worker-earnings?{urlencode({'worker_node_id': worker_id, 'limit': str(max(100, request_count * 2))})}",
-                timeout=timeout,
-            ),
-        )
-        _require_ok(earnings_view, label="worker earnings query")
-        visible_earning_ids = {
-            str(item.get("earning_id") or "")
-            for item in earnings_view.get("worker_earnings", [])
-            if isinstance(item, dict)
-        }
-        missing_earnings = [earning_id for earning_id in earning_ids if earning_id not in visible_earning_ids]
-        if missing_earnings:
-            raise ExpHubLabError(f"owner Hub worker earnings query missed live-session earnings: {missing_earnings}")
-
-        claim = add_step(
-            "record worker claim for live-session earnings",
-            _post_json_url(
-                f"{owner_url}/api/hub/v1/workers/claims",
-                {
-                    "worker_node_id": worker_id,
-                    "earning_ids": earning_ids,
-                    "idempotency_key": f"{scope}-claim",
-                    "memo": "exp full E2E live-session handoff claim",
-                    "metadata": {"exp_full_e2e": True, "scope": scope, "source": "tools.exp_hub_lab"},
-                },
-                timeout=timeout,
-            ),
-        )
-        _require_ok(claim, label="worker claim")
-        claim_payload = claim.get("claim") if isinstance(claim.get("claim"), dict) else {}
-        claim_id = str(claim_payload.get("claim_id") or "")
-        if not claim_id:
-            raise ExpHubLabError(f"worker claim did not return a claim_id: {claim}")
-        claimed_exact = _positive_int(claim_payload.get("claimed_credits"), default=0)
-
-        settlement_before = add_step(
-            "query owner Hub worker settlement before batch",
-            _read_json_url(
-                f"{owner_url}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker_id, 'audit': '1', 'precision_places': str(int(precision_places))})}",
-                timeout=timeout,
-            ),
-        )
-        _require_ok(settlement_before, label="worker settlement preflight")
-
-        batch = add_step(
-            "create worker settlement batch from live-session claim",
-            _post_json_url(
-                f"{owner_url}/api/hub/v1/workers/settlements/batches",
-                {
-                    "worker_node_id": worker_id,
-                    "claim_ids": [claim_id],
-                    "precision_places": int(precision_places),
-                    "idempotency_key": f"{scope}-batch",
-                    "bridge_account_id": "bridge-worker-payout-dust",
-                    "metadata": {"exp_full_e2e": True, "scope": scope, "source": "tools.exp_hub_lab"},
-                },
-                timeout=timeout,
-            ),
-        )
-        _require_ok(batch, label="settlement batch")
-        batch_payload = batch.get("batch") if isinstance(batch.get("batch"), dict) else {}
-        batch_id = str(batch_payload.get("batch_id") or "")
-        if not batch_id:
-            raise ExpHubLabError(f"settlement batch did not return a batch_id: {batch}")
-        exact_units = _positive_int(batch_payload.get("total_credits_exact"), default=claimed_exact)
-        published_units = _positive_int(batch_payload.get("total_credits_published"), default=0)
-        dust_units = _positive_int(batch_payload.get("dust_credits"), default=0)
-        if published_units <= 0:
-            raise ExpHubLabError(
-                "settlement batch rounded to zero; rerun with a larger --worker-credits or more --stress-requests."
-            )
-
-        exact_receipt_rejected = None
-        if exact_units != published_units:
-            status, exact_reject = _post_json_url_status(
-                f"{owner_url}/api/hub/v1/workers/settlements/chain-executions",
-                {
-                    "batch_id": batch_id,
-                    "chain_id": clean_chain_id,
-                    "contract_address": clean_contract,
-                    "recipient_address": recipient,
-                    "payout_units_executed": exact_units,
-                    "settlement_tx_hash": "0x" + "8" * 64,
-                    "proposal_id": f"{scope}-bad-exact",
-                    "block_number": 1,
-                    "payout_rail": "xlag-bridge-reserve-local",
-                    "operator_id": f"exp-full-e2e-operator-{scope}",
-                    "idempotency_key": f"{scope}-exact-reject",
-                },
-                timeout=timeout,
-            )
-            exact_receipt_rejected = status >= 400
-            add_step("reject exact high-precision chain receipt", {"ok": exact_receipt_rejected, "status": status, "response": exact_reject})
-
-        chain_execution = add_step(
-            "execute rounded payout on dev-chain",
-            chain.execute_local_chain_payout(
-                rpc_url=clean_rpc_url,
-                expected_chain_id=clean_chain_id,
-                contract_address=clean_contract,
-                captain=captain,
-                beta_second=beta_second,
-                recipient_address=recipient,
-                payout_units=published_units,
-                fund_units=int(fund_units if fund_units is not None else published_units),
-                memo=f"exp full E2E {batch_id}",
-                expires_blocks=expires_blocks,
-                mine_extra_blocks=mine_extra_blocks,
-                timeout=timeout,
-                poll_s=poll_s,
-            ),
-        )
-        chain_tx_hash = chain.normalize_tx_hash(str(chain_execution.get("settlement_tx_hash", "")))
-        proposal_id = str(chain_execution.get("proposal_id", ""))
-        block_number = int(chain_execution.get("block_number", 0) or 0)
-        if not chain_tx_hash:
-            raise ExpHubLabError(f"dev-chain payout execution did not return a tx hash: {chain_execution}")
-
-        proof_payload = {
-            "exp_full_e2e": True,
-            "scope": scope,
-            "bridge": "xlag-bridge-reserve-local",
-            "chain_id": clean_chain_id,
-            "contract_address": clean_contract,
-            "recipient_address": recipient,
-            "proposal_id": proposal_id,
-            "settlement_tx_hash": chain_tx_hash,
-            "block_number": block_number,
-            "exact_credits": exact_units,
-            "executed_credits": published_units,
-            "bridge_retained_credits": dust_units,
-            "precision_places": int(precision_places),
-            "event": chain_execution.get("payout_executed_event", {}),
-        }
-
-        settled = add_step(
-            "record dev-chain payout receipt with owner Hub",
-            _post_json_url(
-                f"{owner_url}/api/hub/v1/workers/settlements/chain-executions",
-                {
-                    "batch_id": batch_id,
-                    "chain_id": clean_chain_id,
-                    "contract_address": clean_contract,
-                    "recipient_address": recipient,
-                    "payout_units_executed": published_units,
-                    "settlement_tx_hash": chain_tx_hash,
-                    "proposal_id": proposal_id,
-                    "block_number": block_number,
-                    "payout_rail": "xlag-bridge-reserve-local",
-                    "operator_id": f"exp-full-e2e-operator-{scope}",
-                    "settlement_reference": f"{scope}-settlement",
-                    "settlement_proof": proof_payload,
-                    "idempotency_key": f"{scope}-receipt",
-                    "metadata": {"exp_full_e2e": True, "scope": scope, "source": "tools.exp_hub_lab"},
-                },
-                timeout=timeout,
-            ),
-        )
-        _require_ok(settled, label="record chain receipt")
-        settled_batch = settled.get("batch") if isinstance(settled.get("batch"), dict) else {}
-        hub_execution = settled.get("chain_payout_execution") if isinstance(settled.get("chain_payout_execution"), dict) else {}
-
-        duplicate_receipt = add_step(
-            "duplicate dev-chain receipt is idempotent",
-            _post_json_url(
-                f"{owner_url}/api/hub/v1/workers/settlements/chain-executions",
-                {
-                    "batch_id": batch_id,
-                    "chain_id": clean_chain_id,
-                    "contract_address": clean_contract,
-                    "recipient_address": recipient,
-                    "payout_units_executed": published_units,
-                    "settlement_tx_hash": chain_tx_hash,
-                    "proposal_id": proposal_id,
-                    "block_number": block_number,
-                    "payout_rail": "xlag-bridge-reserve-local",
-                    "operator_id": f"exp-full-e2e-operator-{scope}",
-                    "settlement_reference": f"{scope}-settlement",
-                    "settlement_proof": proof_payload,
-                    "idempotency_key": f"{scope}-receipt",
-                },
-                timeout=timeout,
-            ),
-        )
-        _require_ok(duplicate_receipt, label="duplicate chain receipt")
-
-        settlement_after = add_step(
-            "query owner Hub worker settlement after receipt",
-            _read_json_url(
-                f"{owner_url}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker_id, 'audit': '1', 'precision_places': str(int(precision_places))})}",
-                timeout=timeout,
-            ),
-        )
-        _require_ok(settlement_after, label="worker settlement after receipt")
-
-        proof = {
-            "cluster_has_three_hubs": bool((handoff.get("proof") or {}).get("cluster_has_three_hubs")),
-            "multi_session_auth_required": bool((handoff.get("proof") or {}).get("multi_session_auth_required")),
-            "requester_msk_issued": bool((handoff.get("proof") or {}).get("requester_msk_issued")),
-            "worker_msk_issued": bool((handoff.get("proof") or {}).get("worker_msk_issued")),
-            "worker_connected_with_msk": bool((handoff.get("proof") or {}).get("worker_connected_with_msk")),
-            "requests_signed_with_msk": bool((handoff.get("proof") or {}).get("requests_signed_with_msk")),
-            "remote_entries_handoff_to_owner": bool((handoff.get("proof") or {}).get("remote_entries_handoff_to_owner")),
-            "continuations_point_to_owner_hub": bool((handoff.get("proof") or {}).get("continuations_point_to_owner_hub")),
-            "owner_hub_charged_exp_ledger": bool((handoff.get("proof") or {}).get("owner_hub_charged_exp_ledger")),
-            "worker_earnings_created": len(earning_ids) == request_count and not missing_earnings,
-            "worker_claim_created": bool(claim_id),
-            "settlement_batch_created": bool(batch_id) and published_units > 0,
-            "dev_chain_payout_executed": bool(chain_tx_hash) and int(chain_execution.get("payout_units", 0) or 0) == published_units,
-            "hub_recorded_chain_receipt": settled.get("ok") is True and str(hub_execution.get("settlement_tx_hash", "")).lower() == chain_tx_hash.lower(),
-            "duplicate_receipt_idempotent": duplicate_receipt.get("ok") is True and int(duplicate_receipt.get("additional_settled_credits", 0) or 0) == 0,
-            "exact_high_precision_receipt_rejected": True if exact_receipt_rejected is None else bool(exact_receipt_rejected),
-        }
-        ok = all(bool(value) for value in proof.values())
-        metrics = {
-            "requests_attempted": request_count,
-            "requests_accepted": int((handoff.get("metrics") or {}).get("requests_accepted", 0) or 0),
-            "remote_handoffs": int((handoff.get("metrics") or {}).get("remote_handoffs", 0) or 0),
-            "charged_results": int((handoff.get("metrics") or {}).get("charged_results", 0) or 0),
-            "worker_earnings_created": len(earning_ids),
-            "worker_claims_created": 1 if claim_id else 0,
-            "settlement_batches_created": 1 if batch_id else 0,
-            "chain_payouts_executed": 1 if chain_tx_hash else 0,
-            "exact_credits": exact_units,
-            "rounded_payout_units": published_units,
-            "bridge_retained_units": dust_units,
-            "duplicate_receipt_additional_units": int(duplicate_receipt.get("additional_settled_credits", 0) or 0),
-            "msk_authorized_requests": request_count if proof.get("requests_signed_with_msk") else 0,
-            "invariant_violations": 0 if ok else 1,
-        }
-
-        report.update(
-            {
-                "ok": ok,
-                "scenario_id": scope,
-                "requester_account": str(handoff.get("requester_account") or f"{requester_account}-{scope}"),
-                "requested_requester_account": f"{requester_account}-{scope}",
-                "worker_id": worker_id,
-                "multi_session_auth": handoff.get("multi_session_auth", {}),
-                "worker_earning_ids": earning_ids,
-                "claim_id": claim_id,
-                "settlement_batch_id": batch_id,
-                "settlement_proof_id": str(settled_batch.get("settlement_proof_id", "")),
-                "settlement_proof_hash": str(settled_batch.get("settlement_proof_hash", "")),
-                "proposal_id": proposal_id,
-                "chain_tx_hash": chain_tx_hash,
-                "handoff": handoff,
-                "claim": claim,
-                "batch": batch,
-                "chain_execution": chain_execution,
-                "recorded_receipt": settled,
-                "duplicate_receipt": duplicate_receipt,
-                "settlement_after": settlement_after,
-                "metrics": metrics,
-                "proof": proof,
-            }
-        )
-        output_path = report_path if report_path.is_absolute() else repo_root / report_path
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-        report["report_path"] = str(output_path)
-        return report
-    except Exception as exc:
-        report["ok"] = False
-        report["error"] = str(exc)
-        try:
-            output_path = report_path if report_path.is_absolute() else repo_root / report_path
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-            report["report_path"] = str(output_path)
-        except Exception:
-            pass
-        return report
-
-
 def _render_verify_text(result: dict[str, Any]) -> str:
     proof = result.get("proof") or {}
     metrics = result.get("metrics") or {}
@@ -1244,6 +900,12 @@ def _render_verify_text(result: dict[str, Any]) -> str:
     ]
     if result.get("error"):
         lines.append(f"Error: {result['error']}")
+    if result.get("startup_hint"):
+        lines.append(f"Startup hint: {result['startup_hint']}")
+    if result.get("setup_command"):
+        lines.extend(["", "Setup command:", result["setup_command"]])
+    if result.get("verify_command"):
+        lines.extend(["", "Verify command:", result["verify_command"]])
     if result.get("scenario_id"):
         lines.append(f"Scenario: {result['scenario_id']}")
     if result.get("worker_id"):
@@ -1280,6 +942,441 @@ def _render_verify_text(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _extract_worker_earning_ids(handoff: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for item in handoff.get("requests", []) if isinstance(handoff.get("requests"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        ack = item.get("terminal_ack") if isinstance(item.get("terminal_ack"), dict) else {}
+        payout = ack.get("payout") if isinstance(ack.get("payout"), dict) else {}
+        earning_id = str(payout.get("worker_earning_id") or "")
+        if earning_id and earning_id not in ids:
+            ids.append(earning_id)
+    return ids
+
+
+def _worker_earning_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return worker earning rows from either current or legacy Hub payload keys."""
+
+    for key in ("worker_earnings", "earnings"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return [item for item in rows if isinstance(item, dict)]
+    return []
+
+
+def _positive_int(value: Any, *, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return parsed if parsed > 0 else int(default)
+
+
+def _settlement_payout_units(batch: dict[str, Any], *, credit_key: str, credit_wei_key: str) -> int:
+    """Return native dev-chain payout units from a Hub settlement batch.
+
+    The exp ledger exposes both human credit-unit totals and credit-wei totals.
+    The local dev-chain payout contract uses native integer units for the demo
+    payout rail, so the lab must prefer the credit-unit fields.  Falling back to
+    credit-wei without normalizing would try to fund the reserve with millions
+    of ETH-equivalent native units.
+    """
+
+    credit_units = _positive_int(batch.get(credit_key), default=0)
+    if credit_units > 0:
+        return credit_units
+
+    credit_wei = _positive_int(batch.get(credit_wei_key), default=0)
+    if credit_wei <= 0:
+        return 0
+    return max(1, credit_wei // CREDIT_WEI_PER_CREDIT)
+
+
+def _dev_chain_payout_tx_hash(payout: dict[str, Any], *, normalize_tx_hash: Any) -> str:
+    """Return the settlement execution transaction hash from chain-helper output.
+
+    The local-chain helper historically returned only ``settlement_tx_hash``.
+    Newer callers may ask for ``execute_tx_hash`` or ``tx_hash``.  Accept all
+    aliases plus the nested ``transactions.execute`` value so successful chain
+    execution is not reported as a missing hash.
+    """
+
+    transactions = payout.get("transactions") if isinstance(payout.get("transactions"), dict) else {}
+    raw = (
+        payout.get("execute_tx_hash")
+        or payout.get("settlement_tx_hash")
+        or payout.get("tx_hash")
+        or transactions.get("execute")
+        or ""
+    )
+    return normalize_tx_hash(str(raw))
+
+
+def _dev_chain_captain_and_beta_second(
+    offices: Sequence[str],
+    *,
+    captain_address: str = "",
+    beta_second_address: str = "",
+    normalize_address: Any,
+) -> tuple[str, str]:
+    """Return the captain and beta-second officer addresses for payout execution.
+
+    XLagBridgeReserve.secondPayout() accepts only the SECOND_OFFICER or
+    THIRD_OFFICER role.  The deployment state stores offices in contract order:
+    O0 captain, O1 first officer/belay, O2 beta-second, O3 beta-second.  The
+    full E2E lab must therefore default to offices[2], not offices[1].
+    """
+
+    if len(offices) < 4:
+        raise ExpHubLabError("dev-chain deployment state does not expose four officer addresses.")
+    captain = normalize_address(captain_address or offices[0])
+    beta_second = normalize_address(beta_second_address or offices[2])
+    return captain, beta_second
+
+
+def _load_chain_settlement_helpers() -> Any:
+    script_path = _repo_root() / "scripts" / "run_worker_local_chain_settlement_execution_smoke.py"
+    spec = importlib.util.spec_from_file_location("_exp_hub_lab_chain_settlement", script_path)
+    if spec is None or spec.loader is None:
+        raise ExpHubLabError(f"could not load chain settlement helper script: {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_report(report_path: Path, payload: dict[str, Any]) -> str:
+    root = _repo_root()
+    path = report_path if report_path.is_absolute() else root / report_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return str(path)
+
+
+def verify_full_e2e(
+    *,
+    hub_urls: str | Sequence[str] = DEFAULT_HUB_URLS,
+    requester_account: str = DEFAULT_REQUESTER_ACCOUNT,
+    funding_credits: int = 100,
+    stress_requests: int = 9,
+    timeout: float = 30.0,
+    worker_credits: int = 5_500_123,
+    precision_places: int = 3,
+    dev_chain_state: Path = DEFAULT_DEV_CHAIN_STATE_FILE,
+    rpc_url: str | None = None,
+    chain_id: int | None = None,
+    contract_address: str = "",
+    worker_payout_address: str = "",
+    captain_address: str = "",
+    beta_second_address: str = "",
+    fund_units: int | None = None,
+    expires_blocks: int = 100,
+    mine_extra_blocks: int = 1,
+    poll_s: float = 0.25,
+    report_path: Path = DEFAULT_REPORT_PATH,
+    require_multisession_auth: bool = True,
+    topology_path: Path = DEFAULT_TOPOLOGY,
+) -> dict[str, Any]:
+    urls = _hub_urls(hub_urls)
+    owner_url = urls[-1]
+    scope = _clean_scope("exp_full_e2e_" + secrets.token_urlsafe(8).rstrip("="))
+    worker_price = max(1, int(worker_credits or 1))
+    request_count = max(1, int(stress_requests or 1))
+    funded_credits = max(int(funding_credits or 0), request_count * (worker_price + 1) + 10)
+    report: dict[str, Any] = {
+        "ok": False,
+        "mode": "verify-full-e2e",
+        "hub_urls": urls,
+        "scope": scope,
+        "worker_credits": worker_price,
+        "precision_places": int(precision_places),
+        "multi_session_auth_required": bool(require_multisession_auth),
+        "report_path": "",
+    }
+
+    try:
+        cluster_preflight = check_cluster(
+            hub_urls=urls,
+            timeout=timeout,
+            require_multisession_auth=require_multisession_auth,
+        )
+        if not cluster_preflight.get("ok"):
+            refused = any(
+                _is_connection_refused_error(ExpHubLabError(str(item.get("error") or "")))
+                for item in cluster_preflight.get("checks", [])
+                if isinstance(item, dict)
+            )
+            if refused:
+                report.update(_startup_hint_error(
+                    exc=ExpHubLabError("one or more smoke Hub URLs refused the connection"),
+                    hub_urls=urls,
+                    topology_path=topology_path,
+                ))
+                report["cluster"] = cluster_preflight
+                return report
+            raise ExpHubLabError(f"cluster preflight failed: {cluster_preflight}")
+
+        chain_helpers = _load_chain_settlement_helpers()
+        repo_root = chain_helpers.find_repo_root(_repo_root())
+        selected_state_path, state, env, _state_candidates = chain_helpers.select_state(repo_root, dev_chain_state, contract_address or None)
+        offices = chain_helpers.offices_from_state(state, env)
+        if len(offices) < 4:
+            raise ExpHubLabError("dev-chain deployment state does not expose four officer/worker payout addresses.")
+        chain_args = SimpleNamespace(
+            contract_address=contract_address,
+            worker_payout_address=worker_payout_address,
+            captain_address=captain_address,
+            beta_second_address=beta_second_address,
+        )
+        resolved_rpc_url = chain_helpers.resolve_rpc_url(state, env, rpc_url)
+        resolved_chain_id = chain_helpers.resolve_chain_id(state, env, chain_id)
+        resolved_contract = chain_helpers.resolve_contract_address(state, env, contract_address or None)
+        recipient_address = chain_helpers.resolve_worker_payout_address(chain_args, offices)
+        captain, beta_second = _dev_chain_captain_and_beta_second(
+            offices,
+            captain_address=captain_address,
+            beta_second_address=beta_second_address,
+            normalize_address=chain_helpers.normalize_address,
+        )
+
+        actual_chain_id = int(str(chain_helpers.rpc(resolved_rpc_url, "eth_chainId", [], timeout=timeout)), 16)
+        if actual_chain_id != int(resolved_chain_id):
+            raise ExpHubLabError(f"dev-chain RPC chain id mismatch: expected {resolved_chain_id}, got {actual_chain_id}")
+        code = chain_helpers.get_code(resolved_rpc_url, resolved_contract, timeout=timeout)
+        if not str(code or "0x").lower().startswith("0x") or str(code).lower() == "0x":
+            raise ExpHubLabError(f"contract {resolved_contract} has no code on {resolved_rpc_url}")
+
+        handoff = verify_handoff(
+            hub_urls=urls,
+            requester_account=f"{requester_account}-{scope}",
+            funding_credits=funded_credits,
+            stress_requests=request_count,
+            timeout=timeout,
+            worker_credits=worker_price,
+            require_multisession_auth=require_multisession_auth,
+        )
+        if not handoff.get("ok"):
+            raise ExpHubLabError(f"handoff phase failed: {handoff}")
+
+        worker_id = str(handoff.get("worker_id") or "")
+        earning_ids = _extract_worker_earning_ids(handoff)
+        if not earning_ids:
+            raise ExpHubLabError("handoff phase did not produce worker earning ids")
+
+        earnings = _read_json_url(
+            f"{owner_url}/api/hub/v1/credits/worker-earnings?{urlencode({'worker_node_id': worker_id})}",
+            timeout=timeout,
+        )
+        owner_earning_ids = {
+            str(item.get("earning_id") or "")
+            for item in _worker_earning_items(earnings)
+        }
+        missing = [earning_id for earning_id in earning_ids if earning_id not in owner_earning_ids]
+        if missing:
+            raise ExpHubLabError(f"owner Hub did not list expected worker earning ids: {missing}")
+
+        claim = _post_json_url(
+            f"{owner_url}/api/hub/v1/workers/claims",
+            {
+                "worker_node_id": worker_id,
+                "earning_ids": earning_ids,
+                "idempotency_key": f"{scope}-claim",
+                "memo": "exp full E2E live-session handoff claim",
+                "metadata": {"exp_full_e2e": True, "scope": scope, "source": "tools.exp_hub_lab"},
+            },
+            timeout=timeout,
+        )
+        _require_ok(claim, label="worker claim")
+        claim_payload = claim.get("claim") if isinstance(claim.get("claim"), dict) else {}
+        claim_id = str(claim_payload.get("claim_id") or "")
+        if not claim_id:
+            raise ExpHubLabError(f"worker claim did not return a claim_id: {claim}")
+
+        before_totals = _read_json_url(
+            f"{owner_url}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker_id, 'precision_places': int(precision_places)})}",
+            timeout=timeout,
+        )
+        batch_result = _post_json_url(
+            f"{owner_url}/api/hub/v1/workers/settlements/batches",
+            {
+                "worker_node_id": worker_id,
+                "claim_ids": [claim_id],
+                "precision_places": int(precision_places),
+                "idempotency_key": f"{scope}-batch",
+                "metadata": {"exp_full_e2e": True, "scope": scope, "source": "tools.exp_hub_lab"},
+            },
+            timeout=timeout,
+        )
+        _require_ok(batch_result, label="worker settlement batch")
+        batch = batch_result.get("batch") if isinstance(batch_result.get("batch"), dict) else {}
+        batch_id = str(batch.get("batch_id") or "")
+        if not batch_id:
+            raise ExpHubLabError(f"settlement batch did not return a batch_id: {batch_result}")
+        published_units = _settlement_payout_units(
+            batch,
+            credit_key="total_credits_published",
+            credit_wei_key="total_credit_wei_published",
+        )
+        exact_units = _settlement_payout_units(
+            batch,
+            credit_key="total_credits_exact",
+            credit_wei_key="total_credit_wei_exact",
+        )
+        if exact_units <= 0:
+            exact_units = published_units
+        if published_units <= 0:
+            raise ExpHubLabError(f"settlement batch did not publish positive payout units: {batch}")
+
+        exact_rejected = False
+        if exact_units != published_units:
+            status, _body = _post_json_url_status(
+                f"{owner_url}/api/hub/v1/workers/settlements/chain-executions",
+                {
+                    "batch_id": batch_id,
+                    "chain_id": resolved_chain_id,
+                    "contract_address": resolved_contract,
+                    "recipient_address": recipient_address,
+                    "payout_units_executed": exact_units,
+                    "settlement_tx_hash": "0x" + "11" * 32,
+                    "proposal_id": f"{scope}-exact-would-be-invalid",
+                    "idempotency_key": f"{scope}-exact-reject",
+                    "metadata": {"exp_full_e2e": True, "scope": scope, "expected_rejection": True},
+                },
+                timeout=timeout,
+            )
+            exact_rejected = status >= 400
+        else:
+            exact_rejected = True
+
+        payout = chain_helpers.execute_local_chain_payout(
+            rpc_url=resolved_rpc_url,
+            expected_chain_id=resolved_chain_id,
+            contract_address=resolved_contract,
+            captain=captain,
+            beta_second=beta_second,
+            recipient_address=recipient_address,
+            payout_units=published_units,
+            fund_units=int(fund_units if fund_units is not None else published_units),
+            memo=f"xlag-bridge-reserve-local:{scope}:{batch_id}",
+            expires_blocks=int(expires_blocks),
+            mine_extra_blocks=int(mine_extra_blocks),
+            timeout=timeout,
+            poll_s=poll_s,
+        )
+        tx_hash = _dev_chain_payout_tx_hash(payout, normalize_tx_hash=chain_helpers.normalize_tx_hash)
+        if not tx_hash:
+            raise ExpHubLabError(f"dev-chain payout did not return a tx hash: {payout}")
+
+        receipt_payload = {
+            "batch_id": batch_id,
+            "chain_id": resolved_chain_id,
+            "contract_address": resolved_contract,
+            "recipient_address": recipient_address,
+            "payout_units_executed": published_units,
+            "settlement_tx_hash": tx_hash,
+            "proposal_id": str(payout.get("proposal_id") or ""),
+            "block_number": _positive_int(payout.get("execute_receipt", {}).get("blockNumber"), default=0)
+            if isinstance(payout.get("execute_receipt"), dict)
+            else 0,
+            "payout_rail": "xlag-bridge-reserve-local",
+            "operator_id": "tools.exp_hub_lab",
+            "settlement_reference": f"xlag-bridge-reserve-local:{resolved_chain_id}:{resolved_contract}:{tx_hash}",
+            "settlement_proof": {
+                "scope": scope,
+                "source": "tools.exp_hub_lab",
+                "dev_chain_payout": payout,
+                "rounded_public_payout": True,
+            },
+            "idempotency_key": f"{scope}-chain-receipt",
+            "metadata": {"exp_full_e2e": True, "scope": scope, "source": "tools.exp_hub_lab"},
+        }
+        receipt = _post_json_url(
+            f"{owner_url}/api/hub/v1/workers/settlements/chain-executions",
+            receipt_payload,
+            timeout=timeout,
+        )
+        _require_ok(receipt, label="worker settlement chain receipt")
+        duplicate_receipt = _post_json_url(
+            f"{owner_url}/api/hub/v1/workers/settlements/chain-executions",
+            receipt_payload,
+            timeout=timeout,
+        )
+        _require_ok(duplicate_receipt, label="duplicate worker settlement chain receipt")
+        after_totals = _read_json_url(
+            f"{owner_url}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker_id, 'precision_places': int(precision_places)})}",
+            timeout=timeout,
+        )
+
+        proof = {
+            "cluster_has_three_hubs": bool((handoff.get("proof") or {}).get("cluster_has_three_hubs")),
+            "multi_session_auth_required": bool((handoff.get("proof") or {}).get("multi_session_auth_required")),
+            "requester_msk_issued": bool((handoff.get("proof") or {}).get("requester_msk_issued")),
+            "worker_msk_issued": bool((handoff.get("proof") or {}).get("worker_msk_issued")),
+            "worker_connected_with_msk": bool((handoff.get("proof") or {}).get("worker_connected_with_msk")),
+            "requests_signed_with_msk": bool((handoff.get("proof") or {}).get("requests_signed_with_msk")),
+            "remote_entries_handoff_to_owner": bool((handoff.get("proof") or {}).get("remote_entries_handoff_to_owner")),
+            "continuations_point_to_owner_hub": bool((handoff.get("proof") or {}).get("continuations_point_to_owner_hub")),
+            "owner_hub_charged_exp_ledger": bool((handoff.get("proof") or {}).get("owner_hub_charged_exp_ledger")),
+            "worker_earnings_created": len(earning_ids) == request_count,
+            "worker_claim_created": bool(claim_id),
+            "settlement_batch_created": bool(batch_id),
+            "dev_chain_payout_executed": bool(tx_hash),
+            "hub_recorded_chain_receipt": receipt.get("ok") is True,
+            "duplicate_receipt_idempotent": int(duplicate_receipt.get("additional_settled_credits", 0) or 0) == 0,
+            "exact_high_precision_receipt_rejected": bool(exact_rejected),
+        }
+        ok = all(bool(value) for value in proof.values())
+        report.update(
+            {
+                "ok": ok,
+                "scenario_id": scope,
+                "worker_id": worker_id,
+                "requester_account": str(handoff.get("requester_account") or f"{requester_account}-{scope}"),
+                "requested_requester_account": f"{requester_account}-{scope}",
+                "multi_session_auth": handoff.get("multi_session_auth", {}),
+                "dev_chain_tx_hash": tx_hash,
+                "chain": {
+                    "state_path": str(selected_state_path or ""),
+                    "rpc_url": resolved_rpc_url,
+                    "chain_id": resolved_chain_id,
+                    "contract_address": resolved_contract,
+                    "recipient_address": recipient_address,
+                },
+                "handoff": handoff,
+                "worker_earning_ids": earning_ids,
+                "claim": claim,
+                "before_totals": before_totals,
+                "batch": batch_result,
+                "dev_chain_payout": payout,
+                "receipt": receipt,
+                "duplicate_receipt": duplicate_receipt,
+                "after_totals": after_totals,
+                "metrics": {
+                    "requests_attempted": request_count,
+                    "requests_accepted": int((handoff.get("metrics") or {}).get("requests_accepted", 0) or 0),
+                    "remote_handoffs": int((handoff.get("metrics") or {}).get("remote_handoffs", 0) or 0),
+                    "charged_results": int((handoff.get("metrics") or {}).get("charged_results", 0) or 0),
+                    "msk_authorized_requests": int((handoff.get("metrics") or {}).get("msk_authorized_requests", 0) or 0),
+                    "worker_earnings_created": len(earning_ids),
+                    "worker_claims_created": 1 if claim_id else 0,
+                    "settlement_batches_created": 1 if batch_id else 0,
+                    "chain_payouts_executed": 1 if tx_hash else 0,
+                    "rounded_payout_units": published_units,
+                    "bridge_retained_units": max(0, exact_units - published_units),
+                    "duplicate_receipt_additional_units": int(duplicate_receipt.get("additional_settled_credits", 0) or 0),
+                    "invariant_violations": 0 if ok else 1,
+                },
+                "proof": proof,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - the lab reports failures as structured output
+        report["error"] = str(exc)
+        if _is_connection_refused_error(exc):
+            report.update(_startup_hint_error(exc=exc, hub_urls=urls, topology_path=topology_path))
+    finally:
+        report["report_path"] = _write_report(report_path, report)
+    return report
+
 
 def _render_full_e2e_text(result: dict[str, Any]) -> str:
     proof = result.get("proof") or {}
@@ -1290,12 +1387,18 @@ def _render_full_e2e_text(result: dict[str, Any]) -> str:
     ]
     if result.get("error"):
         lines.append(f"Error: {result['error']}")
+    if result.get("startup_hint"):
+        lines.append(f"Startup hint: {result['startup_hint']}")
+    if result.get("setup_command"):
+        lines.extend(["", "Setup command:", result["setup_command"]])
+    if result.get("verify_command"):
+        lines.extend(["", "Verify command:", result["verify_command"]])
     if result.get("scenario_id"):
         lines.append(f"Scenario: {result['scenario_id']}")
     if result.get("worker_id"):
         lines.append(f"Worker: {result['worker_id']}")
-    if result.get("chain_tx_hash"):
-        lines.append(f"Dev-chain tx: {result['chain_tx_hash']}")
+    if result.get("dev_chain_tx_hash"):
+        lines.append(f"Dev-chain tx: {result['dev_chain_tx_hash']}")
     if result.get("report_path"):
         lines.append(f"Report: {result['report_path']}")
     if metrics:
@@ -1348,9 +1451,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        resolved_hub_urls = _resolve_hub_urls(args.hub_urls, args.topology)
         if args.verify_full_e2e:
             result = verify_full_e2e(
-                hub_urls=args.hub_urls,
+                hub_urls=resolved_hub_urls,
                 requester_account=args.requester_account,
                 funding_credits=args.funding_credits,
                 stress_requests=args.stress_requests,
@@ -1370,6 +1474,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 poll_s=args.poll_s,
                 report_path=args.report_path,
                 require_multisession_auth=(False if args.allow_optional_multisession_auth else True),
+                topology_path=args.topology,
             )
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
@@ -1378,27 +1483,53 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if result.get("ok") else 1
 
         if args.verify_handoff:
-            result = verify_handoff(
-                hub_urls=args.hub_urls,
-                requester_account=args.requester_account,
-                funding_credits=args.funding_credits,
-                stress_requests=args.stress_requests,
-                timeout=args.timeout,
-                require_multisession_auth=args.require_multisession_auth,
-            )
+            try:
+                result = verify_handoff(
+                    hub_urls=resolved_hub_urls,
+                    requester_account=args.requester_account,
+                    funding_credits=args.funding_credits,
+                    stress_requests=args.stress_requests,
+                    timeout=args.timeout,
+                    require_multisession_auth=args.require_multisession_auth,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if _is_connection_refused_error(exc):
+                    result = {
+                        "ok": False,
+                        "mode": "verify-handoff",
+                        "hub_urls": resolved_hub_urls,
+                        **_startup_hint_error(exc=exc, hub_urls=resolved_hub_urls, topology_path=args.topology),
+                    }
+                else:
+                    raise
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
             else:
                 print(_render_verify_text(result))
             return 0 if result.get("ok") else 1
 
-        result = check_cluster(hub_urls=args.hub_urls, timeout=args.timeout, require_multisession_auth=args.require_multisession_auth)
+        result = check_cluster(hub_urls=resolved_hub_urls, timeout=args.timeout, require_multisession_auth=args.require_multisession_auth)
+        if not result.get("ok") and any(_is_connection_refused_error(ExpHubLabError(str(item.get("error")))) for item in result.get("checks", [])):
+            result.update(_startup_hint_error(exc=ExpHubLabError("one or more smoke Hub URLs refused the connection"), hub_urls=resolved_hub_urls, topology_path=args.topology))
         if args.json:
             print(json.dumps(result, indent=2, sort_keys=True))
         else:
             print(_render_check_text(result))
         return 0 if result.get("ok") else 1
     except (ExpHubLabError, OSError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        if _is_connection_refused_error(exc):
+            resolved_hub_urls = _resolve_hub_urls(getattr(args, "hub_urls", ""), getattr(args, "topology", DEFAULT_TOPOLOGY))
+            result = {
+                "ok": False,
+                "mode": "exp-hub-lab",
+                "hub_urls": resolved_hub_urls,
+                **_startup_hint_error(exc=exc, hub_urls=resolved_hub_urls, topology_path=getattr(args, "topology", DEFAULT_TOPOLOGY)),
+            }
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(_render_verify_text(result))
+            return 1
         print(f"Exp Hub lab failed: {exc}", flush=True)
         return 1
 

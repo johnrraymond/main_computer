@@ -635,6 +635,24 @@ function Write-MainComputerLocalPlatformWarning([object]$LocalPlatformStart) {
   }
 }
 
+function Write-MainComputerDevHubWarning([object]$DevHubStart) {
+  $state = ConvertTo-StringValue (Get-ObjectPropertyValue $DevHubStart "state" "unknown") "unknown"
+  Write-Warning ("Dev Hub startup failed ({0}). Continuing Main Computer startup; Hub-dependent features may be unavailable." -f $state)
+
+  $message = ConvertTo-StringValue (Get-ObjectPropertyValue $DevHubStart "message" "") ""
+  if (-not [string]::IsNullOrWhiteSpace($message)) {
+    Write-Warning ("Dev Hub error: {0}" -f $message)
+  }
+
+  $prerequisites = Get-ObjectPropertyValue $DevHubStart "prerequisites" $null
+  if ($null -ne $prerequisites) {
+    $prerequisiteState = ConvertTo-StringValue (Get-ObjectPropertyValue $prerequisites "state" "") ""
+    if (-not [string]::IsNullOrWhiteSpace($prerequisiteState)) {
+      Write-Warning ("Dev Hub prerequisite state: {0}" -f $prerequisiteState)
+    }
+  }
+}
+
 function Start-MainComputerLocalPlatform([string]$RootPath, [string]$PythonCommand) {
   if ($env:MAIN_COMPUTER_LOCAL_SERVER_ENABLED -ne "1") {
     return [ordered]@{
@@ -789,6 +807,191 @@ function Test-MainComputerDevChainRpc([string]$RpcUrl, [string]$ExpectedChainId)
     actual_chain_id_hex = $actualHex
   }
 }
+
+function Wait-MainComputerDevChainRpc([string]$RpcUrl, [string]$ExpectedChainId, [int]$TimeoutSeconds = 120) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $last = $null
+
+  do {
+    $last = Test-MainComputerDevChainRpc $RpcUrl $ExpectedChainId
+    if ($last.ok) {
+      return $last
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+
+  return [ordered]@{
+    ok = $false
+    state = "timeout"
+    rpc_url = $RpcUrl
+    expected_chain_id = $ExpectedChainId
+    last_health_check = $last
+  }
+}
+
+function Get-MainComputerDevHubStartTimeoutSeconds([object]$LaunchContext, [string]$HubKind) {
+  $defaultTimeout = $(if ($HubKind -eq "exp-fdb") { "180" } else { "30" })
+  $raw = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS" $defaultTimeout
+  try {
+    $value = [int]$raw
+    if ($value -gt 0) {
+      return $value
+    }
+  } catch {}
+  return [int]$defaultTimeout
+}
+
+function Get-MainComputerFdbClusterEndpoint([string]$ClusterFile) {
+  if ([string]::IsNullOrWhiteSpace($ClusterFile) -or -not (Test-Path -LiteralPath $ClusterFile -PathType Leaf)) {
+    return [ordered]@{
+      ok = $false
+      state = "missing-cluster-file"
+      cluster_file = $ClusterFile
+    }
+  }
+
+  $text = ""
+  try {
+    $text = (Get-Content -LiteralPath $ClusterFile -Raw).Trim()
+  } catch {
+    return [ordered]@{
+      ok = $false
+      state = "read-cluster-file-failed"
+      cluster_file = $ClusterFile
+      message = $_.Exception.Message
+    }
+  }
+
+  $match = [regex]::Match($text, "([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)@([^:,\s]+):([0-9]+)")
+  if (-not $match.Success) {
+    return [ordered]@{
+      ok = $false
+      state = "malformed-cluster-file"
+      cluster_file = $ClusterFile
+      content = $text
+    }
+  }
+
+  return [ordered]@{
+    ok = $true
+    state = "parsed"
+    cluster_file = $ClusterFile
+    host = [string]$match.Groups[3].Value
+    port = [int]$match.Groups[4].Value
+  }
+}
+
+function Test-MainComputerFdbClusterReady([string]$ClusterFile) {
+  $endpoint = Get-MainComputerFdbClusterEndpoint $ClusterFile
+  if (-not $endpoint.ok) {
+    return $endpoint
+  }
+
+  if (-not (Test-MainComputerTcpPortOpen -Port ([int]$endpoint.port))) {
+    return [ordered]@{
+      ok = $false
+      state = "fdb-port-unreachable"
+      cluster_file = $ClusterFile
+      host = $endpoint.host
+      port = $endpoint.port
+      message = "FoundationDB coordinator port is not reachable yet; the resident executor service should start or reuse the default Docker/FDB container after Docker is ready."
+    }
+  }
+
+  return [ordered]@{
+    ok = $true
+    state = "ready"
+    cluster_file = $ClusterFile
+    host = $endpoint.host
+    port = $endpoint.port
+  }
+}
+
+function Wait-MainComputerFdbClusterReady([string]$ClusterFile, [int]$TimeoutSeconds = 120) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $last = $null
+
+  do {
+    $last = Test-MainComputerFdbClusterReady $ClusterFile
+    if ($last.ok) {
+      return $last
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+
+  return [ordered]@{
+    ok = $false
+    state = "timeout"
+    cluster_file = $ClusterFile
+    last_health_check = $last
+    message = "FoundationDB did not become ready before timeout; the resident executor service should bootstrap the default Docker/FDB container after Docker is ready."
+  }
+}
+
+function Test-MainComputerExpFdbHubPrerequisites(
+  [string]$RootPath,
+  [object]$LaunchContext,
+  [object]$Endpoint,
+  [string]$TopologyPath,
+  [string]$ClusterFile,
+  [string]$DevChainDeploymentPath,
+  [string]$ContractsPath,
+  [string]$BridgeBackend,
+  [int]$TimeoutSeconds
+) {
+  if (-not (Test-Path -LiteralPath $TopologyPath -PathType Leaf)) {
+    return [ordered]@{
+      ok = $false
+      state = "missing-topology"
+      topology = $TopologyPath
+      message = "The exp/FDB Hub dev topology must exist before the dev Hub can start."
+    }
+  }
+
+  $fdb = Wait-MainComputerFdbClusterReady $ClusterFile $TimeoutSeconds
+  if (-not $fdb.ok) {
+    return [ordered]@{
+      ok = $false
+      state = "foundationdb-not-ready"
+      fdb = $fdb
+      message = "FoundationDB is not ready; waiting for the resident executor service to bootstrap Docker/FDB after Docker becomes ready."
+    }
+  }
+
+  $backend = ([string]$BridgeBackend).Trim().ToLowerInvariant()
+  if ($backend -in @("dev-chain", "credit-bridge-contract")) {
+    if (-not (Test-Path -LiteralPath $DevChainDeploymentPath -PathType Leaf)) {
+      return [ordered]@{
+        ok = $false
+        state = "missing-dev-chain-deployment"
+        dev_chain_deployment_path = $DevChainDeploymentPath
+        message = "The dev-chain deployment manifest must exist before the exp/FDB Hub starts."
+      }
+    }
+
+    $chain = Wait-MainComputerDevChainRpc ([string]$Endpoint.chain_rpc_url) ([string]$Endpoint.chain_id) $TimeoutSeconds
+    if (-not $chain.ok) {
+      return [ordered]@{
+        ok = $false
+        state = "dev-chain-not-ready"
+        rpc_url = [string]$Endpoint.chain_rpc_url
+        expected_chain_id = [string]$Endpoint.chain_id
+        health_check = $chain
+        message = "The dev-chain RPC is not healthy yet; the exp/FDB Hub starts only after its chain dependency is ready."
+      }
+    }
+  }
+
+  return [ordered]@{
+    ok = $true
+    state = "ready"
+    topology = $TopologyPath
+    fdb = $fdb
+    dev_chain_deployment_path = $DevChainDeploymentPath
+    contracts_path = $ContractsPath
+  }
+}
+
 
 function Test-MainComputerDisabledFlag([string]$Value) {
   $text = ConvertTo-StringValue $Value ""
@@ -1051,8 +1254,15 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_URL", [string]$endpoint.hub_url, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL", [string]$endpoint.chain_rpc_url, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_ID", [string]$endpoint.chain_id, "Process")
-  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", "0", "Process")
-  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", "1", "Process")
+  $hubKind = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb").Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($hubKind)) {
+    $hubKind = "exp-fdb"
+  }
+  $smokeBridgeSetting = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE" "1"
+  $missingBridgeSignerSetting = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER" "0"
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_DEV_HUB_KIND", $hubKind, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", $smokeBridgeSetting, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", $missingBridgeSignerSetting, "Process")
   $bridgeBackend = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_BRIDGE_BACKEND" "dev-chain"
   if ([string]::IsNullOrWhiteSpace($bridgeBackend)) {
     $bridgeBackend = "dev-chain"
@@ -1065,9 +1275,46 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     $LaunchContext `
     "MAIN_COMPUTER_HUB_CONTRACTS_PATH" `
     (Join-Path $RootPath ("main_computer\config\" + [string]$endpoint.network + "_contracts.json"))
+  $clusterFile = Get-LaunchEnvironmentValue `
+    $LaunchContext `
+    "MAIN_COMPUTER_HUB_FDB_CLUSTER_FILE" `
+    (Join-Path $RootPath ".foundationdb\docker.cluster")
+  $topologyPath = Get-LaunchEnvironmentValue `
+    $LaunchContext `
+    "MAIN_COMPUTER_HUB_TOPOLOGY" `
+    (Join-Path $RootPath "deploy\stable-hub-lab\dev-topology.json")
+  $hubId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_ID" "dev-hub1"
+  $hubStartTimeoutSeconds = Get-MainComputerDevHubStartTimeoutSeconds $LaunchContext $hubKind
+
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_BRIDGE_BACKEND", [string]$bridgeBackend, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", [string]$devChainDeploymentPath, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_CONTRACTS_PATH", [string]$contractsPath, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_TOPOLOGY", [string]$topologyPath, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ID", [string]$hubId, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_FDB_CLUSTER_FILE", [string]$clusterFile, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS", ([string]$hubStartTimeoutSeconds), "Process")
+
+  if ($hubKind -eq "exp-fdb") {
+    $prerequisites = Test-MainComputerExpFdbHubPrerequisites `
+      $RootPath `
+      $LaunchContext `
+      $endpoint `
+      ([string]$topologyPath) `
+      ([string]$clusterFile) `
+      ([string]$devChainDeploymentPath) `
+      ([string]$contractsPath) `
+      ([string]$bridgeBackend) `
+      ([int]$hubStartTimeoutSeconds)
+    if (-not $prerequisites.ok) {
+      return [ordered]@{
+        ok = $false
+        state = "dependency-not-ready"
+        endpoint = $endpoint
+        prerequisites = $prerequisites
+        message = $prerequisites.message
+      }
+    }
+  }
 
   $hubRuntime = Join-Path $RootPath ("runtime\hub\" + [string]$endpoint.network)
   Ensure-Directory $hubRuntime
@@ -1075,20 +1322,49 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   $stdout = Join-Path $hubRuntime ("dev-hub-" + $stamp + ".stdout.log")
   $stderr = Join-Path $hubRuntime ("dev-hub-" + $stamp + ".stderr.log")
 
-  $arguments = @(
-    "-m", "main_computer.cli",
-    "hub",
-    "--host", [string]$endpoint.host,
-    "--port", [string]$endpoint.port,
-    "--network", [string]$endpoint.network,
-    "--chain-rpc-url", [string]$endpoint.chain_rpc_url,
-    "--chain-id", [string]$endpoint.chain_id,
-    "--bridge-backend", [string]$bridgeBackend,
-    "--dev-chain-deployment-path", [string]$devChainDeploymentPath,
-    "--contracts-path", [string]$contractsPath,
-    "--allow-missing-bridge-signer",
-    "-noverbose"
-  )
+  if ($hubKind -eq "legacy") {
+    $arguments = @(
+      "-m", "main_computer.cli",
+      "hub",
+      "--host", [string]$endpoint.host,
+      "--port", [string]$endpoint.port,
+      "--network", [string]$endpoint.network,
+      "--chain-rpc-url", [string]$endpoint.chain_rpc_url,
+      "--chain-id", [string]$endpoint.chain_id,
+      "--bridge-backend", [string]$bridgeBackend,
+      "--dev-chain-deployment-path", [string]$devChainDeploymentPath,
+      "--contracts-path", [string]$contractsPath,
+      "--allow-missing-bridge-signer",
+      "-noverbose"
+    )
+  } else {
+    $arguments = @(
+      "exp-fdb-hub.py",
+      "--host", [string]$endpoint.host,
+      "--port", [string]$endpoint.port,
+      "--hub-url", [string]$endpoint.hub_url,
+      "--cluster-file", [string]$clusterFile,
+      "--no-fdb-autostart",
+      "--network-key", [string]$endpoint.network,
+      "--network-display-name", "Main Computer Local Dev",
+      "--network-kind", "dev",
+      "--chain-rpc-url", [string]$endpoint.chain_rpc_url,
+      "--chain-id", [string]$endpoint.chain_id,
+      "--bridge-backend", [string]$bridgeBackend,
+      "--dev-chain-deployment-path", [string]$devChainDeploymentPath,
+      "--contracts-path", [string]$contractsPath,
+      "--topology", [string]$topologyPath,
+      "--hub-id", [string]$hubId,
+      "--require-multisession-auth",
+      "-noverbose"
+    )
+    if (-not (Test-MainComputerDisabledFlag $smokeBridgeSetting)) {
+      $arguments += "--enable-smoke-bridge"
+    }
+    if (-not (Test-MainComputerDisabledFlag $missingBridgeSignerSetting)) {
+      $arguments += "--allow-missing-bridge-signer"
+    }
+  }
   $argString = Join-CommandLine $arguments
 
   $process = Start-Process `
@@ -1102,7 +1378,7 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
 
   Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII
 
-  $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) 30
+  $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) ([int]$hubStartTimeoutSeconds)
   if (-not $health.ok) {
     return [ordered]@{
       ok = $false
@@ -1376,13 +1652,10 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
     throw ("Dev chain startup failed: {0}" -f $message)
   }
 
-  $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand
-  if ($null -eq $devHubStart) {
-    throw "Dev Hub startup returned no status."
-  }
-  if (-not $devHubStart.ok) {
-    $message = ConvertTo-StringValue (Get-ObjectPropertyValue $devHubStart "state" "unknown") "unknown"
-    throw ("Dev Hub startup failed: {0}" -f $message)
+  $devHubStart = [ordered]@{
+    ok = $true
+    state = "pending-final-start"
+    message = "Dev Hub starts after Docker/local platform prep and supervisor-managed dependencies are healthy."
   }
 
   $serviceRuntime = Join-Path $RootPath "runtime\service_supervisor"
@@ -1459,6 +1732,26 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
     -RedirectStandardOutput $stdout `
     -RedirectStandardError $stderr `
     -PassThru
+
+  try {
+    $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand
+  } catch {
+    $devHubStart = [ordered]@{
+      ok = $false
+      state = "exception"
+      message = $_.Exception.Message
+    }
+  }
+  if ($null -eq $devHubStart) {
+    $devHubStart = [ordered]@{
+      ok = $false
+      state = "unknown"
+      message = "Start-MainComputerDevHubFresh returned no status."
+    }
+  }
+  if (-not $devHubStart.ok) {
+    Write-MainComputerDevHubWarning $devHubStart
+  }
 
   $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart
   $sessionPath = Get-StartSessionPath $RootPath

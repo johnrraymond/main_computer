@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -30,6 +31,12 @@ DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_LIGHT_CHECK_INTERVAL_S = 180.0
 DEFAULT_DOCKER_START_TIMEOUT_S = 45.0
 DEFAULT_EXECUTOR_IMAGE = "main-computer-executor:latest"
+DEFAULT_FOUNDATIONDB_CLUSTER_FILE = Path(".foundationdb") / "docker.cluster"
+DEFAULT_FOUNDATIONDB_CONTAINER_NAME = "main-computer-foundationdb-smoke"
+DEFAULT_FOUNDATIONDB_DOCKER_IMAGE = "foundationdb/foundationdb:7.4.6"
+DEFAULT_FOUNDATIONDB_PORT = 4550
+DEFAULT_FOUNDATIONDB_NAMESPACE = "main-computer-exp-fdb-autostart-smoke"
+DEFAULT_FOUNDATIONDB_START_TIMEOUT_S = 45.0
 SERVICE_NAME = "main-computer-executor-service"
 EXECUTOR_SERVICE_PID_FILENAME = ".main_computer_executor_service.pid"
 
@@ -231,6 +238,62 @@ def _which_or_path(command: str) -> str | None:
     if candidate.exists():
         return str(candidate)
     return None
+
+
+
+def _flag_enabled(value: object, *, default: bool = True) -> bool:
+    text = str(value if value is not None else ("1" if default else "0")).strip().lower()
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    return bool(default)
+
+
+def _coerce_int_env(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = os.environ.get(name)
+    try:
+        value = int(str(raw).strip()) if raw not in (None, "") else int(default)
+    except (TypeError, ValueError):
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return value
+
+
+def _coerce_float_env(name: str, default: float, *, minimum: float | None = None) -> float:
+    raw = os.environ.get(name)
+    try:
+        value = float(str(raw).strip()) if raw not in (None, "") else float(default)
+    except (TypeError, ValueError):
+        value = float(default)
+    if minimum is not None:
+        value = max(float(minimum), value)
+    return value
+
+
+def _parse_foundationdb_cluster_endpoint(cluster_file: Path) -> tuple[str, int] | None:
+    try:
+        text = cluster_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    match = re.search(r"[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+@([^:,\s]+):([0-9]+)", text)
+    if not match:
+        return None
+    port = int(match.group(2))
+    if port <= 0 or port > 65535:
+        return None
+    return match.group(1), port
+
+
+def _tcp_port_open(host: str, port: int, *, timeout_s: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
 
 
 def _expand_windows_envvars(value: str) -> str:
@@ -700,6 +763,12 @@ class ExecutorService:
                 message="Docker engine check pending",
                 docker_command=self.docker_command,
             ),
+            "foundationdb": self._component(
+                ok=False,
+                state="pending",
+                message="FoundationDB Docker bootstrap pending",
+                cluster_file=str(self._foundationdb_cluster_file()),
+            ),
             "compose": self._component(
                 ok=False,
                 state="pending",
@@ -725,6 +794,7 @@ class ExecutorService:
         return {
             "wsl": str((components.get("wsl") or state.get("wsl") or {}).get("state") or "unknown"),
             "docker": str((components.get("docker") or state.get("docker") or {}).get("state") or "unknown"),
+            "foundationdb": str((components.get("foundationdb") or state.get("foundationdb") or {}).get("state") or "unknown"),
             "compose": str((components.get("compose") or state.get("compose") or {}).get("state") or "unknown"),
         }
 
@@ -737,6 +807,7 @@ class ExecutorService:
         message: str,
         wsl: dict[str, Any] | None = None,
         docker: dict[str, Any] | None = None,
+        foundationdb: dict[str, Any] | None = None,
         compose: dict[str, Any] | None = None,
     ) -> None:
         """Publish boot progress without claiming that dependencies are ready.
@@ -755,6 +826,8 @@ class ExecutorService:
             components["wsl"] = wsl
         if docker is not None:
             components["docker"] = docker
+        if foundationdb is not None:
+            components["foundationdb"] = foundationdb
         if compose is not None:
             components["compose"] = compose
 
@@ -767,10 +840,12 @@ class ExecutorService:
                 "message": message,
                 "wsl": components.get("wsl"),
                 "docker": components.get("docker"),
+                "foundationdb": components.get("foundationdb"),
                 "compose": components.get("compose"),
                 "components": {
                     "wsl": components.get("wsl"),
                     "docker": components.get("docker"),
+                    "foundationdb": components.get("foundationdb"),
                     "compose": components.get("compose"),
                 },
             }
@@ -788,6 +863,7 @@ class ExecutorService:
         )
         current["service"] = service
         self._write_state(current)
+
 
     def _emit_boot_result(self, state: dict[str, Any], *, prefix: str) -> None:
         fields = self._component_state_fields(state)
@@ -812,7 +888,7 @@ class ExecutorService:
         if explicit:
             return explicit
 
-        for name in ("compose", "docker", "wsl"):
+        for name in ("foundationdb", "compose", "docker", "wsl"):
             component = state.get(name)
             if not isinstance(component, dict) or component.get("ok"):
                 continue
@@ -1054,6 +1130,178 @@ class ExecutorService:
             self._emit_completed_process_to_main_log(result, cwd=cwd or self.root)
             return result
 
+
+    def _foundationdb_cluster_file(self) -> Path:
+        explicit = (os.environ.get("MAIN_COMPUTER_HUB_FDB_CLUSTER_FILE") or "").strip()
+        if not explicit:
+            explicit = (os.environ.get("MAIN_COMPUTER_FDB_CLUSTER_FILE") or "").strip()
+        cluster_file = Path(explicit) if explicit else self.root / DEFAULT_FOUNDATIONDB_CLUSTER_FILE
+        if not cluster_file.is_absolute():
+            cluster_file = self.root / cluster_file
+        return cluster_file.resolve()
+
+    def _foundationdb_autostart_enabled(self) -> bool:
+        return _flag_enabled(
+            os.environ.get("MAIN_COMPUTER_FDB_AUTO_START", os.environ.get("MAIN_COMPUTER_DEV_HUB_FDB_AUTO_START")),
+            default=True,
+        )
+
+    def _foundationdb_cluster_is_default(self, cluster_file: Path) -> bool:
+        default_cluster_file = (self.root / DEFAULT_FOUNDATIONDB_CLUSTER_FILE).resolve()
+        try:
+            return cluster_file.resolve() == default_cluster_file
+        except OSError:
+            return False
+
+    def _check_foundationdb_light(self) -> dict[str, Any]:
+        cluster_file = self._foundationdb_cluster_file()
+        if not self._foundationdb_autostart_enabled():
+            return self._component(
+                ok=True,
+                state="disabled",
+                message="FoundationDB Docker autostart is disabled",
+                cluster_file=str(cluster_file),
+            )
+
+        if not self._foundationdb_cluster_is_default(cluster_file):
+            return self._component(
+                ok=True,
+                state="custom-cluster-file",
+                message="custom FoundationDB cluster file is owned outside the executor bootstrap path",
+                cluster_file=str(cluster_file),
+            )
+
+        endpoint = _parse_foundationdb_cluster_endpoint(cluster_file)
+        if endpoint is None:
+            return self._component(
+                ok=False,
+                state="missing-or-invalid-cluster-file",
+                message="default FoundationDB cluster file is not ready",
+                cluster_file=str(cluster_file),
+            )
+
+        host, port = endpoint
+        reachable = _tcp_port_open(host, port)
+        return self._component(
+            ok=reachable,
+            state="ready" if reachable else "port-unreachable",
+            message="FoundationDB default Docker cluster is reachable" if reachable else "FoundationDB cluster file exists but the coordinator port is not reachable",
+            cluster_file=str(cluster_file),
+            host=host,
+            port=port,
+        )
+
+    def _reconcile_foundationdb(self) -> dict[str, Any]:
+        cluster_file = self._foundationdb_cluster_file()
+        current = self._check_foundationdb_light()
+        if current.get("ok"):
+            return current
+
+        if not self._foundationdb_autostart_enabled():
+            return current
+
+        if not self._foundationdb_cluster_is_default(cluster_file):
+            return current
+
+        smoke_script = self.root / "scripts" / "smoke_foundationdb_credit_ledger_primitives.py"
+        if not smoke_script.exists():
+            return self._component(
+                ok=False,
+                state="missing-smoke-script",
+                message="FoundationDB bootstrap smoke script is missing",
+                cluster_file=str(cluster_file),
+                script=str(smoke_script),
+            )
+
+        cluster_file.parent.mkdir(parents=True, exist_ok=True)
+        container_name = (
+            os.environ.get("MAIN_COMPUTER_FDB_CONTAINER_NAME")
+            or os.environ.get("MAIN_COMPUTER_HUB_FDB_CONTAINER_NAME")
+            or DEFAULT_FOUNDATIONDB_CONTAINER_NAME
+        )
+        fdb_port = _coerce_int_env("MAIN_COMPUTER_FDB_PORT", DEFAULT_FOUNDATIONDB_PORT, minimum=1, maximum=65535)
+        docker_image = (
+            os.environ.get("MAIN_COMPUTER_FDB_DOCKER_IMAGE")
+            or os.environ.get("MAIN_COMPUTER_HUB_FDB_DOCKER_IMAGE")
+            or DEFAULT_FOUNDATIONDB_DOCKER_IMAGE
+        )
+        start_timeout_s = _coerce_float_env(
+            "MAIN_COMPUTER_FDB_START_TIMEOUT_S",
+            DEFAULT_FOUNDATIONDB_START_TIMEOUT_S,
+            minimum=1.0,
+        )
+        namespace = (
+            os.environ.get("MAIN_COMPUTER_FDB_BOOTSTRAP_NAMESPACE")
+            or DEFAULT_FOUNDATIONDB_NAMESPACE
+        )
+
+        command = [
+            sys.executable,
+            str(smoke_script),
+            "--cluster-file",
+            str(cluster_file),
+            "--api-version",
+            "740",
+            "--namespace",
+            str(namespace),
+            "--concurrent-holds",
+            "11",
+            "--workers",
+            "2",
+            "--fdb-container-name",
+            str(container_name),
+            "--fdb-port",
+            str(int(fdb_port)),
+            "--fdb-docker-image",
+            str(docker_image),
+            "--docker-command",
+            self.docker_command,
+            "--docker-start-timeout",
+            str(float(start_timeout_s)),
+            "--keep-container",
+            "--reuse-container",
+        ]
+        docker_platform = (os.environ.get("MAIN_COMPUTER_FDB_DOCKER_PLATFORM") or "").strip()
+        if docker_platform:
+            command.extend(["--docker-platform", docker_platform])
+
+        result = self._run(command, timeout=max(float(start_timeout_s) + 180.0, 240.0))
+        if result.returncode != 0:
+            output = result.stderr or result.stdout or ""
+            return self._component(
+                ok=False,
+                state="bootstrap-failed",
+                message="FoundationDB Docker bootstrap failed",
+                cluster_file=str(cluster_file),
+                script=str(smoke_script),
+                container_name=str(container_name),
+                port=int(fdb_port),
+                docker_image=str(docker_image),
+                returncode=result.returncode,
+                failed_command=_command_display(command),
+                error=_truncate(output),
+            )
+
+        ready = self._check_foundationdb_light()
+        ready.update(
+            {
+                "ok": True,
+                "state": "ready",
+                "message": "FoundationDB Docker bootstrap command succeeded",
+                "bootstrapped": True,
+                "container_name": str(container_name),
+                "docker_image": str(docker_image),
+                "stdout": _truncate(result.stdout or "", 2000),
+                "post_bootstrap_check": {
+                    "ok": bool(ready.get("ok")),
+                    "state": str(ready.get("state") or "unknown"),
+                    "message": str(ready.get("message") or ""),
+                },
+            }
+        )
+        return ready
+
+
     def _full_boot_reconcile(self) -> dict[str, Any]:
         state = self._base_state("booting")
         events: list[dict[str, Any]] = []
@@ -1068,6 +1316,7 @@ class ExecutorService:
                 distribution=self.wsl_distribution,
             ),
             docker=pending["docker"],
+            foundationdb=pending["foundationdb"],
             compose=pending["compose"],
         )
         wsl = self._reconcile_wsl_executor()
@@ -1081,15 +1330,39 @@ class ExecutorService:
                 message="checking Docker engine dependency",
                 docker_command=self.docker_command,
             ),
+            foundationdb=pending["foundationdb"],
             compose=pending["compose"],
         )
         docker = self._reconcile_docker_engine()
 
         if docker.get("ok"):
             self._publish_boot_progress(
+                message="checking FoundationDB Docker dependency",
+                wsl=wsl,
+                docker=docker,
+                foundationdb=self._boot_progress_component(
+                    name="foundationdb",
+                    state="checking",
+                    message="checking FoundationDB Docker dependency",
+                    cluster_file=str(self._foundationdb_cluster_file()),
+                ),
+                compose=pending["compose"],
+            )
+            foundationdb = self._reconcile_foundationdb()
+        else:
+            foundationdb = self._component(
+                ok=False,
+                state="blocked",
+                message="docker is not ready; FoundationDB bootstrap was not started",
+                cluster_file=str(self._foundationdb_cluster_file()),
+            )
+
+        if docker.get("ok"):
+            self._publish_boot_progress(
                 message="checking executor Compose/image dependency",
                 wsl=wsl,
                 docker=docker,
+                foundationdb=foundationdb,
                 compose=self._boot_progress_component(
                     name="compose",
                     state="checking",
@@ -1106,7 +1379,7 @@ class ExecutorService:
                 compose_file=str(self.compose_file),
             )
 
-        ok = bool(wsl.get("ok") and docker.get("ok") and compose.get("ok"))
+        ok = bool(wsl.get("ok") and docker.get("ok") and foundationdb.get("ok") and compose.get("ok"))
         state.update(
             {
                 "ok": ok,
@@ -1115,10 +1388,12 @@ class ExecutorService:
                 "last_boot_reconcile_at": _now_iso(),
                 "wsl": wsl,
                 "docker": docker,
+                "foundationdb": foundationdb,
                 "compose": compose,
                 "components": {
                     "wsl": wsl,
                     "docker": docker,
+                    "foundationdb": foundationdb,
                     "compose": compose,
                 },
                 "events": events,
@@ -1135,27 +1410,44 @@ class ExecutorService:
     def _light_keepalive(self, state: dict[str, Any]) -> dict[str, Any]:
         """Run the cheapest useful checks after boot.
 
-        The light path proves that Docker still answers and that the executor
-        Docker image is still available. It does not touch WSL because WSL
-        repair/proof is handled by full boot reconcile before boot is complete.
+        The light path proves that Docker still answers, the default FDB
+        coordinator is still reachable, and the executor Docker image is still
+        available. It does not touch WSL because WSL repair/proof is handled by
+        full boot reconcile before boot is complete.
         """
 
         docker = self._check_docker_light()
-        compose = self._check_compose_light() if docker.get("ok") else self._component(
-            ok=False,
-            state="blocked",
-            message="docker is down; compose light check was skipped",
-            compose_file=str(self.compose_file),
-        )
+        if docker.get("ok"):
+            foundationdb = self._check_foundationdb_light()
+            compose = self._check_compose_light()
+        else:
+            foundationdb = self._component(
+                ok=False,
+                state="blocked",
+                message="docker is down; FoundationDB light check was skipped",
+                cluster_file=str(self._foundationdb_cluster_file()),
+            )
+            compose = self._component(
+                ok=False,
+                state="blocked",
+                message="docker is down; compose light check was skipped",
+                compose_file=str(self.compose_file),
+            )
 
         if not docker.get("ok"):
             docker = self._reconcile_docker_engine()
-            compose = self._reconcile_compose_stack() if docker.get("ok") else compose
+            if docker.get("ok"):
+                foundationdb = self._reconcile_foundationdb()
+                compose = self._reconcile_compose_stack()
+        elif not foundationdb.get("ok"):
+            foundationdb = self._reconcile_foundationdb()
+            if not compose.get("ok"):
+                compose = self._reconcile_compose_stack()
         elif not compose.get("ok"):
             compose = self._reconcile_compose_stack()
 
         wsl = state.get("wsl") if isinstance(state.get("wsl"), dict) else {}
-        ok = bool(wsl.get("ok") and docker.get("ok") and compose.get("ok"))
+        ok = bool(wsl.get("ok") and docker.get("ok") and foundationdb.get("ok") and compose.get("ok"))
         state.update(
             {
                 "ok": ok,
@@ -1164,10 +1456,12 @@ class ExecutorService:
                 "updated_at": _now_iso(),
                 "last_light_check_at": _now_iso(),
                 "docker": docker,
+                "foundationdb": foundationdb,
                 "compose": compose,
                 "components": {
                     "wsl": wsl,
                     "docker": docker,
+                    "foundationdb": foundationdb,
                     "compose": compose,
                 },
                 "message": "light keepalive passed" if ok else "light keepalive repaired or detected degraded infrastructure",
