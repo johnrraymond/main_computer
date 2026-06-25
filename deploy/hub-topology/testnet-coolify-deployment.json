@@ -20,7 +20,7 @@
   ],
   "foundationdb": {
     "image": "foundationdb/foundationdb:7.4.6",
-    "cluster_description": "main-computer-testnet",
+    "cluster_description": "main_computer_testnet",
     "cluster_id": "7f0396a2939ca9c6",
     "cluster_file_path": "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster",
     "namespace": "main-computer-testnet-exp-fdb-stable-live-sessions",
