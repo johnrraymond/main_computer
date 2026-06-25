@@ -145,8 +145,10 @@ def clean_identifier(value: Any, field: str, *, allow_dots: bool = False) -> str
 
 def clean_cluster_token(value: Any, field: str) -> str:
     clean = clean_required_string(value, field)
-    if any(ch in clean for ch in ":@, \t\r\n"):
-        raise CoolifyHubDeployError(f"{field} must not contain whitespace, ':', '@', or ','.")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", clean):
+        raise CoolifyHubDeployError(
+            f"{field} must contain only ASCII letters, digits, and underscores for FoundationDB cluster strings."
+        )
     return clean
 
 
@@ -393,28 +395,21 @@ def fdb_server_bootstrap_script(placement: FoundationDBPlacement, instance: Foun
     instance_dir = fdb_instance_state_dir(placement, instance)
     data_dir = f"{instance_dir}/data"
     log_dir = f"{instance_dir}/logs"
-    conf_path = f"{instance_dir}/foundationdb.conf"
     return "\n".join(
         [
             f"echo 'Starting Main Computer FDB instance {instance.id} on {instance.vpn_ip}:{instance.port}'",
             f"mkdir -p {sh_quote(cluster_dir)} {sh_quote(data_dir)} {sh_quote(log_dir)}",
             f"printf '%s\\n' {sh_quote(cluster_contents)} > {sh_quote(cluster_file)}",
-            f"cat > {sh_quote(conf_path)} <<'FDBCONF'",
-            "[general]",
-            f"cluster-file = {cluster_file}",
-            "",
-            "[fdbserver]",
-            "command = /usr/sbin/fdbserver",
-            f"public-address = {instance.vpn_ip}:{instance.port}",
-            f"listen-address = 0.0.0.0:{instance.port}",
-            f"datadir = {data_dir}",
-            f"logdir = {log_dir}",
-            f"locality-machineid = {instance.machine_id}",
-            f"locality-zoneid = {instance.zone_id}",
-            "class = storage",
-            "knob_disable_posix_kernel_aio = 1",
-            "FDBCONF",
-            f"exec fdbmonitor --conffile {sh_quote(conf_path)}",
+            "exec /usr/bin/fdbserver \\",
+            f"  --cluster-file {sh_quote(cluster_file)} \\",
+            f"  --public-address {sh_quote(f'{instance.vpn_ip}:{instance.port}')} \\",
+            f"  --listen-address {sh_quote(f'0.0.0.0:{instance.port}')} \\",
+            f"  --datadir {sh_quote(data_dir)} \\",
+            f"  --logdir {sh_quote(log_dir)} \\",
+            f"  --locality-machineid {sh_quote(instance.machine_id)} \\",
+            f"  --locality-zoneid {sh_quote(instance.zone_id)} \\",
+            "  --class storage \\",
+            "  --knob_disable_posix_kernel_aio 1",
         ]
     )
 
@@ -475,7 +470,7 @@ def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str
                 "      - -euc",
                 f"      - {yaml_quote(fdb_server_bootstrap_script(placement, instance))}",
                 "    healthcheck:",
-                f"      test: [\"CMD-SHELL\", \"fdbcli -C {placement.cluster_file_path} --exec status --timeout 10 >/dev/null 2>&1 || exit 1\"]",
+                f'      test: ["CMD-SHELL", "python3 -c \'import socket; s=socket.create_connection((\\\"127.0.0.1\\\",{instance.port}),timeout=3); s.close()\'"]',
                 "      interval: 30s",
                 "      timeout: 10s",
                 "      start_period: 30s",

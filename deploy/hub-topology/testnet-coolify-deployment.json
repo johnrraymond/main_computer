@@ -11,7 +11,7 @@
   "servers": [
     {
       "name": "coolify-a",
-      "vpn_ip": "10.10.0.5"
+      "vpn_ip": "10.116.0.3"
     },
     {
       "name": "coolify-b",

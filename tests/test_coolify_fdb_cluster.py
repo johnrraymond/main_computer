@@ -99,10 +99,14 @@ class CoolifyFdbClusterTests(unittest.TestCase):
     def test_testnet_placement_renders_shared_cluster_contents(self) -> None:
         placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
 
-        self.assertEqual(
-            coolify_fdb_cluster.fdb_cluster_contents(placement),
-            "main-computer-testnet:7f0396a2939ca9c6@10.10.0.5:4550,10.10.0.5:4551,10.124.0.3:4550",
+        expected = (
+            f"{placement.cluster_description}:{placement.cluster_id}@"
+            f"{placement.servers['coolify-a'].vpn_ip}:4550,"
+            f"{placement.servers['coolify-a'].vpn_ip}:4551,"
+            f"{placement.servers['coolify-b'].vpn_ip}:4550"
         )
+        self.assertEqual(placement.cluster_description, "main_computer_testnet")
+        self.assertEqual(coolify_fdb_cluster.fdb_cluster_contents(placement), expected)
         self.assertEqual(placement.namespace, "main-computer-testnet-exp-fdb-stable-live-sessions")
         self.assertEqual(placement.cluster_file_path, "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster")
 
@@ -118,24 +122,36 @@ class CoolifyFdbClusterTests(unittest.TestCase):
 
     def test_coolify_a_compose_binds_only_vpn_ip_ports_for_local_instances(self) -> None:
         placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
+        vpn_a = placement.servers["coolify-a"].vpn_ip
+        vpn_b = placement.servers["coolify-b"].vpn_ip
 
         compose = coolify_fdb_cluster.render_server_fdb_compose(placement, "coolify-a")
 
-        self.assertIn('"10.10.0.5:4550:4550/tcp"', compose)
-        self.assertIn('"10.10.0.5:4551:4551/tcp"', compose)
-        self.assertNotIn('"10.124.0.3:4550:4550/tcp"', compose)
-        self.assertIn("public-address = 10.10.0.5:4550", compose)
-        self.assertIn("listen-address = 0.0.0.0:4550", compose)
-        self.assertIn("locality-machineid = coolify-a", compose)
-        self.assertIn("locality-zoneid = coolify-a", compose)
+        self.assertIn(f'"{vpn_a}:4550:4550/tcp"', compose)
+        self.assertIn(f'"{vpn_a}:4551:4551/tcp"', compose)
+        self.assertNotIn(f'"{vpn_b}:4550:4550/tcp"', compose)
+        self.assertIn(f"--public-address {vpn_a}:4550", compose)
+        self.assertIn("--listen-address 0.0.0.0:4550", compose)
+        self.assertIn("--locality-machineid coolify-a", compose)
+        self.assertIn("--locality-zoneid coolify-a", compose)
         self.assertIn("entrypoint:", compose)
         self.assertIn("      - /bin/sh", compose)
         self.assertIn("      - -euc", compose)
         self.assertNotIn("    command:", compose)
         self.assertNotIn("/var/fdb/scripts/fdb.bash", compose)
-        self.assertIn("Starting Main Computer FDB instance testnet-fdb1 on 10.10.0.5:4550", compose)
-        self.assertIn("knob_disable_posix_kernel_aio = 1", compose)
-        self.assertIn("fdbmonitor --conffile", compose)
+        self.assertIn(f"Starting Main Computer FDB instance testnet-fdb1 on {vpn_a}:4550", compose)
+        self.assertIn("exec /usr/bin/fdbserver", compose)
+        self.assertIn("--cluster-file /data/main-computer/hub/testnet-exp-fdb/fdb.cluster", compose)
+        self.assertIn(f"--public-address {vpn_a}:4550", compose)
+        self.assertIn("--listen-address 0.0.0.0:4550", compose)
+        self.assertIn("--class storage", compose)
+        self.assertIn("--knob_disable_posix_kernel_aio 1", compose)
+        self.assertNotIn("fdbmonitor", compose)
+        self.assertNotIn("foundationdb.conf", compose)
+        self.assertNotIn("[fdbserver]", compose)
+        self.assertNotIn("command = /usr/sbin/fdbserver", compose)
+        self.assertIn("socket.create_connection", compose)
+        self.assertIn("127.0.0.1", compose)
         self.assertIn("configure new double ssd", compose)
         self.assertIn("/data/main-computer/hub/testnet-exp-fdb/fdb.cluster", compose)
 
@@ -160,7 +176,13 @@ class CoolifyFdbClusterTests(unittest.TestCase):
         self.assertEqual(payload["environment_uuid"], "env-b")
         compose = base64.b64decode(payload["docker_compose_raw"]).decode("utf-8")
         self.assertIn("testnet-fdb3:", compose)
-        self.assertIn('"10.124.0.3:4550:4550/tcp"', compose)
+        vpn_b = placement.servers["coolify-b"].vpn_ip
+        self.assertIn(f'"{vpn_b}:4550:4550/tcp"', compose)
+        self.assertIn("exec /usr/bin/fdbserver", compose)
+        self.assertIn(f"--public-address {vpn_b}:4550", compose)
+        self.assertIn("--cluster-file /data/main-computer/hub/testnet-exp-fdb/fdb.cluster", compose)
+        self.assertNotIn("fdbmonitor", compose)
+        self.assertNotIn("command = /usr/sbin/fdbserver", compose)
         self.assertIn("entrypoint:", compose)
         self.assertNotIn("    command:", compose)
 
