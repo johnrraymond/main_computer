@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sys
 import urllib.parse
 from dataclasses import dataclass
@@ -283,10 +284,6 @@ def render_server_traefik_dynamic_config(placement: HubClusterPlacement, profile
                 f"    {service}:",
                 "      loadBalancer:",
                 "        passHostHeader: true",
-                "        healthCheck:",
-                f"          path: {yaml_quote(args.health_path)}",
-                "          interval: 30s",
-                "          timeout: 5s",
                 "        servers:",
             ]
         )
@@ -635,6 +632,12 @@ def render_server_hub_compose(placement: HubClusterPlacement, profile: Any, args
                 "      - /bin/sh",
                 "      - -euc",
                 f"      - {yaml_quote(installer_script)}",
+                "    healthcheck:",
+                f'      test: ["CMD-SHELL", "test -s {traefik_dynamic_config_path(placement, server_name)} && grep -q {shlex.quote(shared_entry_hosts(placement)[0])} {traefik_dynamic_config_path(placement, server_name)}"]',
+                "      interval: 30s",
+                "      timeout: 5s",
+                "      start_period: 5s",
+                "      retries: 3",
                 "",
             ]
         )
