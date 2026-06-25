@@ -128,6 +128,10 @@ class CoolifyFdbClusterTests(unittest.TestCase):
         self.assertIn("listen-address = 0.0.0.0:4550", compose)
         self.assertIn("locality-machineid = coolify-a", compose)
         self.assertIn("locality-zoneid = coolify-a", compose)
+        self.assertIn("knob_disable_posix_kernel_aio = 1", compose)
+        self.assertIn("entrypoint:\n      - /bin/sh\n      - -lc\n    command: |", compose)
+        self.assertNotIn('      - "sh"', compose)
+        self.assertNotIn("/var/fdb/scripts/fdb.bash", compose)
         self.assertIn("fdbmonitor --conffile", compose)
         self.assertIn("configure new double ssd", compose)
         self.assertIn("/data/main-computer/hub/testnet-exp-fdb/fdb.cluster", compose)
@@ -154,6 +158,7 @@ class CoolifyFdbClusterTests(unittest.TestCase):
         compose = base64.b64decode(payload["docker_compose_raw"]).decode("utf-8")
         self.assertIn("testnet-fdb3:", compose)
         self.assertIn('"10.124.0.3:4550:4550/tcp"', compose)
+        self.assertIn("entrypoint:\n      - /bin/sh\n      - -lc\n    command: |", compose)
 
     def test_missing_coolify_url_mapping_is_rejected(self) -> None:
         placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
