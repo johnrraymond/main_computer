@@ -1,8 +1,7 @@
 # Hub Coolify Deployment Runbook
 
 This runbook explains how to deploy the hosted Main Computer Hub service with
-`tools/coolify_hub_service.py` and how to deploy the shared testnet
-FoundationDB layer with `tools/coolify_fdb_cluster.py`.
+`tools/coolify_hub_service.py`.
 
 The hosted Hub now uses the experimental FoundationDB-backed Hub implementation
 served by `exp-fdb-hub.py`. The legacy non-FDB Hub Dockerfiles have been removed;
@@ -232,99 +231,36 @@ If `--fdb-cluster-file` is omitted, the remote deployer defaults to:
 ### Shared testnet FoundationDB cluster layer
 
 For the two-Coolify-host testnet topology, deploy the FoundationDB layer before
-deploying the Hub processes. This is a separate deployment surface from the Hub
-application deployer:
-
-```text
-tools/coolify_fdb_cluster.py  -> shared FoundationDB layer only
-tools/coolify_hub_service.py  -> Hub application/service deploys
-```
-
-The placement file is committed at:
+deploying the Hub processes. The placement file is committed at:
 
 ```text
 deploy/hub-topology/testnet-coolify-deployment.json
 ```
 
-That file deliberately uses stable symbolic Coolify host names such as
-`coolify-a` and `coolify-b`. The real Coolify API base URLs and tokens are
-provided at runtime, not committed to Git.
-
-The placement file owns:
-
-```text
-network key
-topology path
-symbolic Coolify host names
-private/VPN bind addresses for FoundationDB
-FoundationDB instance placement
-FoundationDB cluster description/id
-FoundationDB cluster file path
-FoundationDB namespace
-Hub-to-Coolify placement names
-```
-
-The command line owns:
-
-```text
-symbolic Coolify name -> Coolify API base URL
-symbolic Coolify name -> Coolify API token or token environment variable
-Coolify project/environment selection
-whether to only render the plan or to actually apply/deploy
-```
-
-Do not put public droplet addresses, private VPN addresses, or Coolify API tokens
-in this runbook. Use placeholders such as `ipaddress1`, `ipaddress2`, `vpnip1`,
-and `vpnip2` in documentation and tests.
-
-#### Coolify URL and token binding
-
-Bind the symbolic Coolify names to the actual Coolify API URLs when running the
-deployer:
+The placement file uses symbolic Coolify names (`coolify-a`, `coolify-b`) and
+private droplet VPN `10.*` addresses. Bind the symbols to actual Coolify API URLs
+at runtime:
 
 ```powershell
-$env:COOLIFY_A_TOKEN = "<raw-coolify-api-token-for-coolify-a>"
-$env:COOLIFY_B_TOKEN = "<raw-coolify-api-token-for-coolify-b>"
+$env:MAIN_COMPUTER_COOLIFY_TOKEN = "<token-visible-to-both-coolify-servers>"
 
 python .\tools\coolify_fdb_cluster.py plan `
   --placement deploy\hub-topology\testnet-coolify-deployment.json `
-  --set-coolify-url "coolify-a:http://ipaddress1:8000" `
-  --set-coolify-url "coolify-b:http://ipaddress2:8000" `
-  --coolify-project-name "My first project" `
-  --coolify-environment-name "testnet-fdb"
+  --set-coolify-url "coolify-a:https://ipaddress1:8000" `
+  --set-coolify-url "coolify-b:https://ipaddress2:8000" `
+  --coolify-project-name "Main Computer"
 ```
 
-The value format is:
-
-```text
-<symbolic-coolify-name>:<coolify-api-base-url>
-```
-
-The parser splits on the first colon only, so URLs with their own scheme and port
-are valid. If the raw `:8000` Coolify API is plain HTTP, use `http://...`; using
-`https://...` against a plain HTTP listener will fail during the version check
-with an SSL `WRONG_VERSION_NUMBER` style error.
-
-For live apply, pass the token environment variable bindings and omit
-`--dry-run`:
+Apply the FoundationDB layer:
 
 ```powershell
 python .\tools\coolify_fdb_cluster.py apply `
   --placement deploy\hub-topology\testnet-coolify-deployment.json `
-  --set-coolify-url "coolify-a:http://ipaddress1:8000" `
-  --set-coolify-url "coolify-b:http://ipaddress2:8000" `
-  --set-coolify-token-env "coolify-a:COOLIFY_A_TOKEN" `
-  --set-coolify-token-env "coolify-b:COOLIFY_B_TOKEN" `
-  --coolify-project-name "My first project" `
-  --coolify-environment-name "testnet-fdb" `
-  --force-deploy
+  --set-coolify-url "coolify-a:https://ipaddress1:8000" `
+  --set-coolify-url "coolify-b:https://ipaddress2:8000" `
+  --coolify-project-name "Main Computer" `
+  --coolify-environment-name "testnet-fdb"
 ```
-
-`apply --dry-run` is intentionally non-mutating: it renders the full apply plan
-and generated Compose payloads but does not create/update Coolify resources.
-Remove `--dry-run` when you are ready for the tool to call Coolify.
-
-#### What the FDB deployer creates
 
 The FDB deployer creates one Coolify Service per symbolic host:
 
@@ -333,161 +269,117 @@ main-computer-testnet-fdb-coolify-a
 main-computer-testnet-fdb-coolify-b
 ```
 
-For the current three-FDB-process testnet layout, the intended logical placement
-is:
+The rendered Compose publishes FDB only on the configured VPN/private IP and
+ports, for example:
 
 ```text
-coolify-a:
-  testnet-fdb1 on vpnip1:4550
-  testnet-fdb2 on vpnip1:4551
-
-coolify-b:
-  testnet-fdb3 on vpnip2:4550
+vpnip1:4550
+vpnip1:4551
+vpnip2:4550
 ```
 
-The real VPN/private bind addresses come from `servers[].vpn_ip` in the placement
-file. The generated Compose publishes FDB only on those configured private/VPN
-addresses and ports. Do not publish FoundationDB through public DNS, public
-Traefik routes, or a public interface.
-
-Every FDB process and every Hub process must read the same cluster file path:
+It writes the same cluster file on each host:
 
 ```text
 /data/main-computer/hub/testnet-exp-fdb/fdb.cluster
 ```
 
-The cluster file contents have this shape:
-
-```text
-main-computer-testnet:<stable-cluster-id>@vpnip1:4550,vpnip1:4551,vpnip2:4550
-```
-
-Hub services must use the same namespace from the placement file:
+Hub services must mount/read that exact file and must use the namespace from the
+placement file:
 
 ```text
 main-computer-testnet-exp-fdb-stable-live-sessions
 ```
 
-The generated FDB containers override the FoundationDB image entrypoint and run a
-small shell bootstrap script directly. That is important: if the default image
-wrapper runs instead, it can start a stray FDB server on the container's default
-port and ignore the intended private/VPN bind ports.
+Do not publish FDB through Traefik or public DNS. The FDB service ports should be
+reachable only over the private droplet VPN interface.
 
-Expected healthy FDB container logs begin with a Main Computer bootstrap message
-for the configured FDB instance and configured private/VPN port. They should not
-dump the shell environment, and they should not say that the image wrapper is
-starting a default server on a Docker-internal address and default port.
+### Shared testnet Hub cluster layer
 
-#### Host-level verification
+After the shared FDB layer is green, deploy the three concrete Hub containers
+with `tools/coolify_hub_cluster.py`. This tool uses the same committed placement
+file but manages only the Hub layer. It does **not** start an FDB sidecar and it
+does **not** rewrite `fdb.cluster`.
 
-After apply/deploy, SSH to each Coolify host and confirm that the expected FDB
-ports are listening on the private/VPN interface only.
+Render the Hub cluster plan:
 
-Set placeholders on each host before running checks:
+```powershell
+$env:COOLIFY_A_TOKEN = "<coolify-a-api-token>"
+$env:COOLIFY_B_TOKEN = "<coolify-b-api-token>"
+$GitRepo = "https://github.com/<owner>/<repo>.git"
 
-```bash
-VPNIP1="vpnip1"
-VPNIP2="vpnip2"
-FDB_CLUSTER="main-computer-testnet:<stable-cluster-id>@${VPNIP1}:4550,${VPNIP1}:4551,${VPNIP2}:4550"
+python .\tools\coolify_hub_cluster.py plan `
+  --placement deploy\hub-topology\testnet-coolify-deployment.json `
+  --set-coolify-url "coolify-a:http://ipaddress1:8000" `
+  --set-coolify-url "coolify-b:http://ipaddress2:8000" `
+  --set-coolify-token-env "coolify-a:COOLIFY_A_TOKEN" `
+  --set-coolify-token-env "coolify-b:COOLIFY_B_TOKEN" `
+  --coolify-project-name "Main Computer" `
+  --coolify-environment-name "testnet-hubs" `
+  --git-repo $GitRepo
 ```
 
-Check local listeners:
+Apply the Hub cluster layer:
 
-```bash
-ss -ltnp | grep -E '(:4550|:4551)' || true
+```powershell
+python .\tools\coolify_hub_cluster.py apply `
+  --placement deploy\hub-topology\testnet-coolify-deployment.json `
+  --set-coolify-url "coolify-a:http://ipaddress1:8000" `
+  --set-coolify-url "coolify-b:http://ipaddress2:8000" `
+  --set-coolify-token-env "coolify-a:COOLIFY_A_TOKEN" `
+  --set-coolify-token-env "coolify-b:COOLIFY_B_TOKEN" `
+  --coolify-project-name "Main Computer" `
+  --coolify-environment-name "testnet-hubs" `
+  --git-repo $GitRepo `
+  --force-deploy
 ```
 
-Check TCP reachability from the host:
-
-```bash
-python3 - <<'PY'
-import os
-import socket
-
-vpnip1 = os.environ["VPNIP1"]
-vpnip2 = os.environ["VPNIP2"]
-endpoints = [
-    ("testnet-fdb1", vpnip1, 4550),
-    ("testnet-fdb2", vpnip1, 4551),
-    ("testnet-fdb3", vpnip2, 4550),
-]
-
-for name, host, port in endpoints:
-    sock = socket.socket()
-    sock.settimeout(4)
-    try:
-        sock.connect((host, port))
-        print(f"OK   {name} {host}:{port}")
-    except Exception as exc:
-        print(f"FAIL {name} {host}:{port} -> {type(exc).__name__}: {exc}")
-    finally:
-        sock.close()
-PY
-```
-
-Run an FDB client status check without letting the FoundationDB image start its
-default server:
-
-```bash
-tmpdir="$(mktemp -d)"
-printf '%s\n' "$FDB_CLUSTER" > "$tmpdir/fdb.cluster"
-
-docker run --rm --network host \
-  --entrypoint fdbcli \
-  -v "$tmpdir/fdb.cluster:/etc/foundationdb/fdb.cluster:ro" \
-  foundationdb/foundationdb:7.4.6 \
-  -C /etc/foundationdb/fdb.cluster \
-  --exec "status minimal" \
-  --timeout 10
-
-rm -rf "$tmpdir"
-```
-
-Interpretation:
+The Hub cluster deployer creates one Coolify Service resource per symbolic
+Coolify host:
 
 ```text
-TCP fails for local private/VPN addresses:
-  Docker publish, bind address, or local firewall is wrong.
-
-TCP fails only for the other host:
-  Private/VPN routing or inter-host firewalling is wrong.
-
-TCP succeeds but fdbcli fails:
-  The ports are reachable, but the FDB cluster is not configured/healthy yet.
-
-fdbcli status minimal succeeds:
-  The shared FDB cluster is reachable from that host.
+main-computer-testnet-hubs-coolify-a
+main-computer-testnet-hubs-coolify-b
 ```
 
-#### Common failure signatures
+Those Service resources contain the concrete Hub containers from the placement
+file:
 
-`HTTP 401` during the Coolify version check means the tool reached Coolify but
-the token used for that symbolic host was rejected. Confirm that the token
-environment variable is set in the same shell and that the raw token belongs to
-that specific Coolify instance.
+```text
+coolify-a:
+  testnet-hub1 -> https://testnet-hub1.greatlibrary.io
+  testnet-hub2 -> https://testnet-hub2.greatlibrary.io
 
-`SSL: WRONG_VERSION_NUMBER` during the Coolify version check usually means the
-command used `https://` for a plain HTTP Coolify API listener. Use the scheme that
-the Coolify API actually serves.
+coolify-b:
+  testnet-hub3 -> https://testnet-hub3.greatlibrary.io
+```
 
-A plan printed by `apply` with `"dry_run": true` means the command included
-`--dry-run`; no Coolify resources were changed.
+Every Hub container starts `exp-fdb-hub.py` with the same topology file and
+shared FDB settings, plus its own concrete Hub identity:
 
-FDB logs that dump the whole shell environment mean the generated shell argv was
-wrong and the container ran `set` rather than the bootstrap script. Use the fixed
-deployer and force a redeploy.
+```text
+--topology /app/deploy/hub-topology/testnet-topology.json
+--hub-id testnet-hub1|testnet-hub2|testnet-hub3
+--cluster-file /data/main-computer/hub/testnet-exp-fdb/fdb.cluster
+--namespace main-computer-testnet-exp-fdb-stable-live-sessions
+--no-fdb-autostart
+--require-multisession-auth
+```
 
-FDB logs that show the FoundationDB image wrapper starting a default server on a
-Docker-internal address and default port mean the generated Compose did not
-override the image entrypoint. Use the fixed deployer and force a redeploy.
+The public entry alias, `https://testnet-hub.greatlibrary.io`, should be enabled
+only after all three concrete Hub hostnames are healthy. Verify the concrete
+Hubs directly first:
 
-A cluster file containing a Docker service alias from an old Hub sidecar means a
-stale per-Hub FDB sidecar is still writing to the same runtime path. Stop/remove
-the old sidecar or move the shared FDB layer to a clean runtime directory before
-trusting the testnet cluster.
+```text
+https://testnet-hub1.greatlibrary.io/api/hub/status
+https://testnet-hub2.greatlibrary.io/api/hub/status
+https://testnet-hub3.greatlibrary.io/api/hub/status
+```
 
-Do not launch the multi-hub testnet services against isolated per-Hub sidecars.
-All three Hubs must use the shared cluster file and namespace above.
+If a Hub container starts a local FDB sidecar or writes a cluster file containing
+a Docker service name such as `docker:docker@...`, it is using the wrong deploy
+surface. The shared testnet topology must use `coolify_fdb_cluster.py` for FDB
+and `coolify_hub_cluster.py` for the Hub containers.
 
 
 ## Render the plan
@@ -557,10 +449,10 @@ python .\tools\coolify_hub_service.py apply testnet `
   --coolify-url $CoolifyUrl `
   --coolify-project-name "My first project" `
   --coolify-environment-name "testnet-hub" `
-  --coolify-server-uuid "<coolify-server-uuid>" `
-  --git-repo https://github.com/<owner>/<repo> `
+  --coolify-server-uuid "c11j1nrxs7m2q6of6jmbxoxm" `
+  --git-repo https://github.com/johnrraymond/main_computer `
   --fdb-cluster-file /data/main-computer/hub/testnet-exp-fdb/fdb.cluster `
-  --fdb-namespace main-computer-testnet-exp-fdb-stable-live-sessions `
+  --fdb-namespace main-computer-testnet-exp-fdb `
   --force-deploy `
   --rpc-check warn `
   --hub-health-check warn `
@@ -568,16 +460,13 @@ python .\tools\coolify_hub_service.py apply testnet `
   --sync-bridge-signer
 ```
 
-That command is the single-service testnet Hub calling convention. For the
-three-hub testnet topology, deploy the shared FoundationDB layer first and make
-each Hub service read the shared cluster file from:
+That command is the known-good testnet calling convention for the remote
+exp-FDB Hub that owns its FoundationDB sidecar and writes `fdb.cluster` in the
+same persistent host directory mounted by the Hub service:
 
 ```text
-/data/main-computer/hub/testnet-exp-fdb/fdb.cluster
+/data/main-computer/hub/testnet-exp-fdb
 ```
-
-Do not use isolated per-Hub FoundationDB sidecars for the three-hub testnet
-topology.
 
 `--enable-bridge-writes` selects the non-smoke `bridge-signer` mode.
 `--sync-bridge-signer` pushes the local bridge controller signer bundle through
