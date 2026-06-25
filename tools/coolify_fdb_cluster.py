@@ -175,12 +175,6 @@ def yaml_quote(value: str) -> str:
     return json.dumps(str(value))
 
 
-def yaml_block_lines(value: str, indent: str = "      ") -> list[str]:
-    """Render a literal block scalar body for generated docker-compose YAML."""
-
-    return [f"{indent}{line}" if line else indent.rstrip() for line in value.splitlines()]
-
-
 def service_key(value: str) -> str:
     clean = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "").strip()).strip("-")
     return clean or "main-computer-fdb"
@@ -402,7 +396,7 @@ def fdb_server_bootstrap_script(placement: FoundationDBPlacement, instance: Foun
     conf_path = f"{instance_dir}/foundationdb.conf"
     return "\n".join(
         [
-            "set -eu",
+            f"echo 'Starting Main Computer FDB instance {instance.id} on {instance.vpn_ip}:{instance.port}'",
             f"mkdir -p {sh_quote(cluster_dir)} {sh_quote(data_dir)} {sh_quote(log_dir)}",
             f"printf '%s\\n' {sh_quote(cluster_contents)} > {sh_quote(cluster_file)}",
             f"cat > {sh_quote(conf_path)} <<'FDBCONF'",
@@ -432,7 +426,6 @@ def fdb_configure_bootstrap_script(placement: FoundationDBPlacement) -> str:
     configure_command = f"configure new {placement.configure}"
     return "\n".join(
         [
-            "set -eu",
             f"mkdir -p {sh_quote(cluster_dir)}",
             f"printf '%s\\n' {sh_quote(cluster_contents)} > {sh_quote(cluster_file)}",
             f"echo 'Using FDB cluster file: {cluster_file}'",
@@ -479,9 +472,8 @@ def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str
                 f"      - {yaml_quote(f'{cluster_dir}:{cluster_dir}')}",
                 "    entrypoint:",
                 "      - /bin/sh",
-                "      - -lc",
-                "    command: |",
-                *yaml_block_lines(fdb_server_bootstrap_script(placement, instance)),
+                "      - -euc",
+                f"      - {yaml_quote(fdb_server_bootstrap_script(placement, instance))}",
                 "    healthcheck:",
                 f"      test: [\"CMD-SHELL\", \"fdbcli -C {placement.cluster_file_path} --exec status --timeout 10 >/dev/null 2>&1 || exit 1\"]",
                 "      interval: 30s",
@@ -504,9 +496,8 @@ def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str
             f"      - {yaml_quote(f'{cluster_dir}:{cluster_dir}')}",
             "    entrypoint:",
             "      - /bin/sh",
-            "      - -lc",
-            "    command: |",
-            *yaml_block_lines(fdb_configure_bootstrap_script(placement)),
+            "      - -euc",
+            f"      - {yaml_quote(fdb_configure_bootstrap_script(placement))}",
             "",
         ]
     )
