@@ -1790,6 +1790,7 @@ class HubServerTests(unittest.TestCase):
                 workspace=Path(hub_tmp),
                 model="fake-model",
                 hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_bridge_backend="mock-chain",
             )
             hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
             account_id = wallet_account_id(wallet)
@@ -1859,6 +1860,22 @@ class HubServerTests(unittest.TestCase):
                 self.assertEqual(ready["reason_code"], "active")
                 self.assertEqual(ready["account_id"], account_id)
                 self.assertEqual(ready["account"]["available_credits"], 2)
+
+                decimal_chain_ready = provider.validate_multisession_key(
+                    {
+                        "payment_authorization": {
+                            "kind": "multisession_key",
+                            "paid_overflow_enabled": True,
+                            "wallet_address": wallet,
+                            "multisession_key_id": key_id,
+                            "chain_id": "42424242",
+                            "max_authorized_credit_wei": "1000000000000000000",
+                        }
+                    }
+                )
+                self.assertTrue(decimal_chain_ready["valid"])
+                self.assertEqual(decimal_chain_ready["reason_code"], "active")
+                self.assertEqual(decimal_chain_ready["chain_id"], "42424242")
 
                 revoked = provider.validate_multisession_key(
                     {

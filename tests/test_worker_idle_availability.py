@@ -577,6 +577,118 @@ def test_worker_runtime_transition_derives_enabled_from_seller_policy(tmp_path: 
 
 
 
+def test_worker_runtime_uses_live_session_instead_of_removed_heartbeat_endpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+        },
+    )()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "main_computer.viewport_routes_energy.collect_windows_user_activity",
+        lambda: {
+            "supported": True,
+            "ok": True,
+            "active": False,
+            "reason": "unit-test-idle",
+            "active_session_count": 0,
+            "connected_session_count": 1,
+            "sessions": [],
+            "idle_active_threshold_s": 300,
+        },
+    )
+
+    def fake_live_session(*, hub_url: str, worker_id: str, auth_message: dict[str, object]) -> dict[str, object]:
+        captured["hub_url"] = hub_url
+        captured["worker_id"] = worker_id
+        captured["auth_message"] = auth_message
+        return {
+            "ok": True,
+            "transport": "websocket",
+            "endpoint": "/api/hub/v1/workers/live-session",
+            "connection_id": "conn-test",
+            "alive": True,
+        }
+
+    monkeypatch.setattr(harness, "_ensure_worker_live_session", fake_live_session)
+
+    settings = dict(_runtime_settings(harness))
+    signed = dict(settings["signedWorkerConnection"])  # type: ignore[index]
+    worker = dict(signed["worker"])  # type: ignore[index]
+    worker["multisession_key_id"] = "msk-worker-live-session-test"
+    worker["wallet_address"] = signed["wallet_address"]
+    worker["chain_id"] = signed["chain_id"]
+    signed["worker"] = worker
+    settings["signedWorkerConnection"] = signed
+
+    saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=True)
+
+    auth_message = captured["auth_message"]  # type: ignore[assignment]
+    assert saved["workerRuntimeLastHeartbeatStatus"] == "available"
+    assert status["runtime"]["heartbeat_result"]["endpoint"] == "/api/hub/v1/workers/live-session"
+    assert status["runtime"]["heartbeat_result"]["transport"] == "websocket"
+    assert captured["hub_url"] == "http://127.0.0.1:8770"
+    assert captured["worker_id"] == "runtime-worker-001"
+    assert auth_message["type"] == "worker.auth"  # type: ignore[index]
+    assert auth_message["worker_id"] == "runtime-worker-001"  # type: ignore[index]
+    assert auth_message["market"]["rings"] == ["ring-3"]  # type: ignore[index]
+    assert auth_message["market"]["price"]["amount"] == "1.024"  # type: ignore[index]
+    assert auth_message["multisession_authorization"]["multisession_key_id"] == "msk-worker-live-session-test"  # type: ignore[index]
+
+
+def test_worker_runtime_closes_live_session_when_not_accepting(tmp_path: Path) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+        },
+    )()
+    captured: dict[str, object] = {}
+
+    def fake_close(*, hub_url: str, worker_id: str, reason: str) -> dict[str, object]:
+        captured["hub_url"] = hub_url
+        captured["worker_id"] = worker_id
+        captured["reason"] = reason
+        return {
+            "ok": True,
+            "transport": "websocket",
+            "endpoint": "/api/hub/v1/workers/live-session",
+            "closed_by_runtime": True,
+        }
+
+    harness._close_worker_live_session = fake_close  # type: ignore[method-assign]
+
+    result = harness._post_worker_runtime_heartbeat_to_hub(
+        hub_url="http://127.0.0.1:8770",
+        settings=_runtime_settings(harness),
+        phase="not_accepting",
+        hub_status="offline",
+        active_jobs=0,
+        policy={"allowed_to_accept": False},
+    )
+
+    assert result["endpoint"] == "/api/hub/v1/workers/live-session"
+    assert captured == {
+        "hub_url": "http://127.0.0.1:8770",
+        "worker_id": "runtime-worker-001",
+        "reason": "runtime_not_accepting",
+    }
+
+
+
 def test_worker_runtime_status_truth_accept_paid_jobs_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _WorkerRoutesHarness()
     harness.server = type(
@@ -1060,7 +1172,7 @@ def test_worker_runtime_transition_heartbeats_accepting_then_offline(tmp_path: P
     assert heartbeats[-1]["hub_status"] == "offline"
 
 
-def test_worker_runtime_heartbeat_preserves_registered_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_runtime_live_session_preserves_registered_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _WorkerRoutesHarness()
     harness.server = type(
         "Server",
@@ -1070,50 +1182,56 @@ def test_worker_runtime_heartbeat_preserves_registered_capabilities(monkeypatch:
 
     captured: dict[str, object] = {}
 
-    class _FakeResponse:
-        def __enter__(self) -> "_FakeResponse":
-            return self
+    def fake_live_session(*, hub_url: str, worker_id: str, auth_message: dict[str, object]) -> dict[str, object]:
+        captured["hub_url"] = hub_url
+        captured["worker_id"] = worker_id
+        captured["auth_message"] = auth_message
+        return {
+            "ok": True,
+            "transport": "websocket",
+            "endpoint": "/api/hub/v1/workers/live-session",
+            "connection_id": "conn-test",
+            "alive": True,
+        }
 
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return b'{"ok": true, "worker": {"node_id": "runtime-worker-001"}}'
-
-    def fake_urlopen(request: object, timeout: float = 0.0) -> _FakeResponse:
-        captured["url"] = request.full_url
-        captured["timeout"] = timeout
-        captured["body"] = json.loads(request.data.decode("utf-8"))
-        return _FakeResponse()
-
-    monkeypatch.setattr("main_computer.viewport_routes_energy.urlopen", fake_urlopen)
+    monkeypatch.setattr(harness, "_ensure_worker_live_session", fake_live_session)
 
     policy = {
         "allowed_to_accept": True,
         "user_activity": {"active": False, "reason": "unit-test-idle"},
     }
+    settings = _runtime_settings(harness)
+    signed = dict(settings["signedWorkerConnection"])  # type: ignore[index]
+    worker = dict(signed["worker"])  # type: ignore[index]
+    worker["multisession_key_id"] = "msk-worker-live-session-capabilities"
+    worker["wallet_address"] = signed["wallet_address"]
+    worker["chain_id"] = signed["chain_id"]
+    signed["worker"] = worker
+    settings["signedWorkerConnection"] = signed
 
-    harness._post_worker_runtime_heartbeat_to_hub(
+    result = harness._post_worker_runtime_heartbeat_to_hub(
         hub_url="http://127.0.0.1:8770",
-        settings=_runtime_settings(harness),
+        settings=settings,
         phase="accepting",
         hub_status="available",
         active_jobs=0,
         policy=policy,
     )
 
-    body = captured["body"]
-    assert body["worker_node_id"] == "runtime-worker-001"
-    assert body["status"] == "available"
-    assert body["max_concurrency"] == 1
-    capabilities = body["capabilities"]
-    assert capabilities["pricing"]["credits_per_request"] == "1.024"
-    assert capabilities["execution"]["mode"] == "worker_pull_v0"
-    assert capabilities["assigned_ring"] == "3"
-    assert capabilities["runtime"]["no_job_polling"] is True
-    assert capabilities["availability"]["availability_mode"] == "totally_idle"
-    assert capabilities["availability"]["only_when_idle"] is True
-    assert capabilities["availability"]["worker_runtime_phase"] == "accepting"
+    assert result["endpoint"] == "/api/hub/v1/workers/live-session"
+    auth_message = captured["auth_message"]
+    assert auth_message["worker_id"] == "runtime-worker-001"  # type: ignore[index]
+    assert auth_message["status"] == "available"  # type: ignore[index]
+    assert auth_message["max_concurrency"] == 1  # type: ignore[index]
+    capabilities = auth_message["capabilities"]  # type: ignore[index]
+    assert capabilities["pricing"]["credits_per_request"] == "1.024"  # type: ignore[index]
+    assert capabilities["execution"]["mode"] == "worker_pull_v0"  # type: ignore[index]
+    assert capabilities["assigned_ring"] == "3"  # type: ignore[index]
+    assert capabilities["runtime"]["transport"] == "websocket"  # type: ignore[index]
+    assert capabilities["runtime"]["live_session_endpoint"] == "/api/hub/v1/workers/live-session"  # type: ignore[index]
+    assert capabilities["availability"]["availability_mode"] == "totally_idle"  # type: ignore[index]
+    assert capabilities["availability"]["only_when_idle"] is True  # type: ignore[index]
+    assert capabilities["availability"]["worker_runtime_phase"] == "accepting"  # type: ignore[index]
 
 
 def test_market_worker_offer_from_payload_keeps_decimal_price_as_wei() -> None:

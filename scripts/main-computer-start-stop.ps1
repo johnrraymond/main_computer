@@ -218,9 +218,9 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     MAIN_COMPUTER_DEV_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_DOCKER_VIEWPORT_PORT = "18765"
-    MAIN_COMPUTER_HUB_PORT = "8770"
+    MAIN_COMPUTER_HUB_PORT = "8871"
     MAIN_COMPUTER_HUB_WORKER_PORT = "8771"
-    MAIN_COMPUTER_HUB_URL = "http://127.0.0.1:8770"
+    MAIN_COMPUTER_HUB_URL = "http://127.0.0.1:8871"
     MAIN_COMPUTER_HUB_NETWORK = "dev"
     MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
     OLLAMA_BASE_URL = "http://127.0.0.1:11434"
@@ -1082,10 +1082,96 @@ function Start-MainComputerDevChainIfNeeded([string]$RootPath, [object]$LaunchCo
   }
 }
 
-function Resolve-MainComputerDevHubEndpoint([object]$LaunchContext) {
-  $hubUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_URL" "http://127.0.0.1:8770"
+
+function Resolve-MainComputerRepoPath([string]$RootPath, [string]$Value) {
+  $text = ConvertTo-StringValue $Value ""
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return ""
+  }
+  if ([System.IO.Path]::IsPathRooted($text)) {
+    return $text
+  }
+  return Join-Path $RootPath $text
+}
+
+function New-MainComputerDevHubEndpointFromUrl(
+  [string]$HubUrl,
+  [string]$HubId,
+  [string]$Network,
+  [string]$ChainRpcUrl,
+  [string]$ChainId
+) {
   $hubBindHost = "127.0.0.1"
-  $hubBindPort = 8770
+  $hubBindPort = 8871
+  $cleanUrl = ConvertTo-StringValue $HubUrl ""
+
+  try {
+    $uri = [uri]$cleanUrl
+    if (-not [string]::IsNullOrWhiteSpace($uri.Host)) {
+      $hubBindHost = $uri.Host
+    }
+    if ($uri.Port -gt 0) {
+      $hubBindPort = [int]$uri.Port
+    }
+  } catch {}
+
+  if ([string]::IsNullOrWhiteSpace($cleanUrl)) {
+    $cleanUrl = ("http://{0}:{1}" -f $hubBindHost, $hubBindPort)
+  }
+
+  return [ordered]@{
+    hub_id = $HubId
+    hub_url = $cleanUrl
+    status_url = ($cleanUrl.TrimEnd([char[]]"/") + "/api/hub/status")
+    host = $hubBindHost
+    port = $hubBindPort
+    network = $Network
+    chain_rpc_url = $ChainRpcUrl
+    chain_id = $ChainId
+  }
+}
+
+function Resolve-MainComputerDevHubEndpoints([string]$RootPath, [object]$LaunchContext) {
+  $network = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev"
+  $chainRpcUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL" "http://127.0.0.1:18545"
+  $chainId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ENERGY_CHAIN_ID" "42424242"
+  $topologyMode = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_TOPOLOGY_MODE" "cluster").Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($topologyMode)) {
+    $topologyMode = "cluster"
+  }
+
+  $topologyPath = Resolve-MainComputerRepoPath `
+    $RootPath `
+    (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_TOPOLOGY" "deploy\hub-topology\dev-topology.json")
+
+  if ($topologyMode -ne "single" -and -not [string]::IsNullOrWhiteSpace($topologyPath) -and (Test-Path -LiteralPath $topologyPath -PathType Leaf)) {
+    $topology = Read-JsonFile $topologyPath
+    if ($null -ne $topology -and $null -ne $topology.hubs) {
+      $topologyNetwork = Get-ObjectPropertyValue $topology "network" $null
+      if ($null -ne $topologyNetwork) {
+        $network = ConvertTo-StringValue (Get-ObjectPropertyValue $topologyNetwork "network_key" $network) $network
+        $chainRpcUrl = ConvertTo-StringValue (Get-ObjectPropertyValue $topologyNetwork "chain_rpc_url" $chainRpcUrl) $chainRpcUrl
+        $chainId = ConvertTo-StringValue (Get-ObjectPropertyValue $topologyNetwork "chain_id" $chainId) $chainId
+      }
+
+      $endpoints = @()
+      foreach ($hub in @($topology.hubs)) {
+        $hubId = ConvertTo-StringValue (Get-ObjectPropertyValue $hub "hub_id" "") ""
+        $hubUrl = ConvertTo-StringValue (Get-ObjectPropertyValue $hub "hub_url" (Get-ObjectPropertyValue $hub "public_url" "")) ""
+        if ([string]::IsNullOrWhiteSpace($hubId) -or [string]::IsNullOrWhiteSpace($hubUrl)) {
+          continue
+        }
+        $endpoints += New-MainComputerDevHubEndpointFromUrl $hubUrl $hubId $network $chainRpcUrl $chainId
+      }
+      if ($endpoints.Count -gt 0) {
+        return @($endpoints)
+      }
+    }
+  }
+
+  $hubUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_URL" "http://127.0.0.1:8871"
+  $hubBindHost = "127.0.0.1"
+  $hubBindPort = 8871
 
   try {
     $uri = [uri]$hubUrl
@@ -1102,23 +1188,21 @@ function Resolve-MainComputerDevHubEndpoint([object]$LaunchContext) {
   try {
     $hubBindPort = [int]$hubPortText
   } catch {
-    $hubBindPort = 8770
+    $hubBindPort = 8871
   }
 
-  $network = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev"
-  $chainRpcUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL" "http://127.0.0.1:18545"
-  $chainId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ENERGY_CHAIN_ID" "42424242"
   $hubUrl = ("http://{0}:{1}" -f $hubBindHost, $hubBindPort)
+  $hubId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_ID" "dev-hub1"
 
-  return [ordered]@{
-    hub_url = $hubUrl
-    status_url = ($hubUrl.TrimEnd([char[]]"/") + "/api/hub/status")
-    host = $hubBindHost
-    port = $hubBindPort
-    network = $network
-    chain_rpc_url = $chainRpcUrl
-    chain_id = $chainId
+  return @((New-MainComputerDevHubEndpointFromUrl $hubUrl $hubId $network $chainRpcUrl $chainId))
+}
+
+function Resolve-MainComputerDevHubEndpoint([string]$RootPath, [object]$LaunchContext) {
+  $endpoints = @(Resolve-MainComputerDevHubEndpoints $RootPath $LaunchContext)
+  if ($endpoints.Count -eq 0) {
+    return New-MainComputerDevHubEndpointFromUrl "http://127.0.0.1:8871" "dev-hub1" "dev" "http://127.0.0.1:18545" "42424242"
   }
+  return $endpoints[0]
 }
 
 function Test-MainComputerDevHubStatus([string]$StatusUrl) {
@@ -1179,14 +1263,54 @@ function Wait-MainComputerDevHubStatus([string]$StatusUrl, [int]$TimeoutSeconds 
   }
 }
 
+
+function Wait-MainComputerDevHubEndpointsStatus([object[]]$Endpoints, [int]$TimeoutSeconds = 30) {
+  $checks = @()
+  $allOk = $true
+  foreach ($endpoint in @($Endpoints)) {
+    $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) ([int]$TimeoutSeconds)
+    $checks += [ordered]@{
+      hub_id = [string]$endpoint.hub_id
+      hub_url = [string]$endpoint.hub_url
+      status_url = [string]$endpoint.status_url
+      health_check = $health
+      ok = [bool]$health.ok
+    }
+    if (-not $health.ok) {
+      $allOk = $false
+    }
+  }
+
+  return [ordered]@{
+    ok = $allOk
+    state = $(if ($allOk) { "healthy" } else { "not-all-healthy" })
+    checks = $checks
+  }
+}
+
+
 function Stop-MainComputerDevHubForRestart([string]$RootPath, [object]$LaunchContext) {
-  $endpoint = Resolve-MainComputerDevHubEndpoint $LaunchContext
+  $endpoints = @(Resolve-MainComputerDevHubEndpoints $RootPath $LaunchContext)
+  if ($endpoints.Count -eq 0) {
+    $endpoints = @((Resolve-MainComputerDevHubEndpoint $RootPath $LaunchContext))
+  }
+  $entryEndpoint = $endpoints[0]
   $pidPath = Get-DevHubPidPath $RootPath
   $candidates = @{}
 
   Add-PidCandidate $candidates (Get-PidFromFile $pidPath) "dev-hub" $pidPath 15 $true
 
-  foreach ($row in @(Get-NetstatListenRows -Ports @([int]$endpoint.port))) {
+  $ports = @()
+  foreach ($endpoint in @($endpoints)) {
+    try {
+      $port = [int]$endpoint.port
+      if ($port -gt 0 -and $ports -notcontains $port) {
+        $ports += $port
+      }
+    } catch {}
+  }
+
+  foreach ($row in @(Get-NetstatListenRows -Ports $ports)) {
     $processId = [int]$row.OwningProcess
     if ($processId -le 0 -or $processId -eq $PID) {
       continue
@@ -1200,7 +1324,7 @@ function Stop-MainComputerDevHubForRestart([string]$RootPath, [object]$LaunchCon
     }
 
     if ((Test-MainComputerServiceCommandLine $commandLine $RootPath) -or ([string]::IsNullOrWhiteSpace($commandLine) -and $processName -like "python*")) {
-      Add-PidCandidate $candidates $processId "dev-hub-port-listener" ("listener on dev Hub port " + [string]$endpoint.port) 15 $true
+      Add-PidCandidate $candidates $processId "dev-hub-port-listener" ("listener on dev Hub topology port " + [string]$row.LocalPort) 15 $true
     }
   }
 
@@ -1218,11 +1342,14 @@ function Stop-MainComputerDevHubForRestart([string]$RootPath, [object]$LaunchCon
   }
 
   return [ordered]@{
-    endpoint = $endpoint
+    endpoint = $entryEndpoint
+    endpoints = $endpoints
+    ports = $ports
     pid_file = $pidPath
     process_results = $results
   }
 }
+
 
 function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
   $treeKind = ConvertTo-StringValue (Get-ObjectPropertyValue $LaunchContext "tree_kind" "source") "source"
@@ -1244,14 +1371,33 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     }
   }
 
-  $endpoint = Resolve-MainComputerDevHubEndpoint $LaunchContext
+  $endpoints = @(Resolve-MainComputerDevHubEndpoints $RootPath $LaunchContext)
+  if ($endpoints.Count -eq 0) {
+    $endpoints = @((Resolve-MainComputerDevHubEndpoint $RootPath $LaunchContext))
+  }
+  $endpoint = $endpoints[0]
+  $hubPorts = @()
+  foreach ($item in @($endpoints)) {
+    try {
+      $port = [int]$item.port
+      if ($port -gt 0 -and $hubPorts -notcontains $port) {
+        $hubPorts += $port
+      }
+    } catch {}
+  }
+  if ($hubPorts.Count -eq 0) {
+    $hubPorts = @([int]$endpoint.port)
+  }
+  $hubPortsText = ($hubPorts | ForEach-Object { [string]$_ }) -join ","
+
   $pidPath = Get-DevHubPidPath $RootPath
-  Write-Host ("Resetting dev Hub on start path at {0}; any previous dev Hub process on port {1} will be stopped first." -f $endpoint.hub_url, $endpoint.port)
+  Write-Host ("Resetting dev Hub topology on start path at {0}; any previous dev Hub process on ports {1} will be stopped first." -f $endpoint.hub_url, $hubPortsText)
   $stopResult = Stop-MainComputerDevHubForRestart $RootPath $LaunchContext
 
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK", "1", "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_NETWORK", [string]$endpoint.network, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_URL", [string]$endpoint.hub_url, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ENTRY_URLS", (($endpoints | ForEach-Object { [string]$_.hub_url }) -join ","), "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL", [string]$endpoint.chain_rpc_url, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_ID", [string]$endpoint.chain_id, "Process")
   $hubKind = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb").Trim().ToLowerInvariant()
@@ -1279,10 +1425,12 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     $LaunchContext `
     "MAIN_COMPUTER_HUB_FDB_CLUSTER_FILE" `
     (Join-Path $RootPath ".foundationdb\docker.cluster")
-  $topologyPath = Get-LaunchEnvironmentValue `
-    $LaunchContext `
-    "MAIN_COMPUTER_HUB_TOPOLOGY" `
-    (Join-Path $RootPath "deploy\hub-topology\dev-topology.json")
+  $topologyPath = Resolve-MainComputerRepoPath `
+    $RootPath `
+    (Get-LaunchEnvironmentValue `
+      $LaunchContext `
+      "MAIN_COMPUTER_HUB_TOPOLOGY" `
+      (Join-Path $RootPath "deploy\hub-topology\dev-topology.json"))
   $hubId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_ID" "dev-hub1"
   $hubStartTimeoutSeconds = Get-MainComputerDevHubStartTimeoutSeconds $LaunchContext $hubKind
 
@@ -1310,6 +1458,8 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
         ok = $false
         state = "dependency-not-ready"
         endpoint = $endpoint
+        endpoints = $endpoints
+        ports = $hubPorts
         prerequisites = $prerequisites
         message = $prerequisites.message
       }
@@ -1319,8 +1469,8 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   $hubRuntime = Join-Path $RootPath ("runtime\hub\" + [string]$endpoint.network)
   Ensure-Directory $hubRuntime
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-  $stdout = Join-Path $hubRuntime ("dev-hub-" + $stamp + ".stdout.log")
-  $stderr = Join-Path $hubRuntime ("dev-hub-" + $stamp + ".stderr.log")
+  $stdout = Join-Path $hubRuntime ("dev-hub-topology-" + $stamp + ".stdout.log")
+  $stderr = Join-Path $hubRuntime ("dev-hub-topology-" + $stamp + ".stderr.log")
 
   if ($hubKind -eq "legacy") {
     $arguments = @(
@@ -1341,7 +1491,7 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     $arguments = @(
       "exp-fdb-hub.py",
       "--host", [string]$endpoint.host,
-      "--port", [string]$endpoint.port,
+      "-ports", [string]$hubPortsText,
       "--hub-url", [string]$endpoint.hub_url,
       "--cluster-file", [string]$clusterFile,
       "--no-fdb-autostart",
@@ -1354,10 +1504,12 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
       "--dev-chain-deployment-path", [string]$devChainDeploymentPath,
       "--contracts-path", [string]$contractsPath,
       "--topology", [string]$topologyPath,
-      "--hub-id", [string]$hubId,
       "--require-multisession-auth",
       "-noverbose"
     )
+    if ($endpoints.Count -le 1 -and -not [string]::IsNullOrWhiteSpace($hubId)) {
+      $arguments += @("--hub-id", [string]$hubId)
+    }
     if (-not (Test-MainComputerDisabledFlag $smokeBridgeSetting)) {
       $arguments += "--enable-smoke-bridge"
     }
@@ -1378,12 +1530,18 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
 
   Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII
 
-  $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) ([int]$hubStartTimeoutSeconds)
+  if ($hubKind -eq "legacy") {
+    $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) ([int]$hubStartTimeoutSeconds)
+  } else {
+    $health = Wait-MainComputerDevHubEndpointsStatus $endpoints ([int]$hubStartTimeoutSeconds)
+  }
   if (-not $health.ok) {
     return [ordered]@{
       ok = $false
       state = "unhealthy-after-start"
       endpoint = $endpoint
+      endpoints = $endpoints
+      ports = $hubPorts
       pid = $process.Id
       pid_file = $pidPath
       stdout = $stdout
@@ -1394,11 +1552,13 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     }
   }
 
-  Write-Host ("Dev Hub is running at {0} as PID {1}." -f $endpoint.hub_url, $process.Id)
+  Write-Host ("Dev Hub topology is running at {0} as PID {1}; ports {2}." -f $endpoint.hub_url, $process.Id, $hubPortsText)
   return [ordered]@{
     ok = $true
-    state = "started"
+    state = $(if ($endpoints.Count -gt 1) { "started-topology" } else { "started" })
     endpoint = $endpoint
+    endpoints = $endpoints
+    ports = $hubPorts
     pid = $process.Id
     pid_file = $pidPath
     stdout = $stdout
@@ -1977,6 +2137,7 @@ function Add-PidsFromSupervisorState([hashtable]$Candidates, [object]$State) {
   }
 }
 
+
 function Get-MainComputerManagedPorts([object]$LaunchContext) {
   $ports = New-Object System.Collections.Generic.List[int]
 
@@ -1988,7 +2149,7 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HEARTBEAT_PORT" "8766"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" ""),
-      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_PORT" "8770")
+      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_PORT" "8871")
     )) {
     try {
       $port = [int]$value
@@ -1997,6 +2158,20 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
       }
     } catch {}
   }
+
+  try {
+    $rootPath = ConvertTo-StringValue (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_INSTALL_ROOT" "") ""
+    if (-not [string]::IsNullOrWhiteSpace($rootPath)) {
+      foreach ($endpoint in @(Resolve-MainComputerDevHubEndpoints $rootPath $LaunchContext)) {
+        try {
+          $port = [int]$endpoint.port
+          if ($port -gt 0 -and -not $ports.Contains($port)) {
+            $ports.Add($port)
+          }
+        } catch {}
+      }
+    }
+  } catch {}
 
   return @($ports)
 }
@@ -2021,7 +2196,9 @@ function Test-MainComputerServiceCommandLine([string]$CommandLine, [string]$Root
     "main_computer.executor_service",
     "main_computer.applications_service",
     "main_computer.blockchain_service",
-    "main_computer.cli"
+    "main_computer.cli",
+    "main_computer.exp_fdb_hub",
+    "exp-fdb-hub.py"
   )
 
   $hasServiceMarker = $false

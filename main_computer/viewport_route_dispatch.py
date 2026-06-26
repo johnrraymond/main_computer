@@ -2238,6 +2238,9 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/worker/multisession-key/request":
         self._handle_worker_multisession_key_request()
         return
+    if self.path == "/api/applications/worker/multisession-key/revoke":
+        self._handle_worker_multisession_key_revoke()
+        return
     if self.path == "/api/applications/worker/multisession-keys/load":
         self._handle_worker_multisession_keys_load()
         return

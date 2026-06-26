@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
 from main_computer.hub import HubHttpServer
-from main_computer.multisession_key_signing import verify_personal_sign_blob
+from main_computer.multisession_key_signing import normalize_chain_id, verify_personal_sign_blob
 from main_computer.viewport_server import ViewportServer
 
 
@@ -78,6 +78,15 @@ def _signed_msk_blob(
     }
 
 
+
+def test_multisession_chain_id_normalization_accepts_decimal_and_hex_text() -> None:
+    assert normalize_chain_id("42424242") == "42424242"
+    assert normalize_chain_id(42424242) == "42424242"
+    assert normalize_chain_id("0x28757b2") == "42424242"
+    assert normalize_chain_id("0X028757B2") == "42424242"
+    assert normalize_chain_id("") == ""
+
+
 def test_shared_multisession_signing_verifies_personal_sign_blob_and_rejects_mismatch() -> None:
     blob = _signed_msk_blob()
     result = verify_personal_sign_blob(blob, expected_chain_id="0x28757b2", max_age_minutes=15)
@@ -103,6 +112,7 @@ def test_hub_multisession_key_endpoint_verifies_signature_and_persists_key() -> 
         hub_config = MainComputerConfig(
             workspace=root / "workspace",
             hub_root=root / "hub",
+            hub_bridge_backend="mock-chain",
             hub_allow_insecure_dev_network=False,
         )
         hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
@@ -145,6 +155,7 @@ def test_worker_multisession_key_local_proxy_forwards_to_hub_and_caches_key_by_w
         hub_config = MainComputerConfig(
             workspace=root / "workspace",
             hub_root=root / "hub",
+            hub_bridge_backend="mock-chain",
             hub_allow_insecure_dev_network=False,
         )
         hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
@@ -174,10 +185,21 @@ def test_worker_multisession_key_local_proxy_forwards_to_hub_and_caches_key_by_w
             assert data["key"]["id"].startswith("msk_")  # type: ignore[index]
             assert data["key"]["wallet_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
             assert data["local_cache"]["stored"] is True  # type: ignore[index]
-            cache_path = root / "worker_multisession_keys.json"
+            assert "id" not in data["local_cache"]["key"]  # type: ignore[index]
+            cache_path = root / ".main_computer" / "worker_multisession_keys.json"
             assert cache_path.exists()
             cache = json.loads(cache_path.read_text(encoding="utf-8"))
             assert cache["keys"][data["key"]["id"]]["wallet_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
+
+            duplicate_status, duplicate_error = _post_json_error(
+                f"{viewport_url}/api/applications/worker/multisession-key/request",
+                {
+                    "hub_url": hub_url,
+                    "signed_request": blob,
+                },
+            )
+            assert duplicate_status == 400
+            assert "already exists" in str(duplicate_error.get("error", ""))
 
             loaded = _post_json(
                 f"{viewport_url}/api/applications/worker/multisession-keys/load",
@@ -189,8 +211,34 @@ def test_worker_multisession_key_local_proxy_forwards_to_hub_and_caches_key_by_w
 
             assert loaded["ok"] is True
             assert loaded["wallet_address"] == _TEST_WALLET_ADDRESS
-            assert loaded["active_key"]["id"] == data["key"]["id"]  # type: ignore[index]
+            assert loaded["key_ids_redacted"] is True
+            assert loaded["active_key"]["status"] == "active"  # type: ignore[index]
+            assert "id" not in loaded["active_key"]  # type: ignore[operator]
             assert loaded["keys"][0]["wallet_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
+            assert "id" not in loaded["keys"][0]  # type: ignore[operator]
+
+            revoked = _post_json(
+                f"{viewport_url}/api/applications/worker/multisession-key/revoke",
+                {
+                    "hub_url": hub_url,
+                    "wallet_address": _TEST_WALLET_ADDRESS,
+                },
+            )
+            assert revoked["ok"] is True
+            assert revoked["revoked"] is True
+            assert revoked["key_ids_redacted"] is True
+            assert "id" not in revoked["key"]  # type: ignore[operator]
+
+            loaded_after_revoke = _post_json(
+                f"{viewport_url}/api/applications/worker/multisession-keys/load",
+                {
+                    "hub_url": hub_url,
+                    "wallet_address": _TEST_WALLET_ADDRESS,
+                },
+            )
+            assert loaded_after_revoke["active_key"] is None
+            cache_after_revoke = json.loads(cache_path.read_text(encoding="utf-8"))
+            assert cache_after_revoke["keys"][data["key"]["id"]]["status"] == "revoked"  # type: ignore[index]
         finally:
             viewport.shutdown()
             hub.shutdown()

@@ -8,8 +8,8 @@
       "chain_id": 42424242,
       "chain_rpc_url": "http://127.0.0.1:18545",
       "hub_bind_host": "127.0.0.1",
-      "hub_bind_port": 8770,
-      "hub_public_url": "http://127.0.0.1:8770",
+      "hub_bind_port": 8871,
+      "hub_public_url": "http://127.0.0.1:8871",
       "hub_runtime_dir": "runtime/hub/dev",
       "deployment_manifest_path": "runtime/deployments/dev/latest.json"
     },

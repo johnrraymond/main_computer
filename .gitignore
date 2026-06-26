@@ -187,6 +187,10 @@ tools/documentation/
 # Hub configuration shoudl not be in version control
 hub_configuration.json
 
+# Worker-issued multi-session key cache is a local bearer credential store.
+worker_multisession_keys.json
+**/worker_multisession_keys.json
+
 # Hub-issued runtime credit/session state must stay local.
 compute_credits/
 compute_credits/multisession_keys.json

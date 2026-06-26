@@ -2,7 +2,7 @@
       {name: "Mainnet Hub", url: "https://mainnet-hub.greatlibrary.io", role: "use-provide", network: "mainnet"},
       {name: "Testnet Hub", url: "https://testnet-hub.greatlibrary.io", role: "use-provide", network: "testnet"},
       {name: "Local QBFT Test Hub", url: "http://127.0.0.1:8780", role: "use-provide", network: "test"},
-      {name: "Local Dev Hub", url: "http://127.0.0.1:8770", role: "use-provide", network: "dev"}
+      {name: "Local Dev Hub", url: "http://127.0.0.1:8871", role: "use-provide", network: "dev"}
     ];
     const WORKER_NETWORK_SESSION_ENDPOINT = "/api/applications/worker/network-session";
     const WORKER_NETWORK_CONNECT_ORDER_ENDPOINT = "/api/applications/worker/network-connect-order";
@@ -489,22 +489,16 @@
         : state.wallet_funding && typeof state.wallet_funding === "object"
           ? state.wallet_funding
           : {};
-      const multisessionKeys = Array.isArray(state.multisessionKeys) ? state.multisessionKeys : [];
       return {
         wallet: {...fallback.wallet},
         recoveryEmails: workerNormalizeList(state.recoveryEmails, "email"),
         recoveryWallets: workerNormalizeList(state.recoveryWallets, "wallet"),
         recoveryConfirmedAt: String(state.recoveryConfirmedAt || state.recovery_confirmed_at || ""),
-        multisessionKeys: multisessionKeys
-          .map((key) => ({
-            id: String(key.id || ""),
-            status: String(key.status || "active"),
-            createdAt: String(key.createdAt || key.created_at || ""),
-            revokedAt: String(key.revokedAt || key.revoked_at || ""),
-            walletAddress: String(key.walletAddress || key.wallet_address || "")
-          }))
-          .filter((key) => key.id),
-        activeMultisessionKeyId: String(state.activeMultisessionKeyId || state.active_multisession_key_id || ""),
+        // Multi-session key ids are bearer credentials in this flow. Do not
+        // revive any legacy browser-stored key material; the local backend is
+        // the source of truth and load responses are server-side/redacted.
+        multisessionKeys: [],
+        activeMultisessionKeyId: "",
         faucet: {
           amountCredits: WORKER_FAUCET_AMOUNT_CREDITS,
           lastStatus: String(faucet.lastStatus || faucet.last_status || fallback.faucet.lastStatus),
@@ -553,7 +547,12 @@
 
     function saveWorkerBridgeState() {
       try {
-        const {wallet: _liveWalletState, ...serializableState} = workerBridgeState || {};
+        const {
+          wallet: _liveWalletState,
+          multisessionKeys: _serverSideMultisessionKeys,
+          activeMultisessionKeyId: _serverSideActiveMultisessionKeyId,
+          ...serializableState
+        } = workerBridgeState || {};
         localStorage.setItem(workerBridgeReadinessStorageKey, JSON.stringify(serializableState));
       } catch {}
     }
@@ -570,12 +569,14 @@
 
     function workerActiveMultisessionKey() {
       const activeId = String(workerBridgeState.activeMultisessionKeyId || "");
-      if (!activeId) return null;
-      return workerBridgeState.multisessionKeys.find((key) => (
-        key.id === activeId
-        && key.status === "active"
+      const activeKeys = workerBridgeState.multisessionKeys.filter((key) => (
+        key.status === "active"
         && workerMultisessionKeyMatchesWallet(key)
-      )) || null;
+      ));
+      if (activeId) {
+        return activeKeys.find((key) => key.id === activeId || key.localRef === activeId) || activeKeys[0] || null;
+      }
+      return activeKeys[0] || null;
     }
 
     function workerErrorText(error) {
@@ -591,12 +592,14 @@
       );
     }
 
-    function workerMarkMultisessionKeyInactiveOnHub(keyId, errorMessage = "") {
+    function workerMarkMultisessionKeyInactiveOnHub(keyId = "", errorMessage = "") {
       const id = String(keyId || "").trim();
-      if (!id) return;
       let changed = false;
       workerBridgeState.multisessionKeys = workerBridgeState.multisessionKeys.map((key) => {
-        if (String(key?.id || "") !== id) return key;
+        const matchesKey = id
+          ? (String(key?.id || "") === id || String(key?.localRef || "") === id)
+          : (key?.status === "active" && workerMultisessionKeyMatchesWallet(key));
+        if (!matchesKey) return key;
         changed = true;
         return {
           ...key,
@@ -605,7 +608,7 @@
           lastError: String(errorMessage || "The saved multi-session key is not active on this Hub.")
         };
       });
-      if (workerBridgeState.activeMultisessionKeyId === id) {
+      if (!id || workerBridgeState.activeMultisessionKeyId === id) {
         workerBridgeState.activeMultisessionKeyId = "";
         changed = true;
       }
@@ -615,8 +618,7 @@
     }
 
     function workerClearActiveMultisessionKeyIfWalletMismatch() {
-      if (!workerBridgeState.activeMultisessionKeyId) return;
-      if (!workerActiveMultisessionKey()) {
+      if (workerBridgeState.activeMultisessionKeyId && !workerActiveMultisessionKey()) {
         workerBridgeState.activeMultisessionKeyId = "";
       }
     }
@@ -1029,7 +1031,9 @@
           : `${recoveryEmailCount} email / ${recoveryWalletCount} wallet method${recoveryEmailCount + recoveryWalletCount === 1 ? "" : "s"}`;
       }
       if (workerMultisessionStatus) {
-        workerMultisessionStatus.textContent = activeKey ? `Active ${activeKey.id}` : "No active key";
+        workerMultisessionStatus.textContent = activeKey
+          ? (activeKey.id ? `Active ${activeKey.id}` : "Active server-side key")
+          : "No active key";
       }
       if (workerBridgeReadinessStatus) {
         workerBridgeReadinessStatus.textContent = workerReadinessLabel();
@@ -1137,7 +1141,9 @@
         workerMultisessionKeyState.textContent = activeKey ? "Active" : "No active key";
       }
       if (workerMultisessionKeyId) {
-        workerMultisessionKeyId.textContent = activeKey?.id || "—";
+        workerMultisessionKeyId.textContent = activeKey
+          ? (activeKey.id || "Stored server-side; key id redacted after creation")
+          : "—";
       }
       if (workerMultisessionCreatedAt) {
         workerMultisessionCreatedAt.textContent = workerDisplayTime(activeKey?.createdAt || "");
@@ -1188,23 +1194,46 @@
 
     function workerNormalizeIssuedMultisessionKey(result) {
       const key = result?.key && typeof result.key === "object" ? result.key : {};
+      const walletAddress = String(key.walletAddress || key.wallet_address || result?.verification?.wallet_address || "");
+      const status = String(key.status || "active");
+      const id = String(key.id || "");
+      const createdAt = String(key.createdAt || key.created_at || "");
+      const hubUrl = String(key.hubUrl || key.hub_url || result?.hub_url || "");
+      const localRef = id || [
+        "server-side-msk",
+        workerLowerAddress(walletAddress),
+        hubUrl,
+        status,
+        createdAt
+      ].join("|");
       return {
-        id: String(key.id || ""),
-        status: String(key.status || "active"),
-        createdAt: String(key.createdAt || key.created_at || ""),
+        id,
+        localRef,
+        status,
+        createdAt,
         revokedAt: String(key.revokedAt || key.revoked_at || ""),
-        walletAddress: String(key.walletAddress || key.wallet_address || result?.verification?.wallet_address || "")
+        inactiveOnHubAt: String(key.inactiveOnHubAt || key.inactive_on_hub_at || ""),
+        walletAddress,
+        chainId: String(key.chainId || key.chain_id || ""),
+        hubUrl,
+        serverSideKey: Boolean(key.serverSideKey || key.server_side_key || key.server_side_key === undefined),
+        keyRedacted: Boolean(key.keyRedacted || key.key_redacted || !id),
+        lastError: String(key.lastError || key.last_error || "")
       };
     }
 
     function workerStoreIssuedMultisessionKey(result) {
       const key = workerNormalizeIssuedMultisessionKey(result);
-      if (!key.id) {
-        throw new Error("Hub did not return a multi-session key id.");
+      if (!key.id && !key.serverSideKey) {
+        throw new Error("Hub did not return a usable multi-session key record.");
       }
-      workerBridgeState.multisessionKeys = workerBridgeState.multisessionKeys.filter((existing) => existing.id !== key.id);
+      workerBridgeState.multisessionKeys = workerBridgeState.multisessionKeys.filter((existing) => (
+        existing.localRef !== key.localRef
+        && (!key.id || existing.id !== key.id)
+        && !workerMultisessionKeyMatchesWallet(existing, key.walletAddress)
+      ));
       workerBridgeState.multisessionKeys.push(key);
-      workerBridgeState.activeMultisessionKeyId = key.status === "active" ? key.id : "";
+      workerBridgeState.activeMultisessionKeyId = key.status === "active" ? (key.id || key.localRef) : "";
       saveWorkerBridgeState();
       return key;
     }
@@ -1213,11 +1242,10 @@
       const wallet = workerLowerAddress(walletAddress);
       const rawKeys = Array.isArray(result?.keys) ? result.keys : [];
       const loadedKeys = rawKeys
-        .map((item) => workerNormalizeIssuedMultisessionKey({key: item, verification: {wallet_address: wallet}}))
-        .filter((key) => key.id && key.status !== "revoked" && workerMultisessionKeyMatchesWallet(key, wallet));
+        .map((item) => workerNormalizeIssuedMultisessionKey({key: item, verification: {wallet_address: wallet}, hub_url: result?.hub_url || ""}))
+        .filter((key) => workerMultisessionKeyMatchesWallet(key, wallet));
 
       workerBridgeState.multisessionKeys = workerBridgeState.multisessionKeys.filter((existing) => {
-        if (!existing.id) return false;
         return !workerMultisessionKeyMatchesWallet(existing, wallet);
       });
 
@@ -1226,7 +1254,7 @@
       });
 
       const activeKey = loadedKeys.find((key) => key.status === "active") || null;
-      workerBridgeState.activeMultisessionKeyId = activeKey ? activeKey.id : "";
+      workerBridgeState.activeMultisessionKeyId = activeKey ? (activeKey.id || activeKey.localRef) : "";
       saveWorkerBridgeState();
       return activeKey;
     }
@@ -2848,13 +2876,13 @@
       }
     }
 
-    async function workerRequestReplacementMultisessionKeyForConnect({reason = "connect-order-retry"} = {}) {
+    async function workerRequestReplacementMultisessionKeyForConnect({reason = "connect-order-retry", statusMessage = ""} = {}) {
       loadWorkerBridgeState();
       if (workerMultisessionInFlight) {
         throw new Error("A multi-session key request is already in progress.");
       }
       if (!workerBridgeState.wallet.connected || !workerWalletValidAddress(workerBridgeState.wallet.address)) {
-        throw new Error("Connect a Worker wallet before requesting a replacement multi-session key.");
+        throw new Error("Connect a Worker wallet before requesting a multi-session key.");
       }
       const walletLibrary = window.MainComputerWalletLibrary || window.MainComputerWalletApp || {};
       if (typeof walletLibrary.requestMultiSessionKeySignature !== "function") {
@@ -2865,14 +2893,14 @@
       workerMultisessionInFlight = true;
       renderWorkerBridgeReadiness();
       try {
-        console.info("[worker-msk] replacement.request.start", {
+        console.info("[worker-msk] connect-path.request.start", {
           reason,
           wallet_address: requestContext.wallet_address,
           chain_id: requestContext.chain_id,
           hub_url: workerSelectedHubUrl()
         });
         if (workerSaveStatus) {
-          workerSaveStatus.textContent = "Saved multi-session key is inactive on this Hub; requesting a replacement key…";
+          workerSaveStatus.textContent = statusMessage || "No active multi-session key is loaded for this Hub; signing a key request before worker registration…";
         }
         const signedRequest = await walletLibrary.requestMultiSessionKeySignature({
           requestContext,
@@ -2882,7 +2910,9 @@
           hub_url: workerSelectedHubUrl(),
           signed_request: signedRequest,
           client_metadata: {
-            source: "worker-connect-order-inactive-key-retry",
+            source: reason === "hub-reported-saved-key-inactive"
+              ? "worker-connect-order-inactive-key-retry"
+              : "worker-connect-order-missing-key",
             retry_reason: reason,
             requested_at: workerNowIso(),
             wallet_address: requestContext.wallet_address,
@@ -2890,7 +2920,7 @@
           }
         });
         const key = workerStoreIssuedMultisessionKey(result);
-        console.info("[worker-msk] replacement.request.done", {
+        console.info("[worker-msk] connect-path.request.done", {
           reason,
           key_id: key.id,
           hub_url: workerSelectedHubUrl()
@@ -2902,7 +2932,9 @@
       }
     }
 
-    function revokeWorkerMultisessionKey() {
+    async function revokeWorkerMultisessionKey(event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
       loadWorkerBridgeState();
       const activeKey = workerActiveMultisessionKey();
       if (!activeKey) {
@@ -2910,12 +2942,38 @@
         renderWorkerBridgeReadiness();
         return;
       }
-      activeKey.status = "revoked";
-      activeKey.revokedAt = workerNowIso();
-      workerBridgeState.activeMultisessionKeyId = "";
-      saveWorkerBridgeState();
+      if (!workerBridgeState.wallet.connected || !workerWalletValidAddress(workerBridgeState.wallet.address)) {
+        if (workerSaveStatus) workerSaveStatus.textContent = "Connect the Worker wallet before revoking the saved multi-session key.";
+        renderWorkerBridgeReadiness();
+        return;
+      }
+
+      workerMultisessionInFlight = true;
       renderWorkerBridgeReadiness();
-      if (workerSaveStatus) workerSaveStatus.textContent = "Active multi-session key revoked locally. You can request a new key now.";
+      try {
+        const result = await workerPostJson("/api/applications/worker/multisession-key/revoke", {
+          wallet_address: workerBridgeState.wallet.address,
+          hub_url: workerSelectedHubUrl()
+        });
+        workerMergeLoadedMultisessionKeys(result, workerBridgeState.wallet.address);
+        if (!Array.isArray(result?.keys)) {
+          activeKey.status = "revoked";
+          activeKey.revokedAt = workerNowIso();
+          workerBridgeState.activeMultisessionKeyId = "";
+          saveWorkerBridgeState();
+        }
+        const hubRevokeOk = Boolean(result?.hub_revoke?.ok);
+        if (workerSaveStatus) {
+          workerSaveStatus.textContent = hubRevokeOk
+            ? "Active multi-session key revoked in the local backend and Hub."
+            : "Active multi-session key revoked in the local backend. Hub revoke was unavailable or failed.";
+        }
+      } catch (error) {
+        if (workerSaveStatus) workerSaveStatus.textContent = `Failed to revoke multi-session key: ${workerErrorText(error)}`;
+      } finally {
+        workerMultisessionInFlight = false;
+        renderWorkerBridgeReadiness();
+      }
     }
 
     function workerRoleLabel(role) {
@@ -3256,13 +3314,19 @@
       const hubStatus = hubRegistration.status || workerNetworkHubRegistrationStatus();
       const needsFreshSignature = signedForSelected && !hubRegistered && ["not_submitted", "failed", "stale"].includes(hubStatus);
       if (workerNetworkSignatureInFlight) {
-        return "Signing…";
+        return workerActiveMultisessionKey() ? "Signing…" : "Creating Key + Signing…";
+      }
+      if (workerMultisessionInFlight) {
+        return "Creating Key…";
       }
       if (signedOrder.status === "expired") {
         return "Re-sign Expired Order";
       }
       if (needsFreshSignature) {
         return "Re-sign Connect Order";
+      }
+      if (!workerActiveMultisessionKey()) {
+        return "Create Key + Sign Connect Order";
       }
       return "Sign Connect Order";
     }
@@ -3385,8 +3449,8 @@
         && workerNetworkSession.connection_status === "connected"
         && workerWalletValidAddress(walletAddress)
         && workerNetworkWalletConnectedToSelected()
-        && Boolean(workerActiveMultisessionKey())
         && !workerNetworkSignatureInFlight
+        && !workerMultisessionInFlight
       );
     }
 
@@ -3717,8 +3781,8 @@
     }
 
     async function workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey) {
-      if (!activeMultisessionKey?.id) {
-        throw new Error("Request or load a multi-session key for this Hub before connecting the worker.");
+      if (!activeMultisessionKey) {
+        throw new Error("No active multi-session key is loaded for this Hub.");
       }
       const context = await workerGetWalletProviderContext();
       const signer = await context.browserProvider.getSigner();
@@ -3727,24 +3791,14 @@
       const signature = await signer.signMessage(message);
       return await workerPostJson(
         WORKER_NETWORK_CONNECT_ORDER_ENDPOINT,
-        {
-          ...buildWorkerNetworkRegistrationPayload({message, signature, walletAddress}),
-          active_multisession_key_id: activeMultisessionKey.id,
-          multisession_key_id: activeMultisessionKey.id
-        }
+        buildWorkerNetworkRegistrationPayload({message, signature, walletAddress})
       );
     }
 
     async function signWorkerNetworkConnectOrder(event) {
       event?.preventDefault?.();
-      let activeMultisessionKey = workerActiveMultisessionKey();
-      if (!activeMultisessionKey) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Request or load a multi-session key for this Hub before connecting the worker.";
-        renderWorkerNetworkSurface();
-        return;
-      }
       if (!workerNetworkCanSign()) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network, connect a wallet, and load a multi-session key before signing the worker connection order.";
+        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network and connect the matching wallet before signing the worker connection order.";
         renderWorkerNetworkSurface();
         return;
       }
@@ -3752,23 +3806,32 @@
       renderWorkerNetworkSurface();
       try {
         let data;
+        let activeMultisessionKey = workerActiveMultisessionKey();
+        if (!activeMultisessionKey) {
+          workerSetSaveStatus("No active multi-session key is loaded for this Hub. Signing a fresh key request before worker registration…");
+          activeMultisessionKey = await workerRequestReplacementMultisessionKeyForConnect({
+            reason: "connect-order-no-active-key",
+            statusMessage: "No active multi-session key is loaded for this Hub. Signing a fresh key request before worker registration…"
+          });
+          workerSetSaveStatus("Multi-session key issued. Signing worker connect order and submitting Hub registration…");
+        }
         try {
           data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);
         } catch (error) {
           if (!workerIsInactiveMultisessionKeyError(error)) {
             throw error;
           }
-          const staleKeyId = activeMultisessionKey.id;
           const staleMessage = workerErrorText(error);
           console.warn("[worker-msk] connect-order.key-inactive", {
-            key_id: staleKeyId,
             hub_url: workerSelectedHubUrl(),
             error: staleMessage
           });
-          workerMarkMultisessionKeyInactiveOnHub(staleKeyId, staleMessage);
+          workerMarkMultisessionKeyInactiveOnHub("", staleMessage);
+          await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address, "connect-order-key-inactive");
           workerSetSaveStatus("Saved multi-session key is inactive on this Hub. Signing a fresh key request and retrying worker registration…");
           activeMultisessionKey = await workerRequestReplacementMultisessionKeyForConnect({
-            reason: "hub-reported-saved-key-inactive"
+            reason: "hub-reported-saved-key-inactive",
+            statusMessage: "Saved multi-session key is inactive on this Hub; signing a fresh key request and retrying worker registration…"
           });
           workerSetSaveStatus("Replacement multi-session key issued. Signing a fresh worker connect order and retrying Hub registration…");
           data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);

@@ -36,8 +36,8 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(dev.chain_id, 42424242)
         self.assertEqual(dev.chain_rpc_url, "http://127.0.0.1:18545")
         self.assertEqual(dev.hub_bind_host, "127.0.0.1")
-        self.assertEqual(dev.hub_bind_port, 8770)
-        self.assertEqual(dev.hub_public_url, "http://127.0.0.1:8770")
+        self.assertEqual(dev.hub_bind_port, 8871)
+        self.assertEqual(dev.hub_public_url, "http://127.0.0.1:8871")
         self.assertEqual(dev.hub_runtime_dir, Path("runtime/hub/dev"))
         self.assertEqual(dev.deployment_manifest_path, Path("runtime/deployments/dev/latest.json"))
 

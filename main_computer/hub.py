@@ -46,7 +46,7 @@ from main_computer.hub_credit_models import (
     stable_id,
     normalize_worker_payout_precision_places,
 )
-from main_computer.multisession_key_signing import normalize_address, parse_iso_datetime, recover_personal_sign_address, verify_personal_sign_blob
+from main_computer.multisession_key_signing import normalize_address, normalize_chain_id, parse_iso_datetime, recover_personal_sign_address, verify_personal_sign_blob
 from main_computer.hub_plex_models import HubAIRequest, HubWorkerSummary
 from main_computer.hub_plex_service import AIRequestPlexService
 from main_computer.ring_admission import (
@@ -69,7 +69,7 @@ HUB_WORKER_INSTANCE_SLOT_LIMIT = 1
 PHASE9_PRICING_MODE = "market_offer_fixed_per_call_v0"
 PHASE9_PRICING_TYPE = "fixed_per_call_v0"
 PHASE9_EXECUTION_MODE = "worker_pull_v0"
-HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID = "0x28757b2"
+HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID = normalize_chain_id("0x28757b2")
 HUB_MULTISESSION_KEY_MAX_AGE_MINUTES = 15
 
 
@@ -1870,8 +1870,8 @@ class HubServerHandler(_JsonHandler):
         if record_wallet != wallet_address:
             raise HubCreditAuthorizationError("The multi-session key does not belong to the requested wallet.")
 
-        record_chain_id = str(record.get("chain_id") or "").strip().lower()
-        requested_chain_id = str(authorization.get("chain_id") or required_chain_id or record_chain_id or "").strip().lower()
+        record_chain_id = normalize_chain_id(record.get("chain_id"))
+        requested_chain_id = normalize_chain_id(authorization.get("chain_id") or required_chain_id or record_chain_id)
         if requested_chain_id and record_chain_id and requested_chain_id != record_chain_id:
             raise HubCreditAuthorizationError("The multi-session key chain id does not match this request.")
         if requested_chain_id and requested_chain_id != HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID:
@@ -2608,6 +2608,54 @@ class HubServerHandler(_JsonHandler):
             "key": key_payload,
         }
 
+    def _handle_multisession_key_revoke(self, body: dict[str, Any]) -> dict[str, Any]:
+        key_id = str(body.get("key_id") or body.get("multisession_key_id") or "").strip()
+        if not key_id:
+            raise ValueError("key_id is required.")
+        wallet_address = normalize_address(body.get("wallet_address"))
+        now = _utc_now()
+
+        with self.server.multisession_key_store_lock:
+            data = self._load_multisession_key_store_unlocked()
+            record = data.get("keys", {}).get(key_id)
+            if not isinstance(record, dict):
+                raise ValueError("The multi-session key is not active.")
+            if str(record.get("wallet_address") or "").lower() != wallet_address:
+                raise ValueError("The multi-session key does not belong to the requested wallet.")
+            if record.get("status") != "active":
+                revoked_record = dict(record)
+                return {
+                    "ok": True,
+                    "revoked": False,
+                    "already_inactive": True,
+                    "status": str(record.get("status") or ""),
+                    "key": {
+                        "status": str(revoked_record.get("status") or ""),
+                        "wallet_address": str(revoked_record.get("wallet_address") or ""),
+                        "revoked_at": str(revoked_record.get("revoked_at") or ""),
+                        "key_redacted": True,
+                    },
+                }
+            record = dict(record)
+            record["status"] = "revoked"
+            record["revoked_at"] = now
+            record["updated_at"] = now
+            if body.get("reason"):
+                record["revocation_reason"] = str(body.get("reason") or "")
+            data["keys"][key_id] = record
+            self._save_multisession_key_store_unlocked(data)
+
+        return {
+            "ok": True,
+            "revoked": True,
+            "key": {
+                "status": "revoked",
+                "wallet_address": wallet_address,
+                "revoked_at": now,
+                "key_redacted": True,
+            },
+        }
+
     def _handle_multisession_key_validate(self, body: dict[str, Any]) -> dict[str, Any]:
         """Return Hub-side readiness for a locally cached multi-session key.
 
@@ -2662,11 +2710,11 @@ class HubServerHandler(_JsonHandler):
                 "account": account.as_dict(),
             }
 
-        requested_chain_id = str(
+        requested_chain_id = normalize_chain_id(
             authorization.get("chain_id")
             or body.get("chain_id")
             or ""
-        ).strip().lower()
+        )
 
         with self.server.multisession_key_store_lock:
             data = self._load_multisession_key_store_unlocked()
@@ -2712,7 +2760,7 @@ class HubServerHandler(_JsonHandler):
                 "multisession_key_id": key_id,
             }
 
-        record_chain_id = str(record.get("chain_id") or "").strip().lower()
+        record_chain_id = normalize_chain_id(record.get("chain_id"))
         if requested_chain_id and record_chain_id and requested_chain_id != record_chain_id:
             return {
                 "ok": True,
@@ -2949,9 +2997,9 @@ class HubServerHandler(_JsonHandler):
             record_wallet = normalize_address(record.get("wallet_address"))
             if record_wallet != wallet_address:
                 raise HubCreditAuthorizationError("The multi-session key does not belong to the requested wallet.")
-            record_chain_id = str(record.get("chain_id") or "").strip().lower()
+            record_chain_id = normalize_chain_id(record.get("chain_id"))
 
-        requested_chain_id = str(authorization.get("chain_id") or metadata.get("chain_id") or record_chain_id or "").strip().lower()
+        requested_chain_id = normalize_chain_id(authorization.get("chain_id") or metadata.get("chain_id") or record_chain_id)
         if requested_chain_id and record_chain_id and requested_chain_id != record_chain_id:
             raise HubCreditAuthorizationError("The multi-session key chain id does not match this request.")
         if requested_chain_id and requested_chain_id != HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID:
@@ -3669,6 +3717,12 @@ class HubServerHandler(_JsonHandler):
                 except ValueError as exc:
                     status = HTTPStatus.CONFLICT if "not spendable" in str(exc) else HTTPStatus.BAD_REQUEST
                     self._send_json({"ok": False, "error": str(exc)}, status=status)
+                return
+            if path == "/api/hub/v1/credits/multisession-keys/revoke":
+                try:
+                    self._send_json(self._handle_multisession_key_revoke(self._read_json()))
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             if path == "/api/hub/v1/credits/multisession-keys/validate":
                 try:

@@ -136,6 +136,40 @@ def test_stable_hub_issues_and_validates_multisession_key_by_id_only() -> None:
     assert validated["multisession_key_id"] == issued["key"]["id"]
 
 
+
+def test_stable_hub_validates_decimal_authorization_against_hex_stored_chain_id() -> None:
+    store = InMemoryStableMultiSessionKeyStore()
+    server, thread = _start_server("dev-hub1", store)
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        issued = _post_json(
+            f"{base_url}/api/hub/v1/credits/multisession-keys/request",
+            {"signed_request": _signed_msk_request(request_id="hex-record-decimal-auth")},
+        )
+        data = store.load()
+        data["keys"][issued["key"]["id"]]["chain_id"] = "0x28757b2"
+        store.save(data)
+
+        validated = _post_json(
+            f"{base_url}/api/hub/v1/credits/multisession-keys/validate",
+            {
+                "multisession_authorization": {
+                    "kind": "multisession_key",
+                    "multisession_key_id": issued["key"]["id"],
+                    "chain_id": "42424242",
+                }
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert validated["valid"] is True
+    assert validated["reason_code"] == "active"
+    assert validated["chain_id"] == "42424242"
+
+
 def test_stable_hub_stores_full_signed_request_and_both_entropy_slugs() -> None:
     store = InMemoryStableMultiSessionKeyStore()
     server, thread = _start_server("dev-hub1", store)

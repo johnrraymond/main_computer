@@ -217,6 +217,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/applications/worker/hub-health"' in js
     assert '"/api/applications/worker/settings"' in js
     assert '"/api/applications/worker/multisession-key/request"' in js
+    assert '"/api/applications/worker/multisession-key/revoke"' in js
     assert '"/api/applications/worker/multisession-keys/load"' in js
     assert '"/api/applications/worker/wallet-balance"' in js
     assert '"/api/applications/worker/wallet-funding/config"' in js
@@ -245,6 +246,8 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "changed_fields=changed_fields" in energy_routes
     assert '"/api/applications/worker/multisession-key/request"' in dispatch
     assert "self._handle_worker_multisession_key_request()" in dispatch
+    assert '"/api/applications/worker/multisession-key/revoke"' in dispatch
+    assert "self._handle_worker_multisession_key_revoke()" in dispatch
     assert '"/api/applications/worker/multisession-keys/load"' in dispatch
     assert "self._handle_worker_multisession_keys_load()" in dispatch
     assert '"/api/applications/worker/wallet-balance"' in dispatch
@@ -256,6 +259,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/applications/worker/wallet-funding/balance"' in dispatch
     assert "self._handle_worker_wallet_funding_balance()" in dispatch
     assert '"/api/hub/v1/credits/multisession-keys/request"' in energy_routes
+    assert '"/api/hub/v1/credits/multisession-keys/revoke"' in energy_routes
     assert '"/api/hub/v1/credits/wallet-funding/complete"' in energy_routes
     assert "/api/hub/v1/credits/balance" in energy_routes
     assert '"/api/hub/v1/workers/register"' in energy_routes
@@ -362,11 +366,11 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert ("bridge" + "Account") not in js
     assert ("bridge" + "_context") not in js
     assert "async function requestWorkerMultisessionKey" in js
-    assert "function revokeWorkerMultisessionKey()" in js
+    assert "async function revokeWorkerMultisessionKey(event)" in js
     assert "workerMergeLoadedMultisessionKeys" in js
     assert "local-cache.load.start" in js
     assert "No active multi-session key to revoke." in js
-    assert "You can request a new key now." in js
+    assert "Active multi-session key revoked in the local backend" in js
     assert "Multi-session key requested and marked active locally." not in js
     assert "workerRandomKeyId" not in js
 
@@ -484,6 +488,12 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs." in js
     assert "workerNetworkConnectWallet" not in js
     assert "workerNetworkSignOrder.disabled = !workerNetworkCanSign()" in js
+    assert "Create Key + Sign Connect Order" in js
+    assert "connect-order-no-active-key" in js
+    assert "No active multi-session key is loaded for this Hub. Signing a fresh key request before worker registration…" in js
+    can_sign_body = js[js.index("function workerNetworkCanSign()"):js.index("function workerNetworkSetText", js.index("function workerNetworkCanSign()"))]
+    assert "Boolean(workerActiveMultisessionKey())" not in can_sign_body
+    assert "!workerMultisessionInFlight" in can_sign_body
     assert "workerRuntimeActivate" not in js
     assert "workerRuntimeStop" not in js
     assert "The app connects automatically while Accept Paid Jobs and quser/local policy allow it." in js
@@ -517,7 +527,8 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "def _handle_worker_runtime_sync" in energy_routes
     assert "def _worker_runtime_policy" in energy_routes
     assert "windows_quser_v1" in energy_routes
-    assert '"/api/hub/v1/workers/heartbeat"' in energy_routes
+    assert '"/api/hub/v1/workers/heartbeat"' not in energy_routes
+    assert '"/api/hub/v1/workers/live-session"' in energy_routes
     assert '"mainnet", "testnet", "test", "dev"' in energy_routes
     assert '"selectedNetwork": selected_network' in energy_routes
     assert '"workerRequestedRing": requested_ring' in energy_routes
@@ -626,7 +637,8 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     for token in forbidden:
         assert token not in js
 
-    assert "const {wallet: _liveWalletState, ...serializableState}" in js
+    assert "multisessionKeys: _serverSideMultisessionKeys" in js
+    assert "activeMultisessionKeyId: _serverSideActiveMultisessionKeyId" in js
     assert "workerSetPrimaryWalletState" in js
 
 def test_worker_connect_order_replaces_inactive_saved_multisession_key_before_retry() -> None:
@@ -641,6 +653,7 @@ def test_worker_connect_order_replaces_inactive_saved_multisession_key_before_re
     assert "async function workerRequestReplacementMultisessionKeyForConnect" in js
     assert "requestMultiSessionKeySignature" in js
     assert '"worker-connect-order-inactive-key-retry"' in js
+    assert '"worker-connect-order-missing-key"' in js
     assert "async function workerSignAndSubmitNetworkConnectOrder" in js
     assert "workerIsInactiveMultisessionKeyError(error)" in js
     assert "workerRequestReplacementMultisessionKeyForConnect" in js

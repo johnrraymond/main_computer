@@ -31,7 +31,28 @@ def normalize_address(value: Any) -> str:
 
 
 def normalize_chain_id(value: Any) -> str:
-    return str(value or "").strip().lower()
+    """Return a canonical decimal chain id string for hex or decimal inputs.
+
+    Browser wallets commonly expose chain ids as EIP-1193 hex strings while Hub
+    topology/status payloads often use decimal JSON numbers or strings.  MSK
+    validation must compare the numeric chain id, not the text representation.
+    Invalid/non-numeric values are still returned as lower-case text so callers
+    can reject them with their existing mismatch paths.
+    """
+
+    if value is None:
+        return ""
+    text = str(value).strip().lower()
+    if not text:
+        return ""
+    try:
+        if text.startswith("0x"):
+            return str(int(text, 16))
+        if text.isdigit():
+            return str(int(text, 10))
+    except ValueError:
+        return text
+    return text
 
 
 def unwrap_blob(record: dict[str, Any]) -> dict[str, Any]:

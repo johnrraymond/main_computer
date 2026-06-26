@@ -1,16 +1,414 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import base64
 import ipaddress
 import json
+import os
+import socket
+import ssl
+import threading
+import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlparse, urlsplit
 from urllib.request import Request, urlopen
 
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
 from main_computer.windows_user_activity import collect_windows_user_activity
 from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to_decimal_text
+
+
+class _WorkerHubLiveSessionClient:
+    """Minimal stdlib WebSocket client for the Hub worker live-session contract.
+
+    Worker availability is no longer a REST heartbeat.  The Hub owns liveness by
+    keeping a worker WebSocket open, sending JSON ``hub.ping`` messages, and
+    expecting JSON ``worker.pong`` replies over the same connection.
+    """
+
+    endpoint_path = "/api/hub/v1/workers/live-session"
+
+    def __init__(
+        self,
+        *,
+        hub_url: str,
+        worker_id: str,
+        auth_message: dict[str, Any],
+        timeout_s: float = 5.0,
+    ) -> None:
+        self.hub_url = str(hub_url or "").rstrip("/")
+        self.worker_id = str(worker_id or "").strip()
+        self.auth_message = json.loads(json.dumps(auth_message, ensure_ascii=False))
+        self.timeout_s = max(1.0, float(timeout_s or 5.0))
+        self.fingerprint = json.dumps(
+            {
+                "hub_url": self.hub_url,
+                "worker_id": self.worker_id,
+                "auth_message": self.auth_message,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self.connection_id = ""
+        self.accepted: dict[str, Any] = {}
+        self.owner: dict[str, Any] = {}
+        self.market: dict[str, Any] = {}
+        self.last_pong: dict[str, Any] = {}
+        self.last_offer: dict[str, Any] = {}
+        self.last_result: dict[str, Any] = {}
+        self.last_error = ""
+        self.opened_at = ""
+        self.closed_at = ""
+        self.close_reason = ""
+        self._socket: socket.socket | None = None
+        self._send_lock = threading.RLock()
+        self._state_lock = threading.RLock()
+        self._stop_event = threading.Event()
+        self._reader_thread: threading.Thread | None = None
+
+    @property
+    def is_alive(self) -> bool:
+        sock = self._socket
+        thread = self._reader_thread
+        return (
+            sock is not None
+            and not self._stop_event.is_set()
+            and not self.closed_at
+            and (thread is None or thread.is_alive())
+        )
+
+    def start(self) -> dict[str, Any]:
+        self._socket = self._open_socket()
+        self.opened_at = datetime.now(timezone.utc).isoformat()
+        self._send_json(self.auth_message)
+
+        deadline = time.monotonic() + self.timeout_s
+        saw_accepted = False
+        saw_pong = False
+        while time.monotonic() < deadline:
+            try:
+                message = self._recv_json()
+            except TimeoutError:
+                continue
+            message_type = str(message.get("type") or "")
+            if message_type == "hub.error":
+                raise RuntimeError(str(message.get("error") or message))
+            self._handle_hub_message(message)
+            if message_type == "hub.auth.accepted":
+                saw_accepted = True
+            elif message_type == "hub.pong.accepted":
+                saw_pong = True
+            if saw_accepted and saw_pong:
+                break
+
+        if not saw_accepted:
+            raise RuntimeError("Hub live-session did not accept worker.auth.")
+        if not saw_pong:
+            raise RuntimeError("Hub live-session did not complete the initial ping/pong keepalive.")
+
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name=f"main-computer-worker-live-session-{self.worker_id}",
+            daemon=True,
+        )
+        self._reader_thread.start()
+        return self.snapshot()
+
+    def close(self, reason: str = "closed_by_runtime") -> None:
+        if self._stop_event.is_set():
+            return
+        self._stop_event.set()
+        self.close_reason = str(reason or "closed")
+        try:
+            self._send_json({"type": "worker.close", "reason": self.close_reason})
+        except Exception:
+            pass
+        try:
+            self._send_close_frame()
+        except Exception:
+            pass
+        sock = self._socket
+        self._socket = None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if not self.closed_at:
+            self.closed_at = datetime.now(timezone.utc).isoformat()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._state_lock:
+            return {
+                "ok": not bool(self.last_error),
+                "transport": "websocket",
+                "endpoint": self.endpoint_path,
+                "hub_url": self.hub_url,
+                "worker_id": self.worker_id,
+                "connection_id": self.connection_id,
+                "opened_at": self.opened_at,
+                "closed_at": self.closed_at,
+                "close_reason": self.close_reason,
+                "last_error": self.last_error,
+                "accepted": dict(self.accepted),
+                "owner": dict(self.owner),
+                "market": dict(self.market),
+                "last_pong": dict(self.last_pong),
+                "last_offer": dict(self.last_offer),
+                "last_result": dict(self.last_result),
+                "alive": self.is_alive,
+            }
+
+    def _reader_loop(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    message = self._recv_json()
+                except TimeoutError:
+                    continue
+                self._handle_hub_message(message)
+        except Exception as exc:
+            with self._state_lock:
+                if not self._stop_event.is_set():
+                    self.last_error = str(exc)
+                    self.close_reason = "reader_error"
+                if not self.closed_at:
+                    self.closed_at = datetime.now(timezone.utc).isoformat()
+            self._stop_event.set()
+            sock = self._socket
+            self._socket = None
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    def _handle_hub_message(self, message: dict[str, Any]) -> None:
+        message_type = str(message.get("type") or "")
+        if message_type == "hub.auth.accepted":
+            with self._state_lock:
+                self.accepted = dict(message)
+                self.connection_id = str(message.get("connection_id") or "")
+                self.owner = dict(message.get("owner") or {}) if isinstance(message.get("owner"), dict) else {}
+                self.market = dict(message.get("market") or {}) if isinstance(message.get("market"), dict) else {}
+            return
+        if message_type == "hub.ping":
+            ping_id = str(message.get("ping_id") or "")
+            connection_id = str(message.get("connection_id") or self.connection_id)
+            self._send_json(
+                {
+                    "type": "worker.pong",
+                    "connection_id": connection_id,
+                    "ping_id": ping_id,
+                }
+            )
+            return
+        if message_type == "hub.pong.accepted":
+            with self._state_lock:
+                self.last_pong = dict(message)
+                self.owner = dict(message.get("owner") or self.owner) if isinstance(message.get("owner"), dict) else self.owner
+            return
+        if message_type == "hub.work.offer":
+            self._handle_work_offer(message)
+            return
+        if message_type in {"hub.work.result.accepted", "hub.work.terminal.accepted"}:
+            with self._state_lock:
+                self.last_result = dict(message)
+            return
+        if message_type == "hub.error":
+            with self._state_lock:
+                self.last_error = str(message.get("error") or message)
+            return
+
+    def _handle_work_offer(self, offer: dict[str, Any]) -> None:
+        session_id = str(offer.get("session_id") or "")
+        request_id = str(offer.get("request_id") or "")
+        if not session_id or not request_id:
+            raise RuntimeError(f"Hub work offer missing session_id/request_id: {offer}")
+        accepted = {
+            "type": "worker.work.accepted",
+            "session_id": session_id,
+            "request_id": request_id,
+        }
+        run_id = str(offer.get("run_id") or "")
+        if run_id:
+            accepted["run_id"] = run_id
+        self._send_json(accepted)
+
+        result = self._result_payload_for_offer(offer)
+        result_message = {
+            "type": "worker.work.result",
+            "session_id": session_id,
+            "request_id": request_id,
+            "result": result,
+        }
+        if run_id:
+            result_message["run_id"] = run_id
+        if offer.get("lease_id"):
+            result_message["lease_id"] = str(offer.get("lease_id") or "")
+        self._send_json(result_message)
+        with self._state_lock:
+            self.last_offer = dict(offer)
+            self.last_result = dict(result_message)
+
+    def _result_payload_for_offer(self, offer: dict[str, Any]) -> dict[str, Any]:
+        work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        input_payload = dict(work.get("input") or {}) if isinstance(work.get("input"), dict) else {}
+        if str(input_payload.get("kind") or "").lower() == "echo":
+            content = str(input_payload.get("value") or "")
+        else:
+            prompt = str(work.get("prompt") or work.get("input") or "").strip()
+            messages = work.get("messages")
+            if not prompt and isinstance(messages, list):
+                parts: list[str] = []
+                for message in messages:
+                    if isinstance(message, dict) and message.get("content") is not None:
+                        parts.append(str(message.get("content")))
+                prompt = "\n".join(parts).strip()
+            content = prompt or "Main Computer local test worker completed the Hub live-session request."
+        return {
+            "status": "success",
+            "response": {
+                "role": "assistant",
+                "content": content,
+            },
+            "transport": "websocket-live-session",
+            "worker_id": self.worker_id,
+        }
+
+    def _open_socket(self) -> socket.socket:
+        parsed = urlparse(self.hub_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError(f"Hub URL must be http(s): {self.hub_url!r}")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        raw_sock = socket.create_connection((parsed.hostname, port), timeout=self.timeout_s)
+        if parsed.scheme == "https":
+            context = ssl.create_default_context()
+            sock: socket.socket = context.wrap_socket(raw_sock, server_hostname=parsed.hostname)
+        else:
+            sock = raw_sock
+        sock.settimeout(self.timeout_s)
+        request_path = self._websocket_request_path(parsed)
+        host = parsed.hostname
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        request = (
+            f"GET {request_path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "User-Agent: MainComputerWorker/0.1\r\n"
+            "\r\n"
+        )
+        sock.sendall(request.encode("ascii"))
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise RuntimeError(f"Hub live-session websocket handshake closed early: {response!r}")
+            response += chunk
+            if len(response) > 65536:
+                raise RuntimeError("Hub live-session websocket handshake response was too large.")
+        first_line = response.split(b"\r\n", 1)[0]
+        if b" 101 " not in first_line:
+            try:
+                detail = response.decode("utf-8", errors="replace")
+            except Exception:
+                detail = repr(response[:1000])
+            raise RuntimeError(f"Hub live-session websocket handshake failed: {detail[:1000]}")
+        sock.settimeout(1.0)
+        return sock
+
+    def _websocket_request_path(self, parsed: Any) -> str:
+        prefix = str(parsed.path or "").rstrip("/")
+        if not prefix:
+            prefix = ""
+        return prefix + self.endpoint_path
+
+    def _send_json(self, payload: dict[str, Any]) -> None:
+        data = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self._send_frame(opcode=0x1, payload=data)
+
+    def _send_close_frame(self) -> None:
+        self._send_frame(opcode=0x8, payload=b"")
+
+    def _send_frame(self, *, opcode: int, payload: bytes) -> None:
+        sock = self._socket
+        if sock is None:
+            raise RuntimeError("worker live-session socket is not open.")
+        header = bytearray([0x80 | (opcode & 0x0F)])
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header.extend(length.to_bytes(2, "big"))
+        else:
+            header.append(0x80 | 127)
+            header.extend(length.to_bytes(8, "big"))
+        mask = os.urandom(4)
+        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        with self._send_lock:
+            sock.sendall(bytes(header) + mask + masked)
+
+    def _recv_json(self) -> dict[str, Any]:
+        while True:
+            opcode, payload = self._recv_frame()
+            if opcode == 0x8:
+                raise RuntimeError("Hub closed the worker live-session websocket.")
+            if opcode == 0x9:
+                self._send_frame(opcode=0xA, payload=payload)
+                continue
+            if opcode != 0x1:
+                continue
+            try:
+                decoded = json.loads(payload.decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Hub live-session returned non-JSON text: {exc}") from exc
+            if not isinstance(decoded, dict):
+                raise RuntimeError("Hub live-session returned non-object JSON.")
+            return decoded
+
+    def _recv_frame(self) -> tuple[int, bytes]:
+        sock = self._socket
+        if sock is None:
+            raise RuntimeError("worker live-session socket is not open.")
+        header = self._read_exact(2)
+        opcode = header[0] & 0x0F
+        length = header[1] & 0x7F
+        masked = bool(header[1] & 0x80)
+        if length == 126:
+            length = int.from_bytes(self._read_exact(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._read_exact(8), "big")
+        mask = self._read_exact(4) if masked else b""
+        payload = self._read_exact(length) if length else b""
+        if masked and mask:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        return opcode, payload
+
+    def _read_exact(self, length: int) -> bytes:
+        sock = self._socket
+        if sock is None:
+            raise RuntimeError("worker live-session socket is not open.")
+        chunks: list[bytes] = []
+        remaining = int(length)
+        while remaining:
+            try:
+                chunk = sock.recv(remaining)
+            except socket.timeout as exc:
+                raise TimeoutError("Timed out waiting for Hub live-session websocket data.") from exc
+            if not chunk:
+                raise RuntimeError("Hub live-session websocket closed unexpectedly.")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
 
 class ViewportEnergyRoutesMixin:
 
@@ -1089,6 +1487,184 @@ class ViewportEnergyRoutesMixin:
         models = [item.strip() for item in self._worker_seller_model_text(settings.get("models")).split(",") if item.strip()]
         return models or [self._WORKER_DEFAULT_SELLER_MODEL]
 
+    def _worker_runtime_ring_partition(self, settings: dict[str, Any]) -> str:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        signed_worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
+        capabilities = signed_worker.get("capabilities") if isinstance(signed_worker.get("capabilities"), dict) else {}
+        raw_ring = (
+            settings.get("workerAssignedRing")
+            or signed.get("assigned_ring")
+            or signed_worker.get("assigned_ring")
+            or capabilities.get("assigned_ring")
+            or settings.get("workerRequestedRing")
+            or signed.get("requested_ring")
+            or "3"
+        )
+        text = str(raw_ring or "3").strip().lower()
+        if text.startswith("ring-"):
+            text = text[5:]
+        if text not in {"0", "1", "2", "3"}:
+            text = "3"
+        return f"ring-{text}"
+
+    def _worker_runtime_market_profile(
+        self,
+        *,
+        settings: dict[str, Any],
+        capabilities: dict[str, Any],
+        models: list[str],
+        active_jobs: int,
+    ) -> dict[str, Any]:
+        pricing = capabilities.get("pricing") if isinstance(capabilities.get("pricing"), dict) else {}
+        price_wei = str(
+            pricing.get("credits_per_request_wei")
+            or capabilities.get("credits_per_request_wei")
+            or capabilities.get("estimated_credits_per_request_wei")
+            or ""
+        ).strip()
+        if price_wei:
+            try:
+                price_amount = credit_wei_to_decimal_text(price_wei)
+            except Exception:
+                price_amount = str(pricing.get("credits_per_request") or capabilities.get("credits_per_request") or "1")
+        else:
+            price_amount = str(pricing.get("credits_per_request") or capabilities.get("credits_per_request") or "1")
+        market_capabilities = capabilities.get("capabilities") if isinstance(capabilities.get("capabilities"), list) else []
+        clean_capabilities = [str(item).strip() for item in market_capabilities if str(item).strip()]
+        if not clean_capabilities:
+            clean_capabilities = ["chat.completions"]
+        return {
+            "rings": [self._worker_runtime_ring_partition(settings)],
+            "price": {
+                "amount": price_amount,
+                "unit": str(pricing.get("unit") or "compute_credit"),
+            },
+            "capabilities": clean_capabilities,
+            "models": models,
+            "max_concurrency": 1,
+            "active_sessions": max(0, int(active_jobs or 0)),
+        }
+
+    def _worker_runtime_multisession_authorization(
+        self,
+        *,
+        settings: dict[str, Any],
+        hub_url: str,
+    ) -> dict[str, Any]:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
+        registration = settings.get("workerHubRegistration") if isinstance(settings.get("workerHubRegistration"), dict) else {}
+        registration_worker = registration.get("worker") if isinstance(registration.get("worker"), dict) else {}
+        worker_caps = worker.get("capabilities") if isinstance(worker.get("capabilities"), dict) else {}
+        registration_caps = registration_worker.get("capabilities") if isinstance(registration_worker.get("capabilities"), dict) else {}
+        wallet_address = str(
+            signed.get("credit_wallet")
+            or signed.get("wallet_address")
+            or worker.get("credit_wallet")
+            or worker.get("wallet_address")
+            or registration.get("credit_wallet")
+            or registration.get("wallet_address")
+            or registration_worker.get("credit_wallet")
+            or registration_worker.get("wallet_address")
+            or worker_caps.get("credit_wallet")
+            or worker_caps.get("wallet_address")
+            or registration_caps.get("credit_wallet")
+            or registration_caps.get("wallet_address")
+            or ""
+        ).strip()
+        key_id = str(
+            signed.get("multisession_key_id")
+            or worker.get("multisession_key_id")
+            or registration.get("multisession_key_id")
+            or registration_worker.get("multisession_key_id")
+            or worker_caps.get("multisession_key_id")
+            or registration_caps.get("multisession_key_id")
+            or ""
+        ).strip()
+        chain_id = str(
+            signed.get("chain_id")
+            or worker.get("chain_id")
+            or registration.get("chain_id")
+            or registration_worker.get("chain_id")
+            or worker_caps.get("chain_id")
+            or registration_caps.get("chain_id")
+            or ""
+        ).strip()
+        if key_id and wallet_address:
+            return {
+                "kind": "multisession_key",
+                "wallet_address": self._normalize_worker_wallet_address(wallet_address),
+                "multisession_key_id": key_id,
+                "key_id": key_id,
+                "chain_id": chain_id,
+            }
+        if wallet_address:
+            return self._worker_multisession_authorization_for_wallet(
+                hub_url=hub_url,
+                wallet_address=wallet_address,
+                chain_id=chain_id,
+            )
+        raise ValueError("Worker live-session requires a saved multi-session key authorization for this Hub.")
+
+    def _worker_live_session_clients(self) -> tuple[threading.RLock, dict[tuple[str, str], _WorkerHubLiveSessionClient]]:
+        lock = getattr(self.server, "_worker_live_session_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            setattr(self.server, "_worker_live_session_lock", lock)
+        clients = getattr(self.server, "_worker_live_session_clients", None)
+        if not isinstance(clients, dict):
+            clients = {}
+            setattr(self.server, "_worker_live_session_clients", clients)
+        return lock, clients
+
+    def _close_worker_live_session(self, *, hub_url: str, worker_id: str, reason: str) -> dict[str, Any]:
+        key = (self._clean_hub_url(hub_url), str(worker_id or "").strip())
+        lock, clients = self._worker_live_session_clients()
+        with lock:
+            client = clients.pop(key, None)
+        if client is not None:
+            client.close(reason=reason)
+            snapshot = client.snapshot()
+            snapshot["closed_by_runtime"] = True
+            return snapshot
+        return {
+            "ok": True,
+            "transport": "websocket",
+            "endpoint": _WorkerHubLiveSessionClient.endpoint_path,
+            "hub_url": key[0],
+            "worker_id": key[1],
+            "closed_by_runtime": False,
+            "alive": False,
+            "reason": reason,
+        }
+
+    def _ensure_worker_live_session(
+        self,
+        *,
+        hub_url: str,
+        worker_id: str,
+        auth_message: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized_hub_url = self._clean_hub_url(hub_url)
+        key = (normalized_hub_url, str(worker_id or "").strip())
+        lock, clients = self._worker_live_session_clients()
+        with lock:
+            existing = clients.get(key)
+            candidate = _WorkerHubLiveSessionClient(
+                hub_url=normalized_hub_url,
+                worker_id=key[1],
+                auth_message=auth_message,
+                timeout_s=5.0,
+            )
+            if existing is not None and existing.is_alive and existing.fingerprint == candidate.fingerprint:
+                return existing.snapshot()
+            if existing is not None:
+                existing.close(reason="worker_live_session_replaced")
+                clients.pop(key, None)
+            snapshot = candidate.start()
+            clients[key] = candidate
+            return snapshot
+
     def _post_worker_runtime_heartbeat_to_hub(
         self,
         *,
@@ -1103,16 +1679,24 @@ class ViewportEnergyRoutesMixin:
         worker_instance_id = self._worker_runtime_instance_id(settings)
         models = self._worker_runtime_models(settings)
         if not worker_id:
-            raise ValueError("Worker runtime heartbeat requires a worker id.")
+            raise ValueError("Worker runtime live-session requires a worker id.")
         if not hub_url:
-            raise ValueError("Worker runtime heartbeat requires a Hub URL.")
+            raise ValueError("Worker runtime live-session requires a Hub URL.")
+
+        if str(phase or "") == "not_accepting" or str(hub_status or "") == "offline":
+            return self._close_worker_live_session(
+                hub_url=hub_url,
+                worker_id=worker_id,
+                reason="runtime_not_accepting",
+            )
 
         signed_connection = settings.get("signedWorkerConnection")
         signed_worker = signed_connection.get("worker") if isinstance(signed_connection, dict) else {}
         stored_worker = settings.get("workerHubRegistration")
         base_worker = signed_worker if isinstance(signed_worker, dict) else {}
         if not base_worker and isinstance(stored_worker, dict):
-            base_worker = stored_worker
+            stored_registered_worker = stored_worker.get("worker") if isinstance(stored_worker.get("worker"), dict) else {}
+            base_worker = stored_registered_worker if stored_registered_worker else stored_worker
         capabilities = dict(base_worker.get("capabilities", {})) if isinstance(base_worker.get("capabilities"), dict) else {}
         if not capabilities.get("capabilities"):
             capabilities["capabilities"] = ["chat.completions"]
@@ -1133,41 +1717,62 @@ class ViewportEnergyRoutesMixin:
         capabilities["runtime"] = {
             "phase": phase,
             "source": "main_app_worker_runtime_v1",
-            "no_job_polling": True,
+            "transport": "websocket",
+            "live_session_endpoint": _WorkerHubLiveSessionClient.endpoint_path,
             "drains_before_disconnect": True,
         }
-        request = Request(
-            self._clean_hub_url(hub_url) + "/api/hub/v1/workers/heartbeat",
-            data=json.dumps(
-                {
-                    "worker_node_id": worker_id,
-                    "worker_instance_id": worker_instance_id,
-                    "status": hub_status,
-                    "model": models[0] if models else self._WORKER_DEFAULT_SELLER_MODEL,
-                    "models": models,
-                    "queue_depth": 0,
-                    "active_requests": max(0, int(active_jobs or 0)),
-                    "max_concurrency": 1,
-                    "capabilities": capabilities,
-                },
-                ensure_ascii=False,
-            ).encode("utf-8"),
-            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
-            method="POST",
+
+        authorization = self._worker_runtime_multisession_authorization(
+            settings=settings,
+            hub_url=hub_url,
         )
-        try:
-            with urlopen(request, timeout=5.0) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
-        if not isinstance(data, dict):
-            raise RuntimeError("Hub returned a non-object worker heartbeat response.")
-        if data.get("error"):
-            raise RuntimeError(str(data["error"]))
-        return data
+        chain_id = str(
+            authorization.get("chain_id")
+            or (signed_connection.get("chain_id") if isinstance(signed_connection, dict) else "")
+            or ""
+        ).strip()
+        market = self._worker_runtime_market_profile(
+            settings=settings,
+            capabilities=capabilities,
+            models=models,
+            active_jobs=active_jobs,
+        )
+        auth_message = {
+            "type": "worker.auth",
+            "worker_id": worker_id,
+            "worker_instance_id": worker_instance_id,
+            "chain_id": chain_id,
+            "status": hub_status,
+            "model": models[0] if models else self._WORKER_DEFAULT_SELLER_MODEL,
+            "models": models,
+            "queue_depth": 0,
+            "active_requests": max(0, int(active_jobs or 0)),
+            "max_concurrency": 1,
+            "capabilities": capabilities,
+            "market": market,
+            "multisession_authorization": authorization,
+        }
+        live_session = self._ensure_worker_live_session(
+            hub_url=hub_url,
+            worker_id=worker_id,
+            auth_message=auth_message,
+        )
+        return {
+            "ok": True,
+            "worker": {
+                "node_id": worker_id,
+                "worker_instance_id": worker_instance_id,
+                "status": hub_status,
+                "models": models,
+                "queue_depth": 0,
+                "active_requests": max(0, int(active_jobs or 0)),
+                "max_concurrency": 1,
+                "capabilities": capabilities,
+            },
+            "transport": "websocket",
+            "endpoint": _WorkerHubLiveSessionClient.endpoint_path,
+            "live_session": live_session,
+        }
 
     def _worker_runtime_phase_label(self, phase: Any) -> str:
         normalized = str(phase or "not_accepting")
@@ -1849,27 +2454,29 @@ class ViewportEnergyRoutesMixin:
             settings["signedWorkerConnection"] = signed_connection
             settings = self._save_worker_settings(settings)
 
+            authorization_key_id = ""
             try:
                 connect_payload = {
                     "signed_connection": signed_connection,
                     "worker": registration_payload,
                 }
-                if active_multisession_key_id:
-                    connect_payload["multisession_authorization"] = self._worker_multisession_authorization_for_wallet(
-                        hub_url=hub_url,
-                        wallet_address=wallet_address,
-                        chain_id=chain_id,
-                        requested_key_id=active_multisession_key_id,
-                    )
+                multisession_authorization = self._worker_multisession_authorization_for_wallet(
+                    hub_url=hub_url,
+                    wallet_address=wallet_address,
+                    chain_id=chain_id,
+                    requested_key_id=active_multisession_key_id,
+                )
+                authorization_key_id = str(multisession_authorization.get("key_id") or multisession_authorization.get("multisession_key_id") or "").strip()
+                connect_payload["multisession_authorization"] = multisession_authorization
                 registration = self._post_worker_connect_order_to_hub(
                     hub_url=hub_url,
                     payload=connect_payload,
                 )
             except Exception as register_exc:
                 registration_error = str(register_exc)
-                if self._worker_multisession_connect_error_message(registration_error) and active_multisession_key_id:
+                if self._worker_multisession_connect_error_message(registration_error) and authorization_key_id:
                     self._mark_worker_multisession_key_inactive_on_hub(
-                        key_id=active_multisession_key_id,
+                        key_id=authorization_key_id,
                         hub_url=hub_url,
                         error_message=registration_error,
                     )
@@ -1952,6 +2559,11 @@ class ViewportEnergyRoutesMixin:
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _worker_multisession_key_cache_path(self) -> Path:
+        # Worker multi-session key ids are authorization credentials. Keep them
+        # under the ignored local runtime directory instead of the repository root.
+        return self.server.debug_root / ".main_computer" / "worker_multisession_keys.json"
+
+    def _worker_multisession_key_legacy_cache_path(self) -> Path:
         return self.server.debug_root / "worker_multisession_keys.json"
 
     def _normalize_worker_wallet_address(self, value: Any) -> str:
@@ -2109,10 +2721,16 @@ class ViewportEnergyRoutesMixin:
 
     def _load_worker_multisession_key_cache(self) -> dict[str, Any]:
         path = self._worker_multisession_key_cache_path()
+        source_path = path
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            data = {}
+            legacy_path = self._worker_multisession_key_legacy_cache_path()
+            try:
+                data = json.loads(legacy_path.read_text(encoding="utf-8"))
+                source_path = legacy_path
+            except (OSError, json.JSONDecodeError):
+                data = {}
         if not isinstance(data, dict):
             data = {}
         keys = data.get("keys")
@@ -2120,12 +2738,14 @@ class ViewportEnergyRoutesMixin:
             keys = {}
         data["keys"] = keys
         data.setdefault("version", "main-computer-worker-multisession-key-cache-v1")
+        data["_cache_path"] = str(source_path)
         return data
 
     def _save_worker_multisession_key_cache(self, data: dict[str, Any]) -> None:
+        clean_data = {key: value for key, value in data.items() if key != "_cache_path"}
         path = self._worker_multisession_key_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        path.write_text(json.dumps(clean_data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
     def _normalize_worker_multisession_key_record(
         self,
@@ -2176,6 +2796,52 @@ class ViewportEnergyRoutesMixin:
         data["keys"][record["id"]] = record
         self._save_worker_multisession_key_cache(data)
         return record
+
+    def _public_worker_multisession_key_record(self, record: dict[str, Any], *, reveal_key: bool = False) -> dict[str, Any]:
+        """Return a UI-safe key record.
+
+        The Hub key id is the bearer authorization credential in this lab flow, so
+        load/revoke/status responses must not reveal it again after first issue.
+        """
+        public = {
+            "status": str(record.get("status") or ""),
+            "created_at": str(record.get("created_at") or ""),
+            "revoked_at": str(record.get("revoked_at") or ""),
+            "inactive_on_hub_at": str(record.get("inactive_on_hub_at") or ""),
+            "wallet_address": str(record.get("wallet_address") or ""),
+            "chain_id": str(record.get("chain_id") or ""),
+            "hub_url": str(record.get("hub_url") or ""),
+            "server_side_key": True,
+            "key_redacted": not reveal_key,
+            "updated_at": str(record.get("updated_at") or ""),
+        }
+        if record.get("last_error"):
+            public["last_error"] = str(record.get("last_error") or "")
+        if reveal_key:
+            public["id"] = str(record.get("id") or "")
+        return public
+
+    def _public_worker_multisession_key_records(self, records: list[dict[str, Any]], *, reveal_key: bool = False) -> list[dict[str, Any]]:
+        return [self._public_worker_multisession_key_record(record, reveal_key=reveal_key) for record in records]
+
+    def _select_worker_multisession_key_record(
+        self,
+        *,
+        wallet_address: str,
+        hub_url: str = "",
+        key_id: str = "",
+        status: str = "active",
+    ) -> dict[str, Any] | None:
+        normalized_wallet = self._normalize_worker_wallet_address(wallet_address)
+        wanted_status = str(status or "").strip().lower()
+        records = self._worker_multisession_keys_for_wallet(wallet_address=normalized_wallet, hub_url=hub_url)
+        for record in records:
+            if key_id and str(record.get("id") or "") != key_id:
+                continue
+            if wanted_status and str(record.get("status") or "").strip().lower() != wanted_status:
+                continue
+            return record
+        return None
 
     def _worker_multisession_keys_for_wallet(
         self,
@@ -2252,24 +2918,93 @@ class ViewportEnergyRoutesMixin:
             hub_url = self._clean_hub_url(str(body.get("hub_url") or ""), allow_empty=True)
             keys = self._worker_multisession_keys_for_wallet(wallet_address=wallet_address, hub_url=hub_url)
             active_key = next((key for key in keys if key.get("status") == "active"), None)
+            public_keys = self._public_worker_multisession_key_records(keys, reveal_key=False)
+            public_active_key = self._public_worker_multisession_key_record(active_key, reveal_key=False) if active_key else None
             self.server.signal(
                 "api-worker-multisession-keys-load",
                 hub_url=hub_url,
                 wallet_address=wallet_address,
                 key_count=len(keys),
-                active_key_id=(active_key or {}).get("id", ""),
+                active_key_present=bool(active_key),
             )
             self._send_json(
                 {
                     "ok": True,
                     "wallet_address": wallet_address,
                     "hub_url": hub_url,
-                    "keys": keys,
-                    "active_key": active_key,
+                    "keys": public_keys,
+                    "active_key": public_active_key,
+                    "key_ids_redacted": True,
                 }
             )
         except Exception as exc:
             self.server.signal("api-worker-multisession-keys-load-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_worker_multisession_key_revoke(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker multi-session key revocation is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or ""), allow_empty=True)
+            key_id = str(body.get("key_id") or body.get("multisession_key_id") or "").strip()
+
+            data = self._load_worker_multisession_key_cache()
+            record = self._select_worker_multisession_key_record(
+                wallet_address=wallet_address,
+                hub_url=hub_url,
+                key_id=key_id,
+                status="active",
+            )
+            if not record:
+                raise ValueError("No active saved multi-session key was found for this wallet and Hub.")
+            resolved_key_id = str(record.get("id") or "").strip()
+            now = datetime.now(timezone.utc).isoformat()
+            stored_record = data.get("keys", {}).get(resolved_key_id)
+            if not isinstance(stored_record, dict):
+                stored_record = dict(record)
+            stored_record["status"] = "revoked"
+            stored_record["revoked_at"] = now
+            stored_record["updated_at"] = now
+            stored_record["hub_url"] = self._clean_hub_url(str(stored_record.get("hub_url") or hub_url), allow_empty=True)
+            data["keys"][resolved_key_id] = stored_record
+            self._save_worker_multisession_key_cache(data)
+
+            hub_revoke: dict[str, Any] = {"ok": False, "skipped": True}
+            if hub_url:
+                try:
+                    hub_revoke = self._post_worker_multisession_key_revoke_to_hub(
+                        hub_url=hub_url,
+                        key_id=resolved_key_id,
+                        wallet_address=wallet_address,
+                    )
+                except Exception as exc:
+                    hub_revoke = {"ok": False, "error": str(exc)}
+
+            keys = self._worker_multisession_keys_for_wallet(wallet_address=wallet_address, hub_url=hub_url)
+            self.server.signal(
+                "api-worker-multisession-key-revoke",
+                hub_url=hub_url,
+                wallet_address=wallet_address,
+                hub_revoked=bool(hub_revoke.get("ok")),
+            )
+            self._send_json(
+                {
+                    "ok": True,
+                    "wallet_address": wallet_address,
+                    "hub_url": hub_url,
+                    "revoked": True,
+                    "key": self._public_worker_multisession_key_record(stored_record, reveal_key=False),
+                    "keys": self._public_worker_multisession_key_records(keys, reveal_key=False),
+                    "active_key": None,
+                    "hub_revoke": hub_revoke,
+                    "key_ids_redacted": True,
+                }
+            )
+        except Exception as exc:
+            self.server.signal("api-worker-multisession-key-revoke-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _handle_worker_wallet_funding_balance(self) -> None:
@@ -2665,6 +3400,19 @@ class ViewportEnergyRoutesMixin:
             if not str(signed_request.get("signature") or "").startswith("0x"):
                 raise ValueError("signed_request.signature is required.")
 
+            request_wallet = self._normalize_worker_wallet_address(
+                signed_request.get("message", {}).get("wallet_address")
+                if isinstance(signed_request.get("message"), dict)
+                else signed_request.get("wallet_address") or body.get("wallet_address")
+            )
+            existing_active = self._select_worker_multisession_key_record(
+                wallet_address=request_wallet,
+                hub_url=hub_url,
+                status="active",
+            )
+            if existing_active:
+                raise ValueError("An active saved multi-session key already exists for this wallet and Hub. Revoke it before requesting a replacement.")
+
             forwarded = {
                 "signed_request": signed_request,
                 "client_metadata": dict(body.get("client_metadata", {})) if isinstance(body.get("client_metadata"), dict) else {},
@@ -2672,15 +3420,28 @@ class ViewportEnergyRoutesMixin:
             result = self._post_multisession_key_request_to_hub(hub_url=hub_url, payload=forwarded)
             key = result.get("key") if isinstance(result.get("key"), dict) else {}
             local_record = self._store_worker_multisession_key_from_hub_result(hub_url=hub_url, result=result)
+            reveal_key = not bool(result.get("idempotent"))
+            response_key = key if reveal_key else self._public_worker_multisession_key_record(local_record or key, reveal_key=False)
             self.server.signal(
                 "api-worker-multisession-key-request",
                 hub_url=hub_url,
                 key_id=key.get("id", ""),
                 local_cached=bool(local_record),
+                key_revealed=reveal_key,
             )
-            response = {"ok": True, "hub_url": hub_url, **result}
+            response = {
+                "ok": True,
+                "hub_url": hub_url,
+                **{name: value for name, value in result.items() if name != "key"},
+                "key": response_key,
+                "key_revealed_once": reveal_key,
+            }
             if local_record:
-                response["local_cache"] = {"stored": True, "key": local_record}
+                response["local_cache"] = {
+                    "stored": True,
+                    "key": self._public_worker_multisession_key_record(local_record, reveal_key=False),
+                    "path": str(self._worker_multisession_key_cache_path()),
+                }
             self._send_json(response)
         except Exception as exc:
             self.server.signal("api-worker-multisession-key-request-error", error=exc)
@@ -3003,6 +3764,34 @@ class ViewportEnergyRoutesMixin:
             raise RuntimeError(f"Hub is unreachable: {exc}") from exc
         if not isinstance(data, dict):
             raise RuntimeError("Hub returned a non-object multi-session key response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data
+
+    def _post_worker_multisession_key_revoke_to_hub(self, *, hub_url: str, key_id: str, wallet_address: str) -> dict[str, Any]:
+        request = Request(
+            self._clean_hub_url(hub_url) + "/api/hub/v1/credits/multisession-keys/revoke",
+            data=json.dumps(
+                {
+                    "key_id": str(key_id or "").strip(),
+                    "wallet_address": self._normalize_worker_wallet_address(wallet_address),
+                    "reason": "worker-ui-revoke",
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object multi-session key revocation response.")
         if data.get("error"):
             raise RuntimeError(str(data["error"]))
         return data

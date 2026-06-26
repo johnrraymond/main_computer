@@ -30,7 +30,7 @@ services:
       MAIN_COMPUTER_PATH_MODE: ${MAIN_COMPUTER_PATH_MODE:-local}
       MAIN_COMPUTER_HOST_OS: ${MAIN_COMPUTER_HOST_OS:-auto}
       MAIN_COMPUTER_HOST_DRIVE_ROOT: ${MAIN_COMPUTER_HOST_DRIVE_ROOT:-/host}
-      MAIN_COMPUTER_HUB_URL: ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}
+      MAIN_COMPUTER_HUB_URL: ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8871}
       MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"
       MAIN_COMPUTER_HUB_CLIENT_NODE_ID: docker-dev-client
       MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: ${MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL:-http://host.docker.internal:18545}
@@ -72,7 +72,7 @@ services:
       - --port
       - "8771"
       - --hub-url
-      - ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}
+      - ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8871}
       - --public-endpoint
       - ${MAIN_COMPUTER_HUB_WORKER_PUBLIC_ENDPOINT:-http://host.docker.internal:8771}
       - --hub-worker-node-id

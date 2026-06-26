@@ -231,8 +231,12 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert '"exp-fdb-hub.py"' in helper
     assert '"--network-key", [string]$endpoint.network' in helper
     assert '"--topology", [string]$topologyPath' in helper
+    assert '"-ports", [string]$hubPortsText' in helper
     assert '"--hub-id", [string]$hubId' in helper
     assert '"--require-multisession-auth"' in helper
+    assert "function Resolve-MainComputerDevHubEndpoints" in helper
+    assert "Wait-MainComputerDevHubEndpointsStatus $endpoints" in helper
+    assert '"MAIN_COMPUTER_HUB_ENTRY_URLS"' in helper
     assert '"-m", "main_computer.cli"' in helper
     assert '"hub",' in helper
     assert '"--network", [string]$endpoint.network' in helper
@@ -254,14 +258,14 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert '"-noverbose"' in helper
     assert 'Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII' in helper
 
-    assert "Resetting dev Hub on start path" in helper
+    assert "Resetting dev Hub topology on start path" in helper
     assert "Stop-MainComputerDevHubForRestart $RootPath $LaunchContext" in helper
     assert "Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand" in helper
     assert 'Write-MainComputerDevHubWarning $devHubStart' in helper
     assert 'Get-DevHubPidPath $RootPath' in helper
     assert '".main_computer_dev_hub.pid"' in helper
-    assert '"MAIN_COMPUTER_HUB_PORT" "8770"' in helper
-    assert 'listener on dev Hub port' in helper
+    assert '"MAIN_COMPUTER_HUB_PORT" "8871"' in helper
+    assert 'listener on dev Hub topology port' in helper
     assert 'Dev Hub PID:' in helper
     assert 'dev-hub' in helper
 

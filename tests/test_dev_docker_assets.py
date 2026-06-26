@@ -20,8 +20,8 @@ def test_dev_docker_compose_defines_core_services() -> None:
     assert "\n  hub:\n" not in compose
     assert "\n  ollama:\n" not in compose
     assert "${MAIN_COMPUTER_HUB_PORT:-8770}:8770" not in compose
-    assert "MAIN_COMPUTER_HUB_URL: ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}" in compose
-    assert "- ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}" in compose
+    assert "MAIN_COMPUTER_HUB_URL: ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8871}" in compose
+    assert "- ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8871}" in compose
     assert "- ${MAIN_COMPUTER_HUB_WORKER_PUBLIC_ENDPOINT:-http://host.docker.internal:8771}" in compose
 
     assert "docker/dev/app.Dockerfile" in compose

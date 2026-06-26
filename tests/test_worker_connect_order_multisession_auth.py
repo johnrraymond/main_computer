@@ -309,7 +309,6 @@ def test_worker_connect_order_proxy_attaches_cached_multisession_key() -> None:
                     "wallet_address": _TEST_WORKER_WALLET,
                     "message": message,
                     "signature": sign_personal_message(message, _TEST_WORKER_PRIVATE_KEY),
-                    "active_multisession_key_id": key_id,
                     "worker": _worker_payload(worker_node_id),
                 },
             )
@@ -366,7 +365,8 @@ def test_worker_connect_order_proxy_reports_stale_saved_multisession_key_clearly
                 _write_dev_network_config(root, hub_url=hub_url, hub_port=hub.server_port)
             )
 
-            cache_path = root / "worker_multisession_keys.json"
+            cache_path = root / ".main_computer" / "worker_multisession_keys.json"
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(
                 json.dumps(
                     {
