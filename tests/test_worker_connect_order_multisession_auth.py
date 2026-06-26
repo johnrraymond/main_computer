@@ -418,6 +418,10 @@ def test_worker_connect_order_proxy_reports_stale_saved_multisession_key_clearly
             error = str(payload.get("error", ""))
             assert "saved multi-session key is not active on this Hub" in error
             assert "Request a new multi-session key" in error
+            cache_after = json.loads(cache_path.read_text(encoding="utf-8"))
+            stale_record = cache_after["keys"]["msk_missing_on_hub"]
+            assert stale_record["status"] == "inactive_on_hub"
+            assert "saved multi-session key is not active on this Hub" in stale_record["last_error"]
         finally:
             if viewport is not None:
                 viewport.shutdown()

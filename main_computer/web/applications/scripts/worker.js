@@ -578,6 +578,42 @@
       )) || null;
     }
 
+    function workerErrorText(error) {
+      return String(error?.message || error?.error || error || "").trim();
+    }
+
+    function workerIsInactiveMultisessionKeyError(error) {
+      const text = workerErrorText(error).toLowerCase();
+      return (
+        text.includes("saved multi-session key")
+        && text.includes("not active")
+        && text.includes("hub")
+      );
+    }
+
+    function workerMarkMultisessionKeyInactiveOnHub(keyId, errorMessage = "") {
+      const id = String(keyId || "").trim();
+      if (!id) return;
+      let changed = false;
+      workerBridgeState.multisessionKeys = workerBridgeState.multisessionKeys.map((key) => {
+        if (String(key?.id || "") !== id) return key;
+        changed = true;
+        return {
+          ...key,
+          status: "inactive_on_hub",
+          inactiveOnHubAt: workerNowIso(),
+          lastError: String(errorMessage || "The saved multi-session key is not active on this Hub.")
+        };
+      });
+      if (workerBridgeState.activeMultisessionKeyId === id) {
+        workerBridgeState.activeMultisessionKeyId = "";
+        changed = true;
+      }
+      if (changed) {
+        saveWorkerBridgeState();
+      }
+    }
+
     function workerClearActiveMultisessionKeyIfWalletMismatch() {
       if (!workerBridgeState.activeMultisessionKeyId) return;
       if (!workerActiveMultisessionKey()) {
@@ -2812,6 +2848,60 @@
       }
     }
 
+    async function workerRequestReplacementMultisessionKeyForConnect({reason = "connect-order-retry"} = {}) {
+      loadWorkerBridgeState();
+      if (workerMultisessionInFlight) {
+        throw new Error("A multi-session key request is already in progress.");
+      }
+      if (!workerBridgeState.wallet.connected || !workerWalletValidAddress(workerBridgeState.wallet.address)) {
+        throw new Error("Connect a Worker wallet before requesting a replacement multi-session key.");
+      }
+      const walletLibrary = window.MainComputerWalletLibrary || window.MainComputerWalletApp || {};
+      if (typeof walletLibrary.requestMultiSessionKeySignature !== "function") {
+        throw new Error("Wallet signing library is not loaded yet; open Wallet once or reload Applications.");
+      }
+
+      const requestContext = workerBuildMultisessionRequestContext();
+      workerMultisessionInFlight = true;
+      renderWorkerBridgeReadiness();
+      try {
+        console.info("[worker-msk] replacement.request.start", {
+          reason,
+          wallet_address: requestContext.wallet_address,
+          chain_id: requestContext.chain_id,
+          hub_url: workerSelectedHubUrl()
+        });
+        if (workerSaveStatus) {
+          workerSaveStatus.textContent = "Saved multi-session key is inactive on this Hub; requesting a replacement key…";
+        }
+        const signedRequest = await walletLibrary.requestMultiSessionKeySignature({
+          requestContext,
+          origin: window.location?.origin || "main-computer-worker"
+        });
+        const result = await workerPostJson("/api/applications/worker/multisession-key/request", {
+          hub_url: workerSelectedHubUrl(),
+          signed_request: signedRequest,
+          client_metadata: {
+            source: "worker-connect-order-inactive-key-retry",
+            retry_reason: reason,
+            requested_at: workerNowIso(),
+            wallet_address: requestContext.wallet_address,
+            chain_id: requestContext.chain_id
+          }
+        });
+        const key = workerStoreIssuedMultisessionKey(result);
+        console.info("[worker-msk] replacement.request.done", {
+          reason,
+          key_id: key.id,
+          hub_url: workerSelectedHubUrl()
+        });
+        return key;
+      } finally {
+        workerMultisessionInFlight = false;
+        renderWorkerBridgeReadiness();
+      }
+    }
+
     function revokeWorkerMultisessionKey() {
       loadWorkerBridgeState();
       const activeKey = workerActiveMultisessionKey();
@@ -3626,9 +3716,28 @@
       };
     }
 
+    async function workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey) {
+      if (!activeMultisessionKey?.id) {
+        throw new Error("Request or load a multi-session key for this Hub before connecting the worker.");
+      }
+      const context = await workerGetWalletProviderContext();
+      const signer = await context.browserProvider.getSigner();
+      const walletAddress = await signer.getAddress();
+      const message = workerBuildConnectOrderMessage();
+      const signature = await signer.signMessage(message);
+      return await workerPostJson(
+        WORKER_NETWORK_CONNECT_ORDER_ENDPOINT,
+        {
+          ...buildWorkerNetworkRegistrationPayload({message, signature, walletAddress}),
+          active_multisession_key_id: activeMultisessionKey.id,
+          multisession_key_id: activeMultisessionKey.id
+        }
+      );
+    }
+
     async function signWorkerNetworkConnectOrder(event) {
       event?.preventDefault?.();
-      const activeMultisessionKey = workerActiveMultisessionKey();
+      let activeMultisessionKey = workerActiveMultisessionKey();
       if (!activeMultisessionKey) {
         if (workerSaveStatus) workerSaveStatus.textContent = "Request or load a multi-session key for this Hub before connecting the worker.";
         renderWorkerNetworkSurface();
@@ -3642,19 +3751,28 @@
       workerNetworkSignatureInFlight = true;
       renderWorkerNetworkSurface();
       try {
-        const context = await workerGetWalletProviderContext();
-        const signer = await context.browserProvider.getSigner();
-        const walletAddress = await signer.getAddress();
-        const message = workerBuildConnectOrderMessage();
-        const signature = await signer.signMessage(message);
-        const data = await workerPostJson(
-          WORKER_NETWORK_CONNECT_ORDER_ENDPOINT,
-          {
-            ...buildWorkerNetworkRegistrationPayload({message, signature, walletAddress}),
-            active_multisession_key_id: activeMultisessionKey.id,
-            multisession_key_id: activeMultisessionKey.id
+        let data;
+        try {
+          data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);
+        } catch (error) {
+          if (!workerIsInactiveMultisessionKeyError(error)) {
+            throw error;
           }
-        );
+          const staleKeyId = activeMultisessionKey.id;
+          const staleMessage = workerErrorText(error);
+          console.warn("[worker-msk] connect-order.key-inactive", {
+            key_id: staleKeyId,
+            hub_url: workerSelectedHubUrl(),
+            error: staleMessage
+          });
+          workerMarkMultisessionKeyInactiveOnHub(staleKeyId, staleMessage);
+          workerSetSaveStatus("Saved multi-session key is inactive on this Hub. Signing a fresh key request and retrying worker registration…");
+          activeMultisessionKey = await workerRequestReplacementMultisessionKeyForConnect({
+            reason: "hub-reported-saved-key-inactive"
+          });
+          workerSetSaveStatus("Replacement multi-session key issued. Signing a fresh worker connect order and retrying Hub registration…");
+          data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);
+        }
         workerApplyNetworkPayload(data);
         workerSetSaveStatus(`Signed fresh ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order and submitted it to the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`);
       } catch (error) {
@@ -3712,9 +3830,13 @@
 
     function workerPositiveDecimalString(value, fallback = "1") {
       const raw = String(value ?? "").trim();
-      const parsed = Number.parseFloat(raw);
-      if (!raw || !Number.isFinite(parsed) || parsed <= 0) {
-        return String(fallback);
+      const fallbackText = String(fallback ?? "1").trim() || "1";
+      if (!/^\d+(\.\d{1,18})?$/.test(raw)) {
+        return fallbackText;
+      }
+      const significantDigits = raw.replace(".", "").replace(/^0+/, "");
+      if (!significantDigits) {
+        return fallbackText;
       }
       return raw;
     }
@@ -3723,13 +3845,14 @@
       const raw = workerPositiveDecimalString(value, fallback);
       const parts = raw.split(".");
       const whole = parts[0] || "0";
-      const fraction = (parts[1] || "").slice(0, 18).padEnd(18, "0");
+      const fraction = (parts[1] || "").padEnd(18, "0");
       try {
         return (BigInt(whole) * WORKER_CREDIT_BASE_UNITS_PER_CREDIT + BigInt(fraction || "0")).toString();
       } catch {
-        const fallbackParts = String(fallback).split(".");
+        const fallbackText = workerPositiveDecimalString(fallback, "1");
+        const fallbackParts = fallbackText.split(".");
         const fallbackWhole = fallbackParts[0] || "0";
-        const fallbackFraction = (fallbackParts[1] || "").slice(0, 18).padEnd(18, "0");
+        const fallbackFraction = (fallbackParts[1] || "").padEnd(18, "0");
         return (BigInt(fallbackWhole) * WORKER_CREDIT_BASE_UNITS_PER_CREDIT + BigInt(fallbackFraction || "0")).toString();
       }
     }

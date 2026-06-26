@@ -1867,6 +1867,12 @@ class ViewportEnergyRoutesMixin:
                 )
             except Exception as register_exc:
                 registration_error = str(register_exc)
+                if self._worker_multisession_connect_error_message(registration_error) and active_multisession_key_id:
+                    self._mark_worker_multisession_key_inactive_on_hub(
+                        key_id=active_multisession_key_id,
+                        hub_url=hub_url,
+                        error_message=registration_error,
+                    )
                 failed_registration = {
                     "status": "failed",
                     "label": "Failed",
@@ -2951,12 +2957,14 @@ class ViewportEnergyRoutesMixin:
         local_hub_url: str,
         upstream_hub_url: str,
         node_id: str,
-        credits_per_request: int,
+        credits_per_request: Any,
     ) -> dict[str, Any]:
+        credit_price_wei = credit_decimal_text_to_wei(credits_per_request, default="1", minimum_wei=1)
         payload = {
             "node_id": node_id,
             "endpoint": self._clean_hub_url(upstream_hub_url),
-            "credits_per_request": max(1, int(credits_per_request or 1)),
+            "credits_per_request": credit_wei_to_decimal_text(credit_price_wei),
+            "credits_per_request_wei": str(credit_price_wei),
         }
         request = Request(
             self._clean_hub_url(local_hub_url) + "/api/hub/upstreams/register",
@@ -3131,6 +3139,31 @@ class ViewportEnergyRoutesMixin:
             return data
 
         raise RuntimeError("Hub wallet funding import failed: " + " ; ".join(route_errors))
+
+    def _mark_worker_multisession_key_inactive_on_hub(
+        self,
+        *,
+        key_id: str,
+        hub_url: str,
+        error_message: str,
+    ) -> None:
+        key_id = str(key_id or "").strip()
+        if not key_id:
+            return
+        data = self._load_worker_multisession_key_cache()
+        record = data.get("keys", {}).get(key_id)
+        if not isinstance(record, dict):
+            return
+        normalized_hub_url = self._clean_hub_url(hub_url, allow_empty=True)
+        record_hub_url = self._clean_hub_url(str(record.get("hub_url") or ""), allow_empty=True)
+        if normalized_hub_url and record_hub_url and normalized_hub_url != record_hub_url:
+            return
+        record["status"] = "inactive_on_hub"
+        record["inactive_on_hub_at"] = datetime.now(timezone.utc).isoformat()
+        record["last_error"] = str(error_message or "The saved multi-session key is not active on this Hub.")
+        record["hub_url"] = normalized_hub_url or record_hub_url
+        data["keys"][key_id] = record
+        self._save_worker_multisession_key_cache(data)
 
     def _worker_multisession_connect_error_message(self, error_body: str) -> str:
         text = str(error_body or "")

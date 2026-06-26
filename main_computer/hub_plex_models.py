@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
+from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_to_decimal_text
 from main_computer.hub_credit_models import (
     DEFAULT_WORKER_PAYOUT_PRECISION_PLACES,
     normalize_worker_payout_precision_places,
@@ -30,6 +31,44 @@ REQUEST_STATES = {
 def clean_node_id(value: str, *, default: str) -> str:
     text = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in str(value or "").strip().lower())
     return text or default
+
+
+def _credit_wei_from_payload(
+    payload: dict[str, Any],
+    *,
+    wei_keys: tuple[str, ...] = ("credits_per_request_wei", "quoted_credits_wei", "credit_wei"),
+    decimal_keys: tuple[str, ...] = ("credits_per_request", "quoted_credits", "amount"),
+    default: str = "0",
+) -> int:
+    for key in wei_keys:
+        raw = payload.get(key)
+        if raw not in (None, ""):
+            try:
+                parsed = int(str(raw).strip())
+                if parsed >= 0:
+                    return parsed
+            except (TypeError, ValueError):
+                pass
+    for key in decimal_keys:
+        raw = payload.get(key)
+        if raw not in (None, ""):
+            return credit_decimal_text_to_wei(raw, default=default, minimum_wei=0)
+    return credit_decimal_text_to_wei(default, default=default, minimum_wei=0)
+
+
+def _credit_public_from_wei(credit_wei: Any) -> int | str:
+    text = credit_wei_to_decimal_text(credit_wei)
+    return int(text) if text.isdigit() else text
+
+
+def _credit_legacy_ceil_from_wei(credit_wei: Any) -> int:
+    try:
+        amount = max(0, int(str(credit_wei).strip()))
+    except (TypeError, ValueError):
+        amount = 0
+    if amount <= 0:
+        return 0
+    return (amount + CREDIT_WEI_PER_CREDIT - 1) // CREDIT_WEI_PER_CREDIT
 
 
 def _public_payout_privacy_context(*, precision_places: Any = None, rounding_bucket_credits: int | None = None) -> dict[str, Any]:
@@ -404,7 +443,8 @@ class HubWorkerSummary:
     model: str = ""
     models: list[str] = field(default_factory=list)
     status: str = "available"
-    credits_per_request: int = 1
+    credits_per_request: int | str = 1
+    credits_per_request_wei: int | str = "1000000000000000000"
     settlement_precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
     registered_at: str = ""
     last_seen_at: str = ""
@@ -427,13 +467,15 @@ class HubWorkerSummary:
             models = []
         if model and model not in models:
             models.insert(0, model)
+        credit_price_wei = _credit_wei_from_payload(payload, default="1")
         return cls(
             node_id=str(payload.get("node_id", "")),
             worker_instance_id=str(payload.get("worker_instance_id") or payload.get("node_id", "")),
             model=model,
             models=models,
             status=str(payload.get("status", "available") or "available"),
-            credits_per_request=max(1, int(payload.get("credits_per_request", 1) or 1)),
+            credits_per_request=_credit_public_from_wei(credit_price_wei),
+            credits_per_request_wei=str(credit_price_wei),
             settlement_precision_places=normalize_worker_payout_precision_places(
                 payload.get("settlement_precision_places")
                 if payload.get("settlement_precision_places") is not None
@@ -463,6 +505,8 @@ class HubWorkerSummary:
             "models": list(self.models),
             "status": self.status,
             "credits_per_request": self.credits_per_request,
+            "credits_per_request_wei": str(self.credits_per_request_wei),
+            "credits_per_request_display": credit_wei_to_decimal_text(self.credits_per_request_wei),
             "settlement_precision_places": self.settlement_precision_places,
             "registered_at": self.registered_at,
             "last_seen_at": self.last_seen_at,
@@ -726,9 +770,24 @@ class HubRequestStatus:
         )
         if quote:
             data["quote_id"] = str(quote.get("quote_id", ""))
+            quoted_credit_wei = _credit_wei_from_payload(
+                quote,
+                wei_keys=("quoted_credits_wei", "estimated_credits_wei", "credit_wei"),
+                decimal_keys=("quoted_credits", "estimated_credits", "amount"),
+                default="0",
+            )
+            held_credit_wei = _credit_wei_from_payload(
+                {"held_credits": request_metadata.get("held_credits", quote.get("quoted_credits", 0)), "held_credits_wei": request_metadata.get("held_credits_wei", quote.get("quoted_credits_wei", ""))},
+                wei_keys=("held_credits_wei",),
+                decimal_keys=("held_credits",),
+                default="0",
+            )
             data["pricing"] = {
-                "quoted_credits": max(0, int(quote.get("quoted_credits", quote.get("estimated_credits", 0)) or 0)),
-                "held_credits": max(0, int(request_metadata.get("held_credits", quote.get("quoted_credits", 0)) or 0)),
+                "quoted_credits": _credit_public_from_wei(quoted_credit_wei),
+                "quoted_credits_wei": str(quoted_credit_wei),
+                "quoted_credits_display": credit_wei_to_decimal_text(quoted_credit_wei),
+                "held_credits": _credit_public_from_wei(held_credit_wei),
+                "held_credits_wei": str(held_credit_wei),
                 "charged_credits": max(0, int(self.charged_credits or 0)),
                 "unit": str(quote.get("unit", "compute_credit") or "compute_credit"),
                 "pricing_mode": str(quote.get("pricing_mode", request_metadata.get("pricing_mode", "")) or ""),
@@ -739,7 +798,9 @@ class HubRequestStatus:
                 "offer_id": str(selected_offer.get("offer_id", "")),
                 "worker_node_id": str(selected_offer.get("worker_node_id", "")),
                 "worker_instance_id": str(selected_offer.get("worker_instance_id", "") or selected_offer.get("worker_node_id", "")),
-                "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
+                "credits_per_request": _credit_public_from_wei(_credit_wei_from_payload(selected_offer, default="0")),
+                "credits_per_request_wei": str(_credit_wei_from_payload(selected_offer, default="0")),
+                "credits_per_request_display": credit_wei_to_decimal_text(_credit_wei_from_payload(selected_offer, default="0")),
                 "unit": str(selected_offer.get("unit", "compute_credit") or "compute_credit"),
                 "execution_mode": str(selected_offer.get("execution_mode", "") or ""),
                 "price_source": str(selected_offer.get("price_source", "") or ""),

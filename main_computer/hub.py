@@ -153,6 +153,23 @@ def _hub_credit_wei_from_value(value: Any, default: str = "1", *, minimum_wei: i
     return _hub_credit_wei_from_decimal_text(value, default, minimum_wei=minimum_wei)
 
 
+def _hub_credit_wei_from_explicit_or_decimal(
+    explicit_wei: Any,
+    decimal_value: Any,
+    default: str = "1",
+    *,
+    minimum_wei: int = 1,
+) -> int:
+    if explicit_wei not in (None, ""):
+        try:
+            parsed = int(str(explicit_wei).strip())
+            if parsed > 0:
+                return max(int(minimum_wei), parsed)
+        except (TypeError, ValueError):
+            pass
+    return _hub_credit_wei_from_value(decimal_value, default, minimum_wei=minimum_wei)
+
+
 def _hub_credit_public_value_from_wei(credit_wei: Any) -> int | str:
     text = credit_wei_to_decimal_text(credit_wei)
     return int(text) if text.isdigit() else text
@@ -160,6 +177,42 @@ def _hub_credit_public_value_from_wei(credit_wei: Any) -> int | str:
 
 def _hub_credit_display_from_wei(credit_wei: Any) -> str:
     return credit_wei_to_decimal_text(credit_wei)
+
+
+def _hub_normalized_pricing_payload(
+    capabilities: dict[str, Any],
+    payload: dict[str, Any],
+    default: str = "1",
+) -> tuple[int, int | str, str, dict[str, Any]]:
+    """Normalize human decimal credit fields into integer wei-string pricing.
+
+    UI/API callers may send ETH/credit-style decimal strings such as ``"1.024"``.
+    Hub storage and signed-order comparisons must carry the exact integer wei
+    value so Python never calls ``int("1.024")`` and browser callers can use
+    ``BigInt`` without precision loss.
+    """
+
+    pricing_payload = (
+        dict(capabilities.get("pricing", {}))
+        if isinstance(capabilities.get("pricing"), dict)
+        else {}
+    )
+    credit_price_wei = _hub_pricing_credit_wei(pricing_payload, payload, default)
+    credit_price = _hub_credit_public_value_from_wei(credit_price_wei)
+    credit_price_display = _hub_credit_display_from_wei(credit_price_wei)
+    pricing_payload.update(
+        {
+            "pricing_type": str(pricing_payload.get("pricing_type") or PHASE9_PRICING_TYPE),
+            "credits_per_request": credit_price,
+            "credits_per_request_wei": str(credit_price_wei),
+            "credits_per_request_display": credit_price_display,
+            "estimated_credits_per_request": credit_price,
+            "estimated_credits_per_request_wei": str(credit_price_wei),
+            "estimated_credits_per_request_display": credit_price_display,
+            "unit": str(pricing_payload.get("unit") or "compute_credit"),
+        }
+    )
+    return credit_price_wei, credit_price, credit_price_display, pricing_payload
 
 
 def _hub_pricing_target_output_tokens(pricing: dict[str, Any], payload: dict[str, Any], default: int = 1024) -> int:
@@ -562,18 +615,10 @@ class HubRegistry:
         )
         now = _utc_now()
         clean_capabilities = dict(capabilities or {})
-        pricing_payload = dict(clean_capabilities.get("pricing", {})) if isinstance(clean_capabilities.get("pricing"), dict) else {}
-        credit_price_wei = _hub_pricing_credit_wei(pricing_payload, {"credits_per_request": credits_per_request}, "1")
-        credit_price = _hub_credit_public_value_from_wei(credit_price_wei)
-        credit_price_display = _hub_credit_display_from_wei(credit_price_wei)
-        pricing_payload.update(
-            {
-                "pricing_type": str(pricing_payload.get("pricing_type") or PHASE9_PRICING_TYPE),
-                "credits_per_request": credit_price,
-                "credits_per_request_wei": str(credit_price_wei),
-                "credits_per_request_display": credit_price_display,
-                "unit": str(pricing_payload.get("unit") or "compute_credit"),
-            }
+        credit_price_wei, credit_price, _credit_price_display, pricing_payload = _hub_normalized_pricing_payload(
+            clean_capabilities,
+            {"credits_per_request": credits_per_request},
+            "1",
         )
         clean_capabilities["pricing"] = pricing_payload
         clean_models = self._normalize_models(model=model, models=models)
@@ -742,7 +787,7 @@ class HubRegistry:
         *,
         node_id: str,
         endpoint: str,
-        credits_per_request: int = 1,
+        credits_per_request: Any = 1,
     ) -> HubUpstream:
         clean_node_id = _clean_node_id(node_id, default="upstream-hub")
         clean_endpoint = str(endpoint or "").strip().rstrip("/")
@@ -754,7 +799,8 @@ class HubRegistry:
             allow_insecure_dev_network=self.allow_insecure_dev_network,
         )
         now = _utc_now()
-        credit_price = max(1, int(credits_per_request or 1))
+        credit_price_wei = _hub_credit_wei_from_value(credits_per_request, "1", minimum_wei=1)
+        credit_price = _hub_credit_public_value_from_wei(credit_price_wei)
         with self._lock:
             data = self._load()
             upstreams = [item for item in data["upstream_hubs"] if item.get("node_id") != clean_node_id]
@@ -797,7 +843,9 @@ class HubRegistry:
                     node_id=str(item.get("node_id", "")),
                     endpoint=str(item.get("endpoint", "")).rstrip("/"),
                     status=str(item.get("status", "available")),
-                    credits_per_request=max(1, int(item.get("credits_per_request", 1) or 1)),
+                    credits_per_request=_hub_credit_public_value_from_wei(
+                        _hub_credit_wei_from_explicit_or_decimal(item.get("credits_per_request_wei"), item.get("credits_per_request", 1), "1", minimum_wei=1)
+                    ),
                     registered_at=str(item.get("registered_at", "")),
                     last_seen_at=str(item.get("last_seen_at", "")),
                 )
@@ -1014,6 +1062,9 @@ class HubRegistry:
             status = str(item.get("status", "available") or "available").lower()
             if status not in {"available", "configured", "busy", "offline", "stale", "draining"}:
                 status = "available"
+            capabilities = dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {}
+            price_wei, price, price_display, pricing_payload = _hub_normalized_pricing_payload(capabilities, item, "1")
+            capabilities["pricing"] = pricing_payload
             normalized_worker = {
                 "node_id": node_id,
                 "worker_instance_id": worker_instance_id,
@@ -1021,9 +1072,9 @@ class HubRegistry:
                 "model": primary_model,
                 "models": models,
                 "status": status,
-                "credits_per_request": _hub_credit_public_value_from_wei(_hub_pricing_credit_wei(dict(item.get("capabilities", {}).get("pricing", {})) if isinstance(item.get("capabilities", {}), dict) and isinstance(item.get("capabilities", {}).get("pricing", {}), dict) else {}, item, "1")),
-                "credits_per_request_wei": str(_hub_pricing_credit_wei(dict(item.get("capabilities", {}).get("pricing", {})) if isinstance(item.get("capabilities", {}), dict) and isinstance(item.get("capabilities", {}).get("pricing", {}), dict) else {}, item, "1")),
-                "credits_per_request_display": _hub_credit_display_from_wei(_hub_pricing_credit_wei(dict(item.get("capabilities", {}).get("pricing", {})) if isinstance(item.get("capabilities", {}), dict) and isinstance(item.get("capabilities", {}).get("pricing", {}), dict) else {}, item, "1")),
+                "credits_per_request": price,
+                "credits_per_request_wei": str(price_wei),
+                "credits_per_request_display": price_display,
                 "settlement_precision_places": normalize_worker_payout_precision_places(
                     item.get("settlement_precision_places")
                     if item.get("settlement_precision_places") is not None
@@ -1035,7 +1086,7 @@ class HubRegistry:
                 ),
                 "registered_at": str(item.get("registered_at") or created_at),
                 "last_seen_at": str(item.get("last_seen_at") or item.get("registered_at") or created_at),
-                "capabilities": dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {},
+                "capabilities": capabilities,
                 "queue_depth": max(0, int(item.get("queue_depth", 0) or 0)),
                 "active_requests": active_requests,
                 "max_concurrency": max_concurrency,
@@ -1060,7 +1111,9 @@ class HubRegistry:
                     "node_id": node_id,
                     "endpoint": endpoint,
                     "status": str(item.get("status", "available") or "available"),
-                    "credits_per_request": max(1, int(item.get("credits_per_request", 1) or 1)),
+                    "credits_per_request": _hub_credit_public_value_from_wei(
+                        _hub_credit_wei_from_explicit_or_decimal(item.get("credits_per_request_wei"), item.get("credits_per_request", 1), "1", minimum_wei=1)
+                    ),
                     "registered_at": str(item.get("registered_at") or created_at),
                     "last_seen_at": str(item.get("last_seen_at") or item.get("registered_at") or created_at),
                 }
@@ -1684,6 +1737,41 @@ class HubHttpServer(ThreadingHTTPServer):
                 if self.ring_admission_audit_last_write_failure
                 else None,
             }
+
+
+
+def serving_hub_identity_for_server(server: Any) -> dict[str, Any]:
+    """Return the concrete Hub identity that handled the current request.
+
+    Stable multi-Hub deployments expose a shared entry URL such as
+    ``testnet-hub.greatlibrary.io``.  The admin UI should still show the concrete
+    Hub process that served the request, using the topology hub id
+    (``testnet-hub2``) rather than an implementation address.
+    """
+
+    node = getattr(server, "stable_hub_node", None)
+    if node is not None:
+        hub_id = str(getattr(node, "hub_id", "") or "").strip()
+        return {
+            "hub_id": hub_id or "main-computer-hub",
+            "display_name": hub_id or "main-computer-hub",
+            "hub_url": str(getattr(node, "hub_url", "") or "").strip(),
+            "public_url": str(getattr(node, "public_url", "") or "").strip(),
+            "roles": list(getattr(node, "roles", ()) or ()),
+            "source": "stable_topology",
+        }
+
+    config = getattr(server, "config", None)
+    configured_id = str(getattr(config, "hub_id", "") or "").strip()
+    fallback_id = configured_id or "main-computer-hub"
+    return {
+        "hub_id": fallback_id,
+        "display_name": fallback_id,
+        "hub_url": str(getattr(config, "hub_url", "") or "").strip(),
+        "public_url": str(getattr(config, "hub_url", "") or "").strip(),
+        "roles": [],
+        "source": "local_hub",
+    }
 
 
 class HubServerHandler(_JsonHandler):
@@ -3196,6 +3284,7 @@ class HubServerHandler(_JsonHandler):
                     energy_ledger=self.server.energy_ledger,
                     credit_ledger=self.server.credit_ledger,
                     credit_indexer=self.server.credit_indexer,
+                    serving_hub=serving_hub_identity_for_server(self.server),
                 )
             )
             return
@@ -3212,6 +3301,7 @@ class HubServerHandler(_JsonHandler):
         if path in {"/api/hub/status", "/api/hub/v1/status"}:
             status = self.server.registry.status()
             status["api_version"] = "v1" if path.startswith("/api/hub/v1/") else "legacy"
+            status["serving_hub"] = serving_hub_identity_for_server(self.server)
             status["network"] = {
                 "network_key": self.server.config.hub_network,
                 "display_name": self.server.config.hub_network_display_name,
@@ -4147,7 +4237,14 @@ class HubServerHandler(_JsonHandler):
                 upstream = self.server.registry.register_upstream_hub(
                     node_id=str(body.get("node_id", "")),
                     endpoint=str(body.get("endpoint", "")),
-                    credits_per_request=int(body.get("credits_per_request", self.server.config.hub_credits_per_request)),
+                    credits_per_request=_hub_credit_public_value_from_wei(
+                        _hub_credit_wei_from_explicit_or_decimal(
+                            body.get("credits_per_request_wei"),
+                            body.get("credits_per_request", self.server.config.hub_credits_per_request),
+                            "1",
+                            minimum_wei=1,
+                        )
+                    ),
                 )
                 self.server.energy_ledger.register_node(upstream.node_id, "upstream-hub", upstream.endpoint)
                 self._send_json({"ok": True, "upstream_hub": upstream.as_dict(), "hub": self.server.registry.status()})
@@ -4689,17 +4786,19 @@ def register_worker_with_hub(
     node_id: str,
     endpoint: str,
     model: str = "",
-    credits_per_request: int = 1,
+    credits_per_request: Any = 1,
     timeout_s: float = 10.0,
     allow_insecure_dev_network: bool = False,
 ) -> dict[str, Any]:
     _require_allowed_transport(hub_url, role="Hub", allow_insecure_dev_network=allow_insecure_dev_network)
     _require_allowed_transport(endpoint, role="Worker", allow_insecure_dev_network=allow_insecure_dev_network)
+    credit_price_wei = _hub_credit_wei_from_value(credits_per_request, "1", minimum_wei=1)
     payload = {
         "node_id": node_id,
         "endpoint": endpoint,
         "model": model,
-        "credits_per_request": max(1, int(credits_per_request or 1)),
+        "credits_per_request": _hub_credit_public_value_from_wei(credit_price_wei),
+        "credits_per_request_wei": str(credit_price_wei),
     }
     request = Request(
         hub_url.rstrip("/") + "/api/hub/workers/register",

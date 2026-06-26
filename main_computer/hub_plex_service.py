@@ -29,6 +29,7 @@ from main_computer.hub_credit_models import (
     normalize_address,
     token_digest,
 )
+from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_to_decimal_text
 from main_computer.models import ChatResponse
 
 
@@ -41,13 +42,65 @@ PHASE9_EXECUTION_MODE = "worker_pull_v0"
 DEFAULT_REQUESTER_RESULT_RETENTION_WINDOW_SECONDS = 3600
 
 
-def phase9_offer_id(*, worker_node_id: str, models: list[str], credits_per_request: int, execution_mode: str) -> str:
+def _credit_wei_from_decimal(value: Any, *, default: str = "0", minimum_wei: int = 0) -> int:
+    return credit_decimal_text_to_wei(value, default=default, minimum_wei=minimum_wei)
+
+
+def _credit_wei_from_explicit_or_decimal(
+    explicit_wei: Any,
+    decimal_value: Any,
+    *,
+    default: str = "0",
+    minimum_wei: int = 0,
+) -> int:
+    if explicit_wei not in (None, ""):
+        try:
+            parsed = int(str(explicit_wei).strip())
+            if parsed >= 0:
+                return max(int(minimum_wei), parsed)
+        except (TypeError, ValueError):
+            pass
+    return _credit_wei_from_decimal(decimal_value, default=default, minimum_wei=minimum_wei)
+
+
+def _credit_public_from_wei(credit_wei: Any) -> int | str:
+    text = credit_wei_to_decimal_text(credit_wei)
+    return int(text) if text.isdigit() else text
+
+
+def _credit_legacy_ceil_from_wei(credit_wei: Any) -> int:
+    try:
+        amount = max(0, int(str(credit_wei).strip()))
+    except (TypeError, ValueError):
+        amount = 0
+    if amount <= 0:
+        return 0
+    return (amount + CREDIT_WEI_PER_CREDIT - 1) // CREDIT_WEI_PER_CREDIT
+
+
+def _offer_credit_wei(offer: dict[str, Any], *, default: str = "0") -> int:
+    return _credit_wei_from_explicit_or_decimal(
+        offer.get("credits_per_request_wei", offer.get("quoted_credits_wei")),
+        offer.get("credits_per_request", offer.get("quoted_credits", offer.get("amount", default))),
+        default=default,
+        minimum_wei=0,
+    )
+
+
+def _item_credit_wei(item: Any, *, default: str = "1") -> int:
+    explicit_wei = _item_value(item, "credits_per_request_wei", None)
+    decimal_value = _item_value(item, "credits_per_request", default)
+    return _credit_wei_from_explicit_or_decimal(explicit_wei, decimal_value, default=default, minimum_wei=1)
+
+
+def phase9_offer_id(*, worker_node_id: str, models: list[str], credits_per_request: Any, execution_mode: str) -> str:
     seed = json.dumps(
         {
             "worker_node_id": str(worker_node_id or ""),
             "models": sorted(str(model) for model in models if str(model).strip()),
             "pricing_type": PHASE9_PRICING_TYPE,
-            "credits_per_request": max(0, int(credits_per_request or 0)),
+            "credits_per_request": _credit_public_from_wei(_credit_wei_from_decimal(credits_per_request, default="0")),
+            "credits_per_request_wei": str(_credit_wei_from_decimal(credits_per_request, default="0")),
             "unit": "compute_credit",
             "execution_mode": str(execution_mode or PHASE9_EXECUTION_MODE),
         },
@@ -134,17 +187,20 @@ def market_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     ).strip()
     if pricing_type in {"", "none", "unpriced", "unpriced_v0"}:
         return {}
-    try:
-        credits = int(
-            existing_offer.get("credits_per_request")
-            or pricing.get("credits_per_request")
-            or worker.get("credits_per_request")
-            or 0
-        )
-    except (TypeError, ValueError):
-        credits = 0
-    if credits <= 0:
+    credit_wei = _credit_wei_from_explicit_or_decimal(
+        existing_offer.get("credits_per_request_wei")
+        or pricing.get("credits_per_request_wei")
+        or worker.get("credits_per_request_wei"),
+        existing_offer.get("credits_per_request")
+        or pricing.get("credits_per_request")
+        or worker.get("credits_per_request")
+        or 0,
+        default="0",
+        minimum_wei=0,
+    )
+    if credit_wei <= 0:
         return {}
+    credits = _credit_public_from_wei(credit_wei)
     models = [
         str(model).strip()
         for model in (
@@ -191,6 +247,8 @@ def market_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         else ["chat.completions"],
         "pricing_type": PHASE9_PRICING_TYPE,
         "credits_per_request": credits,
+        "credits_per_request_wei": str(credit_wei),
+        "credits_per_request_display": credit_wei_to_decimal_text(credit_wei),
         "unit": "compute_credit",
         "execution_mode": execution_mode,
         "price_source": str(existing_offer.get("price_source") or "worker_registration"),
@@ -951,8 +1009,9 @@ class AIRequestPlexService:
             worker_node_id = str(_item_value(leased_worker, "node_id", clean_worker_id))
             leased_worker_instance_id = str(_item_value(leased_worker, "worker_instance_id", worker_node_id))
             selected_offer = self._record_selected_offer(record)
-            quoted_credits = self._record_quoted_credits(record)
-            worker_credits = quoted_credits or max(1, int(_item_value(leased_worker, "credits_per_request", 1) or 1))
+            quoted_credit_wei = self._record_quoted_credit_wei(record)
+            worker_credit_wei = quoted_credit_wei or _item_credit_wei(leased_worker, default="1")
+            worker_credits = max(1, _credit_legacy_ceil_from_wei(worker_credit_wei))
             if worker_credits > max(0, int(record.max_credits or 0)):
                 self._release_paid_hold_for_request(
                     record.request_id,
@@ -969,6 +1028,8 @@ class AIRequestPlexService:
                         "worker_node_id": worker_node_id,
                         "worker_instance_id": leased_worker_instance_id,
                         "credits_per_request": worker_credits,
+                        "credits_per_request_wei": str(worker_credit_wei),
+                        "credits_per_request_display": credit_wei_to_decimal_text(worker_credit_wei),
                     },
                 )
                 self._release_record_worker(
@@ -1062,7 +1123,9 @@ class AIRequestPlexService:
                         "worker_instance_id": str(
                             selected_offer.get("worker_instance_id", "") or selected_offer.get("worker_node_id", "")
                         ),
-                        "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
+                        "credits_per_request": _credit_public_from_wei(_offer_credit_wei(selected_offer)),
+                        "credits_per_request_wei": str(_offer_credit_wei(selected_offer)),
+                        "credits_per_request_display": credit_wei_to_decimal_text(_offer_credit_wei(selected_offer)),
                     }
                     assigned_ring = _optional_int(selected_offer.get("assigned_ring"))
                     if assigned_ring is not None:
@@ -1281,15 +1344,22 @@ class AIRequestPlexService:
             default_provider="hub-worker-pull",
             default_model=record.model or "hub-worker-model",
         )
-        quoted_credits = self._record_quoted_credits(record)
-        worker_credits = quoted_credits or max(1, int(record.credits_queued or result.get("charged_credits") or 1))
+        quoted_credit_wei = self._record_quoted_credit_wei(record)
+        worker_credit_wei = quoted_credit_wei or _credit_wei_from_explicit_or_decimal(
+            result.get("charged_credit_wei"),
+            record.credits_queued or result.get("charged_credits") or 1,
+            default="1",
+            minimum_wei=1,
+        )
+        worker_credits = max(1, _credit_legacy_ceil_from_wei(worker_credit_wei))
         if worker_credits > max(0, int(record.max_credits or 0)):
-            raise ValueError(f"Worker result charge {worker_credits} exceeds held max_credits {record.max_credits}.")
+            raise ValueError(f"Worker result charge {worker_credits} credits ({credit_wei_to_decimal_text(worker_credit_wei)} ETH) exceeds held max_credits {record.max_credits}.")
         latest_record = self.request_store.get(record.request_id) or record
         receipt = self._finalize_paid_request(
             record=latest_record,
             worker_node_id=clean_worker_id,
             worker_credits=worker_credits,
+            worker_credit_wei=worker_credit_wei,
         )
         energy_status = self.ledger.queue_worker_payout(
             clean_worker_id,
@@ -1306,6 +1376,8 @@ class AIRequestPlexService:
             "worker_node_id": clean_worker_id,
             "worker_instance_id": clean_worker_instance_id,
             "credits_queued": worker_credits,
+            "credit_wei": str(worker_credit_wei),
+            "credits_display": credit_wei_to_decimal_text(worker_credit_wei),
             "settlement": "batched-worker-claim",
             "payout_queue": energy_status.get("payout_queue", {}),
             "security_mode": "legacy-plaintext-worker-pull-v0",
@@ -1318,8 +1390,12 @@ class AIRequestPlexService:
         if market_metadata:
             selected_offer = self._record_selected_offer(record)
             metadata["hub"]["pricing"] = {
-                "quoted_credits": worker_credits,
-                "worker_earning_credits": worker_credits,
+                "quoted_credits": _credit_public_from_wei(worker_credit_wei),
+                "quoted_credits_wei": str(worker_credit_wei),
+                "quoted_credits_display": credit_wei_to_decimal_text(worker_credit_wei),
+                "worker_earning_credits": _credit_public_from_wei(worker_credit_wei),
+                "worker_earning_credit_wei": str(worker_credit_wei),
+                "worker_earning_display": credit_wei_to_decimal_text(worker_credit_wei),
                 "unit": "compute_credit",
                 "pricing_mode": str(market_metadata.get("pricing_mode", PHASE9_PRICING_MODE) or PHASE9_PRICING_MODE),
                 "execution_mode": str(market_metadata.get("execution_mode", PHASE9_EXECUTION_MODE) or PHASE9_EXECUTION_MODE),
@@ -1331,7 +1407,9 @@ class AIRequestPlexService:
                     "worker_instance_id": str(
                         selected_offer.get("worker_instance_id", "") or selected_offer.get("worker_node_id", "")
                     ),
-                    "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
+                    "credits_per_request": _credit_public_from_wei(_offer_credit_wei(selected_offer)),
+                    "credits_per_request_wei": str(_offer_credit_wei(selected_offer)),
+                    "credits_per_request_display": credit_wei_to_decimal_text(_offer_credit_wei(selected_offer)),
                 }
         if receipt:
             metadata["hub"]["payment"] = dict(receipt)
@@ -1845,7 +1923,8 @@ class AIRequestPlexService:
         if not model:
             raise ValueError("model is required for market-backed paid AI quotes.")
         max_credits = max(0, int(request.max_credits or 0))
-        if max_credits <= 0:
+        max_credits_wei = _credit_wei_from_decimal(max_credits, default="0", minimum_wei=0)
+        if max_credits_wei <= 0:
             raise ValueError("max_credits must be positive for market-backed paid AI quotes.")
         metadata = dict(request.metadata) if isinstance(request.metadata, dict) else {}
         idempotency_key = str(request.idempotency_key or metadata.get("idempotency_key") or "").strip()
@@ -1862,12 +1941,14 @@ class AIRequestPlexService:
             requested_worker_node_id=request.requested_worker_node_id,
             requested_ring=requested_ring,
         )
-        quoted_credits = max(0, int(selected.get("credits_per_request", 0) or 0))
-        if quoted_credits <= 0:
+        quoted_credits_wei = _offer_credit_wei(selected)
+        quoted_credits = _credit_public_from_wei(quoted_credits_wei)
+        quoted_credits_legacy = _credit_legacy_ceil_from_wei(quoted_credits_wei)
+        if quoted_credits_wei <= 0:
             raise ValueError("Selected worker offer is not priced.")
-        if quoted_credits > max_credits:
+        if quoted_credits_wei > max_credits_wei:
             raise ValueError(
-                f"Selected worker offer price {quoted_credits} exceeds requester max_credits {max_credits}."
+                f"Selected worker offer price {credit_wei_to_decimal_text(quoted_credits_wei)} exceeds requester max_credits {max_credits}."
             )
         now = utc_now()
         seed_payload = {
@@ -1878,6 +1959,7 @@ class AIRequestPlexService:
             "requested_ring": requested_ring,
             "selected_offer_id": selected.get("offer_id", ""),
             "quoted_credits": quoted_credits,
+            "quoted_credits_wei": str(quoted_credits_wei),
         }
         quote = {
             "quote_id": phase9_quote_id(
@@ -1889,8 +1971,12 @@ class AIRequestPlexService:
             "account_id": account_id,
             "model": model,
             "quoted_credits": quoted_credits,
+            "quoted_credits_wei": str(quoted_credits_wei),
+            "quoted_credits_legacy_ceiling": quoted_credits_legacy,
             "estimated_credits": quoted_credits,
+            "estimated_credits_wei": str(quoted_credits_wei),
             "max_credits": max_credits,
+            "max_credits_wei": str(max_credits_wei),
             "unit": "compute_credit",
             "pricing_mode": PHASE9_PRICING_MODE,
             "execution_mode": execution_mode,
@@ -1945,10 +2031,11 @@ class AIRequestPlexService:
             if requested_ring is not None:
                 if worker_ring is None or worker_ring > requested_ring:
                     continue
-            offer_price = max(0, int(offer.get("credits_per_request", 0) or 0))
-            if max_credits > 0 and offer_price > max_credits:
-                if cheapest_over_budget_price is None or offer_price < cheapest_over_budget_price:
-                    cheapest_over_budget_price = offer_price
+            offer_price_wei = _offer_credit_wei(offer)
+            max_credits_wei = _credit_wei_from_decimal(max_credits, default="0", minimum_wei=0)
+            if max_credits_wei > 0 and offer_price_wei > max_credits_wei:
+                if cheapest_over_budget_price is None or offer_price_wei < cheapest_over_budget_price:
+                    cheapest_over_budget_price = offer_price_wei
                 continue
             if worker_ring is not None and "assigned_ring" not in offer:
                 offer = {**offer, "assigned_ring": worker_ring}
@@ -1956,7 +2043,7 @@ class AIRequestPlexService:
         if not compatible:
             if cheapest_over_budget_price is not None:
                 raise ValueError(
-                    f"Selected worker offer price {cheapest_over_budget_price} exceeds requester max_credits {max_credits}."
+                    f"Selected worker offer price {credit_wei_to_decimal_text(cheapest_over_budget_price)} exceeds requester max_credits {max_credits}."
                 )
             if requested_ring is not None:
                 raise ValueError(
@@ -1970,7 +2057,7 @@ class AIRequestPlexService:
         selected = sorted(
             compatible,
             key=lambda offer: (
-                max(0, int(offer.get("credits_per_request", 0) or 0)),
+                _offer_credit_wei(offer),
                 assignment_counts.get(
                     str(offer.get("worker_instance_id", "") or offer.get("worker_node_id", "")),
                     0,
@@ -1981,9 +2068,11 @@ class AIRequestPlexService:
                 str(offer.get("offer_id", "")),
             ),
         )[0]
-        if max_credits > 0 and int(selected.get("credits_per_request", 0) or 0) > max_credits:
+        max_credits_wei = _credit_wei_from_decimal(max_credits, default="0", minimum_wei=0)
+        selected_price_wei = _offer_credit_wei(selected)
+        if max_credits_wei > 0 and selected_price_wei > max_credits_wei:
             raise ValueError(
-                f"Selected worker offer price {selected.get('credits_per_request')} exceeds requester max_credits {max_credits}."
+                f"Selected worker offer price {credit_wei_to_decimal_text(selected_price_wei)} exceeds requester max_credits {max_credits}."
             )
         return dict(selected)
 
@@ -2046,16 +2135,29 @@ class AIRequestPlexService:
     def _validate_quote_matches_request(self, quote: dict[str, Any], request: HubAIRequest) -> None:
         account_id = clean_node_id(request.account_id, default="") if request.account_id else ""
         model = str(request.model or "").strip()
-        quoted_credits = max(0, int(quote.get("quoted_credits", quote.get("estimated_credits", 0)) or 0))
+        quoted_credits_wei = _credit_wei_from_explicit_or_decimal(
+            quote.get("quoted_credits_wei", quote.get("estimated_credits_wei")),
+            quote.get("quoted_credits", quote.get("estimated_credits", 0)),
+            default="0",
+            minimum_wei=0,
+        )
         max_credits = max(0, int(request.max_credits or quote.get("max_credits", 0) or 0))
+        max_credits_wei = _credit_wei_from_explicit_or_decimal(
+            quote.get("max_credits_wei"),
+            max_credits,
+            default="0",
+            minimum_wei=0,
+        )
         if str(quote.get("account_id", "")) != account_id:
             raise ValueError("quote account_id does not match request account_id.")
         if str(quote.get("model", "")) != model:
             raise ValueError("quote model does not match request model.")
-        if quoted_credits <= 0:
+        if quoted_credits_wei <= 0:
             raise ValueError("quote is not priced.")
-        if max_credits < quoted_credits:
-            raise ValueError(f"requester max_credits {max_credits} is below quoted_credits {quoted_credits}.")
+        if max_credits_wei < quoted_credits_wei:
+            raise ValueError(
+                f"requester max_credits {max_credits} is below quoted_credits {credit_wei_to_decimal_text(quoted_credits_wei)}."
+            )
         if normalize_execution_mode(quote.get("execution_mode")) != (
             normalize_execution_mode(request.metadata.get("execution_mode") if isinstance(request.metadata, dict) else "")
             or PHASE9_EXECUTION_MODE
@@ -2089,7 +2191,9 @@ class AIRequestPlexService:
                 "quote": dict(quote),
                 "selected_offer": selected_offer,
                 "requested_ring": _optional_int(quote.get("requested_ring")),
-                "quoted_credits": max(0, int(quote.get("quoted_credits", 0) or 0)),
+                "quoted_credits": _credit_public_from_wei(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
+                "quoted_credits_wei": str(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
+                "quoted_credits_display": credit_wei_to_decimal_text(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
                 "held_credits": max(0, int(held_credits or 0)),
                 "accepted_at": utc_now(),
             }
@@ -2115,7 +2219,9 @@ class AIRequestPlexService:
                 ),
                 "requested_ring": _optional_int(quote.get("requested_ring")),
                 "assigned_ring": _optional_int(selected_offer.get("assigned_ring")),
-                "quoted_credits": max(0, int(quote.get("quoted_credits", 0) or 0)),
+                "quoted_credits": _credit_public_from_wei(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
+                "quoted_credits_wei": str(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
+                "quoted_credits_display": credit_wei_to_decimal_text(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
                 "held_credits": max(0, int(held_credits or 0)),
             },
         )
@@ -2128,12 +2234,20 @@ class AIRequestPlexService:
         )
         return metadata if metadata.get("phase9_market_backed_paid_ai_request") is True else {}
 
-    def _record_quoted_credits(self, record: HubRequestRecord) -> int:
+    def _record_quoted_credit_wei(self, record: HubRequestRecord) -> int:
         metadata = self._record_market_metadata(record)
         if not metadata:
             return 0
         quote = dict(metadata.get("quote", {})) if isinstance(metadata.get("quote"), dict) else {}
-        return max(0, int(quote.get("quoted_credits", metadata.get("quoted_credits", 0)) or 0))
+        return _credit_wei_from_explicit_or_decimal(
+            quote.get("quoted_credits_wei", metadata.get("quoted_credits_wei")),
+            quote.get("quoted_credits", metadata.get("quoted_credits", 0)),
+            default="0",
+            minimum_wei=0,
+        )
+
+    def _record_quoted_credits(self, record: HubRequestRecord) -> int:
+        return _credit_legacy_ceil_from_wei(self._record_quoted_credit_wei(record))
 
     def _record_selected_offer(self, record: HubRequestRecord) -> dict[str, Any]:
         metadata = self._record_market_metadata(record)
@@ -2149,28 +2263,49 @@ class AIRequestPlexService:
             raise ValueError("Paid request accounting is not available on this hub.")
         if not request.account_id:
             raise ValueError("account_id is required for paid requests.")
+        held_credit_wei = 0
         if self._market_pricing_requested(request):
             quote = self._accepted_market_quote_for_request(request)
             requester_max_credits = max(0, int(request.max_credits or quote.get("max_credits", 0) or 0))
-            held_credits = max(0, int(quote.get("quoted_credits", quote.get("estimated_credits", 0)) or 0))
-            if held_credits <= 0:
+            held_credit_wei = _credit_wei_from_explicit_or_decimal(
+                quote.get("quoted_credits_wei", quote.get("estimated_credits_wei")),
+                quote.get("quoted_credits", quote.get("estimated_credits", 0)),
+                default="0",
+                minimum_wei=0,
+            )
+            held_credits = _credit_legacy_ceil_from_wei(held_credit_wei)
+            if held_credit_wei <= 0:
                 raise ValueError("Market-backed paid request quote must have positive quoted_credits.")
-            if requester_max_credits < held_credits:
-                raise ValueError(f"requester max_credits {requester_max_credits} is below quoted_credits {held_credits}.")
+            requester_max_credit_wei = _credit_wei_from_decimal(requester_max_credits, default="0", minimum_wei=0)
+            if requester_max_credit_wei < held_credit_wei:
+                raise ValueError(
+                    f"requester max_credits {requester_max_credits} is below quoted_credits {credit_wei_to_decimal_text(held_credit_wei)}."
+                )
             record = self._record_market_acceptance(record, request, quote, held_credits=held_credits)
         else:
             quote_response = self.quote_request(request)
             quote = dict(quote_response["quote"])
             requester_max_credits = max(0, int(quote.get("max_credits", request.max_credits) or request.max_credits or 0))
             held_credits = requester_max_credits
-        hold_result = self.credit_ledger.create_hold(
-            account_id=request.account_id,
-            request_id=record.request_id,
-            credits=held_credits,
-            expires_at=record.deadline_at,
-            memo=f"paid request hold {record.request_id}",
-            metadata={"quote": quote, "idempotency_key": request.idempotency_key},
-        )
+            held_credit_wei = _credit_wei_from_decimal(held_credits, default="0", minimum_wei=0)
+        if hasattr(self.credit_ledger, "create_hold_credit_wei"):
+            hold_result = self.credit_ledger.create_hold_credit_wei(
+                account_id=request.account_id,
+                request_id=record.request_id,
+                credit_wei=held_credit_wei,
+                expires_at=record.deadline_at,
+                memo=f"paid request hold {record.request_id}",
+                metadata={"quote": quote, "idempotency_key": request.idempotency_key},
+            )
+        else:
+            hold_result = self.credit_ledger.create_hold(
+                account_id=request.account_id,
+                request_id=record.request_id,
+                credits=held_credits,
+                expires_at=record.deadline_at,
+                memo=f"paid request hold {record.request_id}",
+                metadata={"quote": quote, "idempotency_key": request.idempotency_key},
+            )
         hold = dict(hold_result.get("hold", {}))
         self.request_store.update(
             record.request_id,
@@ -2182,7 +2317,11 @@ class AIRequestPlexService:
                 "account_id": hold.get("account_id", request.account_id),
                 "hold_id": hold.get("hold_id", ""),
                 "held_credits": hold.get("credits", held_credits),
+                "held_credits_wei": str(hold.get("credit_wei", held_credit_wei)),
+                "held_credits_display": credit_wei_to_decimal_text(hold.get("credit_wei", held_credit_wei)),
                 "quoted_credits": held_credits if self._market_pricing_requested(request) else 0,
+                "quoted_credits_wei": str(held_credit_wei) if self._market_pricing_requested(request) else "0",
+                "quoted_credits_display": credit_wei_to_decimal_text(held_credit_wei) if self._market_pricing_requested(request) else "0",
                 "idempotent": bool(hold_result.get("idempotent", False)),
             },
         )
@@ -2240,6 +2379,7 @@ class AIRequestPlexService:
         record: HubRequestRecord,
         worker_node_id: str,
         worker_credits: int,
+        worker_credit_wei: Any | None = None,
     ) -> dict[str, Any]:
         if self.credit_ledger is None or not record.hold_id:
             return {}
@@ -2267,13 +2407,27 @@ class AIRequestPlexService:
                     "selected_offer_price_source": str(selected_offer.get("price_source", "worker_registration") or "worker_registration"),
                 }
             )
-        charge = self.credit_ledger.charge_hold(
-            hold_id=record.hold_id,
-            charged_credits=worker_credits,
-            worker_node_id=worker_node_id,
-            memo=f"paid request charge {record.request_id}",
-            metadata=charge_metadata,
+        charged_credit_wei = (
+            _credit_wei_from_explicit_or_decimal(worker_credit_wei, worker_credits, default="1", minimum_wei=1)
+            if worker_credit_wei not in (None, "")
+            else _credit_wei_from_decimal(worker_credits, default="1", minimum_wei=1)
         )
+        if hasattr(self.credit_ledger, "charge_hold_credit_wei"):
+            charge = self.credit_ledger.charge_hold_credit_wei(
+                hold_id=record.hold_id,
+                charged_credit_wei=charged_credit_wei,
+                worker_node_id=worker_node_id,
+                memo=f"paid request charge {record.request_id}",
+                metadata=charge_metadata,
+            )
+        else:
+            charge = self.credit_ledger.charge_hold(
+                hold_id=record.hold_id,
+                charged_credits=worker_credits,
+                worker_node_id=worker_node_id,
+                memo=f"paid request charge {record.request_id}",
+                metadata=charge_metadata,
+            )
         charge_payload = dict(charge.get("charge", {}))
         earning_payload = dict(charge.get("worker_earning") or {})
         receipt = {
@@ -2282,7 +2436,11 @@ class AIRequestPlexService:
             "hold_id": record.hold_id,
             "charge_id": charge_payload.get("charge_id", ""),
             "charged_credits": max(0, int(charge_payload.get("charged_credits", 0) or 0)),
+            "charged_credit_wei": str(charge_payload.get("charged_credit_wei", charged_credit_wei)),
+            "charged_credits_display": credit_wei_to_decimal_text(charge_payload.get("charged_credit_wei", charged_credit_wei)),
             "released_credits": max(0, int(charge_payload.get("released_credits", 0) or 0)),
+            "released_credit_wei": str(charge_payload.get("released_credit_wei", 0)),
+            "released_credits_display": credit_wei_to_decimal_text(charge_payload.get("released_credit_wei", 0)),
             "worker_earning_id": earning_payload.get("earning_id", ""),
             "worker_commitment": earning_payload.get("worker_commitment", ""),
             "created_at": charge_payload.get("created_at", utc_now()),
@@ -2385,7 +2543,8 @@ class AIRequestPlexService:
             worker_instance_id = str(_item_value(worker, "worker_instance_id", worker_node_id))
             worker_endpoint = str(_item_value(worker, "endpoint", "")).rstrip("/")
             worker_model = str(_item_value(worker, "model", "") or "")
-            worker_credits = max(1, int(_item_value(worker, "credits_per_request", 1) or 1))
+            worker_credit_wei = _item_credit_wei(worker, default="1")
+            worker_credits = max(1, _credit_legacy_ceil_from_wei(worker_credit_wei))
             attempt_history = self._record_attempt(
                 current,
                 attempt=attempt,
@@ -2414,6 +2573,8 @@ class AIRequestPlexService:
                 "messages": request.messages,
                 "energy": {
                     "credits": worker_credits,
+                    "credit_wei": str(worker_credit_wei),
+                    "credits_display": credit_wei_to_decimal_text(worker_credit_wei),
                     "settlement": "batched-worker-claim",
                     "memo": f"hub request {record.request_id}",
                 },
@@ -2422,7 +2583,7 @@ class AIRequestPlexService:
                 paid_record = self.request_store.get(record.request_id) or current
                 if paid_record.hold_id and worker_credits > max(0, int(paid_record.max_credits or 0)):
                     raise RuntimeError(
-                        f"Selected worker requires {worker_credits} credits but request only held {paid_record.max_credits}."
+                        f"Selected worker requires {worker_credits} credits ({credit_wei_to_decimal_text(worker_credit_wei)} ETH) but request only held {paid_record.max_credits}."
                     )
                 self.request_store.update(
                     record.request_id,
@@ -2480,6 +2641,7 @@ class AIRequestPlexService:
                 record=latest_record,
                 worker_node_id=worker_node_id,
                 worker_credits=worker_credits,
+                worker_credit_wei=worker_credit_wei,
             )
             energy_status = self.ledger.queue_worker_payout(
                 worker_node_id,
@@ -2504,6 +2666,8 @@ class AIRequestPlexService:
                 "worker_instance_id": worker_instance_id,
                 "worker_endpoint": worker_endpoint,
                 "credits_queued": worker_credits,
+                "credit_wei": str(worker_credit_wei),
+                "credits_display": credit_wei_to_decimal_text(worker_credit_wei),
                 "settlement": "batched-worker-claim",
                 "payout_queue": energy_status.get("payout_queue", {}),
                 "security_mode": "legacy-plaintext",
@@ -2661,7 +2825,8 @@ class AIRequestPlexService:
             worker_node_id = str(_item_value(worker, "node_id", ""))
             worker_endpoint = str(_item_value(worker, "endpoint", "")).rstrip("/")
             worker_model = str(_item_value(worker, "model", "") or "")
-            worker_credits = max(1, int(_item_value(worker, "credits_per_request", 1) or 1))
+            worker_credit_wei = _item_credit_wei(worker, default="1")
+            worker_credits = max(1, _credit_legacy_ceil_from_wei(worker_credit_wei))
             session_id = stable_session_id(record.request_id, request_payload)
             payload = {
                 "request_id": record.request_id,
@@ -2671,6 +2836,8 @@ class AIRequestPlexService:
                 "requester_public_key": requester_public_key,
                 "energy": {
                     "credits": worker_credits,
+                    "credit_wei": str(worker_credit_wei),
+                    "credits_display": credit_wei_to_decimal_text(worker_credit_wei),
                     "settlement": "batched-worker-claim",
                     "memo": f"hub request {record.request_id}",
                 },
@@ -2709,6 +2876,7 @@ class AIRequestPlexService:
                     "request_id": record.request_id,
                     "worker": _public_payload(worker),
                     "credits": worker_credits,
+                    "credit_wei": str(worker_credit_wei),
                     "created_at": utc_now(),
                 },
             )
@@ -2737,6 +2905,8 @@ class AIRequestPlexService:
                         "worker_node_id": worker_node_id,
                         "worker_endpoint": worker_endpoint,
                         "credits_queued": worker_credits,
+                        "credit_wei": str(worker_credit_wei),
+                        "credits_display": credit_wei_to_decimal_text(worker_credit_wei),
                         "settlement": "batched-worker-claim",
                         "security_mode": "high-security",
                         "hub_blind": True,
@@ -2763,7 +2933,13 @@ class AIRequestPlexService:
         worker_data = dict(session.get("worker", {}))
         worker_node_id = str(worker_data.get("node_id", ""))
         worker_endpoint = str(worker_data.get("endpoint", "")).rstrip("/")
-        worker_credits = max(1, int(worker_data.get("credits_per_request", session.get("credits", 1)) or 1))
+        worker_credit_wei = _credit_wei_from_explicit_or_decimal(
+            worker_data.get("credits_per_request_wei", session.get("credit_wei")),
+            worker_data.get("credits_per_request", session.get("credits", 1)),
+            default="1",
+            minimum_wei=1,
+        )
+        worker_credits = max(1, _credit_legacy_ceil_from_wei(worker_credit_wei))
         request_id = str(session.get("request_id", ""))
         try:
             worker_response = self._post_json(
@@ -2796,6 +2972,8 @@ class AIRequestPlexService:
             "worker_node_id": worker_node_id,
             "worker_endpoint": worker_endpoint,
             "credits_queued": worker_credits,
+            "credit_wei": str(worker_credit_wei),
+            "credits_display": credit_wei_to_decimal_text(worker_credit_wei),
             "settlement": "batched-worker-claim",
             "payout_queue": energy_status.get("payout_queue", {}),
             "security_mode": "high-security",
@@ -2839,7 +3017,8 @@ class AIRequestPlexService:
 
         upstream_node_id = str(_item_value(upstream, "node_id", ""))
         upstream_endpoint = str(_item_value(upstream, "endpoint", "")).rstrip("/")
-        upstream_credits = max(1, int(_item_value(upstream, "credits_per_request", 1) or 1))
+        upstream_credit_wei = _item_credit_wei(upstream, default="1")
+        upstream_credits = max(1, _credit_legacy_ceil_from_wei(upstream_credit_wei))
         payload = {
             "model": model,
             "client_node_id": clean_node_id(client_node_id, default="main-computer-client"),
@@ -2874,6 +3053,7 @@ class AIRequestPlexService:
                 "upstream_session_id": upstream_session_id,
                 "upstream_request_id": upstream_request_id,
                 "credits": upstream_credits,
+                "credit_wei": str(upstream_credit_wei),
                 "created_at": utc_now(),
             },
         )
@@ -2909,6 +3089,8 @@ class AIRequestPlexService:
                     "upstream_hub_endpoint": upstream_endpoint,
                     "forwarded": True,
                     "credits_queued": upstream_credits,
+                    "credit_wei": str(upstream_credit_wei),
+                    "credits_display": credit_wei_to_decimal_text(upstream_credit_wei),
                     "settlement": "batched-worker-claim",
                     "security_mode": "high-security",
                     "hub_blind": True,
@@ -2921,7 +3103,13 @@ class AIRequestPlexService:
         upstream_data = dict(session.get("upstream", {}))
         upstream_node_id = str(upstream_data.get("node_id", ""))
         upstream_endpoint = str(upstream_data.get("endpoint", "")).rstrip("/")
-        upstream_credits = max(1, int(upstream_data.get("credits_per_request", session.get("credits", 1)) or 1))
+        upstream_credit_wei = _credit_wei_from_explicit_or_decimal(
+            upstream_data.get("credits_per_request_wei", session.get("credit_wei")),
+            upstream_data.get("credits_per_request", session.get("credits", 1)),
+            default="1",
+            minimum_wei=1,
+        )
+        upstream_credits = max(1, _credit_legacy_ceil_from_wei(upstream_credit_wei))
         request_id = str(session.get("request_id", ""))
         local_request_id = str(session.get("local_request_id", request_id))
         try:
@@ -2954,6 +3142,8 @@ class AIRequestPlexService:
             "upstream_hub_endpoint": upstream_endpoint,
             "forwarded": True,
             "credits_queued": upstream_credits,
+            "credit_wei": str(upstream_credit_wei),
+            "credits_display": credit_wei_to_decimal_text(upstream_credit_wei),
             "settlement": "batched-worker-claim",
             "payout_queue": energy_status.get("payout_queue", {}),
             "security_mode": "high-security",
@@ -2997,7 +3187,8 @@ class AIRequestPlexService:
 
         upstream_node_id = str(_item_value(upstream, "node_id", ""))
         upstream_endpoint = str(_item_value(upstream, "endpoint", "")).rstrip("/")
-        upstream_credits = max(1, int(_item_value(upstream, "credits_per_request", 1) or 1))
+        upstream_credit_wei = _item_credit_wei(upstream, default="1")
+        upstream_credits = max(1, _credit_legacy_ceil_from_wei(upstream_credit_wei))
         payload = {
             "model": request.model,
             "client_node_id": clean_node_id(request.client_node_id, default="main-computer-client"),
@@ -3040,6 +3231,8 @@ class AIRequestPlexService:
             "upstream_hub_endpoint": upstream_endpoint,
             "forwarded": True,
             "credits_queued": upstream_credits,
+            "credit_wei": str(upstream_credit_wei),
+            "credits_display": credit_wei_to_decimal_text(upstream_credit_wei),
             "settlement": "batched-worker-claim",
             "payout_queue": energy_status.get("payout_queue", {}),
             "security_mode": "legacy-plaintext",

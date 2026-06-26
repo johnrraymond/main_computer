@@ -37,9 +37,9 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "Configure how other hub users pay this machine" in html
     assert "Configure how this machine is allowed to pay other workers" in html
     assert "Enable paid overflow" in html
-    assert "Max credits per estimated token" in html
-    assert 'id="worker-remote-credits-per-token" type="number" min="0.000001" step="0.001" value="0.001"' in html
-    assert "Approximation only: this ceiling is applied to estimated input and output tokens for now." in html
+    assert "Max ETH per estimated token" in html
+    assert 'id="worker-remote-credits-per-token" type="number" min="0.000000000000000001" step="0.000000000000000001" value="0.001"' in html
+    assert "Approximation only: the UI shows ETH while request budgets are carried as exact wei strings." in html
     assert "Approximation only: used with the prompt estimate to compute the maximum remote request budget." in html
     assert "Busy-local overflow flow" not in html
     assert "Show the count to the user, not the workers' private minimum prices." not in html
@@ -99,9 +99,9 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert 'id="worker-offer-target-tokens" type="number" min="1" step="1" value="1024"' in seller_section
     assert "Matches the requester default max output-token authorization" in seller_section
     assert 'id="worker-offer-models" type="text" value="gemma4:26b" autocomplete="off" disabled aria-disabled="true"' in seller_section
-    assert "Minimum credits per estimated token" in seller_section
-    assert 'id="worker-offer-credits-per-token" type="number" min="0.000001" step="0.001" value="0.001"' in seller_section
-    assert "Matches the requester default max credits per estimated token" in seller_section
+    assert "Minimum ETH per estimated token" in seller_section
+    assert 'id="worker-offer-credits-per-token" type="number" min="0.000000000000000001" step="0.000000000000000001" value="0.001"' in seller_section
+    assert "Displayed as ETH decimals; signed worker registration stores exact wei strings behind the scenes." in seller_section
     assert 'class="worker-card worker-contract-summary"' not in seller_section
     assert "Seller offer contract this UI registers" not in html
     assert "deterministic worker-pull test path" not in html
@@ -629,3 +629,28 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert "const {wallet: _liveWalletState, ...serializableState}" in js
     assert "workerSetPrimaryWalletState" in js
 
+def test_worker_connect_order_replaces_inactive_saved_multisession_key_before_retry() -> None:
+    js = WORKER_JS.read_text(encoding="utf-8")
+    energy_routes = VIEWPORT_ENERGY_ROUTES.read_text(encoding="utf-8")
+
+    assert "function workerIsInactiveMultisessionKeyError(error)" in js
+    assert 'text.includes("saved multi-session key")' in js
+    assert 'text.includes("not active")' in js
+    assert "function workerMarkMultisessionKeyInactiveOnHub" in js
+    assert 'status: "inactive_on_hub"' in js
+    assert "async function workerRequestReplacementMultisessionKeyForConnect" in js
+    assert "requestMultiSessionKeySignature" in js
+    assert '"worker-connect-order-inactive-key-retry"' in js
+    assert "async function workerSignAndSubmitNetworkConnectOrder" in js
+    assert "workerIsInactiveMultisessionKeyError(error)" in js
+    assert "workerRequestReplacementMultisessionKeyForConnect" in js
+    assert "data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);" in js
+
+    stale_detector = js.index("workerIsInactiveMultisessionKeyError(error)")
+    replacement_request = js.index("workerRequestReplacementMultisessionKeyForConnect", stale_detector)
+    retry_submit = js.index("data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);", replacement_request)
+    assert stale_detector < replacement_request < retry_submit
+
+    assert "def _mark_worker_multisession_key_inactive_on_hub" in energy_routes
+    assert 'record["status"] = "inactive_on_hub"' in energy_routes
+    assert "self._mark_worker_multisession_key_inactive_on_hub(" in energy_routes

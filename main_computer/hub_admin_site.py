@@ -27,6 +27,7 @@ def build_admin_bootstrap_payload(
     energy_ledger: Any,
     credit_ledger: Any | None = None,
     credit_indexer: Any | None = None,
+    serving_hub: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a single dashboard-friendly snapshot for the hub admin/control site."""
 
@@ -62,6 +63,7 @@ def build_admin_bootstrap_payload(
             "local_admin_warning": "Bind the hub to loopback or put it behind your own auth/proxy before exposing the control site remotely.",
         },
         "hub": status.get("hub", {}),
+        "serving_hub": dict(serving_hub or {}),
         "status": status,
         "metrics": metrics,
         "workers": workers,
@@ -194,6 +196,7 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
     }}
     .card-title {{ color: var(--muted); font-size: .86rem; margin-bottom: .35rem; }}
     .card-value {{ font-size: 2rem; font-weight: 750; letter-spacing: -0.04em; }}
+    .card-detail {{ color: var(--muted); font-size: .82rem; margin-top: .25rem; }}
     .two-col {{
       display: grid;
       grid-template-columns: minmax(0, 1.4fr) minmax(20rem, .9fr);
@@ -239,6 +242,7 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
       <p>Operate worker registration, request routing, lifecycle visibility, and payout controls from the same server that exposes the hub API.</p>
     </div>
     <div class=\"toolbar\">
+      <span id=\"servingHubBadge\" class=\"badge\">hub unknown</span>
       <span id=\"lastUpdated\" class=\"badge\">not loaded</span>
       <button id=\"refreshBtn\" type=\"button\">Refresh</button>
     </div>
@@ -250,6 +254,7 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
     </section>
 
     <section class=\"grid\">
+      <article class=\"panel\"><div class=\"card-title\">Serving hub</div><div id=\"servingHubId\" class=\"card-value\">—</div><div class=\"card-detail\">Concrete hub that handled this request</div></article>
       <article class=\"panel\"><div class=\"card-title\">Workers</div><div id=\"workerCount\" class=\"card-value\">—</div></article>
       <article class=\"panel\"><div class=\"card-title\">Available</div><div id=\"availableCount\" class=\"card-value\">—</div></article>
       <article class=\"panel\"><div class=\"card-title\">Stale</div><div id=\"staleCount\" class=\"card-value\">—</div></article>
@@ -436,6 +441,10 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
         const status = data.status || {{}};
         const metrics = data.metrics || {{}};
         const requests = data.requests || [];
+        const servingHub = data.serving_hub || status.serving_hub || {{}};
+        const servingHubName = servingHub.display_name || servingHub.hub_id || 'unknown';
+        setText('servingHubId', servingHubName);
+        setText('servingHubBadge', 'served by ' + servingHubName);
         setText('workerCount', status.worker_count ?? data.worker_count ?? '0');
         setText('availableCount', status.available_worker_count ?? metrics.available_worker_count ?? '0');
         setText('staleCount', status.stale_worker_count ?? metrics.stale_worker_count ?? '0');

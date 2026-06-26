@@ -22,10 +22,15 @@ from main_computer.hub import (
     HubUpstream,
     HubWorker,
     _clean_node_id,
+    _hub_credit_public_value_from_wei,
+    _hub_credit_wei_from_value,
+    _hub_normalized_pricing_payload,
+    _hub_pricing_credit_wei,
     _phase9_worker_offer_from_payload,
     _require_allowed_transport,
 )
 from main_computer.hub_plex_models import HubRequestRecord, clean_node_id
+from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
 from main_computer.hub_credit_models import (
     normalize_worker_payout_precision_places,
     truncate_worker_payout_for_precision,
@@ -262,8 +267,8 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         pricing = dict(capabilities.get("pricing", {})) if isinstance(capabilities.get("pricing"), dict) else {}
         network = str(capabilities.get("network") or capabilities.get("assigned_network") or capabilities.get("worker_network") or "").strip().lower()
         ring = str(worker.get("assigned_ring") or capabilities.get("assigned_ring") or capabilities.get("requested_ring") or "").strip()
-        price = max(1, int(worker.get("credits_per_request") or pricing.get("credits_per_request") or 1))
-        price_bucket = min(1_000_000_000, price)
+        price_wei = _hub_pricing_credit_wei(pricing, worker, "1")
+        price_bucket = min(1_000_000_000 * CREDIT_WEI_PER_CREDIT, price_wei)
         models = [str(model).strip() for model in worker.get("models", []) if str(model).strip()] if isinstance(worker.get("models"), list) else []
         model = str(worker.get("model", "") or "").strip()
         if model and model not in models:
@@ -435,7 +440,7 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         model: str = "",
         models: list[str] | None = None,
         capabilities: dict[str, Any] | None = None,
-        credits_per_request: int = 1,
+        credits_per_request: Any = 1,
         settlement_precision_places: int | None = None,
         queue_depth: int = 0,
         active_requests: int = 0,
@@ -453,10 +458,15 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
             allow_insecure_dev_network=self.allow_insecure_dev_network,
         )
         now = _utc_now()
-        credit_price = max(1, int(credits_per_request or 1))
+        clean_capabilities = dict(capabilities or {})
+        credit_price_wei, credit_price, _credit_price_display, pricing_payload = _hub_normalized_pricing_payload(
+            clean_capabilities,
+            {"credits_per_request": credits_per_request},
+            "1",
+        )
+        clean_capabilities["pricing"] = pricing_payload
         clean_models = self._normalize_models(model=model, models=models)
         primary_model = clean_models[0] if clean_models else str(model or "").strip()
-        clean_capabilities = dict(capabilities or {})
         clean_capabilities.setdefault("worker_instance_id", clean_worker_instance_id)
         precision_source = (
             settlement_precision_places
@@ -492,6 +502,7 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
                         "model": primary_model,
                         "models": clean_models,
                         "credits_per_request": credit_price,
+                        "credits_per_request_wei": str(credit_price_wei),
                         "capabilities": clean_capabilities,
                     }
                 ),
@@ -607,7 +618,7 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
 
         return _tx(self.db)
 
-    def register_upstream_hub(self, *, node_id: str, endpoint: str, credits_per_request: int = 1) -> HubUpstream:
+    def register_upstream_hub(self, *, node_id: str, endpoint: str, credits_per_request: Any = 1) -> HubUpstream:
         clean_node_id = _clean_node_id(node_id, default="upstream-hub")
         clean_endpoint = str(endpoint or "").strip().rstrip("/")
         if not clean_endpoint:
@@ -618,7 +629,8 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
             allow_insecure_dev_network=self.allow_insecure_dev_network,
         )
         now = _utc_now()
-        credit_price = max(1, int(credits_per_request or 1))
+        credit_price_wei = _hub_credit_wei_from_value(credits_per_request, "1", minimum_wei=1)
+        credit_price = _hub_credit_public_value_from_wei(credit_price_wei)
 
         @self.fdb.transactional
         def _tx(tr: Any) -> dict[str, Any]:

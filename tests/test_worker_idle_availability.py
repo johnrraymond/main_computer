@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from main_computer.hub import HubRegistry
+from main_computer.exp_fdb_hub_state import ExperimentalFoundationDbRegistry
 from main_computer.viewport_routes_energy import ViewportEnergyRoutesMixin
+from main_computer.hub_plex_service import market_worker_offer_from_payload
 
 
 class _WorkerRoutesHarness(ViewportEnergyRoutesMixin):
@@ -324,6 +326,43 @@ def test_hub_registry_preserves_per_token_seller_offer_price(tmp_path) -> None:
     assert status_worker["offer"]["credits_per_request"] == "1.024"
     assert status_worker["offer"]["credits_per_request_wei"] == "1024000000000000000"
     assert status_worker["offer"]["target_output_tokens"] == 1024
+
+
+def test_fdb_registry_worker_price_index_uses_wei_for_decimal_prices() -> None:
+    registry = ExperimentalFoundationDbRegistry.__new__(ExperimentalFoundationDbRegistry)
+    parts = registry._worker_index_parts(
+        {
+            "node_id": "fdb-decimal-worker-001",
+            "worker_instance_id": "fdb-decimal-worker-001",
+            "status": "available",
+            "active_requests": 0,
+            "max_concurrency": 1,
+            "model": "mock-ai-model-idle-only",
+            "models": ["mock-ai-model-idle-only"],
+            "credits_per_request": "1.024",
+            "credits_per_request_wei": "1024000000000000000",
+            "capabilities": {
+                "worker_network": "testnet",
+                "requested_ring": "3",
+                "pricing": {
+                    "pricing_type": "approx_per_token_v0",
+                    "credits_per_token": "0.001",
+                    "credits_per_token_wei": "1000000000000000",
+                    "target_output_tokens": 1024,
+                    "estimated_credits_per_request": "1.024",
+                    "estimated_credits_per_request_wei": "1024000000000000000",
+                    "credits_per_request": "1.024",
+                    "credits_per_request_wei": "1024000000000000000",
+                },
+            },
+        }
+    )
+
+    assert parts
+    assert parts[0][0] == "testnet"
+    assert parts[0][1] == "3"
+    assert parts[0][2] == "mock-ai-model-idle-only"
+    assert parts[0][3] == 1_024_000_000_000_000_000
 
 
 
@@ -1075,3 +1114,13 @@ def test_worker_runtime_heartbeat_preserves_registered_capabilities(monkeypatch:
     assert capabilities["availability"]["availability_mode"] == "totally_idle"
     assert capabilities["availability"]["only_when_idle"] is True
     assert capabilities["availability"]["worker_runtime_phase"] == "accepting"
+
+
+def test_market_worker_offer_from_payload_keeps_decimal_price_as_wei() -> None:
+    worker = _seller_payload()
+    offer = market_worker_offer_from_payload(worker)
+
+    assert offer["credits_per_request"] == "1.024"
+    assert offer["credits_per_request_wei"] == "1024000000000000000"
+    assert offer["credits_per_request_display"] == "1.024"
+    assert offer["offer_id"].startswith("offer_")

@@ -7,13 +7,14 @@ import threading
 import time
 import unittest
 from collections.abc import Sequence
+from types import SimpleNamespace
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest.mock import patch
 
 from main_computer.config import MainComputerConfig
-from main_computer.hub import HubHttpServer, HubRegistry, HubWorkerHttpServer
+from main_computer.hub import HubHttpServer, HubRegistry, HubWorkerHttpServer, serving_hub_identity_for_server
 from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.hub_plex_models import HubAIRequest
 from main_computer.hub_security import (
@@ -43,6 +44,24 @@ class HubServerTests(unittest.TestCase):
         )
         with urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def test_serving_hub_identity_prefers_stable_topology_hub_id(self) -> None:
+        server = SimpleNamespace(
+            stable_hub_node=SimpleNamespace(
+                hub_id="testnet-hub2",
+                hub_url="https://testnet-hub2.greatlibrary.io",
+                public_url="https://testnet-hub2.greatlibrary.io",
+                roles=("entry", "worker-owner"),
+            ),
+            config=SimpleNamespace(hub_url="http://10.0.0.2:8785"),
+        )
+
+        identity = serving_hub_identity_for_server(server)
+
+        self.assertEqual(identity["hub_id"], "testnet-hub2")
+        self.assertEqual(identity["display_name"], "testnet-hub2")
+        self.assertEqual(identity["public_url"], "https://testnet-hub2.greatlibrary.io")
+        self.assertNotIn("10.0.0.2", identity["display_name"])
 
     def _get_json(self, url: str) -> dict[str, object]:
         with urlopen(url, timeout=5) as response:
@@ -1437,6 +1456,7 @@ class HubServerTests(unittest.TestCase):
                 workspace=Path(hub_tmp),
                 model="fake-model",
                 hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_bridge_backend="mock-chain",
             )
             hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
             hub_thread = self._start_server(hub)
@@ -1451,6 +1471,8 @@ class HubServerTests(unittest.TestCase):
                 self.assertIn("Main Computer Hub Control", html)
                 self.assertIn("/api/hub/v1/admin/bootstrap", html)
                 self.assertIn("Register worker", html)
+                self.assertIn("Serving hub", html)
+                self.assertIn("servingHubId", html)
 
                 with urlopen(f"{hub_base}/api/hub/v1/admin/bootstrap", timeout=5) as response:
                     payload = json.loads(response.read().decode("utf-8"))
@@ -1460,6 +1482,8 @@ class HubServerTests(unittest.TestCase):
                 self.assertEqual(payload["api_version"], "v1")
                 self.assertIn("/admin", payload["admin_site"]["routes"])
                 self.assertEqual(payload["endpoints"]["worker_register"], "/api/hub/v1/workers/register")
+                self.assertEqual(payload["serving_hub"]["hub_id"], "main-computer-hub")
+                self.assertEqual(payload["serving_hub"]["display_name"], "main-computer-hub")
                 self.assertEqual(payload["worker_count"], 0)
                 self.assertEqual(payload["request_count"], 0)
             finally:
@@ -1473,6 +1497,7 @@ class HubServerTests(unittest.TestCase):
                 workspace=Path(hub_tmp),
                 model="fake-model",
                 hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_bridge_backend="mock-chain",
             )
             hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
             hub_thread = self._start_server(hub)

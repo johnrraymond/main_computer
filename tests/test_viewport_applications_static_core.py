@@ -188,7 +188,7 @@ class ViewportApplicationsStaticCoreTests(unittest.TestCase):
         self.assertIn("Use Remote Workers", APPLICATIONS_INDEX_HTML)
         self.assertIn("How others pay me", APPLICATIONS_INDEX_HTML)
         self.assertIn("Target output tokens per request", APPLICATIONS_INDEX_HTML)
-        self.assertIn("Minimum credits per estimated token", APPLICATIONS_INDEX_HTML)
+        self.assertIn("Minimum ETH per estimated token", APPLICATIONS_INDEX_HTML)
         self.assertIn("Only when totally idle", APPLICATIONS_INDEX_HTML)
         self.assertIn("When AI is idle", APPLICATIONS_INDEX_HTML)
         self.assertIn("Enable paid overflow", APPLICATIONS_INDEX_HTML)
