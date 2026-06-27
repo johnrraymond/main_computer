@@ -111,7 +111,7 @@
         linear-gradient(180deg, rgba(167, 216, 109, 0.055), transparent 150px),
         rgba(17, 17, 14, 0.96);
     }
-    .worker-primary-offer > .worker-connect-order-card {
+    .worker-primary-offer > .worker-start-working-card {
       display: grid;
       grid-column: 1 / -1;
       gap: 10px;
@@ -120,7 +120,7 @@
       padding-top: 12px;
       border-top: 1px solid rgba(167, 216, 109, 0.28);
     }
-    .worker-primary-offer > .worker-connect-order-card > label {
+    .worker-primary-offer > .worker-start-working-card > label {
       max-width: min(420px, 100%);
     }
     .worker-network-status-grid {
@@ -147,13 +147,13 @@
       font-weight: 800;
       overflow-wrap: anywhere;
     }
-    .worker-connect-order-card label {
+    .worker-start-working-card label {
       display: grid;
       gap: 6px;
       color: var(--ink);
       font-weight: 800;
     }
-    .worker-connect-order-card label span {
+    .worker-start-working-card label span {
       color: var(--muted);
       font-size: 12px;
       font-weight: 800;
@@ -751,3 +751,36 @@
       word-break: break-word;
       white-space: normal;
     }
+
+.worker-work-now-dialog {
+  border: 1px solid var(--mc-border, #d1d5db);
+  border-radius: 12px;
+  max-width: 420px;
+  padding: 0;
+}
+
+.worker-work-now-dialog::backdrop {
+  background: rgb(15 23 42 / 0.35);
+}
+
+.worker-work-now-dialog-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.worker-work-now-dialog-body h4 {
+  margin: 0;
+}
+
+.worker-work-now-duration-actions,
+.worker-work-now-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.worker-work-now-custom {
+  display: grid;
+  gap: 0.25rem;
+}

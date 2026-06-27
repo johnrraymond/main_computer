@@ -34,7 +34,16 @@
     const workerRuntimePrimaryStatus = document.querySelector("#worker-runtime-primary-status");
     const workerRuntimePrimaryReason = document.querySelector("#worker-runtime-primary-reason");
     const workerRuntimePrimaryNext = document.querySelector("#worker-runtime-primary-next");
-    const workerNetworkSignOrder = document.querySelector("#worker-network-sign-order");
+    const workerNetworkWorkNow = document.querySelector("#worker-network-work-now");
+    const workerWorkNowDialog = document.querySelector("#worker-work-now-dialog");
+    const workerWorkNowDialogMessage = document.querySelector("#worker-work-now-dialog-message");
+    const workerWorkNow15 = document.querySelector("#worker-work-now-15");
+    const workerWorkNow30 = document.querySelector("#worker-work-now-30");
+    const workerWorkNow60 = document.querySelector("#worker-work-now-60");
+    const workerWorkNowCustomMinutes = document.querySelector("#worker-work-now-custom-minutes");
+    const workerWorkNowCustomApply = document.querySelector("#worker-work-now-custom-apply");
+    const workerWorkNowFinish = document.querySelector("#worker-work-now-finish");
+    const workerWorkNowCancel = document.querySelector("#worker-work-now-cancel");
     const workerFleetMainnet = document.querySelector("#worker-fleet-mainnet");
     const workerFleetTestnet = document.querySelector("#worker-fleet-testnet");
     const workerFleetTest = document.querySelector("#worker-fleet-test");

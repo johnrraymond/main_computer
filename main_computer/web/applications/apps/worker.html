@@ -61,7 +61,7 @@
           <div><dt>Test Worker</dt><dd id="worker-fleet-test">Standby</dd></div>
           <div><dt>Dev Worker</dt><dd id="worker-fleet-dev">Standby</dd></div>
         </dl>
-        <small>All four worker targets are visible by default. Only the selected network accepts jobs after wallet signing.</small>
+        <small>All four worker targets are visible by default. Only the selected network accepts jobs after wallet and multi-session key setup.</small>
       </div>
 
     </section>
@@ -107,10 +107,10 @@
           <label>
             <span>Minimum ETH per estimated token</span>
             <input id="worker-offer-credits-per-token" type="number" min="0.000000000000000001" step="0.000000000000000001" value="0.001">
-            <small>Displayed as ETH decimals; signed worker registration stores exact wei strings behind the scenes.</small>
+            <small>Displayed as ETH decimals; worker registration stores exact wei strings behind the scenes.</small>
           </label>
 
-          <div class="worker-connect-order-card worker-wide" aria-label="Worker connection">
+          <div class="worker-start-working-card worker-wide" aria-label="Worker connection">
             <label>
               <span>Requested ring</span>
               <select id="worker-network-ring" autocomplete="off">
@@ -125,7 +125,7 @@
               <div><dt>Credit wallet</dt><dd id="worker-network-credit-wallet">—</dd></div>
               <div><dt>Requested ring</dt><dd id="worker-network-requested-ring">Ring 3 - Public untrusted</dd></div>
               <div><dt>Assigned ring</dt><dd id="worker-network-assigned-ring">—</dd></div>
-              <div><dt>Signed order</dt><dd id="worker-network-signature-status">Not signed</dd></div>
+              <div><dt>Worker start</dt><dd id="worker-network-signature-status">Not started</dd></div>
               <div><dt>Hub registration</dt><dd id="worker-network-hub-registration">—</dd></div>
               <div><dt>Worker ID</dt><dd id="worker-network-worker-id">—</dd></div>
               <div><dt>Pricing policy</dt><dd id="worker-network-pricing-policy">—</dd></div>
@@ -145,7 +145,27 @@
               <div><dt>Next</dt><dd id="worker-runtime-primary-next">Check registration and local policy.</dd></div>
             </dl>
             <div class="worker-inline-actions">
-              <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
+              <button type="button" id="worker-network-work-now" disabled>Work now...</button>
+              <dialog id="worker-work-now-dialog" class="worker-work-now-dialog" aria-labelledby="worker-work-now-dialog-title">
+                <div class="worker-work-now-dialog-body">
+                  <h4 id="worker-work-now-dialog-title">Work now</h4>
+                  <p id="worker-work-now-dialog-message">Create a temporary Work-now override so this computer can work even if the normal idle policy later blocks new work.</p>
+                  <div class="worker-work-now-duration-actions" aria-label="Work now duration">
+                    <button type="button" id="worker-work-now-15">15 min</button>
+                    <button type="button" id="worker-work-now-30">30 min</button>
+                    <button type="button" id="worker-work-now-60">1 hour</button>
+                  </div>
+                  <label class="worker-work-now-custom">
+                    Custom minutes
+                    <input type="number" id="worker-work-now-custom-minutes" min="1" max="10080" step="1" value="120">
+                  </label>
+                  <div class="worker-work-now-dialog-actions">
+                    <button type="button" id="worker-work-now-custom-apply">Work now</button>
+                    <button type="button" id="worker-work-now-finish">Finish after current request</button>
+                    <button type="button" id="worker-work-now-cancel">Close</button>
+                  </div>
+                </div>
+              </dialog>
             </div>
           </div>
         </div>

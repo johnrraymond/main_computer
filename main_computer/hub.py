@@ -1955,7 +1955,7 @@ class HubServerHandler(_JsonHandler):
             return normalize_address(
                 (capabilities or {}).get("wallet_address")
                 or (capabilities or {}).get("worker_wallet_address")
-                or ((capabilities or {}).get("worker_connect_order", {}) or {}).get("wallet_address")
+                or ((capabilities or {}).get("worker_registration", {}) or {}).get("wallet_address")
             )
         except Exception:
             return ""
@@ -2267,139 +2267,77 @@ class HubServerHandler(_JsonHandler):
             payload["node_id"] = _clean_node_id(node_id, default=node_id)
         return payload
 
-    def _verify_worker_connect_order(self, *, signed_connection: dict[str, Any], worker_payload: dict[str, Any]) -> dict[str, Any]:
-        message_text = str(signed_connection.get("message") or "").strip()
-        signature = str(signed_connection.get("signature") or "").strip()
-        if not message_text:
-            raise ValueError("signed_connection.message is required.")
-        if not signature.startswith("0x"):
-            raise ValueError("signed_connection.signature is required.")
-
-        wallet_address = normalize_address(signed_connection.get("wallet_address"))
-        recovered = recover_personal_sign_address(message_text, signature)
-        if recovered != wallet_address:
-            raise ValueError(f"worker connect signature recovered {recovered}, expected {wallet_address}")
-
+    def _verify_worker_start_authorization(self, *, body: dict[str, Any], worker_payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        authorization = self._multisession_authorization_from_body(body)
+        if not authorization:
+            raise HubCreditAuthorizationError(
+                "Worker Hub connection requires a saved multi-session key authorization for this network's Hub."
+            )
         try:
-            message = json.loads(message_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"worker connect message is not JSON: {exc}") from exc
-        if not isinstance(message, dict):
-            raise ValueError("worker connect message JSON must be an object.")
+            worker_authorization = self._validate_multisession_authorization(
+                authorization,
+                required_wallet_address=str(body.get("credit_wallet") or body.get("wallet_address") or ""),
+                required_chain_id=str(body.get("chain_id") or ""),
+            )
+        except HubCreditAuthorizationError as exc:
+            message = str(exc)
+            if "not active" in message:
+                raise HubCreditAuthorizationError(
+                    "The saved multi-session key is not active on this Hub. "
+                    "Request a new multi-session key for this network's Hub before connecting."
+                ) from exc
+            raise
 
-        if message.get("kind") != "main_computer_worker_connect_order":
-            raise ValueError(f"bad worker connect kind: {message.get('kind')!r}")
-        if message.get("purpose") != "connect_worker_to_hub":
-            raise ValueError(f"bad worker connect purpose: {message.get('purpose')!r}")
+        wallet_address = normalize_address(worker_authorization["wallet_address"])
+        body_wallet = body.get("wallet_address")
+        if body_wallet and normalize_address(body_wallet) != wallet_address:
+            raise ValueError("worker registration wallet does not match the multi-session key wallet.")
+        credit_wallet = normalize_address(body.get("credit_wallet") or wallet_address)
+        if credit_wallet != wallet_address:
+            raise ValueError("worker registration credit wallet must match the multi-session key wallet.")
 
-        message_wallet = normalize_address(message.get("wallet_address"))
-        if message_wallet != wallet_address:
-            raise ValueError(f"worker connect wallet mismatch: {message_wallet} != {wallet_address}")
-
-        credit_wallet = normalize_address(message.get("credit_wallet") or wallet_address)
-        signed_credit_wallet = signed_connection.get("credit_wallet")
-        if signed_credit_wallet and normalize_address(signed_credit_wallet) != credit_wallet:
-            raise ValueError("signed_connection.credit_wallet does not match the signed message.")
-
-        network = str(message.get("network") or "").strip().lower()
+        network = str(body.get("network") or "").strip().lower()
         if network not in {"mainnet", "testnet", "test", "dev"}:
-            raise ValueError(f"bad worker connect network: {network!r}")
+            raise ValueError(f"bad worker registration network: {network!r}")
 
-        requested_ring = str(message.get("requested_ring") or "").strip()
+        requested_ring = str(body.get("requested_ring") or "").strip()
         if requested_ring not in {"0", "1", "2", "3"}:
-            raise ValueError("worker connect requested_ring must be 0, 1, 2, or 3.")
-        if requested_ring != str(signed_connection.get("requested_ring") or ""):
-            raise ValueError("signed_connection.requested_ring does not match the signed message.")
+            raise ValueError("worker registration requested_ring must be 0, 1, 2, or 3.")
 
-        expected_network = str(signed_connection.get("network") or "").strip().lower()
-        if expected_network and expected_network != network:
-            raise ValueError("signed_connection.network does not match the signed message.")
-
-        hub_url = str(message.get("hub_url") or "").strip().rstrip("/")
-        signed_hub_url = str(signed_connection.get("hub_url") or "").strip().rstrip("/")
-        if signed_hub_url and hub_url != signed_hub_url:
-            raise ValueError("signed_connection.hub_url does not match the signed message.")
+        hub_url = str(body.get("hub_url") or "").strip().rstrip("/")
         if not hub_url:
-            raise ValueError("worker connect message must include hub_url.")
+            raise ValueError("worker registration must include hub_url.")
 
-        chain_id = str(message.get("chain_id") or "").strip()
-        signed_chain_id = str(signed_connection.get("chain_id") or "").strip()
-        if signed_chain_id and chain_id != signed_chain_id:
-            raise ValueError("signed_connection.chain_id does not match the signed message.")
+        chain_id = str(body.get("chain_id") or worker_authorization.get("chain_id") or "").strip()
         if not chain_id:
-            raise ValueError("worker connect message must include chain_id.")
+            raise ValueError("worker registration must include chain_id.")
 
         worker_node_id = _clean_node_id(str(worker_payload.get("node_id") or ""), default="")
-        message_worker_node_id = _clean_node_id(str(message.get("worker_node_id") or ""), default="")
         if not worker_node_id:
             raise ValueError("worker.node_id is required.")
-        if message_worker_node_id != worker_node_id:
-            raise ValueError("worker connect worker_node_id does not match the worker payload.")
-
-        issued_at = message.get("issued_at")
-        if issued_at:
-            issued = parse_iso_datetime(issued_at)
-            now = datetime.now(timezone.utc)
-            if (issued - now).total_seconds() > 300:
-                raise ValueError(f"worker connect issued_at is too far in the future: {issued_at}")
-        expires_at = message.get("expires_at")
-        if expires_at:
-            expires = parse_iso_datetime(expires_at)
-            if expires < datetime.now(timezone.utc):
-                raise ValueError(f"worker connect order is expired: {expires_at}")
-        else:
-            raise ValueError("worker connect message must include expires_at.")
 
         return {
             "ok": True,
             "wallet_address": wallet_address,
             "credit_wallet": credit_wallet,
-            "recovered_address": recovered,
             "network": network,
             "requested_ring": requested_ring,
             "hub_url": hub_url,
             "chain_id": chain_id,
             "worker_node_id": worker_node_id,
-            "issued_at": issued_at,
-            "expires_at": expires_at,
-            "message": message,
-            "signature": signature,
-        }
+            "multisession_key_id": worker_authorization["multisession_key_id"],
+            "worker_authorization": worker_authorization,
+        }, worker_authorization
 
-    def _handle_worker_connect_order(self, body: dict[str, Any]) -> dict[str, Any]:
-        signed_connection = body.get("signed_connection")
-        if not isinstance(signed_connection, dict):
-            raise ValueError("signed_connection object is required.")
+    def _handle_worker_start_registration(self, body: dict[str, Any]) -> dict[str, Any]:
         worker_payload = body.get("worker")
         if not isinstance(worker_payload, dict):
             raise ValueError("worker object is required.")
 
-        verification = self._verify_worker_connect_order(
-            signed_connection=signed_connection,
+        verification, worker_authorization = self._verify_worker_start_authorization(
+            body=body,
             worker_payload=worker_payload,
         )
-        worker_authorization: dict[str, Any] = {}
-        authorization = self._multisession_authorization_from_body(body)
-        require_auth = bool(getattr(self.server.config, "hub_require_multisession_auth", False))
-        if not authorization:
-            if require_auth:
-                raise HubCreditAuthorizationError(
-                    "Worker Hub connection requires a saved multi-session key authorization for this network's Hub."
-                )
-        else:
-            try:
-                worker_authorization = self._validate_multisession_authorization(
-                    authorization,
-                    required_wallet_address=str(verification["credit_wallet"]),
-                )
-            except HubCreditAuthorizationError as exc:
-                message = str(exc)
-                if "not active" in message:
-                    raise HubCreditAuthorizationError(
-                        "The saved multi-session key is not active on this Hub. "
-                        "Request a new multi-session key for this network's Hub before connecting."
-                    ) from exc
-                raise
         assigned_ring = str(verification["requested_ring"])
         ring_decision = self.server.ring_admission_config.evaluate(
             wallet_address=verification["wallet_address"],
@@ -2442,8 +2380,8 @@ class HubServerHandler(_JsonHandler):
             capabilities["execution"] = execution
         capabilities.update(
             {
-                "worker_connect_order_verified": True,
-                "worker_connect_order": {
+                "worker_registration_authorized": True,
+                "worker_registration": {
                     "network": verification["network"],
                     "requested_ring": verification["requested_ring"],
                     "assigned_ring": assigned_ring,
@@ -2453,8 +2391,7 @@ class HubServerHandler(_JsonHandler):
                     "chain_id": verification["chain_id"],
                     "worker_node_id": verification["worker_node_id"],
                     "worker_instance_id": worker_instance_id,
-                    "issued_at": verification.get("issued_at"),
-                    "expires_at": verification.get("expires_at"),
+                    "multisession_key_id": verification["multisession_key_id"],
                 },
                 "requested_ring": int(ring_decision.requested_ring),
                 "assigned_ring": int(ring_decision.effective_ring if ring_decision.effective_ring is not None else ring_decision.requested_ring),
@@ -3732,7 +3669,7 @@ class HubServerHandler(_JsonHandler):
                 return
             if path in {"/api/hub/workers/connect", "/api/hub/v1/workers/connect"}:
                 try:
-                    result = self._handle_worker_connect_order(self._read_json())
+                    result = self._handle_worker_start_registration(self._read_json())
                     status = HTTPStatus.FORBIDDEN if result.get("error") == "ring_not_allowed" else HTTPStatus.OK
                     self._send_json(result, status=status)
                 except HubCreditAuthorizationError as exc:

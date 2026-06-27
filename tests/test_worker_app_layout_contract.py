@@ -72,12 +72,12 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     primary_offer = seller_section[
         seller_section.index('class="worker-card worker-field-grid worker-primary-offer"') :
     ]
-    assert 'class="worker-card worker-connect-order-card"' not in seller_section
-    assert 'class="worker-connect-order-card worker-wide" aria-label="Worker connection"' in primary_offer
+    assert 'class="worker-card worker-start-working-card"' not in seller_section
+    assert 'class="worker-start-working-card worker-wide" aria-label="Worker connection"' in primary_offer
     assert "Signed Worker Connection" not in html
     assert "Choose a ring, then sign a connection/account-balance order" not in html
     assert "Signed Worker Connection" not in network_surface
-    assert primary_offer.index("How others pay me") < primary_offer.index('class="worker-connect-order-card worker-wide"')
+    assert primary_offer.index("How others pay me") < primary_offer.index('class="worker-start-working-card worker-wide"')
     assert primary_offer.index('id="worker-offer-credits-per-token"') < primary_offer.index('id="worker-network-ring"')
     assert "Registration hub" not in seller_section
     assert 'id="worker-registration-hub-status"' not in seller_section
@@ -101,7 +101,7 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert 'id="worker-offer-models" type="text" value="gemma4:26b" autocomplete="off" disabled aria-disabled="true"' in seller_section
     assert "Minimum ETH per estimated token" in seller_section
     assert 'id="worker-offer-credits-per-token" type="number" min="0.000000000000000001" step="0.000000000000000001" value="0.001"' in seller_section
-    assert "Displayed as ETH decimals; signed worker registration stores exact wei strings behind the scenes." in seller_section
+    assert "Displayed as ETH decimals; worker registration stores exact wei strings behind the scenes." in seller_section
     assert 'class="worker-card worker-contract-summary"' not in seller_section
     assert "Seller offer contract this UI registers" not in html
     assert "deterministic worker-pull test path" not in html
@@ -121,7 +121,7 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "rentalOnlyWhenIdle" in js
     assert 'const workerSellerAvailabilityModes = Array.from(document.querySelectorAll(\'input[name="worker-seller-availability-mode"]\'));' in bindings
     assert ".worker-seller-controls" in css
-    assert ".worker-primary-offer > .worker-connect-order-card" in css
+    assert ".worker-primary-offer > .worker-start-working-card" in css
     assert "grid-column: 1 / -1;" in css
 
     assert '<option value="2">Ring 2 - Public</option>' in html
@@ -410,7 +410,10 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert 'data-worker-network="none"' in html
     assert html.index('data-worker-network="mainnet"') < html.index('data-worker-network="testnet"') < html.index('data-worker-network="test"') < html.index('data-worker-network="dev"') < html.index('data-worker-network="none"')
     assert 'id="worker-network-ring"' in html
-    assert 'id="worker-network-sign-order"' in html
+    assert 'id="worker-network-work-now"' in html
+    assert 'id="worker-work-now-dialog"' in html
+    assert 'id="worker-work-now-finish"' in html
+    assert 'id="worker-work-now-custom-minutes"' in html
     assert 'id="worker-runtime-activate"' not in html
     assert 'id="worker-runtime-stop"' not in html
     assert 'id="worker-runtime-accept-paid-jobs"' in html
@@ -433,7 +436,9 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
 
     assert "workerNetworkTabs" in bindings
     assert "workerNetworkRing" in bindings
-    assert "workerNetworkSignOrder" in bindings
+    assert "workerNetworkWorkNow" in bindings
+    assert "workerWorkNowDialog" in bindings
+    assert "workerWorkNowFinish" in bindings
     assert "workerRuntimeActivate" not in bindings
     assert "workerRuntimeStop" not in bindings
     assert "workerRuntimeAcceptPaidJobs" in bindings
@@ -458,7 +463,7 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "WORKER_NETWORK_ORDER = [\"mainnet\", \"testnet\", \"test\", \"dev\"]" in js
     assert 'WORKER_NETWORK_NONE = "none"' in js
     assert '"/api/applications/worker/network-session"' in js
-    assert '"/api/applications/worker/network-connect-order"' in js
+    assert '"/api/applications/worker/work-now"' in js
     assert '"/api/applications/worker/runtime-status"' in js
     assert '"/api/applications/worker/runtime-sync"' in js
     assert "workerLoadNetworkSessionFromBackend" in js
@@ -466,18 +471,18 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerRuntimePhaseLabel" in js
     assert "workerRuntimePrimaryDisplay" in js
     assert "workerRuntimePolicyPayload" in js
-    assert "Signed connect order has not been submitted to the Hub." in js
-    assert "Re-sign Connect Order" in js
+    assert "Worker registration has not been submitted to the Hub." in js
+    assert "Work now" in js
     assert "Retry Hub Registration" not in js
     assert "Submitted saved" not in js
     assert "const retryingHubRegistration" not in js
-    assert "Connect order has not been signed." in js
+    assert "Worker has not been registered with the Hub." in js
     assert "workerSelectNetwork" in js
-    assert "signWorkerNetworkConnectOrder" in js
-    assert "workerBuildConnectOrderMessage" in js
-    assert 'WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT = "9999-12-31T23:59:59.999999+00:00"' in js
-    assert 'expires_at: expires' in js
-    assert 'const expires = String(expiresAt || WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT);' in js
+    assert "openWorkerWorkNowDialog" in js
+    assert "buildWorkerNetworkRegistrationPayload" in js
+    assert "WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT" not in js
+    assert "main_computer_worker_connect_order" not in js
+    assert "signer.signMessage(message)" not in js
     assert "Date.now() + 10 * 60 * 1000" not in js
     assert "workerSelectedWalletChainIdHex" in js
     assert "workerSelectedWalletRpcUrl" in js
@@ -487,13 +492,15 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "Wallet required" in js
     assert "Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs." in js
     assert "workerNetworkConnectWallet" not in js
-    assert "workerNetworkSignOrder.disabled = !workerNetworkCanSign()" in js
-    assert "Create Key + Sign Connect Order" in js
-    assert "connect-order-no-active-key" in js
+    assert "workerNetworkWorkNow.disabled = workerNetworkWorkNowInFlight || workerMultisessionInFlight || (!workerWorkNowOverrideActive() && !workerNetworkCanWorkNow())" in js
+    assert "Work now" in js
+    assert "Working now ·" in js
+    assert "Finish after current request" in html
+    assert "work-now-no-active-key" in js
     assert "No active multi-session key is loaded for this Hub. Signing a fresh key request before worker registration…" in js
-    can_sign_body = js[js.index("function workerNetworkCanSign()"):js.index("function workerNetworkSetText", js.index("function workerNetworkCanSign()"))]
-    assert "Boolean(workerActiveMultisessionKey())" not in can_sign_body
-    assert "!workerMultisessionInFlight" in can_sign_body
+    can_start_body = js[js.index("function workerNetworkCanWorkNow()"):js.index("function workerNetworkSetText", js.index("function workerNetworkCanWorkNow()"))]
+    assert "Boolean(workerActiveMultisessionKey())" not in can_start_body
+    assert "!workerMultisessionInFlight" in can_start_body
     assert "workerRuntimeActivate" not in js
     assert "workerRuntimeStop" not in js
     assert "The app connects automatically while Accept Paid Jobs and quser/local policy allow it." in js
@@ -513,8 +520,8 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert '"/api/applications/worker/network-session"' in dispatch
     assert "self._handle_worker_network_session_load()" in dispatch
     assert "self._handle_worker_network_session_select()" in dispatch
-    assert '"/api/applications/worker/network-connect-order"' in dispatch
-    assert "self._handle_worker_network_connect_order_sign()" in dispatch
+    assert '"/api/applications/worker/work-now"' in dispatch
+    assert "self._handle_worker_network_work_now()" in dispatch
     assert '"/api/applications/worker/runtime-status"' in dispatch
     assert "self._handle_worker_runtime_status()" in dispatch
     assert '"/api/applications/worker/runtime-sync"' in dispatch
@@ -523,7 +530,7 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "load_hub_network_registry" in energy_routes
     assert "def _handle_worker_network_session_load" in energy_routes
     assert "def _handle_worker_network_session_select" in energy_routes
-    assert "def _handle_worker_network_connect_order_sign" in energy_routes
+    assert "def _handle_worker_network_work_now" in energy_routes
     assert "def _handle_worker_runtime_sync" in energy_routes
     assert "def _worker_runtime_policy" in energy_routes
     assert "windows_quser_v1" in energy_routes
@@ -641,7 +648,7 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert "activeMultisessionKeyId: _serverSideActiveMultisessionKeyId" in js
     assert "workerSetPrimaryWalletState" in js
 
-def test_worker_connect_order_replaces_inactive_saved_multisession_key_before_retry() -> None:
+def test_worker_start_replaces_inactive_saved_multisession_key_before_retry() -> None:
     js = WORKER_JS.read_text(encoding="utf-8")
     energy_routes = VIEWPORT_ENERGY_ROUTES.read_text(encoding="utf-8")
 
@@ -650,18 +657,18 @@ def test_worker_connect_order_replaces_inactive_saved_multisession_key_before_re
     assert 'text.includes("not active")' in js
     assert "function workerMarkMultisessionKeyInactiveOnHub" in js
     assert 'status: "inactive_on_hub"' in js
-    assert "async function workerRequestReplacementMultisessionKeyForConnect" in js
+    assert "async function workerRequestReplacementMultisessionKeyForStart" in js
     assert "requestMultiSessionKeySignature" in js
-    assert '"worker-connect-order-inactive-key-retry"' in js
-    assert '"worker-connect-order-missing-key"' in js
-    assert "async function workerSignAndSubmitNetworkConnectOrder" in js
+    assert '"hub-reported-saved-key-inactive"' in js
+    assert '"work-now-no-active-key"' in js
+    assert "async function workerSubmitNetworkWorkNow" in js
     assert "workerIsInactiveMultisessionKeyError(error)" in js
-    assert "workerRequestReplacementMultisessionKeyForConnect" in js
-    assert "data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);" in js
+    assert "workerRequestReplacementMultisessionKeyForStart" in js
+    assert "data = await workerSubmitNetworkWorkNow({durationSeconds: duration, activeMultisessionKey});" in js
 
     stale_detector = js.index("workerIsInactiveMultisessionKeyError(error)")
-    replacement_request = js.index("workerRequestReplacementMultisessionKeyForConnect", stale_detector)
-    retry_submit = js.index("data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);", replacement_request)
+    replacement_request = js.index("workerRequestReplacementMultisessionKeyForStart", stale_detector)
+    retry_submit = js.index("data = await workerSubmitNetworkWorkNow({durationSeconds: duration, activeMultisessionKey});", replacement_request)
     assert stale_detector < replacement_request < retry_submit
 
     assert "def _mark_worker_multisession_key_inactive_on_hub" in energy_routes

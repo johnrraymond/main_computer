@@ -1006,12 +1006,21 @@ class ViewportEnergyRoutesMixin:
                 ),
                 "",
             )
-            signed_order_status = text(signed_connection.get("signed_order_status"), "")
-            if signed_order_status not in {"not_signed", "signing", "signed_locally", "expired", "invalid"}:
-                if signed_wallet and signed_message and signed_signature:
-                    signed_order_status = "signed_locally"
+            worker_start_status = text(signed_connection.get("worker_start_status"), "")
+            signed_order_status = text(signed_connection.get("signed_order_status"), worker_start_status)
+            if signed_order_status == "signed_locally":
+                signed_order_status = "ready"
+            elif signed_order_status == "signing":
+                signed_order_status = "starting"
+            elif signed_order_status == "expired":
+                signed_order_status = "invalid"
+            if signed_order_status not in {"not_started", "starting", "ready", "invalid"}:
+                if signed_wallet and (signed_message and signed_signature or signed_connection.get("status") in {"ready", "registering-with-hub", "hub-registered", "hub-registration-failed"}):
+                    signed_order_status = "ready"
                 else:
-                    signed_order_status = "not_signed"
+                    signed_order_status = "not_started"
+            if not worker_start_status:
+                worker_start_status = signed_order_status
             hub_registration_status = text(signed_connection.get("hub_registration_status"), "")
             if hub_registration_status not in {"not_submitted", "submitting", "accepted", "failed", "stale"}:
                 legacy_status_lower = legacy_status.lower()
@@ -1034,6 +1043,7 @@ class ViewportEnergyRoutesMixin:
                 "signed_at": text(signed_connection.get("signed_at"), ""),
                 "expires_at": text(signed_connection.get("expires_at"), ""),
                 "status": legacy_status,
+                "worker_start_status": worker_start_status,
                 "signed_order_status": signed_order_status,
                 "hub_registration_status": hub_registration_status,
                 "hub_registration_attempted_at": text(signed_connection.get("hub_registration_attempted_at"), ""),
@@ -1042,6 +1052,10 @@ class ViewportEnergyRoutesMixin:
                 "assigned_ring": signed_assigned_ring,
                 "worker_id": text(signed_connection.get("worker_id"), ""),
                 "pricing_policy": text(signed_connection.get("pricing_policy"), ""),
+                "multisession_key_id": text(
+                    signed_connection.get("multisession_key_id", signed_connection.get("active_multisession_key_id")),
+                    "",
+                ),
                 "hub_registration_error": hub_registration_error,
                 "registration_error": text(signed_connection.get("registration_error"), ""),
                 "last_error": text(signed_connection.get("last_error"), ""),
@@ -1078,6 +1092,15 @@ class ViewportEnergyRoutesMixin:
             "workerRuntimeLastHeartbeatAt": text(settings.get("workerRuntimeLastHeartbeatAt", settings.get("worker_runtime_last_heartbeat_at")), ""),
             "workerRuntimeLastHeartbeatStatus": text(settings.get("workerRuntimeLastHeartbeatStatus", settings.get("worker_runtime_last_heartbeat_status")), ""),
             "workerRuntimeError": text(settings.get("workerRuntimeError", settings.get("worker_runtime_error")), ""),
+            "workerWorkNowOverrideStartedAt": text(settings.get("workerWorkNowOverrideStartedAt", settings.get("worker_work_now_override_started_at")), ""),
+            "workerWorkNowOverrideExpiresAt": text(settings.get("workerWorkNowOverrideExpiresAt", settings.get("worker_work_now_override_expires_at")), ""),
+            "workerWorkNowOverrideDurationSeconds": intish(
+                settings.get("workerWorkNowOverrideDurationSeconds", settings.get("worker_work_now_override_duration_seconds")),
+                0,
+                minimum=0,
+                maximum=7 * 24 * 60 * 60,
+            ),
+            "workerWorkNowFinishRequestedAt": text(settings.get("workerWorkNowFinishRequestedAt", settings.get("worker_work_now_finish_requested_at")), ""),
             "remoteEnabled": boolish(settings.get("remoteEnabled", settings.get("remote_enabled")), False),
             "remoteMode": text(settings.get("remoteMode", settings.get("remote_mode")), "ask-when-busy"),
             "remoteCreditsPerToken": text(settings.get("remoteCreditsPerToken", settings.get("remote_credits_per_token")), "0.001"),
@@ -1257,6 +1280,61 @@ class ViewportEnergyRoutesMixin:
             "active_runs": [],
         }
 
+    def _parse_worker_utc_datetime(self, value: Any) -> datetime | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _worker_work_now_override_state(self, settings: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+        now_dt = now or datetime.now(timezone.utc)
+        started_at = str(settings.get("workerWorkNowOverrideStartedAt") or "").strip()
+        expires_dt = self._parse_worker_utc_datetime(settings.get("workerWorkNowOverrideExpiresAt"))
+        duration_seconds = max(0, int(settings.get("workerWorkNowOverrideDurationSeconds") or 0))
+        remaining_seconds = 0
+        active = False
+        expires_at = ""
+        if expires_dt is not None:
+            expires_at = expires_dt.isoformat()
+            remaining_seconds = max(0, int((expires_dt - now_dt).total_seconds()))
+            active = remaining_seconds > 0
+        return {
+            "active": active,
+            "started_at": started_at,
+            "startedAt": started_at,
+            "expires_at": expires_at,
+            "expiresAt": expires_at,
+            "duration_seconds": duration_seconds,
+            "durationSeconds": duration_seconds,
+            "remaining_seconds": remaining_seconds,
+            "remainingSeconds": remaining_seconds,
+            "finish_requested_at": str(settings.get("workerWorkNowFinishRequestedAt") or "").strip(),
+            "finishRequestedAt": str(settings.get("workerWorkNowFinishRequestedAt") or "").strip(),
+        }
+
+    def _worker_set_work_now_override(self, settings: dict[str, Any], *, duration_seconds: int) -> dict[str, Any]:
+        duration = max(60, min(int(duration_seconds or 0), 7 * 24 * 60 * 60))
+        now_dt = datetime.now(timezone.utc)
+        expires_dt = datetime.fromtimestamp(now_dt.timestamp() + duration, tz=timezone.utc)
+        settings["workerWorkNowOverrideStartedAt"] = now_dt.isoformat()
+        settings["workerWorkNowOverrideExpiresAt"] = expires_dt.isoformat()
+        settings["workerWorkNowOverrideDurationSeconds"] = duration
+        settings["workerWorkNowFinishRequestedAt"] = ""
+        return settings
+
+    def _worker_clear_work_now_override(self, settings: dict[str, Any]) -> dict[str, Any]:
+        settings["workerWorkNowOverrideStartedAt"] = ""
+        settings["workerWorkNowOverrideExpiresAt"] = ""
+        settings["workerWorkNowOverrideDurationSeconds"] = 0
+        settings["workerWorkNowFinishRequestedAt"] = datetime.now(timezone.utc).isoformat()
+        return settings
+
     def _worker_ring_label(self, value: Any) -> str:
         ring = str(value if value is not None else "").strip()
         if ring == "0":
@@ -1270,32 +1348,41 @@ class ViewportEnergyRoutesMixin:
         return ""
 
     def _worker_runtime_signed_order_state(self, settings: dict[str, Any]) -> dict[str, Any]:
-        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
-        signature = str(signed.get("signature") or "").strip()
-        message = str(signed.get("message") or "").strip()
-        wallet = str(signed.get("wallet_address") or "").strip()
-        credit_wallet = str(signed.get("credit_wallet") or wallet).strip()
-        has_signed_order = bool(signature and message and wallet)
-        status = str(signed.get("signed_order_status") or "").strip()
-        if status not in {"not_signed", "signing", "signed_locally", "expired", "invalid"}:
-            status = "signed_locally" if has_signed_order else "not_signed"
-        if not has_signed_order and status not in {"signing", "invalid"}:
-            status = "not_signed"
+        connection = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        wallet = str(connection.get("wallet_address") or "").strip()
+        credit_wallet = str(connection.get("credit_wallet") or wallet).strip()
+        has_worker_start = bool(
+            wallet
+            and connection.get("network")
+            and connection.get("requested_ring")
+            and str(connection.get("status") or "") in {"ready", "registering-with-hub", "hub-registered", "hub-registration-failed"}
+        )
+        status = str(connection.get("worker_start_status") or connection.get("signed_order_status") or "").strip()
+        if status not in {"not_started", "starting", "ready", "invalid", "signed_locally", "signing", "expired"}:
+            status = "ready" if has_worker_start else "not_started"
+        if status == "signed_locally":
+            status = "ready"
+        elif status == "signing":
+            status = "starting"
+        elif status == "expired":
+            status = "invalid"
+        if not has_worker_start and status not in {"starting", "invalid"}:
+            status = "not_started"
         labels = {
-            "not_signed": "Not signed",
-            "signing": "Signing",
-            "signed_locally": "Signed locally",
-            "expired": "Expired",
-            "invalid": "Invalid",
+            "not_started": "Not started",
+            "starting": "Starting",
+            "ready": "Ready",
+            "invalid": "Needs restart",
         }
         return {
             "status": status,
-            "label": labels.get(status, "Not signed"),
-            "signedAt": str(signed.get("signed_at") or ""),
-            "expiresAt": str(signed.get("expires_at") or ""),
+            "label": labels.get(status, "Not started"),
+            "signedAt": "",
+            "expiresAt": "",
+            "startedAt": str(connection.get("started_at") or connection.get("signed_at") or ""),
             "wallet": wallet,
             "creditWallet": credit_wallet,
-            "rawStatus": str(signed.get("status") or ""),
+            "rawStatus": str(connection.get("status") or ""),
         }
 
     def _worker_runtime_hub_registration_state(self, settings: dict[str, Any]) -> dict[str, Any]:
@@ -1375,20 +1462,40 @@ class ViewportEnergyRoutesMixin:
                 message = str(local_ai_capacity.get("user_message") or local_ai_capacity.get("reason_code") or "").strip()
                 reasons.append(f"Local AI is busy. {message}".strip())
 
-        allowed = not reasons
-        if allowed and only_when_idle:
-            reason = "Computer is idle."
-        elif allowed:
-            reason = "AI is idle."
+        normal_allowed = not reasons
+        normal_reason = ""
+        if normal_allowed and only_when_idle:
+            normal_reason = "Computer is idle."
+        elif normal_allowed:
+            normal_reason = "AI is idle."
         else:
-            reason = " ".join(reasons)
+            normal_reason = " ".join(reasons)
+
+        work_now_override = self._worker_work_now_override_state(settings)
+        override_active = seller_enabled and bool(work_now_override.get("active"))
+        allowed = normal_allowed or override_active
+        if override_active and normal_allowed:
+            reason = f"Work-now override is active until {work_now_override.get('expires_at')}; normal policy also allows work."
+            label = "Allowed by Work now"
+        elif override_active:
+            reason = f"Work-now override is active until {work_now_override.get('expires_at')}; normal policy says: {normal_reason}"
+            label = "Allowed by Work now"
+        else:
+            reason = normal_reason
+            label = "Allowed" if allowed else "Blocked"
 
         return {
             "enabled": seller_enabled,
             "mode": availability_mode,
             "allowed": allowed,
-            "label": "Allowed" if allowed else "Blocked",
+            "normal_allowed": normal_allowed,
+            "normalAllowed": normal_allowed,
+            "label": label,
             "reason": reason,
+            "normal_reason": normal_reason,
+            "normalReason": normal_reason,
+            "work_now_override": work_now_override,
+            "workNowOverride": work_now_override,
             "activeAiJobs": active_ai_jobs,
             "active_ai_jobs": active_ai_jobs,
             "user_activity": user_activity,
@@ -1399,7 +1506,7 @@ class ViewportEnergyRoutesMixin:
     def _worker_runtime_policy(self, settings: dict[str, Any], *, user_activity: dict[str, Any] | None = None, active_jobs: int = 0) -> dict[str, Any]:
         """Return whether the app may currently announce availability to the Hub.
 
-        The runtime decision still requires identity, signed order, Hub registration,
+        The runtime decision still requires identity, worker start, Hub registration,
         and a Hub URL.  The nested ``local_policy`` field stays independent so the
         UI can truthfully show that local policy may allow work even while another
         blocker, such as Hub registration, keeps the runtime from accepting work.
@@ -1414,13 +1521,13 @@ class ViewportEnergyRoutesMixin:
         seller_enabled = bool(local_policy.get("enabled"))
         availability_mode = self._normalize_worker_seller_availability_mode(local_policy.get("mode"))
         only_when_idle = availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
-        signed_ready = signed_order.get("status") == "signed_locally"
+        signed_ready = signed_order.get("status") == "ready"
         hub_accepted = hub_registration.get("status") == "accepted" and self._worker_runtime_signed_connection_registered(settings)
         requirements = {
             "seller_enabled": seller_enabled,
             "network_selected": selected_network != "none",
-            "signed_order": signed_ready,
-            "signed_order_status": signed_order.get("status"),
+            "worker_start": signed_ready,
+            "worker_start_status": signed_order.get("status"),
             "hub_registered": hub_accepted,
             "hub_registration_status": hub_registration.get("status"),
             "worker_id_present": bool(worker_id),
@@ -1429,6 +1536,8 @@ class ViewportEnergyRoutesMixin:
             "idle_only": only_when_idle,
             "ai_idle": availability_mode == self._WORKER_SELLER_AVAILABILITY_AI_IDLE,
             "local_policy_allowed": bool(local_policy.get("allowed")),
+            "local_policy_normal_allowed": bool(local_policy.get("normal_allowed", local_policy.get("allowed"))),
+            "work_now_override_active": bool((local_policy.get("work_now_override") if isinstance(local_policy.get("work_now_override"), dict) else {}).get("active")),
         }
 
         reasons: list[str] = []
@@ -1437,15 +1546,13 @@ class ViewportEnergyRoutesMixin:
         if selected_network == "none":
             reasons.append("No worker network is selected.")
         if not signed_ready:
-            signed_status = str(signed_order.get("status") or "not_signed")
-            if signed_status == "signing":
-                reasons.append("Wallet signature is in progress.")
-            elif signed_status == "invalid":
-                reasons.append("Signed connect order is invalid.")
-            elif signed_status == "expired":
-                reasons.append("Signed connect order expired.")
+            start_status = str(signed_order.get("status") or "not_started")
+            if start_status == "starting":
+                reasons.append("Multi-session key request is in progress.")
+            elif start_status == "invalid":
+                reasons.append("Worker registration is not ready.")
             else:
-                reasons.append("Connect order has not been signed.")
+                reasons.append("Worker has not been registered with the Hub.")
         elif not hub_accepted:
             hub_status = str(hub_registration.get("status") or "not_submitted")
             if hub_status == "failed" and hub_registration.get("lastError"):
@@ -1453,11 +1560,11 @@ class ViewportEnergyRoutesMixin:
             elif hub_status == "failed":
                 reasons.append("Hub registration failed.")
             elif hub_status == "submitting":
-                reasons.append("Signed connect order is being submitted to the Hub.")
+                reasons.append("Worker registration is being submitted to the Hub.")
             elif hub_status == "stale":
                 reasons.append("Hub registration is stale.")
             else:
-                reasons.append("Signed connect order has not been submitted to the Hub.")
+                reasons.append("Worker registration has not been submitted to the Hub.")
         if hub_accepted and not worker_id:
             reasons.append("Worker ID is missing.")
         if selected_network != "none" and not hub_url:
@@ -1466,16 +1573,22 @@ class ViewportEnergyRoutesMixin:
             reasons.append(str(local_policy.get("reason") or "Local policy blocks work."))
 
         allowed = not reasons
+        work_now_override = local_policy.get("work_now_override") if isinstance(local_policy.get("work_now_override"), dict) else self._worker_work_now_override_state(settings)
+        override_active = bool(work_now_override.get("active"))
         return {
             "allowed_to_accept": allowed,
             "reason": (
-                "Hub registration accepted and local policy allows work."
+                "Hub registration accepted and Work-now override allows work."
+                if allowed and override_active and not bool(local_policy.get("normal_allowed", local_policy.get("allowed")))
+                else "Hub registration accepted and local policy allows work."
                 if allowed
                 else " ".join(reason for reason in reasons if reason)
             ),
             "requirements": requirements,
             "user_activity": local_policy.get("user_activity"),
             "local_ai_capacity": local_policy.get("local_ai_capacity"),
+            "work_now_override": local_policy.get("work_now_override") if isinstance(local_policy.get("work_now_override"), dict) else self._worker_work_now_override_state(settings),
+            "workNowOverride": local_policy.get("work_now_override") if isinstance(local_policy.get("work_now_override"), dict) else self._worker_work_now_override_state(settings),
             "availability_mode": availability_mode,
             "source": "windows_quser_v1" if only_when_idle else "local_ai_capacity_v1",
             "local_policy": local_policy,
@@ -1825,20 +1938,17 @@ class ViewportEnergyRoutesMixin:
                 "reason": "Wallet is not connected.",
                 "next": "Connect a wallet.",
             }
-        if signed_order.get("status") != "signed_locally":
-            signed_status = str(signed_order.get("status") or "not_signed")
-            if signed_status == "signing":
-                reason = "Wallet signature is in progress."
-                next_action = "Finish the wallet signature prompt."
-            elif signed_status == "invalid":
-                reason = "Signed connect order is invalid."
-                next_action = "Re-sign connect order."
-            elif signed_status == "expired":
-                reason = "Signed connect order expired."
-                next_action = "Re-sign connect order."
+        if signed_order.get("status") != "ready":
+            start_status = str(signed_order.get("status") or "not_started")
+            if start_status == "starting":
+                reason = "Multi-session key request is in progress."
+                next_action = "Finish the multi-session key wallet prompt."
+            elif start_status == "invalid":
+                reason = "Worker registration is not ready."
+                next_action = "Work now."
             else:
-                reason = "Connect order has not been signed."
-                next_action = "Sign connect order."
+                reason = "Worker has not been registered with the Hub."
+                next_action = "Work now."
             return {
                 "status": "not_accepting",
                 "label": "Not accepting",
@@ -1853,20 +1963,20 @@ class ViewportEnergyRoutesMixin:
                     "status": "not_accepting",
                     "label": "Not accepting",
                     "reason": f"Hub registration failed: {hub_registration['lastError']}",
-                    "next": "Re-sign connect order.",
+                    "next": "Work now.",
                 }
             if hub_status == "failed":
                 return {
                     "status": "not_accepting",
                     "label": "Not accepting",
                     "reason": "Hub registration failed.",
-                    "next": "Re-sign connect order.",
+                    "next": "Work now.",
                 }
             if hub_status == "submitting":
                 return {
                     "status": "not_accepting",
                     "label": "Not accepting",
-                    "reason": "Signed connect order is being submitted to the Hub.",
+                    "reason": "Worker registration is being submitted to the Hub.",
                     "next": "Wait for Hub registration to finish.",
                 }
             if hub_status == "stale":
@@ -1874,13 +1984,13 @@ class ViewportEnergyRoutesMixin:
                     "status": "not_accepting",
                     "label": "Not accepting",
                     "reason": "Hub registration is stale.",
-                    "next": "Re-sign connect order.",
+                    "next": "Work now.",
                 }
             return {
                 "status": "not_accepting",
                 "label": "Not accepting",
-                "reason": "Signed connect order has not been submitted to the Hub.",
-                "next": "Re-sign connect order.",
+                "reason": "Worker registration has not been submitted to the Hub.",
+                "next": "Work now.",
             }
         if not bool(local_policy.get("allowed")):
             mode = str(local_policy.get("mode") or "")
@@ -1895,10 +2005,16 @@ class ViewportEnergyRoutesMixin:
                 ),
             }
         if phase == "accepting" and can_accept:
+            override = local_policy.get("work_now_override") if isinstance(local_policy.get("work_now_override"), dict) else {}
+            override_active = bool(override.get("active"))
             return {
                 "status": "accepting",
                 "label": "Accepting work",
-                "reason": "Hub registration accepted and local policy allows work.",
+                "reason": (
+                    "Hub registration accepted and Work-now override allows work."
+                    if override_active and not bool(local_policy.get("normal_allowed", local_policy.get("allowed")))
+                    else "Hub registration accepted and local policy allows work."
+                ),
                 "next": "Waiting for Hub job assignment.",
             }
         return {
@@ -1927,6 +2043,7 @@ class ViewportEnergyRoutesMixin:
         signed_order = policy.get("signed_order") if isinstance(policy.get("signed_order"), dict) else self._worker_runtime_signed_order_state(settings)
         hub_registration = policy.get("hub_registration") if isinstance(policy.get("hub_registration"), dict) else self._worker_runtime_hub_registration_state(settings)
         local_policy = policy.get("local_policy") if isinstance(policy.get("local_policy"), dict) else self._worker_runtime_local_policy(settings, active_jobs=active_jobs)
+        work_now_override = policy.get("work_now_override") if isinstance(policy.get("work_now_override"), dict) else self._worker_work_now_override_state(settings)
         primary = self._worker_runtime_primary_status(
             settings,
             phase=phase,
@@ -1960,6 +2077,7 @@ class ViewportEnergyRoutesMixin:
             "signedOrder": signed_order,
             "hubRegistration": hub_registration,
             "localPolicy": local_policy,
+            "workNowOverride": work_now_override,
             "runtime": {
                 "enabled": bool(settings.get("workerRuntimeEnabled")),
                 "phase": phase,
@@ -1981,6 +2099,8 @@ class ViewportEnergyRoutesMixin:
                 "heartbeat_error": heartbeat_error,
                 "heartbeat_result": heartbeat_result,
                 "policy": policy,
+                "work_now_override": work_now_override,
+                "workNowOverride": work_now_override,
             },
             "worker": {
                 "pricingPolicy": pricing_policy,
@@ -2332,31 +2452,59 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-network-select-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
-    def _handle_worker_network_connect_order_sign(self) -> None:
+    def _handle_worker_network_work_now(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
-                self._send_json({"ok": False, "error": "Worker network connection orders are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                self._send_json({"ok": False, "error": "Worker Work now override is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
                 return
             body = self._read_json()
+            action = str(body.get("action") or "work-now").strip().lower()
+            if action not in {"work-now", "finish"}:
+                raise ValueError("Worker Work now action must be work-now or finish.")
+
+            active_jobs_raw = body.get("active_jobs")
+            active_jobs = int(active_jobs_raw) if active_jobs_raw is not None else None
+
+            def send_network_and_runtime_payload(settings_payload: dict[str, Any]) -> None:
+                saved, runtime_status = self._worker_runtime_transition(
+                    settings_payload,
+                    action="sync",
+                    active_jobs=active_jobs,
+                    send_heartbeat=True,
+                )
+                payload = self._worker_network_session_payload(saved, check_hub=False)
+                payload["runtimeStatus"] = runtime_status
+                payload["runtime"] = runtime_status.get("runtime")
+                payload["localPolicy"] = runtime_status.get("localPolicy")
+                payload["workNowOverride"] = runtime_status.get("workNowOverride")
+                self._send_json(payload)
+
+            settings = self._load_worker_settings()
+            if action == "finish":
+                settings = self._worker_clear_work_now_override(settings)
+                settings = self._save_worker_settings(settings)
+                self.server.signal("api-worker-network-work-now-finish")
+                send_network_and_runtime_payload(settings)
+                return
+
+            duration_seconds = int(body.get("duration_seconds") or body.get("durationSeconds") or 0)
+            if duration_seconds <= 0:
+                raise ValueError("duration_seconds is required for Work now.")
+            if duration_seconds > 7 * 24 * 60 * 60:
+                raise ValueError("Work now duration may not exceed 7 days.")
+
             selected = self._normalize_worker_network_key(body.get("network"), allow_none=False)
             requested_ring = self._normalize_worker_ring(body.get("requested_ring", "3"))
             wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
-            signature = str(body.get("signature") or "").strip()
-            message = str(body.get("message") or "").strip()
-            if not signature:
-                raise ValueError("signature is required.")
-            if not message:
-                raise ValueError("message is required.")
 
             worker_payload = body.get("worker")
             if not isinstance(worker_payload, dict):
                 raise ValueError("worker registration payload is required.")
             registration_payload = self._worker_registration_payload_from_ui(worker_payload)
 
-            settings = self._load_worker_settings()
             current = self._normalize_worker_network_key(settings.get("selectedNetwork", "none"))
             if current != selected:
-                raise ValueError(f"Cannot sign for {selected!r}; current worker network is {current!r}.")
+                raise ValueError(f"Cannot start work for {selected!r}; current worker network is {current!r}.")
 
             session_payload = self._worker_network_session_payload(settings, check_hub=False)
             profile = session_payload["session"].get("profile") if isinstance(session_payload.get("session"), dict) else None
@@ -2364,69 +2512,66 @@ class ViewportEnergyRoutesMixin:
             hub_url = self._clean_hub_url(str(body.get("hub_url") or profile.get("hub_url") or self.server.config.hub_url))
             profile_hub_url = str(profile.get("hub_url") or "").strip()
             if profile_hub_url and hub_url != self._clean_hub_url(profile_hub_url):
-                raise ValueError(f"Signed worker connect order hub {hub_url!r} does not match selected network hub {profile_hub_url!r}.")
+                raise ValueError(f"Worker start Hub {hub_url!r} does not match selected network Hub {profile_hub_url!r}.")
             chain_id = str(profile.get("chain_id") or body.get("chain_id") or "")
+
             active_multisession_key_id = str(
                 body.get("active_multisession_key_id")
                 or body.get("multisession_key_id")
                 or ""
             ).strip()
-            message_payload: dict[str, Any] = {}
-            try:
-                parsed_message = json.loads(message)
-                if isinstance(parsed_message, dict):
-                    message_payload = parsed_message
-            except (TypeError, ValueError):
-                message_payload = {}
-            issued_at = str(message_payload.get("issued_at") or "")
-            expires_at = str(message_payload.get("expires_at") or "")
 
-            signed_at = datetime.now(timezone.utc).isoformat()
-            signed_connection = {
+            settings = self._worker_set_work_now_override(settings, duration_seconds=duration_seconds)
+            settings["workerRequestedRing"] = requested_ring
+            settings["workerConnectedHubUrl"] = hub_url
+            settings["workerConnectionStatus"] = "connected"
+            settings["workerConnectionError"] = ""
+
+            existing_connection = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+            existing_wallet = self._normalize_worker_wallet_address(existing_connection.get("wallet_address")) if re.fullmatch(r"0x[0-9a-fA-F]{40}", str(existing_connection.get("wallet_address") or "").strip()) else ""
+            existing_network = self._normalize_worker_network_key(existing_connection.get("network") or "none")
+            existing_ring = self._normalize_worker_ring(existing_connection.get("requested_ring") or requested_ring)
+            existing_hub = self._clean_hub_url(str(existing_connection.get("hub_url") or ""), allow_empty=True)
+            needs_registration = not (
+                self._worker_runtime_signed_connection_registered(settings)
+                and existing_network == selected
+                and existing_wallet == wallet_address
+                and existing_ring == requested_ring
+                and existing_hub == hub_url
+            )
+
+            if not needs_registration:
+                settings["workerConnectedAt"] = settings.get("workerConnectedAt") or datetime.now(timezone.utc).isoformat()
+                settings = self._save_worker_settings(settings)
+                self.server.signal(
+                    "api-worker-network-work-now-override",
+                    selected=selected,
+                    ring=requested_ring,
+                    wallet=wallet_address,
+                    duration_seconds=duration_seconds,
+                    registered=True,
+                )
+                send_network_and_runtime_payload(settings)
+                return
+
+            started_at = datetime.now(timezone.utc).isoformat()
+            worker_connection = {
                 "network": selected,
                 "requested_ring": requested_ring,
                 "wallet_address": wallet_address,
                 "credit_wallet": wallet_address,
                 "hub_url": hub_url,
                 "chain_id": chain_id,
-                "message": message,
-                "signature": signature,
-                "issued_at": issued_at,
-                "signed_at": signed_at,
-                "expires_at": expires_at,
-                "status": "signed",
-                "signed_order_status": "signed_locally",
+                "started_at": started_at,
+                "status": "ready",
+                "worker_start_status": "ready",
+                "signed_order_status": "ready",
                 "hub_registration_status": "not_submitted",
                 "hub_registration_error": "",
                 "hub_registration_attempted_at": "",
                 "hub_registered_at": "",
                 "hub_registered": False,
             }
-            if not expires_at:
-                invalid_error = "Signed connect order message is missing expires_at; re-sign connect order."
-                signed_connection.update(
-                    {
-                        "status": "invalid",
-                        "signed_order_status": "invalid",
-                        "hub_registration_status": "not_submitted",
-                        "hub_registration_error": invalid_error,
-                        "last_error": invalid_error,
-                        "worker": registration_payload,
-                    }
-                )
-                settings["workerRequestedRing"] = requested_ring
-                settings["workerAssignedRing"] = ""
-                settings["workerRegisteredId"] = ""
-                settings["workerPricingPolicy"] = ""
-                settings["workerConnectedHubUrl"] = hub_url
-                settings["workerConnectionStatus"] = "failed"
-                settings["workerConnectionError"] = invalid_error
-                settings["workerHubRegistration"] = {}
-                settings["workerPool"] = {}
-                settings["signedWorkerConnection"] = signed_connection
-                self._save_worker_settings(settings)
-                raise ValueError(invalid_error)
-            settings["workerRequestedRing"] = requested_ring
             settings["workerAssignedRing"] = ""
             settings["workerRegisteredId"] = ""
             settings["workerPricingPolicy"] = ""
@@ -2435,15 +2580,16 @@ class ViewportEnergyRoutesMixin:
             settings["workerConnectionError"] = ""
             settings["workerHubRegistration"] = {}
             settings["workerPool"] = {}
-            settings["signedWorkerConnection"] = signed_connection
+            settings["signedWorkerConnection"] = worker_connection
             settings = self._save_worker_settings(settings)
 
             attempted_at = datetime.now(timezone.utc).isoformat()
-            signed_connection = dict(settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else signed_connection)
-            signed_connection.update(
+            worker_connection = dict(settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else worker_connection)
+            worker_connection.update(
                 {
                     "status": "registering-with-hub",
-                    "signed_order_status": "signed_locally",
+                    "worker_start_status": "ready",
+                    "signed_order_status": "ready",
                     "hub_registration_status": "submitting",
                     "hub_registration_attempted_at": attempted_at,
                     "hub_registration_error": "",
@@ -2451,15 +2597,11 @@ class ViewportEnergyRoutesMixin:
                     "hub_registered": False,
                 }
             )
-            settings["signedWorkerConnection"] = signed_connection
+            settings["signedWorkerConnection"] = worker_connection
             settings = self._save_worker_settings(settings)
 
             authorization_key_id = ""
             try:
-                connect_payload = {
-                    "signed_connection": signed_connection,
-                    "worker": registration_payload,
-                }
                 multisession_authorization = self._worker_multisession_authorization_for_wallet(
                     hub_url=hub_url,
                     wallet_address=wallet_address,
@@ -2467,8 +2609,17 @@ class ViewportEnergyRoutesMixin:
                     requested_key_id=active_multisession_key_id,
                 )
                 authorization_key_id = str(multisession_authorization.get("key_id") or multisession_authorization.get("multisession_key_id") or "").strip()
-                connect_payload["multisession_authorization"] = multisession_authorization
-                registration = self._post_worker_connect_order_to_hub(
+                connect_payload = {
+                    "hub_url": hub_url,
+                    "network": selected,
+                    "chain_id": chain_id,
+                    "requested_ring": requested_ring,
+                    "wallet_address": wallet_address,
+                    "credit_wallet": wallet_address,
+                    "worker": registration_payload,
+                    "multisession_authorization": multisession_authorization,
+                }
+                registration = self._post_worker_start_to_hub(
                     hub_url=hub_url,
                     payload=connect_payload,
                 )
@@ -2487,10 +2638,11 @@ class ViewportEnergyRoutesMixin:
                     "error": registration_error,
                     "failed_at": datetime.now(timezone.utc).isoformat(),
                 }
-                signed_connection.update(
+                worker_connection.update(
                     {
                         "status": "hub-registration-failed",
-                        "signed_order_status": "signed_locally",
+                        "worker_start_status": "ready",
+                        "signed_order_status": "ready",
                         "hub_registration_status": "failed",
                         "hub_registered": False,
                         "hub_registration_error": registration_error,
@@ -2507,18 +2659,20 @@ class ViewportEnergyRoutesMixin:
                 settings["workerConnectionError"] = registration_error
                 settings["workerHubRegistration"] = failed_registration
                 settings["workerPool"] = {}
-                settings["signedWorkerConnection"] = signed_connection
+                settings["signedWorkerConnection"] = worker_connection
                 self._save_worker_settings(settings)
                 raise
+
             worker = registration.get("worker") if isinstance(registration.get("worker"), dict) else {}
             pool = registration.get("pool") if isinstance(registration.get("pool"), dict) else {}
             assigned_ring = str(registration.get("assigned_ring") or worker.get("assigned_ring") or requested_ring)
             worker_id = str(registration.get("worker_id") or worker.get("worker_id") or worker.get("node_id") or registration_payload["node_id"])
             pricing_policy = str(registration.get("pricing_policy") or worker.get("pricing_policy") or worker.get("capabilities", {}).get("pricing_policy", ""))
-            signed_connection.update(
+            worker_connection.update(
                 {
                     "status": "hub-registered",
-                    "signed_order_status": "signed_locally",
+                    "worker_start_status": "ready",
+                    "signed_order_status": "ready",
                     "hub_registration_status": "accepted",
                     "hub_registered": True,
                     "hub_registered_at": datetime.now(timezone.utc).isoformat(),
@@ -2530,6 +2684,7 @@ class ViewportEnergyRoutesMixin:
                     "hub_registration": registration,
                     "worker": worker,
                     "pool": pool,
+                    "multisession_key_id": authorization_key_id,
                 }
             )
             settings["workerRequestedRing"] = requested_ring
@@ -2542,20 +2697,20 @@ class ViewportEnergyRoutesMixin:
             settings["workerConnectedAt"] = datetime.now(timezone.utc).isoformat()
             settings["workerHubRegistration"] = registration
             settings["workerPool"] = pool
-            settings["signedWorkerConnection"] = signed_connection
+            settings["signedWorkerConnection"] = worker_connection
             saved = self._save_worker_settings(settings)
-            payload = self._worker_network_session_payload(saved, check_hub=False)
             self.server.signal(
-                "api-worker-network-connect-order-hub-register",
+                "api-worker-network-work-now-hub-register",
                 selected=selected,
                 ring=requested_ring,
                 assigned_ring=assigned_ring,
                 wallet=wallet_address,
                 worker_id=worker_id,
+                duration_seconds=duration_seconds,
             )
-            self._send_json(payload)
+            send_network_and_runtime_payload(saved)
         except Exception as exc:
-            self.server.signal("api-worker-network-connect-order-sign-error", error=exc)
+            self.server.signal("api-worker-network-work-now-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _worker_multisession_key_cache_path(self) -> Path:
@@ -3981,7 +4136,7 @@ class ViewportEnergyRoutesMixin:
             + text
         )
 
-    def _post_worker_connect_order_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post_worker_start_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = Request(
             self._clean_hub_url(hub_url) + "/api/hub/v1/workers/connect",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

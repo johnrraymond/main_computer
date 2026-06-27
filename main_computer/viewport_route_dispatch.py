@@ -2223,8 +2223,8 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/worker/network-session":
         self._handle_worker_network_session_select()
         return
-    if self.path == "/api/applications/worker/network-connect-order":
-        self._handle_worker_network_connect_order_sign()
+    if self.path == "/api/applications/worker/work-now":
+        self._handle_worker_network_work_now()
         return
     if self.path == "/api/applications/worker/runtime-sync":
         self._handle_worker_runtime_sync()

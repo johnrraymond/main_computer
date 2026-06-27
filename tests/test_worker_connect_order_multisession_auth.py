@@ -10,10 +10,7 @@ from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
 from main_computer.hub import HubHttpServer
-from main_computer.multisession_key_signing import (
-    build_personal_sign_blob,
-    sign_personal_message,
-)
+from main_computer.multisession_key_signing import build_personal_sign_blob
 from main_computer.viewport_server import ViewportServer
 
 
@@ -65,38 +62,12 @@ def _signed_msk_blob(*, request_id: str = "worker_ui_connect_msk") -> dict[str, 
     return build_personal_sign_blob(message=message, private_key=_TEST_WORKER_PRIVATE_KEY, chain_id=_DEV_CHAIN_ID_HEX)
 
 
-def _worker_connect_message(
-    *,
-    hub_url: str,
-    network: str = "dev",
-    requested_ring: str = "3",
-    worker_node_id: str = "signed-ui-worker-001",
-) -> str:
-    return json.dumps(
-        {
-            "kind": "main_computer_worker_connect_order",
-            "purpose": "connect_worker_to_hub",
-            "version": "main-computer-worker-connect-order-v1",
-            "network": network,
-            "hub_url": hub_url,
-            "chain_id": "42424242",
-            "requested_ring": requested_ring,
-            "wallet_address": _TEST_WORKER_WALLET,
-            "credit_wallet": _TEST_WORKER_WALLET,
-            "worker_node_id": worker_node_id,
-            "issued_at": "2026-01-01T00:00:00+00:00",
-            "expires_at": "2999-01-01T00:00:00+00:00",
-        },
-        separators=(",", ":"),
-    )
-
-
-def _worker_payload(worker_node_id: str) -> dict[str, object]:
+def _worker_payload(node_id: str = "strict-ui-worker-001") -> dict[str, object]:
     return {
-        "node_id": worker_node_id,
+        "node_id": node_id,
         "endpoint": "http://127.0.0.1:8771",
-        "model": "mock-ai-model-signed-worker",
-        "models": ["mock-ai-model-signed-worker"],
+        "model": "mock-ai-model-strict-worker",
+        "models": ["mock-ai-model-strict-worker"],
         "credits_per_token": "0.001",
         "credits_per_token_wei": "1000000000000000",
         "estimated_credits_per_request": "1.024",
@@ -105,7 +76,13 @@ def _worker_payload(worker_node_id: str) -> dict[str, object]:
         "credits_per_request_wei": "1024000000000000000",
         "target_output_tokens": 1024,
         "max_concurrency": 1,
-        "availability": {"only_when_idle": False},
+        "availability": {
+            "accept_paid_jobs": True,
+            "availability_mode": "ai_idle",
+            "only_when_idle": False,
+            "idle_source": "local_ai_capacity_v1",
+            "ai_idle_required": True,
+        },
         "pricing": {
             "pricing_type": "approx_per_token_v0",
             "credits_per_token": "0.001",
@@ -127,29 +104,21 @@ def _worker_payload(worker_node_id: str) -> dict[str, object]:
     }
 
 
-def _signed_worker_connect_payload(
+def _worker_start_payload(
     *,
     hub_url: str,
-    worker_node_id: str = "signed-ui-worker-001",
+    network: str = "dev",
     requested_ring: str = "3",
+    worker_node_id: str = "strict-ui-worker-001",
     key_id: str = "",
 ) -> dict[str, object]:
-    message = _worker_connect_message(
-        hub_url=hub_url,
-        worker_node_id=worker_node_id,
-        requested_ring=requested_ring,
-    )
     payload: dict[str, object] = {
-        "signed_connection": {
-            "network": "dev",
-            "requested_ring": requested_ring,
-            "wallet_address": _TEST_WORKER_WALLET,
-            "credit_wallet": _TEST_WORKER_WALLET,
-            "hub_url": hub_url,
-            "chain_id": "42424242",
-            "message": message,
-            "signature": sign_personal_message(message, _TEST_WORKER_PRIVATE_KEY),
-        },
+        "hub_url": hub_url,
+        "network": network,
+        "chain_id": "42424242",
+        "requested_ring": requested_ring,
+        "wallet_address": _TEST_WORKER_WALLET,
+        "credit_wallet": _TEST_WORKER_WALLET,
         "worker": _worker_payload(worker_node_id),
     }
     if key_id:
@@ -190,7 +159,7 @@ def _write_dev_network_config(root: Path, *, hub_url: str, hub_port: int) -> Pat
     return networks_path
 
 
-def test_hub_worker_connect_requires_multisession_auth_in_strict_mode() -> None:
+def test_hub_worker_start_requires_multisession_auth() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         hub_config = MainComputerConfig(
@@ -208,7 +177,7 @@ def test_hub_worker_connect_requires_multisession_auth_in_strict_mode() -> None:
             hub_url = f"http://127.0.0.1:{hub.server_port}"
             unsigned_status, unsigned_payload = _post_json_error(
                 f"{hub_url}/api/hub/v1/workers/connect",
-                _signed_worker_connect_payload(hub_url=hub_url, worker_node_id="strict-connect-no-msk"),
+                _worker_start_payload(hub_url=hub_url, worker_node_id="strict-connect-no-msk"),
             )
             assert unsigned_status == 403
             assert "multi-session key" in str(unsigned_payload.get("error", ""))
@@ -223,7 +192,7 @@ def test_hub_worker_connect_requires_multisession_auth_in_strict_mode() -> None:
 
             accepted = _post_json(
                 f"{hub_url}/api/hub/v1/workers/connect",
-                _signed_worker_connect_payload(
+                _worker_start_payload(
                     hub_url=hub_url,
                     worker_node_id="strict-connect-with-msk",
                     key_id=key_id,
@@ -247,7 +216,7 @@ def test_hub_worker_connect_requires_multisession_auth_in_strict_mode() -> None:
             hub_thread.join(timeout=2)
 
 
-def test_worker_connect_order_proxy_attaches_cached_multisession_key() -> None:
+def test_worker_start_proxy_attaches_cached_multisession_key() -> None:
     previous_networks_file = os.environ.get("MAIN_COMPUTER_HUB_NETWORKS_FILE")
     previous_cwd = Path.cwd()
     with tempfile.TemporaryDirectory() as tmp:
@@ -299,16 +268,15 @@ def test_worker_connect_order_proxy_attaches_cached_multisession_key() -> None:
             key_id = str(key["id"])
 
             worker_node_id = "strict-ui-worker-001"
-            message = _worker_connect_message(hub_url=hub_url, worker_node_id=worker_node_id)
             data = _post_json(
-                f"{viewport_url}/api/applications/worker/network-connect-order",
+                f"{viewport_url}/api/applications/worker/work-now",
                 {
                     "hub_url": hub_url,
                     "network": "dev",
+                    "chain_id": "42424242",
                     "requested_ring": "3",
+                    "duration_seconds": 900,
                     "wallet_address": _TEST_WORKER_WALLET,
-                    "message": message,
-                    "signature": sign_personal_message(message, _TEST_WORKER_PRIVATE_KEY),
                     "worker": _worker_payload(worker_node_id),
                 },
             )
@@ -338,7 +306,7 @@ def test_worker_connect_order_proxy_attaches_cached_multisession_key() -> None:
                 os.environ["MAIN_COMPUTER_HUB_NETWORKS_FILE"] = previous_networks_file
 
 
-def test_worker_connect_order_proxy_reports_stale_saved_multisession_key_clearly() -> None:
+def test_worker_start_proxy_reports_stale_saved_multisession_key_clearly() -> None:
     previous_networks_file = os.environ.get("MAIN_COMPUTER_HUB_NETWORKS_FILE")
     previous_cwd = Path.cwd()
     with tempfile.TemporaryDirectory() as tmp:
@@ -399,16 +367,15 @@ def test_worker_connect_order_proxy_reports_stale_saved_multisession_key_clearly
             assert selected["session"]["connection_status"] == "connected"  # type: ignore[index]
 
             worker_node_id = "stale-msk-ui-worker-001"
-            message = _worker_connect_message(hub_url=hub_url, worker_node_id=worker_node_id)
             status, payload = _post_json_error(
-                f"{viewport_url}/api/applications/worker/network-connect-order",
+                f"{viewport_url}/api/applications/worker/work-now",
                 {
                     "hub_url": hub_url,
                     "network": "dev",
+                    "chain_id": "42424242",
                     "requested_ring": "3",
+                    "duration_seconds": 900,
                     "wallet_address": _TEST_WORKER_WALLET,
-                    "message": message,
-                    "signature": sign_personal_message(message, _TEST_WORKER_PRIVATE_KEY),
                     "active_multisession_key_id": "msk_missing_on_hub",
                     "worker": _worker_payload(worker_node_id),
                 },

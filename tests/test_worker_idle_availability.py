@@ -387,6 +387,7 @@ def _runtime_settings(harness: _WorkerRoutesHarness | None = None) -> dict[str, 
             "signedWorkerConnection": {
                 "network": "dev",
                 "requested_ring": "3",
+                "duration_seconds": 900,
                 "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
                 "credit_wallet": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
                 "hub_url": "http://127.0.0.1:8770",
@@ -466,6 +467,74 @@ def test_worker_runtime_policy_blocks_accepting_when_quser_reports_active(monkey
     policy = harness._worker_runtime_policy(_runtime_settings(harness))
 
     assert policy["allowed_to_accept"] is False
+    assert "active interactive user session" in policy["reason"]
+
+    assert policy["requirements"]["local_policy_normal_allowed"] is False
+
+
+def test_worker_runtime_policy_work_now_override_allows_active_user_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {"config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})()},
+    )()
+
+    monkeypatch.setattr(
+        "main_computer.viewport_routes_energy.collect_windows_user_activity",
+        lambda: {
+            "supported": True,
+            "ok": True,
+            "active": True,
+            "reason": "unit-test-active",
+            "active_session_count": 1,
+            "connected_session_count": 1,
+            "sessions": [],
+            "idle_active_threshold_s": 300,
+        },
+    )
+
+    settings = harness._worker_set_work_now_override(_runtime_settings(harness), duration_seconds=7 * 60 * 60)
+    policy = harness._worker_runtime_policy(settings)
+
+    assert policy["allowed_to_accept"] is True
+    assert policy["requirements"]["local_policy_allowed"] is True
+    assert policy["requirements"]["local_policy_normal_allowed"] is False
+    assert policy["requirements"]["work_now_override_active"] is True
+    assert policy["local_policy"]["label"] == "Allowed by Work now"
+    assert policy["workNowOverride"]["active"] is True
+    assert "Work-now override" in policy["reason"]
+
+
+def test_worker_runtime_clearing_work_now_override_returns_to_normal_policy_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {"config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})()},
+    )()
+
+    monkeypatch.setattr(
+        "main_computer.viewport_routes_energy.collect_windows_user_activity",
+        lambda: {
+            "supported": True,
+            "ok": True,
+            "active": True,
+            "reason": "unit-test-active",
+            "active_session_count": 1,
+            "connected_session_count": 1,
+            "sessions": [],
+            "idle_active_threshold_s": 300,
+        },
+    )
+
+    settings = harness._worker_set_work_now_override(_runtime_settings(harness), duration_seconds=15 * 60)
+    settings = harness._worker_clear_work_now_override(settings)
+    policy = harness._worker_runtime_policy(settings)
+
+    assert policy["allowed_to_accept"] is False
+    assert policy["workNowOverride"]["active"] is False
+    assert policy["requirements"]["work_now_override_active"] is False
     assert "active interactive user session" in policy["reason"]
 
 
@@ -718,7 +787,7 @@ def test_worker_runtime_status_truth_accept_paid_jobs_off(tmp_path: Path, monkey
     assert status["localPolicy"]["label"] == "Blocked"
 
 
-def test_worker_runtime_status_truth_signed_order_missing_but_local_policy_allowed(tmp_path: Path) -> None:
+def test_worker_runtime_status_truth_worker_start_missing_but_local_policy_allowed(tmp_path: Path) -> None:
     harness = _WorkerRoutesHarness()
     harness.server = type(
         "Server",
@@ -766,16 +835,16 @@ def test_worker_runtime_status_truth_signed_order_missing_but_local_policy_allow
     _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
 
     assert status["status"] == "not_accepting"
-    assert status["reason"] == "Connect order has not been signed."
-    assert status["next"] == "Sign connect order."
-    assert status["signedOrder"]["label"] == "Not signed"
+    assert status["reason"] == "Worker has not been registered with the Hub."
+    assert status["next"] == "Work now."
+    assert status["signedOrder"]["label"] == "Not started"
     assert status["hubRegistration"]["label"] == "Not submitted"
     assert status["localPolicy"]["label"] == "Allowed"
     assert status["localPolicy"]["reason"] == "AI is idle."
     assert status["runtime"]["label"] == "Not accepting"
 
 
-def test_worker_runtime_status_truth_hub_registration_missing_is_separate_from_signed_order(tmp_path: Path) -> None:
+def test_worker_runtime_status_truth_hub_registration_missing_is_separate_from_worker_start(tmp_path: Path) -> None:
     harness = _WorkerRoutesHarness()
     harness.server = type(
         "Server",
@@ -809,8 +878,9 @@ def test_worker_runtime_status_truth_hub_registration_missing_is_separate_from_s
     settings["workerRegisteredId"] = ""
     settings["workerHubRegistration"] = {}
     signed = dict(settings["signedWorkerConnection"])
-    signed["status"] = "signed"
-    signed["signed_order_status"] = "signed_locally"
+    signed["status"] = "ready"
+    signed["worker_start_status"] = "ready"
+    signed["signed_order_status"] = "ready"
     signed["hub_registration_status"] = "not_submitted"
     signed["hub_registered"] = False
     signed.pop("worker_id", None)
@@ -820,14 +890,14 @@ def test_worker_runtime_status_truth_hub_registration_missing_is_separate_from_s
     _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
 
     assert status["status"] == "not_accepting"
-    assert status["reason"] == "Signed connect order has not been submitted to the Hub."
-    assert status["signedOrder"]["label"] == "Signed locally"
+    assert status["reason"] == "Worker registration has not been submitted to the Hub."
+    assert status["signedOrder"]["label"] == "Ready"
     assert status["hubRegistration"]["label"] == "Not submitted"
     assert status["localPolicy"]["label"] == "Allowed"
 
 
 
-def test_worker_runtime_status_truth_hub_registration_failed_after_signed_submit(tmp_path: Path) -> None:
+def test_worker_runtime_status_truth_hub_registration_failed_after_worker_start(tmp_path: Path) -> None:
     harness = _WorkerRoutesHarness()
     harness.server = type(
         "Server",
@@ -865,7 +935,8 @@ def test_worker_runtime_status_truth_hub_registration_failed_after_signed_submit
     }
     signed = dict(settings["signedWorkerConnection"])
     signed["status"] = "hub-registration-failed"
-    signed["signed_order_status"] = "signed_locally"
+    signed["worker_start_status"] = "ready"
+    signed["signed_order_status"] = "ready"
     signed["hub_registration_status"] = "failed"
     signed["hub_registered"] = False
     signed["hub_registration_error"] = "Hub returned HTTP 400: bad worker price"
@@ -876,15 +947,15 @@ def test_worker_runtime_status_truth_hub_registration_failed_after_signed_submit
     _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
 
     assert status["status"] == "not_accepting"
-    assert status["signedOrder"]["label"] == "Signed locally"
+    assert status["signedOrder"]["label"] == "Ready"
     assert status["hubRegistration"]["label"] == "Failed"
     assert status["hubRegistration"]["lastError"] == "Hub returned HTTP 400: bad worker price"
     assert status["reason"] == "Hub registration failed: Hub returned HTTP 400: bad worker price"
-    assert status["next"] == "Re-sign connect order."
+    assert status["next"] == "Work now."
     assert status["runtime"]["lastError"] == "Hub returned HTTP 400: bad worker price"
 
 
-def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Path) -> None:
+def test_worker_start_persists_hub_registration_failure_state(tmp_path: Path) -> None:
     payload = _seller_payload()
     payload["availability"] = {
         "accept_paid_jobs": True,
@@ -894,7 +965,7 @@ def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Pa
         "ai_idle_required": True,
     }
 
-    class _ConnectOrderHarness(_WorkerRoutesHarness):
+    class _StartWorkingHarness(_WorkerRoutesHarness):
         def __init__(self) -> None:
             self.client_address = ("127.0.0.1", 12345)
             self.sent_payload: dict[str, object] | None = None
@@ -914,51 +985,65 @@ def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Pa
             return {
                 "network": "dev",
                 "requested_ring": "3",
+                "duration_seconds": 900,
                 "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
-                "hub_url": "http://127.0.0.1:8770",
-                "message": '{"kind":"main_computer_worker_connect_order","issued_at":"2026-06-22T12:00:00+00:00","expires_at":"9999-12-31T23:59:59.999999+00:00"}',
-                "signature": "0xabc",
+                "hub_url": "http://127.0.0.1:8871",
+                "chain_id": "42424242",
                 "worker": payload,
+            }
+
+        def _worker_multisession_authorization_for_wallet(
+            self,
+            *,
+            hub_url: str,
+            wallet_address: str,
+            chain_id: str = "",
+            requested_key_id: str = "",
+        ) -> dict[str, object]:
+            return {
+                "kind": "multisession_key",
+                "wallet_address": wallet_address,
+                "multisession_key_id": requested_key_id or "msk_test_start",
+                "key_id": requested_key_id or "msk_test_start",
+                "chain_id": chain_id,
             }
 
         def _send_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
             self.sent_payload = payload
             self.sent_status = status
 
-        def _post_worker_connect_order_to_hub(self, *, hub_url: str, payload: dict[str, object]) -> dict[str, object]:
+        def _post_worker_start_to_hub(self, *, hub_url: str, payload: dict[str, object]) -> dict[str, object]:
             self.hub_payload = payload
             raise RuntimeError("Hub returned HTTP 400: invalid literal for int() with base 10: '1.024'")
 
-    harness = _ConnectOrderHarness()
+    harness = _StartWorkingHarness()
     harness.server = type(
         "Server",
         (),
         {
             "debug_root": tmp_path,
-            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8770"})(),
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8871"})(),
             "signal": lambda *args, **kwargs: None,
         },
     )()
     harness._save_worker_settings({"selectedNetwork": "dev", "sellerEnabled": True})
 
-    harness._handle_worker_network_connect_order_sign()
+    harness._handle_worker_network_work_now()
 
     saved = harness._load_worker_settings()
     signed = saved["signedWorkerConnection"]
     assert harness.sent_status == HTTPStatus.BAD_REQUEST
     assert harness.sent_payload and harness.sent_payload["ok"] is False
     assert harness.hub_payload is not None
-    assert harness.hub_payload["signed_connection"]["issued_at"] == "2026-06-22T12:00:00+00:00"  # type: ignore[index]
-    assert harness.hub_payload["signed_connection"]["expires_at"] == "9999-12-31T23:59:59.999999+00:00"  # type: ignore[index]
+    assert "signed_connection" not in harness.hub_payload
+    assert harness.hub_payload["multisession_authorization"]["key_id"] == "msk_test_start"  # type: ignore[index]
     assert harness.hub_payload["worker"]["credits_per_request"] == "2"  # type: ignore[index]
     assert harness.hub_payload["worker"]["pricing"]["credits_per_request"] == "1.024"  # type: ignore[index]
-    assert signed["issued_at"] == "2026-06-22T12:00:00+00:00"
-    assert signed["expires_at"] == "9999-12-31T23:59:59.999999+00:00"
-    assert signed["signature"] == "0xabc"
-    assert json.loads(signed["message"])["expires_at"] == "9999-12-31T23:59:59.999999+00:00"
+    assert signed.get("message", "") == ""
+    assert signed.get("signature", "") == ""
     assert harness.saved_hub_registration_statuses[-3:] == ["not_submitted", "submitting", "failed"]
     assert signed["status"] == "hub-registration-failed"
-    assert signed["signed_order_status"] == "signed_locally"
+    assert signed["signed_order_status"] == "ready"
     assert signed["hub_registration_status"] == "failed"
     assert signed["hub_registration_attempted_at"]
     assert signed["hub_registered"] is False
@@ -969,7 +1054,7 @@ def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Pa
 
 
 
-def test_worker_network_connect_order_rejects_missing_expires_at_before_hub_submit(tmp_path: Path) -> None:
+def test_worker_start_rejects_missing_multisession_key_before_hub_submit(tmp_path: Path) -> None:
     payload = _seller_payload()
     payload["availability"] = {
         "accept_paid_jobs": True,
@@ -979,7 +1064,7 @@ def test_worker_network_connect_order_rejects_missing_expires_at_before_hub_subm
         "ai_idle_required": True,
     }
 
-    class _ConnectOrderHarness(_WorkerRoutesHarness):
+    class _StartWorkingHarness(_WorkerRoutesHarness):
         def __init__(self) -> None:
             self.client_address = ("127.0.0.1", 12345)
             self.sent_payload: dict[str, object] | None = None
@@ -990,10 +1075,10 @@ def test_worker_network_connect_order_rejects_missing_expires_at_before_hub_subm
             return {
                 "network": "dev",
                 "requested_ring": "3",
+                "duration_seconds": 900,
                 "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
-                "hub_url": "http://127.0.0.1:8770",
-                "message": '{"kind":"main_computer_worker_connect_order","issued_at":"2026-06-22T12:00:00+00:00"}',
-                "signature": "0xabc",
+                "hub_url": "http://127.0.0.1:8871",
+                "chain_id": "42424242",
                 "worker": payload,
             }
 
@@ -1001,31 +1086,31 @@ def test_worker_network_connect_order_rejects_missing_expires_at_before_hub_subm
             self.sent_payload = payload
             self.sent_status = status
 
-        def _post_worker_connect_order_to_hub(self, *, hub_url: str, payload: dict[str, object]) -> dict[str, object]:
+        def _post_worker_start_to_hub(self, *, hub_url: str, payload: dict[str, object]) -> dict[str, object]:
             self.hub_called = True
             return {}
 
-    harness = _ConnectOrderHarness()
+    harness = _StartWorkingHarness()
     harness.server = type(
         "Server",
         (),
         {
             "debug_root": tmp_path,
-            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8770"})(),
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8871"})(),
             "signal": lambda *args, **kwargs: None,
         },
     )()
     harness._save_worker_settings({"selectedNetwork": "dev", "sellerEnabled": True})
 
-    harness._handle_worker_network_connect_order_sign()
+    harness._handle_worker_network_work_now()
 
     saved = harness._load_worker_settings()
     signed = saved["signedWorkerConnection"]
     assert harness.sent_status == HTTPStatus.BAD_REQUEST
     assert harness.hub_called is False
-    assert signed["signed_order_status"] == "invalid"
-    assert signed["hub_registration_status"] == "not_submitted"
-    assert signed["hub_registration_error"] == "Signed connect order message is missing expires_at; re-sign connect order."
+    assert signed["signed_order_status"] == "ready"
+    assert signed["hub_registration_status"] == "failed"
+    assert "No active saved multi-session key was found" in signed["hub_registration_error"]
 
 
 def test_worker_runtime_status_truth_ai_busy_blocks_after_registration(tmp_path: Path) -> None:

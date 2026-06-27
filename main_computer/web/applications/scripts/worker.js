@@ -5,12 +5,11 @@
       {name: "Local Dev Hub", url: "http://127.0.0.1:8871", role: "use-provide", network: "dev"}
     ];
     const WORKER_NETWORK_SESSION_ENDPOINT = "/api/applications/worker/network-session";
-    const WORKER_NETWORK_CONNECT_ORDER_ENDPOINT = "/api/applications/worker/network-connect-order";
+    const WORKER_NETWORK_WORK_NOW_ENDPOINT = "/api/applications/worker/work-now";
     const WORKER_RUNTIME_STATUS_ENDPOINT = "/api/applications/worker/runtime-status";
     const WORKER_RUNTIME_SYNC_ENDPOINT = "/api/applications/worker/runtime-sync";
     const WORKER_RUNTIME_SYNC_INTERVAL_MS = 10000;
     const WORKER_STATUS_MESSAGE_MAX_LENGTH = 260;
-    const WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT = "9999-12-31T23:59:59.999999+00:00";
     const WORKER_NETWORK_ORDER = ["mainnet", "testnet", "test", "dev"];
     const WORKER_NETWORK_NONE = "none";
     const WORKER_DEFAULT_RING = "3";
@@ -52,7 +51,7 @@
       connected_at: ""
     };
     let workerNetworkSessionInFlight = false;
-    let workerNetworkSignatureInFlight = false;
+    let workerNetworkWorkNowInFlight = false;
     let workerRuntimeStatus = {
       enabled: false,
       status: "not_accepting",
@@ -68,6 +67,7 @@
       signedOrder: null,
       hubRegistration: null,
       localPolicy: null,
+      workNowOverride: null,
       worker: null,
       policy: null,
       last_checked_at: "",
@@ -77,6 +77,7 @@
     };
     let workerRuntimeSyncInFlight = false;
     let workerRuntimeSyncTimer = null;
+    let workerWorkNowCountdownTimer = null;
 
     const workerBridgeReadinessStorageKey = "main-computer-worker-bridge-readiness-v1";
     const WORKER_SETTINGS_POLL_INTERVAL_MS = 2500;
@@ -2876,7 +2877,7 @@
       }
     }
 
-    async function workerRequestReplacementMultisessionKeyForConnect({reason = "connect-order-retry", statusMessage = ""} = {}) {
+    async function workerRequestReplacementMultisessionKeyForStart({reason = "start-working-retry", statusMessage = ""} = {}) {
       loadWorkerBridgeState();
       if (workerMultisessionInFlight) {
         throw new Error("A multi-session key request is already in progress.");
@@ -2911,8 +2912,8 @@
           signed_request: signedRequest,
           client_metadata: {
             source: reason === "hub-reported-saved-key-inactive"
-              ? "worker-connect-order-inactive-key-retry"
-              : "worker-connect-order-missing-key",
+              ? "worker-start-inactive-key-retry"
+              : "worker-start-missing-key",
             retry_reason: reason,
             requested_at: workerNowIso(),
             wallet_address: requestContext.wallet_address,
@@ -3090,7 +3091,7 @@
     }
 
     function workerNetworkCanRetryHubRegistration() {
-      if (!workerNetworkCanSign()) return false;
+      if (!workerNetworkCanWorkNow()) return false;
       if (!workerNetworkSignedForSelected()) return false;
       if (workerNetworkHubRegistered()) return false;
       return ["not_submitted", "failed", "stale"].includes(workerNetworkHubRegistrationStatus());
@@ -3211,30 +3212,30 @@
       if (!signedForSelected) {
         return {
           status: "Not accepting",
-          reason: "Connect order has not been signed.",
-          next: "Sign connect order."
+          reason: "Worker has not been registered with the Hub.",
+          next: "Work now."
         };
       }
-      if (signedOrder.status && signedOrder.status !== "signed_locally") {
+      if (signedOrder.status && !["ready", "signed_locally"].includes(signedOrder.status)) {
         if (signedOrder.status === "signing") {
           return {
             status: "Not accepting",
-            reason: "Wallet signature is in progress.",
-            next: "Finish the wallet signature prompt."
+            reason: "Multi-session key request is in progress.",
+            next: "Finish the multi-session key wallet prompt."
           };
         }
         if (signedOrder.status === "invalid") {
           return {
             status: "Not accepting",
-            reason: "Signed connect order is invalid.",
-            next: "Re-sign connect order."
+            reason: "Worker registration is not ready.",
+            next: "Work now."
           };
         }
         if (signedOrder.status === "expired") {
           return {
             status: "Not accepting",
-            reason: "Signed connect order expired.",
-            next: "Re-sign connect order."
+            reason: "Worker registration is not ready.",
+            next: "Work now."
           };
         }
       }
@@ -3246,13 +3247,13 @@
             reason: hubRegistration.lastError
               ? `Hub registration failed: ${hubRegistration.lastError}`
               : "Hub registration failed.",
-            next: "Retry Hub registration."
+            next: "Work now."
           };
         }
         if (hubStatus === "submitting") {
           return {
             status: "Not accepting",
-            reason: "Signed connect order is being submitted to the Hub.",
+            reason: "Worker registration is being submitted to the Hub.",
             next: "Wait for Hub registration to finish."
           };
         }
@@ -3260,13 +3261,13 @@
           return {
             status: "Not accepting",
             reason: "Hub registration is stale.",
-            next: "Retry Hub registration."
+            next: "Work now."
           };
         }
         return {
           status: "Not accepting",
-          reason: "Signed connect order has not been submitted to the Hub.",
-          next: "Submit signed order to Hub."
+          reason: "Worker registration has not been submitted to the Hub.",
+          next: "Work now."
         };
       }
       if (localPolicy.allowed === false) {
@@ -3294,11 +3295,10 @@
 
     function workerSignedOrderStatusLabel(status) {
       const normalized = String(status || "").trim();
-      if (normalized === "signed_locally") return "Signed locally";
-      if (normalized === "signing") return "Signing";
-      if (normalized === "expired") return "Expired";
-      if (normalized === "invalid") return "Invalid";
-      return "Not signed";
+      if (normalized === "ready" || normalized === "signed_locally") return "Ready";
+      if (normalized === "starting" || normalized === "signing") return "Starting";
+      if (normalized === "expired" || normalized === "invalid") return "Needs restart";
+      return "Not started";
     }
 
     function workerHubRegistrationStatusLabel(status) {
@@ -3310,25 +3310,105 @@
       return "Not submitted";
     }
 
-    function workerConnectOrderButtonText({signedForSelected = false, hubRegistered = false, hubRegistration = {}, signedOrder = {}} = {}) {
-      const hubStatus = hubRegistration.status || workerNetworkHubRegistrationStatus();
-      const needsFreshSignature = signedForSelected && !hubRegistered && ["not_submitted", "failed", "stale"].includes(hubStatus);
-      if (workerNetworkSignatureInFlight) {
-        return workerActiveMultisessionKey() ? "Signing…" : "Creating Key + Signing…";
+    function workerRuntimeWorkNowOverride() {
+      const direct = workerRuntimeStatus.workNowOverride && typeof workerRuntimeStatus.workNowOverride === "object"
+        ? workerRuntimeStatus.workNowOverride
+        : null;
+      if (direct) return direct;
+      const runtimePolicy = workerRuntimeStatus.policy && typeof workerRuntimeStatus.policy === "object"
+        ? workerRuntimeStatus.policy
+        : {};
+      if (runtimePolicy.workNowOverride && typeof runtimePolicy.workNowOverride === "object") {
+        return runtimePolicy.workNowOverride;
+      }
+      if (runtimePolicy.work_now_override && typeof runtimePolicy.work_now_override === "object") {
+        return runtimePolicy.work_now_override;
+      }
+      const localPolicy = workerRuntimeStatus.localPolicy && typeof workerRuntimeStatus.localPolicy === "object"
+        ? workerRuntimeStatus.localPolicy
+        : {};
+      if (localPolicy.workNowOverride && typeof localPolicy.workNowOverride === "object") {
+        return localPolicy.workNowOverride;
+      }
+      if (localPolicy.work_now_override && typeof localPolicy.work_now_override === "object") {
+        return localPolicy.work_now_override;
+      }
+      return {};
+    }
+
+    function workerParseTimeMs(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return 0;
+      const parsed = Date.parse(raw);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function workerWorkNowOverrideExpiresMs() {
+      const override = workerRuntimeWorkNowOverride();
+      return workerParseTimeMs(override.expiresAt || override.expires_at);
+    }
+
+    function workerWorkNowOverrideActive() {
+      const expiresMs = workerWorkNowOverrideExpiresMs();
+      return expiresMs > Date.now();
+    }
+
+    function workerFormatCountdown(ms) {
+      const totalSeconds = Math.max(0, Math.ceil(Number(ms || 0) / 1000));
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      if (hours > 0) {
+        return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+      }
+      if (minutes > 0) {
+        return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+      }
+      return `${seconds}s`;
+    }
+
+    function workerWorkNowRemainingText() {
+      const expiresMs = workerWorkNowOverrideExpiresMs();
+      if (!expiresMs) return "";
+      return workerFormatCountdown(expiresMs - Date.now());
+    }
+
+    function workerWorkNowButtonText() {
+      if (workerNetworkWorkNowInFlight) {
+        return workerActiveMultisessionKey() ? "Updating…" : "Creating key…";
       }
       if (workerMultisessionInFlight) {
-        return "Creating Key…";
+        return "Creating key…";
       }
-      if (signedOrder.status === "expired") {
-        return "Re-sign Expired Order";
+      if (workerWorkNowOverrideActive()) {
+        return `Working now · ${workerWorkNowRemainingText()} left`;
       }
-      if (needsFreshSignature) {
-        return "Re-sign Connect Order";
+      return "Work now...";
+    }
+
+    function workerEnsureWorkNowCountdownTimer() {
+      const active = workerWorkNowOverrideActive();
+      if (active && !workerWorkNowCountdownTimer) {
+        workerWorkNowCountdownTimer = setInterval(() => {
+          if (!workerWorkNowOverrideActive()) {
+            clearInterval(workerWorkNowCountdownTimer);
+            workerWorkNowCountdownTimer = null;
+          }
+          renderWorkerNetworkSurface();
+        }, 1000);
+      } else if (!active && workerWorkNowCountdownTimer) {
+        clearInterval(workerWorkNowCountdownTimer);
+        workerWorkNowCountdownTimer = null;
       }
-      if (!workerActiveMultisessionKey()) {
-        return "Create Key + Sign Connect Order";
-      }
-      return "Sign Connect Order";
+    }
+
+    function workerNormalPolicyAllowsWorkNow() {
+      const localPolicy = workerRuntimeStatus.localPolicy && typeof workerRuntimeStatus.localPolicy === "object"
+        ? workerRuntimeStatus.localPolicy
+        : {};
+      if ("normalAllowed" in localPolicy) return Boolean(localPolicy.normalAllowed);
+      if ("normal_allowed" in localPolicy) return Boolean(localPolicy.normal_allowed);
+      return Boolean(localPolicy.allowed);
     }
 
     function workerApplyRuntimePayload(data) {
@@ -3350,6 +3430,13 @@
         signedOrder: data.signedOrder && typeof data.signedOrder === "object" ? data.signedOrder : null,
         hubRegistration: data.hubRegistration && typeof data.hubRegistration === "object" ? data.hubRegistration : null,
         localPolicy: data.localPolicy && typeof data.localPolicy === "object" ? data.localPolicy : null,
+        workNowOverride: data.workNowOverride && typeof data.workNowOverride === "object"
+          ? data.workNowOverride
+          : runtime.workNowOverride && typeof runtime.workNowOverride === "object"
+            ? runtime.workNowOverride
+            : runtime.work_now_override && typeof runtime.work_now_override === "object"
+              ? runtime.work_now_override
+              : null,
         worker: data.worker && typeof data.worker === "object" ? data.worker : null,
         policy: runtime.policy && typeof runtime.policy === "object" ? runtime.policy : null,
         last_checked_at: String(runtime.last_checked_at || runtime.lastCheckedAt || ""),
@@ -3441,7 +3528,7 @@
       return workerBridgeState.wallet?.address || "";
     }
 
-    function workerNetworkCanSign() {
+    function workerNetworkCanWorkNow() {
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
       const walletAddress = workerNetworkWalletAddress();
       return (
@@ -3449,7 +3536,7 @@
         && workerNetworkSession.connection_status === "connected"
         && workerWalletValidAddress(walletAddress)
         && workerNetworkWalletConnectedToSelected()
-        && !workerNetworkSignatureInFlight
+        && !workerNetworkWorkNowInFlight
         && !workerMultisessionInFlight
       );
     }
@@ -3556,10 +3643,10 @@
       workerNetworkSetText(
         workerNetworkSignatureStatus,
         signedForSelected
-          ? workerSignedOrderStatusLabel(signedOrder.status || signed.signed_order_status || "signed_locally")
-          : (signedOrder.status === "signed_locally" || signed.signed_order_status === "signed_locally")
-            ? "Signed locally for another selection"
-            : workerSignedOrderStatusLabel(signedOrder.status || signed.signed_order_status)
+          ? workerSignedOrderStatusLabel(signedOrder.status || signed.worker_start_status || signed.signed_order_status || "ready")
+          : (["ready", "signed_locally"].includes(signedOrder.status) || ["ready", "signed_locally"].includes(signed.worker_start_status || signed.signed_order_status))
+            ? "Ready for another selection"
+            : workerSignedOrderStatusLabel(signedOrder.status || signed.worker_start_status || signed.signed_order_status)
       );
       workerNetworkSetText(workerNetworkHubRegistration, workerHubRegistrationStatusLabel(hubRegistration.status || signed.hub_registration_status || workerNetworkHubRegistrationStatus()));
       workerNetworkSetText(workerNetworkWorkerId, hubRegistered ? workerId || "—" : "—");
@@ -3585,7 +3672,7 @@
         } else if (hubConnected && !walletConnectedToSelected) {
           workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs.`;
         } else if (hubConnected && walletConnectedToSelected && !signedForSelected) {
-          workerNetworkHelp.textContent = `Wallet is connected to ${workerNetworkDisplayName(selected)}. Choose a ring and sign the connect order before accepting jobs.`;
+          workerNetworkHelp.textContent = `Wallet is connected to ${workerNetworkDisplayName(selected)}. Choose a ring and start working before accepting jobs.`;
         } else if (hubConnected && hubRegistered && workerRuntimeStatus.phase === "accepting") {
           workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker is accepting work while quser/local policy allows it.`;
         } else if (hubConnected && hubRegistered && workerRuntimeStatus.phase === "draining") {
@@ -3595,11 +3682,11 @@
         } else if (hubConnected && signedForSelected) {
           const hubStatus = hubRegistration.status || workerNetworkHubRegistrationStatus();
           if (hubStatus === "failed") {
-            workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} connect order is signed locally, but Hub registration failed. Retry Hub registration.`;
+            workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker registration is prepared, but Hub registration failed. Retry Hub registration.`;
           } else if (hubStatus === "submitting") {
-            workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} connect order is signed locally and is being submitted to the Hub.`;
+            workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker registration is prepared and is being submitted to the Hub.`;
           } else {
-            workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} connect order is signed locally, but Hub registration has not been accepted yet. Retry Hub registration.`;
+            workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker registration is prepared, but Hub registration has not been accepted yet. Retry Hub registration.`;
           }
         } else if (workerNetworkSession.connection_status === "failed") {
           workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} is selected, but the Hub is unreachable: ${workerNetworkSession.connection_error || "connection failed"}`;
@@ -3625,7 +3712,7 @@
             : signedForSelected && hubConnected && walletConnectedToSelected
               ? "Registration pending"
               : hubConnected && walletConnectedToSelected
-                ? "Selected / needs signature"
+                ? "Selected / start required"
                 : hubConnected
                   ? "Selected / wallet required"
                   : "Selected / not connected"
@@ -3641,9 +3728,10 @@
       if (workerNetworkDisconnect) {
         workerNetworkDisconnect.disabled = workerNetworkSessionInFlight && selected === WORKER_NETWORK_NONE;
       }
-      if (workerNetworkSignOrder) {
-        workerNetworkSignOrder.disabled = !workerNetworkCanSign();
-        workerNetworkSignOrder.textContent = workerConnectOrderButtonText({signedForSelected, hubRegistered, hubRegistration, signedOrder});
+      workerEnsureWorkNowCountdownTimer();
+      if (workerNetworkWorkNow) {
+        workerNetworkWorkNow.disabled = workerNetworkWorkNowInFlight || workerMultisessionInFlight || (!workerWorkNowOverrideActive() && !workerNetworkCanWorkNow());
+        workerNetworkWorkNow.textContent = workerWorkNowButtonText();
       }
       if (workerNetworkRing && workerNetworkRing.value !== workerNetworkSession.requested_ring) {
         workerNetworkRing.value = workerNetworkSession.requested_ring;
@@ -3685,7 +3773,7 @@
           workerSaveStatus.textContent = selected === WORKER_NETWORK_NONE
             ? "Worker network fully disconnected."
             : workerNetworkSession.connection_status === "connected"
-              ? `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet to finish the worker connection.`
+              ? `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet, then start working.`
               : `${workerNetworkDisplayName(selected)} selected but not reachable.`;
         }
       } catch (error) {
@@ -3734,40 +3822,26 @@
       renderWorkerNetworkSurface();
     }
 
-    function workerBuildConnectOrderMessage({issuedAt = workerNowIso(), expiresAt = WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT} = {}) {
-      const selected = workerNetworkKey(workerNetworkSession.selected_network);
-      const profile = workerNetworkSession.profile || workerNetworkProfile(selected);
-      const walletAddress = workerLowerAddress(workerNetworkWalletAddress());
-      const expires = String(expiresAt || WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT);
-      return JSON.stringify({
-        kind: "main_computer_worker_connect_order",
-        purpose: "connect_worker_to_hub",
-        version: "main-computer-worker-connect-order-v1",
-        network: selected,
-        hub_url: profile?.hub_url || workerNetworkSession.connected_hub_url || "",
-        chain_id: String(profile?.chain_id || ""),
-        requested_ring: String(workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
-        wallet_address: walletAddress,
-        credit_wallet: walletAddress,
-        worker_node_id: workerElementValue(workerNodeId, "local-worker-001"),
-        issued_at: issuedAt,
-        expires_at: expires
-      });
-    }
-
-    function buildWorkerNetworkRegistrationPayload({message = "", signature = "", walletAddress = ""} = {}) {
+    function buildWorkerNetworkRegistrationPayload({walletAddress = "", activeMultisessionKey = null} = {}) {
       const offerPayload = buildWorkerOfferRegistrationPayload();
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
       const profile = workerNetworkSession.profile || workerNetworkProfile(selected);
       const hubUrl = profile?.hub_url || workerNetworkSession.connected_hub_url || offerPayload.hub_url;
       const normalizedWallet = workerLowerAddress(walletAddress || workerNetworkWalletAddress());
-      return {
+      const keyId = String(
+        activeMultisessionKey?.id
+        || activeMultisessionKey?.key_id
+        || activeMultisessionKey?.multisession_key_id
+        || workerNetworkSession.active_multisession_key_id
+        || ""
+      ).trim();
+      const payload = {
         hub_url: hubUrl,
         network: selected,
+        chain_id: String(profile?.chain_id || ""),
         requested_ring: String(workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
         wallet_address: normalizedWallet,
-        message,
-        signature,
+        credit_wallet: normalizedWallet,
         worker: {
           ...offerPayload.worker,
           capabilities: {
@@ -3778,74 +3852,159 @@
           }
         }
       };
+      if (keyId) {
+        payload.active_multisession_key_id = keyId;
+        payload.multisession_key_id = keyId;
+      }
+      return payload;
     }
 
-    async function workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey) {
-      if (!activeMultisessionKey) {
-        throw new Error("No active multi-session key is loaded for this Hub.");
+    function workerNetworkRegistrationReadyForSelected() {
+      return workerNetworkSignedForSelected() && workerNetworkHubRegistered();
+    }
+
+    function buildWorkerNetworkWorkNowPayload({durationSeconds = 0, action = "work-now", activeMultisessionKey = null} = {}) {
+      const walletAddress = workerLowerAddress(workerNetworkWalletAddress());
+      if (action !== "finish" && !workerWalletValidAddress(walletAddress)) {
+        throw new Error("Connect the matching wallet before using Work now.");
       }
-      const context = await workerGetWalletProviderContext();
-      const signer = await context.browserProvider.getSigner();
-      const walletAddress = await signer.getAddress();
-      const message = workerBuildConnectOrderMessage();
-      const signature = await signer.signMessage(message);
+      const payload = buildWorkerNetworkRegistrationPayload({walletAddress, activeMultisessionKey});
+      payload.action = action;
+      if (durationSeconds) {
+        payload.duration_seconds = Number(durationSeconds);
+      }
+      payload.active_jobs = Number(workerRuntimeStatus.active_jobs || 0);
+      return payload;
+    }
+
+    async function workerSubmitNetworkWorkNow({durationSeconds = 0, action = "work-now", activeMultisessionKey = null} = {}) {
       return await workerPostJson(
-        WORKER_NETWORK_CONNECT_ORDER_ENDPOINT,
-        buildWorkerNetworkRegistrationPayload({message, signature, walletAddress})
+        WORKER_NETWORK_WORK_NOW_ENDPOINT,
+        buildWorkerNetworkWorkNowPayload({durationSeconds, action, activeMultisessionKey})
       );
     }
 
-    async function signWorkerNetworkConnectOrder(event) {
+    function workerApplyWorkNowResponse(data) {
+      workerApplyNetworkPayload(data);
+      if (data?.runtimeStatus && typeof data.runtimeStatus === "object") {
+        workerApplyRuntimePayload(data.runtimeStatus);
+      } else if (data?.runtime && typeof data.runtime === "object") {
+        workerApplyRuntimePayload(data);
+      }
+    }
+
+    function workerCloseWorkNowDialog() {
+      if (workerWorkNowDialog?.open && typeof workerWorkNowDialog.close === "function") {
+        workerWorkNowDialog.close();
+      }
+    }
+
+    function openWorkerWorkNowDialog(event) {
       event?.preventDefault?.();
-      if (!workerNetworkCanSign()) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network and connect the matching wallet before signing the worker connection order.";
+      const overrideActive = workerWorkNowOverrideActive();
+      if (!overrideActive && !workerNetworkCanWorkNow()) {
+        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network and connect the matching wallet before using Work now.";
         renderWorkerNetworkSurface();
         return;
       }
-      workerNetworkSignatureInFlight = true;
+      if (workerWorkNowDialogMessage) {
+        workerWorkNowDialogMessage.textContent = overrideActive
+          ? `Work-now override is active with ${workerWorkNowRemainingText()} remaining. Extend it, or finish after the current request.`
+          : "Create a temporary Work-now override so this computer can work even if the normal idle policy later blocks new work.";
+      }
+      if (workerWorkNowFinish) {
+        workerWorkNowFinish.hidden = !overrideActive;
+      }
+      if (workerWorkNowDialog && typeof workerWorkNowDialog.showModal === "function") {
+        workerWorkNowDialog.showModal();
+        return;
+      }
+      const minutes = window.prompt("Work now for how many minutes?", "60");
+      if (minutes === null) return;
+      const parsed = Number.parseInt(String(minutes || "").trim(), 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        workerWorkNowForDuration(parsed * 60);
+      }
+    }
+
+    async function workerWorkNowForDuration(durationSeconds) {
+      const duration = Math.max(60, Math.min(Number(durationSeconds || 0), 7 * 24 * 60 * 60));
+      if (!Number.isFinite(duration) || duration <= 0) {
+        if (workerSaveStatus) workerSaveStatus.textContent = "Choose a Work-now duration before continuing.";
+        return;
+      }
+      if (!workerNetworkCanWorkNow()) {
+        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network and connect the matching wallet before using Work now.";
+        renderWorkerNetworkSurface();
+        return;
+      }
+      workerCloseWorkNowDialog();
+      workerNetworkWorkNowInFlight = true;
       renderWorkerNetworkSurface();
       try {
         let data;
         let activeMultisessionKey = workerActiveMultisessionKey();
-        if (!activeMultisessionKey) {
+        if (!workerNetworkRegistrationReadyForSelected() && !activeMultisessionKey) {
           workerSetSaveStatus("No active multi-session key is loaded for this Hub. Signing a fresh key request before worker registration…");
-          activeMultisessionKey = await workerRequestReplacementMultisessionKeyForConnect({
-            reason: "connect-order-no-active-key",
+          activeMultisessionKey = await workerRequestReplacementMultisessionKeyForStart({
+            reason: "work-now-no-active-key",
             statusMessage: "No active multi-session key is loaded for this Hub. Signing a fresh key request before worker registration…"
           });
-          workerSetSaveStatus("Multi-session key issued. Signing worker connect order and submitting Hub registration…");
+          workerSetSaveStatus("Multi-session key issued. Submitting worker registration to the Hub…");
         }
         try {
-          data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);
+          data = await workerSubmitNetworkWorkNow({durationSeconds: duration, activeMultisessionKey});
         } catch (error) {
-          if (!workerIsInactiveMultisessionKeyError(error)) {
+          if (!workerIsInactiveMultisessionKeyError(error) || workerNetworkRegistrationReadyForSelected()) {
             throw error;
           }
           const staleMessage = workerErrorText(error);
-          console.warn("[worker-msk] connect-order.key-inactive", {
+          console.warn("[worker-msk] work-now.key-inactive", {
             hub_url: workerSelectedHubUrl(),
             error: staleMessage
           });
           workerMarkMultisessionKeyInactiveOnHub("", staleMessage);
-          await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address, "connect-order-key-inactive");
+          await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address, "work-now-key-inactive");
           workerSetSaveStatus("Saved multi-session key is inactive on this Hub. Signing a fresh key request and retrying worker registration…");
-          activeMultisessionKey = await workerRequestReplacementMultisessionKeyForConnect({
+          activeMultisessionKey = await workerRequestReplacementMultisessionKeyForStart({
             reason: "hub-reported-saved-key-inactive",
             statusMessage: "Saved multi-session key is inactive on this Hub; signing a fresh key request and retrying worker registration…"
           });
-          workerSetSaveStatus("Replacement multi-session key issued. Signing a fresh worker connect order and retrying Hub registration…");
-          data = await workerSignAndSubmitNetworkConnectOrder(activeMultisessionKey);
+          workerSetSaveStatus("Replacement multi-session key issued. Retrying worker registration with the Hub…");
+          data = await workerSubmitNetworkWorkNow({durationSeconds: duration, activeMultisessionKey});
         }
-        workerApplyNetworkPayload(data);
-        workerSetSaveStatus(`Signed fresh ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order and submitted it to the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`);
+        workerApplyWorkNowResponse(data);
+        workerSetSaveStatus(`Work-now override active for ${workerFormatCountdown(duration * 1000)} on the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`);
       } catch (error) {
-        workerSetSaveStatus("", {walletError: error, prefix: "Worker connect order submission failed: "});
+        workerSetSaveStatus("", {walletError: error, prefix: "Work now failed: "});
         await Promise.allSettled([
           workerLoadNetworkSessionFromBackend(),
           workerLoadRuntimeStatus()
         ]);
       } finally {
-        workerNetworkSignatureInFlight = false;
+        workerNetworkWorkNowInFlight = false;
+        renderWorkerNetworkSurface();
+      }
+    }
+
+    async function workerFinishWorkNowOverride(event) {
+      event?.preventDefault?.();
+      if (workerNormalPolicyAllowsWorkNow()) {
+        const confirmed = window.confirm("Your normal worker settings currently allow work, so finishing this override may not prevent future work.\n\nFinish anyway?");
+        if (!confirmed) return;
+      }
+      workerCloseWorkNowDialog();
+      workerNetworkWorkNowInFlight = true;
+      renderWorkerNetworkSurface();
+      try {
+        const data = await workerSubmitNetworkWorkNow({action: "finish"});
+        workerApplyWorkNowResponse(data);
+        workerSetSaveStatus("Work-now override will finish after the current request; normal worker policy now controls future work.");
+      } catch (error) {
+        workerSetSaveStatus("", {walletError: error, prefix: "Finish Work now failed: "});
+        await workerLoadRuntimeStatus();
+      } finally {
+        workerNetworkWorkNowInFlight = false;
         renderWorkerNetworkSurface();
       }
     }
@@ -4546,9 +4705,36 @@
           }
         });
       }
-      if (workerNetworkSignOrder && !workerNetworkSignOrder.dataset.workerBound) {
-        workerNetworkSignOrder.dataset.workerBound = "true";
-        workerNetworkSignOrder.addEventListener("click", signWorkerNetworkConnectOrder);
+      if (workerNetworkWorkNow && !workerNetworkWorkNow.dataset.workerBound) {
+        workerNetworkWorkNow.dataset.workerBound = "true";
+        workerNetworkWorkNow.addEventListener("click", openWorkerWorkNowDialog);
+      }
+      if (workerWorkNow15 && !workerWorkNow15.dataset.workerBound) {
+        workerWorkNow15.dataset.workerBound = "true";
+        workerWorkNow15.addEventListener("click", () => workerWorkNowForDuration(15 * 60));
+      }
+      if (workerWorkNow30 && !workerWorkNow30.dataset.workerBound) {
+        workerWorkNow30.dataset.workerBound = "true";
+        workerWorkNow30.addEventListener("click", () => workerWorkNowForDuration(30 * 60));
+      }
+      if (workerWorkNow60 && !workerWorkNow60.dataset.workerBound) {
+        workerWorkNow60.dataset.workerBound = "true";
+        workerWorkNow60.addEventListener("click", () => workerWorkNowForDuration(60 * 60));
+      }
+      if (workerWorkNowCustomApply && !workerWorkNowCustomApply.dataset.workerBound) {
+        workerWorkNowCustomApply.dataset.workerBound = "true";
+        workerWorkNowCustomApply.addEventListener("click", () => {
+          const minutes = Number.parseInt(String(workerWorkNowCustomMinutes?.value || "0"), 10);
+          workerWorkNowForDuration(minutes * 60);
+        });
+      }
+      if (workerWorkNowFinish && !workerWorkNowFinish.dataset.workerBound) {
+        workerWorkNowFinish.dataset.workerBound = "true";
+        workerWorkNowFinish.addEventListener("click", workerFinishWorkNowOverride);
+      }
+      if (workerWorkNowCancel && !workerWorkNowCancel.dataset.workerBound) {
+        workerWorkNowCancel.dataset.workerBound = "true";
+        workerWorkNowCancel.addEventListener("click", workerCloseWorkNowDialog);
       }
       if (workerAddHubForm && !workerAddHubForm.dataset.workerBound) {
         workerAddHubForm.dataset.workerBound = "true";
