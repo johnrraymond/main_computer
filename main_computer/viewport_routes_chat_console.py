@@ -486,7 +486,7 @@ class ViewportChatConsoleRoutesMixin:
             "estimated_max_credits_display": str(context.get("estimated_max_credits_display") or context.get("estimated_max_credits_approx") or ""),
             "estimated_max_credits_approx": str(context.get("estimated_max_credits_approx") or ""),
             "approximation_only": True,
-            "no_credit_hold_created": True,
+            "direct_spend": True,
             "no_credit_spent": True,
         }
         return enriched, context
@@ -731,7 +731,7 @@ class ViewportChatConsoleRoutesMixin:
             "estimated_max_credits_display": str(readiness.get("estimated_max_credits_display") or context.get("estimated_max_credits_display") or context.get("estimated_max_credits_approx") or ""),
             "estimated_max_credits_approx": str(readiness.get("estimated_max_credits_approx") or context.get("estimated_max_credits_approx") or ""),
             "approximation_only": True,
-            "no_credit_hold_created": True,
+            "direct_spend": True,
             "no_credit_spent": True,
         }
 
@@ -838,10 +838,9 @@ class ViewportChatConsoleRoutesMixin:
                     "remote_overflow_request_id": remote_overflow_request_id,
                     "run_id": str(submit_body.get("run_id") or ""),
                     "thread_id": str(submit_body.get("thread_id") or submit_body.get("chat_thread_id") or ""),
-                    "credit_hold_created": bool((response.metadata.get("payment") or {}).get("hold_id")) if isinstance(response.metadata.get("payment"), dict) else False,
-                    "credit_spent": bool((response.metadata.get("payment") or {}).get("charged_credit_wei")) if isinstance(response.metadata.get("payment"), dict) else False,
-                    "no_credit_hold_created": not bool((response.metadata.get("payment") or {}).get("hold_id")) if isinstance(response.metadata.get("payment"), dict) else True,
-                    "no_credit_spent": not bool((response.metadata.get("payment") or {}).get("charged_credit_wei")) if isinstance(response.metadata.get("payment"), dict) else True,
+                    "credit_spent": bool((response.metadata.get("payment") or {}).get("charged_credit_wei") or (response.metadata.get("payment") or {}).get("charge_id")) if isinstance(response.metadata.get("payment"), dict) else False,
+                    "direct_spend": bool((response.metadata.get("payment") or {}).get("direct_spend", True)) if isinstance(response.metadata.get("payment"), dict) else True,
+                    "no_credit_spent": not bool((response.metadata.get("payment") or {}).get("charged_credit_wei") or (response.metadata.get("payment") or {}).get("charge_id")) if isinstance(response.metadata.get("payment"), dict) else True,
                 }
                 result["output_cell"] = output_cell
 

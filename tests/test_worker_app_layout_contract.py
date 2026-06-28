@@ -577,7 +577,11 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert "provider.selected" in js
     assert "connect.finalized.connected" in js
     assert "async function workerHydrateConnectedWalletFromProvider" in js
-    assert 'workerHydrateConnectedWalletFromProvider("page-load")' in js
+    assert "function workerSchedulePassiveWalletHydration" in js
+    assert 'workerSchedulePassiveWalletHydration("page-load")' in js
+    assert "WORKER_WALLET_PASSIVE_HYDRATION_RETRY_DELAYS_MS" in js
+    assert "provider.passiveHydrate.schedule" in js
+    assert "provider.passiveHydrate.attempt" in js
     assert "workerReadGrantedWalletProviderSnapshot" in js
     assert '"eth_accounts"' in js
     assert '"metamask_getProviderState"' in js

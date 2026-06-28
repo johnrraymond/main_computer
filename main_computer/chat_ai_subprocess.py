@@ -30,7 +30,7 @@ from main_computer.rag_trust_contract_chat import (
     run_trust_contract_chat_request,
 )
 from main_computer.router import MainComputer
-from main_computer.chat_console import build_notebook_ai_messages
+from main_computer.chat_console import attachment_from_payload, build_notebook_ai_messages
 from main_computer.rag_assisted_thinking_v3 import (
     RagAssistedThinkingV3Policy,
     run_rag_assisted_thinking_v3_request,
@@ -485,6 +485,187 @@ class ModelIOLoggingProvider:
 
 
 
+def _worker_live_session_content_text(value: Any) -> str:
+    """Normalize chat.completions content payloads into provider text."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                if item:
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type in {"", "text", "input_text"}:
+                text = str(item.get("text") or item.get("content") or "").strip()
+                if text:
+                    parts.append(text)
+        return "\n".join(parts).strip()
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _worker_live_session_chat_messages_from_command(command: dict[str, Any]) -> list[ChatMessage]:
+    """Build direct provider messages for worker chat.completions work.
+
+    Worker live-session jobs should not inherit the notebook/chat-console prompt
+    stack, workspace context pack, or optional web-search context.  Those are UI
+    features for local notebook chat.  Paid worker chat.completions jobs need the
+    caller's messages directly while still running inside ChatAISubprocessManager
+    so the shared local-AI capacity slot is visible and cancellable.
+    """
+
+    raw_messages = command.get("messages") if isinstance(command.get("messages"), list) else []
+    raw_attachments = command.get("attachments") if isinstance(command.get("attachments"), list) else []
+    default_attachments = [item for item in (attachment_from_payload(payload) for payload in raw_attachments) if item]
+    messages: list[ChatMessage] = []
+    for raw in raw_messages:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role") or "user").strip().lower()
+        if role not in {"system", "user", "assistant"}:
+            role = "user"
+        content = _worker_live_session_content_text(raw.get("content")).strip()
+        if not content:
+            continue
+        raw_message_attachments = raw.get("attachments") if isinstance(raw.get("attachments"), list) else []
+        attachments = [item for item in (attachment_from_payload(payload) for payload in raw_message_attachments) if item]
+        messages.append(ChatMessage(role=role, content=content, attachments=attachments))
+
+    if default_attachments:
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].role == "user":
+                existing = list(messages[index].attachments or [])
+                messages[index] = ChatMessage(
+                    role=messages[index].role,
+                    content=messages[index].content,
+                    attachments=existing + default_attachments,
+                )
+                break
+
+    if messages:
+        return messages
+
+    source = str(command.get("source") or "").strip()
+    if not source:
+        raise ChatAISubprocessError("Worker live-session chat.completions command did not include any messages or source text.")
+    return [ChatMessage(role="user", content=source, attachments=default_attachments)]
+
+
+def _run_worker_live_session_chat_completion_child(command: dict[str, Any], stdout: WorkerStdout, *, log_file: str) -> dict[str, Any]:
+    run_id = str(command.get("run_id") or "").strip()
+    source = str(command.get("source") or "")
+    config = config_from_payload(command.get("config") if isinstance(command.get("config"), dict) else {})
+    messages = _worker_live_session_chat_messages_from_command(command)
+    append_text_log(
+        log_file,
+        "worker live-session chat completion child starting",
+        run_id=run_id,
+        source_chars=len(source),
+        message_count=len(messages),
+        messages=[{"role": msg.role, "content": msg.content, "attachment_count": len(msg.attachments)} for msg in messages],
+        config=config_to_payload(config) if config is not None else {},
+    )
+
+    computer = MainComputer.build(config)
+    provider = getattr(computer, "provider", None)
+    if provider is None or not hasattr(provider, "chat"):
+        raise ChatAISubprocessError("Local provider is not available for worker live-session chat.completions.")
+    provider = ModelIOLoggingProvider(provider, log_file=log_file, run_id=run_id, label="worker_live_session_chat_completion")
+    provider_name = getattr(provider, "name", "")
+    model_name = getattr(provider, "model", "")
+
+    stdout.emit(
+        {
+            "type": "activity",
+            "event": {
+                "source": "worker-live-session",
+                "kind": "ai",
+                "time_model": "parallel",
+                "severity": "info",
+                "title": "Worker local AI subprocess started",
+                "message": source[:500],
+                "status": "running",
+                "tags": ["ai", "local-ai", "worker", "chat.completions", "model-call", "subprocess"],
+                "data": {
+                    "run_id": run_id,
+                    "activity_filter": "ai",
+                    "provider": provider_name,
+                    "model": model_name,
+                    "log_file": log_file,
+                    "raw_thinking_exposed": False,
+                    "running_text": "worker local AI subprocess running",
+                    "rag_type": "worker_live_session_chat_completion",
+                    "message_count": len(messages),
+                },
+            },
+        }
+    )
+
+    previous_callback = getattr(provider, "stream_callback", None)
+    if hasattr(provider, "stream_callback"):
+        try:
+            setattr(provider, "stream_callback", _worker_stream_callback(stdout, log_file=log_file, run_id=run_id, provider=provider))
+            append_text_log(log_file, "installed worker stream callback", run_id=run_id)
+        except Exception as exc:
+            append_text_log(log_file, "failed to install worker stream callback", run_id=run_id, error=repr(exc))
+
+    try:
+        response = provider.chat(messages)
+    finally:
+        if hasattr(provider, "stream_callback"):
+            try:
+                setattr(provider, "stream_callback", previous_callback)
+                append_text_log(log_file, "restored worker stream callback", run_id=run_id)
+            except Exception as exc:
+                append_text_log(log_file, "failed to restore worker stream callback", run_id=run_id, error=repr(exc))
+
+    response_payload = _jsonable_response(response)
+    append_text_log(
+        log_file,
+        "worker live-session chat completion response completed",
+        run_id=run_id,
+        provider=response.provider,
+        model=response.model,
+        response_chars=len(response.content),
+        response=response.content,
+        metadata=response.metadata,
+    )
+    stdout.emit(
+        {
+            "type": "activity",
+            "event": {
+                "source": "worker-live-session",
+                "kind": "ai",
+                "time_model": "parallel",
+                "severity": "info",
+                "title": "Worker local AI subprocess completed",
+                "message": f"{response.provider}/{response.model}",
+                "status": "completed",
+                "tags": ["ai", "local-ai", "worker", "chat.completions", "completed", "subprocess"],
+                "data": {
+                    "run_id": run_id,
+                    "activity_filter": "ai",
+                    "provider": response.provider,
+                    "model": response.model,
+                    "log_file": log_file,
+                    "response_chars": len(response.content),
+                    "raw_thinking_exposed": False,
+                    "ran_text": f"Worker local AI subprocess completed: {response.provider}/{response.model}",
+                    "rag_type": "worker_live_session_chat_completion",
+                },
+            },
+        }
+    )
+    return {"response": response_payload}
+
+
+
 def _run_chat_console_ai_child(command: dict[str, Any], stdout: WorkerStdout, *, log_file: str) -> dict[str, Any]:
     run_id = str(command.get("run_id") or "").strip()
     source = str(command.get("source") or "")
@@ -921,6 +1102,8 @@ def run_worker(log_file: str | Path) -> int:
         append_text_log(log_file, "worker command dispatch", mode=mode, run_id=run_id, command=command)
         if mode == "chat_console_ai":
             payload = _run_chat_console_ai_child(command, stdout, log_file=log_file)
+        elif mode == "worker_live_session_chat_completion":
+            payload = _run_worker_live_session_chat_completion_child(command, stdout, log_file=log_file)
         elif mode in {"rag_assisted_thinking_v3", "rag_assisted_thinking_v4"}:
             payload = _run_rag_assisted_thinking_child(command, stdout, log_file=log_file)
         elif mode == "rag_trust_contract_chat":

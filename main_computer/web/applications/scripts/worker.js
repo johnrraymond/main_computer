@@ -88,6 +88,7 @@
     const WORKER_WALLET_BALANCE_TIMEOUT_MS = 8000;
     const WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS = 75000;
     const WORKER_METAMASK_RPC_BACKOFF_POLL_MS = 3000;
+    const WORKER_WALLET_PASSIVE_HYDRATION_RETRY_DELAYS_MS = [0, 250, 750, 1500, 3000];
     const WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
       "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)",
       "event CreditDeposited(bytes32 indexed depositId,address indexed account,address indexed payer,uint256 amountUnits,string memo)"
@@ -125,6 +126,9 @@
     let workerMultisessionInFlight = false;
     let workerWalletHydrationPromise = null;
     let workerWalletPageLoadHydrationAttempted = false;
+    let workerWalletPassiveHydrationScheduleSerial = 0;
+    let workerWalletPassiveHydrationTimers = [];
+    let workerWalletPassiveProviderEventsBound = false;
     let workerSettingsPollTimer = null;
     let workerSettingsPollInFlight = false;
     let workerRemoteEnabledLastLocalEditAt = 0;
@@ -2065,6 +2069,91 @@
         renderWorkerBridgeReadiness();
         return null;
       }
+    }
+
+    function workerPassiveWalletHydrationShouldRun() {
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      if (selected === WORKER_NETWORK_NONE) return false;
+      if (workerNetworkSession.connection_status !== "connected") return false;
+      if (workerNetworkWalletConnectedToSelected()) return false;
+      return !["requesting", "stabilizing", "disconnecting"].includes(workerWalletHookState);
+    }
+
+    function workerClearPassiveWalletHydrationTimers() {
+      workerWalletPassiveHydrationTimers.forEach((timer) => clearTimeout(timer));
+      workerWalletPassiveHydrationTimers = [];
+    }
+
+    function workerSchedulePassiveWalletHydration(reason = "page-load", delaysMs = WORKER_WALLET_PASSIVE_HYDRATION_RETRY_DELAYS_MS) {
+      workerClearPassiveWalletHydrationTimers();
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      const scheduleSerial = ++workerWalletPassiveHydrationScheduleSerial;
+      const delays = Array.isArray(delaysMs) && delaysMs.length
+        ? delaysMs
+        : WORKER_WALLET_PASSIVE_HYDRATION_RETRY_DELAYS_MS;
+
+      if (!workerPassiveWalletHydrationShouldRun()) {
+        workerWalletRecordEvent("provider.passiveHydrate.schedule.ignored", {
+          reason,
+          selected,
+          status: workerNetworkSession.connection_status,
+          phase: workerWalletHookState,
+          walletConnected: workerNetworkWalletConnectedToSelected()
+        });
+        return;
+      }
+
+      workerWalletRecordEvent("provider.passiveHydrate.schedule", {
+        reason,
+        selected,
+        attempts: delays.length
+      });
+
+      workerWalletPassiveHydrationTimers = delays.map((delayMs, index) => setTimeout(async () => {
+        if (scheduleSerial !== workerWalletPassiveHydrationScheduleSerial) return;
+        if (!workerPassiveWalletHydrationShouldRun()) return;
+
+        const attemptReason = index === 0 ? reason : `${reason}-retry-${index}`;
+        workerWalletRecordEvent("provider.passiveHydrate.attempt", {
+          reason: attemptReason,
+          selected,
+          delayMs
+        });
+
+        try {
+          await workerHydrateConnectedWalletFromProvider(attemptReason);
+        } finally {
+          if (workerNetworkWalletConnectedToSelected()) {
+            workerClearPassiveWalletHydrationTimers();
+          }
+        }
+      }, Math.max(0, Number(delayMs) || 0)));
+    }
+
+    function workerHandlePassiveWalletProviderAnnounced(event) {
+      const info = event && event.detail && event.detail.info ? event.detail.info : {};
+      workerWalletRecordEvent("provider.passiveHydrate.providerAnnounced", {
+        name: String(info.name || ""),
+        rdns: String(info.rdns || ""),
+        uuid: String(info.uuid || "")
+      });
+      workerSchedulePassiveWalletHydration("provider-announced", [0, 250, 750]);
+    }
+
+    function workerBindPassiveWalletHydrationEvents() {
+      if (workerWalletPassiveProviderEventsBound || typeof window.addEventListener !== "function") return;
+      workerWalletPassiveProviderEventsBound = true;
+      window.addEventListener("eip6963:announceProvider", workerHandlePassiveWalletProviderAnnounced);
+      if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) {
+            workerSchedulePassiveWalletHydration("page-visible", [0, 500]);
+          }
+        });
+      }
+      window.addEventListener("pageshow", () => {
+        workerSchedulePassiveWalletHydration("page-show", [0, 500]);
+      });
     }
 
     async function workerHydrateConnectedWalletFromProvider(reason = "page-load") {
@@ -4814,7 +4903,8 @@
         workerDisconnectWallet.addEventListener("click", disconnectWorkerPrimaryWallet, true);
       }
       workerBindWalletProviderEvents();
-      Promise.resolve(workerNetworkSessionLoadPromise).finally(() => workerHydrateConnectedWalletFromProvider("page-load"));
+      workerBindPassiveWalletHydrationEvents();
+      Promise.resolve(workerNetworkSessionLoadPromise).finally(() => workerSchedulePassiveWalletHydration("page-load"));
       if (workerRefreshBridgeReadiness && !workerRefreshBridgeReadiness.dataset.workerBound) {
         workerRefreshBridgeReadiness.dataset.workerBound = "true";
         workerRefreshBridgeReadiness.addEventListener("click", async () => {

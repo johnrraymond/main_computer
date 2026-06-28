@@ -1026,7 +1026,7 @@ class ExperimentalFoundationDbRequestStateStore(_StateComponent):
             record = HubRequestRecord.from_dict(payload)
             if record.state != "queued":
                 return None
-            if not record.hold_id or record.charge_id:
+            if record.charge_id:
                 return None
             if record.selected_worker_instance_id and record.selected_worker_instance_id != clean_worker_instance_id:
                 return None
@@ -1109,7 +1109,7 @@ class ExperimentalFoundationDbRequestStateStore(_StateComponent):
         by_state: dict[str, int] = {}
         for record in records:
             by_state[record.state] = by_state.get(record.state, 0) + 1
-        active_states = {"submitted", "held", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
+        active_states = {"submitted", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
         terminal_states = {"completed", "failed", "cancelled", "expired"}
         return {
             "requests": {

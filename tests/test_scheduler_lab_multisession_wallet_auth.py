@@ -185,7 +185,9 @@ def test_hub_strict_mode_rejects_unsigned_worker_pull_and_derives_account_from_m
             )
             assert data["ok"] is True
             assert data["request"]["account_id"] == expected_account_id  # type: ignore[index]
-            assert data["request"]["hold_id"]  # type: ignore[index]
+            assert not data["request"].get("hold_id")  # type: ignore[union-attr]
+            assert not data["request"].get("charge_id")  # type: ignore[union-attr]
+            assert data["request"].get("state") == "queued"  # type: ignore[union-attr]
         finally:
             hub.shutdown()
             hub.server_close()

@@ -553,7 +553,7 @@ class RequestStateStore:
         by_state: dict[str, int] = {}
         for record in records:
             by_state[record.state] = by_state.get(record.state, 0) + 1
-        active_states = {"submitted", "held", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
+        active_states = {"submitted", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
         terminal_states = {"completed", "failed", "cancelled", "expired"}
         return {
             "requests": {
@@ -898,12 +898,12 @@ class AIRequestPlexService:
     ) -> HubRequestStatus:
         """Accept a paid request for outbound worker-pull leasing.
 
-        This path is intentionally opt-in for Worker Pull v0. It creates the
-        paid hold before the request becomes visible to worker polling.
+        The request is queued without reserving credits. Credits are spent
+        directly when the worker lease is granted.
         """
 
         if not self._request_requires_paid_account(request):
-            raise ValueError("Worker Pull v0 requires a paid account_id and max_credits hold.")
+            raise ValueError("Worker Pull v0 requires a paid account_id and max_credits.")
         normalized = request.as_payload()
         existing = self._idempotent_record(request)
         if existing is not None:
@@ -923,24 +923,17 @@ class AIRequestPlexService:
             initial_event_type="request.submitted",
         )
         try:
-            self._ensure_paid_hold(record, request)
-            held = self.request_store.get(request_id) or record
-            self.request_store.update(
-                request_id,
-                state="held",
-                event_type="request.held",
-                event={"account_id": held.account_id, "hold_id": held.hold_id},
-            )
+            self._prepare_paid_request_spend(record, request)
             self.request_store.update(
                 request_id,
                 state="queued",
                 event_type="request.queued",
-                event={"worker_pull_v0": True, "held": True},
+                event={"worker_pull_v0": True, "credit_spend_mode": "direct_on_lease"},
             )
             queued = self.request_store.get(request_id) or record
             return HubRequestStatus.from_record(queued, polling_url=f"{polling_base_path.rstrip('/')}/{request_id}")
         except Exception as exc:
-            self._release_paid_hold_for_request(request_id, reason="worker_pull_submit_failed", error=str(exc))
+            self._discard_paid_request_spend(request_id, reason="worker_pull_submit_failed", error=str(exc))
             try:
                 self.request_store.update(
                     request_id,
@@ -962,7 +955,7 @@ class AIRequestPlexService:
         lease_seconds: float | None = None,
         polling_base_path: str = "/api/hub/v1/requests",
     ) -> dict[str, Any]:
-        """Return one held queued request as a worker-pull lease, if available."""
+        """Return one queued paid request as a worker-pull lease, if available."""
 
         clean_worker_id = clean_node_id(worker_node_id, default="hub-worker")
         clean_worker_instance_id = (
@@ -982,7 +975,7 @@ class AIRequestPlexService:
             key=lambda item: item.created_at or item.updated_at,
         )
         for record in candidates:
-            if not record.hold_id or record.charge_id:
+            if record.charge_id:
                 continue
             worker_node_identity = str(_item_value(worker, "node_id", clean_worker_id))
             worker_instance_identity = str(_item_value(worker, "worker_instance_id", worker_node_identity))
@@ -1013,16 +1006,11 @@ class AIRequestPlexService:
             worker_credit_wei = quoted_credit_wei or _item_credit_wei(leased_worker, default="1")
             worker_credits = max(1, _credit_legacy_ceil_from_wei(worker_credit_wei))
             if worker_credits > max(0, int(record.max_credits or 0)):
-                self._release_paid_hold_for_request(
-                    record.request_id,
-                    reason="worker_pull_worker_price_exceeds_hold",
-                    error=f"Worker requires {worker_credits} credits but request held {record.max_credits}.",
-                )
                 self.request_store.update(
                     record.request_id,
                     state="failed",
-                    error=f"Worker requires {worker_credits} credits but request held {record.max_credits}.",
-                    terminal_reason="worker_price_exceeds_hold",
+                    error=f"Worker requires {worker_credits} credits but requester max_credits is {record.max_credits}.",
+                    terminal_reason="worker_price_exceeds_max_credits",
                     event_type="request.failed",
                     event={
                         "worker_node_id": worker_node_id,
@@ -1040,7 +1028,7 @@ class AIRequestPlexService:
                             "selected_worker_instance_id": leased_worker_instance_id,
                         }
                     ),
-                    success=False,
+                    success=True,
                 )
                 continue
             lease_id = stable_lease_id(record.request_id, leased_worker_instance_id)
@@ -1094,6 +1082,41 @@ class AIRequestPlexService:
                         "expires_at": expires_at,
                     },
                 )
+            try:
+                self._spend_paid_request_credit(
+                    record=record,
+                    worker_node_id=worker_node_id,
+                    worker_credits=worker_credits,
+                    worker_credit_wei=worker_credit_wei,
+                )
+                record = self.request_store.get(record.request_id) or record
+            except Exception as exc:
+                self.request_store.update(
+                    record.request_id,
+                    state="failed",
+                    error=str(exc),
+                    terminal_reason="credit_spend_failed",
+                    lease_id="",
+                    lease_expires_at="",
+                    event_type="request.failed",
+                    event={
+                        "worker_node_id": worker_node_id,
+                        "worker_instance_id": leased_worker_instance_id,
+                        "error": str(exc),
+                        "credit_spend_mode": "direct_on_lease",
+                    },
+                )
+                self._release_record_worker(
+                    HubRequestRecord.from_dict(
+                        {
+                            **record.as_dict(),
+                            "selected_worker_node_id": worker_node_id,
+                            "selected_worker_instance_id": leased_worker_instance_id,
+                        }
+                    ),
+                    success=True,
+                )
+                continue
             lease = {
                 "lease_id": lease_id,
                 "request_id": record.request_id,
@@ -1319,7 +1342,6 @@ class AIRequestPlexService:
         status = str(result.get("status") or "success").strip().lower()
         if status not in {"success", "ok", "completed"}:
             error = str(result.get("error") or result.get("message") or "worker result reported failure")
-            self._release_paid_hold_for_request(record.request_id, reason="worker_pull_result_failed", error=error)
             self._release_record_worker(record, success=False)
             failed = self.request_store.update(
                 record.request_id,
@@ -1353,7 +1375,7 @@ class AIRequestPlexService:
         )
         worker_credits = max(1, _credit_legacy_ceil_from_wei(worker_credit_wei))
         if worker_credits > max(0, int(record.max_credits or 0)):
-            raise ValueError(f"Worker result charge {worker_credits} credits ({credit_wei_to_decimal_text(worker_credit_wei)} ETH) exceeds held max_credits {record.max_credits}.")
+            raise ValueError(f"Worker result charge {worker_credits} credits ({credit_wei_to_decimal_text(worker_credit_wei)} ETH) exceeds requester max_credits {record.max_credits}.")
         latest_record = self.request_store.get(record.request_id) or record
         receipt = self._finalize_paid_request(
             record=latest_record,
@@ -1490,12 +1512,12 @@ class AIRequestPlexService:
         )
         try:
             if self._request_requires_paid_account(request):
-                self._ensure_paid_hold(record, request)
+                self._prepare_paid_request_spend(record, request)
             response = self._dispatch_plaintext(record, request)
             status = self.get_status(request_id, polling_base_path=polling_base_path)
             return response, status
         except Exception as exc:
-            self._release_paid_hold_for_request(request_id, reason="dispatch_failed", error=str(exc))
+            self._discard_paid_request_spend(request_id, reason="dispatch_failed", error=str(exc))
             try:
                 self.request_store.update(
                     request_id,
@@ -1520,7 +1542,7 @@ class AIRequestPlexService:
         record = self.request_store.cancel(request_id)
         if existing is not None and existing.state not in {"completed", "failed", "cancelled", "expired"}:
             self._release_record_worker(existing, success=True)
-            self._release_paid_hold_for_request(record.request_id, reason="client_cancelled")
+            self._discard_paid_request_spend(record.request_id, reason="client_cancelled")
         refreshed = self.request_store.get(record.request_id) or record
         return HubRequestStatus.from_record(refreshed, polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}")
 
@@ -2079,7 +2101,7 @@ class AIRequestPlexService:
     def _market_worker_assignment_counts(self) -> dict[str, int]:
         """Count active market assignments by selected worker for quote-time load balancing."""
 
-        active_states = {"submitted", "held", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
+        active_states = {"submitted", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
         try:
             records = self.request_store.list(limit=500, states=active_states)
         except Exception:
@@ -2178,7 +2200,7 @@ class AIRequestPlexService:
         request: HubAIRequest,
         quote: dict[str, Any],
         *,
-        held_credits: int,
+        quoted_credits: int,
     ) -> HubRequestRecord:
         payload = dict(record.request_payload)
         metadata = dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {}
@@ -2194,7 +2216,6 @@ class AIRequestPlexService:
                 "quoted_credits": _credit_public_from_wei(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
                 "quoted_credits_wei": str(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
                 "quoted_credits_display": credit_wei_to_decimal_text(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
-                "held_credits": max(0, int(held_credits or 0)),
                 "accepted_at": utc_now(),
             }
         )
@@ -2222,7 +2243,6 @@ class AIRequestPlexService:
                 "quoted_credits": _credit_public_from_wei(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
                 "quoted_credits_wei": str(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
                 "quoted_credits_display": credit_wei_to_decimal_text(_credit_wei_from_explicit_or_decimal(quote.get("quoted_credits_wei"), quote.get("quoted_credits", 0), default="0", minimum_wei=0)),
-                "held_credits": max(0, int(held_credits or 0)),
             },
         )
 
@@ -2258,122 +2278,66 @@ class AIRequestPlexService:
     def _request_requires_paid_account(self, request: HubAIRequest) -> bool:
         return bool(str(request.account_id or "").strip() or int(request.max_credits or 0) > 0)
 
-    def _ensure_paid_hold(self, record: HubRequestRecord, request: HubAIRequest) -> dict[str, Any]:
+    def _prepare_paid_request_spend(self, record: HubRequestRecord, request: HubAIRequest) -> dict[str, Any]:
         if self.credit_ledger is None:
             raise ValueError("Paid request accounting is not available on this hub.")
         if not request.account_id:
             raise ValueError("account_id is required for paid requests.")
-        held_credit_wei = 0
+        spend_credit_wei = 0
         if self._market_pricing_requested(request):
             quote = self._accepted_market_quote_for_request(request)
             requester_max_credits = max(0, int(request.max_credits or quote.get("max_credits", 0) or 0))
-            held_credit_wei = _credit_wei_from_explicit_or_decimal(
+            spend_credit_wei = _credit_wei_from_explicit_or_decimal(
                 quote.get("quoted_credits_wei", quote.get("estimated_credits_wei")),
                 quote.get("quoted_credits", quote.get("estimated_credits", 0)),
                 default="0",
                 minimum_wei=0,
             )
-            held_credits = _credit_legacy_ceil_from_wei(held_credit_wei)
-            if held_credit_wei <= 0:
+            quoted_credits = _credit_legacy_ceil_from_wei(spend_credit_wei)
+            if spend_credit_wei <= 0:
                 raise ValueError("Market-backed paid request quote must have positive quoted_credits.")
             requester_max_credit_wei = _credit_wei_from_decimal(requester_max_credits, default="0", minimum_wei=0)
-            if requester_max_credit_wei < held_credit_wei:
+            if requester_max_credit_wei < spend_credit_wei:
                 raise ValueError(
-                    f"requester max_credits {requester_max_credits} is below quoted_credits {credit_wei_to_decimal_text(held_credit_wei)}."
+                    f"requester max_credits {requester_max_credits} is below quoted_credits {credit_wei_to_decimal_text(spend_credit_wei)}."
                 )
-            record = self._record_market_acceptance(record, request, quote, held_credits=held_credits)
+            record = self._record_market_acceptance(record, request, quote, quoted_credits=quoted_credits)
         else:
             quote_response = self.quote_request(request)
             quote = dict(quote_response["quote"])
             requester_max_credits = max(0, int(quote.get("max_credits", request.max_credits) or request.max_credits or 0))
-            held_credits = requester_max_credits
-            held_credit_wei = _credit_wei_from_decimal(held_credits, default="0", minimum_wei=0)
-        if hasattr(self.credit_ledger, "create_hold_credit_wei"):
-            hold_result = self.credit_ledger.create_hold_credit_wei(
-                account_id=request.account_id,
-                request_id=record.request_id,
-                credit_wei=held_credit_wei,
-                expires_at=record.deadline_at,
-                memo=f"paid request hold {record.request_id}",
-                metadata={"quote": quote, "idempotency_key": request.idempotency_key},
-            )
-        else:
-            hold_result = self.credit_ledger.create_hold(
-                account_id=request.account_id,
-                request_id=record.request_id,
-                credits=held_credits,
-                expires_at=record.deadline_at,
-                memo=f"paid request hold {record.request_id}",
-                metadata={"quote": quote, "idempotency_key": request.idempotency_key},
-            )
-        hold = dict(hold_result.get("hold", {}))
+            spend_credit_wei = _credit_wei_from_decimal(requester_max_credits, default="0", minimum_wei=0)
         self.request_store.update(
             record.request_id,
-            account_id=hold.get("account_id", request.account_id),
+            account_id=request.account_id,
             max_credits=requester_max_credits,
-            hold_id=str(hold.get("hold_id", "")),
-            event_type="payment.hold.created",
+            hold_id="",
+            event_type="payment.spend.prepared",
             event={
-                "account_id": hold.get("account_id", request.account_id),
-                "hold_id": hold.get("hold_id", ""),
-                "held_credits": hold.get("credits", held_credits),
-                "held_credits_wei": str(hold.get("credit_wei", held_credit_wei)),
-                "held_credits_display": credit_wei_to_decimal_text(hold.get("credit_wei", held_credit_wei)),
-                "quoted_credits": held_credits if self._market_pricing_requested(request) else 0,
-                "quoted_credits_wei": str(held_credit_wei) if self._market_pricing_requested(request) else "0",
-                "quoted_credits_display": credit_wei_to_decimal_text(held_credit_wei) if self._market_pricing_requested(request) else "0",
-                "idempotent": bool(hold_result.get("idempotent", False)),
+                "account_id": request.account_id,
+                "credit_spend_mode": "direct_on_request_through",
+                "max_credits": requester_max_credits,
+                "max_credit_wei": str(spend_credit_wei),
+                "max_credits_display": credit_wei_to_decimal_text(spend_credit_wei),
+                "quoted_credits": _credit_legacy_ceil_from_wei(spend_credit_wei) if self._market_pricing_requested(request) else 0,
+                "quoted_credits_wei": str(spend_credit_wei) if self._market_pricing_requested(request) else "0",
+                "quoted_credits_display": credit_wei_to_decimal_text(spend_credit_wei) if self._market_pricing_requested(request) else "0",
             },
         )
-        return hold_result
+        return {
+            "ok": True,
+            "account_id": request.account_id,
+            "max_credits": requester_max_credits,
+            "spend_credit_wei": str(spend_credit_wei),
+            "quote": quote,
+        }
 
-    def _release_paid_hold_for_request(self, request_id: str, *, reason: str, error: str = "") -> None:
-        if self.credit_ledger is None:
-            return
-        record = self.request_store.get(request_id)
-        if record is None or not record.hold_id or record.charge_id:
-            return
-        try:
-            release = self.credit_ledger.release_hold(
-                hold_id=record.hold_id,
-                reason=reason,
-                memo=f"release paid request hold {record.request_id}: {reason}",
-                metadata={"error": error} if error else {},
-            )
-        except Exception:
-            return
-        hold = dict(release.get("hold", {}))
-        self.request_store.update(
-            record.request_id,
-            released_credits=max(0, int(hold.get("credits", record.max_credits) or 0)),
-            event_type="payment.hold.released",
-            event={
-                "account_id": record.account_id,
-                "hold_id": record.hold_id,
-                "reason": reason,
-                "error": error,
-            },
-        )
+    def _discard_paid_request_spend(self, request_id: str, *, reason: str, error: str = "") -> None:
+        # Holds are disabled. Queued requests may be cancelled, but there is no
+        # reserved credit to release.
+        return None
 
-    def _feedback_secret(self) -> str:
-        return str(os.environ.get("MAIN_COMPUTER_HUB_REPORT_SECRET") or "main-computer-dev-report-secret-v0")
-
-    def _record_receipt_for_feedback(self, record: HubRequestRecord) -> dict[str, Any]:
-        receipt = dict(record.receipt) if isinstance(record.receipt, dict) else {}
-        if not receipt and isinstance(record.response, dict):
-            metadata = dict(record.response.get("metadata", {})) if isinstance(record.response.get("metadata"), dict) else {}
-            hub_metadata = dict(metadata.get("hub", {})) if isinstance(metadata.get("hub"), dict) else {}
-            receipt = dict(hub_metadata.get("payment", {})) if isinstance(hub_metadata.get("payment"), dict) else {}
-        if receipt.get("worker_commitment") and not receipt.get("report_token"):
-            receipt["report_token"] = make_report_token(
-                hub_secret=self._feedback_secret(),
-                account_id=str(receipt.get("account_id") or record.account_id or ""),
-                request_id=record.request_id,
-                worker_commitment=str(receipt.get("worker_commitment", "") or ""),
-            )
-        return receipt
-
-    def _finalize_paid_request(
+    def _spend_paid_request_credit(
         self,
         *,
         record: HubRequestRecord,
@@ -2381,14 +2345,17 @@ class AIRequestPlexService:
         worker_credits: int,
         worker_credit_wei: Any | None = None,
     ) -> dict[str, Any]:
-        if self.credit_ledger is None or not record.hold_id:
+        if self.credit_ledger is None or not record.account_id:
             return {}
+        if record.charge_id:
+            return dict(record.receipt) if isinstance(record.receipt, dict) else {}
+
         market_metadata = self._record_market_metadata(record)
         selected_offer = self._record_selected_offer(record)
         quote = dict(market_metadata.get("quote", {})) if isinstance(market_metadata.get("quote"), dict) else {}
         request_payload = dict(record.request_payload or {}) if isinstance(record.request_payload, dict) else {}
         request_metadata = dict(request_payload.get("metadata") or {}) if isinstance(request_payload.get("metadata"), dict) else {}
-        charge_metadata = {"worker_node_id": worker_node_id}
+        charge_metadata = {"worker_node_id": worker_node_id, "direct_spend": True}
         scheduler_lab_run_id = str(request_metadata.get("scheduler_lab_run_id", "") or "").strip()
         if scheduler_lab_run_id:
             charge_metadata["scheduler_lab_run_id"] = scheduler_lab_run_id
@@ -2412,39 +2379,41 @@ class AIRequestPlexService:
             if worker_credit_wei not in (None, "")
             else _credit_wei_from_decimal(worker_credits, default="1", minimum_wei=1)
         )
-        if hasattr(self.credit_ledger, "charge_hold_credit_wei"):
-            charge = self.credit_ledger.charge_hold_credit_wei(
-                hold_id=record.hold_id,
-                charged_credit_wei=charged_credit_wei,
-                worker_node_id=worker_node_id,
-                memo=f"paid request charge {record.request_id}",
-                metadata=charge_metadata,
+        requester_max_credit_wei = _credit_wei_from_decimal(record.max_credits, default="0", minimum_wei=0)
+        if requester_max_credit_wei > 0 and charged_credit_wei > requester_max_credit_wei:
+            raise ValueError(
+                f"Worker charge {credit_wei_to_decimal_text(charged_credit_wei)} credits exceeds requester max_credits {record.max_credits}."
             )
-        else:
-            charge = self.credit_ledger.charge_hold(
-                hold_id=record.hold_id,
-                charged_credits=worker_credits,
-                worker_node_id=worker_node_id,
-                memo=f"paid request charge {record.request_id}",
-                metadata=charge_metadata,
-            )
-        charge_payload = dict(charge.get("charge", {}))
-        earning_payload = dict(charge.get("worker_earning") or {})
+        spend = self.credit_ledger.spend_request_credit_wei(
+            account_id=record.account_id,
+            request_id=record.request_id,
+            credit_wei=charged_credit_wei,
+            worker_node_id=worker_node_id,
+            memo=f"paid request charge {record.request_id}",
+            metadata=charge_metadata,
+        )
+        charge_payload = dict(spend.get("charge", {}))
+        account_payload = dict(spend.get("account", {}))
+        earning_payload = dict(spend.get("worker_earning") or {})
         receipt = {
             "request_id": record.request_id,
             "account_id": charge_payload.get("account_id", record.account_id),
-            "hold_id": record.hold_id,
             "charge_id": charge_payload.get("charge_id", ""),
             "charged_credits": max(0, int(charge_payload.get("charged_credits", 0) or 0)),
             "charged_credit_wei": str(charge_payload.get("charged_credit_wei", charged_credit_wei)),
             "charged_credits_display": credit_wei_to_decimal_text(charge_payload.get("charged_credit_wei", charged_credit_wei)),
-            "released_credits": max(0, int(charge_payload.get("released_credits", 0) or 0)),
-            "released_credit_wei": str(charge_payload.get("released_credit_wei", 0)),
-            "released_credits_display": credit_wei_to_decimal_text(charge_payload.get("released_credit_wei", 0)),
+            "released_credits": 0,
+            "released_credit_wei": "0",
+            "released_credits_display": "0",
             "worker_earning_id": earning_payload.get("earning_id", ""),
             "worker_commitment": earning_payload.get("worker_commitment", ""),
             "created_at": charge_payload.get("created_at", utc_now()),
             "unit": "compute_credit",
+            "direct_spend": True,
+            "credit_spend_mode": "direct_on_request_through",
+            "legacy_holds_cancelled": list(spend.get("legacy_holds_cancelled") or []),
+            "account_available_credit_wei_after": str(account_payload.get("available_credit_wei", "0")),
+            "account_held_credit_wei_after": str(account_payload.get("held_credit_wei", "0")),
         }
         if receipt.get("worker_commitment"):
             receipt["report_token"] = make_report_token(
@@ -2467,14 +2436,50 @@ class AIRequestPlexService:
         self.request_store.update(
             record.request_id,
             account_id=receipt["account_id"],
+            hold_id="",
             charge_id=receipt["charge_id"],
             charged_credits=receipt["charged_credits"],
-            released_credits=receipt["released_credits"],
+            released_credits=0,
             worker_earning_id=receipt["worker_earning_id"],
             receipt=receipt,
-            event_type="payment.charge.created",
+            event_type="payment.credit.spent",
             event=receipt,
         )
+        return receipt
+
+    def _finalize_paid_request(
+        self,
+        *,
+        record: HubRequestRecord,
+        worker_node_id: str,
+        worker_credits: int,
+        worker_credit_wei: Any | None = None,
+    ) -> dict[str, Any]:
+        if record.charge_id:
+            return dict(record.receipt) if isinstance(record.receipt, dict) else {}
+        return self._spend_paid_request_credit(
+            record=record,
+            worker_node_id=worker_node_id,
+            worker_credits=worker_credits,
+            worker_credit_wei=worker_credit_wei,
+        )
+
+    def _feedback_secret(self) -> str:
+        return str(os.environ.get("MAIN_COMPUTER_HUB_REPORT_SECRET") or "main-computer-dev-report-secret-v0")
+
+    def _record_receipt_for_feedback(self, record: HubRequestRecord) -> dict[str, Any]:
+        receipt = dict(record.receipt) if isinstance(record.receipt, dict) else {}
+        if not receipt and isinstance(record.response, dict):
+            metadata = dict(record.response.get("metadata", {})) if isinstance(record.response.get("metadata"), dict) else {}
+            hub_metadata = dict(metadata.get("hub", {})) if isinstance(metadata.get("hub"), dict) else {}
+            receipt = dict(hub_metadata.get("payment", {})) if isinstance(hub_metadata.get("payment"), dict) else {}
+        if receipt.get("worker_commitment") and not receipt.get("report_token"):
+            receipt["report_token"] = make_report_token(
+                hub_secret=self._feedback_secret(),
+                account_id=str(receipt.get("account_id") or record.account_id or ""),
+                request_id=record.request_id,
+                worker_commitment=str(receipt.get("worker_commitment", "") or ""),
+            )
         return receipt
 
     def _create_record(
@@ -2581,9 +2586,16 @@ class AIRequestPlexService:
             }
             try:
                 paid_record = self.request_store.get(record.request_id) or current
-                if paid_record.hold_id and worker_credits > max(0, int(paid_record.max_credits or 0)):
+                if paid_record.account_id and worker_credits > max(0, int(paid_record.max_credits or 0)):
                     raise RuntimeError(
-                        f"Selected worker requires {worker_credits} credits ({credit_wei_to_decimal_text(worker_credit_wei)} ETH) but request only held {paid_record.max_credits}."
+                        f"Selected worker requires {worker_credits} credits ({credit_wei_to_decimal_text(worker_credit_wei)} ETH) but requester max_credits is {paid_record.max_credits}."
+                    )
+                if paid_record.account_id and not paid_record.charge_id:
+                    self._spend_paid_request_credit(
+                        record=paid_record,
+                        worker_node_id=worker_node_id,
+                        worker_credits=worker_credits,
+                        worker_credit_wei=worker_credit_wei,
                     )
                 self.request_store.update(
                     record.request_id,
@@ -2742,19 +2754,17 @@ class AIRequestPlexService:
         return not models or desired in models
 
     def _fail_worker_pull_lease_timeout(self, record: HubRequestRecord, *, reason: str = "worker_lost_timeout") -> HubRequestRecord:
-        """Mark an expired worker-pull lease as failed without charging the requester.
+        """Mark an expired worker-pull lease as failed.
 
         Worker-pull v0 treats temporary disconnects as recoverable until the lease
         deadline.  Once that deadline passes, the request is no longer requeued
-        implicitly: the requester must make a new request, the paid hold is
-        released, and any late worker result is rejected without creating a
-        worker earning.
+        implicitly: the requester must make a new request, and any late worker
+        result is rejected.
         """
 
         worker_node_id = str(record.selected_worker_node_id or "").strip()
         lease_id = str(record.lease_id or "").strip()
         error = "Worker disconnected or failed to return a result before the lease deadline."
-        self._release_paid_hold_for_request(record.request_id, reason=reason, error=error)
         failed = self.request_store.update(
             record.request_id,
             state="failed",
@@ -2768,8 +2778,8 @@ class AIRequestPlexService:
                 "lease_id": lease_id,
                 "worker_node_id": worker_node_id,
                 "worker_pull_v0": True,
-                "charge_created": False,
-                "requester_charged": False,
+                "direct_spend": bool(record.charge_id),
+                "requester_charged": bool(record.charge_id),
             },
         )
         self._release_record_worker(record, success=False)

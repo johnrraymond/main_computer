@@ -17,6 +17,7 @@ from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
 from main_computer.windows_user_activity import collect_windows_user_activity
 from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to_decimal_text
+from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 
 
 class _WorkerHubLiveSessionClient:
@@ -36,16 +37,20 @@ class _WorkerHubLiveSessionClient:
         worker_id: str,
         auth_message: dict[str, Any],
         timeout_s: float = 5.0,
+        work_executor: Any | None = None,
+        work_canceller: Any | None = None,
     ) -> None:
         self.hub_url = str(hub_url or "").rstrip("/")
         self.worker_id = str(worker_id or "").strip()
         self.auth_message = json.loads(json.dumps(auth_message, ensure_ascii=False))
         self.timeout_s = max(1.0, float(timeout_s or 5.0))
+        self.work_executor = work_executor
+        self.work_canceller = work_canceller
         self.fingerprint = json.dumps(
             {
                 "hub_url": self.hub_url,
                 "worker_id": self.worker_id,
-                "auth_message": self.auth_message,
+                "auth": self._stable_auth_fingerprint_payload(self.auth_message),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -58,6 +63,7 @@ class _WorkerHubLiveSessionClient:
         self.last_pong: dict[str, Any] = {}
         self.last_offer: dict[str, Any] = {}
         self.last_result: dict[str, Any] = {}
+        self.active_work_count = 0
         self.last_error = ""
         self.opened_at = ""
         self.closed_at = ""
@@ -78,6 +84,52 @@ class _WorkerHubLiveSessionClient:
             and not self.closed_at
             and (thread is None or thread.is_alive())
         )
+
+    @property
+    def has_active_work(self) -> bool:
+        with self._state_lock:
+            return self.active_work_count > 0
+
+    @staticmethod
+    def _stable_auth_fingerprint_payload(auth_message: dict[str, Any]) -> dict[str, Any]:
+        """Return only durable auth/market inputs used to decide socket replacement.
+
+        The full ``worker.auth`` payload includes volatile availability snapshots
+        such as last user activity and local AI capacity.  Reconnecting whenever
+        those fields change can close the selected websocket while an accepted
+        live-session job is still running.  The Hub learns current capacity from
+        the live session itself; this fingerprint is only for deciding whether a
+        viewport-side websocket must be replaced.
+        """
+
+        market = dict(auth_message.get("market") or {}) if isinstance(auth_message.get("market"), dict) else {}
+        auth = (
+            dict(auth_message.get("multisession_authorization") or {})
+            if isinstance(auth_message.get("multisession_authorization"), dict)
+            else {}
+        )
+        return {
+            "type": str(auth_message.get("type") or ""),
+            "worker_id": str(auth_message.get("worker_id") or ""),
+            "worker_instance_id": str(auth_message.get("worker_instance_id") or ""),
+            "chain_id": str(auth_message.get("chain_id") or auth.get("chain_id") or ""),
+            "model": str(auth_message.get("model") or ""),
+            "models": [str(item) for item in auth_message.get("models", [])] if isinstance(auth_message.get("models"), list) else [],
+            "authorization": {
+                "kind": str(auth.get("kind") or ""),
+                "key_id": str(auth.get("key_id") or auth.get("multisession_key_id") or ""),
+                "wallet_address": str(auth.get("wallet_address") or ""),
+                "chain_id": str(auth.get("chain_id") or ""),
+            },
+            "market": {
+                "rings": [str(item) for item in market.get("rings", [])] if isinstance(market.get("rings"), list) else [],
+                "partitions": [str(item) for item in market.get("partitions", [])] if isinstance(market.get("partitions"), list) else [],
+                "capabilities": [str(item) for item in market.get("capabilities", [])] if isinstance(market.get("capabilities"), list) else [],
+                "models": [str(item) for item in market.get("models", [])] if isinstance(market.get("models"), list) else [],
+                "max_concurrency": int(market.get("max_concurrency") or auth_message.get("max_concurrency") or 1),
+                "price": dict(market.get("price") or {}) if isinstance(market.get("price"), dict) else {},
+            },
+        }
 
     def start(self) -> dict[str, Any]:
         self._socket = self._open_socket()
@@ -158,6 +210,8 @@ class _WorkerHubLiveSessionClient:
                 "last_pong": dict(self.last_pong),
                 "last_offer": dict(self.last_offer),
                 "last_result": dict(self.last_result),
+                "active_work_count": self.active_work_count,
+                "has_active_work": self.active_work_count > 0,
                 "alive": self.is_alive,
             }
 
@@ -213,7 +267,7 @@ class _WorkerHubLiveSessionClient:
         if message_type == "hub.work.offer":
             self._handle_work_offer(message)
             return
-        if message_type in {"hub.work.result.accepted", "hub.work.terminal.accepted"}:
+        if message_type in {"hub.work.result.accepted", "hub.work.failed.accepted", "hub.work.terminal.accepted"}:
             with self._state_lock:
                 self.last_result = dict(message)
             return
@@ -236,38 +290,172 @@ class _WorkerHubLiveSessionClient:
         if run_id:
             accepted["run_id"] = run_id
         self._send_json(accepted)
-
-        result = self._result_payload_for_offer(offer)
-        result_message = {
-            "type": "worker.work.result",
-            "session_id": session_id,
-            "request_id": request_id,
-            "result": result,
-        }
-        if run_id:
-            result_message["run_id"] = run_id
-        if offer.get("lease_id"):
-            result_message["lease_id"] = str(offer.get("lease_id") or "")
-        self._send_json(result_message)
         with self._state_lock:
             self.last_offer = dict(offer)
-            self.last_result = dict(result_message)
+            self.active_work_count += 1
 
-    def _result_payload_for_offer(self, offer: dict[str, Any]) -> dict[str, Any]:
+        worker_thread = threading.Thread(
+            target=self._complete_work_offer,
+            args=(dict(offer),),
+            name=f"worker-live-session-offer-{session_id[:12] or request_id[:12]}",
+            daemon=True,
+        )
+        worker_thread.start()
+
+    def _complete_work_offer(self, offer: dict[str, Any]) -> None:
+        session_id = str(offer.get("session_id") or "")
+        request_id = str(offer.get("request_id") or "")
+        run_id = str(offer.get("run_id") or "")
+        result_message: dict[str, Any] = {}
+        try:
+            result = self._execute_work_offer(offer)
+            result_message = {
+                "type": "worker.work.result",
+                "session_id": session_id,
+                "request_id": request_id,
+                "result": result,
+            }
+            if run_id:
+                result_message["run_id"] = run_id
+            self._send_json(result_message)
+        except BaseException as exc:
+            error_payload = self._worker_failure_payload_for_exception(exc, offer)
+            result_message = {
+                "type": "worker.work.failed",
+                "session_id": session_id,
+                "request_id": request_id,
+                "error": error_payload,
+            }
+            if run_id:
+                result_message["run_id"] = run_id
+            try:
+                self._send_json(result_message)
+            except Exception as send_exc:
+                with self._state_lock:
+                    self.last_error = (
+                        f"Worker live-session local executor failed with {exc.__class__.__name__}: {exc}; "
+                        f"also failed to report terminal worker.work.failed: {send_exc}"
+                    )
+        finally:
+            with self._state_lock:
+                if result_message:
+                    self.last_result = dict(result_message)
+                self.active_work_count = max(0, self.active_work_count - 1)
+
+    def _worker_failure_payload_for_exception(self, exc: BaseException, offer: dict[str, Any]) -> dict[str, Any]:
+        work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        session_id = str(offer.get("session_id") or "")
+        request_id = str(offer.get("request_id") or "")
+        run_id = str(offer.get("run_id") or "")
+        return {
+            "error": str(exc) or exc.__class__.__name__,
+            "error_type": exc.__class__.__name__,
+            "status": "failed",
+            "transport": "websocket-live-session",
+            "worker_id": self.worker_id,
+            "session_id": session_id,
+            "request_id": request_id,
+            "run_id": run_id,
+            "model": str(work.get("model") or ""),
+            "capabilities": [str(item) for item in work.get("capabilities", [])] if isinstance(work.get("capabilities"), list) else [],
+        }
+
+    def _work_offer_timeout_seconds(self, offer: dict[str, Any]) -> float:
+        work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        candidates = [
+            work.get("timeout_seconds"),
+            work.get("max_runtime_seconds"),
+            work.get("local_ai_timeout_seconds"),
+            offer.get("timeout_seconds"),
+            os.environ.get("MAIN_COMPUTER_WORKER_LIVE_SESSION_LOCAL_AI_TIMEOUT_SECONDS"),
+        ]
+        for value in candidates:
+            raw = str(value or "").strip()
+            if not raw:
+                continue
+            try:
+                parsed = float(raw)
+            except ValueError:
+                continue
+            if parsed > 0:
+                return max(1.0, min(parsed, 3600.0))
+        return 45.0
+
+    def _cancel_work_executor_after_timeout(self, executor: Any, offer: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
+        """Best-effort cancellation for worker local-AI work after the outer offer timeout.
+
+        The live-session client owns the Hub terminal failure timeout, but the actual
+        local AI slot is owned by the route/server executor.  Without this hook the
+        Hub can see a failed job while the local subprocess remains active and keeps
+        the shared local-AI capacity slot busy.
+        """
+
+        canceller = self.work_canceller
+        if not callable(canceller):
+            owner = getattr(executor, "__self__", None)
+            canceller = getattr(owner, "_cancel_worker_live_session_offer", None)
+        if not callable(canceller):
+            return {"ok": False, "cancelled": False, "reason": "no-work-canceller"}
+        result = canceller(
+            offer,
+            reason="worker-live-session-timeout",
+            timeout_s=timeout_s,
+        )
+        return result if isinstance(result, dict) else {"ok": True, "cancelled": True, "result": result}
+
+    def _call_work_executor_with_timeout(self, executor: Any, offer: dict[str, Any]) -> Any:
+        timeout_s = self._work_offer_timeout_seconds(offer)
+        done = threading.Event()
+        box: dict[str, Any] = {}
+
+        def runner() -> None:
+            try:
+                box["result"] = executor(offer)
+            except BaseException as exc:  # propagate through the parent offer thread
+                box["exception"] = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(
+            target=runner,
+            name=f"worker-live-session-local-ai-{str(offer.get('session_id') or offer.get('request_id') or '')[:12]}",
+            daemon=True,
+        )
+        thread.start()
+        if not done.wait(timeout_s):
+            try:
+                box["timeout_cancel"] = self._cancel_work_executor_after_timeout(executor, offer, timeout_s=timeout_s)
+            except BaseException as cancel_exc:
+                box["timeout_cancel_error"] = f"{cancel_exc.__class__.__name__}: {cancel_exc}"
+            done.wait(0.25)
+            raise TimeoutError(f"Worker live-session local AI executor timed out after {timeout_s:.1f}s.")
+        if "exception" in box:
+            raise box["exception"]
+        return box.get("result")
+
+    def _execute_work_offer(self, offer: dict[str, Any]) -> dict[str, Any]:
         work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
         input_payload = dict(work.get("input") or {}) if isinstance(work.get("input"), dict) else {}
         if str(input_payload.get("kind") or "").lower() == "echo":
-            content = str(input_payload.get("value") or "")
-        else:
-            prompt = str(work.get("prompt") or work.get("input") or "").strip()
-            messages = work.get("messages")
-            if not prompt and isinstance(messages, list):
-                parts: list[str] = []
-                for message in messages:
-                    if isinstance(message, dict) and message.get("content") is not None:
-                        parts.append(str(message.get("content")))
-                prompt = "\n".join(parts).strip()
-            content = prompt or "Main Computer local test worker completed the Hub live-session request."
+            return self._debug_echo_result_payload_for_offer(offer)
+        executor = self.work_executor
+        if not callable(executor):
+            raise RuntimeError("Worker live-session has no local work executor configured.")
+        result = self._call_work_executor_with_timeout(executor, offer)
+        if not isinstance(result, dict):
+            result = {"response": {"content": str(result or "")}}
+        result.setdefault("status", "success")
+        response = result.get("response")
+        if not isinstance(response, dict):
+            result["response"] = {"content": str(response or "")}
+        result.setdefault("transport", "websocket-live-session")
+        result.setdefault("worker_id", self.worker_id)
+        return result
+
+    def _debug_echo_result_payload_for_offer(self, offer: dict[str, Any]) -> dict[str, Any]:
+        work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        input_payload = dict(work.get("input") or {}) if isinstance(work.get("input"), dict) else {}
+        content = str(input_payload.get("value") or input_payload.get("prompt") or "")
         return {
             "status": "success",
             "response": {
@@ -276,6 +464,7 @@ class _WorkerHubLiveSessionClient:
             },
             "transport": "websocket-live-session",
             "worker_id": self.worker_id,
+            "debug_echo": True,
         }
 
     def _open_socket(self) -> socket.socket:
@@ -1730,10 +1919,36 @@ class ViewportEnergyRoutesMixin:
             setattr(self.server, "_worker_live_session_clients", clients)
         return lock, clients
 
+    def _worker_live_session_active_work_count(self, *, hub_url: str | None = None, worker_id: str | None = None) -> int:
+        normalized_hub_url = self._clean_hub_url(hub_url, allow_empty=True) if hub_url is not None else ""
+        normalized_worker_id = str(worker_id or "").strip()
+        lock, clients = self._worker_live_session_clients()
+        total = 0
+        with lock:
+            for (client_hub_url, client_worker_id), client in clients.items():
+                if normalized_hub_url and client_hub_url != normalized_hub_url:
+                    continue
+                if normalized_worker_id and client_worker_id != normalized_worker_id:
+                    continue
+                try:
+                    snapshot = client.snapshot()
+                    total += max(0, int(snapshot.get("active_work_count", 0) or 0))
+                except Exception:
+                    continue
+        return total
+
     def _close_worker_live_session(self, *, hub_url: str, worker_id: str, reason: str) -> dict[str, Any]:
         key = (self._clean_hub_url(hub_url), str(worker_id or "").strip())
         lock, clients = self._worker_live_session_clients()
         with lock:
+            client = clients.get(key)
+            if client is not None and client.has_active_work:
+                snapshot = client.snapshot()
+                snapshot["closed_by_runtime"] = False
+                snapshot["close_deferred"] = True
+                snapshot["close_deferred_reason"] = "active_live_session_work"
+                snapshot["requested_close_reason"] = str(reason or "closed")
+                return snapshot
             client = clients.pop(key, None)
         if client is not None:
             client.close(reason=reason)
@@ -1749,6 +1964,260 @@ class ViewportEnergyRoutesMixin:
             "closed_by_runtime": False,
             "alive": False,
             "reason": reason,
+        }
+
+    def _worker_live_session_prompt_for_offer(self, offer: dict[str, Any]) -> str:
+        work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        input_payload = dict(work.get("input") or {}) if isinstance(work.get("input"), dict) else {}
+        for key in ("prompt", "source", "value", "text"):
+            text = str(input_payload.get(key) or "").strip()
+            if text:
+                return text
+        for key in ("prompt", "source", "input"):
+            value = work.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        messages = work.get("messages")
+        if isinstance(messages, list):
+            user_parts: list[str] = []
+            all_parts: list[str] = []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                content = str(message.get("content") or "").strip()
+                if not content:
+                    continue
+                all_parts.append(content)
+                if str(message.get("role") or "").strip().lower() == "user":
+                    user_parts.append(content)
+            if user_parts:
+                return "\n\n".join(user_parts).strip()
+            if all_parts:
+                return "\n\n".join(all_parts).strip()
+        return ""
+
+    def _worker_live_session_messages_for_offer(self, offer: dict[str, Any], *, source: str) -> list[dict[str, Any]]:
+        work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        messages = work.get("messages")
+        result: list[dict[str, Any]] = []
+        if isinstance(messages, list):
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "user").strip().lower()
+                if role not in {"system", "user", "assistant"}:
+                    role = "user"
+                content = message.get("content")
+                if isinstance(content, str):
+                    clean_content: Any = content.strip()
+                elif isinstance(content, list):
+                    clean_content = content
+                else:
+                    clean_content = str(content or "").strip()
+                if not clean_content:
+                    continue
+                item: dict[str, Any] = {"role": role, "content": clean_content}
+                if isinstance(message.get("attachments"), list):
+                    item["attachments"] = message.get("attachments")
+                result.append(item)
+        if result:
+            return result
+        return [{"role": "user", "content": str(source or "")}]
+
+    def _worker_live_session_attachments_for_offer(self, offer: dict[str, Any]) -> list[Any]:
+        work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        input_payload = dict(work.get("input") or {}) if isinstance(work.get("input"), dict) else {}
+        for value in (input_payload.get("attachments"), work.get("attachments")):
+            if isinstance(value, list):
+                return value
+        return []
+
+    def _worker_live_session_thread_id_for_offer(self, offer: dict[str, Any], *, run_id: str = "") -> str:
+        session_id = str(offer.get("session_id") or "").strip()
+        request_id = str(offer.get("request_id") or "").strip()
+        clean_run_id = str(run_id or offer.get("run_id") or "").strip()
+        return f"worker-live-session:{session_id or request_id or clean_run_id}"
+
+    def _cancel_worker_live_session_offer(
+        self,
+        offer: dict[str, Any],
+        *,
+        reason: str = "worker-live-session-timeout",
+        timeout_s: float = 0.0,
+    ) -> dict[str, Any]:
+        session_id = str(offer.get("session_id") or "").strip()
+        request_id = str(offer.get("request_id") or "").strip()
+        run_id = str(offer.get("run_id") or "").strip()
+        thread_id = self._worker_live_session_thread_id_for_offer(offer, run_id=run_id)
+        log_path = self._worker_live_session_log_path(run_id=run_id, session_id=session_id, request_id=request_id)
+        manager = getattr(getattr(self, "server", None), "chat_ai_processes", None)
+        stop_method = getattr(manager, "stop", None)
+        if not callable(stop_method):
+            append_text_log(
+                log_path,
+                "worker live-session local AI cancellation unavailable",
+                run_id=run_id,
+                session_id=session_id,
+                request_id=request_id,
+                thread_id=thread_id,
+                reason=reason,
+                timeout_s=timeout_s,
+            )
+            return {
+                "ok": False,
+                "cancelled": False,
+                "reason": "local-ai-stop-unavailable",
+                "thread_id": thread_id,
+                "run_id": run_id,
+            }
+
+        append_text_log(
+            log_path,
+            "worker live-session local AI cancellation requested",
+            run_id=run_id,
+            session_id=session_id,
+            request_id=request_id,
+            thread_id=thread_id,
+            reason=reason,
+            timeout_s=timeout_s,
+        )
+        result = stop_method(thread_id=thread_id, run_id=run_id, reason=reason)
+        if not isinstance(result, dict):
+            result = {"ok": True, "stopped": bool(result)}
+        append_text_log(
+            log_path,
+            "worker live-session local AI cancellation completed",
+            run_id=run_id,
+            session_id=session_id,
+            request_id=request_id,
+            thread_id=thread_id,
+            reason=reason,
+            timeout_s=timeout_s,
+            stop_result=result,
+        )
+        return {
+            **result,
+            "thread_id": str(result.get("thread_id") or thread_id),
+            "run_id": str(result.get("run_id") or run_id),
+        }
+
+    def _worker_live_session_log_path(self, *, run_id: str, session_id: str, request_id: str) -> Path:
+        safe_id = "".join(
+            ch if ch.isalnum() or ch in {"-", "_"} else "_"
+            for ch in (str(run_id or "") or str(session_id or "") or str(request_id or "") or "worker_live_session")
+        )
+        safe_id = safe_id[:96] or "worker_live_session"
+        root = (self.server.debug_root / "worker_live_session_ai").resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root / f"{safe_id}.log"
+
+    def _worker_live_session_should_inline_provider(self) -> bool:
+        provider = getattr(getattr(getattr(self, "server", None), "computer", None), "provider", None)
+        module = str(getattr(getattr(provider, "__class__", None), "__module__", "") or "")
+        if not provider or module.startswith("main_computer.providers"):
+            return False
+        return os.environ.get("MAIN_COMPUTER_DISABLE_INLINE_TEST_PROVIDER", "").strip().lower() not in {"1", "true", "yes", "on"}
+
+    def _execute_worker_live_session_offer(self, offer: dict[str, Any]) -> dict[str, Any]:
+        work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        capability_values = work.get("capabilities")
+        capabilities = [str(item) for item in capability_values] if isinstance(capability_values, list) else []
+        if capabilities and "chat.completions" not in capabilities and "text" not in capabilities:
+            raise ValueError(f"Unsupported worker live-session capabilities: {capabilities!r}")
+        source = self._worker_live_session_prompt_for_offer(offer)
+        if not source:
+            raise ValueError("Worker live-session chat.completions offer did not include a prompt or user message.")
+        attachments = self._worker_live_session_attachments_for_offer(offer)
+        messages = self._worker_live_session_messages_for_offer(offer, source=source)
+        run_id = str(offer.get("run_id") or "").strip() or f"worker_live_{int(time.time() * 1000)}"
+        session_id = str(offer.get("session_id") or "").strip()
+        request_id = str(offer.get("request_id") or "").strip()
+        thread_id = self._worker_live_session_thread_id_for_offer(offer, run_id=run_id)
+        log_path = self._worker_live_session_log_path(run_id=run_id, session_id=session_id, request_id=request_id)
+
+        append_text_log(
+            log_path,
+            "worker live-session local AI execution starting",
+            run_id=run_id,
+            session_id=session_id,
+            request_id=request_id,
+            worker_id=str(offer.get("worker_id") or self._worker_runtime_worker_id(self._load_worker_settings())),
+            model=str(work.get("model") or ""),
+            capabilities=capabilities,
+            source_chars=len(source),
+            source_preview=source[:1000],
+        )
+
+        if self._worker_live_session_should_inline_provider():
+            if hasattr(self.server.computer, "chat_console_ai"):
+                inline_response = self.server.computer.chat_console_ai(source, attachments=attachments)
+            else:
+                inline_response = self.server.computer.chat(source)
+            response_payload = {
+                "content": str(getattr(inline_response, "content", "") or ""),
+                "provider": str(getattr(inline_response, "provider", "") or ""),
+                "model": str(getattr(inline_response, "model", "") or str(work.get("model") or "")),
+                "metadata": getattr(inline_response, "metadata", {}) if isinstance(getattr(inline_response, "metadata", {}), dict) else {},
+            }
+        else:
+            manager = getattr(getattr(self, "server", None), "chat_ai_processes", None)
+            run_method = getattr(manager, "run", None)
+            if not callable(run_method):
+                raise RuntimeError("Local AI subprocess manager is not available for worker live-session execution.")
+            payload = run_method(
+                command={
+                    "mode": "worker_live_session_chat_completion",
+                    "run_id": run_id,
+                    "source": source,
+                    "messages": messages,
+                    "attachments": attachments,
+                    "config": config_to_payload(self.server.config),
+                },
+                thread_id=thread_id,
+                log_file=log_path,
+                activity_bus=getattr(self.server, "activity", None),
+                cwd=self.server.debug_root,
+                max_local_concurrency=1,
+            )
+            response_payload = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+
+        content = str(response_payload.get("content") or "")
+        provider = str(response_payload.get("provider") or "")
+        model = str(response_payload.get("model") or str(work.get("model") or ""))
+        metadata = response_payload.get("metadata") if isinstance(response_payload.get("metadata"), dict) else {}
+        metadata = {
+            **metadata,
+            "from_live_session": True,
+            "source": "main_computer.worker_live_session_ai",
+            "request_id": request_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "log_file": str(log_path),
+        }
+        append_text_log(
+            log_path,
+            "worker live-session local AI execution completed",
+            run_id=run_id,
+            session_id=session_id,
+            request_id=request_id,
+            provider=provider,
+            model=model,
+            response_chars=len(content),
+            response_preview=content[:1000],
+        )
+        return {
+            "status": "success",
+            "response": {
+                "role": "assistant",
+                "content": content,
+                "provider": provider,
+                "model": model,
+                "metadata": metadata,
+            },
+            "transport": "websocket-live-session",
+            "worker_id": str(offer.get("worker_id") or self._worker_runtime_worker_id(self._load_worker_settings())),
+            "local_ai": True,
+            "log_file": str(log_path),
         }
 
     def _ensure_worker_live_session(
@@ -1768,9 +2237,18 @@ class ViewportEnergyRoutesMixin:
                 worker_id=key[1],
                 auth_message=auth_message,
                 timeout_s=5.0,
+                work_executor=self._execute_worker_live_session_offer,
+                work_canceller=self._cancel_worker_live_session_offer,
             )
             if existing is not None and existing.is_alive and existing.fingerprint == candidate.fingerprint:
                 return existing.snapshot()
+            if existing is not None and existing.is_alive and existing.has_active_work:
+                return {
+                    **existing.snapshot(),
+                    "ok": True,
+                    "replacement_deferred": True,
+                    "replacement_deferred_reason": "active_live_session_work",
+                }
             if existing is not None:
                 existing.close(reason="worker_live_session_replaced")
                 clients.pop(key, None)
@@ -2136,14 +2614,27 @@ class ViewportEnergyRoutesMixin:
 
         previous_phase = str(cleaned.get("workerRuntimePhase") or "not_accepting")
         previous_active = max(0, int(cleaned.get("workerRuntimeActiveJobs", 0) or 0))
+        hub_url_for_active = self._worker_runtime_hub_url(cleaned)
+        worker_id_for_active = self._worker_runtime_worker_id(cleaned)
+        live_session_active = self._worker_live_session_active_work_count(
+            hub_url=hub_url_for_active or None,
+            worker_id=worker_id_for_active or None,
+        )
         if active_jobs is None:
-            active = previous_active
-            if action == "job-start":
-                active += 1
-            elif action == "job-finish":
-                active = max(0, active - 1)
+            if action == "sync":
+                # Live-session work is tracked by the websocket client, not by
+                # persisted settings.  Do not carry a prior sync's synthetic
+                # active count forever after the job finishes.
+                active = live_session_active
+            else:
+                active = previous_active
+                if action == "job-start":
+                    active += 1
+                elif action == "job-finish":
+                    active = max(0, active - 1)
+                active = max(active, live_session_active)
         else:
-            active = max(0, int(active_jobs or 0))
+            active = max(0, int(active_jobs or 0), live_session_active)
 
         policy = self._worker_runtime_policy(cleaned, active_jobs=active)
         runtime_enabled = bool(cleaned.get("sellerEnabled"))

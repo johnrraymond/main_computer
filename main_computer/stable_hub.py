@@ -495,32 +495,16 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             return
 
         payout = dict(accepted_session.get("payout") or {})
-        hold_id = str(payout.get("hold_id") or "")
-        if not hold_id:
-            raise StableHubWorkerSessionError("accepted work session does not have a payout hold.")
         if message_type == "worker.work.result":
             result_payload = message.get("result")
             if not isinstance(result_payload, dict):
                 result_payload = {"value": result_payload}
-            charge = self.server.payout_ledger_directory.charge_hold(
-                hold_id=hold_id,
-                session_id=session_id,
-                request_id=request_id,
-                worker_id=worker_id,
-                result=result_payload,
-                metadata={"message_type": message_type, "hub_id": self.server.hub.hub_id},
-            )
-            hold = dict(charge.get("hold") or {})
-            charge_record = dict(charge.get("charge") or {})
-            earning_record = dict(charge.get("worker_earning") or {})
             payout.update(
                 {
-                    "hold_status": str(hold.get("status") or "charged"),
-                    "charge_id": str(charge_record.get("charge_id") or ""),
-                    "worker_earning_id": str(earning_record.get("earning_id") or ""),
-                    "charged_credits": str(charge_record.get("amount") or hold.get("amount") or "0"),
+                    "payment_status": str(payout.get("payment_status") or "spent"),
+                    "direct_spend": True,
                     "released_credits": "0",
-                    "settlement_status": str(earning_record.get("settlement_status") or "earned"),
+                    "settlement_status": str(payout.get("settlement_status") or "earned"),
                 }
             )
             updated = self.server.accepted_work_session_directory.record_succeeded(
@@ -551,18 +535,13 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 failure_payload = {
                     "error": str(failure_payload or message.get("message") or "worker_failed")
                 }
-            released = self.server.payout_ledger_directory.release_hold(
-                hold_id=hold_id,
-                reason="worker_failed",
-                metadata={"message_type": message_type, "failure": failure_payload},
-            )
             payout.update(
                 {
-                    "hold_status": str(released.get("status") or "released"),
-                    "release_reason": str(released.get("release_reason") or "worker_failed"),
-                    "charged_credits": "0",
-                    "released_credits": str(released.get("amount") or "0"),
-                    "settlement_status": "not_settled",
+                    "payment_status": str(payout.get("payment_status") or "spent"),
+                    "direct_spend": True,
+                    "failure_reason": "worker_failed",
+                    "released_credits": "0",
+                    "settlement_status": str(payout.get("settlement_status") or "earned"),
                 }
             )
             updated = self.server.accepted_work_session_directory.record_failed(
@@ -1154,25 +1133,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        existing_hold = self.server.payout_ledger_directory.get_hold_for_request(
-            account_id=requester_account_id,
-            request_id=request_id,
-        )
-        if existing_hold is not None:
-            self._send_json(
-                409,
-                {
-                    "ok": False,
-                    "error": "duplicate_request_id_already_reserved",
-                    "message": "Requester request_id already has a payout hold but no accepted session. Use a new request_id to retry.",
-                    "request_id": request_id,
-                    "hold_id": existing_hold.get("hold_id"),
-                    "hold_status": existing_hold.get("status"),
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                },
-            )
-            return
+        # Legacy payout holds are no longer authoritative.  Idempotency is handled by
+        # accepted-session and direct charge records instead of pre-reserved credit.
 
         selected_worker = self.server.worker_market_directory.select_worker_for_work(work)
         if selected_worker is None:
@@ -1357,44 +1319,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         session_id = new_session_id()
         run_id = new_run_id()
         task_queue = stable_task_queue_for_partition(partition)
-        payout_hold: dict[str, Any] = {}
-        try:
-            payout_hold = self.server.payout_ledger_directory.create_hold(
-                account_id=str(validation.get("account_id") or ""),
-                wallet_address=str(validation.get("wallet_address") or ""),
-                request_id=request_id,
-                session_id=session_id,
-                run_id=run_id,
-                worker_id=worker_id,
-                selected_price=dict(selected_worker.get("price") or {}),
-                requester_max_price=(work.get("max_price") if isinstance(work, dict) else None),
-                partition=partition,
-                metadata={
-                    "pricing_mode": "stable_market_price",
-                    "selected_worker": selected_worker,
-                    "hub_id": self.server.hub.hub_id,
-                },
-            )
-        except StableHubWorkerSessionError as exc:
-            self.server.worker_market_directory.record_session_finished(
-                worker_id=worker_id,
-                connection_id=owner_connection_id,
-            )
-            self._send_json(
-                402,
-                {
-                    "ok": False,
-                    "error": str(exc),
-                    "message": "Requester credits could not be held for the selected worker.",
-                    "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "selected_worker": selected_worker,
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                },
-            )
-            return
+        payout_payment: dict[str, Any] = {}
 
         offer = {
             "type": "hub.work.offer",
@@ -1412,12 +1337,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 timeout_seconds=self.server.work_offer_timeout_seconds,
             )
         except TimeoutError as exc:
-            if payout_hold:
-                self.server.payout_ledger_directory.release_hold(
-                    hold_id=str(payout_hold.get("hold_id") or ""),
-                    reason="worker_offer_timeout",
-                    metadata={"request_id": request_id, "session_id": session_id},
-                )
             self.server.worker_market_directory.record_session_finished(
                 worker_id=worker_id,
                 connection_id=owner_connection_id,
@@ -1438,12 +1357,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
         except (ConnectionError, OSError) as exc:
-            if payout_hold:
-                self.server.payout_ledger_directory.release_hold(
-                    hold_id=str(payout_hold.get("hold_id") or ""),
-                    reason="worker_owner_not_local",
-                    metadata={"request_id": request_id, "session_id": session_id},
-                )
             self.server.worker_market_directory.record_session_finished(
                 worker_id=worker_id,
                 connection_id=owner_connection_id,
@@ -1464,12 +1377,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
         except StableHubWorkerSessionError as exc:
-            if payout_hold:
-                self.server.payout_ledger_directory.release_hold(
-                    hold_id=str(payout_hold.get("hold_id") or ""),
-                    reason="worker_acceptance_rejected",
-                    metadata={"request_id": request_id, "session_id": session_id},
-                )
             self.server.worker_market_directory.record_session_finished(
                 worker_id=worker_id,
                 connection_id=owner_connection_id,
@@ -1490,6 +1397,48 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        try:
+            payout_payment = self.server.payout_ledger_directory.spend_request_credit(
+                account_id=str(validation.get("account_id") or ""),
+                wallet_address=str(validation.get("wallet_address") or ""),
+                request_id=request_id,
+                session_id=session_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                selected_price=dict(selected_worker.get("price") or {}),
+                requester_max_price=(work.get("max_price") if isinstance(work, dict) else None),
+                partition=partition,
+                result={},
+                metadata={
+                    "pricing_mode": "stable_market_price",
+                    "selected_worker": selected_worker,
+                    "hub_id": self.server.hub.hub_id,
+                },
+            )
+        except StableHubWorkerSessionError as exc:
+            self.server.worker_market_directory.record_session_finished(
+                worker_id=worker_id,
+                connection_id=owner_connection_id,
+            )
+            self._send_json(
+                402,
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "message": "Requester credits could not be spent for the selected worker.",
+                    "request_id": request_id,
+                    "worker_id": worker_id,
+                    "partition": partition,
+                    "selected_worker": selected_worker,
+                    "hub_id": self.server.hub.hub_id,
+                    "cluster_id": self.server.topology.cluster_id,
+                },
+            )
+            return
+
+        charge_record = dict(payout_payment.get("charge") or {})
+        earning_record = dict(payout_payment.get("worker_earning") or {})
+
         accepted_session = self.server.accepted_work_session_directory.record_accepted(
             session_id=session_id,
             run_id=run_id,
@@ -1506,15 +1455,17 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             work=work,
             worker_acceptance=worker_acceptance,
             payout={
-                "unit": str(payout_hold.get("unit") or "credit"),
+                "unit": str(charge_record.get("unit") or "credit"),
                 "pricing_mode": "stable_market_price",
-                "selected_price": dict(payout_hold.get("selected_price") or {}),
-                "requester_max_price": dict(payout_hold.get("requester_max_price") or {}),
-                "hold_id": str(payout_hold.get("hold_id") or ""),
-                "hold_status": str(payout_hold.get("status") or "held"),
-                "charge_id": "",
-                "worker_earning_id": "",
-                "settlement_status": "not_settled",
+                "selected_price": dict(payout_payment.get("selected_price") or {}),
+                "requester_max_price": dict(payout_payment.get("requester_max_price") or {}),
+                "charge_id": str(charge_record.get("charge_id") or ""),
+                "worker_earning_id": str(earning_record.get("earning_id") or ""),
+                "charged_credits": str(charge_record.get("amount") or "0"),
+                "released_credits": "0",
+                "settlement_status": str(earning_record.get("settlement_status") or "earned"),
+                "payment_status": str(charge_record.get("status") or "charged"),
+                "direct_spend": True,
             },
         )
         # Capacity was reserved before the offer was sent, so acceptance only

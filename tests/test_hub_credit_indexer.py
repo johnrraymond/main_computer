@@ -96,6 +96,39 @@ class HubCreditIndexerTests(unittest.TestCase):
             self.assertEqual(ledger.get_account(normalized_wallet).available_credits, 250)
             self.assertEqual(ledger.get_account("browser-invented-account-must-not-win").available_credits, 0)
 
+    def test_local_dev_wallet_funding_import_restores_repeat_smoke_spendable_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wallet = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD"
+            normalized_wallet = wallet.lower()
+            ledger = HubCreditLedger(Path(tmp))
+            indexer = HubCreditIndexer(ledger)
+            payload = normalized_deposit_payload(
+                wallet_address=wallet,
+                payer_address=wallet,
+                credits_granted_wei="2000000000000000000",
+            )
+
+            first = indexer.import_wallet_funding(payload)
+            self.assertFalse(first["idempotent"])
+            self.assertEqual(first["account"]["available_credit_wei"], "2000000000000000000")
+
+            ledger.spend_request_credit_wei(
+                account_id=normalized_wallet,
+                request_id="req-first-repeat-smoke-run",
+                credit_wei="1024000000000000000",
+                worker_node_id="worker-1",
+                memo="first direct-spend local smoke request",
+            )
+            self.assertEqual(ledger.get_account(normalized_wallet).available_credit_wei, 976000000000000000)
+
+            second = indexer.import_wallet_funding(payload)
+            self.assertTrue(second["idempotent"])
+            self.assertTrue(second["dev_reusable_funding_top_up"]["top_up_applied"])
+            self.assertEqual(second["dev_reusable_funding_top_up"]["top_up_credit_wei"], "1024000000000000000")
+            self.assertEqual(second["account"]["available_credit_wei"], "2000000000000000000")
+            transactions = ledger.list_transactions(account_id=normalized_wallet, limit=10)
+            self.assertEqual(transactions[0].transaction_type, "admin_adjustment")
+
     def test_malformed_event_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             indexer = HubCreditIndexer(HubCreditLedger(Path(tmp)))

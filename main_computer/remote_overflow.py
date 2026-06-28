@@ -324,7 +324,7 @@ def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEsti
                 "minimum_useful_credits_display": credit_wei_to_decimal_text(estimate.minimum_useful_credit_wei),
                 "estimated_max_credit_wei": str(estimate.estimated_max_credit_wei),
                 "estimated_max_credits_display": credit_wei_to_decimal_text(estimate.estimated_max_credit_wei),
-                "no_credit_hold_created": True,
+                "direct_spend": True,
             },
         )
         return CreditReadiness(
@@ -410,7 +410,7 @@ def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEsti
             "estimated_max_credit_wei": str(estimate.estimated_max_credit_wei),
             "estimated_max_credits_display": credit_wei_to_decimal_text(estimate.estimated_max_credit_wei),
             "no_credit_minted": True,
-            "no_credit_hold_created": True,
+            "direct_spend": True,
         },
     )
     return CreditReadiness(
@@ -518,7 +518,7 @@ class RemoteOverflowDecisionEngine:
                 {
                     "captain_responsibility": "local_machine",
                     "no_credit_minted": True,
-                    "no_credit_hold_created": True,
+                    "direct_spend": True,
                     "no_credit_spent": True,
                     "private_worker_prices_exposed": False,
                     "mock_execution_only": True,
@@ -592,7 +592,7 @@ class RemoteOverflowDecisionEngine:
                         "Credit readiness",
                         "skipped",
                         "Credits were not checked because remote overflow is not allowed for this request.",
-                        {"reason_code": "policy_blocked_before_credit", "no_credit_hold_created": True},
+                        {"reason_code": "policy_blocked_before_credit", "direct_spend": True},
                     ),
                     _card(
                         "hub_availability",
@@ -652,7 +652,7 @@ class RemoteOverflowDecisionEngine:
                         "Credit readiness",
                         "skipped",
                         "Credits were not checked because local AI can handle the request now.",
-                        {"reason_code": "local_ai_available_before_credit", "no_credit_hold_created": True},
+                        {"reason_code": "local_ai_available_before_credit", "direct_spend": True},
                     ),
                     _card(
                         "hub_availability",
@@ -690,7 +690,7 @@ class RemoteOverflowDecisionEngine:
                         "Credit readiness",
                         "skipped",
                         "Credits were not checked because the remote request estimate was not safe.",
-                        {"reason_code": "estimate_blocked_before_credit", "no_credit_hold_created": True},
+                        {"reason_code": "estimate_blocked_before_credit", "direct_spend": True},
                     ),
                     _card(
                         "hub_availability",
@@ -794,7 +794,7 @@ class RemoteOverflowDecisionEngine:
             },
             "preflight_id": hub.preflight_id,
             "private_worker_prices_exposed": False,
-            "no_credit_hold_created": True,
+            "direct_spend": True,
             "expires_at": _utc_now(),
         }
         cards.append(
@@ -927,11 +927,9 @@ class RemoteHubExecutionGateway:
             }
         )
         payment = metadata.get("payment") if isinstance(metadata.get("payment"), dict) else {}
-        credit_hold_created = bool(payment.get("hold_id"))
-        credit_spent = positive_credit_wei(payment.get("charged_credit_wei"), default=0) > 0
-        metadata["credit_hold_created"] = credit_hold_created
+        credit_spent = bool(payment.get("charge_id")) or positive_credit_wei(payment.get("charged_credit_wei"), default=0) > 0
         metadata["credit_spent"] = credit_spent
-        metadata["no_credit_hold_created"] = not credit_hold_created
+        metadata["direct_spend"] = bool(payment.get("direct_spend", True))
         metadata["no_credit_spent"] = not credit_spent
         result = {
             "source": "remote_hub_ai",
@@ -960,9 +958,8 @@ class RemoteHubExecutionGateway:
                         "safe_remote_hub_path": True,
                         "remote_overflow_request_id": remote_overflow_request_id,
                         "no_real_paid_worker_contacted": True,
-                        "credit_hold_created": credit_hold_created,
                         "credit_spent": credit_spent,
-                        "no_credit_hold_created": not credit_hold_created,
+                        "direct_spend": bool(payment.get("direct_spend", True)),
                         "no_credit_spent": not credit_spent,
                     },
                 )
@@ -1018,7 +1015,7 @@ class MockHubAIOverflowProvider:
                     "preflight_id": (assessment.authorization_payload or {}).get("preflight_id", ""),
                     "willing_worker_count": (assessment.authorization_payload or {}).get("willing_worker_count", 0),
                     "no_real_remote_worker_contacted": True,
-                    "no_credit_hold_created": True,
+                    "direct_spend": True,
                     "no_credit_spent": True,
                 },
             },
@@ -1033,7 +1030,7 @@ class MockHubAIOverflowProvider:
                         "simulated": True,
                         "thinking_delay_ms": delay_ms,
                         "no_real_remote_worker_contacted": True,
-                        "no_credit_hold_created": True,
+                        "direct_spend": True,
                         "no_credit_spent": True,
                     },
                 )

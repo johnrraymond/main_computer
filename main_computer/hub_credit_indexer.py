@@ -9,6 +9,14 @@ from main_computer.hub_credit_models import ChainEventRef, CreditDeposit, clean_
 HUB_CREDIT_INDEXER_PHASE = "R2A"
 HUB_CREDIT_INDEXER_MODE = "manual-normalized-escrow-import"
 HUB_CREDIT_INDEXER_EVENT = "HubCreditBridgeEscrow.CreditDeposited"
+LOCAL_DEV_CHAIN_ID = 42424242
+
+
+def _is_local_dev_wallet_funding(payload: dict[str, Any]) -> bool:
+    try:
+        return int(payload.get("chain_id", 0) or 0) == LOCAL_DEV_CHAIN_ID
+    except (TypeError, ValueError):
+        return False
 
 
 def _require_string(payload: dict[str, Any], key: str) -> str:
@@ -182,6 +190,29 @@ class HubCreditIndexer:
         forced_payload.setdefault("memo", f"bridge escrow wallet funding for {wallet_address}")
         account_id = forced_payload["account_id"]
         result = self.import_deposit(forced_payload)
+
+        # Local smoke clients call this endpoint before each paid request.  After
+        # direct-spend charging replaced holds, the original idempotent bridge
+        # deposit is no longer enough for repeated local test runs: the next run
+        # must ensure the requester still has the requested spendable floor.  Keep
+        # real bridge imports idempotent, but on the local dev chain restore the
+        # wallet's available balance to at least the imported grant amount.
+        if result.get("idempotent") and _is_local_dev_wallet_funding(forced_payload):
+            minimum_wei = _require_positive_int(forced_payload, "credits_granted_wei")
+            account = self.ledger.get_account(account_id)
+            if int(account.available_credit_wei) < minimum_wei:
+                result["dev_reusable_funding_top_up"] = self.ledger.ensure_account_available_credit_wei(
+                    account_id=account_id,
+                    minimum_available_credit_wei=minimum_wei,
+                    owner_address=wallet_address,
+                    memo=f"local dev reusable wallet funding for {wallet_address}",
+                    metadata={
+                        "source": "wallet_funding_import",
+                        "chain_id": str(forced_payload.get("chain_id", "")),
+                        "original_deposit_id": str(result.get("deposit", {}).get("deposit_id", "")),
+                    },
+                )
+
         result["wallet_address"] = wallet_address
         result["account_id"] = account_id
         result["account"] = self.ledger.get_account(account_id).as_dict()

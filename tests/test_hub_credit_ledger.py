@@ -72,74 +72,69 @@ class HubCreditLedgerTests(unittest.TestCase):
             self.assertEqual(ledger.status()["deposit_count"], 1)
             self.assertEqual(len(ledger.list_transactions(account_id="buyer")), 1)
 
-    def test_concurrent_same_account_holds_are_atomic_and_do_not_overspend(self) -> None:
+    def test_concurrent_same_account_direct_spends_are_atomic_and_do_not_overspend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ledger = HubCreditLedger(Path(tmp))
             ledger.issue(account_id="buyer", credits=10, memo="fund buyer")
 
-            def try_hold(index: int) -> tuple[str, dict[str, object] | str]:
+            def try_spend(index: int) -> tuple[str, dict[str, object] | str]:
                 try:
-                    result = ledger.create_hold(
+                    result = ledger.spend_request_credit(
                         account_id="buyer",
                         request_id=f"req-concurrent-{index}",
                         credits=1,
-                        memo="same wallet concurrent request hold",
+                        worker_node_id="worker-1",
+                        memo="same wallet concurrent request spend",
                     )
                     return "ok", result
                 except ValueError as exc:
                     return "insufficient", str(exc)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-                results = list(pool.map(try_hold, range(25)))
+                results = list(pool.map(try_spend, range(25)))
 
-            created = [payload for status, payload in results if status == "ok"]
+            charged = [payload for status, payload in results if status == "ok"]
             rejected = [payload for status, payload in results if status == "insufficient"]
 
-            self.assertEqual(len(created), 10)
+            self.assertEqual(len(charged), 10)
             self.assertEqual(len(rejected), 15)
             self.assertTrue(all("Insufficient Compute Credits" in str(item) for item in rejected))
 
             account = ledger.get_account("buyer")
             self.assertEqual(account.available_credit_wei, 0)
-            self.assertEqual(account.held_credit_wei, 10 * 10**18)
-            self.assertEqual(account.spent_credit_wei, 0)
+            self.assertEqual(account.held_credit_wei, 0)
+            self.assertEqual(account.spent_credit_wei, 10 * 10**18)
 
             status = ledger.status()
             self.assertEqual(status["totals"]["available_credit_wei"], "0")
-            self.assertEqual(status["totals"]["held_credit_wei"], str(10 * 10**18))
-            self.assertEqual(status["active_hold_count"], 10)
+            self.assertEqual(status["totals"]["held_credit_wei"], "0")
+            self.assertEqual(status["active_hold_count"], 0)
 
 
-    def test_credit_wei_hold_charge_and_release_preserve_fractional_amounts(self) -> None:
+    def test_credit_wei_direct_spend_preserves_fractional_amounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ledger = HubCreditLedger(Path(tmp))
             ledger.issue(account_id="buyer", credits=3, memo="fund buyer")
 
-            hold = ledger.create_hold_credit_wei(
+            charge = ledger.spend_request_credit_wei(
                 account_id="buyer",
                 request_id="req-fractional",
                 credit_wei="1024000000000000000",
-                memo="fractional hold",
-            )
-            self.assertEqual(hold["hold"]["credit_wei"], "1024000000000000000")
-            self.assertEqual(hold["hold"]["credits_display"], "1.024")
-            self.assertEqual(hold["account"]["available_credit_wei"], "1976000000000000000")
-            self.assertEqual(hold["account"]["held_credit_wei"], "1024000000000000000")
-
-            charge = ledger.charge_hold_credit_wei(
-                hold_id=hold["hold"]["hold_id"],
-                charged_credit_wei="1024000000000000000",
-                memo="fractional charge",
+                worker_node_id="worker-1",
+                memo="fractional direct spend",
             )
             self.assertEqual(charge["charge"]["charged_credit_wei"], "1024000000000000000")
             self.assertEqual(charge["charge"]["charged_credits_display"], "1.024")
+            self.assertEqual(charge["charge"]["hold_id"], "")
             self.assertEqual(charge["account"]["available_credit_wei"], "1976000000000000000")
             self.assertEqual(charge["account"]["held_credit_wei"], "0")
             self.assertEqual(charge["account"]["spent_credit_wei"], "1024000000000000000")
 
-            duplicate = ledger.charge_hold_credit_wei(
-                hold_id=hold["hold"]["hold_id"],
-                charged_credit_wei="1024000000000000000",
+            duplicate = ledger.spend_request_credit_wei(
+                account_id="buyer",
+                request_id="req-fractional",
+                credit_wei="1024000000000000000",
+                worker_node_id="worker-1",
                 memo="fractional duplicate",
             )
             self.assertTrue(duplicate["idempotent"])
@@ -147,7 +142,49 @@ class HubCreditLedgerTests(unittest.TestCase):
 
             account = HubCreditLedger(Path(tmp)).get_account("buyer")
             self.assertEqual(account.available_credit_wei, 1976000000000000000)
+            self.assertEqual(account.held_credit_wei, 0)
             self.assertEqual(account.spent_credit_wei, 1024000000000000000)
+
+
+    def test_legacy_held_balance_is_treated_as_spendable_after_holds_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = HubCreditLedger(Path(tmp))
+            ledger.issue(account_id="buyer", credits=2, memo="fund buyer")
+            data = json.loads((Path(tmp) / "ledger.json").read_text(encoding="utf-8"))
+            account = data["accounts"]["buyer"]
+            account["available_credit_wei"] = "0"
+            account["available_credits"] = 0
+            account["held_credit_wei"] = "2000000000000000000"
+            account["held_credits"] = 2
+            data["holds"]["legacy-hold"] = {
+                "hold_id": "legacy-hold",
+                "account_id": "buyer",
+                "request_id": "legacy-request",
+                "credits": 2,
+                "credit_wei": "2000000000000000000",
+                "status": "held",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "expires_at": "",
+                "released_at": "",
+                "charged_at": "",
+            }
+            (Path(tmp) / "ledger.json").write_text(json.dumps(data), encoding="utf-8")
+
+            reloaded = HubCreditLedger(Path(tmp))
+            account = reloaded.get_account("buyer")
+            self.assertEqual(account.available_credit_wei, 2000000000000000000)
+            self.assertEqual(account.held_credit_wei, 0)
+            self.assertEqual(reloaded.status()["active_hold_count"], 0)
+
+            spend = reloaded.spend_request_credit(
+                account_id="buyer",
+                request_id="spend-after-legacy-hold",
+                credits=2,
+                worker_node_id="worker-1",
+            )
+            self.assertEqual(spend["account"]["available_credit_wei"], "0")
+            self.assertEqual(spend["account"]["held_credit_wei"], "0")
+            self.assertEqual(spend["account"]["spent_credit_wei"], "2000000000000000000")
 
 
     def test_hub_credit_api_exposes_balances_transactions_deposits_and_bootstrap(self) -> None:

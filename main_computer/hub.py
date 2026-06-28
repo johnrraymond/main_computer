@@ -1891,7 +1891,7 @@ class HubServerHandler(_JsonHandler):
             if max_authorized_credits > 0:
                 max_authorized_credit_wei = max_authorized_credits * CREDIT_WEI_PER_CREDIT
         if required_credit_wei > 0 and max_authorized_credit_wei > 0 and max_authorized_credit_wei < required_credit_wei:
-            raise HubCreditAuthorizationError("The multi-session key authorization is below the requested credit hold.")
+            raise HubCreditAuthorizationError("The multi-session key authorization is below the requested credit spend.")
 
         account_id = wallet_account_id(wallet_address)
         return {
@@ -2746,15 +2746,16 @@ class HubServerHandler(_JsonHandler):
                 "account": account_payload,
                 "multisession_key_id": key_id,
             }
+        spendable_credit_wei = account.available_credit_wei + account.held_credit_wei
         credit_ready = True
         reason_code = "active"
         user_message = "The selected multi-session key is active on this Hub."
-        if required_credit_wei and account.available_credit_wei < required_credit_wei:
+        if required_credit_wei and spendable_credit_wei < required_credit_wei:
             credit_ready = False
             reason_code = "insufficient_spendable_credits"
             user_message = (
                 f"The Hub sees insufficient spendable credits for this approximate authorization: "
-                f"{credit_wei_to_display_text(account.available_credit_wei)} available, "
+                f"{credit_wei_to_display_text(spendable_credit_wei)} spendable, "
                 f"{credit_wei_to_display_text(required_credit_wei)} required."
             )
 
@@ -2784,6 +2785,8 @@ class HubServerHandler(_JsonHandler):
             "required_credits_display": credit_wei_to_decimal_text(required_credit_wei),
             "available_credit_wei": str(account.available_credit_wei),
             "available_credits_display": credit_wei_to_decimal_text(account.available_credit_wei),
+            "spendable_credit_wei": str(spendable_credit_wei),
+            "spendable_credits_display": credit_wei_to_decimal_text(spendable_credit_wei),
             "credit_ready": bool(credit_ready),
             "key": key_payload,
         }
@@ -2978,10 +2981,11 @@ class HubServerHandler(_JsonHandler):
 
         account_id = wallet_account_id(wallet_address)
         account = self.server.credit_ledger.get_account(account_id)
-        if account.available_credit_wei < estimated_credit_wei:
+        spendable_credit_wei = account.available_credit_wei + account.held_credit_wei
+        if spendable_credit_wei < estimated_credit_wei:
             raise HubPaymentRequired(
                 f"Insufficient Compute Credits for account {account_id}: "
-                f"{credit_wei_to_display_text(account.available_credit_wei)} available, "
+                f"{credit_wei_to_display_text(spendable_credit_wei)} spendable, "
                 f"{credit_wei_to_display_text(estimated_credit_wei)} required."
             )
         return {
@@ -3073,40 +3077,8 @@ class HubServerHandler(_JsonHandler):
             hub_request_id=hub_request_id,
         )
 
-        hold_result: dict[str, Any] | None = None
-        charge_result: dict[str, Any] | None = None
+        payment_receipt: dict[str, Any] | None = None
         try:
-            if payment_authorization:
-                required_credit_wei = int(payment_authorization["required_credit_wei"])
-                hold_result = self.server.credit_ledger.create_hold_credit_wei(
-                    account_id=payment_authorization["account_id"],
-                    request_id=hub_request_id,
-                    credit_wei=required_credit_wei,
-                    memo=f"paid remote overflow hold for {remote_overflow_request_id}",
-                    metadata={
-                        "remote_overflow_request_id": remote_overflow_request_id,
-                        "wallet_address": payment_authorization["wallet_address"],
-                        "multisession_key_id": payment_authorization["multisession_key_id"],
-                        "max_output_tokens": payment_authorization["max_output_tokens"],
-                        "credits_per_token": payment_authorization["credits_per_token"],
-                        "credits_per_token_wei": payment_authorization["credits_per_token_wei"],
-                        "estimated_input_tokens": payment_authorization["estimated_input_tokens"],
-                        "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
-                        "required_credit_wei": payment_authorization["required_credit_wei"],
-                        "approximation_only": True,
-                    },
-                )
-                self._log_remote_overflow_event(
-                    "credit hold created",
-                    remote_overflow_request_id=remote_overflow_request_id,
-                    hub_request_id=hub_request_id,
-                    message=(
-                        f"account_id={payment_authorization['account_id']} "
-                        f"credit_wei={payment_authorization['required_credit_wei']} "
-                        f"credits={payment_authorization['required_credits_display']}"
-                    ),
-                )
-
             prompt_preview = self._remote_overflow_prompt_preview(messages_payload)
             if payment_authorization:
                 content = (
@@ -3118,17 +3090,15 @@ class HubServerHandler(_JsonHandler):
             else:
                 content = (
                     "Remote Hub AI response received.\n"
-                    "No credits were held, no credits were spent, and no real paid worker was contacted.\n\n"
+                    "No credits were spent, and no real paid worker was contacted.\n\n"
                     f"Prompt preview: {prompt_preview}"
                 )
 
-            payment_receipt: dict[str, Any] | None = None
-            if payment_authorization and hold_result:
-                hold_payload = hold_result.get("hold") if isinstance(hold_result.get("hold"), dict) else {}
-                hold_id = str(hold_payload.get("hold_id") or "")
-                charge_result = self.server.credit_ledger.charge_hold_credit_wei(
-                    hold_id=hold_id,
-                    charged_credit_wei=payment_authorization["required_credit_wei"],
+            if payment_authorization:
+                spend_result = self.server.credit_ledger.spend_request_credit_wei(
+                    account_id=payment_authorization["account_id"],
+                    request_id=hub_request_id,
+                    credit_wei=payment_authorization["required_credit_wei"],
                     memo=f"paid remote overflow charge for {remote_overflow_request_id}",
                     metadata={
                         "remote_overflow_request_id": remote_overflow_request_id,
@@ -3141,16 +3111,16 @@ class HubServerHandler(_JsonHandler):
                         "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
                         "required_credit_wei": payment_authorization["required_credit_wei"],
                         "approximation_only": True,
+                        "direct_spend": True,
                     },
                 )
-                charge_payload = charge_result.get("charge") if isinstance(charge_result.get("charge"), dict) else {}
-                account_payload = charge_result.get("account") if isinstance(charge_result.get("account"), dict) else {}
+                charge_payload = spend_result.get("charge") if isinstance(spend_result.get("charge"), dict) else {}
+                account_payload = spend_result.get("account") if isinstance(spend_result.get("account"), dict) else {}
                 payment_receipt = {
                     "account_id": payment_authorization["account_id"],
                     "wallet_address": payment_authorization["wallet_address"],
                     "charged_credits_display": payment_authorization["required_credits_display"],
                     "charged_credit_wei": payment_authorization["required_credit_wei"],
-                    "hold_id": hold_id,
                     "charge_id": str(charge_payload.get("charge_id") or ""),
                     "request_id": hub_request_id,
                     "remote_overflow_request_id": remote_overflow_request_id,
@@ -3160,6 +3130,8 @@ class HubServerHandler(_JsonHandler):
                     "held_credit_wei_after": account_payload.get("held_credit_wei", "0"),
                     "spent_credits_after": account_payload.get("spent_credits_display", account_payload.get("spent_credits", 0)),
                     "spent_credit_wei_after": account_payload.get("spent_credit_wei", "0"),
+                    "legacy_holds_cancelled": list(spend_result.get("legacy_holds_cancelled") or []),
+                    "direct_spend": True,
                     "max_output_tokens": payment_authorization["max_output_tokens"],
                     "credits_per_token": payment_authorization["credits_per_token"],
                     "credits_per_token_wei": payment_authorization["credits_per_token_wei"],
@@ -3167,7 +3139,7 @@ class HubServerHandler(_JsonHandler):
                     "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
                     "estimated_max_credit_wei": payment_authorization["estimated_max_credit_wei"],
                     "approximation_only": True,
-                    "idempotent": bool(hold_result.get("idempotent") or charge_result.get("idempotent")),
+                    "idempotent": bool(spend_result.get("idempotent")),
                     "authorization": {
                         "kind": payment_authorization["kind"],
                         "multisession_key_id": payment_authorization["multisession_key_id"],
@@ -3187,24 +3159,6 @@ class HubServerHandler(_JsonHandler):
                 )
 
         except Exception:
-            if hold_result:
-                hold_payload = hold_result.get("hold") if isinstance(hold_result.get("hold"), dict) else {}
-                hold_id = str(hold_payload.get("hold_id") or "")
-                if hold_id and str(hold_payload.get("status") or "") == "held":
-                    try:
-                        self.server.credit_ledger.release_hold(
-                            hold_id=hold_id,
-                            reason="remote_overflow_execution_failed",
-                            memo=f"released paid remote overflow hold for {remote_overflow_request_id}",
-                            metadata={"remote_overflow_request_id": remote_overflow_request_id},
-                        )
-                    except Exception as release_exc:  # pragma: no cover - best effort cleanup
-                        self._log_remote_overflow_event(
-                            "credit hold release failed",
-                            remote_overflow_request_id=remote_overflow_request_id,
-                            hub_request_id=hub_request_id,
-                            message=str(release_exc),
-                        )
             raise
 
         metadata = {
@@ -3215,9 +3169,7 @@ class HubServerHandler(_JsonHandler):
             "remote_hub_observable_passthrough": True,
             "safe_remote_hub_path": True,
             "remote_overflow_request_id": remote_overflow_request_id,
-            "credit_hold_created": bool(payment_receipt),
             "credit_spent": bool(payment_receipt),
-            "no_credit_hold_created": not bool(payment_receipt),
             "no_credit_spent": not bool(payment_receipt),
             "no_real_paid_worker_contacted": True,
             "no_real_remote_worker_contacted": True,
@@ -3228,9 +3180,7 @@ class HubServerHandler(_JsonHandler):
                 "model": model,
                 "surface": "/api/hub/remote-overflow/safe-chat",
                 "security_mode": "remote-overflow-paid" if payment_receipt else "remote-overflow-safe-preview",
-                "credit_hold_created": bool(payment_receipt),
                 "credit_spent": bool(payment_receipt),
-                "no_credit_hold_created": not bool(payment_receipt),
                 "no_credit_spent": not bool(payment_receipt),
                 "no_real_paid_worker_contacted": True,
             },
@@ -3596,20 +3546,10 @@ class HubServerHandler(_JsonHandler):
             self._send_json(payload)
             return
         if path == "/api/hub/v1/credits/holds":
-            account_id = query.get("account_id", [""])[0]
-            request_id = query.get("request_id", [""])[0]
-            active_only = str(query.get("active", [""])[0]).lower() in {"1", "true", "yes"}
-            limit = int(query.get("limit", ["100"])[0] or 100)
-            holds = [
-                hold.as_dict()
-                for hold in self.server.credit_ledger.list_holds(
-                    account_id=account_id,
-                    request_id=request_id,
-                    active_only=active_only,
-                    limit=limit,
-                )
-            ]
-            self._send_json({"ok": True, "holds": holds, "hold_count": len(holds)})
+            # Holds are no longer part of the credit golden path.  Keep this
+            # read endpoint harmless for old diagnostics, but never report an
+            # active hold that could block spendable balance.
+            self._send_json({"ok": True, "holds_disabled": True, "holds": [], "hold_count": 0})
             return
         if path == "/api/hub/v1/credits/worker-earnings":
             worker_node_id = query.get("worker_node_id", [""])[0]

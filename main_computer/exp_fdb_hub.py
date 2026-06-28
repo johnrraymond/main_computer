@@ -20,6 +20,12 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from main_computer.config import DEFAULT_HUB_BRIDGE_BACKEND, MainComputerConfig
+from main_computer.credit_units import (
+    CREDIT_WEI_PER_CREDIT,
+    credit_decimal_text_to_wei,
+    credit_wei_to_decimal_text,
+    credit_wei_to_whole_credits_floor,
+)
 from main_computer.contract_config import contract_config_path
 from main_computer.exp_fdb_credit_ledger import ExperimentalFoundationDbConfig, ExperimentalFoundationDbCreditLedger
 from main_computer.exp_fdb_hub_state import (
@@ -41,7 +47,8 @@ from main_computer.hub import (
     HubServerHandler,
 )
 from main_computer.stable_hub import LiveWorkerSession, stable_hub_contract
-from main_computer.hub_plex_models import HubAIRequest
+from main_computer.hub_plex_models import HubAIRequest, HubRequestStatus, chat_response_from_payload
+from main_computer.hub_plex_service import idempotent_request_id, stable_request_id
 from main_computer.stable_hub_topology import (
     StableHubNode,
     StableHubTopology,
@@ -83,6 +90,13 @@ DEFAULT_EXP_FDB_SMOKE_DOCKER_IMAGE = "foundationdb/foundationdb:7.4.6"
 DEFAULT_EXP_FDB_SMOKE_PORT = 4550
 DEFAULT_EXP_FDB_SMOKE_NAMESPACE = "main-computer-exp-fdb-autostart-smoke"
 DEFAULT_EXP_FDB_SMOKE_START_TIMEOUT_SECONDS = 45.0
+
+
+def _exp_short_response_summary(response: Any) -> str:
+    text = " ".join(str(getattr(response, "content", "") or "").split())
+    if len(text) > 240:
+        return text[:237] + "..."
+    return text
 
 
 
@@ -487,7 +501,12 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         raw_market = message.get("market")
         if not isinstance(raw_market, dict):
             raw_market = message.get("worker_market")
-        market = normalize_worker_market_profile(raw_market if isinstance(raw_market, dict) else None)
+        market_source = dict(raw_market) if isinstance(raw_market, dict) else {}
+        if "models" not in market_source and isinstance(message.get("models"), list):
+            market_source["models"] = list(message.get("models") or [])
+        if "model" not in market_source and message.get("model"):
+            market_source["model"] = str(message.get("model") or "")
+        market = normalize_worker_market_profile(market_source)
         return market
 
     def _register_exp_worker_from_live_session(
@@ -528,14 +547,23 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             "credits_per_request": amount,
             "unit": str(price.get("unit") or "compute_credit") if isinstance(price, dict) else "compute_credit",
         }
-        model = "live-session-worker"
+        market_models = [str(item).strip() for item in market.get("models", []) if str(item).strip()]
+        models: list[str] = []
+        for candidate in ["live-session-worker", *market_models]:
+            if candidate and candidate not in models:
+                models.append(candidate)
+        if not models:
+            models = ["live-session-worker"]
+        model = models[0]
+        capabilities["model"] = model
+        capabilities["models"] = list(models)
         endpoint = self.server.stable_hub_node.hub_url.rstrip("/") + "/api/hub/v1/workers/live-session"
         try:
             self.server.registry.register_worker(
                 node_id=worker_id,
                 endpoint=endpoint,
                 model=model,
-                models=[model],
+                models=models,
                 capabilities=capabilities,
                 credits_per_request=amount,
                 worker_instance_id=worker_instance_id or connection_id,
@@ -560,7 +588,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         # the accepted live socket.
         return str(connection_id or worker_id)
 
-    def _exp_request_body_for_worker_pull(
+    def _exp_request_body_for_live_session(
         self,
         body: dict[str, Any],
         *,
@@ -568,16 +596,22 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
     ) -> dict[str, Any]:
         payload = dict(body)
         metadata = dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {}
-        metadata.setdefault("execution_mode", "exp-live-session-worker-v1")
+        metadata.setdefault("execution_mode", "exp-live-session-direct-v1")
         metadata.setdefault("worker_connection_mode", "stable-websocket-live-session")
+        selected_price = dict(selected_worker.get("price") or {})
+        selected_credit_wei = credit_decimal_text_to_wei(str(selected_price.get("amount") or "1"), default="1", minimum_wei=1)
         metadata.setdefault("selected_offer", {
             "worker_node_id": str(selected_worker.get("worker_id") or ""),
             "worker_instance_id": str(selected_worker.get("connection_id") or ""),
-            "credits_per_request": max(1, int(float((selected_worker.get("price") or {}).get("amount") or 1))),
-            "unit": str((selected_worker.get("price") or {}).get("unit") or "compute_credit"),
-            "execution_mode": "exp-live-session-worker-v1",
+            "credits_per_request": max(1, (selected_credit_wei + CREDIT_WEI_PER_CREDIT - 1) // CREDIT_WEI_PER_CREDIT),
+            "credits_per_request_wei": str(selected_credit_wei),
+            "credits_per_request_display": credit_wei_to_decimal_text(selected_credit_wei),
+            "unit": str(selected_price.get("unit") or "compute_credit"),
+            "execution_mode": "exp-live-session-direct-v1",
             "price_source": "exp_live_worker_market",
+            "legacy_worker_pull_lease": False,
         })
+        metadata.setdefault("selected_worker", dict(selected_worker))
         if payload.get("request_id") and not payload.get("idempotency_key"):
             payload["idempotency_key"] = str(payload.get("request_id"))
         if not payload.get("messages"):
@@ -590,7 +624,10 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 or "exp live-session work request"
             )
             payload["messages"] = [{"role": "user", "content": str(prompt)}]
-        if not payload.get("model"):
+        requested_model = str(payload.get("model") or "").strip()
+        if requested_model:
+            metadata.setdefault("requested_model", requested_model)
+        else:
             payload["model"] = "live-session-worker"
         if not payload.get("requested_worker_node_id"):
             payload["requested_worker_node_id"] = str(selected_worker.get("worker_id") or "")
@@ -609,6 +646,330 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             required=bool(getattr(self.server.config, "hub_require_multisession_auth", False)),
         )
         return payload
+
+    def _exp_live_session_selected_credit_wei(self, selected_worker: dict[str, Any]) -> int:
+        price = dict(selected_worker.get("price") or {})
+        return credit_decimal_text_to_wei(str(price.get("amount") or "1"), default="1", minimum_wei=1)
+
+    def _exp_live_session_selected_credit_units(self, selected_worker: dict[str, Any]) -> int:
+        credit_wei = self._exp_live_session_selected_credit_wei(selected_worker)
+        return max(1, (credit_wei + CREDIT_WEI_PER_CREDIT - 1) // CREDIT_WEI_PER_CREDIT)
+
+    def _exp_create_live_session_request_record(
+        self,
+        *,
+        request: HubAIRequest,
+        request_payload: dict[str, Any],
+        worker_id: str,
+        worker_instance_id: str,
+    ) -> Any:
+        existing = self.server.dispatcher.plex_service._idempotent_record(request)
+        if existing is not None:
+            return existing
+        normalized = request.as_payload()
+        request_id = (
+            idempotent_request_id(request.client_node_id, request.idempotency_key)
+            if request.idempotency_key
+            else stable_request_id(normalized)
+        )
+        record = self.server.dispatcher.plex_service._create_record(
+            request_id=request_id,
+            request=request,
+            security_mode="exp-live-session-direct-v1",
+            hub_blind=False,
+            initial_state="dispatching",
+            initial_event_type="exp_live_session.selected",
+        )
+        self.server.dispatcher.plex_service._prepare_paid_request_spend(record, request)
+        return self._exp_request_store().update(
+            request_id,
+            state="dispatching",
+            selected_worker_node_id=worker_id,
+            selected_worker_instance_id=worker_instance_id,
+            credits_queued=self._exp_live_session_selected_credit_units(
+                dict((request_payload.get("metadata") or {}).get("selected_worker") or {})
+            ) if isinstance(request_payload.get("metadata"), dict) and isinstance((request_payload.get("metadata") or {}).get("selected_worker"), dict) else 0,
+            event_type="exp_live_session.worker_selected",
+            event={
+                "worker_node_id": worker_id,
+                "worker_instance_id": worker_instance_id,
+                "direct_live_session": True,
+                "legacy_worker_pull_lease": False,
+            },
+        )
+
+    def _exp_spend_live_session_credit(
+        self,
+        *,
+        request_id: str,
+        worker_id: str,
+        selected_worker: dict[str, Any],
+        result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        record = self._exp_request_store().get(request_id)
+        if record is None:
+            raise StableHubWorkerSessionError("live-session request record does not exist.")
+        if getattr(record, "charge_id", ""):
+            return dict(getattr(record, "receipt", {}) or {})
+        credit_wei = self._exp_live_session_selected_credit_wei(selected_worker)
+        credit_units = self._exp_live_session_selected_credit_units(selected_worker)
+        receipt = self.server.dispatcher.plex_service._spend_paid_request_credit(
+            record=record,
+            worker_node_id=worker_id,
+            worker_credits=credit_units,
+            worker_credit_wei=credit_wei,
+        )
+        return dict(receipt or {})
+
+    def _exp_mark_live_session_request_running(
+        self,
+        *,
+        request_id: str,
+        session_id: str,
+        run_id: str,
+        worker_id: str,
+        worker_instance_id: str,
+        worker_acceptance: dict[str, Any],
+    ) -> dict[str, Any]:
+        existing = self._exp_request_store().get(request_id)
+        if existing is not None and str(existing.state or "") in {"completed", "failed", "cancelled", "expired"}:
+            return HubRequestStatus.from_record(
+                existing,
+                polling_url=f"/api/hub/v1/requests/{request_id}",
+            ).as_dict()
+        record = self._exp_request_store().update(
+            request_id,
+            state="running",
+            session_id=session_id,
+            selected_worker_node_id=worker_id,
+            selected_worker_instance_id=worker_instance_id,
+            event_type="exp_live_session.accepted",
+            event={
+                "session_id": session_id,
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "connection_id": worker_instance_id,
+                "direct_live_session": True,
+                "legacy_worker_pull_lease": False,
+                "worker_acceptance": dict(worker_acceptance),
+            },
+        )
+        return HubRequestStatus.from_record(record, polling_url=f"/api/hub/v1/requests/{request_id}").as_dict()
+
+    def _exp_complete_live_session_request(
+        self,
+        *,
+        request_id: str,
+        worker_id: str,
+        worker_instance_id: str,
+        result_payload: dict[str, Any],
+        receipt: dict[str, Any],
+        selected_worker: dict[str, Any],
+    ) -> dict[str, Any]:
+        record = self._exp_request_store().get(request_id)
+        if record is None:
+            raise StableHubWorkerSessionError("live-session request record does not exist.")
+        response_payload = result_payload.get("response") if isinstance(result_payload.get("response"), dict) else result_payload
+        if not isinstance(response_payload, dict):
+            response_payload = {"content": str(response_payload or "")}
+        response = chat_response_from_payload(
+            response_payload,
+            default_provider="exp-live-worker",
+            default_model=str(record.model or "live-session-worker"),
+        )
+        credit_wei = self._exp_live_session_selected_credit_wei(selected_worker)
+        credit_units = self._exp_live_session_selected_credit_units(selected_worker)
+        metadata = dict(response.metadata)
+        metadata["hub"] = {
+            "request_id": request_id,
+            "worker_node_id": worker_id,
+            "worker_instance_id": worker_instance_id,
+            "credits_queued": credit_units,
+            "credit_wei": str(credit_wei),
+            "credits_display": credit_wei_to_decimal_text(credit_wei),
+            "settlement": "batched-worker-claim",
+            "security_mode": "exp-live-session-direct-v1",
+            "hub_blind": False,
+            "exp_live_session": True,
+            "direct_live_session": True,
+            "legacy_worker_pull_lease": False,
+            "payment": dict(receipt or {}),
+        }
+        selected_offer = (
+            dict(record.request_payload.get("metadata", {}).get("selected_offer", {}))
+            if isinstance(record.request_payload, dict)
+            and isinstance(record.request_payload.get("metadata", {}), dict)
+            and isinstance(record.request_payload.get("metadata", {}).get("selected_offer"), dict)
+            else {}
+        )
+        if selected_offer:
+            metadata["hub"]["selected_offer"] = selected_offer
+        completed_record = self._exp_request_store().update(
+            request_id,
+            state="completed",
+            selected_worker_node_id=worker_id,
+            selected_worker_instance_id=worker_instance_id,
+            response={
+                "content": response.content,
+                "provider": response.provider,
+                "model": response.model,
+                "metadata": metadata,
+            },
+            response_summary=_exp_short_response_summary(response),
+            credits_queued=credit_units,
+            charge_id=str(receipt.get("charge_id", "")) if receipt else "",
+            charged_credits=max(0, int(receipt.get("charged_credits", 0) or 0)) if receipt else credit_wei_to_whole_credits_floor(credit_wei),
+            released_credits=0,
+            worker_earning_id=str(receipt.get("worker_earning_id", "")) if receipt else "",
+            receipt=dict(receipt or {}),
+            error="",
+            terminal_reason="completed",
+            event_type="request.completed",
+            event={
+                "worker_node_id": worker_id,
+                "worker_instance_id": worker_instance_id,
+                "exp_live_session": True,
+                "direct_live_session": True,
+                "legacy_worker_pull_lease": False,
+            },
+        )
+        return HubRequestStatus.from_record(
+            completed_record,
+            polling_url=f"/api/hub/v1/requests/{request_id}",
+        ).as_dict()
+
+    def _exp_fail_live_session_request(
+        self,
+        *,
+        request_id: str,
+        worker_id: str,
+        worker_instance_id: str,
+        error: str,
+        terminal_reason: str,
+    ) -> dict[str, Any]:
+        record = self._exp_request_store().update(
+            request_id,
+            state="failed",
+            selected_worker_node_id=worker_id,
+            selected_worker_instance_id=worker_instance_id,
+            error=str(error or terminal_reason),
+            terminal_reason=str(terminal_reason or "worker_failed"),
+            event_type="request.failed",
+            event={
+                "worker_node_id": worker_id,
+                "worker_instance_id": worker_instance_id,
+                "error": str(error or terminal_reason),
+                "exp_live_session": True,
+                "direct_live_session": True,
+                "legacy_worker_pull_lease": False,
+            },
+        )
+        return HubRequestStatus.from_record(record, polling_url=f"/api/hub/v1/requests/{request_id}").as_dict()
+
+    def _exp_fail_open_live_sessions_for_connection(
+        self,
+        *,
+        worker_id: str,
+        connection_id: str | None = None,
+        exclude_connection_id: str | None = None,
+        error: str,
+        terminal_reason: str,
+    ) -> list[dict[str, Any]]:
+        """Make broken live-session handoffs terminal and release capacity.
+
+        Direct live-session work is bound to one websocket generation.  If that
+        socket closes or the worker reconnects before a terminal result, the
+        requester must see a failed session instead of polling an accepted session
+        forever.
+        """
+
+        failed: list[dict[str, Any]] = []
+        try:
+            open_sessions = self.server.exp_accepted_work_session_directory.list_open_sessions_for_worker_connection(
+                worker_id=worker_id,
+                connection_id=connection_id,
+                exclude_connection_id=exclude_connection_id,
+            )
+        except Exception:
+            return failed
+        for accepted in open_sessions:
+            session_id = normalize_session_id(accepted.get("session_id"))
+            request_id = normalize_request_id(accepted.get("request_id"))
+            accepted_connection_id = str(accepted.get("worker_connection_id") or connection_id or "")
+            work = dict(accepted.get("work") or {})
+            worker_instance_id = str(work.get("worker_instance_id") or accepted_connection_id)
+            payout = dict(accepted.get("payout") or {})
+            payout.update(
+                {
+                    "status": "failed",
+                    "direct_spend": True,
+                    "legacy_worker_pull_lease": False,
+                    "release_reason": str(terminal_reason or "worker_connection_lost"),
+                }
+            )
+            try:
+                request_status = self._exp_fail_live_session_request(
+                    request_id=request_id,
+                    worker_id=worker_id,
+                    worker_instance_id=worker_instance_id,
+                    error=error,
+                    terminal_reason=terminal_reason,
+                )
+            except Exception:
+                request_status = {}
+            try:
+                updated = self.server.exp_accepted_work_session_directory.record_failed(
+                    session_id=session_id,
+                    worker_connection_id=accepted_connection_id,
+                    worker_failure={
+                        "type": "worker.connection.closed",
+                        "error": error,
+                        "terminal_reason": terminal_reason,
+                        "request": request_status,
+                    },
+                    payout=payout,
+                )
+                failed.append(updated)
+            except Exception:
+                continue
+            try:
+                self.server.stable_worker_market_directory.record_session_finished(
+                    worker_id=worker_id,
+                    connection_id=accepted_connection_id,
+                )
+            except Exception:
+                pass
+        return failed
+
+    def _exp_reconcile_open_live_session(self, accepted: dict[str, Any]) -> dict[str, Any]:
+        """Fail accepted/running direct live sessions whose websocket is no longer current."""
+
+        if str(accepted.get("status") or "") not in {"accepted", "running"}:
+            return accepted
+        work = dict(accepted.get("work") or {})
+        if work.get("direct_live_session") is not True:
+            return accepted
+        worker_id = str(accepted.get("worker_id") or "")
+        connection_id = str(accepted.get("worker_connection_id") or "")
+        if not worker_id or not connection_id:
+            return accepted
+        live_session = self.server.get_live_worker_session(connection_id)
+        market_record = self.server.stable_worker_market_directory.get_worker(worker_id)
+        market_connection_id = str((market_record or {}).get("connection_id") or "")
+        market_status = str((market_record or {}).get("status") or "")
+        if live_session is not None and live_session.is_live and market_status == "live" and market_connection_id == connection_id:
+            return accepted
+        reason = "worker_connection_replaced" if market_connection_id and market_connection_id != connection_id else "worker_connection_lost"
+        failed = self._exp_fail_open_live_sessions_for_connection(
+            worker_id=worker_id,
+            connection_id=connection_id,
+            error=f"worker live-session connection {connection_id} is no longer available",
+            terminal_reason=reason,
+        )
+        for item in failed:
+            if str(item.get("session_id") or "") == str(accepted.get("session_id") or ""):
+                return item
+        return self.server.exp_accepted_work_session_directory.get_session(str(accepted.get("session_id") or "")) or accepted
 
     def _exp_live_session_response(
         self,
@@ -848,30 +1209,59 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             )
             return
 
-        request_payload = self._exp_request_body_for_worker_pull(body, selected_worker=selected_worker)
+        request_payload = self._exp_request_body_for_live_session(body, selected_worker=selected_worker)
         request = HubAIRequest.from_payload(
             request_payload,
             default_model=str(request_payload.get("model") or "live-session-worker"),
             default_client_node_id=str(request_payload.get("client_node_id") or "exp-live-requester"),
         )
-        queued_status = self.server.dispatcher.submit_worker_pull(request)
-        queued_request = dict(queued_status.get("request") or queued_status)
-        request_id = str(queued_request.get("request_id") or "")
         worker_id = str(selected_worker.get("worker_id") or "")
         worker_instance_id = self._exp_worker_instance_id_for_connection(worker_id, connection_id)
-        lease_response = self.server.dispatcher.poll_worker(
-            worker_node_id=worker_id,
-            worker_instance_id=worker_instance_id,
-            lease_seconds=float(request_payload.get("lease_seconds") or self.server.config.hub_timeout_s or 600.0),
-        )
-        lease = dict(lease_response.get("lease") or {})
-        if not lease:
-            self.server.dispatcher.cancel_request(request_id)
+
+        try:
+            record = self._exp_create_live_session_request_record(
+                request=request,
+                request_payload=request_payload,
+                worker_id=worker_id,
+                worker_instance_id=worker_instance_id,
+            )
+        except Exception as exc:
             self._send_json(
                 {
                     "ok": False,
-                    "error": "worker_lease_unavailable",
-                    "message": "The selected exp live-session worker could not claim the paid request lease.",
+                    "error": "credit_spend_prepare_failed",
+                    "message": str(exc),
+                    "worker_id": worker_id,
+                    "connection_id": connection_id,
+                    "hub_id": self.server.stable_hub_node.hub_id,
+                },
+                status=HTTPStatus.PAYMENT_REQUIRED,
+            )
+            return
+
+        request_id = str(record.request_id or "")
+        try:
+            market_record = self.server.stable_worker_market_directory.reserve_worker_capacity(
+                worker_id=worker_id,
+                connection_id=connection_id,
+                lease_epoch=int(selected_worker.get("lease_epoch") or 0),
+            )
+        except StableHubWorkerSessionError as exc:
+            try:
+                self._exp_fail_live_session_request(
+                    request_id=request_id,
+                    worker_id=worker_id,
+                    worker_instance_id=worker_instance_id,
+                    error=str(exc),
+                    terminal_reason="worker_capacity_unavailable",
+                )
+            except Exception:
+                pass
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "message": "Selected exp live-session worker no longer has an available capacity slot.",
                     "request_id": request_id,
                     "worker_id": worker_id,
                     "connection_id": connection_id,
@@ -885,25 +1275,39 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         run_id = new_run_id()
         partition = stable_partition_key_for_work(body)
         task_queue = stable_task_queue_for_partition(partition)
+        metadata = dict(request_payload.get("metadata") or {}) if isinstance(request_payload.get("metadata"), dict) else {}
+        selected_offer = dict(metadata.get("selected_offer") or {}) if isinstance(metadata.get("selected_offer"), dict) else {}
+        selected_credit_wei = self._exp_live_session_selected_credit_wei(selected_worker)
+        selected_credit_units = self._exp_live_session_selected_credit_units(selected_worker)
         offer = {
             "type": "hub.work.offer",
             "service": "main_computer.exp_fdb_hub",
             "session_id": session_id,
             "run_id": run_id,
             "request_id": request_id,
-            "lease_id": str(lease.get("lease_id") or ""),
             "worker_id": worker_id,
             "connection_id": connection_id,
             "worker_instance_id": worker_instance_id,
             "work": {
-                "messages": lease.get("messages", []),
+                "messages": request.messages,
                 "input": body.get("input", {}),
-                "model": lease.get("model") or request.model,
+                "model": str(metadata.get("requested_model") or request.model or "live-session-worker"),
                 "ring": body.get("ring", body.get("partition", partition)),
                 "capabilities": body.get("capabilities", body.get("required_capabilities", [])),
             },
-            "pricing": lease.get("pricing", {}),
-            "selected_offer": lease.get("selected_offer", {}),
+            "pricing": {
+                "quoted_credits": selected_credit_units,
+                "quoted_credits_wei": str(selected_credit_wei),
+                "quoted_credits_display": credit_wei_to_decimal_text(selected_credit_wei),
+                "worker_earning_credits": selected_credit_units,
+                "worker_earning_credit_wei": str(selected_credit_wei),
+                "worker_earning_display": credit_wei_to_decimal_text(selected_credit_wei),
+                "unit": str((selected_worker.get("price") or {}).get("unit") or "compute_credit"),
+                "pricing_mode": "exp_live_session_direct",
+                "execution_mode": "exp-live-session-direct-v1",
+                "legacy_worker_pull_lease": False,
+            },
+            "selected_offer": selected_offer,
             "execution_hub": {
                 "hub_id": self.server.stable_hub_node.hub_id,
                 "hub_url": self.server.stable_hub_node.hub_url,
@@ -911,19 +1315,68 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 "handoff": False,
             },
         }
+        payout = {
+            "backend": "exp_fdb_credit_ledger",
+            "charge_id": "",
+            "worker_earning_id": "",
+            "unit": "compute_credit",
+            "status": "pending_worker_acceptance",
+            "direct_spend": True,
+            "legacy_worker_pull_lease": False,
+        }
+        accepted = self.server.exp_accepted_work_session_directory.record_accepted(
+            session_id=session_id,
+            run_id=run_id,
+            request_id=request_id,
+            requester_msk_id=str(metadata.get("multisession_key_id") or ""),
+            requester_account_id=str(request.account_id or ""),
+            requester_wallet_address=str(metadata.get("wallet_address") or ""),
+            worker_id=worker_id,
+            worker_connection_id=connection_id,
+            owner_hub_id=self.server.stable_hub_node.hub_id,
+            owner_hub_url=self.server.stable_hub_node.hub_url,
+            partition=partition,
+            task_queue=task_queue,
+            work={
+                "request": body,
+                "exp_request_payload": request_payload,
+                "worker_instance_id": worker_instance_id,
+                "selected_worker": dict(selected_worker),
+                "direct_live_session": True,
+                "legacy_worker_pull_lease": False,
+            },
+            worker_acceptance={"status": "pending", "reason": "offer_sent"},
+            payout=payout,
+        )
+
         try:
             acceptance = live_session.offer_work_and_wait_for_acceptance(
                 offer,
                 timeout_seconds=float(body.get("accept_timeout_seconds") or 10.0),
             )
         except Exception as exc:
+            self.server.stable_worker_market_directory.record_session_finished(
+                worker_id=worker_id,
+                connection_id=connection_id,
+            )
             try:
-                self.server.dispatcher.submit_worker_result(
-                    worker_node_id=worker_id,
-                    worker_instance_id=worker_instance_id,
+                failed_payout = dict(payout)
+                failed_payout.update({"status": "failed", "release_reason": "worker_accept_timeout"})
+                self._exp_fail_live_session_request(
                     request_id=request_id,
-                    lease_id=str(lease.get("lease_id") or ""),
-                    result={"status": "failed", "error": f"worker did not accept offer: {exc}"},
+                    worker_id=worker_id,
+                    worker_instance_id=worker_instance_id,
+                    error=f"worker did not accept offer: {exc}",
+                    terminal_reason="worker_accept_timeout",
+                )
+                self.server.exp_accepted_work_session_directory.record_failed(
+                    session_id=session_id,
+                    worker_connection_id=connection_id,
+                    worker_failure={
+                        "type": "worker.work.accept_timeout",
+                        "error": f"worker did not accept offer: {exc}",
+                    },
+                    payout=failed_payout,
                 )
             except Exception:
                 pass
@@ -940,59 +1393,34 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             )
             return
 
-        try:
-            self._exp_request_store().update(
-                request_id,
-                session_id=session_id,
-                event_type="exp_live_session.accepted",
-                event={
-                    "session_id": session_id,
-                    "run_id": run_id,
-                    "worker_id": worker_id,
-                    "connection_id": connection_id,
-                    "lease_id": str(lease.get("lease_id") or ""),
-                    "bounce_required": True,
-                },
-            )
-        except Exception:
-            pass
-        self.server.stable_worker_market_directory.record_session_accepted(
+        receipt = self._exp_spend_live_session_credit(
+            request_id=request_id,
             worker_id=worker_id,
-            connection_id=connection_id,
+            selected_worker=dict(selected_worker),
         )
-        leased_request = dict(lease_response.get("request") or {})
-        payout = {
-            "backend": "exp_fdb_credit_ledger",
-            "hold_id": str(leased_request.get("hold_id") or queued_request.get("hold_id") or ""),
-            "charge_id": "",
-            "worker_earning_id": "",
-            "unit": "compute_credit",
-            "status": "held",
-            "lease_id": str(lease.get("lease_id") or ""),
-        }
-        accepted = self.server.exp_accepted_work_session_directory.record_accepted(
+        request_status = self._exp_mark_live_session_request_running(
+            request_id=request_id,
             session_id=session_id,
             run_id=run_id,
-            request_id=request_id,
-            requester_msk_id=str((request_payload.get("metadata") or {}).get("multisession_key_id") or ""),
-            requester_account_id=str(request.account_id or ""),
-            requester_wallet_address=str((request_payload.get("metadata") or {}).get("wallet_address") or ""),
             worker_id=worker_id,
-            worker_connection_id=connection_id,
-            owner_hub_id=self.server.stable_hub_node.hub_id,
-            owner_hub_url=self.server.stable_hub_node.hub_url,
-            partition=partition,
-            task_queue=task_queue,
-            work={
-                "request": body,
-                "exp_request_payload": request_payload,
-                "lease": lease,
-                "worker_instance_id": worker_instance_id,
-            },
-            worker_acceptance=acceptance,
-            payout=payout,
+            worker_instance_id=worker_instance_id,
+            worker_acceptance=dict(acceptance),
         )
-        self._send_json(self._exp_live_session_response(accepted_session=accepted, request_status=lease_response.get("request") if isinstance(lease_response.get("request"), dict) else queued_request))
+        accepted = self.server.exp_accepted_work_session_directory.get_session(session_id) or accepted
+        if str(accepted.get("status") or "") not in {"succeeded", "failed", "cancelled"}:
+            payout = dict(accepted.get("payout") or payout)
+            payout.update(
+                {
+                    "status": "charged",
+                    "charge_id": str(receipt.get("charge_id") or ""),
+                    "worker_earning_id": str(receipt.get("worker_earning_id") or ""),
+                    "charged_credits": int(receipt.get("charged_credits") or 0),
+                    "charged_credit_wei": str(receipt.get("charged_credit_wei") or selected_credit_wei),
+                    "direct_spend": True,
+                    "legacy_worker_pull_lease": False,
+                }
+            )
+        self._send_json(self._exp_live_session_response(accepted_session=accepted, request_status=request_status))
 
     def _handle_exp_worker_terminal_message(
         self,
@@ -1031,31 +1459,39 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             )
             return
         work = dict(accepted.get("work") or {})
-        lease = dict(work.get("lease") or {})
+        selected_worker = dict(work.get("selected_worker") or {})
         worker_instance_id = str(work.get("worker_instance_id") or connection_id)
-        lease_id = str(message.get("lease_id") or lease.get("lease_id") or "")
         if message_type == "worker.work.result":
             result_payload = message.get("result")
             if not isinstance(result_payload, dict):
                 result_payload = {"response": {"content": str(result_payload or "")}}
             result_payload.setdefault("status", "success")
-            result_response = self.server.dispatcher.submit_worker_result(
-                worker_node_id=worker_id,
-                worker_instance_id=worker_instance_id,
+            receipt = self._exp_spend_live_session_credit(
                 request_id=request_id,
-                lease_id=lease_id,
+                worker_id=worker_id,
+                selected_worker=selected_worker,
                 result=result_payload,
             )
-            request_status = dict(result_response.get("request") or {})
+            request_status = self._exp_complete_live_session_request(
+                request_id=request_id,
+                worker_id=worker_id,
+                worker_instance_id=worker_instance_id,
+                result_payload=result_payload,
+                receipt=receipt,
+                selected_worker=selected_worker,
+            )
             payout = dict(accepted.get("payout") or {})
             payout.update(
                 {
                     "status": "charged",
-                    "charge_id": str(request_status.get("charge_id") or ""),
-                    "worker_earning_id": str(request_status.get("worker_earning_id") or ""),
-                    "charged_credits": int(request_status.get("charged_credits") or 0),
-                    "released_credits": int(request_status.get("released_credits") or 0),
-                    "lease_id": lease_id,
+                    "charge_id": str(receipt.get("charge_id") or ""),
+                    "worker_earning_id": str(receipt.get("worker_earning_id") or ""),
+                    "charged_credits": int(receipt.get("charged_credits") or 0),
+                    "charged_credit_wei": str(receipt.get("charged_credit_wei") or ""),
+                    "released_credits": 0,
+                    "released_credit_wei": "0",
+                    "direct_spend": True,
+                    "legacy_worker_pull_lease": False,
                 }
             )
             updated = self.server.exp_accepted_work_session_directory.record_succeeded(
@@ -1083,23 +1519,31 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         if message_type == "worker.work.failed":
             error = message.get("error")
             error_text = str(error.get("error") if isinstance(error, dict) else error or message.get("message") or "worker_failed")
-            result_response = self.server.dispatcher.submit_worker_result(
-                worker_node_id=worker_id,
-                worker_instance_id=worker_instance_id,
+            receipt = self._exp_spend_live_session_credit(
                 request_id=request_id,
-                lease_id=lease_id,
+                worker_id=worker_id,
+                selected_worker=selected_worker,
                 result={"status": "failed", "error": error_text},
             )
-            request_status = dict(result_response.get("request") or {})
+            request_status = self._exp_fail_live_session_request(
+                request_id=request_id,
+                worker_id=worker_id,
+                worker_instance_id=worker_instance_id,
+                error=error_text,
+                terminal_reason="worker_result_failed",
+            )
             payout = dict(accepted.get("payout") or {})
             payout.update(
                 {
-                    "status": "released",
-                    "charge_id": "",
-                    "worker_earning_id": "",
-                    "charged_credits": int(request_status.get("charged_credits") or 0),
-                    "released_credits": int(request_status.get("released_credits") or 0),
-                    "lease_id": lease_id,
+                    "status": "failed",
+                    "charge_id": str(receipt.get("charge_id") or ""),
+                    "worker_earning_id": str(receipt.get("worker_earning_id") or ""),
+                    "charged_credits": int(receipt.get("charged_credits") or 0),
+                    "charged_credit_wei": str(receipt.get("charged_credit_wei") or ""),
+                    "released_credits": 0,
+                    "released_credit_wei": "0",
+                    "direct_spend": True,
+                    "legacy_worker_pull_lease": False,
                     "release_reason": "worker_failed",
                 }
             )
@@ -1140,6 +1584,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         if accepted is None:
             self._send_json({"ok": False, "error": "work_session_not_found", "session_id": session_id}, status=HTTPStatus.NOT_FOUND)
             return
+        accepted = self._exp_reconcile_open_live_session(accepted)
         request_record = None
         try:
             request_record = self._exp_request_store().get(str(accepted.get("request_id") or ""))
@@ -1234,6 +1679,12 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 market_profile=market,
             )
             self.server.register_live_worker_session(session)
+            self._exp_fail_open_live_sessions_for_connection(
+                worker_id=worker_id,
+                exclude_connection_id=connection_id,
+                error=f"worker reconnected as {connection_id} before previous live-session work finished",
+                terminal_reason="worker_connection_replaced",
+            )
             session.send_json(
                 {
                     "type": "hub.auth.accepted",
@@ -1372,6 +1823,12 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 pass
         finally:
             if worker_id and connection_id:
+                self._exp_fail_open_live_sessions_for_connection(
+                    worker_id=worker_id,
+                    connection_id=connection_id,
+                    error=f"worker live-session connection {connection_id} closed before returning a terminal result",
+                    terminal_reason="worker_connection_closed",
+                )
                 closed_owner = self.server.stable_worker_session_directory.record_closed(
                     worker_id=worker_id,
                     connection_id=connection_id,

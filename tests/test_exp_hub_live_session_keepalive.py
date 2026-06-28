@@ -456,6 +456,7 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
                     "capabilities": ["text"],
                     "input": {"prompt": "hello over exp live session"},
                     "messages": [{"role": "user", "content": "hello over exp live session"}],
+                    "model": "micro-agent-local",
                 },
                 timeout=10,
             )
@@ -471,6 +472,10 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
         assert offer["execution_hub"]["hub_url"] == hub.stable_hub_node.hub_url
         assert offer["execution_hub"]["local_owner"] is True
         assert offer["execution_hub"]["handoff"] is False
+        assert offer["work"]["model"] == "micro-agent-local"
+        assert "lease_id" not in offer
+        assert offer["pricing"]["legacy_worker_pull_lease"] is False
+        assert offer["selected_offer"]["legacy_worker_pull_lease"] is False
         _ws_send_json(
             worker_sock,
             {
@@ -481,6 +486,33 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
                 "worker_id": "worker-exp-exec-1",
             },
         )
+        _ws_send_json(
+            worker_sock,
+            {
+                "type": "worker.work.result",
+                "session_id": offer["session_id"],
+                "run_id": offer["run_id"],
+                "request_id": offer["request_id"],
+                "worker_id": "worker-exp-exec-1",
+                "result": {
+                    "status": "success",
+                    "response": {
+                        "content": "exp live-session result",
+                        "provider": "exp-live-worker",
+                        "model": "micro-agent-local",
+                        "metadata": {"from_live_session": True},
+                    },
+                },
+            },
+        )
+        terminal_ack = _ws_recv_json(worker_sock)
+        assert terminal_ack["type"] == "hub.work.result.accepted"
+        assert terminal_ack["ok"] is True
+        assert terminal_ack["status"] == "succeeded"
+        assert terminal_ack["payout"]["status"] == "charged"
+        assert terminal_ack["payout"]["charge_id"]
+        assert terminal_ack["payout"]["worker_earning_id"]
+
         submit_thread.join(timeout=10)
         assert not submit_thread.is_alive()
         assert work_response_holder["status"] == 200
@@ -495,34 +527,6 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
         assert accepted_work["continuation"]["bounce_required"] is True
         assert accepted_work["continuation_url"].startswith(base_url + "/api/hub/v1/work/sessions/")
 
-        _ws_send_json(
-            worker_sock,
-            {
-                "type": "worker.work.result",
-                "session_id": offer["session_id"],
-                "run_id": offer["run_id"],
-                "request_id": offer["request_id"],
-                "worker_id": "worker-exp-exec-1",
-                "lease_id": offer["lease_id"],
-                "result": {
-                    "status": "success",
-                    "response": {
-                        "content": "exp live-session result",
-                        "provider": "exp-live-worker",
-                        "model": "live-session-worker",
-                        "metadata": {"from_live_session": True},
-                    },
-                },
-            },
-        )
-        terminal_ack = _ws_recv_json(worker_sock)
-        assert terminal_ack["type"] == "hub.work.result.accepted"
-        assert terminal_ack["ok"] is True
-        assert terminal_ack["status"] == "succeeded"
-        assert terminal_ack["payout"]["status"] == "charged"
-        assert terminal_ack["payout"]["charge_id"]
-        assert terminal_ack["payout"]["worker_earning_id"]
-
         stream_status, stream = _get_json_status(str(accepted_work["continuation_url"]))
         assert stream_status == 200
         assert stream["ok"] is True
@@ -532,6 +536,92 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
         assert stream["execution_hub"]["handoff"] is False
         assert stream["bounce"]["required"] is True
         assert stream["payout"]["charge_id"] == terminal_ack["payout"]["charge_id"]
+
+        market_after_first = hub.stable_worker_market_directory.get_worker("worker-exp-exec-1")
+        assert market_after_first is not None
+        assert market_after_first["active_sessions"] == 0
+
+        second_response_holder: dict[str, object] = {}
+
+        def submit_second_work() -> None:
+            status, payload = _post_json_status(
+                base_url + "/api/hub/v1/work/requests",
+                {
+                    "request_id": "exp-live-req-2",
+                    "client_node_id": "requester-exp-live",
+                    "account_id": requester_account,
+                    "max_credits": 3,
+                    "ring": "ring-3",
+                    "capabilities": ["text"],
+                    "input": {"prompt": "hello again over exp live session"},
+                    "messages": [{"role": "user", "content": "hello again over exp live session"}],
+                    "model": "micro-agent-local",
+                },
+                timeout=10,
+            )
+            second_response_holder["status"] = status
+            second_response_holder["payload"] = payload
+
+        second_submit_thread = threading.Thread(target=submit_second_work, daemon=True)
+        second_submit_thread.start()
+        second_offer = _ws_recv_json(worker_sock)
+        assert second_offer["type"] == "hub.work.offer"
+        assert second_offer["request_id"]
+        assert second_offer["request_id"] != offer["request_id"]
+        assert second_offer["work"]["model"] == "micro-agent-local"
+        assert "lease_id" not in second_offer
+        assert second_offer["pricing"]["legacy_worker_pull_lease"] is False
+
+        _ws_send_json(
+            worker_sock,
+            {
+                "type": "worker.work.accepted",
+                "session_id": second_offer["session_id"],
+                "run_id": second_offer["run_id"],
+                "request_id": second_offer["request_id"],
+                "worker_id": "worker-exp-exec-1",
+            },
+        )
+        _ws_send_json(
+            worker_sock,
+            {
+                "type": "worker.work.result",
+                "session_id": second_offer["session_id"],
+                "run_id": second_offer["run_id"],
+                "request_id": second_offer["request_id"],
+                "worker_id": "worker-exp-exec-1",
+                "result": {
+                    "status": "success",
+                    "response": {
+                        "content": "second exp live-session result",
+                        "provider": "exp-live-worker",
+                        "model": "micro-agent-local",
+                        "metadata": {"from_live_session": True, "repeat": True},
+                    },
+                },
+            },
+        )
+        terminal_ack_2 = _ws_recv_json(worker_sock)
+        assert terminal_ack_2["type"] == "hub.work.result.accepted"
+        assert terminal_ack_2["ok"] is True
+        assert terminal_ack_2["status"] == "succeeded"
+
+        second_submit_thread.join(timeout=10)
+        assert not second_submit_thread.is_alive()
+        assert second_response_holder["status"] == 200
+        accepted_second = second_response_holder["payload"]
+        assert accepted_second["ok"] is True
+        assert accepted_second["accepted"] is True
+        second_stream_status, second_stream = _get_json_status(str(accepted_second["continuation_url"]))
+        assert second_stream_status == 200
+        assert second_stream["ok"] is True
+        assert second_stream["session_id"] == second_offer["session_id"]
+        assert second_stream["status"] == "succeeded"
+        assert second_stream["payout"]["charge_id"] == terminal_ack_2["payout"]["charge_id"]
+
+        market_after_second = hub.stable_worker_market_directory.get_worker("worker-exp-exec-1")
+        assert market_after_second is not None
+        assert market_after_second["active_sessions"] == 0
     finally:
         if worker_sock is not None:
             try:
@@ -539,6 +629,258 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
             except OSError:
                 pass
             worker_sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
+
+
+
+def test_exp_hub_marks_direct_live_session_failed_when_worker_socket_closes_after_acceptance(tmp_path: Path) -> None:
+    config = MainComputerConfig(
+        workspace=tmp_path,
+        hub_root=tmp_path / "hub-runtime",
+        hub_bridge_backend="mock",
+        hub_allow_insecure_dev_network=True,
+        hub_network="dev",
+        hub_network_kind="local-dev-chain",
+        chain_id=42424242,
+        hub_credits_per_request=1,
+    )
+    hub = _TestExpLiveSessionHub(("127.0.0.1", 0), config)
+    requester_account = "requester-exp-live-close"
+    hub.credit_ledger.issue(
+        account_id=requester_account,
+        credits=25,
+        memo="fund exp live-session close requester",
+    )
+    thread = threading.Thread(target=hub.serve_forever, daemon=True)
+    thread.start()
+    worker_sock: socket.socket | None = None
+    try:
+        base_url = f"http://127.0.0.1:{hub.server_port}"
+        worker_sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
+        _ws_send_json(
+            worker_sock,
+            {
+                "type": "worker.auth",
+                "worker_id": "worker-exp-close-1",
+                "market": {
+                    "rings": ["ring-3"],
+                    "price": {"amount": "1", "unit": "compute_credit"},
+                    "capabilities": ["text"],
+                    "max_concurrency": 1,
+                },
+            },
+        )
+        accepted_auth = _ws_recv_json(worker_sock)
+        ping = _ws_recv_json(worker_sock)
+        _ws_send_json(
+            worker_sock,
+            {
+                "type": "worker.pong",
+                "connection_id": accepted_auth["connection_id"],
+                "ping_id": ping["ping_id"],
+            },
+        )
+        assert _ws_recv_json(worker_sock)["type"] == "hub.pong.accepted"
+
+        work_response_holder: dict[str, object] = {}
+
+        def submit_work() -> None:
+            status, payload = _post_json_status(
+                base_url + "/api/hub/v1/work/requests",
+                {
+                    "request_id": "exp-live-close-req-1",
+                    "client_node_id": "requester-exp-live-close",
+                    "account_id": requester_account,
+                    "max_credits": 3,
+                    "ring": "ring-3",
+                    "capabilities": ["text"],
+                    "input": {"prompt": "close before result"},
+                    "messages": [{"role": "user", "content": "close before result"}],
+                    "model": "micro-agent-local",
+                },
+                timeout=10,
+            )
+            work_response_holder["status"] = status
+            work_response_holder["payload"] = payload
+
+        submit_thread = threading.Thread(target=submit_work, daemon=True)
+        submit_thread.start()
+        offer = _ws_recv_json(worker_sock)
+        assert offer["type"] == "hub.work.offer"
+        _ws_send_json(
+            worker_sock,
+            {
+                "type": "worker.work.accepted",
+                "session_id": offer["session_id"],
+                "run_id": offer["run_id"],
+                "request_id": offer["request_id"],
+                "worker_id": "worker-exp-close-1",
+            },
+        )
+
+        submit_thread.join(timeout=10)
+        assert not submit_thread.is_alive()
+        assert work_response_holder["status"] == 200
+        accepted_work = work_response_holder["payload"]
+        assert accepted_work["ok"] is True
+        assert accepted_work["accepted"] is True
+
+        worker_sock.close()
+        worker_sock = None
+
+        stream: dict[str, object] | None = None
+        for _ in range(20):
+            stream_status, stream_payload = _get_json_status(str(accepted_work["continuation_url"]))
+            assert stream_status == 200
+            stream = stream_payload
+            if stream.get("status") == "failed":
+                break
+            threading.Event().wait(0.1)
+
+        assert stream is not None
+        assert stream["status"] == "failed"
+        assert stream["request"]["state"] == "failed"
+        assert stream["request"]["terminal_reason"] in {"worker_connection_closed", "worker_connection_lost"}
+        assert stream["accepted_session"]["worker_failure"]["type"] == "worker.connection.closed"
+        assert stream["payout"]["legacy_worker_pull_lease"] is False
+
+        market_after_close = hub.stable_worker_market_directory.get_worker("worker-exp-close-1")
+        assert market_after_close is not None
+        assert market_after_close["active_sessions"] == 0
+    finally:
+        if worker_sock is not None:
+            try:
+                _ws_send_json(worker_sock, {"type": "worker.close"})
+            except OSError:
+                pass
+            worker_sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
+
+
+def test_exp_hub_worker_reconnect_fails_previous_open_direct_live_session(tmp_path: Path) -> None:
+    config = MainComputerConfig(
+        workspace=tmp_path,
+        hub_root=tmp_path / "hub-runtime",
+        hub_bridge_backend="mock",
+        hub_allow_insecure_dev_network=True,
+        hub_network="dev",
+        hub_network_kind="local-dev-chain",
+        chain_id=42424242,
+        hub_credits_per_request=1,
+    )
+    hub = _TestExpLiveSessionHub(("127.0.0.1", 0), config)
+    requester_account = "requester-exp-live-reconnect"
+    hub.credit_ledger.issue(
+        account_id=requester_account,
+        credits=25,
+        memo="fund exp live-session reconnect requester",
+    )
+    thread = threading.Thread(target=hub.serve_forever, daemon=True)
+    thread.start()
+    old_sock: socket.socket | None = None
+    new_sock: socket.socket | None = None
+    try:
+        base_url = f"http://127.0.0.1:{hub.server_port}"
+        old_sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
+        _ws_send_json(
+            old_sock,
+            {
+                "type": "worker.auth",
+                "worker_id": "worker-exp-reconnect-1",
+                "market": {
+                    "rings": ["ring-3"],
+                    "price": {"amount": "1", "unit": "compute_credit"},
+                    "capabilities": ["text"],
+                    "max_concurrency": 1,
+                },
+            },
+        )
+        old_auth = _ws_recv_json(old_sock)
+        old_ping = _ws_recv_json(old_sock)
+        _ws_send_json(old_sock, {"type": "worker.pong", "connection_id": old_auth["connection_id"], "ping_id": old_ping["ping_id"]})
+        assert _ws_recv_json(old_sock)["type"] == "hub.pong.accepted"
+
+        work_response_holder: dict[str, object] = {}
+
+        def submit_work() -> None:
+            status, payload = _post_json_status(
+                base_url + "/api/hub/v1/work/requests",
+                {
+                    "request_id": "exp-live-reconnect-req-1",
+                    "client_node_id": "requester-exp-live-reconnect",
+                    "account_id": requester_account,
+                    "max_credits": 3,
+                    "ring": "ring-3",
+                    "capabilities": ["text"],
+                    "input": {"prompt": "reconnect before result"},
+                    "messages": [{"role": "user", "content": "reconnect before result"}],
+                    "model": "micro-agent-local",
+                },
+                timeout=10,
+            )
+            work_response_holder["status"] = status
+            work_response_holder["payload"] = payload
+
+        submit_thread = threading.Thread(target=submit_work, daemon=True)
+        submit_thread.start()
+        old_offer = _ws_recv_json(old_sock)
+        assert old_offer["type"] == "hub.work.offer"
+        _ws_send_json(
+            old_sock,
+            {
+                "type": "worker.work.accepted",
+                "session_id": old_offer["session_id"],
+                "run_id": old_offer["run_id"],
+                "request_id": old_offer["request_id"],
+                "worker_id": "worker-exp-reconnect-1",
+            },
+        )
+        submit_thread.join(timeout=10)
+        assert not submit_thread.is_alive()
+        assert work_response_holder["status"] == 200
+        accepted_work = work_response_holder["payload"]
+
+        new_sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
+        _ws_send_json(
+            new_sock,
+            {
+                "type": "worker.auth",
+                "worker_id": "worker-exp-reconnect-1",
+                "market": {
+                    "rings": ["ring-3"],
+                    "price": {"amount": "1", "unit": "compute_credit"},
+                    "capabilities": ["text"],
+                    "max_concurrency": 1,
+                },
+            },
+        )
+        new_auth = _ws_recv_json(new_sock)
+        new_ping = _ws_recv_json(new_sock)
+        assert new_auth["connection_id"] != old_auth["connection_id"]
+        _ws_send_json(new_sock, {"type": "worker.pong", "connection_id": new_auth["connection_id"], "ping_id": new_ping["ping_id"]})
+        assert _ws_recv_json(new_sock)["type"] == "hub.pong.accepted"
+
+        stream_status, stream = _get_json_status(str(accepted_work["continuation_url"]))
+        assert stream_status == 200
+        assert stream["status"] == "failed"
+        assert stream["request"]["terminal_reason"] == "worker_connection_replaced"
+
+        market_after_reconnect = hub.stable_worker_market_directory.get_worker("worker-exp-reconnect-1")
+        assert market_after_reconnect is not None
+        assert market_after_reconnect["connection_id"] == new_auth["connection_id"]
+        assert market_after_reconnect["active_sessions"] == 0
+    finally:
+        for sock in (old_sock, new_sock):
+            if sock is not None:
+                try:
+                    _ws_send_json(sock, {"type": "worker.close"})
+                except OSError:
+                    pass
+                sock.close()
         hub.shutdown()
         hub.server_close()
         thread.join(timeout=2)
@@ -687,6 +1029,9 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
         assert offer["execution_hub"]["hub_url"] == owner_url
         assert offer["execution_hub"]["local_owner"] is True
         assert offer["execution_hub"]["handoff"] is False
+        assert "lease_id" not in offer
+        assert offer["pricing"]["legacy_worker_pull_lease"] is False
+        assert offer["selected_offer"]["legacy_worker_pull_lease"] is False
 
         _ws_send_json(
             worker_sock,
@@ -729,7 +1074,6 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
                 "run_id": offer["run_id"],
                 "request_id": offer["request_id"],
                 "worker_id": "worker-exp-remote-1",
-                "lease_id": offer["lease_id"],
                 "result": {
                     "status": "success",
                     "response": {
@@ -758,6 +1102,7 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
         assert stream["execution_hub"]["local_owner"] is True
         assert stream["execution_hub"]["handoff"] is False
         assert stream["payout"]["charge_id"] == terminal_ack["payout"]["charge_id"]
+
     finally:
         if worker_sock is not None:
             try:
