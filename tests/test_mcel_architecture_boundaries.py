@@ -105,6 +105,7 @@ CORE_FACADE_METHODS = [
     "buildEvidencePacket",
     "runProof",
     "buildSubsumptionLattice",
+    "buildAdoptionCase",
     "buildWorkbenchPlan",
     "listChromes",
     "normalizeChrome",
@@ -262,6 +263,41 @@ def test_mcel_default_state_keeps_machine_theme_and_strict_hierarchy() -> None:
     assert state["activeModal"] is None
     assert state["siteFrameTwiddle"]["lastReason"] == "boot"
     assert state["siteFrameTwiddle"]["lastFitStatus"] == "unavailable"
+
+
+def test_mcel_platform_spine_adoption_case_is_gate_based_not_assertion_based() -> None:
+    sources = [
+        "main_computer/web/applications/scripts/mcel-contract.js",
+        "main_computer/web/applications/scripts/mcel-law-registry.js",
+        "main_computer/web/applications/scripts/mcel-component-law.js",
+        "main_computer/web/applications/scripts/mcel-state-law.js",
+        "main_computer/web/applications/scripts/mcel-data-law.js",
+        "main_computer/web/applications/scripts/mcel-form-law.js",
+        "main_computer/web/applications/scripts/mcel-action-law.js",
+        "main_computer/web/applications/scripts/mcel-render-law.js",
+        "main_computer/web/applications/scripts/mcel-a11y-law.js",
+        "main_computer/web/applications/scripts/mcel-performance-law.js",
+        "main_computer/web/applications/scripts/mcel-platform-spine.js",
+    ]
+    script = "globalThis.window = globalThis;\n" + "\n".join(_read_repo_text(path) for path in sources) + """
+const adoptionCase = McelLabPlatformSpine.buildAdoptionCase();
+process.stdout.write(JSON.stringify(adoptionCase));
+"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is unavailable; static architecture guards still cover the public facade")
+
+    result = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+    adoption_case = json.loads(result.stdout)
+
+    assert adoption_case["kind"] == "mcel-adoption-case"
+    assert adoption_case["verdict"] == "adopt-mcel-when-proof-is-required"
+    assert adoption_case["proofCoverage"]["obsoleteFamilyCount"] >= 8
+    assert adoption_case["proofCoverage"]["lawPlanCount"] >= 8
+    assert adoption_case["proofCoverage"]["passedGateCount"] == adoption_case["proofCoverage"]["totalGateCount"]
+    gate_ids = {gate["id"] for gate in adoption_case["gates"]}
+    assert {"concrete-prior-art", "law-backed-claims", "proof-obligations", "evidence-packet-and-supervisor"} <= gate_ids
+    assert any("not better because MCEL says it is better" in item for item in adoption_case["comparisonStandard"])
 
 
 def test_mcel_lower_layers_do_not_reach_into_lab_ui_surface() -> None:

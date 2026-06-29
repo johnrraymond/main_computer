@@ -24,6 +24,7 @@
         lastKernelAudit: null,
         lastTraceabilityMap: null,
         lastSubsumptionLattice: null,
+        lastAdoptionCase: null,
         lastWorkbenchPlan: null,
         lastBrowserProof: null,
         lastSiteSkeleton: null,
@@ -155,6 +156,7 @@
     const mcelRunKernel = document.querySelector("#mcel-lab-kernel");
     const mcelBuildTraceability = document.querySelector("#mcel-lab-traceability");
     const mcelBuildSubsumption = document.querySelector("#mcel-lab-subsumption");
+    const mcelBuildAdoptionCase = document.querySelector("#mcel-lab-adoption-case");
     const mcelBuildWorkbench = document.querySelector("#mcel-lab-workbench");
     const mcelRunBrowserProof = document.querySelector("#mcel-lab-browser-proof");
     const mcelApplyTraits = document.querySelector("#mcel-apply-traits");
@@ -182,6 +184,7 @@
     const mcelTraceabilityReport = document.querySelector("#mcel-traceability-report");
     const mcelPriorArtReport = document.querySelector("#mcel-prior-art-report");
     const mcelSubsumptionReport = document.querySelector("#mcel-subsumption-report");
+    const mcelAdoptionReport = document.querySelector("#mcel-adoption-report");
     const mcelWorkbenchReport = document.querySelector("#mcel-workbench-report");
     const mcelBrowserProofReport = document.querySelector("#mcel-browser-proof-report");
     const mcelReadinessScore = document.querySelector("#mcel-readiness-score");

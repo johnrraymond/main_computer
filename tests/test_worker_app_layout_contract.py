@@ -33,7 +33,16 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert '<main class="worker-pane worker-seller' not in html
     assert '<section class="worker-pane worker-seller' in html
     assert 'class="worker-pane worker-buyer' in html
-    assert 'class="worker-pane worker-hubs' in html
+    assert 'class="worker-pane worker-hubs' not in html
+    assert 'id="worker-add-hub-form"' not in html
+    assert 'id="worker-hub-list"' not in html
+    assert 'id="worker-test-hubs"' not in html
+    assert "workerDefaultHubs" not in js
+    assert "workerHubs" not in js
+    assert "renderWorkerHubs" not in js
+    assert "workerAddHubForm" not in bindings
+    assert "workerHubList" not in bindings
+    assert "workerTestHubs" not in bindings
     assert "Configure how other hub users pay this machine" in html
     assert "Configure how this machine is allowed to pay other workers" in html
     assert "Enable paid overflow" in html
@@ -141,7 +150,8 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     # The layout presents selling first, then buying remote work below it,
     # because a worker must be sell-ready before it can safely use others.
     assert "grid-template-columns: minmax(0, 1fr);" in css
-    assert '        "seller"\n        "buyer"\n        "hubs";' in css
+    assert '        "seller"\n        "buyer";' in css
+    assert '"hubs"' not in css
     assert '"seller buyer"' not in css
     assert '"tabs tabs"' not in css
     assert '"hubs hubs"' not in css
@@ -164,6 +174,8 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "applyWorkerSettings" in js
     assert "remoteCreditsPerToken" in js
     assert 'workerPositiveDecimalString(workerElementValue(workerRemoteCreditsPerToken, "0.001"), "0.001")' in js
+    assert "hubs:" not in js
+    assert "parsed.hubs" not in js
     assert "workerApplyRemoteEnabledFromBackend(parsed.remoteEnabled, {requestStartedAt})" in js
     assert "workerPollRemoteEnabledFromBackend" in js
     assert "WORKER_SETTINGS_POLL_INTERVAL_MS = 2500" in js
@@ -217,7 +229,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert 'unit: "compute_credit"' in js
     assert 'mode: settings.executionMode' in js
     assert '"/api/applications/worker/register-offer"' in js
-    assert '"/api/applications/worker/hub-health"' in js
+    assert '"/api/applications/worker/hub-health"' not in js
     assert '"/api/applications/worker/settings"' in js
     assert '"/api/applications/worker/multisession-key/request"' in js
     assert '"/api/applications/worker/multisession-key/revoke"' in js
@@ -495,6 +507,11 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerRuntimePhaseLabel" in js
     assert "workerRuntimePrimaryDisplay" in js
     assert "workerRuntimePolicyPayload" in js
+    assert "workerRuntimeSupervisorFoot" in js
+    assert "workerRuntimeSupervisorPayload" in js
+    assert "Backend heartbeat active" in js
+    assert "Backend heartbeat stale." in js
+    assert "supervisor: data.supervisor" in js
     assert "Worker registration has not been submitted to the Hub." in js
     assert "Work now" in js
     assert "Retry Hub Registration" not in js

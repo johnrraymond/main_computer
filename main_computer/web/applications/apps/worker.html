@@ -372,58 +372,6 @@
         </details>
       </section>
 
-      <aside class="worker-pane worker-hubs mc-app-pane" aria-label="Hub connections" data-mc-component-id="worker.hubs.panel" data-mc-component-kind="panel" data-mc-component-label="Hub Connections" data-mc-component-owner="worker.root" data-mc-feature-id="worker.feature.hubs">
-        <div class="worker-pane-head">
-          <div>
-            <h3>Hub Connections</h3>
-            <p>Choose which hubs this machine can buy from, sell work to, or keep disabled.</p>
-          </div>
-        </div>
-
-        <form class="worker-add-hub" id="worker-add-hub-form" aria-label="Add hub">
-          <label>
-            <span>Hub name</span>
-            <input id="worker-hub-name" type="text" value="Main Hub" autocomplete="off">
-          </label>
-          <label>
-            <span>Hub URL</span>
-            <input id="worker-hub-url" type="url" value="http://127.0.0.1:8770" autocomplete="off">
-          </label>
-          <label>
-            <span>Role</span>
-            <select id="worker-hub-role">
-              <option value="use-provide">Buy + sell</option>
-              <option value="use-only">Buy/request only</option>
-              <option value="provide-only">Sell work only</option>
-              <option value="disabled">Disabled</option>
-            </select>
-          </label>
-          <button type="submit">+ Add Hub</button>
-        </form>
-
-        <div class="worker-hub-list" id="worker-hub-list" aria-label="Configured hubs">
-          <article class="worker-hub-card">
-            <div>
-              <strong>Local Hub</strong>
-              <span>http://127.0.0.1:8770</span>
-            </div>
-            <div class="worker-hub-badges">
-              <span>Configured</span>
-              <span>Buy + sell</span>
-            </div>
-          </article>
-          <article class="worker-hub-card">
-            <div>
-              <strong>Friend Hub</strong>
-              <span>https://friend-hub.local</span>
-            </div>
-            <div class="worker-hub-badges">
-              <span>Configured</span>
-              <span>Buy/request only</span>
-            </div>
-          </article>
-        </div>
-      </aside>
     </div>
 
     <footer class="worker-actions" aria-label="Worker controls">
@@ -432,7 +380,6 @@
         <button type="button" id="worker-register-offer">Register / Update Offer</button>
         <button type="button" id="worker-save-settings">Save Worker Settings</button>
         <button type="button" id="worker-pause-rentals">Pause Selling</button>
-        <button type="button" id="worker-test-hubs">Test Hubs</button>
       </div>
     </footer>
   </div>

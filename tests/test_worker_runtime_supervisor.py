@@ -132,3 +132,149 @@ def test_worker_runtime_status_read_is_display_only(tmp_path, monkeypatch) -> No
     assert status["autoConnect"] == {"network": "dev", "enabled": True}
     assert status["runtime"]["state"] in {"RECONNECTING", "CONNECTED"}
     assert status["runtimeDisplay"]["center"] in {"RECONNECTING", "CONNECTED"}
+
+
+class _FakeRuntimeForSupervisor:
+    def __init__(self) -> None:
+        self.server = _DummySignalServer()
+        self.reconcile_event = threading.Event()
+        self.reconcile_count = 0
+        self.read_count = 0
+
+    def _status(self, *, heartbeat_at: str = "2026-01-01T00:00:00+00:00") -> dict[str, object]:
+        return {
+            "ok": True,
+            "autoConnect": {"network": "dev", "enabled": True},
+            "runtimeDisplay": {
+                "state": "CONNECTED",
+                "center": "CONNECTED",
+                "tone": "good",
+                "nw": "Accepting paid work",
+                "ne": "Dev auto hub",
+                "sw": "Heartbeat healthy",
+                "se": "AI idle",
+                "foot": "Worker is live.",
+            },
+            "runtime": {
+                "state": "CONNECTED",
+                "phase": "accepting",
+                "enabled": True,
+                "allowed_to_accept": True,
+                "allowedToAccept": True,
+                "active_jobs": 0,
+                "activeJobs": 0,
+                "lastHeartbeatAt": heartbeat_at,
+                "last_heartbeat_at": heartbeat_at,
+                "lastCheckedAt": heartbeat_at,
+                "last_checked_at": heartbeat_at,
+                "lastError": "",
+            },
+        }
+
+    def reconcile_worker_runtime(self, *, reason: str = "manual", send_heartbeat: bool = True) -> dict[str, object]:
+        self.reconcile_count += 1
+        self.reconcile_event.set()
+        return self._status(heartbeat_at=f"2026-01-01T00:00:{self.reconcile_count:02d}+00:00")
+
+    def read_worker_runtime_status(self) -> dict[str, object]:
+        self.read_count += 1
+        return self._status()
+
+
+class _DummySignalServer:
+    def __init__(self) -> None:
+        self.signals: list[tuple[str, dict[str, object]]] = []
+
+    def signal(self, name: str, **fields: object) -> None:
+        self.signals.append((name, fields))
+
+
+def test_worker_runtime_supervisor_status_autostarts_background_owner() -> None:
+    runtime = _FakeRuntimeForSupervisor()
+    supervisor = WorkerRuntimeSupervisor(runtime, interval_s=1)
+
+    try:
+        status = supervisor.status()
+        assert runtime.reconcile_event.wait(2)
+        diagnostics = supervisor.diagnostics()
+        assert diagnostics["thread_alive"] is True
+        assert diagnostics["loop_count"] >= 1
+        assert runtime.reconcile_count >= 1
+        assert status["supervisor"]["thread_alive"] is True
+        assert any(name == "worker-runtime-supervisor-autostart" for name, _fields in runtime.server.signals)
+        assert any(name == "worker-runtime-supervisor-reconcile" for name, _fields in runtime.server.signals)
+    finally:
+        supervisor.stop()
+
+
+def test_worker_runtime_supervisor_marks_stale_connected_cache_as_reconnecting() -> None:
+    runtime = _FakeRuntimeForSupervisor()
+    supervisor = WorkerRuntimeSupervisor(runtime, interval_s=1)
+    supervisor.update_status(runtime._status(heartbeat_at="2026-01-01T00:00:00+00:00"))
+
+    with supervisor._status_lock:
+        supervisor._latest_status_at -= 120.0
+
+    status = supervisor.status(ensure_running=False)
+
+    assert status["runtime"]["state"] == "RECONNECTING"
+    assert status["runtime"]["stale"] is True
+    assert status["runtimeDisplay"]["center"] == "RECONNECTING"
+    assert status["runtimeDisplay"]["sw"] == "Supervisor stale"
+    assert status["supervisor"]["supervisor_stale"] is True
+
+
+def test_worker_runtime_supervisor_fresh_success_exposes_stable_diagnostics_contract() -> None:
+    runtime = _FakeRuntimeForSupervisor()
+    supervisor = WorkerRuntimeSupervisor(runtime, interval_s=1)
+
+    status = supervisor.reconcile_now(reason="contract", send_heartbeat=True)
+    diagnostics = status["supervisor"]
+
+    expected_keys = {
+        "running",
+        "thread_alive",
+        "threadAlive",
+        "interval_s",
+        "intervalSeconds",
+        "stale_after_s",
+        "staleAfterSeconds",
+        "started_at",
+        "startedAt",
+        "stopped_at",
+        "stoppedAt",
+        "last_attempt_at",
+        "lastAttemptAt",
+        "last_success_at",
+        "lastSuccessAt",
+        "last_error_at",
+        "lastErrorAt",
+        "last_error",
+        "lastError",
+        "last_reason",
+        "lastReason",
+        "loop_count",
+        "loopCount",
+        "success_count",
+        "successCount",
+        "error_count",
+        "errorCount",
+        "latest_status_at",
+        "latestStatusAt",
+        "latest_status_age_s",
+        "latestStatusAgeSeconds",
+        "supervisor_stale",
+        "supervisorStale",
+        "stale",
+    }
+
+    assert expected_keys <= set(diagnostics)
+    assert status["runtime"]["supervisor"] == diagnostics
+    assert diagnostics["successCount"] == 1
+    assert diagnostics["errorCount"] == 0
+    assert diagnostics["lastReason"] == "contract"
+    assert diagnostics["lastAttemptAt"]
+    assert diagnostics["lastSuccessAt"]
+    assert diagnostics["supervisorStale"] is False
+    assert status["runtime"]["state"] == "CONNECTED"
+    assert status["runtimeDisplay"]["center"] == "CONNECTED"

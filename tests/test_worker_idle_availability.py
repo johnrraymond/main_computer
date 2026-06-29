@@ -98,6 +98,62 @@ def test_worker_auto_connect_network_drives_saved_selected_network() -> None:
     assert settings["selectedNetwork"] == "testnet"
 
 
+
+
+def test_worker_settings_drops_legacy_configured_hubs_from_settings_payload() -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {"config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})()},
+    )()
+
+    settings = harness._sanitize_worker_settings(
+        {
+            "selectedNetwork": "dev",
+            "workerAutoConnectNetwork": "dev",
+            "hubs": [
+                {"name": "Main Computer Mainnet Hub", "url": "https://mainnet-hub.greatlibrary.io", "role": "use-provide"},
+                {"name": "Main Computer Mainnet Hub", "url": "https://mainnet-hub.greatlibrary.io", "role": "use-provide"},
+                {"name": "Friend Hub", "url": "https://friend-hub.local", "role": "use-only"},
+            ],
+        }
+    )
+
+    assert "hubs" not in settings
+
+
+def test_worker_settings_save_migrates_legacy_hubs_out_of_persisted_file(tmp_path: Path) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+        },
+    )()
+    legacy_payload = {
+        "selectedNetwork": "dev",
+        "workerAutoConnectNetwork": "dev",
+        "hubs": [
+            {"name": "Main Computer Mainnet Hub", "url": "https://mainnet-hub.greatlibrary.io", "role": "use-provide"},
+            {"name": "Main Computer Mainnet Hub", "url": "https://mainnet-hub.greatlibrary.io", "role": "use-provide"},
+            {"name": "Main Computer Local Dev Hub", "url": "http://127.0.0.1:8871", "role": "use-provide"},
+            {"name": "Friend Hub", "url": "https://friend-hub.local", "role": "use-only"},
+        ],
+    }
+    settings_path = tmp_path / "worker_settings.json"
+    settings_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    loaded = harness._load_worker_settings()
+    saved = harness._save_worker_settings({"hubs": legacy_payload["hubs"]}, changed_fields=["hubs"])
+
+    assert "hubs" not in loaded
+    assert "hubs" not in saved
+    assert "hubs" not in json.loads(settings_path.read_text(encoding="utf-8"))
+
+
 def test_worker_settings_migrates_old_visual_defaults_to_current_defaults() -> None:
     harness = _WorkerRoutesHarness()
     harness.server = type(
@@ -1348,3 +1404,143 @@ def test_market_worker_offer_from_payload_keeps_decimal_price_as_wei() -> None:
     assert offer["credits_per_request_wei"] == "1024000000000000000"
     assert offer["credits_per_request_display"] == "1.024"
     assert offer["offer_id"].startswith("offer_")
+
+def test_worker_network_session_select_same_target_preserves_saved_setup(tmp_path: Path) -> None:
+    class _NetworkSelectHarness(_WorkerRoutesHarness):
+        def __init__(self) -> None:
+            self.client_address = ("127.0.0.1", 12345)
+            self.sent_payload: dict[str, object] | None = None
+            self.sent_status: HTTPStatus | None = None
+            self.closed_sessions: list[dict[str, object]] = []
+            self.server = type(
+                "Server",
+                (),
+                {
+                    "debug_root": tmp_path,
+                    "config": type("Config", (), {"hub_url": "http://127.0.0.1:8770"})(),
+                    "signal": lambda *args, **kwargs: None,
+                },
+            )()
+
+        def _read_json(self) -> dict[str, object]:
+            return {"network": "dev", "requested_ring": "3"}
+
+        def _send_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
+            self.sent_payload = payload
+            self.sent_status = status
+
+        def _worker_network_profiles_payload(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "network": "dev",
+                    "network_key": "dev",
+                    "display_name": "Dev",
+                    "kind": "dev",
+                    "chain_id": "42424242",
+                    "chain_rpc_url": "http://127.0.0.1:18545",
+                    "hub_url": "http://127.0.0.1:8770",
+                    "hub_public_url": "http://127.0.0.1:8770",
+                    "hub_bind_host": "127.0.0.1",
+                    "hub_bind_port": 8770,
+                    "deployment_manifest_path": "",
+                }
+            ]
+
+        def _fetch_hub_status(self, hub_url: str) -> dict[str, object]:
+            return {"reachable": True, "hub_url": hub_url}
+
+        def _close_worker_live_session(self, **kwargs: object) -> dict[str, object]:
+            self.closed_sessions.append(dict(kwargs))
+            return {"ok": True}
+
+    harness = _NetworkSelectHarness()
+    settings = _runtime_settings(harness)
+    settings["workerHubRegistration"] = {
+        "status": "accepted",
+        "worker": {"node_id": "runtime-worker-001", "worker_id": "runtime-worker-001"},
+    }
+    harness._save_worker_settings(settings)
+
+    harness._handle_worker_network_session_select()
+
+    saved = harness._load_worker_settings()
+    assert harness.sent_status == HTTPStatus.OK
+    assert harness.closed_sessions == []
+    assert saved["selectedNetwork"] == "dev"
+    assert saved["workerAutoConnectNetwork"] == "dev"
+    assert saved["workerRegisteredId"] == "runtime-worker-001"
+    assert saved["workerHubRegistration"]["status"] == "accepted"
+    assert saved["signedWorkerConnection"]["wallet_address"] == "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+    assert saved["signedWorkerConnection"]["worker_id"] == "runtime-worker-001"
+    assert saved["signedWorkerConnection"]["hub_registered"] is True
+
+
+def test_worker_network_session_select_different_target_clears_saved_setup(tmp_path: Path) -> None:
+    class _NetworkSelectHarness(_WorkerRoutesHarness):
+        def __init__(self) -> None:
+            self.client_address = ("127.0.0.1", 12345)
+            self.sent_payload: dict[str, object] | None = None
+            self.sent_status: HTTPStatus | None = None
+            self.closed_sessions: list[dict[str, object]] = []
+            self.server = type(
+                "Server",
+                (),
+                {
+                    "debug_root": tmp_path,
+                    "config": type("Config", (), {"hub_url": "http://127.0.0.1:8770"})(),
+                    "signal": lambda *args, **kwargs: None,
+                },
+            )()
+
+        def _read_json(self) -> dict[str, object]:
+            return {"network": "testnet", "requested_ring": "3"}
+
+        def _send_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
+            self.sent_payload = payload
+            self.sent_status = status
+
+        def _worker_network_profiles_payload(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "network": "testnet",
+                    "network_key": "testnet",
+                    "display_name": "Testnet",
+                    "kind": "testnet",
+                    "chain_id": "42424241",
+                    "chain_rpc_url": "",
+                    "hub_url": "http://127.0.0.1:8781",
+                    "hub_public_url": "http://127.0.0.1:8781",
+                    "hub_bind_host": "127.0.0.1",
+                    "hub_bind_port": 8781,
+                    "deployment_manifest_path": "",
+                }
+            ]
+
+        def _fetch_hub_status(self, hub_url: str) -> dict[str, object]:
+            return {"reachable": True, "hub_url": hub_url}
+
+        def _close_worker_live_session(self, **kwargs: object) -> dict[str, object]:
+            self.closed_sessions.append(dict(kwargs))
+            return {"ok": True}
+
+    harness = _NetworkSelectHarness()
+    settings = _runtime_settings(harness)
+    settings["workerHubRegistration"] = {
+        "status": "accepted",
+        "worker": {"node_id": "runtime-worker-001", "worker_id": "runtime-worker-001"},
+    }
+    harness._save_worker_settings(settings)
+
+    harness._handle_worker_network_session_select()
+
+    saved = harness._load_worker_settings()
+    assert harness.sent_status == HTTPStatus.OK
+    assert saved["selectedNetwork"] == "testnet"
+    assert saved["workerAutoConnectNetwork"] == "testnet"
+    assert saved["workerRegisteredId"] == ""
+    assert saved["workerHubRegistration"] == {}
+    assert saved["signedWorkerConnection"]["wallet_address"] == ""
+    assert saved["signedWorkerConnection"]["worker_id"] == ""
+    assert len(harness.closed_sessions) == 1
+    assert harness.closed_sessions[0]["reason"] == "worker_auto_connect_network_changed"
+

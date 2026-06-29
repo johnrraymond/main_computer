@@ -119,6 +119,400 @@ var McelLabContract = (() => {
 
       const contractVersion = "mcel-lab.v0.11-ui-site-skeleton";
 
+      const contractGuarantees = Object.freeze([
+        Object.freeze({
+          id: "mcel.contract.source-intent-is-input.v1",
+          label: "Source intent is the durable input",
+          status: "executable",
+          scope: "MCEL source elements selected by data-mc before compile, repair, or serialize.",
+          guarantee: "The durable MCEL input is source-owned markup and source-owned data-mc-* policy attributes; runtime facts are outputs, not durable source intent.",
+          absoluteWhen: Object.freeze([
+            "The element is inside a DOM root passed to McelLabEngine.compileDocument or serializeRuntimeRoot.",
+            "The element carries the canonical data-mc attribute.",
+            "Callers treat compile-time schema normalization as an explicit source mutation and inspect emitted events before saving."
+          ]),
+          nonGuarantees: Object.freeze([
+            "MCEL does not guarantee that arbitrary non-MCEL DOM is semantically owned.",
+            "MCEL does not guarantee that invalid source values are preserved byte-for-byte after compile.",
+            "MCEL does not make external framework state durable source intent."
+          ]),
+          failureMode: "If source ownership is ambiguous, MCEL must report or normalize explicitly instead of silently inventing durable intent.",
+          evidenceTests: Object.freeze([
+            "compile inserts generated parts without touching source semantics",
+            "schema normalizes invalid trait values"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.contract.generated-runtime-is-discardable.v1",
+          label: "Generated runtime parts are discardable",
+          status: "executable",
+          scope: "Nodes and attributes marked by MCEL as generated/runtime-owned.",
+          guarantee: "MCEL-generated DOM parts and runtime-owned attributes are reconstructable from source and must not be required as saved source.",
+          absoluteWhen: Object.freeze([
+            "Generated nodes carry data-mc-generated=\"true\" and data-mc-part.",
+            "Runtime-owned attributes are listed in McelLabContract.runtimeOwnedAttributes.",
+            "Repair is allowed to rebuild generated parts from the current source schema."
+          ]),
+          nonGuarantees: Object.freeze([
+            "MCEL does not guarantee recovery of user-authored content placed inside generated nodes.",
+            "MCEL does not guarantee recovery after callers remove source-owned data-mc attributes.",
+            "MCEL does not treat unknown third-party generated markup as MCEL-owned."
+          ]),
+          failureMode: "If generated ownership cannot be proven, serialization and repair must leave the node source-owned or warn rather than deleting it.",
+          evidenceTests: Object.freeze([
+            "compile inserts generated parts without touching source semantics",
+            "repair restores canonical generated parts after damage"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.contract.serializer-cleans-runtime-state.v1",
+          label: "Serialization strips runtime state",
+          status: "executable",
+          scope: "serializeRuntimeRoot output produced from an MCEL runtime root.",
+          guarantee: "Serialization removes MCEL-generated parts and MCEL runtime-owned attributes before returning clean source markup.",
+          absoluteWhen: Object.freeze([
+            "The caller serializes through McelLabEngine.serializeRuntimeRoot.",
+            "Runtime-owned generated nodes and attributes use the names declared by McelLabContract.",
+            "The serializer report returns serializerClean=true."
+          ]),
+          nonGuarantees: Object.freeze([
+            "MCEL does not clean arbitrary inline styles or classes that were source-authored by non-MCEL code.",
+            "MCEL does not guarantee cleanliness if callers ignore serializerClean=false.",
+            "MCEL does not infer deletes from omitted files or external storage state."
+          ]),
+          failureMode: "If generated markers survive serialization, serializerClean must become false and warnings must explain the leak.",
+          evidenceTests: Object.freeze([
+            "serializer removes all generated runtime parts",
+            "platform source policies survive while runtime proof facts are stripped",
+            "layout source policies survive while observed geometry is stripped"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.contract.repair-is-schema-bounded.v1",
+          label: "Repair is bounded by schema",
+          status: "executable",
+          scope: "repairRuntimeRoot rebuilding direct MCEL generated children.",
+          guarantee: "Repair may restore missing canonical generated parts, but it must derive those parts from the declared schema for the source element.",
+          absoluteWhen: Object.freeze([
+            "The source element still has a supported data-mc type.",
+            "The schema declares generatedParts for that type.",
+            "Repair only rebuilds MCEL-owned generated children and leaves source-owned children in place."
+          ]),
+          nonGuarantees: Object.freeze([
+            "MCEL repair does not recover deleted source-authored children.",
+            "MCEL repair does not adjudicate business meaning outside the schema.",
+            "MCEL repair does not make stale browser measurements true."
+          ]),
+          failureMode: "If schema ownership is unclear, repair must report no-op or warnings rather than inventing new source meaning.",
+          evidenceTests: Object.freeze([
+            "repair restores canonical generated parts after damage"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.contract.validation-is-reporting-not-trust.v1",
+          label: "Validation reports proof state",
+          status: "executable",
+          scope: "MCEL validation, a11y, browser, proof, and adoption reports.",
+          guarantee: "MCEL reports validation/proof state and must not convert an unchecked claim into a trusted platform decision.",
+          absoluteWhen: Object.freeze([
+            "The report is produced by an MCEL proof, validation, contract test, or adoption-case entry point.",
+            "The caller checks failed/clean/valid verdict fields before adopting the behavior.",
+            "Uncovered guarantees are treated as not proven."
+          ]),
+          nonGuarantees: Object.freeze([
+            "MCEL does not guarantee a screen is accessible merely because it rendered.",
+            "MCEL does not guarantee runtime correctness when proof reports are ignored.",
+            "MCEL does not guarantee a platform replacement claim without evidence gates."
+          ]),
+          failureMode: "If evidence is missing, MCEL must expose a warning, failed guarantee, uncovered guarantee, or hold verdict instead of a pass.",
+          evidenceTests: Object.freeze([
+            "a11y report fails unlabeled source widgets",
+            "MCEL adoption case is gate based, not assertion based"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.contract.browser-facts-are-runtime-only.v1",
+          label: "Browser facts are runtime-only",
+          status: "executable",
+          scope: "Observed layout, overflow, scroll, geometry, hydration, and performance facts.",
+          guarantee: "Observed browser facts may guide runtime repair or diagnostics, but they must not be serialized as source-owned policy.",
+          absoluteWhen: Object.freeze([
+            "Observed facts use attributes listed in runtimeOwnedAttributes.",
+            "Serialization runs through serializeRuntimeRoot.",
+            "The caller treats browser observations as evidence attached to a runtime report, not source intent."
+          ]),
+          nonGuarantees: Object.freeze([
+            "MCEL does not make browser measurements stable across devices.",
+            "MCEL does not guarantee that an observation remains true after CSS, viewport, or content changes.",
+            "MCEL does not persist browser facts as authored source."
+          ]),
+          failureMode: "If a browser fact would be saved as source, serialization must strip it or report an unclean serializer result.",
+          evidenceTests: Object.freeze([
+            "layout source policies survive while observed geometry is stripped"
+          ])
+        })
+      ]);
+
+      const userSpaceContract = Object.freeze([
+        Object.freeze({
+          id: "mcel.user.source-traits-are-planning-surface.v1",
+          label: "Source traits are the planning surface",
+          stableSurface: "Author-owned HTML elements with data-mc plus supported data-mc-* policy attributes.",
+          userCanRelyOn: Object.freeze([
+            "MCEL reads source-owned data-mc traits as the durable description of intent.",
+            "Compile-time normalization is observable through events instead of being hidden.",
+            "Unsupported MCEL values fall back to documented defaults instead of inventing a new contract."
+          ]),
+          userMustProvide: Object.freeze([
+            "Use data-mc on elements MCEL is expected to own.",
+            "Use supported values from McelLabContract.schema and platform policy lists.",
+            "Inspect compile events before saving normalized source."
+          ]),
+          userMustNotAssume: Object.freeze([
+            "Non-MCEL DOM is automatically owned by MCEL.",
+            "Invalid trait values are preserved byte-for-byte after compile.",
+            "External framework state becomes MCEL source intent."
+          ]),
+          failClosedSignal: "warning event such as MCEL_UNKNOWN_TYPE or MCEL_SCHEMA_NORMALIZED",
+          evidenceGuarantees: Object.freeze([
+            "mcel.contract.source-intent-is-input.v1",
+            "mcel.contract.validation-is-reporting-not-trust.v1"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.user.runtime-generation-is-discardable.v1",
+          label: "Runtime generation is discardable",
+          stableSurface: "Generated nodes marked data-mc-generated=\"true\" and runtime-owned data-mc-* attributes.",
+          userCanRelyOn: Object.freeze([
+            "MCEL-generated wrappers, rails, metadata, proof markers, and browser facts are runtime outputs.",
+            "Generated parts may be removed and rebuilt from current source traits.",
+            "Runtime-owned attributes are listed in McelLabContract.runtimeOwnedAttributes."
+          ]),
+          userMustProvide: Object.freeze([
+            "Keep authored content in source-owned elements, not inside generated MCEL parts.",
+            "Treat generated nodes as cacheable runtime artifacts.",
+            "Use MCEL repair or compile rather than hand-editing generated runtime markup."
+          ]),
+          userMustNotAssume: Object.freeze([
+            "User-authored content placed inside generated nodes can be recovered.",
+            "Generated runtime markup is a stable authoring format.",
+            "Runtime-only attributes are safe to persist as source."
+          ]),
+          failClosedSignal: "serializerClean=false, missing generated parts, or a repair warning",
+          evidenceGuarantees: Object.freeze([
+            "mcel.contract.generated-runtime-is-discardable.v1",
+            "mcel.contract.repair-is-schema-bounded.v1"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.user.serialization-is-source-firewall.v1",
+          label: "Serialization is the source firewall",
+          stableSurface: "McelLabEngine.serializeRuntimeRoot and MCEL.serialize.",
+          userCanRelyOn: Object.freeze([
+            "Serialization removes MCEL-generated nodes.",
+            "Serialization strips runtime-owned attributes and MCEL-owned runtime classes.",
+            "Source-owned MCEL policy attributes remain available for saving or export."
+          ]),
+          userMustProvide: Object.freeze([
+            "Serialize through MCEL before persisting MCEL-owned runtime DOM.",
+            "Block save/export when serializerClean is false.",
+            "Treat serialized output as the durable source artifact, not runtime innerHTML."
+          ]),
+          userMustNotAssume: Object.freeze([
+            "Raw runtime innerHTML is safe to save.",
+            "Non-MCEL mutations are validated by the serializer.",
+            "Serializer success proves product behavior, accessibility, or business correctness."
+          ]),
+          failClosedSignal: "serializerClean=false or mcel.contract.serializer-cleans-runtime-state.v1 failing",
+          evidenceGuarantees: Object.freeze([
+            "mcel.contract.serializer-cleans-runtime-state.v1",
+            "mcel.contract.browser-facts-are-runtime-only.v1"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.user.repair-is-bounded-regeneration.v1",
+          label: "Repair is bounded regeneration",
+          stableSurface: "McelLabEngine.repairRuntimeRoot and MCEL.repair reports.",
+          userCanRelyOn: Object.freeze([
+            "Repair may rebuild missing MCEL-generated parts from the source schema.",
+            "Repair is scoped to MCEL-owned generated structure and runtime-owned state.",
+            "Repair reports what it changed instead of silently asserting correctness."
+          ]),
+          userMustProvide: Object.freeze([
+            "Keep source-owned traits present.",
+            "Treat repair as regeneration of MCEL-owned runtime structure.",
+            "Re-run serialization and proof checks after repair before save/export."
+          ]),
+          userMustNotAssume: Object.freeze([
+            "Repair recovers deleted source-owned semantics.",
+            "Repair makes arbitrary DOM valid.",
+            "Repair can infer product intent that is absent from source traits."
+          ]),
+          failClosedSignal: "repair report warnings, failed proof, or failed serializer result",
+          evidenceGuarantees: Object.freeze([
+            "mcel.contract.generated-runtime-is-discardable.v1",
+            "mcel.contract.repair-is-schema-bounded.v1"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.user.validation-is-evidence-not-trust.v1",
+          label: "Validation is evidence, not trust",
+          stableSurface: "MCEL audit, proof, adoption-case, a11y, and contract-test reports.",
+          userCanRelyOn: Object.freeze([
+            "MCEL reports expose failed, uncovered, or warning states.",
+            "Adoption is blocked when required evidence is missing.",
+            "Contract tests map user-facing claims back to executable guarantee IDs."
+          ]),
+          userMustProvide: Object.freeze([
+            "Treat reports as gates, not badges.",
+            "Fail closed when relevant guarantees are failed or uncovered.",
+            "Add executable evidence before widening MCEL responsibilities."
+          ]),
+          userMustNotAssume: Object.freeze([
+            "A rendered component is proven safe.",
+            "A law module is a user-facing contract by itself.",
+            "MCEL is a better replacement without an evidence-gated adoption case."
+          ]),
+          failClosedSignal: "failed guarantee, uncovered guarantee, adoption hold verdict, or warning event",
+          evidenceGuarantees: Object.freeze([
+            "mcel.contract.validation-is-reporting-not-trust.v1"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.user.browser-facts-are-snapshots.v1",
+          label: "Browser facts are snapshots",
+          stableSurface: "MCEL browser observer, layout proof attributes, and runtime proof reports.",
+          userCanRelyOn: Object.freeze([
+            "Browser measurements are runtime evidence collected for a specific DOM, viewport, CSS, and content state.",
+            "Observed facts may guide diagnostics and repair.",
+            "Observed facts are stripped from serialized source."
+          ]),
+          userMustProvide: Object.freeze([
+            "Re-observe after viewport, CSS, content, or DOM changes.",
+            "Do not save browser observations as source policies.",
+            "Treat browser evidence as time- and environment-scoped."
+          ]),
+          userMustNotAssume: Object.freeze([
+            "A browser fact remains true across devices or later edits.",
+            "Observed layout facts are durable source intent.",
+            "MCEL can guarantee visual correctness without a current browser observation."
+          ]),
+          failClosedSignal: "stale or absent browser proof, layout warning, or stripped runtime observation",
+          evidenceGuarantees: Object.freeze([
+            "mcel.contract.browser-facts-are-runtime-only.v1"
+          ])
+        }),
+        Object.freeze({
+          id: "mcel.user.adoption-is-narrow-and-reversible.v1",
+          label: "Adoption is narrow and reversible",
+          stableSurface: "MCEL adoption case, subsumption lattice, and explicitly selected workflow gates.",
+          userCanRelyOn: Object.freeze([
+            "MCEL adoption is justified only for a named workflow and named guarantees.",
+            "Missing evidence produces a hold verdict instead of a platform-wide claim.",
+            "A workflow can opt into MCEL without making MCEL the default platform for unrelated UI."
+          ]),
+          userMustProvide: Object.freeze([
+            "Name the workflow MCEL is allowed to own.",
+            "Name the user-space contract clauses required by that workflow.",
+            "Keep fallback or rollback behavior for workflows that have not passed the gate."
+          ]),
+          userMustNotAssume: Object.freeze([
+            "MCEL should replace React-like or framework-like concerns globally.",
+            "Passing one workflow proves all MCEL domains.",
+            "The subsumption lattice is an adoption decision by itself."
+          ]),
+          failClosedSignal: "hold-until-proof-gates-pass or missing workflow-specific evidence",
+          evidenceGuarantees: Object.freeze([
+            "mcel.contract.source-intent-is-input.v1",
+            "mcel.contract.validation-is-reporting-not-trust.v1"
+          ])
+        })
+      ]);
+
+      function cloneContractGuarantee(guarantee) {
+        return Object.freeze({
+          id: guarantee.id,
+          label: guarantee.label,
+          status: guarantee.status,
+          scope: guarantee.scope,
+          guarantee: guarantee.guarantee,
+          absoluteWhen: Object.freeze([...(guarantee.absoluteWhen || [])]),
+          nonGuarantees: Object.freeze([...(guarantee.nonGuarantees || [])]),
+          failureMode: guarantee.failureMode,
+          evidenceTests: Object.freeze([...(guarantee.evidenceTests || [])])
+        });
+      }
+
+      function cloneUserContractClause(clause) {
+        return Object.freeze({
+          id: clause.id,
+          label: clause.label,
+          stableSurface: clause.stableSurface,
+          userCanRelyOn: Object.freeze([...(clause.userCanRelyOn || [])]),
+          userMustProvide: Object.freeze([...(clause.userMustProvide || [])]),
+          userMustNotAssume: Object.freeze([...(clause.userMustNotAssume || [])]),
+          failClosedSignal: clause.failClosedSignal,
+          evidenceGuarantees: Object.freeze([...(clause.evidenceGuarantees || [])])
+        });
+      }
+
+      function listContractGuarantees() {
+        return Object.freeze(contractGuarantees.map(cloneContractGuarantee));
+      }
+
+      function guaranteeById(id) {
+        const normalized = String(id || "");
+        const guarantee = contractGuarantees.find((item) => item.id === normalized);
+        return guarantee ? cloneContractGuarantee(guarantee) : null;
+      }
+
+      function listUserContractClauses() {
+        return Object.freeze(userSpaceContract.map(cloneUserContractClause));
+      }
+
+      function userContractClauseById(id) {
+        const normalized = String(id || "");
+        const clause = userSpaceContract.find((item) => item.id === normalized);
+        return clause ? cloneUserContractClause(clause) : null;
+      }
+
+      function buildUserSpaceContract() {
+        return Object.freeze({
+          kind: "mcel-user-space-contract",
+          contractVersion,
+          purpose: "The user-facing MCEL contract: what builders can rely on, what they must provide, what they must not assume, and how MCEL fails closed.",
+          stableEntrypoints: Object.freeze([
+            "McelLabContract.buildUserSpaceContract()",
+            "McelLabContract.listUserContractClauses()",
+            "McelLabEngine.compileSource(sourceHtml, options)",
+            "McelLabEngine.compileDocument(documentOrRoot, options)",
+            "McelLabEngine.serializeRuntimeRoot(root, options)",
+            "McelLabEngine.repairRuntimeRoot(root, options)",
+            "McelLabEngine.runContractTests()",
+            "MCEL.compile(sourceHtml, options)",
+            "MCEL.serialize(runtimeRootOrHtml, options)",
+            "MCEL.repair(runtimeRootOrHtml, options)",
+            "MCEL.audit(sourceHtml, runtimeRoot, options)",
+            "MCEL.buildAdoptionCase(options)"
+          ]),
+          clauseCount: userSpaceContract.length,
+          evidenceGuaranteeIds: Object.freeze([...new Set(userSpaceContract.flatMap((clause) => clause.evidenceGuarantees || []))]),
+          clauses: listUserContractClauses()
+        });
+      }
+
+      function buildContractEnvelope() {
+        return Object.freeze({
+          kind: "mcel-contract-envelope",
+          contractVersion,
+          guaranteeCount: contractGuarantees.length,
+          executableGuaranteeIds: Object.freeze(contractGuarantees
+            .filter((guarantee) => guarantee.status === "executable")
+            .map((guarantee) => guarantee.id)),
+          guarantees: listContractGuarantees()
+        });
+      }
+
       const modes = Object.freeze(["source", "editor", "runtime", "diff", "stress", "a11y"]);
 
       const defaults = Object.freeze({
@@ -585,6 +979,14 @@ var McelLabContract = (() => {
         layoutPolicies,
         platformPolicies,
         contractVersion,
+        contractGuarantees,
+        userSpaceContract,
+        listContractGuarantees,
+        guaranteeById,
+        listUserContractClauses,
+        userContractClauseById,
+        buildUserSpaceContract,
+        buildContractEnvelope,
         schema,
         defaultSource,
         blockTemplates
@@ -1045,141 +1447,225 @@ var McelLabEngine = (() => {
         const tests = [];
         const events = [];
 
-        function record(name, passed, details = "") {
-          tests.push({name, passed: Boolean(passed), details});
+        function normalizeGuarantees(guarantees = []) {
+          return Object.freeze([...(Array.isArray(guarantees) ? guarantees : [guarantees])]
+            .map((id) => String(id || "").trim())
+            .filter(Boolean));
         }
 
-        function test(name, callback) {
+        function record(name, guarantees, passed, details = "") {
+          tests.push({name, guarantees: normalizeGuarantees(guarantees), passed: Boolean(passed), details});
+        }
+
+        function test(name, guarantees, callback) {
           try {
             const result = callback();
-            record(name, result === true || result?.passed === true, result?.details || "");
+            record(name, guarantees, result === true || result?.passed === true, result?.details || "");
           } catch (error) {
-            record(name, false, error.message);
+            record(name, guarantees, false, error.message);
           }
         }
 
-        test("compile inserts generated parts without touching source semantics", () => {
-          const compiled = compileSource(contract.defaultSource, {reason: "contract-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          return {
-            passed: Boolean(first?.querySelector(`[${attributes.generated}="true"][${attributes.part}="rail"]`)) &&
-              first.getAttribute(attributes.kind) === "signal",
-            details: `${compiled.sourceCount} source element(s) compiled`
-          };
-        });
+        test(
+          "compile inserts generated parts without touching source semantics",
+          [
+            "mcel.contract.source-intent-is-input.v1",
+            "mcel.contract.generated-runtime-is-discardable.v1"
+          ],
+          () => {
+            const compiled = compileSource(contract.defaultSource, {reason: "contract-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            return {
+              passed: Boolean(first?.querySelector(`[${attributes.generated}="true"][${attributes.part}="rail"]`)) &&
+                first.getAttribute(attributes.kind) === "signal",
+              details: `${compiled.sourceCount} source element(s) compiled`
+            };
+          }
+        );
 
-        test("serializer removes all generated runtime parts", () => {
-          const compiled = compileSource(contract.defaultSource, {reason: "serializer-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const serialized = serializeRuntimeRoot(root, {reason: "serializer-test"});
-          return {
-            passed: serialized.report.serializerClean && !serialized.serialized.includes(attributes.generated),
-            details: `${serialized.report.removedGeneratedParts} generated part(s) removed`
-          };
-        });
+        test(
+          "serializer removes all generated runtime parts",
+          [
+            "mcel.contract.serializer-cleans-runtime-state.v1",
+            "mcel.contract.generated-runtime-is-discardable.v1"
+          ],
+          () => {
+            const compiled = compileSource(contract.defaultSource, {reason: "serializer-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const serialized = serializeRuntimeRoot(root, {reason: "serializer-test"});
+            return {
+              passed: serialized.report.serializerClean && !serialized.serialized.includes(attributes.generated),
+              details: `${serialized.report.removedGeneratedParts} generated part(s) removed`
+            };
+          }
+        );
 
-        test("repair restores canonical generated parts after damage", () => {
-          const compiled = compileSource(contract.defaultSource, {reason: "repair-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          damageRuntimeRoot(root);
-          const repair = repairRuntimeRoot(root, {reason: "repair-test"});
-          return {
-            passed: repair.repaired > 0 && !debuggerStateFor(root.querySelector(`[${attributes.type}]`), root).missingParts.length,
-            details: `${repair.repaired} element(s) repaired`
-          };
-        });
+        test(
+          "repair restores canonical generated parts after damage",
+          [
+            "mcel.contract.repair-is-schema-bounded.v1",
+            "mcel.contract.generated-runtime-is-discardable.v1"
+          ],
+          () => {
+            const compiled = compileSource(contract.defaultSource, {reason: "repair-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            damageRuntimeRoot(root);
+            const repair = repairRuntimeRoot(root, {reason: "repair-test"});
+            return {
+              passed: repair.repaired > 0 && !debuggerStateFor(root.querySelector(`[${attributes.type}]`), root).missingParts.length,
+              details: `${repair.repaired} element(s) repaired`
+            };
+          }
+        );
 
-        test("schema normalizes invalid trait values", () => {
-          const compiled = compileSource(`<section data-mc="nonsense" data-mc-kind="bogus" data-mc-flow="sideways"><h2>Bad</h2></section>`, {reason: "schema-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          return {
-            passed: first.getAttribute(attributes.type) === defaults.type &&
-              first.getAttribute(attributes.kind) === defaults.kind &&
-              first.getAttribute(attributes.flow) === defaults.flow,
-            details: compiled.events.filter((event) => event.level === "warning").map((event) => event.code).join(", ")
-          };
-        });
+        test(
+          "schema normalizes invalid trait values",
+          ["mcel.contract.source-intent-is-input.v1"],
+          () => {
+            const compiled = compileSource(`<section data-mc="nonsense" data-mc-kind="bogus" data-mc-flow="sideways"><h2>Bad</h2></section>`, {reason: "schema-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            return {
+              passed: first.getAttribute(attributes.type) === defaults.type &&
+                first.getAttribute(attributes.kind) === defaults.kind &&
+                first.getAttribute(attributes.flow) === defaults.flow,
+              details: compiled.events.filter((event) => event.level === "warning").map((event) => event.code).join(", ")
+            };
+          }
+        );
 
-        test("a11y report fails unlabeled source widgets", () => {
-          const compiled = compileSource(`<section data-mc="panel"><p>No heading.</p></section>`, {reason: "a11y-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const report = computeA11y(root);
-          return {
-            passed: report.a11yValid === false && report.warnings.length > 0,
-            details: report.warnings.join("; ")
-          };
-        });
+        test(
+          "a11y report fails unlabeled source widgets",
+          ["mcel.contract.validation-is-reporting-not-trust.v1"],
+          () => {
+            const compiled = compileSource(`<section data-mc="panel"><p>No heading.</p></section>`, {reason: "a11y-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const report = computeA11y(root);
+            return {
+              passed: report.a11yValid === false && report.warnings.length > 0,
+              details: report.warnings.join("; ")
+            };
+          }
+        );
 
-        test("relations resolve when data-mc-connects points at a smart target", () => {
-          const compiled = compileSource(`<section data-mc="panel" data-mc-connects="target"><h2>Source</h2></section><section id="target" data-mc="panel"><h2>Target</h2></section>`, {reason: "relation-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          return {
-            passed: first.getAttribute(attributes.relation) === "resolved" && first.getAttribute(attributes.relationCount) === "1",
-            details: `relation=${first.getAttribute(attributes.relation)}`
-          };
-        });
+        test(
+          "relations resolve when data-mc-connects points at a smart target",
+          ["mcel.contract.source-intent-is-input.v1"],
+          () => {
+            const compiled = compileSource(`<section data-mc="panel" data-mc-connects="target"><h2>Source</h2></section><section id="target" data-mc="panel"><h2>Target</h2></section>`, {reason: "relation-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            return {
+              passed: first.getAttribute(attributes.relation) === "resolved" && first.getAttribute(attributes.relationCount) === "1",
+              details: `relation=${first.getAttribute(attributes.relation)}`
+            };
+          }
+        );
 
-        test("platform source policies survive while runtime proof facts are stripped", () => {
-          const source = `<section data-mc="panel" data-mc-component="ProofCard" data-mc-component-kind="component" data-mc-state-owner="view" data-mc-state-policy="derived" data-mc-query="proof.cards" data-mc-cache-policy="stale-while-revalidate" data-mc-submit="proof.save" data-mc-validation="schema" data-mc-action="save-proof" data-mc-render="island" data-mc-hydration="visible" data-mc-a11y-policy="strict" data-mc-performance-budget="small"><h2>Platform</h2></section>`;
-          const compiled = compileSource(source, {reason: "platform-serializer-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          first.setAttribute(attributes.componentLaw, "true");
-          first.setAttribute(attributes.stateLaw, "owned");
-          first.setAttribute(attributes.dataLaw, "query");
-          first.setAttribute(attributes.formLaw, "valid");
-          first.setAttribute(attributes.actionLaw, "safe");
-          first.setAttribute(attributes.renderLaw, "island");
-          first.setAttribute(attributes.a11yLaw, "strict");
-          first.setAttribute(attributes.performanceLaw, "small");
-          first.setAttribute(attributes.proofTier, "platform-spine");
-          first.setAttribute(attributes.semanticRisk, "low");
-          const serialized = serializeRuntimeRoot(root, {reason: "platform-serializer-test"});
-          return {
-            passed: serialized.report.serializerClean &&
-              serialized.serialized.includes(attributes.componentName) &&
-              serialized.serialized.includes(attributes.renderMode) &&
-              serialized.serialized.includes(attributes.a11yPolicy) &&
-              !serialized.serialized.includes(attributes.componentLaw) &&
-              !serialized.serialized.includes(attributes.performanceLaw) &&
-              !serialized.serialized.includes(attributes.semanticRisk),
-            details: `serialized=${serialized.serialized}`
-          };
-        });
+        test(
+          "platform source policies survive while runtime proof facts are stripped",
+          [
+            "mcel.contract.serializer-cleans-runtime-state.v1",
+            "mcel.contract.validation-is-reporting-not-trust.v1"
+          ],
+          () => {
+            const source = `<section data-mc="panel" data-mc-component="ProofCard" data-mc-component-kind="component" data-mc-state-owner="view" data-mc-state-policy="derived" data-mc-query="proof.cards" data-mc-cache-policy="stale-while-revalidate" data-mc-submit="proof.save" data-mc-validation="schema" data-mc-action="save-proof" data-mc-render="island" data-mc-hydration="visible" data-mc-a11y-policy="strict" data-mc-performance-budget="small"><h2>Platform</h2></section>`;
+            const compiled = compileSource(source, {reason: "platform-serializer-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            first.setAttribute(attributes.componentLaw, "true");
+            first.setAttribute(attributes.stateLaw, "owned");
+            first.setAttribute(attributes.dataLaw, "query");
+            first.setAttribute(attributes.formLaw, "valid");
+            first.setAttribute(attributes.actionLaw, "safe");
+            first.setAttribute(attributes.renderLaw, "island");
+            first.setAttribute(attributes.a11yLaw, "strict");
+            first.setAttribute(attributes.performanceLaw, "small");
+            first.setAttribute(attributes.proofTier, "platform-spine");
+            first.setAttribute(attributes.semanticRisk, "low");
+            const serialized = serializeRuntimeRoot(root, {reason: "platform-serializer-test"});
+            return {
+              passed: serialized.report.serializerClean &&
+                serialized.serialized.includes(attributes.componentName) &&
+                serialized.serialized.includes(attributes.renderMode) &&
+                serialized.serialized.includes(attributes.a11yPolicy) &&
+                !serialized.serialized.includes(attributes.componentLaw) &&
+                !serialized.serialized.includes(attributes.performanceLaw) &&
+                !serialized.serialized.includes(attributes.semanticRisk),
+              details: `serialized=${serialized.serialized}`
+            };
+          }
+        );
 
-        test("layout source policies survive while observed geometry is stripped", () => {
-          const source = `<section data-mc="panel" data-mc-overflow-policy="delegate" data-mc-scroll-policy="external" data-mc-size-policy="fluid"><h2>Layout</h2></section>`;
-          const compiled = compileSource(source, {reason: "layout-serializer-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          first.setAttribute(attributes.layoutLaw, "true");
-          first.setAttribute(attributes.overflowComputed, "delegated");
-          first.setAttribute(attributes.scrollNeeded, "true");
-          first.setAttribute(attributes.scrollOwner, "parent");
-          first.setAttribute(attributes.layoutPressure, "high");
-          first.setAttribute(attributes.geometryProof, "fail");
-          const serialized = serializeRuntimeRoot(root, {reason: "layout-serializer-test"});
-          return {
-            passed: serialized.report.serializerClean &&
-              serialized.serialized.includes(attributes.overflowPolicy) &&
-              serialized.serialized.includes(attributes.scrollPolicy) &&
-              !serialized.serialized.includes(attributes.overflowComputed) &&
-              !serialized.serialized.includes(attributes.geometryProof),
-            details: `serialized=${serialized.serialized}`
-          };
-        });
+        test(
+          "layout source policies survive while observed geometry is stripped",
+          [
+            "mcel.contract.serializer-cleans-runtime-state.v1",
+            "mcel.contract.browser-facts-are-runtime-only.v1"
+          ],
+          () => {
+            const source = `<section data-mc="panel" data-mc-overflow-policy="delegate" data-mc-scroll-policy="external" data-mc-size-policy="fluid"><h2>Layout</h2></section>`;
+            const compiled = compileSource(source, {reason: "layout-serializer-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            first.setAttribute(attributes.layoutLaw, "true");
+            first.setAttribute(attributes.overflowComputed, "delegated");
+            first.setAttribute(attributes.scrollNeeded, "true");
+            first.setAttribute(attributes.scrollOwner, "parent");
+            first.setAttribute(attributes.layoutPressure, "high");
+            first.setAttribute(attributes.geometryProof, "fail");
+            const serialized = serializeRuntimeRoot(root, {reason: "layout-serializer-test"});
+            return {
+              passed: serialized.report.serializerClean &&
+                serialized.serialized.includes(attributes.overflowPolicy) &&
+                serialized.serialized.includes(attributes.scrollPolicy) &&
+                !serialized.serialized.includes(attributes.overflowComputed) &&
+                !serialized.serialized.includes(attributes.geometryProof),
+              details: `serialized=${serialized.serialized}`
+            };
+          }
+        );
 
         const passed = tests.filter((item) => item.passed).length;
         const failed = tests.length - passed;
-        if (failed) {
-          logEvent(events, "warning", "tests", "MCEL_CONTRACT_TESTS_FAILED", `${failed} MCEL contract test(s) failed.`);
+        const executableGuarantees = [...(contract.contractGuarantees || [])]
+          .filter((guarantee) => guarantee.status === "executable")
+          .map((guarantee) => guarantee.id);
+        const guaranteeResults = executableGuarantees.map((id) => {
+          const supportingTests = tests.filter((testResult) => testResult.guarantees.includes(id));
+          const guaranteePassed = supportingTests.length > 0 && supportingTests.every((testResult) => testResult.passed);
+          return {
+            id,
+            passed: guaranteePassed,
+            supportingTests: supportingTests.map((testResult) => testResult.name)
+          };
+        });
+        const uncoveredGuarantees = guaranteeResults
+          .filter((result) => result.supportingTests.length === 0)
+          .map((result) => result.id);
+        const failedGuarantees = guaranteeResults
+          .filter((result) => !result.passed)
+          .map((result) => result.id);
+
+        if (failed || failedGuarantees.length || uncoveredGuarantees.length) {
+          logEvent(
+            events,
+            "warning",
+            "tests",
+            "MCEL_CONTRACT_GUARANTEES_FAILED",
+            `${failed} test(s), ${failedGuarantees.length} guarantee(s), and ${uncoveredGuarantees.length} uncovered guarantee(s) require attention.`
+          );
         } else {
-          logEvent(events, "success", "tests", "MCEL_CONTRACT_TESTS_PASSED", `${passed} MCEL contract test(s) passed.`);
+          logEvent(
+            events,
+            "success",
+            "tests",
+            "MCEL_CONTRACT_GUARANTEES_PASSED",
+            `${passed} MCEL contract test(s) covered ${guaranteeResults.length} executable guarantee(s).`
+          );
         }
-        return {passed, failed, tests, events};
+        return {passed, failed, tests, guaranteeResults, failedGuarantees, uncoveredGuarantees, events};
       }
 
       return Object.freeze({
@@ -5034,6 +5520,83 @@ var McelLabPlatformSpine = (() => {
     };
   }
 
+  function buildAdoptionCase(options = {}) {
+    const lattice = buildSubsumptionLattice();
+    const lawPlans = Array.isArray(lattice.lawPlans) ? lattice.lawPlans : [];
+    const registeredLaws = Array.isArray(lattice.lawRegistry) ? lattice.lawRegistry : [];
+    const proofObligations = lawPlans.flatMap((plan) => Array.isArray(plan.proofObligations) ? plan.proofObligations : []);
+    const comparisonStandard = [
+      "A replacement is not better because MCEL says it is better.",
+      "MCEL is better only when replacement claims map to laws, proof obligations, browser facts, evidence packets, and a supervisor gate."
+    ];
+    const gates = [
+      {
+        id: "concrete-prior-art",
+        label: "Concrete prior-art families are named before replacement is claimed.",
+        passed: lattice.obsoleteLibraryMap.length >= 8,
+        evidence: lattice.obsoleteLibraryMap.map((item) => item.family)
+      },
+      {
+        id: "law-backed-claims",
+        label: "Replacement claims are backed by MCEL law plans.",
+        passed: lawPlans.length >= 8,
+        evidence: lawPlans.map((plan) => plan.domain || plan.label).filter(Boolean)
+      },
+      {
+        id: "proof-obligations",
+        label: "Each law family carries proof obligations instead of prose-only superiority.",
+        passed: proofObligations.length >= lawPlans.length * 4,
+        evidence: proofObligations
+      },
+      {
+        id: "evidence-packet-and-supervisor",
+        label: "Adoption depends on evidence packets and the supervisor gate.",
+        passed: lattice.axisOrder.includes("evidence packet") && lattice.axisOrder.includes("supervisor gate"),
+        evidence: lattice.axisOrder
+      },
+      {
+        id: "source-runtime-separation",
+        label: "The proof keeps source meaning separate from generated runtime machinery.",
+        passed: lattice.zeroSharpEdges.includes("meaning is source-owned") && lattice.zeroSharpEdges.includes("machinery is runtime-owned"),
+        evidence: lattice.zeroSharpEdges
+      },
+      {
+        id: "registry-accountability",
+        label: "Registered laws make the comparison machine-readable.",
+        passed: registeredLaws.length >= lawPlans.length,
+        evidence: registeredLaws.map((item) => item.id || item.label).filter(Boolean)
+      }
+    ];
+    const passed = gates.every((gate) => gate.passed);
+    return {
+      kind: "mcel-adoption-case",
+      contractVersion,
+      generatedAt: now(),
+      question: options.question || "Does MCEL make sense to use instead of scattered legacy UI libraries?",
+      verdict: passed ? "adopt-mcel-when-proof-is-required" : "hold-until-proof-gates-pass",
+      summary: passed
+        ? "MCEL makes sense when the work needs source-owned semantics, runtime law, browser-observed evidence, and a machine-checkable replacement story for legacy library glue."
+        : "MCEL adoption is not justified yet because at least one comparison gate lacks evidence.",
+      comparisonStandard,
+      proofCoverage: {
+        obsoleteFamilyCount: lattice.obsoleteLibraryMap.length,
+        lawPlanCount: lawPlans.length,
+        registeredLawCount: registeredLaws.length,
+        proofObligationCount: proofObligations.length,
+        axisCount: lattice.axisOrder.length,
+        passedGateCount: gates.filter((gate) => gate.passed).length,
+        totalGateCount: gates.length
+      },
+      gates,
+      replacementClaims: lattice.obsoleteLibraryMap.map((item) => ({
+        family: item.family,
+        legacy: item.legacy,
+        mcelAxis: item.mcelAxis,
+        replacementClaim: item.replacementClaim
+      }))
+    };
+  }
+
   function buildAxisMatrix(feature = "platform-spine") {
     const lattice = buildSubsumptionLattice();
     return {
@@ -5058,6 +5621,7 @@ var McelLabPlatformSpine = (() => {
     applyPlatformLaws,
     provePlatform,
     buildSubsumptionLattice,
+    buildAdoptionCase,
     buildAxisMatrix
   });
 })();

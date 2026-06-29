@@ -446,141 +446,225 @@
         const tests = [];
         const events = [];
 
-        function record(name, passed, details = "") {
-          tests.push({name, passed: Boolean(passed), details});
+        function normalizeGuarantees(guarantees = []) {
+          return Object.freeze([...(Array.isArray(guarantees) ? guarantees : [guarantees])]
+            .map((id) => String(id || "").trim())
+            .filter(Boolean));
         }
 
-        function test(name, callback) {
+        function record(name, guarantees, passed, details = "") {
+          tests.push({name, guarantees: normalizeGuarantees(guarantees), passed: Boolean(passed), details});
+        }
+
+        function test(name, guarantees, callback) {
           try {
             const result = callback();
-            record(name, result === true || result?.passed === true, result?.details || "");
+            record(name, guarantees, result === true || result?.passed === true, result?.details || "");
           } catch (error) {
-            record(name, false, error.message);
+            record(name, guarantees, false, error.message);
           }
         }
 
-        test("compile inserts generated parts without touching source semantics", () => {
-          const compiled = compileSource(contract.defaultSource, {reason: "contract-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          return {
-            passed: Boolean(first?.querySelector(`[${attributes.generated}="true"][${attributes.part}="rail"]`)) &&
-              first.getAttribute(attributes.kind) === "signal",
-            details: `${compiled.sourceCount} source element(s) compiled`
-          };
-        });
+        test(
+          "compile inserts generated parts without touching source semantics",
+          [
+            "mcel.contract.source-intent-is-input.v1",
+            "mcel.contract.generated-runtime-is-discardable.v1"
+          ],
+          () => {
+            const compiled = compileSource(contract.defaultSource, {reason: "contract-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            return {
+              passed: Boolean(first?.querySelector(`[${attributes.generated}="true"][${attributes.part}="rail"]`)) &&
+                first.getAttribute(attributes.kind) === "signal",
+              details: `${compiled.sourceCount} source element(s) compiled`
+            };
+          }
+        );
 
-        test("serializer removes all generated runtime parts", () => {
-          const compiled = compileSource(contract.defaultSource, {reason: "serializer-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const serialized = serializeRuntimeRoot(root, {reason: "serializer-test"});
-          return {
-            passed: serialized.report.serializerClean && !serialized.serialized.includes(attributes.generated),
-            details: `${serialized.report.removedGeneratedParts} generated part(s) removed`
-          };
-        });
+        test(
+          "serializer removes all generated runtime parts",
+          [
+            "mcel.contract.serializer-cleans-runtime-state.v1",
+            "mcel.contract.generated-runtime-is-discardable.v1"
+          ],
+          () => {
+            const compiled = compileSource(contract.defaultSource, {reason: "serializer-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const serialized = serializeRuntimeRoot(root, {reason: "serializer-test"});
+            return {
+              passed: serialized.report.serializerClean && !serialized.serialized.includes(attributes.generated),
+              details: `${serialized.report.removedGeneratedParts} generated part(s) removed`
+            };
+          }
+        );
 
-        test("repair restores canonical generated parts after damage", () => {
-          const compiled = compileSource(contract.defaultSource, {reason: "repair-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          damageRuntimeRoot(root);
-          const repair = repairRuntimeRoot(root, {reason: "repair-test"});
-          return {
-            passed: repair.repaired > 0 && !debuggerStateFor(root.querySelector(`[${attributes.type}]`), root).missingParts.length,
-            details: `${repair.repaired} element(s) repaired`
-          };
-        });
+        test(
+          "repair restores canonical generated parts after damage",
+          [
+            "mcel.contract.repair-is-schema-bounded.v1",
+            "mcel.contract.generated-runtime-is-discardable.v1"
+          ],
+          () => {
+            const compiled = compileSource(contract.defaultSource, {reason: "repair-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            damageRuntimeRoot(root);
+            const repair = repairRuntimeRoot(root, {reason: "repair-test"});
+            return {
+              passed: repair.repaired > 0 && !debuggerStateFor(root.querySelector(`[${attributes.type}]`), root).missingParts.length,
+              details: `${repair.repaired} element(s) repaired`
+            };
+          }
+        );
 
-        test("schema normalizes invalid trait values", () => {
-          const compiled = compileSource(`<section data-mc="nonsense" data-mc-kind="bogus" data-mc-flow="sideways"><h2>Bad</h2></section>`, {reason: "schema-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          return {
-            passed: first.getAttribute(attributes.type) === defaults.type &&
-              first.getAttribute(attributes.kind) === defaults.kind &&
-              first.getAttribute(attributes.flow) === defaults.flow,
-            details: compiled.events.filter((event) => event.level === "warning").map((event) => event.code).join(", ")
-          };
-        });
+        test(
+          "schema normalizes invalid trait values",
+          ["mcel.contract.source-intent-is-input.v1"],
+          () => {
+            const compiled = compileSource(`<section data-mc="nonsense" data-mc-kind="bogus" data-mc-flow="sideways"><h2>Bad</h2></section>`, {reason: "schema-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            return {
+              passed: first.getAttribute(attributes.type) === defaults.type &&
+                first.getAttribute(attributes.kind) === defaults.kind &&
+                first.getAttribute(attributes.flow) === defaults.flow,
+              details: compiled.events.filter((event) => event.level === "warning").map((event) => event.code).join(", ")
+            };
+          }
+        );
 
-        test("a11y report fails unlabeled source widgets", () => {
-          const compiled = compileSource(`<section data-mc="panel"><p>No heading.</p></section>`, {reason: "a11y-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const report = computeA11y(root);
-          return {
-            passed: report.a11yValid === false && report.warnings.length > 0,
-            details: report.warnings.join("; ")
-          };
-        });
+        test(
+          "a11y report fails unlabeled source widgets",
+          ["mcel.contract.validation-is-reporting-not-trust.v1"],
+          () => {
+            const compiled = compileSource(`<section data-mc="panel"><p>No heading.</p></section>`, {reason: "a11y-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const report = computeA11y(root);
+            return {
+              passed: report.a11yValid === false && report.warnings.length > 0,
+              details: report.warnings.join("; ")
+            };
+          }
+        );
 
-        test("relations resolve when data-mc-connects points at a smart target", () => {
-          const compiled = compileSource(`<section data-mc="panel" data-mc-connects="target"><h2>Source</h2></section><section id="target" data-mc="panel"><h2>Target</h2></section>`, {reason: "relation-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          return {
-            passed: first.getAttribute(attributes.relation) === "resolved" && first.getAttribute(attributes.relationCount) === "1",
-            details: `relation=${first.getAttribute(attributes.relation)}`
-          };
-        });
+        test(
+          "relations resolve when data-mc-connects points at a smart target",
+          ["mcel.contract.source-intent-is-input.v1"],
+          () => {
+            const compiled = compileSource(`<section data-mc="panel" data-mc-connects="target"><h2>Source</h2></section><section id="target" data-mc="panel"><h2>Target</h2></section>`, {reason: "relation-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            return {
+              passed: first.getAttribute(attributes.relation) === "resolved" && first.getAttribute(attributes.relationCount) === "1",
+              details: `relation=${first.getAttribute(attributes.relation)}`
+            };
+          }
+        );
 
-        test("platform source policies survive while runtime proof facts are stripped", () => {
-          const source = `<section data-mc="panel" data-mc-component="ProofCard" data-mc-component-kind="component" data-mc-state-owner="view" data-mc-state-policy="derived" data-mc-query="proof.cards" data-mc-cache-policy="stale-while-revalidate" data-mc-submit="proof.save" data-mc-validation="schema" data-mc-action="save-proof" data-mc-render="island" data-mc-hydration="visible" data-mc-a11y-policy="strict" data-mc-performance-budget="small"><h2>Platform</h2></section>`;
-          const compiled = compileSource(source, {reason: "platform-serializer-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          first.setAttribute(attributes.componentLaw, "true");
-          first.setAttribute(attributes.stateLaw, "owned");
-          first.setAttribute(attributes.dataLaw, "query");
-          first.setAttribute(attributes.formLaw, "valid");
-          first.setAttribute(attributes.actionLaw, "safe");
-          first.setAttribute(attributes.renderLaw, "island");
-          first.setAttribute(attributes.a11yLaw, "strict");
-          first.setAttribute(attributes.performanceLaw, "small");
-          first.setAttribute(attributes.proofTier, "platform-spine");
-          first.setAttribute(attributes.semanticRisk, "low");
-          const serialized = serializeRuntimeRoot(root, {reason: "platform-serializer-test"});
-          return {
-            passed: serialized.report.serializerClean &&
-              serialized.serialized.includes(attributes.componentName) &&
-              serialized.serialized.includes(attributes.renderMode) &&
-              serialized.serialized.includes(attributes.a11yPolicy) &&
-              !serialized.serialized.includes(attributes.componentLaw) &&
-              !serialized.serialized.includes(attributes.performanceLaw) &&
-              !serialized.serialized.includes(attributes.semanticRisk),
-            details: `serialized=${serialized.serialized}`
-          };
-        });
+        test(
+          "platform source policies survive while runtime proof facts are stripped",
+          [
+            "mcel.contract.serializer-cleans-runtime-state.v1",
+            "mcel.contract.validation-is-reporting-not-trust.v1"
+          ],
+          () => {
+            const source = `<section data-mc="panel" data-mc-component="ProofCard" data-mc-component-kind="component" data-mc-state-owner="view" data-mc-state-policy="derived" data-mc-query="proof.cards" data-mc-cache-policy="stale-while-revalidate" data-mc-submit="proof.save" data-mc-validation="schema" data-mc-action="save-proof" data-mc-render="island" data-mc-hydration="visible" data-mc-a11y-policy="strict" data-mc-performance-budget="small"><h2>Platform</h2></section>`;
+            const compiled = compileSource(source, {reason: "platform-serializer-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            first.setAttribute(attributes.componentLaw, "true");
+            first.setAttribute(attributes.stateLaw, "owned");
+            first.setAttribute(attributes.dataLaw, "query");
+            first.setAttribute(attributes.formLaw, "valid");
+            first.setAttribute(attributes.actionLaw, "safe");
+            first.setAttribute(attributes.renderLaw, "island");
+            first.setAttribute(attributes.a11yLaw, "strict");
+            first.setAttribute(attributes.performanceLaw, "small");
+            first.setAttribute(attributes.proofTier, "platform-spine");
+            first.setAttribute(attributes.semanticRisk, "low");
+            const serialized = serializeRuntimeRoot(root, {reason: "platform-serializer-test"});
+            return {
+              passed: serialized.report.serializerClean &&
+                serialized.serialized.includes(attributes.componentName) &&
+                serialized.serialized.includes(attributes.renderMode) &&
+                serialized.serialized.includes(attributes.a11yPolicy) &&
+                !serialized.serialized.includes(attributes.componentLaw) &&
+                !serialized.serialized.includes(attributes.performanceLaw) &&
+                !serialized.serialized.includes(attributes.semanticRisk),
+              details: `serialized=${serialized.serialized}`
+            };
+          }
+        );
 
-        test("layout source policies survive while observed geometry is stripped", () => {
-          const source = `<section data-mc="panel" data-mc-overflow-policy="delegate" data-mc-scroll-policy="external" data-mc-size-policy="fluid"><h2>Layout</h2></section>`;
-          const compiled = compileSource(source, {reason: "layout-serializer-test"});
-          const root = makeRuntimeRoot(compiled.runtimeHtml);
-          const first = root.querySelector(`[${attributes.type}]`);
-          first.setAttribute(attributes.layoutLaw, "true");
-          first.setAttribute(attributes.overflowComputed, "delegated");
-          first.setAttribute(attributes.scrollNeeded, "true");
-          first.setAttribute(attributes.scrollOwner, "parent");
-          first.setAttribute(attributes.layoutPressure, "high");
-          first.setAttribute(attributes.geometryProof, "fail");
-          const serialized = serializeRuntimeRoot(root, {reason: "layout-serializer-test"});
-          return {
-            passed: serialized.report.serializerClean &&
-              serialized.serialized.includes(attributes.overflowPolicy) &&
-              serialized.serialized.includes(attributes.scrollPolicy) &&
-              !serialized.serialized.includes(attributes.overflowComputed) &&
-              !serialized.serialized.includes(attributes.geometryProof),
-            details: `serialized=${serialized.serialized}`
-          };
-        });
+        test(
+          "layout source policies survive while observed geometry is stripped",
+          [
+            "mcel.contract.serializer-cleans-runtime-state.v1",
+            "mcel.contract.browser-facts-are-runtime-only.v1"
+          ],
+          () => {
+            const source = `<section data-mc="panel" data-mc-overflow-policy="delegate" data-mc-scroll-policy="external" data-mc-size-policy="fluid"><h2>Layout</h2></section>`;
+            const compiled = compileSource(source, {reason: "layout-serializer-test"});
+            const root = makeRuntimeRoot(compiled.runtimeHtml);
+            const first = root.querySelector(`[${attributes.type}]`);
+            first.setAttribute(attributes.layoutLaw, "true");
+            first.setAttribute(attributes.overflowComputed, "delegated");
+            first.setAttribute(attributes.scrollNeeded, "true");
+            first.setAttribute(attributes.scrollOwner, "parent");
+            first.setAttribute(attributes.layoutPressure, "high");
+            first.setAttribute(attributes.geometryProof, "fail");
+            const serialized = serializeRuntimeRoot(root, {reason: "layout-serializer-test"});
+            return {
+              passed: serialized.report.serializerClean &&
+                serialized.serialized.includes(attributes.overflowPolicy) &&
+                serialized.serialized.includes(attributes.scrollPolicy) &&
+                !serialized.serialized.includes(attributes.overflowComputed) &&
+                !serialized.serialized.includes(attributes.geometryProof),
+              details: `serialized=${serialized.serialized}`
+            };
+          }
+        );
 
         const passed = tests.filter((item) => item.passed).length;
         const failed = tests.length - passed;
-        if (failed) {
-          logEvent(events, "warning", "tests", "MCEL_CONTRACT_TESTS_FAILED", `${failed} MCEL contract test(s) failed.`);
+        const executableGuarantees = [...(contract.contractGuarantees || [])]
+          .filter((guarantee) => guarantee.status === "executable")
+          .map((guarantee) => guarantee.id);
+        const guaranteeResults = executableGuarantees.map((id) => {
+          const supportingTests = tests.filter((testResult) => testResult.guarantees.includes(id));
+          const guaranteePassed = supportingTests.length > 0 && supportingTests.every((testResult) => testResult.passed);
+          return {
+            id,
+            passed: guaranteePassed,
+            supportingTests: supportingTests.map((testResult) => testResult.name)
+          };
+        });
+        const uncoveredGuarantees = guaranteeResults
+          .filter((result) => result.supportingTests.length === 0)
+          .map((result) => result.id);
+        const failedGuarantees = guaranteeResults
+          .filter((result) => !result.passed)
+          .map((result) => result.id);
+
+        if (failed || failedGuarantees.length || uncoveredGuarantees.length) {
+          logEvent(
+            events,
+            "warning",
+            "tests",
+            "MCEL_CONTRACT_GUARANTEES_FAILED",
+            `${failed} test(s), ${failedGuarantees.length} guarantee(s), and ${uncoveredGuarantees.length} uncovered guarantee(s) require attention.`
+          );
         } else {
-          logEvent(events, "success", "tests", "MCEL_CONTRACT_TESTS_PASSED", `${passed} MCEL contract test(s) passed.`);
+          logEvent(
+            events,
+            "success",
+            "tests",
+            "MCEL_CONTRACT_GUARANTEES_PASSED",
+            `${passed} MCEL contract test(s) covered ${guaranteeResults.length} executable guarantee(s).`
+          );
         }
-        return {passed, failed, tests, events};
+        return {passed, failed, tests, guaranteeResults, failedGuarantees, uncoveredGuarantees, events};
       }
 
       return Object.freeze({

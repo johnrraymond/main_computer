@@ -98,6 +98,7 @@
       mcelRunKernel?.addEventListener("click", () => runMcelKernelAudit("manual-kernel-audit"));
       mcelBuildTraceability?.addEventListener("click", () => buildMcelTraceabilityMap("manual-traceability"));
       mcelBuildSubsumption?.addEventListener("click", () => buildMcelSubsumptionLattice("manual-subsumption"));
+      mcelBuildAdoptionCase?.addEventListener("click", () => buildMcelAdoptionCase("manual-adoption-case"));
       mcelBuildWorkbench?.addEventListener("click", () => buildMcelWorkbenchPlan("manual-workbench"));
       mcelRunBrowserProof?.addEventListener("click", () => runMcelBrowserSemanticProof("manual-browser-proof"));
       mcelApplyTraits?.addEventListener("click", applyMcelTraitsToSelectedSourceWidget);
@@ -567,6 +568,27 @@
       renderMcelSubsumptionLattice();
       renderMcelCompilerLog();
       return lattice;
+    }
+
+    function buildMcelAdoptionCase(reason = "manual-adoption-case") {
+      const adoptionCase = window.MCEL?.buildAdoptionCase
+        ? MCEL.buildAdoptionCase({reason})
+        : McelLabPlatformSpine?.buildAdoptionCase?.({reason});
+      mcelLabState.lastAdoptionCase = adoptionCase;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: adoptionCase?.verdict === "adopt-mcel-when-proof-is-required" ? "success" : "warning",
+          module: "platform-spine",
+          code: adoptionCase ? "MCEL_ADOPTION_CASE_READY" : "MCEL_ADOPTION_CASE_UNAVAILABLE",
+          message: adoptionCase
+            ? `Adoption case verdict ${adoptionCase.verdict}; ${adoptionCase.proofCoverage?.passedGateCount || 0}/${adoptionCase.proofCoverage?.totalGateCount || 0} comparison gate(s) passed.`
+            : "Adoption case is unavailable."
+        }
+      ].slice(-64);
+      renderMcelAdoptionCase();
+      renderMcelCompilerLog();
+      return adoptionCase;
     }
 
     function buildMcelWorkbenchPlan(reason = "manual-workbench") {
@@ -4932,6 +4954,12 @@
       if (!mcelSubsumptionReport) return;
       const lattice = mcelLabState.lastSubsumptionLattice || (typeof McelLabPlatformSpine !== "undefined" ? McelLabPlatformSpine.buildSubsumptionLattice() : null);
       mcelSubsumptionReport.textContent = lattice ? JSON.stringify(lattice, null, 2) : "Subsumption lattice is unavailable.";
+    }
+
+    function renderMcelAdoptionCase() {
+      if (!mcelAdoptionReport) return;
+      const adoptionCase = mcelLabState.lastAdoptionCase || (typeof McelLabPlatformSpine !== "undefined" ? McelLabPlatformSpine.buildAdoptionCase() : null);
+      mcelAdoptionReport.textContent = adoptionCase ? JSON.stringify(adoptionCase, null, 2) : "Adoption case is unavailable.";
     }
 
     function renderMcelWorkbenchPlan() {

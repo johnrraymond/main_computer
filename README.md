@@ -282,6 +282,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\build-main
 
 NSIS is only needed for installer creation. It is not required to run the system from a source checkout with `start_v2.bat`.
 
+## MCEL documentation
+
+MCEL is the semantic interface layer behind the MCEL Lab and Website Builder runtime exports. Start with the system guide, then use the user-space contract before planning work on top of MCEL:
+
+```text
+pretty_docs/mcel-system-guide.md
+pretty_docs/mcel-user-space-contract.md
+pretty_docs/mcel-contract-guarantees.md
+```
+
+The system guide explains the source/runtime/serialization boundary, the evidence-packet workflow, the subsumption lattice, and the adoption-case gate that prevents unsupported "MCEL is better" claims. The user-space contract is the planning surface: it states what MCEL users can rely on, what they must provide, what they must not assume, and which fail-closed signals block trust.
+
 ## Tests and diagnostics
 
 Run focused tests for the part of the system you changed:

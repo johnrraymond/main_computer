@@ -118,6 +118,18 @@
         return platformSpine?.buildSubsumptionLattice ? platformSpine.buildSubsumptionLattice() : null;
       }
 
+      function buildAdoptionCase(options = {}) {
+        return platformSpine?.buildAdoptionCase ? platformSpine.buildAdoptionCase(options) : null;
+      }
+
+      function buildUserSpaceContract() {
+        return contract?.buildUserSpaceContract ? contract.buildUserSpaceContract() : null;
+      }
+
+      function listUserContractClauses() {
+        return contract?.listUserContractClauses ? contract.listUserContractClauses() : [];
+      }
+
       function buildWorkbenchPlan() {
         return workbench?.buildWorkbenchPlan ? workbench.buildWorkbenchPlan() : null;
       }
@@ -178,6 +190,9 @@
         buildEvidencePacket,
         runProof,
         buildSubsumptionLattice,
+        buildAdoptionCase,
+        buildUserSpaceContract,
+        listUserContractClauses,
         buildWorkbenchPlan,
         listChromes,
         normalizeChrome,

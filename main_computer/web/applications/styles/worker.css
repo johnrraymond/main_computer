@@ -32,7 +32,6 @@
     .worker-pane-head p,
     .worker-card small,
     .worker-card-note,
-    .worker-hub-card span,
     .worker-save-note,
     .worker-drawer summary small {
       color: var(--muted);
@@ -46,8 +45,7 @@
       gap: 8px;
       min-width: min(420px, 100%);
     }
-    .worker-status-strip span,
-    .worker-hub-badges span {
+    .worker-status-strip span {
       border: 1px solid rgba(115, 214, 255, 0.36);
       border-radius: 999px;
       background: rgba(115, 214, 255, 0.1);
@@ -382,9 +380,7 @@
       margin-top: 6px;
       font-weight: 600;
     }
-    .worker-card,
-    .worker-add-hub,
-    .worker-hub-card {
+    .worker-card {
       display: grid;
       gap: 10px;
       border: 1px solid rgba(79, 73, 58, 0.82);
@@ -399,7 +395,6 @@
       align-content: start;
     }
     .worker-card label,
-    .worker-add-hub label,
     .worker-switch,
     .worker-checkline {
       display: grid;
@@ -414,8 +409,7 @@
       grid-template-columns: auto minmax(0, 1fr);
       align-items: center;
     }
-    .worker-card label span,
-    .worker-add-hub label span {
+    .worker-card label span {
       color: var(--muted);
       font-size: 12px;
       font-weight: 800;
@@ -446,29 +440,8 @@
       outline: 2px solid rgba(115, 214, 255, 0.25);
       outline-offset: 1px;
     }
-    .worker-add-hub button,
     .worker-actions button {
       width: 100%;
-    }
-    .worker-hub-list {
-      display: grid;
-      gap: 10px;
-    }
-    .worker-hub-card {
-      grid-template-columns: minmax(0, 1fr);
-    }
-    .worker-hub-card strong {
-      display: block;
-      font-size: 16px;
-    }
-    .worker-hub-badges {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 7px;
-    }
-    .worker-hub-badges span {
-      padding: 5px 8px;
-      font-size: 12px;
     }
     .worker-switch {
       min-width: fit-content;
@@ -652,18 +625,14 @@
       grid-template-columns: minmax(0, 1fr);
       grid-template-areas:
         "seller"
-        "buyer"
-        "hubs";
+        "buyer";
       gap: 14px;
       align-items: start;
       min-height: 0;
       height: auto;
       overflow: visible;
     }
-    .worker-hubs {
-      grid-area: hubs;
-    }
-    .worker-seller {
+     .worker-seller {
       grid-area: seller;
     }
     .worker-buyer {
@@ -836,9 +805,6 @@
       padding: 4px 7px;
       font-size: 11px;
     }
-    .worker-hubs .worker-hub-list {
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    }
     .worker-actions {
       display: flex;
       align-items: center;
@@ -869,8 +835,7 @@
         grid-template-columns: 1fr;
         grid-template-areas:
           "seller"
-          "buyer"
-          "hubs";
+          "buyer";
       }
       .worker-seller {
         grid-template-columns: 1fr;
@@ -881,8 +846,7 @@
         grid-template-columns: 1fr;
         grid-template-areas:
           "seller"
-          "buyer"
-          "hubs";
+          "buyer";
       }
       .worker-seller {
         grid-template-columns: 1fr;

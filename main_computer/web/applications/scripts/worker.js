@@ -1,9 +1,3 @@
-    const workerDefaultHubs = [
-      {name: "Mainnet Hub", url: "https://mainnet-hub.greatlibrary.io", role: "use-provide", network: "mainnet"},
-      {name: "Testnet Hub", url: "https://testnet-hub.greatlibrary.io", role: "use-provide", network: "testnet"},
-      {name: "Local QBFT Test Hub", url: "http://127.0.0.1:8780", role: "use-provide", network: "test"},
-      {name: "Local Dev Hub", url: "http://127.0.0.1:8871", role: "use-provide", network: "dev"}
-    ];
     const WORKER_NETWORK_SESSION_ENDPOINT = "/api/applications/worker/network-session";
     const WORKER_NETWORK_WORK_NOW_ENDPOINT = "/api/applications/worker/work-now";
     const WORKER_RUNTIME_STATUS_ENDPOINT = "/api/applications/worker/runtime-status";
@@ -32,7 +26,6 @@
       "3": "Ring 3 - Public untrusted"
     };
     let workerSettingsLoaded = false;
-    let workerHubs = [...workerDefaultHubs];
     let workerNetworkProfiles = {};
     let workerNetworkSession = {
       selected_network: WORKER_NETWORK_NONE,
@@ -70,6 +63,7 @@
       workNowOverride: null,
       worker: null,
       policy: null,
+      supervisor: null,
       last_checked_at: "",
       last_heartbeat_at: "",
       lastError: "",
@@ -3260,16 +3254,6 @@
       }
     }
 
-    function workerRoleLabel(role) {
-      return role === "use-only"
-        ? "Buy/request only"
-        : role === "provide-only"
-          ? "Sell work only"
-          : role === "disabled"
-            ? "Disabled"
-            : "Buy + sell";
-    }
-
     function workerNetworkKey(value) {
       const key = String(value || WORKER_NETWORK_NONE).trim().toLowerCase();
       return [...WORKER_NETWORK_ORDER, WORKER_NETWORK_NONE].includes(key) ? key : WORKER_NETWORK_NONE;
@@ -3620,6 +3604,47 @@
       return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
     }
 
+    function workerRuntimeClockText(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      const parsed = Date.parse(raw);
+      if (!Number.isFinite(parsed)) return "";
+      try {
+        return new Date(parsed).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit"
+        });
+      } catch (_error) {
+        return new Date(parsed).toLocaleTimeString();
+      }
+    }
+
+    function workerRuntimeSupervisorPayload() {
+      return workerRuntimeStatus.supervisor && typeof workerRuntimeStatus.supervisor === "object"
+        ? workerRuntimeStatus.supervisor
+        : {};
+    }
+
+    function workerRuntimeSupervisorFoot(backendDisplay = {}) {
+      const state = String(
+        backendDisplay.center
+        || backendDisplay.state
+        || workerRuntimeStatus.state
+        || ""
+      ).trim().toUpperCase();
+      if (state !== "CONNECTED" && state !== "ACTIVE") return "";
+      const supervisor = workerRuntimeSupervisorPayload();
+      const stale = Boolean(supervisor.supervisorStale ?? supervisor.supervisor_stale ?? supervisor.stale);
+      if (stale) return "Backend heartbeat stale.";
+      const alive = Boolean(supervisor.threadAlive ?? supervisor.thread_alive ?? supervisor.running);
+      if (!alive) return "";
+      const heartbeatAt = workerRuntimeStatus.last_heartbeat_at || workerRuntimeStatus.lastHeartbeatAt || "";
+      const successAt = String(supervisor.lastSuccessAt || supervisor.last_success_at || "").trim();
+      const stamp = workerRuntimeClockText(heartbeatAt || successAt);
+      return stamp ? `Backend heartbeat active · ${stamp}` : "Backend heartbeat active.";
+    }
+
     function workerRuntimeStateVisualModel({
       selected = workerNetworkSession.selected_network,
       hubConnected = false,
@@ -3634,13 +3659,14 @@
         ? workerRuntimeStatus.runtimeDisplay
         : null;
       if (backendDisplay) {
+        const supervisorFoot = workerRuntimeSupervisorFoot(backendDisplay);
         return {
           center: String(backendDisplay.center || backendDisplay.state || "OFF"),
           nw: String(backendDisplay.nw || "Worker runtime"),
           ne: String(backendDisplay.ne || "Auto hub"),
           sw: String(backendDisplay.sw || "Status pending"),
           se: String(backendDisplay.se || "Retry scheduled"),
-          foot: String(backendDisplay.foot || ""),
+          foot: supervisorFoot || String(backendDisplay.foot || ""),
           tone: String(backendDisplay.tone || "muted")
         };
       }
@@ -3972,6 +3998,11 @@
               : null,
         worker: data.worker && typeof data.worker === "object" ? data.worker : null,
         policy: runtime.policy && typeof runtime.policy === "object" ? runtime.policy : null,
+        supervisor: data.supervisor && typeof data.supervisor === "object"
+          ? data.supervisor
+          : runtime.supervisor && typeof runtime.supervisor === "object"
+            ? runtime.supervisor
+            : null,
         setup: runtime.setup && typeof runtime.setup === "object" ? runtime.setup : null,
         last_checked_at: String(runtime.last_checked_at || runtime.lastCheckedAt || ""),
         last_heartbeat_at: String(runtime.last_heartbeat_at || runtime.lastHeartbeatAt || ""),
@@ -4081,22 +4112,6 @@
           workerNetworkProfiles[key] = profile;
         }
       });
-
-      const networkHubs = WORKER_NETWORK_ORDER
-        .map((key) => workerNetworkProfiles[key])
-        .filter(Boolean)
-        .map((profile) => ({
-          name: `${profile.display_name || workerNetworkDisplayName(profile.network)} Hub`,
-          url: profile.hub_url || profile.hub_public_url || "",
-          role: "use-provide",
-          network: profile.network || profile.network_key
-        }))
-        .filter((hub) => hub.url);
-      if (networkHubs.length) {
-        const manualHubs = workerHubs.filter((hub) => !hub.network);
-        workerHubs = [...networkHubs, ...manualHubs];
-        renderWorkerHubs();
-      }
 
       const session = data.session && typeof data.session === "object" ? data.session : {};
       workerNetworkSession = {
@@ -4562,16 +4577,6 @@
       }
     }
 
-    function workerHubCanSell(hub) {
-      const role = String(hub?.role || "use-provide");
-      return role === "use-provide" || role === "provide-only";
-    }
-
-    function workerHubCanBuy(hub) {
-      const role = String(hub?.role || "use-provide");
-      return role === "use-provide" || role === "use-only";
-    }
-
     function workerElementValue(element, fallback = "") {
       if (!element || !("value" in element)) return fallback;
       return String(element.value || fallback).trim();
@@ -4682,10 +4687,9 @@
     function workerHubDisplayLabel(hubUrl) {
       const cleanUrl = String(hubUrl || "").trim();
       if (!cleanUrl) return "";
-      const configured = workerHubs.find((hub) => String(hub?.url || "").trim() === cleanUrl);
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
       const networkLabel = selected === WORKER_NETWORK_NONE ? "" : `${workerNetworkDisplayName(selected)} Hub`;
-      const label = configured?.name || networkLabel || "Connected Hub";
+      const label = networkLabel || "Connected Hub";
       return `${label} - ${cleanUrl}`;
     }
 
@@ -4708,35 +4712,6 @@
             ? "Offer: registration failed"
             : "Offer: local only";
       }
-    }
-
-    function renderWorkerHubs() {
-      if (!workerHubList) return;
-      workerHubList.innerHTML = "";
-      workerHubs.forEach((hub, index) => {
-        const card = document.createElement("article");
-        card.className = "worker-hub-card";
-        card.innerHTML = `
-          <div>
-            <strong></strong>
-            <span></span>
-          </div>
-          <div class="worker-hub-badges">
-            <span>${hub.role === "disabled" ? "Disabled" : "Configured"}</span>
-            <span>${workerRoleLabel(hub.role)}</span>
-          </div>
-          <button type="button" data-worker-remove-hub="${index}">Remove</button>
-        `;
-        card.querySelector("strong").textContent = hub.name || "Hub";
-        card.querySelector("div > span").textContent = hub.url || "No URL set";
-        workerHubList.append(card);
-      });
-      if (workerHubCount) {
-        const sellableCount = workerHubs.filter(workerHubCanSell).length;
-        const buyableCount = workerHubs.filter(workerHubCanBuy).length;
-        workerHubCount.textContent = `${sellableCount} sell / ${buyableCount} buy hub${workerHubs.length === 1 ? "" : "s"}`;
-      }
-      workerRenderRegistrationHubOptions();
     }
 
     function workerSettingsChangedFields(changedFields = null) {
@@ -4829,8 +4804,7 @@
           WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN
         ),
         maxConcurrency: workerPositiveInteger(workerElementValue(workerMaxConcurrency, "1"), 1),
-        executionMode: workerElementValue(workerExecutionMode, "worker_pull_v0"),
-        hubs: workerHubs
+        executionMode: workerElementValue(workerExecutionMode, "worker_pull_v0")
       };
     }
 
@@ -4872,15 +4846,6 @@
 
     function applyWorkerSettings(parsed, {requestStartedAt = 0, source = "load"} = {}) {
       if (!parsed || typeof parsed !== "object") return;
-      if (Array.isArray(parsed.hubs)) {
-        workerHubs = parsed.hubs
-          .map((hub) => ({
-            name: String(hub.name || "").trim(),
-            url: String(hub.url || "").trim(),
-            role: String(hub.role || "use-provide")
-          }))
-          .filter((hub) => hub.name || hub.url);
-      }
       if (Object.prototype.hasOwnProperty.call(parsed, "selectedNetwork")) {
         workerNetworkSession = {
           ...workerNetworkSession,
@@ -4950,7 +4915,6 @@
       assignWorkerValue(workerMaxConcurrency, parsed.maxConcurrency);
       assignWorkerValue(workerExecutionMode, parsed.executionMode);
       workerRenderRegistrationHubOptions(parsed.registrationHubUrl);
-      renderWorkerHubs();
     }
 
     async function workerLoadSettingsFromBackend() {
@@ -4959,8 +4923,6 @@
         const data = await workerGetJson("/api/applications/worker/settings");
         applyWorkerSettings(data.settings || {}, {requestStartedAt, source: "load"});
       } catch (error) {
-        workerHubs = [...workerDefaultHubs];
-        renderWorkerHubs();
         if (workerSaveStatus) {
           workerSaveStatus.textContent = `Worker settings could not be loaded from the local backend: ${error.message || error}`;
         }
@@ -4993,7 +4955,6 @@
     function loadWorkerSettings() {
       if (workerSettingsLoaded) return;
       workerSettingsLoaded = true;
-      renderWorkerHubs();
       workerLoadSettingsFromBackend();
       workerStartSettingsPolling();
     }
@@ -5162,29 +5123,6 @@
       }
     }
 
-    async function testSelectedWorkerHub() {
-      const hubUrl = workerSelectedHubUrl();
-      if (!hubUrl) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Choose a sell-capable hub before testing.";
-        return;
-      }
-      if (workerTestHubs) workerTestHubs.disabled = true;
-      if (workerSaveStatus) workerSaveStatus.textContent = `Testing ${hubUrl}...`;
-      try {
-        const data = await workerPostJson("/api/applications/worker/hub-health", {hub_url: hubUrl});
-        const reachable = Boolean(data.status?.reachable ?? data.reachable);
-        if (workerSaveStatus) {
-          workerSaveStatus.textContent = reachable
-            ? `Hub reachable: ${hubUrl}`
-            : `Hub test returned no reachable status for ${hubUrl}.`;
-        }
-      } catch (error) {
-        if (workerSaveStatus) workerSaveStatus.textContent = `Hub test failed: ${error.message || error}`;
-      } finally {
-        if (workerTestHubs) workerTestHubs.disabled = false;
-      }
-    }
-
     function bindWorkerAutosaveSetting(element, eventName = "change", changedFields = null) {
       if (!element) return;
       const datasetKey = eventName === "input" ? "workerAutosaveInputBound" : "workerAutosaveChangeBound";
@@ -5208,7 +5146,6 @@
 
     function initWorkerApp() {
       loadWorkerSettings();
-      renderWorkerHubs();
       loadWorkerBridgeState();
       renderWorkerBridgeReadiness();
       const workerNetworkSessionLoadPromise = workerLoadNetworkSessionFromBackend();
@@ -5292,37 +5229,6 @@
         workerWorkNowCancel.dataset.workerBound = "true";
         workerWorkNowCancel.addEventListener("click", workerCloseWorkNowDialog);
       }
-      if (workerAddHubForm && !workerAddHubForm.dataset.workerBound) {
-        workerAddHubForm.dataset.workerBound = "true";
-        workerAddHubForm.addEventListener("submit", (event) => {
-          event.preventDefault();
-          const name = String(workerHubName?.value || "").trim() || "Hub";
-          const url = String(workerHubUrl?.value || "").trim();
-          const role = String(workerHubRole?.value || "use-provide");
-          if (!url) {
-            if (workerSaveStatus) workerSaveStatus.textContent = "Enter a hub URL before adding it.";
-            return;
-          }
-          workerHubs.push({name, url, role});
-          renderWorkerHubs();
-          workerRenderRegistrationHubOptions(url);
-          if (workerSaveStatus) workerSaveStatus.textContent = `${name} added. Save settings to keep it.`;
-        });
-      }
-      if (workerHubList && !workerHubList.dataset.workerBound) {
-        workerHubList.dataset.workerBound = "true";
-        workerHubList.addEventListener("click", (event) => {
-          const removeButton = event.target instanceof Element
-            ? event.target.closest("[data-worker-remove-hub]")
-            : null;
-          if (!removeButton) return;
-          const index = Number(removeButton.getAttribute("data-worker-remove-hub"));
-          if (!Number.isInteger(index) || index < 0 || index >= workerHubs.length) return;
-          const [removed] = workerHubs.splice(index, 1);
-          renderWorkerHubs();
-          if (workerSaveStatus) workerSaveStatus.textContent = `${removed?.name || "Hub"} removed. Save settings to keep the change.`;
-        });
-      }
       if (workerRegisterOffer && !workerRegisterOffer.dataset.workerBound) {
         workerRegisterOffer.dataset.workerBound = "true";
         workerRegisterOffer.addEventListener("click", registerWorkerOffer);
@@ -5356,10 +5262,6 @@
           workerLoadRuntimeStatus();
           if (workerSaveStatus) workerSaveStatus.textContent = "Selling paused locally. The worker will drain active work and stop accepting new jobs.";
         });
-      }
-      if (workerTestHubs && !workerTestHubs.dataset.workerBound) {
-        workerTestHubs.dataset.workerBound = "true";
-        workerTestHubs.addEventListener("click", testSelectedWorkerHub);
       }
       if (workerConnectWallet && !workerConnectWallet.dataset.workerBound) {
         workerConnectWallet.dataset.workerBound = "true";

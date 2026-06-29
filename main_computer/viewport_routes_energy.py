@@ -1335,19 +1335,10 @@ class ViewportEnergyRoutesMixin:
             "maxConcurrency": intish(settings.get("maxConcurrency", settings.get("max_concurrency")), 1, minimum=1, maximum=1024),
             "executionMode": text(settings.get("executionMode", settings.get("execution_mode")), "worker_pull_v0"),
         }
-        hubs = settings.get("hubs")
-        if isinstance(hubs, list):
-            cleaned["hubs"] = [
-                {
-                    "name": text(hub.get("name"), "Hub"),
-                    "url": text(hub.get("url"), ""),
-                    "role": text(hub.get("role"), "use-provide"),
-                }
-                for hub in hubs
-                if isinstance(hub, dict) and (text(hub.get("name")) or text(hub.get("url")))
-            ]
-        else:
-            cleaned["hubs"] = []
+        # Hub targets are selected from network profiles/worker setup, not from a
+        # user-editable pane.  Do not persist legacy settings["hubs"] entries; older
+        # snapshots could accumulate generated built-in hubs on every Worker page
+        # save and make worker_settings.json grow without bound.
         return cleaned
 
     def _load_worker_settings(self) -> dict[str, Any]:
@@ -3411,6 +3402,94 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-network-session-load-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _worker_network_profile_hub_url(self, network: str) -> str:
+        if str(network or "none") == "none":
+            return ""
+        for profile in self._worker_network_profiles_payload():
+            if str(profile.get("network") or profile.get("network_key") or "") == str(network):
+                return self._clean_hub_url(str(profile.get("hub_url") or profile.get("hub_public_url") or ""), allow_empty=True)
+        return ""
+
+    def _worker_saved_setup_has_runtime_material(self, settings: dict[str, Any]) -> bool:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        registration = settings.get("workerHubRegistration") if isinstance(settings.get("workerHubRegistration"), dict) else {}
+        pool = settings.get("workerPool") if isinstance(settings.get("workerPool"), dict) else {}
+        if registration or pool:
+            return True
+        if str(settings.get("workerRegisteredId") or settings.get("workerAssignedRing") or settings.get("workerPricingPolicy") or "").strip():
+            return True
+        if not signed:
+            return False
+        scalar_keys = (
+            "wallet_address",
+            "credit_wallet",
+            "hub_url",
+            "chain_id",
+            "message",
+            "signature",
+            "worker_id",
+            "pricing_policy",
+            "multisession_key_id",
+            "active_multisession_key_id",
+        )
+        if any(str(signed.get(key) or "").strip() for key in scalar_keys):
+            return True
+        return any(isinstance(signed.get(key), dict) and bool(signed.get(key)) for key in ("worker", "hub_registration", "pool"))
+
+    def _worker_network_saved_setup_target_mismatch(
+        self,
+        settings: dict[str, Any],
+        *,
+        selected: str,
+        requested_ring: str,
+        hub_url: str,
+    ) -> bool:
+        selected = self._normalize_worker_network_key(selected)
+        if selected == "none" or not self._worker_saved_setup_has_runtime_material(settings):
+            return False
+
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        signed_worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
+
+        signed_network = str(signed.get("network") or "").strip().lower()
+        if signed_network:
+            try:
+                if self._normalize_worker_network_key(signed_network, allow_none=False) != selected:
+                    return True
+            except ValueError:
+                return True
+        else:
+            previous_selected = str(settings.get("workerAutoConnectNetwork") or settings.get("selectedNetwork") or "").strip().lower()
+            if previous_selected and previous_selected != "none":
+                try:
+                    if self._normalize_worker_network_key(previous_selected, allow_none=False) != selected:
+                        return True
+                except ValueError:
+                    return True
+
+        signed_ring = str(signed.get("requested_ring") or signed_worker.get("requested_ring") or "").strip()
+        if signed_ring and requested_ring and signed_ring != requested_ring:
+            return True
+
+        signed_hub_url = self._clean_hub_url(
+            str(signed.get("hub_url") or signed_worker.get("hub_url") or settings.get("registrationHubUrl") or ""),
+            allow_empty=True,
+        )
+        clean_hub_url = self._clean_hub_url(str(hub_url or ""), allow_empty=True)
+        if signed_hub_url and clean_hub_url and signed_hub_url != clean_hub_url:
+            return True
+
+        return False
+
+    def _worker_network_clear_saved_setup_fields(self, settings: dict[str, Any]) -> None:
+        settings["workerAssignedRing"] = ""
+        settings["workerRegisteredId"] = ""
+        settings["workerPricingPolicy"] = ""
+        settings["workerHubRegistration"] = {}
+        settings["workerPool"] = {}
+        settings["signedWorkerConnection"] = {}
+
+
     def _handle_worker_network_session_select(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
@@ -3422,15 +3501,22 @@ class ViewportEnergyRoutesMixin:
             settings = self._load_worker_settings()
             old_hub_url = self._worker_runtime_hub_url(settings)
             old_worker_id = self._worker_runtime_worker_id(settings)
+            new_hub_url = self._worker_network_profile_hub_url(selected)
+
+            setup_target_changed = self._worker_network_saved_setup_target_mismatch(
+                settings,
+                selected=selected,
+                requested_ring=requested_ring,
+                hub_url=new_hub_url,
+            )
+
             settings["selectedNetwork"] = selected
             settings["workerAutoConnectNetwork"] = selected
             settings["workerRequestedRing"] = requested_ring
-            settings["workerAssignedRing"] = ""
-            settings["workerRegisteredId"] = ""
-            settings["workerPricingPolicy"] = ""
-            settings["workerHubRegistration"] = {}
-            settings["workerPool"] = {}
-            settings["signedWorkerConnection"] = {}
+
+            if setup_target_changed:
+                self._worker_network_clear_saved_setup_fields(settings)
+
             if selected == "none":
                 settings.update(
                     {
@@ -3438,11 +3524,6 @@ class ViewportEnergyRoutesMixin:
                         "workerConnectedAt": "",
                         "workerConnectionError": "",
                         "workerConnectedHubUrl": "",
-                        "workerAssignedRing": "",
-                        "workerRegisteredId": "",
-                        "workerPricingPolicy": "",
-                        "workerHubRegistration": {},
-                        "workerPool": {},
                     }
                 )
                 saved = self._save_worker_settings(settings)
@@ -3465,22 +3546,33 @@ class ViewportEnergyRoutesMixin:
             settings["workerConnectionError"] = session.get("connection_error", "")
             settings["workerConnectedAt"] = datetime.now(timezone.utc).isoformat() if session["connection_status"] == "connected" else ""
             saved = self._save_worker_settings(settings)
-            new_hub_url = self._worker_runtime_hub_url(saved)
             new_worker_id = self._worker_runtime_worker_id(saved)
-            if old_hub_url and old_worker_id and (old_hub_url != new_hub_url or old_worker_id != new_worker_id):
+            if old_hub_url and old_worker_id and setup_target_changed:
                 self._close_worker_live_session(
                     hub_url=old_hub_url,
                     worker_id=old_worker_id,
                     reason="worker_auto_connect_network_changed",
                 )
+            elif old_hub_url and old_worker_id and (old_hub_url != self._worker_runtime_hub_url(saved) or old_worker_id != new_worker_id):
+                self._close_worker_live_session(
+                    hub_url=old_hub_url,
+                    worker_id=old_worker_id,
+                    reason="worker_auto_connect_target_changed",
+                )
             self._kick_worker_runtime_supervisor("worker-network-select")
             payload = self._worker_network_session_payload(saved, check_hub=False)
             payload["session"]["hub_status"] = session.get("hub_status")
-            self.server.signal("api-worker-network-select", selected=selected, status=payload["session"]["connection_status"])
+            self.server.signal(
+                "api-worker-network-select",
+                selected=selected,
+                status=payload["session"]["connection_status"],
+                setup_target_changed=setup_target_changed,
+            )
             self._send_json(payload)
         except Exception as exc:
             self.server.signal("api-worker-network-select-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
 
     def _handle_worker_network_work_now(self) -> None:
         try:

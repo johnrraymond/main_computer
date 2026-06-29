@@ -7,6 +7,24 @@
       "order": 10
     },
     {
+      "path": "mcel-system-guide.md",
+      "title": "MCEL System Guide",
+      "kind": "markdown",
+      "order": 35
+    },
+    {
+      "path": "mcel-user-space-contract.md",
+      "title": "MCEL User-Space Contract",
+      "kind": "markdown",
+      "order": 36
+    },
+    {
+      "path": "mcel-contract-guarantees.md",
+      "title": "MCEL Contract Guarantees",
+      "kind": "markdown",
+      "order": 37
+    },
+    {
       "path": "website-builder-remote-coolify-publishing.md",
       "title": "Website Builder Remote Coolify Publishing",
       "kind": "markdown",

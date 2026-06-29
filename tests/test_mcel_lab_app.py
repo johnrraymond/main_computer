@@ -493,6 +493,7 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
     assert "mcel-kernel-report" in app
     assert "mcel-traceability-report" in app
     assert "mcel-prior-art-report" in app
+    assert "mcel-adoption-report" in app
     assert "mcel-readiness-score" in app
     assert "Run Operational Audit" in app
     assert "Run Scenario Matrix" in app
@@ -1235,12 +1236,14 @@ def test_mcel_lab_tenth_slice_fleshes_out_platform_subsumption_spine() -> None:
     assert "platform-spine" in kernel
     assert "workbench-subsumption" in kernel
     assert "browser-runner" in kernel
-    assert "buildSubsumptionLattice" in core and "buildWorkbenchPlan" in core and "runBrowserProof" in core
+    assert "buildSubsumptionLattice" in core and "buildAdoptionCase" in core and "buildWorkbenchPlan" in core and "runBrowserProof" in core
     assert "Semantic Component" in app and "Lawful Form" in app and "Semantic Route" in app
-    assert "Build Subsumption Lattice" in app and "Build Workbench Plan" in app and "Run Browser Semantic Proof" in app
-    assert "mcelBuildSubsumption" in bindings and "mcelSubsumptionReport" in bindings
+    assert "Build Subsumption Lattice" in app and "Build Adoption Case" in app and "Build Workbench Plan" in app and "Run Browser Semantic Proof" in app
+    assert "mcelBuildSubsumption" in bindings and "mcelBuildAdoptionCase" in bindings and "mcelSubsumptionReport" in bindings and "mcelAdoptionReport" in bindings
     assert "buildMcelSubsumptionLattice" in ui
+    assert "buildMcelAdoptionCase" in ui
     assert "renderMcelSubsumptionLattice" in ui
+    assert "renderMcelAdoptionCase" in ui
     assert "runMcelBrowserSemanticProof" in ui
 
 

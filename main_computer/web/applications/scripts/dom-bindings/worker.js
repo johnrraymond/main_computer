@@ -59,12 +59,6 @@
     const workerRuntimeStateSw = document.querySelector("#worker-runtime-state-sw");
     const workerRuntimeStateSe = document.querySelector("#worker-runtime-state-se");
     const workerRuntimeStateFoot = document.querySelector("#worker-runtime-state-foot");
-    const workerHubCount = document.querySelector("#worker-hub-count");
-    const workerAddHubForm = document.querySelector("#worker-add-hub-form");
-    const workerHubName = document.querySelector("#worker-hub-name");
-    const workerHubUrl = document.querySelector("#worker-hub-url");
-    const workerHubRole = document.querySelector("#worker-hub-role");
-    const workerHubList = document.querySelector("#worker-hub-list");
     const workerRemoteEnabled = document.querySelector("#worker-remote-enabled");
     const workerRemoteMode = document.querySelector("#worker-remote-mode");
     const workerRemoteCreditsPerToken = document.querySelector("#worker-remote-credits-per-token");
@@ -87,7 +81,6 @@
     const workerRegisterOffer = document.querySelector("#worker-register-offer");
     const workerSaveSettings = document.querySelector("#worker-save-settings");
     const workerPauseRentals = document.querySelector("#worker-pause-rentals");
-    const workerTestHubs = document.querySelector("#worker-test-hubs");
     const workerPrimaryWalletStatus = document.querySelector("#worker-primary-wallet-status");
     const workerRecoveryStatus = document.querySelector("#worker-recovery-status");
     const workerMultisessionStatus = document.querySelector("#worker-multisession-status");

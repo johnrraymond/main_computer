@@ -158,6 +158,83 @@ var McelLabPlatformSpine = (() => {
     };
   }
 
+  function buildAdoptionCase(options = {}) {
+    const lattice = buildSubsumptionLattice();
+    const lawPlans = Array.isArray(lattice.lawPlans) ? lattice.lawPlans : [];
+    const registeredLaws = Array.isArray(lattice.lawRegistry) ? lattice.lawRegistry : [];
+    const proofObligations = lawPlans.flatMap((plan) => Array.isArray(plan.proofObligations) ? plan.proofObligations : []);
+    const comparisonStandard = [
+      "A replacement is not better because MCEL says it is better.",
+      "MCEL is better only when replacement claims map to laws, proof obligations, browser facts, evidence packets, and a supervisor gate."
+    ];
+    const gates = [
+      {
+        id: "concrete-prior-art",
+        label: "Concrete prior-art families are named before replacement is claimed.",
+        passed: lattice.obsoleteLibraryMap.length >= 8,
+        evidence: lattice.obsoleteLibraryMap.map((item) => item.family)
+      },
+      {
+        id: "law-backed-claims",
+        label: "Replacement claims are backed by MCEL law plans.",
+        passed: lawPlans.length >= 8,
+        evidence: lawPlans.map((plan) => plan.domain || plan.label).filter(Boolean)
+      },
+      {
+        id: "proof-obligations",
+        label: "Each law family carries proof obligations instead of prose-only superiority.",
+        passed: proofObligations.length >= lawPlans.length * 4,
+        evidence: proofObligations
+      },
+      {
+        id: "evidence-packet-and-supervisor",
+        label: "Adoption depends on evidence packets and the supervisor gate.",
+        passed: lattice.axisOrder.includes("evidence packet") && lattice.axisOrder.includes("supervisor gate"),
+        evidence: lattice.axisOrder
+      },
+      {
+        id: "source-runtime-separation",
+        label: "The proof keeps source meaning separate from generated runtime machinery.",
+        passed: lattice.zeroSharpEdges.includes("meaning is source-owned") && lattice.zeroSharpEdges.includes("machinery is runtime-owned"),
+        evidence: lattice.zeroSharpEdges
+      },
+      {
+        id: "registry-accountability",
+        label: "Registered laws make the comparison machine-readable.",
+        passed: registeredLaws.length >= lawPlans.length,
+        evidence: registeredLaws.map((item) => item.id || item.label).filter(Boolean)
+      }
+    ];
+    const passed = gates.every((gate) => gate.passed);
+    return {
+      kind: "mcel-adoption-case",
+      contractVersion,
+      generatedAt: now(),
+      question: options.question || "Does MCEL make sense to use instead of scattered legacy UI libraries?",
+      verdict: passed ? "adopt-mcel-when-proof-is-required" : "hold-until-proof-gates-pass",
+      summary: passed
+        ? "MCEL makes sense when the work needs source-owned semantics, runtime law, browser-observed evidence, and a machine-checkable replacement story for legacy library glue."
+        : "MCEL adoption is not justified yet because at least one comparison gate lacks evidence.",
+      comparisonStandard,
+      proofCoverage: {
+        obsoleteFamilyCount: lattice.obsoleteLibraryMap.length,
+        lawPlanCount: lawPlans.length,
+        registeredLawCount: registeredLaws.length,
+        proofObligationCount: proofObligations.length,
+        axisCount: lattice.axisOrder.length,
+        passedGateCount: gates.filter((gate) => gate.passed).length,
+        totalGateCount: gates.length
+      },
+      gates,
+      replacementClaims: lattice.obsoleteLibraryMap.map((item) => ({
+        family: item.family,
+        legacy: item.legacy,
+        mcelAxis: item.mcelAxis,
+        replacementClaim: item.replacementClaim
+      }))
+    };
+  }
+
   function buildAxisMatrix(feature = "platform-spine") {
     const lattice = buildSubsumptionLattice();
     return {
@@ -182,6 +259,7 @@ var McelLabPlatformSpine = (() => {
     applyPlatformLaws,
     provePlatform,
     buildSubsumptionLattice,
+    buildAdoptionCase,
     buildAxisMatrix
   });
 })();
