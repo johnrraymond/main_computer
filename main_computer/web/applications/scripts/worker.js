@@ -3630,6 +3630,20 @@
       localPolicy = {},
       activeJobs = 0
     } = {}) {
+      const backendDisplay = workerRuntimeStatus.runtimeDisplay && typeof workerRuntimeStatus.runtimeDisplay === "object"
+        ? workerRuntimeStatus.runtimeDisplay
+        : null;
+      if (backendDisplay) {
+        return {
+          center: String(backendDisplay.center || backendDisplay.state || "OFF"),
+          nw: String(backendDisplay.nw || "Worker runtime"),
+          ne: String(backendDisplay.ne || "Auto hub"),
+          sw: String(backendDisplay.sw || "Status pending"),
+          se: String(backendDisplay.se || "Retry scheduled"),
+          foot: String(backendDisplay.foot || ""),
+          tone: String(backendDisplay.tone || "muted")
+        };
+      }
       const normalized = workerNetworkKey(selected);
       const hubName = normalized === WORKER_NETWORK_NONE
         ? "No auto hub"
@@ -3922,9 +3936,20 @@
     function workerApplyRuntimePayload(data) {
       if (!data || typeof data !== "object") return;
       const runtime = data.runtime && typeof data.runtime === "object" ? data.runtime : data;
+      const runtimeDisplay = data.runtimeDisplay && typeof data.runtimeDisplay === "object"
+        ? data.runtimeDisplay
+        : runtime.display && typeof runtime.display === "object"
+          ? runtime.display
+          : null;
+      const autoConnect = data.autoConnect && typeof data.autoConnect === "object"
+        ? data.autoConnect
+        : null;
       workerRuntimeStatus = {
         ...workerRuntimeStatus,
         enabled: Boolean(runtime.enabled),
+        state: String(runtime.state || data.state || workerRuntimeStatus.state || ""),
+        runtimeDisplay,
+        autoConnect,
         status: String(data.status || workerRuntimeStatus.status || "not_accepting"),
         statusLabel: String(data.statusLabel || runtime.label || workerRuntimePhaseLabel(runtime.phase)),
         phase: String(runtime.phase || "not_accepting"),
@@ -3947,6 +3972,7 @@
               : null,
         worker: data.worker && typeof data.worker === "object" ? data.worker : null,
         policy: runtime.policy && typeof runtime.policy === "object" ? runtime.policy : null,
+        setup: runtime.setup && typeof runtime.setup === "object" ? runtime.setup : null,
         last_checked_at: String(runtime.last_checked_at || runtime.lastCheckedAt || ""),
         last_heartbeat_at: String(runtime.last_heartbeat_at || runtime.lastHeartbeatAt || ""),
         lastError: String(runtime.lastError || ""),
@@ -4013,21 +4039,13 @@
     }
 
     function workerRuntimeShouldSync() {
-      return (
-        Boolean(workerRentalEnabled?.checked)
-        || Boolean(workerRuntimeStatus.enabled)
-        || workerRuntimeStatus.phase === "accepting"
-        || workerRuntimeStatus.phase === "draining"
-        || Number(workerRuntimeStatus.active_jobs || 0) > 0
-      );
+      return false;
     }
 
     function workerStartRuntimeSync() {
       if (workerRuntimeSyncTimer) return;
       workerRuntimeSyncTimer = setInterval(() => {
-        if (workerRuntimeShouldSync()) {
-          workerSyncRuntime("sync", {includeSettings: true});
-        }
+        workerLoadRuntimeStatus();
       }, WORKER_RUNTIME_SYNC_INTERVAL_MS);
     }
 
@@ -5183,7 +5201,7 @@
         saveWorkerSettings({changedFields: fields, remoteEnabledSerial});
         if (fields?.some((field) => ["sellerEnabled", "rentalEnabled", "sellerAvailabilityMode", "sellerOnlyWhenIdle", "rentalOnlyWhenIdle"].includes(field))) {
           workerRefreshSellerAvailabilityControls();
-          workerSyncRuntime("sync", {includeSettings: true});
+          workerLoadRuntimeStatus();
         }
       });
     }
@@ -5335,7 +5353,7 @@
         workerPauseRentals.addEventListener("click", () => {
           if (workerRentalEnabled) workerRentalEnabled.checked = false;
           saveWorkerSettings({changedFields: ["sellerEnabled", "rentalEnabled"]});
-          workerSyncRuntime("sync", {includeSettings: true});
+          workerLoadRuntimeStatus();
           if (workerSaveStatus) workerSaveStatus.textContent = "Selling paused locally. The worker will drain active work and stop accepting new jobs.";
         });
       }

@@ -1398,6 +1398,7 @@ class ViewportEnergyRoutesMixin:
             if not isinstance(changed_fields, list):
                 changed_fields = None
             settings = self._save_worker_settings(body, changed_fields=changed_fields)
+            self._kick_worker_runtime_supervisor("worker-settings-save")
             self.server.signal("api-worker-settings-save", remote_enabled=bool(settings.get("remoteEnabled")))
             self._send_json({"ok": True, "settings": settings})
         except Exception as exc:
@@ -1429,6 +1430,163 @@ class ViewportEnergyRoutesMixin:
         if str(signed.get("status") or "") in {"hub-registered", "registered"}:
             return True
         return bool(signed.get("hub_registered"))
+
+    def _worker_runtime_transition_lock(self) -> threading.RLock:
+        lock = getattr(getattr(self, "server", None), "worker_runtime_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            try:
+                setattr(self.server, "worker_runtime_lock", lock)
+            except Exception:
+                pass
+        return lock
+
+    def _kick_worker_runtime_supervisor(self, reason: str) -> None:
+        supervisor = getattr(getattr(self, "server", None), "worker_runtime_supervisor", None)
+        kick = getattr(supervisor, "kick", None)
+        if callable(kick):
+            kick(reason)
+
+    def _worker_runtime_note_status(self, status: dict[str, Any]) -> None:
+        supervisor = getattr(getattr(self, "server", None), "worker_runtime_supervisor", None)
+        update_status = getattr(supervisor, "update_status", None)
+        if callable(update_status):
+            update_status(status)
+
+    def _worker_runtime_auto_connect_network(self, settings: dict[str, Any]) -> str:
+        cleaned = self._sanitize_worker_settings(settings)
+        return str(cleaned.get("workerAutoConnectNetwork") or "none")
+
+    def _worker_runtime_network_label(self, network: Any) -> str:
+        labels = {
+            "mainnet": "Mainnet",
+            "testnet": "Testnet",
+            "test": "Test",
+            "dev": "Dev",
+            "none": "No",
+        }
+        key = str(network or "none").strip().lower()
+        return labels.get(key, key[:1].upper() + key[1:] if key else "No")
+
+    def _worker_runtime_short_display_text(self, value: Any, fallback: str = "—", max_length: int = 34) -> str:
+        text = str(value or fallback or "—").strip()
+        if len(text) <= max_length:
+            return text
+        return f"{text[: max(1, max_length - 1)].rstrip()}…"
+
+    def _worker_runtime_missing_display_label(self, missing: str) -> str:
+        labels = {
+            "worker_start": "Worker start missing",
+            "registration": "Registration missing",
+            "registration_failed": "Registration failed",
+            "registration_stale": "Registration stale",
+            "registration_pending": "Registration pending",
+            "worker_id": "Worker ID missing",
+            "hub_url": "Hub URL missing",
+            "multisession_key": "Key missing",
+            "wallet": "Wallet missing",
+        }
+        return labels.get(str(missing or ""), "Setup missing")
+
+    def _worker_runtime_setup_state(self, settings: dict[str, Any]) -> dict[str, Any]:
+        cleaned = self._sanitize_worker_settings(settings)
+        network = self._worker_runtime_auto_connect_network(cleaned)
+        if network != "none":
+            cleaned["selectedNetwork"] = network
+        paid_jobs_enabled = bool(cleaned.get("sellerEnabled")) or bool(cleaned.get("rentalEnabled"))
+        worker_id = self._worker_runtime_worker_id(cleaned)
+        hub_url = self._worker_runtime_hub_url(cleaned)
+        signed_order = self._worker_runtime_signed_order_state(cleaned)
+        hub_registration = self._worker_runtime_hub_registration_state(cleaned)
+        missing: list[str] = []
+        authorization: dict[str, Any] | None = None
+        authorization_error = ""
+
+        if network == "none":
+            return {
+                "ready": False,
+                "state": "off",
+                "network": "none",
+                "hubUrl": hub_url,
+                "hub_url": hub_url,
+                "paidJobsEnabled": paid_jobs_enabled,
+                "paid_jobs_enabled": paid_jobs_enabled,
+                "missing": [],
+                "reason": "Worker auto-connect hub is none.",
+                "signedOrder": signed_order,
+                "hubRegistration": hub_registration,
+                "workerId": worker_id,
+                "multisessionAuthorizationPresent": False,
+            }
+
+        if not paid_jobs_enabled:
+            return {
+                "ready": False,
+                "state": "off",
+                "network": network,
+                "hubUrl": hub_url,
+                "hub_url": hub_url,
+                "paidJobsEnabled": False,
+                "paid_jobs_enabled": False,
+                "missing": [],
+                "reason": "Accept paid jobs is off.",
+                "signedOrder": signed_order,
+                "hubRegistration": hub_registration,
+                "workerId": worker_id,
+                "multisessionAuthorizationPresent": False,
+            }
+
+        if signed_order.get("status") != "ready":
+            missing.append("worker_start")
+
+        registration_status = str(hub_registration.get("status") or "not_submitted")
+        hub_accepted = registration_status == "accepted" and self._worker_runtime_signed_connection_registered(cleaned)
+        if not hub_accepted:
+            if registration_status == "failed":
+                missing.append("registration_failed")
+            elif registration_status == "stale":
+                missing.append("registration_stale")
+            elif registration_status == "submitting":
+                missing.append("registration_pending")
+            else:
+                missing.append("registration")
+
+        if not worker_id:
+            missing.append("worker_id")
+        if not hub_url:
+            missing.append("hub_url")
+
+        if signed_order.get("status") == "ready" and worker_id and hub_url:
+            try:
+                authorization = self._worker_runtime_multisession_authorization(settings=cleaned, hub_url=hub_url)
+            except Exception as exc:
+                authorization_error = str(exc)
+                missing.append("multisession_key")
+        else:
+            signed = cleaned.get("signedWorkerConnection") if isinstance(cleaned.get("signedWorkerConnection"), dict) else {}
+            wallet = str(signed.get("credit_wallet") or signed.get("wallet_address") or "").strip()
+            if not wallet:
+                missing.append("wallet")
+
+        seen_missing = list(dict.fromkeys(missing))
+        return {
+            "ready": not seen_missing,
+            "state": "ready" if not seen_missing else "setup",
+            "network": network,
+            "hubUrl": hub_url,
+            "hub_url": hub_url,
+            "paidJobsEnabled": paid_jobs_enabled,
+            "paid_jobs_enabled": paid_jobs_enabled,
+            "missing": seen_missing,
+            "reason": "Worker setup is complete." if not seen_missing else "Worker setup is incomplete.",
+            "signedOrder": signed_order,
+            "hubRegistration": hub_registration,
+            "workerId": worker_id,
+            "multisessionAuthorizationPresent": bool(authorization),
+            "multisession_authorization_present": bool(authorization),
+            "authorizationError": authorization_error,
+            "authorization_error": authorization_error,
+        }
 
     def _worker_runtime_worker_id(self, settings: dict[str, Any]) -> str:
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
@@ -1710,7 +1868,7 @@ class ViewportEnergyRoutesMixin:
         blocker, such as Hub registration, keeps the runtime from accepting work.
         """
 
-        selected_network = str(settings.get("selectedNetwork") or "none")
+        selected_network = self._worker_runtime_auto_connect_network(settings)
         worker_id = self._worker_runtime_worker_id(settings)
         hub_url = self._worker_runtime_hub_url(settings)
         signed_order = self._worker_runtime_signed_order_state(settings)
@@ -2382,6 +2540,210 @@ class ViewportEnergyRoutesMixin:
             return "Finishing current work"
         return "Not accepting"
 
+    def _worker_runtime_display_model(
+        self,
+        settings: dict[str, Any],
+        *,
+        state: str,
+        setup_state: dict[str, Any],
+        policy: dict[str, Any],
+        active_jobs: int,
+        heartbeat_error: str = "",
+        heartbeat_result: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        normalized_state = str(state or "OFF").strip().upper()
+        network = str(setup_state.get("network") or self._worker_runtime_auto_connect_network(settings) or "none")
+        hub_name = "No auto hub" if network == "none" else f"{self._worker_runtime_network_label(network)} auto hub"
+        missing = [str(item) for item in setup_state.get("missing", []) if str(item or "").strip()]
+        local_policy = policy.get("local_policy") if isinstance(policy.get("local_policy"), dict) else {}
+        policy_source = str(policy.get("source") or local_policy.get("source") or "")
+        if policy_source == "windows_quser_v1":
+            local_corner = "Requester idle" if bool(local_policy.get("allowed")) else "Requester active"
+        elif policy_source == "local_ai_capacity_v1":
+            local_corner = "AI idle" if bool(local_policy.get("allowed")) else "AI busy"
+        else:
+            local_corner = "Local policy"
+
+        if normalized_state == "OFF":
+            paid_jobs_enabled = bool(setup_state.get("paid_jobs_enabled", setup_state.get("paidJobsEnabled")))
+            auto_disabled = network == "none"
+            return {
+                "state": "OFF",
+                "center": "OFF",
+                "tone": "muted",
+                "nw": "Auto-start disabled" if auto_disabled else "Paid jobs disabled",
+                "ne": hub_name,
+                "sw": "No reconnect",
+                "se": local_corner,
+                "foot": "Choose an auto hub to reconnect." if auto_disabled else "Enable Accept paid jobs to reconnect.",
+            }
+
+        if normalized_state == "SETUP":
+            first = self._worker_runtime_missing_display_label(missing[0]) if missing else "Setup missing"
+            second = self._worker_runtime_missing_display_label(missing[1]) if len(missing) > 1 else "Wallet setup needed"
+            return {
+                "state": "SETUP",
+                "center": "SETUP",
+                "tone": "bad",
+                "nw": "Cannot auto-start",
+                "ne": hub_name,
+                "sw": first,
+                "se": second,
+                "foot": "Open Worker setup once.",
+            }
+
+        if normalized_state == "READY":
+            policy_text = self._worker_runtime_short_display_text(
+                local_policy.get("reason") or policy.get("reason") or "Local policy blocks work.",
+                "Local policy blocks work.",
+                32,
+            )
+            return {
+                "state": "READY",
+                "center": "READY",
+                "tone": "standby",
+                "nw": "Worker configured",
+                "ne": hub_name,
+                "sw": policy_text,
+                "se": local_corner,
+                "foot": "Will reconnect when allowed.",
+            }
+
+        if normalized_state == "RECONNECTING":
+            return {
+                "state": "RECONNECTING",
+                "center": "RECONNECTING",
+                "tone": "warn",
+                "nw": "Saved worker found",
+                "ne": hub_name,
+                "sw": "Session rebuilding",
+                "se": "No wallet action",
+                "foot": "Waiting for heartbeat.",
+            }
+
+        if normalized_state == "ACTIVE":
+            jobs = max(0, int(active_jobs or 0))
+            return {
+                "state": "ACTIVE",
+                "center": "ACTIVE",
+                "tone": "active",
+                "nw": f"{jobs} paid job{'' if jobs == 1 else 's'} running",
+                "ne": hub_name,
+                "sw": "Heartbeat healthy",
+                "se": local_corner,
+                "foot": "Work in progress.",
+            }
+
+        if normalized_state == "CONNECTED":
+            return {
+                "state": "CONNECTED",
+                "center": "CONNECTED",
+                "tone": "good",
+                "nw": "Accepting paid work",
+                "ne": hub_name,
+                "sw": "Heartbeat healthy",
+                "se": local_corner,
+                "foot": "Worker is live.",
+            }
+
+        error = self._worker_runtime_short_display_text(
+            heartbeat_error or (heartbeat_result.get("error") if isinstance(heartbeat_result, dict) else "") or settings.get("workerRuntimeError"),
+            "Retry scheduled",
+            34,
+        )
+        return {
+            "state": "FAILED",
+            "center": "FAILED",
+            "tone": "bad",
+            "nw": "Heartbeat failed",
+            "ne": hub_name,
+            "sw": error,
+            "se": "Retry scheduled",
+            "foot": "Check Hub connection.",
+        }
+
+    def _worker_runtime_state_from_inputs(
+        self,
+        *,
+        setup_state: dict[str, Any],
+        policy: dict[str, Any],
+        phase: str,
+        active_jobs: int,
+        heartbeat_error: str = "",
+        heartbeat_result: dict[str, Any] | None = None,
+    ) -> str:
+        setup_kind = str(setup_state.get("state") or "")
+        if setup_kind == "off":
+            return "OFF"
+        if setup_kind == "setup":
+            return "SETUP"
+        if heartbeat_error:
+            return "FAILED"
+        if active_jobs > 0:
+            return "ACTIVE"
+        local_policy = policy.get("local_policy") if isinstance(policy.get("local_policy"), dict) else {}
+        if not bool(local_policy.get("allowed")):
+            return "READY"
+        if phase == "accepting" and bool(heartbeat_result):
+            return "CONNECTED"
+        if phase == "accepting" and str(heartbeat_result) == "":
+            return "RECONNECTING"
+        if phase == "accepting":
+            return "CONNECTED"
+        return "RECONNECTING"
+
+    def _worker_runtime_read_only_status(self) -> dict[str, Any]:
+        cleaned = self._sanitize_worker_settings(self._load_worker_settings())
+        active = self._worker_live_session_active_work_count(
+            hub_url=self._worker_runtime_hub_url(cleaned) or None,
+            worker_id=self._worker_runtime_worker_id(cleaned) or None,
+        )
+        policy = self._worker_runtime_policy(cleaned, active_jobs=active)
+        setup_state = self._worker_runtime_setup_state(cleaned)
+        phase = str(cleaned.get("workerRuntimePhase") or "not_accepting")
+        if setup_state.get("state") in {"off", "setup"}:
+            phase = "not_accepting"
+        hub_status = str(cleaned.get("workerRuntimeLastHeartbeatStatus") or "")
+        if not hub_status:
+            hub_status = "busy" if active > 0 else "available" if phase == "accepting" else "offline"
+        can_accept = (
+            setup_state.get("state") == "ready"
+            and bool(policy.get("allowed_to_accept"))
+            and phase == "accepting"
+        )
+        heartbeat_error = str(cleaned.get("workerRuntimeError") or "")
+        if setup_state.get("state") in {"off", "setup"}:
+            heartbeat_error = ""
+        state = self._worker_runtime_state_from_inputs(
+            setup_state=setup_state,
+            policy=policy,
+            phase=phase,
+            active_jobs=active,
+            heartbeat_error=heartbeat_error,
+            heartbeat_result=None,
+        )
+        reason = str(
+            setup_state.get("reason")
+            if setup_state.get("state") in {"off", "setup"}
+            else policy.get("reason")
+            or cleaned.get("workerRuntimeLastReason")
+            or ""
+        )
+        return self._worker_runtime_status_payload(
+            cleaned,
+            phase=phase,
+            active_jobs=active,
+            can_accept=can_accept,
+            hub_status=hub_status,
+            reason=reason,
+            now=datetime.now(timezone.utc).isoformat(),
+            heartbeat_error=heartbeat_error,
+            heartbeat_result=None,
+            policy=policy,
+            setup_state=setup_state,
+            runtime_state=state,
+        )
+
     def _worker_runtime_primary_status(
         self,
         settings: dict[str, Any],
@@ -2524,6 +2886,8 @@ class ViewportEnergyRoutesMixin:
         heartbeat_error: str,
         heartbeat_result: dict[str, Any] | None,
         policy: dict[str, Any],
+        setup_state: dict[str, Any] | None = None,
+        runtime_state: str = "",
     ) -> dict[str, Any]:
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
         signed_worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
@@ -2548,8 +2912,33 @@ class ViewportEnergyRoutesMixin:
         last_heartbeat_status = str(settings.get("workerRuntimeLastHeartbeatStatus") or "")
         hub_availability = last_heartbeat_status or (hub_status if hub_registration.get("status") == "accepted" else "not_announced")
         runtime_last_error = str(heartbeat_error or settings.get("workerRuntimeError") or hub_registration.get("lastError") or "")
+        setup_payload = setup_state if isinstance(setup_state, dict) else self._worker_runtime_setup_state(settings)
+        display_state = str(runtime_state or "").strip().upper() or self._worker_runtime_state_from_inputs(
+            setup_state=setup_payload,
+            policy=policy,
+            phase=phase,
+            active_jobs=active_jobs,
+            heartbeat_error=heartbeat_error,
+            heartbeat_result=heartbeat_result,
+        )
+        runtime_display = self._worker_runtime_display_model(
+            settings,
+            state=display_state,
+            setup_state=setup_payload,
+            policy=policy,
+            active_jobs=active_jobs,
+            heartbeat_error=heartbeat_error,
+            heartbeat_result=heartbeat_result,
+        )
+        auto_network = str(setup_payload.get("network") or self._worker_runtime_auto_connect_network(settings) or "none")
+        auto_connect = {
+            "network": auto_network,
+            "enabled": auto_network != "none" and bool(setup_payload.get("paid_jobs_enabled", setup_payload.get("paidJobsEnabled"))),
+        }
         return {
             "ok": True,
+            "autoConnect": auto_connect,
+            "runtimeDisplay": runtime_display,
             "status": primary["status"],
             "statusLabel": primary["label"],
             "reason": primary["reason"],
@@ -2567,6 +2956,8 @@ class ViewportEnergyRoutesMixin:
             "workNowOverride": work_now_override,
             "runtime": {
                 "enabled": bool(settings.get("workerRuntimeEnabled")),
+                "state": display_state,
+                "display": runtime_display,
                 "phase": phase,
                 "label": self._worker_runtime_phase_label(phase),
                 "active_jobs": active_jobs,
@@ -2586,6 +2977,7 @@ class ViewportEnergyRoutesMixin:
                 "heartbeat_error": heartbeat_error,
                 "heartbeat_result": heartbeat_result,
                 "policy": policy,
+                "setup": setup_payload,
                 "work_now_override": work_now_override,
                 "workNowOverride": work_now_override,
             },
@@ -2604,121 +2996,240 @@ class ViewportEnergyRoutesMixin:
         active_jobs: int | None = None,
         send_heartbeat: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        cleaned = self._sanitize_worker_settings(settings)
-        action = str(action or "sync").strip().lower()
-        if action not in {"sync", "activate", "deactivate", "job-start", "job-finish"}:
-            raise ValueError("Worker runtime action must be sync, activate, deactivate, job-start, or job-finish.")
+        with self._worker_runtime_transition_lock():
+            cleaned = self._sanitize_worker_settings(settings)
+            action = str(action or "sync").strip().lower()
+            if action not in {"sync", "activate", "deactivate", "job-start", "job-finish"}:
+                raise ValueError("Worker runtime action must be sync, activate, deactivate, job-start, or job-finish.")
 
-        if action == "activate":
-            # Legacy callers used to toggle a separate runtime latch.  The golden
-            # path now derives worker availability from the saved seller policy,
-            # so activation is an alias for enabling paid jobs.
-            cleaned["sellerEnabled"] = True
-            cleaned["rentalEnabled"] = True
-        elif action == "deactivate":
-            # Deactivation is likewise just the saved seller policy going false.
-            # Active work drains before the Hub sees the worker offline.
-            cleaned["sellerEnabled"] = False
-            cleaned["rentalEnabled"] = False
+            if action == "activate":
+                # Legacy callers used to toggle a separate runtime latch.  The golden
+                # path now derives worker availability from the saved seller policy,
+                # so activation is an alias for enabling paid jobs.
+                cleaned["sellerEnabled"] = True
+                cleaned["rentalEnabled"] = True
+            elif action == "deactivate":
+                # Deactivation is likewise just the saved seller policy going false.
+                # Active work drains before the Hub sees the worker offline.
+                cleaned["sellerEnabled"] = False
+                cleaned["rentalEnabled"] = False
 
-        previous_phase = str(cleaned.get("workerRuntimePhase") or "not_accepting")
-        previous_active = max(0, int(cleaned.get("workerRuntimeActiveJobs", 0) or 0))
-        hub_url_for_active = self._worker_runtime_hub_url(cleaned)
-        worker_id_for_active = self._worker_runtime_worker_id(cleaned)
-        live_session_active = self._worker_live_session_active_work_count(
-            hub_url=hub_url_for_active or None,
-            worker_id=worker_id_for_active or None,
-        )
-        if active_jobs is None:
-            if action == "sync":
-                # Live-session work is tracked by the websocket client, not by
-                # persisted settings.  Do not carry a prior sync's synthetic
-                # active count forever after the job finishes.
-                active = live_session_active
+            auto_network = self._worker_runtime_auto_connect_network(cleaned)
+            if auto_network != "none":
+                cleaned["selectedNetwork"] = auto_network
+
+            previous_phase = str(cleaned.get("workerRuntimePhase") or "not_accepting")
+            previous_active = max(0, int(cleaned.get("workerRuntimeActiveJobs", 0) or 0))
+            hub_url_for_active = self._worker_runtime_hub_url(cleaned)
+            worker_id_for_active = self._worker_runtime_worker_id(cleaned)
+            live_session_active = self._worker_live_session_active_work_count(
+                hub_url=hub_url_for_active or None,
+                worker_id=worker_id_for_active or None,
+            )
+            if active_jobs is None:
+                if action == "sync":
+                    # Live-session work is tracked by the websocket client, not by
+                    # persisted settings.  Do not carry a prior sync's synthetic
+                    # active count forever after the job finishes.
+                    active = live_session_active
+                else:
+                    active = previous_active
+                    if action == "job-start":
+                        active += 1
+                    elif action == "job-finish":
+                        active = max(0, active - 1)
+                    active = max(active, live_session_active)
             else:
-                active = previous_active
-                if action == "job-start":
-                    active += 1
-                elif action == "job-finish":
-                    active = max(0, active - 1)
-                active = max(active, live_session_active)
-        else:
-            active = max(0, int(active_jobs or 0), live_session_active)
+                active = max(0, int(active_jobs or 0), live_session_active)
 
-        policy = self._worker_runtime_policy(cleaned, active_jobs=active)
-        runtime_enabled = bool(cleaned.get("sellerEnabled"))
-        cleaned["workerRuntimeEnabled"] = runtime_enabled
-        can_accept = runtime_enabled and bool(policy.get("allowed_to_accept"))
+            setup_state = self._worker_runtime_setup_state(cleaned)
+            policy = self._worker_runtime_policy(cleaned, active_jobs=active)
+            local_policy = policy.get("local_policy") if isinstance(policy.get("local_policy"), dict) else {}
+            runtime_enabled = bool(cleaned.get("sellerEnabled")) or bool(cleaned.get("rentalEnabled"))
+            cleaned["workerRuntimeEnabled"] = runtime_enabled
 
-        if can_accept:
-            phase = "accepting"
-            hub_status = "busy" if active > 0 else "available"
-        elif active > 0 and previous_phase in {"accepting", "draining"}:
-            phase = "draining"
-            hub_status = "draining"
-        else:
-            phase = "not_accepting"
-            hub_status = "offline"
+            now = datetime.now(timezone.utc).isoformat()
+            heartbeat_result: dict[str, Any] | None = None
+            heartbeat_error = ""
+            hub_url = self._worker_runtime_hub_url(cleaned)
+            worker_id = self._worker_runtime_worker_id(cleaned)
+            setup_kind = str(setup_state.get("state") or "")
 
-        now = datetime.now(timezone.utc).isoformat()
-        reason = str(policy.get("reason") or "")
-        heartbeat_result: dict[str, Any] | None = None
-        heartbeat_error = ""
-        hub_url = self._worker_runtime_hub_url(cleaned)
-        should_heartbeat = send_heartbeat and self._worker_runtime_signed_connection_registered(cleaned) and bool(hub_url)
-        if should_heartbeat:
-            try:
-                heartbeat_result = self._post_worker_runtime_heartbeat_to_hub(
-                    hub_url=hub_url,
-                    settings=cleaned,
-                    phase=phase,
-                    hub_status=hub_status,
-                    active_jobs=active,
-                    policy=policy,
-                )
-            except Exception as exc:
-                heartbeat_error = str(exc)
-                if phase == "accepting":
+            def can_send_runtime_close_heartbeat() -> bool:
+                # When a fully configured worker is intentionally turned off, keep
+                # the Hub truth fresh by sending an offline/draining heartbeat.  Do
+                # not turn incomplete wallet/key setup into a FAILED reconnect.
+                if not send_heartbeat or auto_network == "none" or not hub_url or not worker_id:
+                    return False
+                if not self._worker_runtime_signed_connection_registered(cleaned):
+                    return False
+                try:
+                    self._worker_runtime_multisession_authorization(settings=cleaned, hub_url=hub_url)
+                except Exception:
+                    return False
+                return True
+
+            if setup_kind == "off":
+                can_accept = False
+                reason = str(setup_state.get("reason") or "Worker auto-connect is off.")
+                if active > 0 and previous_phase in {"accepting", "draining"}:
+                    phase = "draining"
+                    hub_status = "draining"
+                    runtime_state = "ACTIVE"
+                    reason = "Worker is draining active work before stopping."
+                else:
                     phase = "not_accepting"
                     hub_status = "offline"
-                    reason = f"Hub heartbeat failed: {heartbeat_error}"
+                    runtime_state = "OFF"
+                if can_send_runtime_close_heartbeat():
+                    try:
+                        heartbeat_result = self._post_worker_runtime_heartbeat_to_hub(
+                            hub_url=hub_url,
+                            settings=cleaned,
+                            phase=phase,
+                            hub_status=hub_status,
+                            active_jobs=active,
+                            policy=policy,
+                        )
+                    except Exception as exc:
+                        heartbeat_error = str(exc)
+                        heartbeat_result = self._close_worker_live_session(
+                            hub_url=hub_url,
+                            worker_id=worker_id,
+                            reason="worker_runtime_auto_connect_off_heartbeat_failed",
+                        )
+                elif send_heartbeat and hub_url and worker_id:
+                    heartbeat_result = self._close_worker_live_session(
+                        hub_url=hub_url,
+                        worker_id=worker_id,
+                        reason="worker_runtime_auto_connect_off",
+                    )
+            elif setup_kind == "setup":
+                phase = "not_accepting"
+                hub_status = "offline"
+                can_accept = False
+                reason = str(setup_state.get("reason") or "Worker setup is incomplete.")
+                runtime_state = "SETUP"
+                if active > 0 and previous_phase in {"accepting", "draining"}:
+                    phase = "draining"
+                    hub_status = "draining"
+                    reason = "Worker setup is incomplete; active work is draining."
+                    runtime_state = "ACTIVE"
+                if send_heartbeat and hub_url and worker_id:
+                    heartbeat_result = self._close_worker_live_session(
+                        hub_url=hub_url,
+                        worker_id=worker_id,
+                        reason="worker_runtime_setup_incomplete",
+                    )
+            elif not bool(local_policy.get("allowed")):
+                phase = "not_accepting"
+                hub_status = "offline"
+                can_accept = False
+                reason = str(local_policy.get("reason") or policy.get("reason") or "Local policy blocks work.")
+                runtime_state = "READY"
+                if send_heartbeat and hub_url and worker_id:
+                    heartbeat_result = self._close_worker_live_session(
+                        hub_url=hub_url,
+                        worker_id=worker_id,
+                        reason="worker_runtime_local_policy_blocked",
+                    )
+            else:
+                can_accept = bool(policy.get("allowed_to_accept"))
+                if can_accept:
+                    phase = "accepting"
+                    hub_status = "busy" if active > 0 else "available"
+                    reason = str(policy.get("reason") or "Hub registration accepted and local policy allows work.")
+                    runtime_state = "RECONNECTING"
+                elif active > 0 and previous_phase in {"accepting", "draining"}:
+                    phase = "draining"
+                    hub_status = "draining"
+                    reason = str(policy.get("reason") or "Worker is draining active work.")
+                    runtime_state = "ACTIVE"
+                else:
+                    phase = "not_accepting"
+                    hub_status = "offline"
+                    reason = str(policy.get("reason") or "Worker is not accepting work.")
+                    runtime_state = "READY"
 
-        if previous_phase != "accepting" and phase == "accepting":
-            cleaned["workerRuntimeLastConnectedAt"] = now
-        if previous_phase != "not_accepting" and phase == "not_accepting":
-            cleaned["workerRuntimeLastDisconnectedAt"] = now
-        cleaned["workerRuntimePhase"] = phase
-        cleaned["workerRuntimeActiveJobs"] = active
-        cleaned["workerRuntimeLastReason"] = reason
-        cleaned["workerRuntimeLastCheckedAt"] = now
-        cleaned["workerRuntimeLastHeartbeatStatus"] = hub_status if should_heartbeat and not heartbeat_error else ""
-        if should_heartbeat and not heartbeat_error:
-            cleaned["workerRuntimeLastHeartbeatAt"] = now
-        cleaned["workerRuntimeError"] = heartbeat_error
-        saved = self._save_worker_settings(cleaned)
+                should_heartbeat = (
+                    send_heartbeat
+                    and can_accept
+                    and bool(setup_state.get("ready"))
+                    and self._worker_runtime_signed_connection_registered(cleaned)
+                    and bool(hub_url)
+                )
+                if should_heartbeat:
+                    try:
+                        heartbeat_result = self._post_worker_runtime_heartbeat_to_hub(
+                            hub_url=hub_url,
+                            settings=cleaned,
+                            phase=phase,
+                            hub_status=hub_status,
+                            active_jobs=active,
+                            policy=policy,
+                        )
+                        runtime_state = "ACTIVE" if active > 0 else "CONNECTED"
+                    except Exception as exc:
+                        heartbeat_error = str(exc)
+                        phase = "not_accepting"
+                        hub_status = "offline"
+                        can_accept = False
+                        reason = f"Hub heartbeat failed: {heartbeat_error}"
+                        runtime_state = "FAILED"
+                elif can_accept:
+                    # A read-only caller should never mutate the live session.  The
+                    # cached/display model should show that a backend-owned reconcile
+                    # is needed rather than claiming this GET opened the session.
+                    runtime_state = "RECONNECTING"
 
-        status = self._worker_runtime_status_payload(
-            saved,
-            phase=phase,
-            active_jobs=active,
-            can_accept=can_accept,
-            hub_status=hub_status,
-            reason=reason,
-            now=now,
-            heartbeat_error=heartbeat_error,
-            heartbeat_result=heartbeat_result,
-            policy=policy,
-        )
-        return saved, status
+            if previous_phase != "accepting" and phase == "accepting":
+                cleaned["workerRuntimeLastConnectedAt"] = now
+            if previous_phase != "not_accepting" and phase == "not_accepting":
+                cleaned["workerRuntimeLastDisconnectedAt"] = now
+            cleaned["workerRuntimePhase"] = phase
+            cleaned["workerRuntimeActiveJobs"] = active
+            cleaned["workerRuntimeLastReason"] = reason
+            cleaned["workerRuntimeLastCheckedAt"] = now
+            cleaned["workerRuntimeLastHeartbeatStatus"] = hub_status if send_heartbeat and not heartbeat_error and runtime_state in {"CONNECTED", "ACTIVE"} else ""
+            if send_heartbeat and not heartbeat_error and runtime_state in {"CONNECTED", "ACTIVE"}:
+                cleaned["workerRuntimeLastHeartbeatAt"] = now
+            cleaned["workerRuntimeError"] = heartbeat_error
+            saved = self._save_worker_settings(cleaned)
+
+            status = self._worker_runtime_status_payload(
+                saved,
+                phase=phase,
+                active_jobs=active,
+                can_accept=can_accept,
+                hub_status=hub_status,
+                reason=reason,
+                now=now,
+                heartbeat_error=heartbeat_error,
+                heartbeat_result=heartbeat_result,
+                policy=policy,
+                setup_state=setup_state,
+                runtime_state=runtime_state,
+            )
+            self._worker_runtime_note_status(status)
+            return saved, status
+
 
     def _handle_worker_runtime_status(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
                 self._send_json({"ok": False, "error": "Worker runtime status is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
                 return
-            settings = self._load_worker_settings()
-            _saved, status = self._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
-            self.server.signal("api-worker-runtime-status", phase=status["runtime"]["phase"], allowed=status["runtime"]["allowed_to_accept"])
+            supervisor = getattr(getattr(self, "server", None), "worker_runtime_supervisor", None)
+            status_method = getattr(supervisor, "status", None)
+            status = status_method() if callable(status_method) else self._worker_runtime_read_only_status()
+            runtime = status.get("runtime") if isinstance(status.get("runtime"), dict) else {}
+            self.server.signal(
+                "api-worker-runtime-status",
+                state=runtime.get("state"),
+                phase=runtime.get("phase"),
+                allowed=runtime.get("allowed_to_accept"),
+                source="supervisor-cache" if callable(status_method) else "read-only-fallback",
+            )
             self._send_json(status)
         except Exception as exc:
             self.server.signal("api-worker-runtime-status-error", error=exc)
@@ -2909,6 +3420,8 @@ class ViewportEnergyRoutesMixin:
             selected = self._normalize_worker_network_key(body.get("network"))
             requested_ring = self._normalize_worker_ring(body.get("requested_ring", "3"))
             settings = self._load_worker_settings()
+            old_hub_url = self._worker_runtime_hub_url(settings)
+            old_worker_id = self._worker_runtime_worker_id(settings)
             settings["selectedNetwork"] = selected
             settings["workerAutoConnectNetwork"] = selected
             settings["workerRequestedRing"] = requested_ring
@@ -2933,6 +3446,13 @@ class ViewportEnergyRoutesMixin:
                     }
                 )
                 saved = self._save_worker_settings(settings)
+                if old_hub_url and old_worker_id:
+                    self._close_worker_live_session(
+                        hub_url=old_hub_url,
+                        worker_id=old_worker_id,
+                        reason="worker_auto_connect_network_disabled",
+                    )
+                self._kick_worker_runtime_supervisor("worker-network-disconnect")
                 payload = self._worker_network_session_payload(saved, check_hub=False)
                 self.server.signal("api-worker-network-disconnect")
                 self._send_json(payload)
@@ -2945,6 +3465,15 @@ class ViewportEnergyRoutesMixin:
             settings["workerConnectionError"] = session.get("connection_error", "")
             settings["workerConnectedAt"] = datetime.now(timezone.utc).isoformat() if session["connection_status"] == "connected" else ""
             saved = self._save_worker_settings(settings)
+            new_hub_url = self._worker_runtime_hub_url(saved)
+            new_worker_id = self._worker_runtime_worker_id(saved)
+            if old_hub_url and old_worker_id and (old_hub_url != new_hub_url or old_worker_id != new_worker_id):
+                self._close_worker_live_session(
+                    hub_url=old_hub_url,
+                    worker_id=old_worker_id,
+                    reason="worker_auto_connect_network_changed",
+                )
+            self._kick_worker_runtime_supervisor("worker-network-select")
             payload = self._worker_network_session_payload(saved, check_hub=False)
             payload["session"]["hub_status"] = session.get("hub_status")
             self.server.signal("api-worker-network-select", selected=selected, status=payload["session"]["connection_status"])
@@ -2978,6 +3507,7 @@ class ViewportEnergyRoutesMixin:
                 payload["runtime"] = runtime_status.get("runtime")
                 payload["localPolicy"] = runtime_status.get("localPolicy")
                 payload["workNowOverride"] = runtime_status.get("workNowOverride")
+                self._kick_worker_runtime_supervisor("worker-work-now")
                 self._send_json(payload)
 
             settings = self._load_worker_settings()
@@ -3646,6 +4176,7 @@ class ViewportEnergyRoutesMixin:
                 wallet_address=wallet_address,
                 hub_revoked=bool(hub_revoke.get("ok")),
             )
+            self._kick_worker_runtime_supervisor("worker-multisession-key-revoke")
             self._send_json(
                 {
                     "ok": True,
@@ -4098,6 +4629,7 @@ class ViewportEnergyRoutesMixin:
                     "key": self._public_worker_multisession_key_record(local_record, reveal_key=False),
                     "path": str(self._worker_multisession_key_cache_path()),
                 }
+            self._kick_worker_runtime_supervisor("worker-multisession-key-request")
             self._send_json(response)
         except Exception as exc:
             self.server.signal("api-worker-multisession-key-request-error", error=exc)
@@ -4689,3 +5221,31 @@ class ViewportEnergyRoutesMixin:
             return True
         supplied = str(body.get("passcode") or self.headers.get("X-Main-Computer-Energy-Passcode") or "")
         return supplied == required
+
+
+class WorkerRuntimeService(ViewportEnergyRoutesMixin):
+    """Small backend adapter for worker runtime helpers without HTTP handler state."""
+
+    def __init__(self, server: Any) -> None:
+        self.server = server
+
+    def reconcile_worker_runtime(self, *, reason: str = "manual", send_heartbeat: bool = True) -> dict[str, Any]:
+        settings = self._load_worker_settings()
+        _saved, status = self._worker_runtime_transition(
+            settings,
+            action="sync",
+            send_heartbeat=send_heartbeat,
+        )
+        signal = getattr(self.server, "signal", None)
+        runtime = status.get("runtime") if isinstance(status.get("runtime"), dict) else {}
+        if callable(signal):
+            signal(
+                "worker-runtime-supervisor-reconcile",
+                reason=str(reason or "manual"),
+                state=runtime.get("state"),
+                phase=runtime.get("phase"),
+            )
+        return status
+
+    def read_worker_runtime_status(self) -> dict[str, Any]:
+        return self._worker_runtime_read_only_status()

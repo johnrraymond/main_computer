@@ -17,7 +17,8 @@ from main_computer.viewport_routes_component_docs import ViewportComponentDocsRo
 from main_computer.viewport_routes_debug import ViewportDebugRoutesMixin
 from main_computer.viewport_routes_docs import ViewportDocsRoutesMixin
 from main_computer.viewport_routes_editor import ViewportEditorRoutesMixin
-from main_computer.viewport_routes_energy import ViewportEnergyRoutesMixin
+from main_computer.viewport_routes_energy import ViewportEnergyRoutesMixin, WorkerRuntimeService
+from main_computer.worker_runtime_supervisor import WorkerRuntimeSupervisor
 from main_computer.viewport_routes_executor import ViewportExecutorRoutesMixin
 from main_computer.viewport_routes_file_explorer import ViewportFileExplorerRoutesMixin
 from main_computer.viewport_routes_game import ViewportGameRoutesMixin
@@ -115,6 +116,9 @@ class ViewportServer(ThreadingHTTPServer):
         )
         self.aider_web_context = AiderWebContextStore(self.debug_root / "aider_web_context")
         self.aider_jobs = AiderActionJobRegistry(self)
+        self.worker_runtime_lock = threading.RLock()
+        self.worker_runtime_service = WorkerRuntimeService(self)
+        self.worker_runtime_supervisor = WorkerRuntimeSupervisor(self.worker_runtime_service)
 
     def signal(self, name: str, **fields: Any) -> None:
         if name in {"api-activity-snapshot", "api-activity-ollama-ps"}:
@@ -212,6 +216,7 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
         workspace=config.workspace,
         pid_file=viewport_pid_file,
     )
+    server.worker_runtime_supervisor.start()
     print(f"Main Computer viewport: http://{host}:{server.server_port}")
     print("Press Ctrl+C to stop.")
     try:
@@ -220,6 +225,7 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
         server.signal("server-interrupt")
         print("\nViewport stopped.")
     finally:
+        server.worker_runtime_supervisor.stop()
         if _viewport_pid_path(control_root) == viewport_pid_file:
             _clear_viewport_pid_file(viewport_pid_file)
         server.signal("server-stop")

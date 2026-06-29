@@ -420,6 +420,7 @@ def _runtime_settings(harness: _WorkerRoutesHarness | None = None) -> dict[str, 
                 "worker": {
                     "node_id": "runtime-worker-001",
                     "worker_instance_id": "runtime-worker-001",
+                    "multisession_key_id": "msk-runtime-worker",
                     "capabilities": {
                         "capabilities": ["chat.completions"],
                         "pricing": {"credits_per_request": "1.024"},
