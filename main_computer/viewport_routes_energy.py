@@ -1159,6 +1159,14 @@ class ViewportEnergyRoutesMixin:
         selected_network = text(settings.get("selectedNetwork", settings.get("selected_network")), "none").lower()
         if selected_network not in {"mainnet", "testnet", "test", "dev", "none"}:
             selected_network = "none"
+        auto_connect_network = text(
+            settings.get("workerAutoConnectNetwork", settings.get("worker_auto_connect_network")),
+            selected_network,
+        ).lower()
+        if auto_connect_network not in {"mainnet", "testnet", "test", "dev", "none"}:
+            auto_connect_network = selected_network
+        if auto_connect_network != "none":
+            selected_network = auto_connect_network
         requested_ring = text(settings.get("workerRequestedRing", settings.get("worker_requested_ring")), "3")
         if requested_ring not in {"0", "1", "2", "3"}:
             requested_ring = "3"
@@ -1260,6 +1268,7 @@ class ViewportEnergyRoutesMixin:
             assigned_ring = ""
         cleaned: dict[str, Any] = {
             "selectedNetwork": selected_network,
+            "workerAutoConnectNetwork": auto_connect_network,
             "workerRequestedRing": requested_ring,
             "workerAssignedRing": assigned_ring,
             "workerRegisteredId": text(settings.get("workerRegisteredId", settings.get("worker_registered_id")), ""),
@@ -2901,6 +2910,7 @@ class ViewportEnergyRoutesMixin:
             requested_ring = self._normalize_worker_ring(body.get("requested_ring", "3"))
             settings = self._load_worker_settings()
             settings["selectedNetwork"] = selected
+            settings["workerAutoConnectNetwork"] = selected
             settings["workerRequestedRing"] = requested_ring
             settings["workerAssignedRing"] = ""
             settings["workerRegisteredId"] = ""

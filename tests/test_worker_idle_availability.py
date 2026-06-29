@@ -78,6 +78,26 @@ def test_worker_settings_defaults_to_idle_only_enabled() -> None:
     assert settings["models"] == "gemma4:26b"
 
 
+def test_worker_auto_connect_network_drives_saved_selected_network() -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {"config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})()},
+    )()
+
+    settings = harness._sanitize_worker_settings(
+        {
+            "selectedNetwork": "dev",
+            "workerAutoConnectNetwork": "testnet",
+            "workerRequestedRing": "3",
+        }
+    )
+
+    assert settings["workerAutoConnectNetwork"] == "testnet"
+    assert settings["selectedNetwork"] == "testnet"
+
+
 def test_worker_settings_migrates_old_visual_defaults_to_current_defaults() -> None:
     harness = _WorkerRoutesHarness()
     harness.server = type(

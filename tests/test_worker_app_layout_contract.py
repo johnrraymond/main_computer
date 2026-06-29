@@ -107,20 +107,23 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "deterministic worker-pull test path" not in html
     assert ".worker-contract-summary" not in css
     assert ".worker-registration-card" not in css
-    assert 'id="worker-rental-enabled"' in seller_section
-    assert 'Accept paid jobs' in seller_section
-    assert 'name="worker-seller-availability-mode"' in seller_section
-    assert 'id="worker-seller-availability-mode-totally-idle" value="totally_idle" checked' in seller_section
-    assert 'Only when totally idle' in seller_section
-    assert 'id="worker-seller-availability-mode-ai-idle" value="ai_idle"' in seller_section
-    assert 'When AI is idle' in seller_section
-    assert seller_section.index('id="worker-rental-enabled"') < seller_section.index('id="worker-seller-availability-mode-totally-idle"')
+    assert 'id="worker-rental-enabled"' in network_surface
+    assert 'Accept paid jobs' in network_surface
+    assert 'name="worker-seller-availability-mode"' in network_surface
+    assert 'id="worker-seller-availability-mode-totally-idle" value="totally_idle" checked' in network_surface
+    assert 'Only when totally idle' in network_surface
+    assert 'id="worker-seller-availability-mode-ai-idle" value="ai_idle"' in network_surface
+    assert 'When AI is idle' in network_surface
+    assert network_surface.index('id="worker-rental-enabled"') < network_surface.index('id="worker-seller-availability-mode-totally-idle"')
+    assert network_surface.index('id="worker-auto-hub-mainnet"') < network_surface.index('class="worker-card worker-network-card"')
+    assert 'id="worker-rental-enabled"' not in seller_section
     assert "workerSellerAvailabilityModes" in js
     assert "sellerAvailabilityMode" in js
     assert "sellerOnlyWhenIdle" in js
     assert "rentalOnlyWhenIdle" in js
     assert 'const workerSellerAvailabilityModes = Array.from(document.querySelectorAll(\'input[name="worker-seller-availability-mode"]\'));' in bindings
-    assert ".worker-seller-controls" in css
+    assert ".worker-auto-hub-card" in css
+    assert ".worker-auto-hub-network-mode" in css
     assert ".worker-primary-offer > .worker-start-working-card" in css
     assert "grid-column: 1 / -1;" in css
 
@@ -402,13 +405,16 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     dispatch = VIEWPORT_ROUTES.read_text(encoding="utf-8")
     energy_routes = VIEWPORT_ENERGY_ROUTES.read_text(encoding="utf-8")
 
-    assert 'class="worker-network-tabs"' in html
+    assert 'class="worker-card worker-auto-hub-card"' in html
+    assert 'name="worker-auto-connect-network"' in html
+    assert 'id="worker-auto-hub-status"' in html
     assert 'data-worker-network="mainnet"' in html
     assert 'data-worker-network="testnet"' in html
     assert 'data-worker-network="test"' in html
     assert 'data-worker-network="dev"' in html
-    assert 'data-worker-network="none"' in html
-    assert html.index('data-worker-network="mainnet"') < html.index('data-worker-network="testnet"') < html.index('data-worker-network="test"') < html.index('data-worker-network="dev"') < html.index('data-worker-network="none"')
+    assert 'data-worker-network="none"' not in html
+    assert html.index('id="worker-auto-hub-mainnet"') < html.index('id="worker-auto-hub-testnet"') < html.index('id="worker-auto-hub-test"') < html.index('id="worker-auto-hub-dev"')
+    assert html.index('class="worker-card worker-auto-hub-card"') < html.index('class="worker-card worker-network-card"')
     assert 'id="worker-network-ring"' in html
     assert 'id="worker-network-work-now"' in html
     assert 'id="worker-work-now-dialog"' in html
@@ -432,8 +438,21 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "Network selection handles wallet connection" not in html
     assert 'id="worker-network-disconnect"' in html
     assert "None / Full Disconnect" in html
-    assert "All four worker targets are visible by default" in html
+    assert "The automatic hub above is the only worker/requester target that auto-connects" in html
+    assert 'id="worker-runtime-state-card"' in html
+    assert 'id="worker-runtime-state-center"' in html
+    assert html.index('class="worker-card worker-fleet-card"') < html.index('id="worker-runtime-state-card"')
+    assert ".worker-runtime-state-card" in css
+    assert ".worker-runtime-state-corner" in css
+    assert "grid-column: 3;" in css
+    assert "width: 322px;" in css
+    assert "min-width: 322px;" in css
+    assert "border: 0;" in css
+    assert "workerRuntimeStateVisualModel" in js
+    assert "workerRenderRuntimeStateCard" in js
 
+    assert "workerAutoHubStatus" in bindings
+    assert "workerAutoHubNetworkModes" in bindings
     assert "workerNetworkTabs" in bindings
     assert "workerNetworkRing" in bindings
     assert "workerNetworkWorkNow" in bindings
@@ -453,12 +472,17 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerRuntimePrimaryStatus" in bindings
     assert "workerRuntimePrimaryReason" in bindings
     assert "workerRuntimePrimaryNext" in bindings
+    assert "workerRuntimeStateCard" in bindings
+    assert "workerRuntimeStateCenter" in bindings
+    assert "workerRuntimeStateFoot" in bindings
     assert "workerNetworkConnectWallet" not in bindings
     assert "workerFleetMainnet" in bindings
 
     assert ".worker-network-surface" in css
-    assert ".worker-network-tab.is-selected" in css
-    assert ".worker-network-tab-none" in css
+    assert ".worker-auto-hub-card" in css
+    assert ".worker-auto-hub-network-mode" in css
+    assert ".worker-auto-hub-card .worker-switch.is-selected" in css
+    assert ".worker-network-tab" not in css
 
     assert "WORKER_NETWORK_ORDER = [\"mainnet\", \"testnet\", \"test\", \"dev\"]" in js
     assert 'WORKER_NETWORK_NONE = "none"' in js
@@ -478,6 +502,8 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "const retryingHubRegistration" not in js
     assert "Worker has not been registered with the Hub." in js
     assert "workerSelectNetwork" in js
+    assert "workerAutoConnectNetworkFromForm" in js
+    assert "workerSetAutoConnectNetwork" in js
     assert "openWorkerWorkNowDialog" in js
     assert "buildWorkerNetworkRegistrationPayload" in js
     assert "WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT" not in js
@@ -538,7 +564,10 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert '"/api/hub/v1/workers/live-session"' in energy_routes
     assert '"mainnet", "testnet", "test", "dev"' in energy_routes
     assert '"selectedNetwork": selected_network' in energy_routes
+    assert '"workerAutoConnectNetwork": auto_connect_network' in energy_routes
     assert '"workerRequestedRing": requested_ring' in energy_routes
+    assert 'auto_connect_network = text(' in energy_routes
+    assert 'settings.get("workerAutoConnectNetwork", settings.get("worker_auto_connect_network"))' in energy_routes
     assert 'requested_ring = text(settings.get("workerRequestedRing", settings.get("worker_requested_ring")), "3")' in energy_routes
     assert 'if requested_ring not in {"0", "1", "2", "3"}:' in energy_routes
     assert '{"ring": "3", "label": "Ring 3 - Public untrusted", "description": "public untrusted workers"}' in energy_routes
@@ -595,14 +624,28 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert 'WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG"' in js
     assert 'WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_SYMBOL = "ENG"' in js
     assert "workerWalletIsNativeCurrencySymbolMismatch" in js
+    assert "workerWalletIsUnknownChainSwitchError" in js
+    assert "connect.ethers.switchChain.unknownChain" in js
+    assert "connect.ethers.switchChain.done" in js
+    assert "preferSwitchFirst" in js
     assert "connect.wallet.addChain.symbolMismatchFallback" in js
     assert "canonical-mcxlag" in js
     assert "legacy-symbol-rpc-repair" in js
     assert "provider.hydrate.rpc-needs-repair" in js
+    assert "provider.hydrate.networkPreflight.start" in js
+    assert "provider.hydrate.networkPreflight.done" in js
+    assert "{probeRpc: true, reason: `hydrate-${reason}`}" in js
     assert "connect.wallet.networkPreflight.start" in js
     assert "connect.wallet.rpcProof.done" in js
     assert "connect.wallet.rpcProof.backoffWait" in js
     assert "connect.wallet.rpcProof.backoffCleared" in js
+    assert "connect.wallet.postAccountPreflight.reused" in js
+    assert "connect.wallet.postAccountPreflight.wait" in js
+    assert "connect.wallet.postAccountPreflight.recheck" in js
+    assert "workerReuseSatisfiedWalletNetworkPreflight" in js
+    assert "workerFinalizeWalletNetworkAfterAccount" in js
+    assert "WORKER_POST_ACCOUNT_PREFLIGHT_REUSE_TIMEOUT_MS = 3000" in js
+    assert "WORKER_POST_ACCOUNT_PREFLIGHT_REUSE_POLL_MS = 150" in js
     assert "workerWalletIsRpcEndpointBackoff" in js
     assert "workerWalletRpcBackoffMessage" in js
     assert "async function workerBrowserProviderSend" in js
@@ -622,6 +665,40 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert "Local state cleared. If a wallet popup is still pending, close it manually." in js
     assert "Wallet accepted. Verifying signer and selected worker network with ethers." in js
     assert "Select Mainnet, Testnet, Test, or Dev before connecting the worker wallet." in js
+
+    connect_start = js.index("async function connectWorkerPrimaryWallet")
+    connect_end = js.index("async function disconnectWorkerPrimaryWallet")
+    connect_body = js[connect_start:connect_end]
+    assert connect_body.index("connect.ethers.requestAccounts.resolved") < connect_body.index("workerFinalizeWalletNetworkAfterAccount")
+    assert "preAccountNetwork" in connect_body
+    assert "connect-post-account" not in connect_body
+
+    request_update_start = js.index("async function workerRequestDevWalletChainUpdate")
+    rebuild_start = js.index("function workerRebuildWalletBrowserProvider")
+    request_update_body = js[request_update_start:rebuild_start]
+    assert request_update_body.index("if (preferSwitchFirst)") < request_update_body.index("requestSelectedChainUpdate(workerSelectedWalletChainParams()")
+    assert request_update_body.index('"wallet_switchEthereumChain"') < request_update_body.index('"wallet_addEthereumChain"')
+    assert "workerWalletIsUnknownChainSwitchError" in request_update_body
+
+    ensure_start = js.index("async function workerEnsureDevWalletChain")
+    reuse_start = js.index("async function workerReuseSatisfiedWalletNetworkPreflight")
+    ensure_body = js[ensure_start:reuse_start]
+    assert "metadata.chainId && metadata.chainId !== expectedChainId && !opts.forceUpdate" in ensure_body
+    assert "{preferSwitchFirst}" in ensure_body
+
+    finalize_start = js.index("async function workerFinalizeWalletNetworkAfterAccount")
+    refresh_start = js.index("async function workerRefreshWalletFromProvider")
+    finalize_body = js[finalize_start:refresh_start]
+    assert finalize_body.index("workerReuseSatisfiedWalletNetworkPreflight") < finalize_body.index("workerEnsureDevWalletChain")
+    assert '"connect-post-account"' in finalize_body
+
+    hydrate_start = js.index("async function workerHydrateConnectedWalletFromProvider")
+    connect_start = js.index("async function connectWorkerPrimaryWallet")
+    hydrate_body = js[hydrate_start:connect_start]
+    assert "eth_requestAccounts" not in hydrate_body
+    assert hydrate_body.index("provider.hydrate.rpc-needs-repair") < hydrate_body.index("provider.hydrate.networkPreflight.start")
+    assert hydrate_body.index("provider.hydrate.networkPreflight.start") < hydrate_body.index("workerEnsureDevWalletChain")
+    assert hydrate_body.index("workerEnsureDevWalletChain") < hydrate_body.index("provider.hydrate.connected")
 
     required_provider_calls = [
         "ethers.BrowserProvider",

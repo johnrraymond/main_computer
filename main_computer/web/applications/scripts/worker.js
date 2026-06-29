@@ -88,6 +88,8 @@
     const WORKER_WALLET_BALANCE_TIMEOUT_MS = 8000;
     const WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS = 75000;
     const WORKER_METAMASK_RPC_BACKOFF_POLL_MS = 3000;
+    const WORKER_POST_ACCOUNT_PREFLIGHT_REUSE_TIMEOUT_MS = 3000;
+    const WORKER_POST_ACCOUNT_PREFLIGHT_REUSE_POLL_MS = 150;
     const WORKER_WALLET_PASSIVE_HYDRATION_RETRY_DELAYS_MS = [0, 250, 750, 1500, 3000];
     const WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
       "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)",
@@ -1470,6 +1472,17 @@
         || (message.includes("currency symbol") && message.includes("same chainid"));
     }
 
+    function workerWalletIsUnknownChainSwitchError(error) {
+      const code = workerErrorCode(error);
+      const message = workerWalletErrorMessage(error).toLowerCase();
+      return code === "4902"
+        || message.includes("unrecognized chain id")
+        || message.includes("unrecognized chainid")
+        || message.includes("unknown chain")
+        || message.includes("has not been added")
+        || message.includes("wallet_addethereumchain");
+    }
+
     function workerWalletIsRpcEndpointBackoff(error) {
       const message = workerWalletErrorMessage(error).toLowerCase();
       return (
@@ -1676,13 +1689,43 @@
       };
     }
 
-    async function workerRequestDevWalletChainUpdate(browserProvider, reason = "network-repair") {
+    async function workerRequestDevWalletChainUpdate(browserProvider, reason = "network-repair", options = {}) {
       if (!browserProvider || typeof browserProvider.send !== "function") {
         throw new Error("No ethers browser wallet provider is available.");
       }
 
+      const opts = options && typeof options === "object" ? options : {};
       const expectedChainId = workerSelectedWalletChainIdHex();
       const expectedRpcUrl = workerSelectedWalletRpcUrl();
+      const preferSwitchFirst = Boolean(opts.preferSwitchFirst);
+      const result = {
+        addedChain: false,
+        switchedChain: false,
+        switchFirst: preferSwitchFirst
+      };
+
+      const requestSelectedChainSwitch = async (switchMode) => {
+        workerWalletRecordEvent("connect.ethers.switchChain.start", {
+          from: "wallet-provider",
+          to: expectedChainId,
+          reason,
+          switchMode
+        });
+        await workerBrowserProviderSend(
+          browserProvider,
+          "wallet_switchEthereumChain",
+          [{chainId: expectedChainId}],
+          "wallet selected-network switch",
+          60000
+        );
+        result.switchedChain = true;
+        workerWalletRecordEvent("connect.ethers.switchChain.done", {
+          from: "wallet-provider",
+          to: expectedChainId,
+          reason,
+          switchMode
+        });
+      };
 
       const requestSelectedChainUpdate = async (params, repairMode) => {
         workerWalletRecordEvent("connect.wallet.addChain.start", {
@@ -1699,6 +1742,7 @@
           "wallet selected-network update",
           120000
         );
+        result.addedChain = true;
         workerWalletRecordEvent("connect.wallet.addChain.done", {
           reason,
           repairMode,
@@ -1707,6 +1751,22 @@
           currencySymbol: params?.nativeCurrency?.symbol || ""
         });
       };
+
+      if (preferSwitchFirst) {
+        try {
+          await requestSelectedChainSwitch("switch-first");
+          return result;
+        } catch (error) {
+          if (!workerWalletIsUnknownChainSwitchError(error)) {
+            throw error;
+          }
+          workerWalletRecordEvent("connect.ethers.switchChain.unknownChain", {
+            reason,
+            chainId: expectedChainId,
+            message: workerWalletErrorMessage(error)
+          });
+        }
+      }
 
       try {
         await requestSelectedChainUpdate(workerSelectedWalletChainParams(), "canonical-mcxlag");
@@ -1730,18 +1790,8 @@
         );
       }
 
-      workerWalletRecordEvent("connect.ethers.switchChain.start", {
-        from: "wallet-provider",
-        to: expectedChainId,
-        reason
-      });
-      await workerBrowserProviderSend(
-        browserProvider,
-        "wallet_switchEthereumChain",
-        [{chainId: expectedChainId}],
-        "wallet selected-network switch",
-        60000
-      );
+      await requestSelectedChainSwitch(preferSwitchFirst ? "post-add-after-unknown-chain" : "post-add");
+      return result;
     }
 
     function workerRebuildWalletBrowserProvider(ethers, injectedProvider) {
@@ -1977,7 +2027,12 @@
 
       if (needsUpdate) {
         if (workerSaveStatus) workerSaveStatus.textContent = workerWalletRpcRepairMessage(updateReason);
-        await workerRequestDevWalletChainUpdate(activeBrowserProvider, updateReason || reason);
+        const preferSwitchFirst = Boolean(metadata.chainId && metadata.chainId !== expectedChainId && !opts.forceUpdate);
+        await workerRequestDevWalletChainUpdate(
+          activeBrowserProvider,
+          updateReason || reason,
+          {preferSwitchFirst}
+        );
         await workerSleep(500);
         activeBrowserProvider = workerRebuildWalletBrowserProvider(ethers, injectedProvider);
         metadata = await workerReadInjectedProviderMetadata(activeBrowserProvider, injectedProvider);
@@ -2013,6 +2068,95 @@
         metadata,
         repaired: needsUpdate
       };
+    }
+
+    async function workerReuseSatisfiedWalletNetworkPreflight(browserProvider, injectedProvider, preflight = {}, options = {}) {
+      const opts = options && typeof options === "object" ? options : {};
+      const reason = String(opts.reason || "connect-post-account");
+      const expectedChainId = workerSelectedWalletChainIdHex();
+
+      if (!preflight || workerNormalizeChainIdHex(preflight.chainId) !== expectedChainId) {
+        return null;
+      }
+
+      const ethers = await workerGetEthers();
+      let activeBrowserProvider = browserProvider || workerWalletBrowserProvider;
+      if (injectedProvider) {
+        activeBrowserProvider = workerRebuildWalletBrowserProvider(ethers, injectedProvider);
+      }
+
+      const timeoutMs = preflight.repaired ? WORKER_POST_ACCOUNT_PREFLIGHT_REUSE_TIMEOUT_MS : 0;
+      const pollMs = WORKER_POST_ACCOUNT_PREFLIGHT_REUSE_POLL_MS;
+      const startedAt = Date.now();
+      let attempts = 0;
+      let lastProof = null;
+
+      do {
+        attempts += 1;
+        const proof = await workerProveInjectedProviderRpc(activeBrowserProvider);
+        if (proof.ok) {
+          workerWalletRecordEvent("connect.wallet.postAccountPreflight.reused", {
+            reason,
+            chainId: proof.chainId,
+            blockNumber: proof.blockNumber,
+            attempts,
+            repairedBeforeAccounts: Boolean(preflight.repaired)
+          });
+          return {
+            chainId: proof.chainId,
+            browserProvider: activeBrowserProvider,
+            metadata: null,
+            repaired: false,
+            reusedPreflight: true
+          };
+        }
+
+        lastProof = proof;
+        const shouldWaitForSettledPreflight = Boolean(preflight.repaired && (proof.wrongChain || proof.rpcUnavailable));
+        if (!shouldWaitForSettledPreflight || Date.now() - startedAt >= timeoutMs) {
+          break;
+        }
+
+        workerWalletRecordEvent("connect.wallet.postAccountPreflight.wait", {
+          reason,
+          expectedChainId,
+          chainId: proof.chainId,
+          wrongChain: Boolean(proof.wrongChain),
+          rpcUnavailable: Boolean(proof.rpcUnavailable),
+          attempts,
+          elapsedMs: Date.now() - startedAt
+        });
+        await workerSleep(pollMs);
+        if (injectedProvider) {
+          activeBrowserProvider = workerRebuildWalletBrowserProvider(ethers, injectedProvider);
+        }
+      } while (Date.now() - startedAt <= timeoutMs);
+
+      workerWalletRecordEvent("connect.wallet.postAccountPreflight.recheck", {
+        reason,
+        expectedChainId,
+        chainId: lastProof?.chainId || "",
+        wrongChain: Boolean(lastProof?.wrongChain),
+        rpcUnavailable: Boolean(lastProof?.rpcUnavailable),
+        attempts
+      });
+      return null;
+    }
+
+    async function workerFinalizeWalletNetworkAfterAccount(browserProvider, injectedProvider, preflight = {}) {
+      const reusedPreflight = await workerReuseSatisfiedWalletNetworkPreflight(
+        browserProvider,
+        injectedProvider,
+        preflight,
+        {reason: "connect-post-account"}
+      );
+      if (reusedPreflight) return reusedPreflight;
+
+      return await workerEnsureDevWalletChain(
+        browserProvider,
+        injectedProvider,
+        {probeRpc: true, reason: "connect-post-account"}
+      );
     }
 
     async function workerRefreshWalletFromProvider(reason = "refresh") {
@@ -2215,31 +2359,81 @@
 
           const metadata = await workerReadInjectedProviderMetadata(context.browserProvider, context.injectedProvider);
           if (workerWalletMetadataNeedsRpcRepair(metadata)) {
-            workerSetPrimaryWalletState({connected: false});
-            workerWalletHookState = "idle";
-            workerWalletLastAction = workerWalletRpcRepairMessage("Click Connect Wallet to update the saved MetaMask network before funding.");
             workerWalletRecordEvent("provider.hydrate.rpc-needs-repair", {
               reason,
               address,
               chainId,
               networkVersion: metadata.networkVersion,
-              providerConnected: metadata.providerConnected
+              providerConnected: metadata.providerConnected,
+              action: "repair-before-finalize"
             });
-            renderWorkerBridgeReadiness();
-            return snapshot;
           }
 
-          workerSetPrimaryWalletState({connected: true, address, chainId});
+          workerWalletRecordEvent("provider.hydrate.networkPreflight.start", {
+            reason,
+            address,
+            chainId,
+            provider: context.providerInfo
+          });
+          const networkPreflight = await workerEnsureDevWalletChain(
+            context.browserProvider,
+            context.injectedProvider,
+            {probeRpc: true, reason: `hydrate-${reason}`}
+          );
+          context.browserProvider = networkPreflight.browserProvider || context.browserProvider;
+
+          const finalizedSnapshot = await workerReadGrantedWalletProviderSnapshot(context.browserProvider);
+          const finalizedAddress = workerWalletValidAddress(finalizedSnapshot.address) ? finalizedSnapshot.address : "";
+          const finalizedChainId = workerNormalizeChainIdHex(finalizedSnapshot.chainId || networkPreflight.chainId);
+
+          if (!workerWalletOperationIsCurrent(token)) return finalizedSnapshot;
+
+          if (!finalizedAddress) {
+            workerSetPrimaryWalletState({connected: false});
+            workerWalletHookState = "idle";
+            workerWalletLastAction = "No already-authorized browser wallet account found after wallet network preflight.";
+            workerWalletRecordEvent("provider.hydrate.no-account", {reason, afterNetworkPreflight: true});
+            renderWorkerBridgeReadiness();
+            return finalizedSnapshot;
+          }
+
+          if (finalizedChainId !== workerSelectedWalletChainIdHex()) {
+            workerSetPrimaryWalletState({connected: false});
+            workerWalletHookState = "idle";
+            workerWalletLastAction = `Wallet is on ${finalizedChainId || "unknown chain"}; expected ${workerSelectedWalletChainIdHex()} for ${workerNetworkDisplayName(workerNetworkSession.selected_network)}.`;
+            workerWalletRecordEvent("provider.hydrate.wrong-chain", {
+              reason,
+              address: finalizedAddress,
+              chainId: finalizedChainId,
+              afterNetworkPreflight: true
+            });
+            renderWorkerBridgeReadiness();
+            return finalizedSnapshot;
+          }
+
+          workerWalletRecordEvent("provider.hydrate.networkPreflight.done", {
+            reason,
+            address: finalizedAddress,
+            chainId: finalizedChainId,
+            repaired: Boolean(networkPreflight.repaired)
+          });
+
+          workerSetPrimaryWalletState({connected: true, address: finalizedAddress, chainId: finalizedChainId});
           workerWalletHookState = "idle";
-          workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
-          workerWalletRecordEvent("provider.hydrate.connected", {reason, address, chainId});
-          const activeKey = await workerLoadMultisessionKeysForWallet(address, reason);
+          workerWalletLastAction = `Connected ${workerShortAddress(finalizedAddress)} on ${finalizedChainId}.`;
+          workerWalletRecordEvent("provider.hydrate.connected", {
+            reason,
+            address: finalizedAddress,
+            chainId: finalizedChainId,
+            repaired: Boolean(networkPreflight.repaired)
+          });
+          const activeKey = await workerLoadMultisessionKeysForWallet(finalizedAddress, reason);
           await checkWorkerWalletCreditBalance({quiet: true});
           if (!activeKey && workerSaveStatus) {
-            workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(address)} on ${chainId}; no saved multi-session key loaded.`;
+            workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(finalizedAddress)} on ${finalizedChainId}; no saved multi-session key loaded.`;
           }
           renderWorkerBridgeReadiness();
-          return snapshot;
+          return finalizedSnapshot;
         } catch (error) {
           if (workerWalletOperationIsCurrent(token)) {
             workerSetPrimaryWalletState({connected: false});
@@ -2299,10 +2493,10 @@
 
         workerSetWalletOperationState("stabilizing", "Wallet accepted. Verifying signer and selected worker network with ethers. Checking MetaMask RPC before enabling funding.");
 
-        const postAccountNetwork = await workerEnsureDevWalletChain(
+        const postAccountNetwork = await workerFinalizeWalletNetworkAfterAccount(
           context.browserProvider,
           context.injectedProvider,
-          {probeRpc: true, reason: "connect-post-account"}
+          preAccountNetwork
         );
         context.browserProvider = postAccountNetwork.browserProvider || context.browserProvider;
 
@@ -3091,6 +3285,44 @@
       return workerNetworkProfile(normalized)?.display_name || normalized.charAt(0).toUpperCase() + normalized.slice(1);
     }
 
+    function workerRuntimeStateNetworkLabel(key = workerNetworkSession.selected_network) {
+      const normalized = workerNetworkKey(key);
+      if (normalized === "mainnet") return "Mainnet";
+      if (normalized === "testnet") return "Testnet";
+      if (normalized === "test") return "Test";
+      if (normalized === "dev") return "Dev";
+      return "No";
+    }
+
+    function workerAutoHubInputs() {
+      return typeof workerAutoHubNetworkModes !== "undefined" && Array.isArray(workerAutoHubNetworkModes)
+        ? workerAutoHubNetworkModes
+        : [];
+    }
+
+    function workerAutoConnectNetworkFromForm() {
+      const selected = workerAutoHubInputs().find((input) => input?.checked);
+      return workerNetworkKey(selected?.value || workerNetworkSession.selected_network);
+    }
+
+    function workerSetAutoConnectNetwork(network) {
+      const normalized = workerNetworkKey(network);
+      workerAutoHubInputs().forEach((input) => {
+        if (!input) return;
+        const key = workerNetworkKey(input.getAttribute("data-worker-network") || input.value);
+        const checked = normalized !== WORKER_NETWORK_NONE && key === normalized;
+        input.checked = checked;
+        input.setAttribute("aria-checked", checked ? "true" : "false");
+        input.closest(".worker-switch")?.classList.toggle("is-selected", checked);
+      });
+      if (typeof workerAutoHubStatus !== "undefined" && workerAutoHubStatus) {
+        workerAutoHubStatus.textContent = normalized === WORKER_NETWORK_NONE
+          ? "Auto hub: None"
+          : `Auto hub: ${workerNetworkDisplayName(normalized)}`;
+      }
+      return normalized;
+    }
+
     function workerRingLabel(ring = workerNetworkSession.requested_ring) {
       const normalized = String(ring || WORKER_DEFAULT_RING);
       return WORKER_RING_LABELS[normalized] || WORKER_RING_LABELS[WORKER_DEFAULT_RING];
@@ -3380,6 +3612,193 @@
         reason: workerRuntimeStatus.reason || "Worker is not ready.",
         next: workerRuntimeStatus.next || "Check registration and local policy."
       };
+    }
+
+    function workerRuntimeStateShortText(value, fallback = "—", maxLength = 32) {
+      const text = String(value || fallback || "—").trim();
+      if (text.length <= maxLength) return text;
+      return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+    }
+
+    function workerRuntimeStateVisualModel({
+      selected = workerNetworkSession.selected_network,
+      hubConnected = false,
+      walletConnectedToSelected = false,
+      signedForSelected = false,
+      hubRegistered = false,
+      primaryStatus = {},
+      localPolicy = {},
+      activeJobs = 0
+    } = {}) {
+      const normalized = workerNetworkKey(selected);
+      const hubName = normalized === WORKER_NETWORK_NONE
+        ? "No auto hub"
+        : `${workerRuntimeStateNetworkLabel(normalized)} auto hub`;
+      const connectionStatus = String(workerNetworkSession.connection_status || "disconnected");
+      const foot = workerRuntimeStateShortText(primaryStatus.next || "Check worker setup.", "Check worker setup.", 40);
+      const error = workerRuntimeStateShortText(workerRuntimeStatus.heartbeat_error || workerRuntimeStatus.lastError || workerNetworkSession.connection_error, "Retry scheduled", 34);
+
+      if (normalized === WORKER_NETWORK_NONE) {
+        return {
+          center: "OFF",
+          nw: "Auto-start disabled",
+          ne: "No auto hub",
+          sw: "No reconnect",
+          se: "Requester idle",
+          foot: "Choose a hub to auto-connect.",
+          tone: "muted"
+        };
+      }
+
+      if (!workerRentalEnabled?.checked) {
+        return {
+          center: "OFF",
+          nw: "Paid jobs disabled",
+          ne: hubName,
+          sw: "No worker reconnect",
+          se: "Requester idle",
+          foot: "Enable paid jobs to auto-connect.",
+          tone: "muted"
+        };
+      }
+
+      if (workerRuntimeStatus.heartbeat_error || connectionStatus === "failed") {
+        return {
+          center: "FAILED",
+          nw: hubConnected ? "Hub reachable" : "Hub unreachable",
+          ne: hubName,
+          sw: error,
+          se: "Retry scheduled",
+          foot: "Check hub or RPC.",
+          tone: "bad"
+        };
+      }
+
+      if (workerNetworkSessionInFlight || connectionStatus === "connecting") {
+        return {
+          center: "RECONNECTING",
+          nw: signedForSelected ? "Saved worker found" : "Selected hub saved",
+          ne: hubName,
+          sw: "Session rebuilding",
+          se: "Wallet not needed",
+          foot: "Waiting for heartbeat.",
+          tone: "warn"
+        };
+      }
+
+      if (!hubConnected) {
+        return {
+          center: "RECONNECTING",
+          nw: signedForSelected ? "Saved worker found" : "Selected hub saved",
+          ne: hubName,
+          sw: "Hub session offline",
+          se: "Retry pending",
+          foot: "Waiting for hub connection.",
+          tone: "warn"
+        };
+      }
+
+      if (!walletConnectedToSelected) {
+        return {
+          center: "SETUP",
+          nw: "Wallet action needed",
+          ne: hubName,
+          sw: "Wrong wallet chain",
+          se: "Requester idle",
+          foot: "Open Worker setup once.",
+          tone: "bad"
+        };
+      }
+
+      if (!signedForSelected) {
+        return {
+          center: "SETUP",
+          nw: "Cannot auto-start",
+          ne: hubName,
+          sw: "Registration missing",
+          se: "Key missing",
+          foot: "Open Worker setup once.",
+          tone: "bad"
+        };
+      }
+
+      if (!hubRegistered) {
+        const hubRegistration = workerRuntimeStatus.hubRegistration && typeof workerRuntimeStatus.hubRegistration === "object"
+          ? workerRuntimeStatus.hubRegistration
+          : {};
+        const hubStatus = hubRegistration.status || workerNetworkHubRegistrationStatus();
+        if (hubStatus === "submitting") {
+          return {
+            center: "RECONNECTING",
+            nw: "Registration pending",
+            ne: hubName,
+            sw: "Hub accepting worker",
+            se: "Requester idle",
+            foot: "Waiting for hub registration.",
+            tone: "warn"
+          };
+        }
+        return {
+          center: "SETUP",
+          nw: "Cannot auto-start",
+          ne: hubName,
+          sw: hubStatus === "failed" ? "Registration failed" : "Registration missing",
+          se: "Key missing",
+          foot,
+          tone: "bad"
+        };
+      }
+
+      if (Number(activeJobs || 0) > 0) {
+        return {
+          center: "ACTIVE",
+          nw: `${activeJobs} paid job${Number(activeJobs) === 1 ? "" : "s"} running`,
+          ne: hubName,
+          sw: "Heartbeat healthy",
+          se: "Requester idle",
+          foot: "Work in progress.",
+          tone: "active"
+        };
+      }
+
+      if (workerRuntimeStatus.phase === "accepting" && workerRuntimeStatus.allowed_to_accept) {
+        return {
+          center: "CONNECTED",
+          nw: "Accepting paid work",
+          ne: hubName,
+          sw: "Heartbeat healthy",
+          se: "Requester idle",
+          foot: "Worker is live.",
+          tone: "good"
+        };
+      }
+
+      const policyText = workerRuntimeStateShortText(localPolicy.reason || workerRuntimePolicyLabel(), "Idle policy active", 30);
+      return {
+        center: "READY",
+        nw: "Worker configured",
+        ne: hubName,
+        sw: policyText,
+        se: "Requester idle",
+        foot: "Will start when allowed.",
+        tone: "standby"
+      };
+    }
+
+    function workerRenderRuntimeStateCard(model) {
+      if (!workerRuntimeStateCard) return;
+      const state = model || workerRuntimeStateVisualModel();
+      workerRuntimeStateCard.dataset.tone = state.tone || "muted";
+      workerRuntimeStateCard.setAttribute(
+        "aria-label",
+        `${state.center}. ${state.nw}. ${state.ne}. ${state.sw}. ${state.se}. ${state.foot}`
+      );
+      workerNetworkSetText(workerRuntimeStateCenter, state.center);
+      workerNetworkSetText(workerRuntimeStateNw, state.nw);
+      workerNetworkSetText(workerRuntimeStateNe, state.ne);
+      workerNetworkSetText(workerRuntimeStateSw, state.sw);
+      workerNetworkSetText(workerRuntimeStateSe, state.se);
+      workerNetworkSetText(workerRuntimeStateFoot, state.foot);
     }
 
     function workerSignedOrderStatusLabel(status) {
@@ -3705,12 +4124,39 @@
         ? workerRuntimeStatus.signedOrder
         : {};
       const primaryStatus = workerRuntimePrimaryDisplay({walletAddress, signedForSelected, hubRegistered});
+      const activeJobs = Number(workerRuntimeStatus.active_jobs || 0);
+      workerRenderRuntimeStateCard(workerRuntimeStateVisualModel({
+        selected,
+        hubConnected,
+        walletConnectedToSelected,
+        signedForSelected,
+        hubRegistered,
+        primaryStatus,
+        localPolicy,
+        activeJobs
+      }));
 
+      workerSetAutoConnectNetwork(selected);
       workerNetworkTabs.forEach((tab) => {
-        const key = workerNetworkKey(tab.getAttribute("data-worker-network"));
-        tab.classList.toggle("is-selected", key === selected);
-        tab.setAttribute("aria-pressed", key === selected ? "true" : "false");
-        if (workerNetworkSessionInFlight && key === selected) {
+        const key = workerNetworkKey(tab.getAttribute("data-worker-network") || tab.value);
+        const selectedForTab = key === selected;
+        tab.classList.toggle("is-selected", selectedForTab);
+        if (tab.matches?.('input[type="radio"]')) {
+          tab.checked = selectedForTab;
+          tab.setAttribute("aria-checked", selectedForTab ? "true" : "false");
+          const label = tab.closest(".worker-switch");
+          if (label) {
+            label.classList.toggle("is-selected", selectedForTab);
+            if (workerNetworkSessionInFlight && selectedForTab) {
+              label.setAttribute("aria-busy", "true");
+            } else {
+              label.removeAttribute("aria-busy");
+            }
+          }
+        } else {
+          tab.setAttribute("aria-pressed", selectedForTab ? "true" : "false");
+        }
+        if (workerNetworkSessionInFlight && selectedForTab) {
           tab.setAttribute("aria-busy", "true");
         } else {
           tab.removeAttribute("aria-busy");
@@ -4326,7 +4772,8 @@
     function readWorkerFormSettings() {
       const models = workerOfferModelsArray();
       return {
-        selectedNetwork: workerNetworkKey(workerNetworkSession.selected_network),
+        selectedNetwork: workerAutoConnectNetworkFromForm(),
+        workerAutoConnectNetwork: workerAutoConnectNetworkFromForm(),
         workerRequestedRing: String(workerNetworkRing?.value || workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
         workerConnectionStatus: String(workerNetworkSession.connection_status || "disconnected"),
         workerAssignedRing: String(workerNetworkSession.assigned_ring || ""),
@@ -4431,6 +4878,7 @@
           hub_registration: parsed.workerHubRegistration && typeof parsed.workerHubRegistration === "object" ? parsed.workerHubRegistration : workerNetworkSession.hub_registration,
           worker_pool: parsed.workerPool && typeof parsed.workerPool === "object" ? parsed.workerPool : workerNetworkSession.worker_pool
         };
+        workerSetAutoConnectNetwork(parsed.workerAutoConnectNetwork || parsed.worker_auto_connect_network || workerNetworkSession.selected_network);
         if (Object.prototype.hasOwnProperty.call(parsed, "workerRuntimeEnabled")) {
           workerRuntimeStatus = {
             ...workerRuntimeStatus,
@@ -4753,8 +5201,9 @@
       workerNetworkTabs.forEach((tab) => {
         if (tab.dataset.workerBound) return;
         tab.dataset.workerBound = "true";
-        tab.addEventListener("click", (event) => {
-          const network = tab.getAttribute("data-worker-network") || WORKER_NETWORK_NONE;
+        const eventName = tab.matches?.('input[type="radio"]') ? "change" : "click";
+        tab.addEventListener(eventName, (event) => {
+          const network = tab.getAttribute("data-worker-network") || tab.value || WORKER_NETWORK_NONE;
           if (workerNetworkKey(network) === WORKER_NETWORK_NONE) {
             workerDisconnectSelectedNetworkAndWallet(event);
           } else {

@@ -1,7 +1,11 @@
     const workerApp = document.querySelector("#worker-app");
     const workerSelectedNetworkPill = document.querySelector("#worker-selected-network-pill");
     const workerNetworkConnectionPill = document.querySelector("#worker-network-connection-pill");
-    const workerNetworkTabs = Array.from(document.querySelectorAll("[data-worker-network]"));
+    const workerAutoHubStatus = document.querySelector("#worker-auto-hub-status");
+    const workerAutoHubNetworkModes = Array.from(document.querySelectorAll('input[name="worker-auto-connect-network"]'));
+    const workerNetworkTabs = workerAutoHubNetworkModes.length
+      ? workerAutoHubNetworkModes
+      : Array.from(document.querySelectorAll("[data-worker-network]"));
     const workerNetworkHelp = document.querySelector("#worker-network-help");
     const workerNetworkSelected = document.querySelector("#worker-network-selected");
     const workerNetworkStatus = document.querySelector("#worker-network-status");
@@ -48,6 +52,13 @@
     const workerFleetTestnet = document.querySelector("#worker-fleet-testnet");
     const workerFleetTest = document.querySelector("#worker-fleet-test");
     const workerFleetDev = document.querySelector("#worker-fleet-dev");
+    const workerRuntimeStateCard = document.querySelector("#worker-runtime-state-card");
+    const workerRuntimeStateCenter = document.querySelector("#worker-runtime-state-center");
+    const workerRuntimeStateNw = document.querySelector("#worker-runtime-state-nw");
+    const workerRuntimeStateNe = document.querySelector("#worker-runtime-state-ne");
+    const workerRuntimeStateSw = document.querySelector("#worker-runtime-state-sw");
+    const workerRuntimeStateSe = document.querySelector("#worker-runtime-state-se");
+    const workerRuntimeStateFoot = document.querySelector("#worker-runtime-state-foot");
     const workerHubCount = document.querySelector("#worker-hub-count");
     const workerAddHubForm = document.querySelector("#worker-add-hub-form");
     const workerHubName = document.querySelector("#worker-hub-name");

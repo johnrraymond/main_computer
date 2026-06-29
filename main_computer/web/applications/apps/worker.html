@@ -13,32 +13,59 @@
     </header>
 
     <section class="worker-network-surface" aria-label="Worker network selection">
-      <nav class="worker-network-tabs" aria-label="Worker networks">
-        <button type="button" class="worker-network-tab" data-worker-network="mainnet">
-          <strong>Mainnet</strong>
-          <span>Default worker market</span>
-        </button>
-        <button type="button" class="worker-network-tab" data-worker-network="testnet">
-          <strong>Testnet</strong>
-          <span>Remote staging market</span>
-        </button>
-        <button type="button" class="worker-network-tab" data-worker-network="test">
-          <strong>Test</strong>
-          <span>Local QBFT market</span>
-        </button>
-        <button type="button" class="worker-network-tab" data-worker-network="dev">
-          <strong>Dev</strong>
-          <span>Local Anvil market</span>
-        </button>
-        <button type="button" class="worker-network-tab worker-network-tab-none" data-worker-network="none">
-          <strong>None</strong>
-          <span>Full disconnect</span>
-        </button>
-      </nav>
+      <div class="worker-card worker-auto-hub-card" aria-label="Automatic hub connection controls">
+        <div class="worker-auto-hub-head">
+          <div>
+            <h4>Automatic Hub Connection</h4>
+            <p class="worker-card-note">Choose the single hub this app auto-connects to for worker registration and requester overflow.</p>
+          </div>
+          <span class="worker-auto-hub-status" id="worker-auto-hub-status">Auto hub: None</span>
+        </div>
+        <div class="worker-auto-hub-row worker-auto-hub-policy" aria-label="Worker availability policy">
+          <span class="worker-auto-hub-label">Worker policy</span>
+          <label class="worker-switch">
+            <input type="checkbox" id="worker-rental-enabled" checked>
+            <span>Accept paid jobs</span>
+          </label>
+          <fieldset class="worker-seller-availability-mode" aria-label="When this app may accept paid work">
+            <legend>Accept work when</legend>
+            <label class="worker-switch">
+              <input type="radio" name="worker-seller-availability-mode" id="worker-seller-availability-mode-totally-idle" value="totally_idle" checked>
+              <span>Only when totally idle</span>
+            </label>
+            <label class="worker-switch">
+              <input type="radio" name="worker-seller-availability-mode" id="worker-seller-availability-mode-ai-idle" value="ai_idle">
+              <span>When AI is idle</span>
+            </label>
+          </fieldset>
+        </div>
+        <div class="worker-auto-hub-row">
+          <span class="worker-auto-hub-label">Hub for workers + requesters</span>
+          <fieldset class="worker-auto-hub-network-mode" aria-label="Hub for automatic worker and requester connection">
+            <legend>Automatic hub</legend>
+            <label class="worker-switch">
+              <input type="radio" name="worker-auto-connect-network" id="worker-auto-hub-mainnet" value="mainnet" data-worker-network="mainnet">
+              <span>Mainnet</span>
+            </label>
+            <label class="worker-switch">
+              <input type="radio" name="worker-auto-connect-network" id="worker-auto-hub-testnet" value="testnet" data-worker-network="testnet">
+              <span>Testnet</span>
+            </label>
+            <label class="worker-switch">
+              <input type="radio" name="worker-auto-connect-network" id="worker-auto-hub-test" value="test" data-worker-network="test">
+              <span>Test</span>
+            </label>
+            <label class="worker-switch">
+              <input type="radio" name="worker-auto-connect-network" id="worker-auto-hub-dev" value="dev" data-worker-network="dev">
+              <span>Dev</span>
+            </label>
+          </fieldset>
+        </div>
+      </div>
 
       <div class="worker-card worker-network-card" aria-label="Active worker network">
         <h4>Active Network</h4>
-        <p class="worker-card-note" id="worker-network-help">No active worker network selected. Select Mainnet, Testnet, Test, or Dev to connect.</p>
+        <p class="worker-card-note" id="worker-network-help">No automatic hub selected. Choose Mainnet, Testnet, Test, or Dev above to connect.</p>
         <dl class="worker-network-status-grid">
           <div><dt>Selected</dt><dd id="worker-network-selected">None</dd></div>
           <div><dt>Status</dt><dd id="worker-network-status">Disconnected</dd></div>
@@ -61,7 +88,21 @@
           <div><dt>Test Worker</dt><dd id="worker-fleet-test">Standby</dd></div>
           <div><dt>Dev Worker</dt><dd id="worker-fleet-dev">Standby</dd></div>
         </dl>
-        <small>All four worker targets are visible by default. Only the selected network accepts jobs after wallet and multi-session key setup.</small>
+        <small>The automatic hub above is the only worker/requester target that auto-connects. The other hubs stay on standby.</small>
+      </div>
+
+      <div class="worker-runtime-state-card" id="worker-runtime-state-card" role="status" aria-live="polite" aria-label="Worker runtime state">
+        <div class="worker-runtime-state-corner worker-runtime-state-nw" id="worker-runtime-state-nw">No auto-start</div>
+        <div class="worker-runtime-state-corner worker-runtime-state-ne" id="worker-runtime-state-ne">No auto hub</div>
+        <div class="worker-runtime-state-center" id="worker-runtime-state-center">OFF</div>
+        <div class="worker-runtime-state-corner worker-runtime-state-sw" id="worker-runtime-state-sw">Paid jobs disabled</div>
+        <div class="worker-runtime-state-corner worker-runtime-state-se" id="worker-runtime-state-se">Requester idle</div>
+        <div class="worker-runtime-state-foot">
+          <span id="worker-runtime-state-foot">Enable paid jobs to auto-connect.</span>
+          <span class="worker-runtime-state-dots" aria-hidden="true">
+            <span></span><span></span><span class="is-active"></span><span></span><span></span>
+          </span>
+        </div>
       </div>
 
     </section>
@@ -72,23 +113,6 @@
           <div>
             <h3>Sell Work</h3>
             <p>Configure how other hub users pay this machine when it accepts leased AI work.</p>
-          </div>
-          <div class="worker-seller-controls" aria-label="Sell work availability controls">
-            <label class="worker-switch">
-              <input type="checkbox" id="worker-rental-enabled" checked>
-              <span>Accept paid jobs</span>
-            </label>
-            <fieldset class="worker-seller-availability-mode" aria-label="When this app may accept paid work">
-              <legend>Accept work when</legend>
-              <label class="worker-switch">
-                <input type="radio" name="worker-seller-availability-mode" id="worker-seller-availability-mode-totally-idle" value="totally_idle" checked>
-                <span>Only when totally idle</span>
-              </label>
-              <label class="worker-switch">
-                <input type="radio" name="worker-seller-availability-mode" id="worker-seller-availability-mode-ai-idle" value="ai_idle">
-                <span>When AI is idle</span>
-              </label>
-            </fieldset>
           </div>
         </div>
 
