@@ -82,7 +82,7 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
         seller_section.index('class="worker-card worker-field-grid worker-primary-offer"') :
     ]
     assert 'class="worker-card worker-start-working-card"' not in seller_section
-    assert 'class="worker-start-working-card worker-wide" aria-label="Worker connection"' in primary_offer
+    assert 'class="worker-start-working-card worker-wide" aria-label="Worker setup"' in primary_offer
     assert "Signed Worker Connection" not in html
     assert "Choose a ring, then sign a connection/account-balance order" not in html
     assert "Signed Worker Connection" not in network_surface
@@ -449,7 +449,7 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert 'id="worker-network-connect-wallet"' not in html
     assert "Network selection handles wallet connection" not in html
     assert 'id="worker-network-disconnect"' in html
-    assert "None / Full Disconnect" in html
+    assert "Clear auto hub / Disconnect" in html
     assert "The automatic hub above is the only worker/requester target that auto-connects" in html
     assert 'id="worker-runtime-state-card"' in html
     assert 'id="worker-runtime-state-center"' in html
@@ -532,8 +532,17 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerNetworkWalletConnectedToSelected" in js
     assert "workerSelectNetworkAndConnectWallet" in js
     assert "workerDisconnectSelectedNetworkAndWallet" in js
-    assert "Wallet required" in js
-    assert "Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs." in js
+    assert "Hub reachable · wallet required" in js
+    assert "Hub reachable · wallet ready" in js
+    assert "Hub session offline" in js
+    assert "Reaching hub" in js
+    assert "Hub unreachable" in js
+    assert "Retry Hub" in js
+    assert "Worker setup incomplete" in js
+    assert "Worker runtime connected" in js
+    assert "Active Hub Session" in html
+    assert "Hub session" in html
+    assert "Connect your wallet to ${workerNetworkDisplayName(selected)} before completing Worker setup." in js
     assert "workerNetworkConnectWallet" not in js
     assert "workerNetworkWorkNow.disabled = workerNetworkWorkNowInFlight || workerMultisessionInFlight || (!workerWorkNowOverrideActive() && !workerNetworkCanWorkNow())" in js
     assert "Work now" in js
@@ -546,7 +555,7 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "!workerMultisessionInFlight" in can_start_body
     assert "workerRuntimeActivate" not in js
     assert "workerRuntimeStop" not in js
-    assert "The app connects automatically while Accept Paid Jobs and quser/local policy allow it." in js
+    assert "The backend supervisor keeps the worker runtime connected while Accept Paid Jobs and local policy allow it." in js
     assert "workerRuntimeShouldSync" in js
     assert "workerNetworkWalletConnectedToSelected()" in js
 

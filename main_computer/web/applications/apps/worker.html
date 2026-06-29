@@ -7,7 +7,7 @@
       </div>
       <div class="worker-status-strip" aria-label="Worker status summary">
         <span id="worker-selected-network-pill">Network: None</span>
-        <span id="worker-network-connection-pill">Disconnected</span>
+        <span id="worker-network-connection-pill">Hub session offline</span>
         <span id="worker-registration-status-pill">Offer: local only</span>
       </div>
     </header>
@@ -16,8 +16,8 @@
       <div class="worker-card worker-auto-hub-card" aria-label="Automatic hub connection controls">
         <div class="worker-auto-hub-head">
           <div>
-            <h4>Automatic Hub Connection</h4>
-            <p class="worker-card-note">Choose the single hub this app auto-connects to for worker registration and requester overflow.</p>
+            <h4>Automatic Hub Selection</h4>
+            <p class="worker-card-note">Choose the single Hub this app uses for worker registration and requester overflow.</p>
           </div>
           <span class="worker-auto-hub-status" id="worker-auto-hub-status">Auto hub: None</span>
         </div>
@@ -63,20 +63,20 @@
         </div>
       </div>
 
-      <div class="worker-card worker-network-card" aria-label="Active worker network">
-        <h4>Active Network</h4>
-        <p class="worker-card-note" id="worker-network-help">No automatic hub selected. Choose Mainnet, Testnet, Test, or Dev above to connect.</p>
+      <div class="worker-card worker-network-card" aria-label="Active worker Hub session">
+        <h4>Active Hub Session</h4>
+        <p class="worker-card-note" id="worker-network-help">No automatic hub selected. Choose Mainnet, Testnet, Test, or Dev above to reach a Hub.</p>
         <dl class="worker-network-status-grid">
           <div><dt>Selected</dt><dd id="worker-network-selected">None</dd></div>
-          <div><dt>Status</dt><dd id="worker-network-status">Disconnected</dd></div>
+          <div><dt>Hub session</dt><dd id="worker-network-status">Hub session offline</dd></div>
           <div><dt>Hub</dt><dd id="worker-network-hub">—</dd></div>
           <div><dt>RPC</dt><dd id="worker-network-rpc">—</dd></div>
           <div><dt>Chain ID</dt><dd id="worker-network-chain-id">—</dd></div>
           <div><dt>Manifest</dt><dd id="worker-network-manifest">—</dd></div>
         </dl>
         <div class="worker-inline-actions">
-          <button type="button" id="worker-network-retry" disabled>Retry Connection</button>
-          <button type="button" id="worker-network-disconnect">None / Full Disconnect</button>
+          <button type="button" id="worker-network-retry" disabled>Retry Hub</button>
+          <button type="button" id="worker-network-disconnect">Clear auto hub / Disconnect</button>
         </div>
       </div>
 
@@ -134,7 +134,7 @@
             <small>Displayed as ETH decimals; worker registration stores exact wei strings behind the scenes.</small>
           </label>
 
-          <div class="worker-start-working-card worker-wide" aria-label="Worker connection">
+          <div class="worker-start-working-card worker-wide" aria-label="Worker setup">
             <label>
               <span>Requested ring</span>
               <select id="worker-network-ring" autocomplete="off">

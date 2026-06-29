@@ -2576,11 +2576,11 @@ class ViewportEnergyRoutesMixin:
                 "state": "SETUP",
                 "center": "SETUP",
                 "tone": "bad",
-                "nw": "Cannot auto-start",
+                "nw": "Worker setup incomplete",
                 "ne": hub_name,
                 "sw": first,
                 "se": second,
-                "foot": "Open Worker setup once.",
+                "foot": "Complete Worker setup once.",
             }
 
         if normalized_state == "READY":
@@ -2593,11 +2593,11 @@ class ViewportEnergyRoutesMixin:
                 "state": "READY",
                 "center": "READY",
                 "tone": "standby",
-                "nw": "Worker configured",
+                "nw": "Worker registered",
                 "ne": hub_name,
                 "sw": policy_text,
                 "se": local_corner,
-                "foot": "Will reconnect when allowed.",
+                "foot": "Will connect when allowed.",
             }
 
         if normalized_state == "RECONNECTING":
@@ -2607,8 +2607,8 @@ class ViewportEnergyRoutesMixin:
                 "tone": "warn",
                 "nw": "Saved worker found",
                 "ne": hub_name,
-                "sw": "Session rebuilding",
-                "se": "No wallet action",
+                "sw": "Backend supervisor reconnecting",
+                "se": "No wallet action needed",
                 "foot": "Waiting for heartbeat.",
             }
 
@@ -2630,11 +2630,11 @@ class ViewportEnergyRoutesMixin:
                 "state": "CONNECTED",
                 "center": "CONNECTED",
                 "tone": "good",
-                "nw": "Accepting paid work",
+                "nw": "Worker runtime connected",
                 "ne": hub_name,
                 "sw": "Heartbeat healthy",
                 "se": local_corner,
-                "foot": "Worker is live.",
+                "foot": "Backend heartbeat active.",
             }
 
         error = self._worker_runtime_short_display_text(
@@ -2646,11 +2646,11 @@ class ViewportEnergyRoutesMixin:
             "state": "FAILED",
             "center": "FAILED",
             "tone": "bad",
-            "nw": "Heartbeat failed",
+            "nw": "Runtime reconnect failed",
             "ne": hub_name,
             "sw": error,
             "se": "Retry scheduled",
-            "foot": "Check Hub connection.",
+            "foot": "Check Hub session.",
         }
 
     def _worker_runtime_state_from_inputs(

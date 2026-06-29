@@ -94,7 +94,7 @@ def test_worker_runtime_supervisor_reconnects_complete_saved_setup_without_worke
     assert status["autoConnect"] == {"network": "dev", "enabled": True}
     assert status["runtime"]["state"] == "CONNECTED"
     assert status["runtimeDisplay"]["center"] == "CONNECTED"
-    assert status["runtimeDisplay"]["foot"] == "Worker is live."
+    assert status["runtimeDisplay"]["foot"] == "Backend heartbeat active."
 
 
 def test_worker_runtime_supervisor_reports_setup_when_multisession_key_is_missing(tmp_path, monkeypatch) -> None:
@@ -113,8 +113,9 @@ def test_worker_runtime_supervisor_reports_setup_when_multisession_key_is_missin
     assert status["autoConnect"] == {"network": "dev", "enabled": True}
     assert status["runtime"]["state"] == "SETUP"
     assert status["runtimeDisplay"]["center"] == "SETUP"
+    assert status["runtimeDisplay"]["nw"] == "Worker setup incomplete"
     assert "multisession_key" in status["runtime"]["setup"]["missing"]
-    assert status["runtimeDisplay"]["foot"] == "Open Worker setup once."
+    assert status["runtimeDisplay"]["foot"] == "Complete Worker setup once."
 
 
 def test_worker_runtime_status_read_is_display_only(tmp_path, monkeypatch) -> None:
@@ -149,11 +150,11 @@ class _FakeRuntimeForSupervisor:
                 "state": "CONNECTED",
                 "center": "CONNECTED",
                 "tone": "good",
-                "nw": "Accepting paid work",
+                "nw": "Worker runtime connected",
                 "ne": "Dev auto hub",
                 "sw": "Heartbeat healthy",
                 "se": "AI idle",
-                "foot": "Worker is live.",
+                "foot": "Backend heartbeat active.",
             },
             "runtime": {
                 "state": "CONNECTED",

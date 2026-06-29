@@ -3329,12 +3329,12 @@
     function workerNetworkStatusLabel(status = workerNetworkSession.connection_status) {
       const normalized = String(status || "disconnected");
       if (normalized === "connected") {
-        return workerNetworkWalletConnectedToSelected() ? "Wallet connected" : "Wallet required";
+        return workerNetworkWalletConnectedToSelected() ? "Hub reachable · wallet ready" : "Hub reachable · wallet required";
       }
-      if (normalized === "connecting") return "Connecting";
-      if (normalized === "failed") return "Connection failed";
-      if (normalized === "stale") return "Reconnect required";
-      return "Disconnected";
+      if (normalized === "connecting") return "Reaching hub";
+      if (normalized === "failed") return "Hub unreachable";
+      if (normalized === "stale") return "Hub session stale";
+      return "Hub session offline";
     }
 
     function workerNetworkSignedConnection() {
@@ -3745,7 +3745,7 @@
           ne: hubName,
           sw: "Wrong wallet chain",
           se: "Requester idle",
-          foot: "Open Worker setup once.",
+          foot: "Complete Worker setup once.",
           tone: "bad"
         };
       }
@@ -3753,11 +3753,11 @@
       if (!signedForSelected) {
         return {
           center: "SETUP",
-          nw: "Cannot auto-start",
+          nw: "Worker setup incomplete",
           ne: hubName,
           sw: "Registration missing",
           se: "Key missing",
-          foot: "Open Worker setup once.",
+          foot: "Complete Worker setup once.",
           tone: "bad"
         };
       }
@@ -3780,7 +3780,7 @@
         }
         return {
           center: "SETUP",
-          nw: "Cannot auto-start",
+          nw: "Worker setup incomplete",
           ne: hubName,
           sw: hubStatus === "failed" ? "Registration failed" : "Registration missing",
           se: "Key missing",
@@ -3804,11 +3804,11 @@
       if (workerRuntimeStatus.phase === "accepting" && workerRuntimeStatus.allowed_to_accept) {
         return {
           center: "CONNECTED",
-          nw: "Accepting paid work",
+          nw: "Worker runtime connected",
           ne: hubName,
           sw: "Heartbeat healthy",
           se: "Requester idle",
-          foot: "Worker is live.",
+          foot: "Backend heartbeat active.",
           tone: "good"
         };
       }
@@ -4236,17 +4236,17 @@
 
       if (workerNetworkHelp) {
         if (selected === WORKER_NETWORK_NONE) {
-          workerNetworkHelp.textContent = "No active worker network selected. Select Mainnet, Testnet, Test, or Dev to connect.";
+          workerNetworkHelp.textContent = "No active worker Hub selected. Select Mainnet, Testnet, Test, or Dev to reach a Hub.";
         } else if (hubConnected && !walletConnectedToSelected) {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs.`;
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet to ${workerNetworkDisplayName(selected)} before completing Worker setup.`;
         } else if (hubConnected && walletConnectedToSelected && !signedForSelected) {
-          workerNetworkHelp.textContent = `Wallet is connected to ${workerNetworkDisplayName(selected)}. Choose a ring and start working before accepting jobs.`;
+          workerNetworkHelp.textContent = `Wallet is ready for ${workerNetworkDisplayName(selected)}. Choose a ring and complete Worker setup before accepting jobs.`;
         } else if (hubConnected && hubRegistered && workerRuntimeStatus.phase === "accepting") {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker is accepting work while quser/local policy allows it.`;
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker runtime is accepting work while local policy allows it.`;
         } else if (hubConnected && hubRegistered && workerRuntimeStatus.phase === "draining") {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker is finishing current work, then it will disconnect.`;
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker runtime is finishing current work, then it will stop accepting new work.`;
         } else if (hubConnected && hubRegistered) {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} wallet and Hub registration are ready. The app connects automatically while Accept Paid Jobs and quser/local policy allow it.`;
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub registration is ready. The backend supervisor keeps the worker runtime connected while Accept Paid Jobs and local policy allow it.`;
         } else if (hubConnected && signedForSelected) {
           const hubStatus = hubRegistration.status || workerNetworkHubRegistrationStatus();
           if (hubStatus === "failed") {
@@ -4257,9 +4257,9 @@
             workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker registration is prepared, but Hub registration has not been accepted yet. Retry Hub registration.`;
           }
         } else if (workerNetworkSession.connection_status === "failed") {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} is selected, but the Hub is unreachable: ${workerNetworkSession.connection_error || "connection failed"}`;
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} auto hub is selected, but the Hub is unreachable: ${workerNetworkSession.connection_error || "Hub session failed"}`;
         } else {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} is selected. Retry the connection when the Hub is available.`;
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} auto hub is selected. Retry Hub when it is available.`;
         }
       }
 
@@ -4280,10 +4280,10 @@
             : signedForSelected && hubConnected && walletConnectedToSelected
               ? "Registration pending"
               : hubConnected && walletConnectedToSelected
-                ? "Selected / start required"
+                ? "Selected / setup required"
                 : hubConnected
                   ? "Selected / wallet required"
-                  : "Selected / not connected"
+                  : "Selected / hub offline"
           : "Standby";
         workerNetworkSetText(fleet[key], state);
       });
@@ -4291,7 +4291,7 @@
       const canSelectRealNetwork = selected !== WORKER_NETWORK_NONE;
       if (workerNetworkRetry) {
         workerNetworkRetry.disabled = workerNetworkSessionInFlight || !canSelectRealNetwork;
-        workerNetworkRetry.textContent = workerNetworkSessionInFlight ? "Connecting…" : "Retry Connection";
+        workerNetworkRetry.textContent = workerNetworkSessionInFlight ? "Reaching hub…" : "Retry Hub";
       }
       if (workerNetworkDisconnect) {
         workerNetworkDisconnect.disabled = workerNetworkSessionInFlight && selected === WORKER_NETWORK_NONE;
@@ -4471,7 +4471,7 @@
       event?.preventDefault?.();
       const overrideActive = workerWorkNowOverrideActive();
       if (!overrideActive && !workerNetworkCanWorkNow()) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network and connect the matching wallet before using Work now.";
+        if (workerSaveStatus) workerSaveStatus.textContent = "Select a reachable Hub session and connect the matching wallet before using Work now.";
         renderWorkerNetworkSurface();
         return;
       }
@@ -4502,7 +4502,7 @@
         return;
       }
       if (!workerNetworkCanWorkNow()) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network and connect the matching wallet before using Work now.";
+        if (workerSaveStatus) workerSaveStatus.textContent = "Select a reachable Hub session and connect the matching wallet before using Work now.";
         renderWorkerNetworkSurface();
         return;
       }
@@ -4689,7 +4689,7 @@
       if (!cleanUrl) return "";
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
       const networkLabel = selected === WORKER_NETWORK_NONE ? "" : `${workerNetworkDisplayName(selected)} Hub`;
-      const label = networkLabel || "Connected Hub";
+      const label = networkLabel || "Selected Hub";
       return `${label} - ${cleanUrl}`;
     }
 
