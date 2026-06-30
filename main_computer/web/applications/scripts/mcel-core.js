@@ -15,6 +15,126 @@
       const acidTests = typeof McelLabAcidTests !== "undefined" ? McelLabAcidTests : window.McelLabAcidTests;
       const supervisor = typeof McelLabSupervisor !== "undefined" ? McelLabSupervisor : window.McelLabSupervisor;
       const registry = typeof McelLabLawRegistry !== "undefined" ? McelLabLawRegistry : window.McelLabLawRegistry;
+      const scm = typeof McelLabScm !== "undefined" ? McelLabScm : window.McelLabScm;
+
+      const debugTimeline = [];
+
+      function debugNow() {
+        try {
+          return new Date().toISOString();
+        } catch (_error) {
+          return "unknown-time";
+        }
+      }
+
+      function debugSummary(value) {
+        if (!value || typeof value !== "object") return {};
+        return {
+          sourceCount: Number(value.sourceCount || 0),
+          eventCount: Array.isArray(value.events) ? value.events.length : 0,
+          runtimeHtmlLength: typeof value.runtimeHtml === "string" ? value.runtimeHtml.length : 0,
+          serializedLength: typeof value.serialized === "string" ? value.serialized.length : 0,
+          failed: Boolean(value.failed || value.report?.failed)
+        };
+      }
+
+      function trimDebugTimeline() {
+        const max = 250;
+        while (debugTimeline.length > max) debugTimeline.shift();
+      }
+
+      function recordDebug(operation, subject = null, options = {}, result = null, error = null) {
+        const reason = options.reason || `mcel-core:${operation}`;
+        const envelope = engine?.captureDebugEnvelope
+          ? engine.captureDebugEnvelope(subject || options.root || null, {
+              name: options.debugName || `mcel-core:${operation}`,
+              reason,
+              rootSelector: options.rootSelector || "",
+              expected: options.expectedDebug || {},
+              selectors: options.debugSelectors || {},
+              largestLimit: options.largestLimit || 12
+            })
+          : {
+              kind: "mcel-debug-envelope",
+              contractVersion: contract.contractVersion,
+              generatedAt: debugNow(),
+              name: `mcel-core:${operation}`,
+              reason,
+              ok: !error,
+              issues: []
+            };
+
+        const entry = {
+          ...envelope,
+          operation,
+          phase: error ? "error" : "after",
+          reason,
+          ok: Boolean(envelope.ok) && !error,
+          resultSummary: debugSummary(result),
+          error: error ? {
+            name: error.name || "Error",
+            message: error.message || String(error)
+          } : null
+        };
+        debugTimeline.push(entry);
+        trimDebugTimeline();
+        if (typeof window !== "undefined") {
+          window.__MCEL_DEBUG_TIMELINE__ = debugTimeline;
+          window.__MCEL_LAST_DEBUG_ENVELOPE__ = entry;
+        }
+        return entry;
+      }
+
+      function getDebugTimeline() {
+        return debugTimeline.map((entry) => ({...entry}));
+      }
+
+      function clearDebugTimeline() {
+        debugTimeline.length = 0;
+        if (typeof window !== "undefined") {
+          window.__MCEL_DEBUG_TIMELINE__ = debugTimeline;
+          window.__MCEL_LAST_DEBUG_ENVELOPE__ = null;
+        }
+        return {kind: "mcel-debug-clear", cleared: true, generatedAt: debugNow()};
+      }
+
+      function captureDebug(targetOrOptions = null, options = {}) {
+        const envelope = engine?.captureDebugEnvelope
+          ? engine.captureDebugEnvelope(targetOrOptions, options)
+          : {
+              kind: "mcel-debug-envelope",
+              contractVersion: contract.contractVersion,
+              generatedAt: debugNow(),
+              name: options.name || "mcel-debug-capture",
+              reason: options.reason || "manual-debug-capture",
+              ok: true,
+              issues: []
+            };
+        debugTimeline.push({...envelope, operation: "captureDebug", phase: "manual"});
+        trimDebugTimeline();
+        if (typeof window !== "undefined") {
+          window.__MCEL_DEBUG_TIMELINE__ = debugTimeline;
+          window.__MCEL_LAST_DEBUG_ENVELOPE__ = envelope;
+        }
+        return envelope;
+      }
+
+      function exportDebugPacket(options = {}) {
+        return {
+          kind: "mcel-debug-packet",
+          contractVersion: contract.contractVersion,
+          generatedAt: debugNow(),
+          reason: options.reason || "mcel-core:export-debug-packet",
+          timeline: getDebugTimeline(),
+          mechanisms: engine?.listDebugMechanisms ? engine.listDebugMechanisms() : [],
+          last: typeof window !== "undefined" ? window.__MCEL_LAST_DEBUG_ENVELOPE__ || null : debugTimeline[debugTimeline.length - 1] || null
+        };
+      }
+
+      function listDebugMechanisms() {
+        return engine?.listDebugMechanisms ? engine.listDebugMechanisms() : [];
+      }
+
 
       function runtimeRoot(html) {
         const root = document.createElement("div");
@@ -29,7 +149,7 @@
         const cssLaw = options.applyLaws === false ? null : styleLaw?.applyRuntimeLaw?.(root, {theme: options.theme || "theme-machine", reason: options.reason || "mcel-core:compile"});
         const layoutReport = options.applyLaws === false ? null : layoutLaw?.applyRuntimeLaw?.(root, {reason: options.reason || "mcel-core:compile"});
         const platformReport = options.applyLaws === false ? null : platformSpine?.applyPlatformLaws?.(root, {reason: options.reason || "mcel-core:compile"});
-        return {
+        const result = {
           ...compiled,
           sourceHtml: source,
           runtimeHtml: root.innerHTML.trim(),
@@ -40,22 +160,28 @@
             platform: platformReport
           }
         };
+        result.debug = recordDebug("compile", root, options, result);
+        return result;
       }
 
       function serialize(runtimeRootOrHtml, options = {}) {
         const root = typeof runtimeRootOrHtml === "string" ? runtimeRoot(runtimeRootOrHtml) : runtimeRootOrHtml;
-        return engine.serializeRuntimeRoot(root, {reason: options.reason || "mcel-core:serialize"});
+        const result = engine.serializeRuntimeRoot(root, {reason: options.reason || "mcel-core:serialize"});
+        result.debug = recordDebug("serialize", root, options, result);
+        return result;
       }
 
       function repair(runtimeRootOrHtml, options = {}) {
         const root = typeof runtimeRootOrHtml === "string" ? runtimeRoot(runtimeRootOrHtml) : runtimeRootOrHtml;
         const generatedRepair = engine.repairRuntimeRoot(root, {reason: options.reason || "mcel-core:repair"});
         const layoutRepair = layoutLaw?.repairRuntimeLaw?.(root, {reason: options.reason || "mcel-core:repair"}) || null;
-        return {
+        const result = {
           generatedRepair,
           layoutRepair,
           runtimeHtml: root?.innerHTML || ""
         };
+        result.debug = recordDebug("repair", root, options, result);
+        return result;
       }
 
       function audit(sourceHtml, runtimeRootOrHtml = null, options = {}) {
@@ -64,7 +190,7 @@
         const layoutProof = runtime && layoutLaw?.proveRuntime ? layoutLaw.proveRuntime(runtime, {reason: options.reason || "mcel-core:audit"}) : null;
         const platformProof = runtime && platformSpine?.provePlatform ? platformSpine.provePlatform(runtime, {reason: options.reason || "mcel-core:audit"}) : null;
         const lawProof = runtime && registry?.prove ? registry.prove(runtime, {reason: options.reason || "mcel-core:audit"}) : null;
-        return {
+        const result = {
           kind: "mcel-core-audit",
           contractVersion: contract.contractVersion,
           graphAudit,
@@ -73,12 +199,14 @@
           lawProof,
           failed: Boolean(graphAudit?.failed || layoutProof?.failed || platformProof?.failed || lawProof?.failed)
         };
+        result.debug = recordDebug("audit", runtime, options, result);
+        return result;
       }
 
       function inspect(element, options = {}) {
         const debuggerState = engine.debuggerStateFor(element, options.root || element?.parentElement || element);
         const layout = layoutLaw?.computeElementLaw?.(element, Number(element?.getAttribute?.(contract.attributes.sourceIndex) || "0"), 1) || null;
-        return {
+        const result = {
           kind: "mcel-core-inspection",
           contractVersion: contract.contractVersion,
           geometryProof: debuggerState.geometryProof || null,
@@ -88,6 +216,8 @@
           browser: browserObserver?.observeElement?.(element, options) || null,
           layout
         };
+        result.debug = recordDebug("inspect", element, options, result);
+        return result;
       }
 
       function planCommand(commandText, context = {}) {
@@ -132,6 +262,99 @@
 
       function buildWorkbenchPlan() {
         return workbench?.buildWorkbenchPlan ? workbench.buildWorkbenchPlan() : null;
+      }
+
+      function requireScm() {
+        if (!scm) throw new Error("MCEL SCM kernel is not loaded.");
+        return scm;
+      }
+
+      function defineComponent(name, manifest, options = {}) {
+        return requireScm().defineComponent(name, manifest, options);
+      }
+
+      function validateComponentManifest(name, manifest) {
+        return requireScm().validateComponentManifest(name, manifest);
+      }
+
+      function listComponentDefinitions() {
+        return requireScm().listComponentDefinitions();
+      }
+
+      function componentDefinition(name) {
+        return requireScm().componentDefinition(name);
+      }
+
+      function createComponentInstance(name, options = {}) {
+        return requireScm().createComponentInstance(name, options);
+      }
+
+      function createChildContext(instance, childName) {
+        return requireScm().createChildContext(instance, childName);
+      }
+
+      function createEffectContext(instance, effectName) {
+        return requireScm().createEffectContext(instance, effectName);
+      }
+
+      function runEffect(instance, effectName, payload = {}) {
+        return requireScm().runEffect(instance, effectName, payload);
+      }
+
+      function cancelEffect(instance, effectName, reason = "manual") {
+        return requireScm().cancelEffect(instance, effectName, reason);
+      }
+
+      function transition(instance, transitionName, payload = {}) {
+        return requireScm().transition(instance, transitionName, payload);
+      }
+
+      function exportScmEvidence(instance) {
+        return requireScm().exportEvidence(instance);
+      }
+
+      function defineRoute(name, manifest, options = {}) {
+        return requireScm().defineRoute(name, manifest, options);
+      }
+
+      function validateRouteManifest(name, manifest) {
+        return requireScm().validateRouteManifest(name, manifest);
+      }
+
+      function listRouteDefinitions() {
+        return requireScm().listRouteDefinitions();
+      }
+
+      function routeDefinition(name) {
+        return requireScm().routeDefinition(name);
+      }
+
+      function createRouteInstance(name, options = {}) {
+        return requireScm().createRouteInstance(name, options);
+      }
+
+      function enterRoute(instance, paramsOrOptions = {}, query = {}) {
+        return requireScm().enterRoute(instance, paramsOrOptions, query);
+      }
+
+      function leaveRoute(instance, options = {}) {
+        return requireScm().leaveRoute(instance, options);
+      }
+
+      function createRouteLoaderContext(instance, loaderName) {
+        return requireScm().createRouteLoaderContext(instance, loaderName);
+      }
+
+      function runRouteLoader(instance, loaderName, payload = {}) {
+        return requireScm().runRouteLoader(instance, loaderName, payload);
+      }
+
+      function cancelRouteLoader(instance, loaderName, reason = "manual") {
+        return requireScm().cancelRouteLoader(instance, loaderName, reason);
+      }
+
+      function exportRouteEvidence(instance) {
+        return requireScm().exportRouteEvidence(instance);
       }
 
       function listChromes() {
@@ -194,14 +417,42 @@
         buildUserSpaceContract,
         listUserContractClauses,
         buildWorkbenchPlan,
+        defineComponent,
+        validateComponentManifest,
+        listComponentDefinitions,
+        componentDefinition,
+        createComponentInstance,
+        createChildContext,
+        createEffectContext,
+        runEffect,
+        cancelEffect,
+        transition,
+        exportScmEvidence,
+        defineRoute,
+        validateRouteManifest,
+        listRouteDefinitions,
+        routeDefinition,
+        createRouteInstance,
+        enterRoute,
+        leaveRoute,
+        createRouteLoaderContext,
+        runRouteLoader,
+        cancelRouteLoader,
+        exportRouteEvidence,
         listChromes,
         normalizeChrome,
         describeChrome,
         applyChrome,
         runBrowserProof,
+        captureDebug,
+        getDebugTimeline,
+        exportDebugPacket,
+        clearDebugTimeline,
+        listDebugMechanisms,
         platform: platformSpine,
         workbench,
         browserRunner,
+        scm,
         laws: registry
       });
     })();

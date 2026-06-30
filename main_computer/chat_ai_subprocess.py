@@ -328,6 +328,7 @@ def _worker_stream_callback(
                 "model": model,
                 "log_file": log_file,
                 "latest_text": latest_text[:500],
+                "delta": str(event.get("delta") or "") if event_type == "content_delta" else "",
                 "thinking_preview": latest_text[:500] if event_type == "thinking_delta" else "",
                 "status_preview": message if event_type not in {"content_delta", "thinking_delta"} else "",
                 "content_chars": event.get("content_chars", 0),
@@ -636,6 +637,14 @@ def _run_worker_live_session_chat_completion_child(command: dict[str, Any], stdo
         response=response.content,
         metadata=response.metadata,
     )
+    # Emit the terminal result before any nonessential completion activity.  The
+    # live-session caller has its own hard offer timeout, and real local models
+    # can finish very close to that boundary.  Emitting the result first prevents
+    # a successfully completed model call from being marked failed merely because
+    # the child was still logging/displaying completion activity.
+    terminal_payload = {"response": response_payload}
+    stdout.emit({"type": "result", "ok": True, "run_id": run_id, "payload": terminal_payload, "ts": utc_now()})
+    append_text_log(log_file, "worker live-session chat completion result emitted", run_id=run_id, payload=terminal_payload)
     stdout.emit(
         {
             "type": "activity",
@@ -662,7 +671,7 @@ def _run_worker_live_session_chat_completion_child(command: dict[str, Any], stdo
             },
         }
     )
-    return {"response": response_payload}
+    return terminal_payload
 
 
 
@@ -1590,7 +1599,15 @@ class ChatAISubprocessManager:
                         except Exception as exc:
                             append_text_log(log_file, "parent stderr activity failed", error=repr(exc), stderr=line)
 
-                if result_message is not None and process.poll() is not None:
+                if result_message is not None:
+                    if process.poll() is None:
+                        append_text_log(
+                            log_file,
+                            "parent terminal result received before worker exit",
+                            run_id=run_id,
+                            thread_id=thread_id,
+                            pid=process.pid,
+                        )
                     break
 
                 if process.poll() is not None and not drained:
@@ -1655,7 +1672,32 @@ class ChatAISubprocessManager:
 
                 time.sleep(0.05)
 
-            returncode = process.wait(timeout=2.0)
+            if process.poll() is None and result_message is not None:
+                try:
+                    returncode = process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    append_text_log(
+                        log_file,
+                        "parent terminating worker after terminal result",
+                        run_id=run_id,
+                        thread_id=thread_id,
+                        pid=process.pid,
+                    )
+                    try:
+                        process.terminate()
+                    except Exception as exc:
+                        append_text_log(log_file, "parent terminate after terminal result failed", run_id=run_id, error=repr(exc))
+                    try:
+                        returncode = process.wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        append_text_log(log_file, "parent killing worker after terminal result", run_id=run_id, pid=process.pid)
+                        try:
+                            process.kill()
+                        except Exception as exc:
+                            append_text_log(log_file, "parent kill after terminal result failed", run_id=run_id, error=repr(exc))
+                        returncode = process.wait(timeout=2.0)
+            else:
+                returncode = process.wait(timeout=2.0)
             append_text_log(log_file, "parent worker exited", run_id=run_id, returncode=returncode, result_message=result_message)
             if active_process.stop_requested:
                 with self._lock:

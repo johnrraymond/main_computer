@@ -4794,7 +4794,7 @@
         sellerOnlyWhenIdle: workerSellerAvailabilityModeFromForm() === WORKER_SELLER_AVAILABILITY_TOTAL_IDLE,
         rentalOnlyWhenIdle: workerSellerAvailabilityModeFromForm() === WORKER_SELLER_AVAILABILITY_TOTAL_IDLE,
         registrationHubUrl: workerSelectedHubUrl(),
-        nodeId: workerElementValue(workerNodeId, "local-worker-001"),
+        nodeId: workerElementValue(workerNodeId, ""),
         endpoint: workerElementValue(workerEndpoint, "http://127.0.0.1:8771"),
         models: models.join(","),
         sellerTargetTokens: workerPositiveInteger(workerElementValue(workerOfferTargetTokens, WORKER_DEFAULT_SELLER_TARGET_TOKENS), WORKER_DEFAULT_SELLER_TARGET_TOKENS),

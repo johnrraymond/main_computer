@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import copy
 import base64
 import ipaddress
 import json
@@ -18,6 +19,88 @@ from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_r
 from main_computer.windows_user_activity import collect_windows_user_activity
 from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to_decimal_text
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
+
+
+def _worker_runtime_public_redacted(value: Any) -> Any:
+    private_keys = {
+        "worker_id",
+        "workerId",
+        "node_id",
+        "nodeId",
+        "worker_node_id",
+        "workerNodeId",
+        "requested_worker_node_id",
+        "requestedWorkerNodeId",
+        "selected_worker_node_id",
+        "selectedWorkerNodeId",
+        "worker_instance_id",
+        "workerInstanceId",
+        "selected_worker_instance_id",
+        "selectedWorkerInstanceId",
+        "connection_id",
+        "connectionId",
+        "worker_connection_id",
+        "workerConnectionId",
+        "worker_wallet_address",
+        "workerWalletAddress",
+        "wallet_address",
+        "walletAddress",
+        "wallet",
+        "worker_account_id",
+        "workerAccountId",
+        "account_id",
+        "accountId",
+        "worker_msk_id",
+        "workerMskId",
+        "multisession_key_id",
+        "multisessionKeyId",
+        "active_multisession_key",
+        "activeMultisessionKey",
+        "multisession_authorization",
+        "multisessionAuthorization",
+        "credit_wallet",
+        "creditWallet",
+        "payout_wallet_address",
+        "payoutWalletAddress",
+        "owner",
+        "market",
+        "selected_worker",
+        "selectedWorker",
+        "accepted_session",
+        "acceptedSession",
+        "signedWorkerConnection",
+        "signed_worker_connection",
+        "workerHubRegistration",
+        "worker_hub_registration",
+    }
+    if isinstance(value, dict):
+        return {
+            str(key): _worker_runtime_public_redacted(item)
+            for key, item in value.items()
+            if str(key) not in private_keys
+        }
+    if isinstance(value, list):
+        return [_worker_runtime_public_redacted(item) for item in value]
+    return value
+
+
+class _WorkerLiveSessionActivityBridge:
+    """Forward local model stream activity to the Hub while preserving normal activity recording."""
+
+    def __init__(self, downstream: Any | None, delta_callback: Any | None) -> None:
+        self.downstream = downstream
+        self.delta_callback = delta_callback
+
+    def record(self, **event: Any) -> None:
+        downstream_record = getattr(self.downstream, "record", None)
+        if callable(downstream_record):
+            downstream_record(**event)
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if str(data.get("stream_event_type") or "") != "content_delta":
+            return
+        if not callable(self.delta_callback):
+            return
+        self.delta_callback(event)
 
 
 class _WorkerHubLiveSessionClient:
@@ -63,6 +146,8 @@ class _WorkerHubLiveSessionClient:
         self.last_pong: dict[str, Any] = {}
         self.last_offer: dict[str, Any] = {}
         self.last_result: dict[str, Any] = {}
+        self._delta_seq_by_session: dict[str, int] = {}
+        self._delta_content_by_session: dict[str, str] = {}
         self.active_work_count = 0
         self.last_error = ""
         self.opened_at = ""
@@ -110,8 +195,6 @@ class _WorkerHubLiveSessionClient:
         )
         return {
             "type": str(auth_message.get("type") or ""),
-            "worker_id": str(auth_message.get("worker_id") or ""),
-            "worker_instance_id": str(auth_message.get("worker_instance_id") or ""),
             "chain_id": str(auth_message.get("chain_id") or auth.get("chain_id") or ""),
             "model": str(auth_message.get("model") or ""),
             "models": [str(item) for item in auth_message.get("models", [])] if isinstance(auth_message.get("models"), list) else [],
@@ -198,18 +281,18 @@ class _WorkerHubLiveSessionClient:
                 "transport": "websocket",
                 "endpoint": self.endpoint_path,
                 "hub_url": self.hub_url,
-                "worker_id": self.worker_id,
-                "connection_id": self.connection_id,
+                "worker_session": {
+                    "connected": bool(self.accepted),
+                    "privacy": "worker wallet and hub connection are internal",
+                },
                 "opened_at": self.opened_at,
                 "closed_at": self.closed_at,
                 "close_reason": self.close_reason,
                 "last_error": self.last_error,
-                "accepted": dict(self.accepted),
-                "owner": dict(self.owner),
-                "market": dict(self.market),
-                "last_pong": dict(self.last_pong),
-                "last_offer": dict(self.last_offer),
-                "last_result": dict(self.last_result),
+                "accepted": _worker_runtime_public_redacted(dict(self.accepted)),
+                "last_pong": _worker_runtime_public_redacted(dict(self.last_pong)),
+                "last_offer": _worker_runtime_public_redacted(dict(self.last_offer)),
+                "last_result": _worker_runtime_public_redacted(dict(self.last_result)),
                 "active_work_count": self.active_work_count,
                 "has_active_work": self.active_work_count > 0,
                 "alive": self.is_alive,
@@ -244,17 +327,15 @@ class _WorkerHubLiveSessionClient:
         if message_type == "hub.auth.accepted":
             with self._state_lock:
                 self.accepted = dict(message)
-                self.connection_id = str(message.get("connection_id") or "")
-                self.owner = dict(message.get("owner") or {}) if isinstance(message.get("owner"), dict) else {}
-                self.market = dict(message.get("market") or {}) if isinstance(message.get("market"), dict) else {}
+                self.connection_id = ""
+                self.owner = {}
+                self.market = {}
             return
         if message_type == "hub.ping":
             ping_id = str(message.get("ping_id") or "")
-            connection_id = str(message.get("connection_id") or self.connection_id)
             self._send_json(
                 {
                     "type": "worker.pong",
-                    "connection_id": connection_id,
                     "ping_id": ping_id,
                 }
             )
@@ -262,7 +343,6 @@ class _WorkerHubLiveSessionClient:
         if message_type == "hub.pong.accepted":
             with self._state_lock:
                 self.last_pong = dict(message)
-                self.owner = dict(message.get("owner") or self.owner) if isinstance(message.get("owner"), dict) else self.owner
             return
         if message_type == "hub.work.offer":
             self._handle_work_offer(message)
@@ -275,6 +355,48 @@ class _WorkerHubLiveSessionClient:
             with self._state_lock:
                 self.last_error = str(message.get("error") or message)
             return
+
+    def _send_work_delta_from_activity(self, offer: dict[str, Any], event: dict[str, Any]) -> None:
+        session_id = str(offer.get("session_id") or "")
+        request_id = str(offer.get("request_id") or "")
+        run_id = str(offer.get("run_id") or "")
+        if not session_id or not request_id:
+            return
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        latest_text = str(data.get("latest_text") or event.get("message") or "")
+        delta = str(data.get("delta") or "")
+        with self._state_lock:
+            seq = self._delta_seq_by_session.get(session_id, 0) + 1
+            self._delta_seq_by_session[session_id] = seq
+            previous = self._delta_content_by_session.get(session_id, "")
+            if not delta and latest_text:
+                if latest_text.startswith(previous):
+                    delta = latest_text[len(previous) :]
+                elif latest_text != previous:
+                    delta = latest_text
+            if latest_text:
+                self._delta_content_by_session[session_id] = latest_text
+        if not delta and not latest_text:
+            return
+        message: dict[str, Any] = {
+            "type": "worker.work.delta",
+            "session_id": session_id,
+            "request_id": request_id,
+            "seq": seq,
+            "delta": delta,
+            "content_so_far": latest_text,
+            "done": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if run_id:
+            message["run_id"] = run_id
+        if data.get("content_chars") is not None:
+            message["content_chars"] = data.get("content_chars")
+        try:
+            self._send_json(message)
+        except Exception as exc:
+            with self._state_lock:
+                self.last_error = f"Worker live-session failed to forward stream delta: {exc}"
 
     def _handle_work_offer(self, offer: dict[str, Any]) -> None:
         session_id = str(offer.get("session_id") or "")
@@ -308,7 +430,11 @@ class _WorkerHubLiveSessionClient:
         run_id = str(offer.get("run_id") or "")
         result_message: dict[str, Any] = {}
         try:
-            result = self._execute_work_offer(offer)
+            execution_offer = dict(offer)
+            execution_offer["_worker_live_session_delta_callback"] = (
+                lambda event: self._send_work_delta_from_activity(offer, event)
+            )
+            result = self._execute_work_offer(execution_offer)
             result_message = {
                 "type": "worker.work.result",
                 "session_id": session_id,
@@ -340,6 +466,8 @@ class _WorkerHubLiveSessionClient:
             with self._state_lock:
                 if result_message:
                     self.last_result = dict(result_message)
+                self._delta_seq_by_session.pop(session_id, None)
+                self._delta_content_by_session.pop(session_id, None)
                 self.active_work_count = max(0, self.active_work_count - 1)
 
     def _worker_failure_payload_for_exception(self, exc: BaseException, offer: dict[str, Any]) -> dict[str, Any]:
@@ -352,7 +480,6 @@ class _WorkerHubLiveSessionClient:
             "error_type": exc.__class__.__name__,
             "status": "failed",
             "transport": "websocket-live-session",
-            "worker_id": self.worker_id,
             "session_id": session_id,
             "request_id": request_id,
             "run_id": run_id,
@@ -379,7 +506,10 @@ class _WorkerHubLiveSessionClient:
                 continue
             if parsed > 0:
                 return max(1.0, min(parsed, 3600.0))
-        return 45.0
+        # Local LLMs can cold-start or prefill slowly.  The worker result
+        # handoff is already terminal-safe, so keep this as a generous outer
+        # executor deadline rather than a short request/accept timer.
+        return 180.0
 
     def _cancel_work_executor_after_timeout(self, executor: Any, offer: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
         """Best-effort cancellation for worker local-AI work after the outer offer timeout.
@@ -449,7 +579,6 @@ class _WorkerHubLiveSessionClient:
         if not isinstance(response, dict):
             result["response"] = {"content": str(response or "")}
         result.setdefault("transport", "websocket-live-session")
-        result.setdefault("worker_id", self.worker_id)
         return result
 
     def _debug_echo_result_payload_for_offer(self, offer: dict[str, Any]) -> dict[str, Any]:
@@ -463,7 +592,6 @@ class _WorkerHubLiveSessionClient:
                 "content": content,
             },
             "transport": "websocket-live-session",
-            "worker_id": self.worker_id,
             "debug_echo": True,
         }
 
@@ -1312,7 +1440,7 @@ class ViewportEnergyRoutesMixin:
             "sellerOnlyWhenIdle": seller_only_when_idle,
             "rentalOnlyWhenIdle": seller_only_when_idle,
             "registrationHubUrl": self._clean_hub_url(text(settings.get("registrationHubUrl", settings.get("registration_hub_url")), self.server.config.hub_url), allow_empty=True),
-            "nodeId": text(settings.get("nodeId", settings.get("node_id")), "local-worker-001"),
+            "nodeId": "",
             "endpoint": text(settings.get("endpoint"), "http://127.0.0.1:8771"),
             "models": self._worker_seller_model_text(settings.get("models", self._WORKER_DEFAULT_SELLER_MODEL)),
             "sellerTargetTokens": intish(
@@ -1472,7 +1600,6 @@ class ViewportEnergyRoutesMixin:
             "registration_failed": "Registration failed",
             "registration_stale": "Registration stale",
             "registration_pending": "Registration pending",
-            "worker_id": "Worker ID missing",
             "hub_url": "Hub URL missing",
             "multisession_key": "Key missing",
             "wallet": "Wallet missing",
@@ -1506,7 +1633,6 @@ class ViewportEnergyRoutesMixin:
                 "reason": "Worker auto-connect hub is none.",
                 "signedOrder": signed_order,
                 "hubRegistration": hub_registration,
-                "workerId": worker_id,
                 "multisessionAuthorizationPresent": False,
             }
 
@@ -1523,7 +1649,6 @@ class ViewportEnergyRoutesMixin:
                 "reason": "Accept paid jobs is off.",
                 "signedOrder": signed_order,
                 "hubRegistration": hub_registration,
-                "workerId": worker_id,
                 "multisessionAuthorizationPresent": False,
             }
 
@@ -1542,8 +1667,6 @@ class ViewportEnergyRoutesMixin:
             else:
                 missing.append("registration")
 
-        if not worker_id:
-            missing.append("worker_id")
         if not hub_url:
             missing.append("hub_url")
 
@@ -1572,7 +1695,6 @@ class ViewportEnergyRoutesMixin:
             "reason": "Worker setup is complete." if not seen_missing else "Worker setup is incomplete.",
             "signedOrder": signed_order,
             "hubRegistration": hub_registration,
-            "workerId": worker_id,
             "multisessionAuthorizationPresent": bool(authorization),
             "multisession_authorization_present": bool(authorization),
             "authorizationError": authorization_error,
@@ -1580,26 +1702,28 @@ class ViewportEnergyRoutesMixin:
         }
 
     def _worker_runtime_worker_id(self, settings: dict[str, Any]) -> str:
+        """Return the internal Hub worker key derived from the private worker wallet.
+
+        Live worker routing no longer has a user/requester-visible worker node id.
+        The worker wallet authorization is the private authority; the Hub derives
+        its internal durable key from that wallet and keeps the generated websocket
+        connection id internal to the live socket.
+        """
+
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
-        worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
-        return str(
-            signed.get("worker_id")
-            or worker.get("worker_id")
-            or worker.get("node_id")
-            or settings.get("workerRegisteredId")
-            or settings.get("nodeId")
+        wallet_obj = signed.get("wallet") if isinstance(signed.get("wallet"), dict) else {}
+        wallet = str(
+            signed.get("credit_wallet")
+            or signed.get("wallet_address")
+            or wallet_obj.get("address")
             or ""
-        ).strip()
+        ).strip().lower()
+        return wallet
 
     def _worker_runtime_instance_id(self, settings: dict[str, Any]) -> str:
-        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
-        worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
-        worker_id = self._worker_runtime_worker_id(settings)
-        return str(
-            worker.get("worker_instance_id")
-            or signed.get("worker_instance_id")
-            or worker_id
-        ).strip()
+        # Connection identity is generated by the Hub per websocket and is not a
+        # stable worker identity.  Keep this blank on the worker side.
+        return ""
 
     def _worker_runtime_hub_url(self, settings: dict[str, Any]) -> str:
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
@@ -2095,6 +2219,191 @@ class ViewportEnergyRoutesMixin:
                     continue
         return total
 
+    def _worker_live_session_snapshot(self, *, hub_url: str | None = None, worker_id: str | None = None) -> dict[str, Any] | None:
+        """Return the current backend-owned live-session proof without opening a socket."""
+        normalized_hub_url = self._clean_hub_url(hub_url, allow_empty=True) if hub_url is not None else ""
+        normalized_worker_id = str(worker_id or "").strip()
+        lock, clients = self._worker_live_session_clients()
+        with lock:
+            for (client_hub_url, client_worker_id), client in clients.items():
+                if normalized_hub_url and client_hub_url != normalized_hub_url:
+                    continue
+                if normalized_worker_id and client_worker_id != normalized_worker_id:
+                    continue
+                try:
+                    return client.snapshot()
+                except Exception:
+                    return None
+        return None
+
+    @staticmethod
+    def _worker_runtime_heartbeat_has_live_session(heartbeat_result: dict[str, Any] | None) -> bool:
+        if not isinstance(heartbeat_result, dict):
+            return False
+        live_session = heartbeat_result.get("live_session")
+        return isinstance(live_session, dict) and bool(live_session.get("alive"))
+
+    @staticmethod
+    def _worker_runtime_status_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
+    def _worker_runtime_compact_heartbeat_result(self, heartbeat_result: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Return a small status-safe live-session proof.
+
+        Runtime status is polled frequently by the Worker page and by shell
+        diagnostics.  The full live-session snapshot contains authentication,
+        market, worker offer, and websocket debug payloads that are noisy and can
+        include private worker setup material.  The status endpoint only needs a
+        proof that a selectable live session exists plus a few harmless counters.
+        """
+        if not isinstance(heartbeat_result, dict):
+            return None
+
+        live_session = heartbeat_result.get("live_session")
+        live_session = live_session if isinstance(live_session, dict) else {}
+        worker_session = live_session.get("worker_session") if isinstance(live_session.get("worker_session"), dict) else {}
+        worker = heartbeat_result.get("worker") if isinstance(heartbeat_result.get("worker"), dict) else {}
+        worker_capabilities = worker.get("capabilities") if isinstance(worker.get("capabilities"), dict) else {}
+        capability_names = worker_capabilities.get("capabilities")
+        if not isinstance(capability_names, list):
+            capability_names = []
+
+        compact_live_session = {
+            "alive": bool(live_session.get("alive")),
+            "connected": bool(
+                live_session.get("connected")
+                or live_session.get("alive")
+                or worker_session.get("connected")
+            ),
+            "active_work_count": self._worker_runtime_status_int(live_session.get("active_work_count"), 0),
+            "activeWorkCount": self._worker_runtime_status_int(live_session.get("active_work_count"), 0),
+            "has_active_work": bool(live_session.get("has_active_work")),
+            "hasActiveWork": bool(live_session.get("has_active_work")),
+            "opened_at": str(live_session.get("opened_at") or ""),
+            "openedAt": str(live_session.get("opened_at") or ""),
+            "closed_at": str(live_session.get("closed_at") or ""),
+            "closedAt": str(live_session.get("closed_at") or ""),
+            "close_reason": str(live_session.get("close_reason") or ""),
+            "closeReason": str(live_session.get("close_reason") or ""),
+            "last_error": str(live_session.get("last_error") or ""),
+            "lastError": str(live_session.get("last_error") or ""),
+        }
+
+        return {
+            "ok": bool(heartbeat_result.get("ok", True)) and not bool(compact_live_session["last_error"]),
+            "transport": str(heartbeat_result.get("transport") or "websocket"),
+            "endpoint": str(heartbeat_result.get("endpoint") or _WorkerHubLiveSessionClient.endpoint_path),
+            "worker": {
+                "status": str(worker.get("status") or ""),
+                "active_requests": self._worker_runtime_status_int(worker.get("active_requests"), 0),
+                "activeRequests": self._worker_runtime_status_int(worker.get("active_requests"), 0),
+                "max_concurrency": self._worker_runtime_status_int(worker.get("max_concurrency"), 1),
+                "maxConcurrency": self._worker_runtime_status_int(worker.get("max_concurrency"), 1),
+                "capabilities": [str(item) for item in capability_names if str(item or "").strip()],
+                "ring": str(worker_capabilities.get("effective_ring") or worker_capabilities.get("assigned_ring") or ""),
+            },
+            "live_session": compact_live_session,
+        }
+
+    @staticmethod
+    def _worker_runtime_compact_setup_payload(setup: Any) -> dict[str, Any]:
+        if not isinstance(setup, dict):
+            return {}
+        missing = setup.get("missing")
+        if not isinstance(missing, list):
+            missing = []
+        return {
+            "state": str(setup.get("state") or ""),
+            "ready": bool(setup.get("ready")),
+            "network": str(setup.get("network") or ""),
+            "missing": [str(item) for item in missing if str(item or "").strip()],
+            "paid_jobs_enabled": bool(setup.get("paid_jobs_enabled", setup.get("paidJobsEnabled", False))),
+            "paidJobsEnabled": bool(setup.get("paid_jobs_enabled", setup.get("paidJobsEnabled", False))),
+            "reason": str(setup.get("reason") or ""),
+        }
+
+    @staticmethod
+    def _worker_runtime_compact_local_policy(local_policy: Any) -> dict[str, Any] | None:
+        if not isinstance(local_policy, dict):
+            return None
+        keep = {
+            "allowed",
+            "allowed_to_accept",
+            "allowedToAccept",
+            "label",
+            "reason",
+            "source",
+            "status",
+            "available_now",
+            "availableNow",
+            "busy",
+            "reason_code",
+            "reasonCode",
+            "active_run_count",
+            "activeRunCount",
+            "max_local_concurrency",
+            "maxLocalConcurrency",
+        }
+        return {str(key): value for key, value in local_policy.items() if str(key) in keep}
+
+    def _worker_runtime_status_response_payload(self, status: dict[str, Any], *, verbose: bool = False) -> dict[str, Any]:
+        """Compact the runtime status response by default.
+
+        ``?verbose=1`` keeps the previous diagnostic shape for local debugging.
+        The default payload is intentionally small and excludes saved settings,
+        signed orders, worker wallet material, multisession keys, market rows,
+        websocket connection ids, and raw live-session offer payloads.
+        """
+        if verbose:
+            return _worker_runtime_public_redacted(copy.deepcopy(status))
+
+        runtime = copy.deepcopy(status.get("runtime")) if isinstance(status.get("runtime"), dict) else {}
+        runtime["heartbeat_result"] = self._worker_runtime_compact_heartbeat_result(runtime.get("heartbeat_result"))
+        runtime["setup"] = self._worker_runtime_compact_setup_payload(runtime.get("setup"))
+        policy = runtime.get("policy") if isinstance(runtime.get("policy"), dict) else {}
+        local_policy = status.get("localPolicy") if isinstance(status.get("localPolicy"), dict) else policy.get("local_policy")
+        compact_local_policy = self._worker_runtime_compact_local_policy(local_policy)
+        if compact_local_policy is not None:
+            runtime["policy"] = {"local_policy": compact_local_policy}
+        else:
+            runtime.pop("policy", None)
+
+        result = {
+            "ok": bool(status.get("ok", True)),
+            "autoConnect": copy.deepcopy(status.get("autoConnect")) if isinstance(status.get("autoConnect"), dict) else None,
+            "runtimeDisplay": copy.deepcopy(status.get("runtimeDisplay")) if isinstance(status.get("runtimeDisplay"), dict) else None,
+            "status": str(status.get("status") or ""),
+            "statusLabel": str(status.get("statusLabel") or ""),
+            "reason": str(status.get("reason") or ""),
+            "next": str(status.get("next") or ""),
+            "runtime": runtime,
+        }
+
+        supervisor = status.get("supervisor")
+        if isinstance(supervisor, dict):
+            result["supervisor"] = copy.deepcopy(supervisor)
+            result["runtime"]["supervisor"] = copy.deepcopy(supervisor)
+
+        if compact_local_policy is not None:
+            result["localPolicy"] = compact_local_policy
+
+        work_now = status.get("workNowOverride")
+        if isinstance(work_now, dict):
+            result["workNowOverride"] = copy.deepcopy(work_now)
+        elif isinstance(runtime.get("workNowOverride"), dict):
+            result["workNowOverride"] = copy.deepcopy(runtime.get("workNowOverride"))
+
+        worker = status.get("worker") if isinstance(status.get("worker"), dict) else {}
+        if worker:
+            result["worker"] = {
+                "pricingPolicy": str(worker.get("pricingPolicy") or ""),
+            }
+
+        return _worker_runtime_public_redacted(result)
+
     def _close_worker_live_session(self, *, hub_url: str, worker_id: str, reason: str) -> dict[str, Any]:
         key = (self._clean_hub_url(hub_url), str(worker_id or "").strip())
         lock, clients = self._worker_live_session_clients()
@@ -2299,7 +2608,6 @@ class ViewportEnergyRoutesMixin:
             run_id=run_id,
             session_id=session_id,
             request_id=request_id,
-            worker_id=str(offer.get("worker_id") or self._worker_runtime_worker_id(self._load_worker_settings())),
             model=str(work.get("model") or ""),
             capabilities=capabilities,
             source_chars=len(source),
@@ -2333,7 +2641,10 @@ class ViewportEnergyRoutesMixin:
                 },
                 thread_id=thread_id,
                 log_file=log_path,
-                activity_bus=getattr(self.server, "activity", None),
+                activity_bus=_WorkerLiveSessionActivityBridge(
+                    getattr(self.server, "activity", None),
+                    offer.get("_worker_live_session_delta_callback"),
+                ),
                 cwd=self.server.debug_root,
                 max_local_concurrency=1,
             )
@@ -2373,7 +2684,6 @@ class ViewportEnergyRoutesMixin:
                 "metadata": metadata,
             },
             "transport": "websocket-live-session",
-            "worker_id": str(offer.get("worker_id") or self._worker_runtime_worker_id(self._load_worker_settings())),
             "local_ai": True,
             "log_file": str(log_path),
         }
@@ -2428,7 +2738,7 @@ class ViewportEnergyRoutesMixin:
         worker_instance_id = self._worker_runtime_instance_id(settings)
         models = self._worker_runtime_models(settings)
         if not worker_id:
-            raise ValueError("Worker runtime live-session requires a worker id.")
+            raise ValueError("Worker runtime live-session requires a worker wallet authorization.")
         if not hub_url:
             raise ValueError("Worker runtime live-session requires a Hub URL.")
 
@@ -2488,8 +2798,6 @@ class ViewportEnergyRoutesMixin:
         )
         auth_message = {
             "type": "worker.auth",
-            "worker_id": worker_id,
-            "worker_instance_id": worker_instance_id,
             "chain_id": chain_id,
             "status": hub_status,
             "model": models[0] if models else self._WORKER_DEFAULT_SELLER_MODEL,
@@ -2509,8 +2817,6 @@ class ViewportEnergyRoutesMixin:
         return {
             "ok": True,
             "worker": {
-                "node_id": worker_id,
-                "worker_instance_id": worker_instance_id,
                 "status": hub_status,
                 "models": models,
                 "queue_depth": 0,
@@ -2675,19 +2981,33 @@ class ViewportEnergyRoutesMixin:
         local_policy = policy.get("local_policy") if isinstance(policy.get("local_policy"), dict) else {}
         if not bool(local_policy.get("allowed")):
             return "READY"
-        if phase == "accepting" and bool(heartbeat_result):
+        if phase == "accepting" and self._worker_runtime_heartbeat_has_live_session(heartbeat_result):
             return "CONNECTED"
-        if phase == "accepting" and str(heartbeat_result) == "":
-            return "RECONNECTING"
         if phase == "accepting":
-            return "CONNECTED"
+            return "RECONNECTING"
         return "RECONNECTING"
 
     def _worker_runtime_read_only_status(self) -> dict[str, Any]:
         cleaned = self._sanitize_worker_settings(self._load_worker_settings())
+        hub_url = self._worker_runtime_hub_url(cleaned) or None
+        worker_id = self._worker_runtime_worker_id(cleaned) or None
+        live_session_snapshot = self._worker_live_session_snapshot(
+            hub_url=hub_url,
+            worker_id=worker_id,
+        )
+        heartbeat_result = (
+            {
+                "ok": True,
+                "transport": "websocket",
+                "endpoint": _WorkerHubLiveSessionClient.endpoint_path,
+                "live_session": live_session_snapshot,
+            }
+            if isinstance(live_session_snapshot, dict) and bool(live_session_snapshot.get("alive"))
+            else None
+        )
         active = self._worker_live_session_active_work_count(
-            hub_url=self._worker_runtime_hub_url(cleaned) or None,
-            worker_id=self._worker_runtime_worker_id(cleaned) or None,
+            hub_url=hub_url,
+            worker_id=worker_id,
         )
         policy = self._worker_runtime_policy(cleaned, active_jobs=active)
         setup_state = self._worker_runtime_setup_state(cleaned)
@@ -2701,6 +3021,7 @@ class ViewportEnergyRoutesMixin:
             setup_state.get("state") == "ready"
             and bool(policy.get("allowed_to_accept"))
             and phase == "accepting"
+            and self._worker_runtime_heartbeat_has_live_session(heartbeat_result)
         )
         heartbeat_error = str(cleaned.get("workerRuntimeError") or "")
         if setup_state.get("state") in {"off", "setup"}:
@@ -2711,7 +3032,7 @@ class ViewportEnergyRoutesMixin:
             phase=phase,
             active_jobs=active,
             heartbeat_error=heartbeat_error,
-            heartbeat_result=None,
+            heartbeat_result=heartbeat_result,
         )
         reason = str(
             setup_state.get("reason")
@@ -2729,7 +3050,7 @@ class ViewportEnergyRoutesMixin:
             reason=reason,
             now=datetime.now(timezone.utc).isoformat(),
             heartbeat_error=heartbeat_error,
-            heartbeat_result=None,
+            heartbeat_result=heartbeat_result,
             policy=policy,
             setup_state=setup_state,
             runtime_state=state,
@@ -3159,7 +3480,14 @@ class ViewportEnergyRoutesMixin:
                             active_jobs=active,
                             policy=policy,
                         )
-                        runtime_state = "ACTIVE" if active > 0 else "CONNECTED"
+                        if self._worker_runtime_heartbeat_has_live_session(heartbeat_result):
+                            runtime_state = "ACTIVE" if active > 0 else "CONNECTED"
+                        else:
+                            phase = "not_accepting"
+                            hub_status = "offline"
+                            can_accept = False
+                            reason = "Backend live-session websocket is not connected yet."
+                            runtime_state = "RECONNECTING"
                     except Exception as exc:
                         heartbeat_error = str(exc)
                         phase = "not_accepting"
@@ -3221,7 +3549,9 @@ class ViewportEnergyRoutesMixin:
                 allowed=runtime.get("allowed_to_accept"),
                 source="supervisor-cache" if callable(status_method) else "read-only-fallback",
             )
-            self._send_json(status)
+            query = parse_qs(urlsplit(self.path).query)
+            verbose = str((query.get("verbose") or query.get("debug") or [""])[0]).strip().lower() in {"1", "true", "yes", "on"}
+            self._send_json(self._worker_runtime_status_response_payload(status, verbose=verbose))
         except Exception as exc:
             self.server.signal("api-worker-runtime-status-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -3248,7 +3578,8 @@ class ViewportEnergyRoutesMixin:
                 allowed=status["runtime"]["allowed_to_accept"],
                 active_jobs=status["runtime"]["active_jobs"],
             )
-            self._send_json(status)
+            verbose = bool(body.get("verbose") or body.get("debug"))
+            self._send_json(self._worker_runtime_status_response_payload(status, verbose=verbose))
         except Exception as exc:
             self.server.signal("api-worker-runtime-sync-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

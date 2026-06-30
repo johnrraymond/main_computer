@@ -1,58 +1,232 @@
-<div class="code-editor-app mc-app" id="code-editor-app" aria-label="Code editor Aider setup" data-mc-widget-id="code-editor.root" data-mc-widget-kind="container" data-mc-widget-class="box" data-mc-widget-label="Code Editor" data-mc-component-id="code-editor.root" data-mc-component-kind="app" data-mc-component-label="Code Editor" data-mc-component-owner="applications.workspace" data-mc-feature-id="code-editor" data-mc-source="main_computer/web/applications/apps/code-editor.html; main_computer/web/applications/styles/code-editor.css">
-            <div class="aider-shell mc-shell">
-              <div class="file-map-panel mc-panel mc-sidebar" data-widget-label="Editor File Map" aria-label="Editor file map" data-mc-widget-id="code-editor.file-map-panel" data-mc-widget-kind="panel" data-mc-widget-class="box" data-mc-widget-label="File Map Panel" data-mc-component-id="code-editor.file-map.panel" data-mc-component-kind="panel" data-mc-component-label="File Map" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.file-map" data-mc-source="main_computer/web/applications/scripts/code-editor-file-map.js; /api/applications/editor/files">
-                <div class="file-map-toolbar mc-toolbar" data-mc-component-id="code-editor.file-map.toolbar" data-mc-component-kind="toolbar" data-mc-component-label="File Map Toolbar" data-mc-component-owner="code-editor.file-map.panel" data-mc-feature-id="code-editor.feature.file-map">
-                  <label class="mc-field" data-mc-component-id="code-editor.file-map.search" data-mc-component-kind="input" data-mc-component-label="File Search" data-mc-component-owner="code-editor.file-map.toolbar" data-mc-feature-id="code-editor.feature.file-map">file search<input id="file-map-search" placeholder="viewport, tests, pyproject" data-mc-widget-id="code-editor.file-map-search" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="File Search"></label>
-                  <button type="button" id="file-map-refresh" data-mc-widget-id="code-editor.file-map-refresh" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Load Files" data-mc-component-id="code-editor.file-map.refresh" data-mc-component-kind="action" data-mc-component-label="Load Files" data-mc-component-owner="code-editor.file-map.toolbar" data-mc-feature-id="code-editor.feature.file-map">Load Files</button>
-                  <button type="button" id="file-map-apply" data-mc-widget-id="code-editor.file-map-apply" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Use Marked" data-mc-component-id="code-editor.file-map.apply" data-mc-component-kind="action" data-mc-component-label="Use Marked" data-mc-component-owner="code-editor.file-map.toolbar" data-mc-feature-id="code-editor.feature.file-map">Use Marked</button>
-                </div>
-                <div class="file-map-status mc-output" id="file-map-status" data-mc-widget-id="code-editor.file-map-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="File Map Status" data-mc-component-id="code-editor.file-map.status" data-mc-component-kind="output" data-mc-component-label="File Map Status" data-mc-component-owner="code-editor.file-map.panel" data-mc-feature-id="code-editor.feature.file-map">Load the file explorer and mark what Aider should include in the map.</div>
-                <div class="file-map-list mc-fill" id="file-map-list" data-mc-widget-id="code-editor.file-map-list" data-mc-widget-kind="repeater" data-mc-widget-class="list" data-mc-widget-label="File Map List" data-mc-component-id="code-editor.file-map.list" data-mc-component-kind="repeater" data-mc-component-label="File Map List" data-mc-component-owner="code-editor.file-map.panel" data-mc-feature-id="code-editor.feature.file-map">
-                  <div class="file-map-empty">No directory loaded yet.</div>
-                </div>
-              </div>
-              <div class="aider-workspace" data-widget-label="Aider Workspace" data-mc-widget-id="code-editor.aider-workspace" data-mc-widget-kind="container" data-mc-widget-class="box" data-mc-widget-label="Aider Workspace" data-mc-component-id="code-editor.aider.workspace" data-mc-component-kind="workspace" data-mc-component-label="Aider Workspace" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="main_computer/web/applications/scripts/code-editor-aider-actions.js; main_computer/web/applications/scripts/code-editor-aider-output.js">
-                <div class="aider-grid" data-mc-component-id="code-editor.aider.settings" data-mc-component-kind="form" data-mc-component-label="Aider Settings" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-run">
-                  <label class="mc-field" data-mc-component-id="code-editor.aider.repo" data-mc-component-kind="input" data-mc-component-label="Repository" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run">repository<input id="aider-repo" value="." data-mc-widget-id="code-editor.aider-repo" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Repository"></label>
-                  <!-- <select id="aider-model"> static hook retained for viewport tests. -->
-                  <label class="mc-field" data-mc-component-id="code-editor.aider.model" data-mc-component-kind="input" data-mc-component-label="Model" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run">model<select id="aider-model" data-mc-widget-id="code-editor.aider-model" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Model">
-                    <option value="ollama_chat/llama3.1:8b">Balanced: llama3.1:8b</option>
-                    <option value="ollama_chat/gemma4:e4b">Fast quality: gemma4:e4b</option>
-                    <option value="ollama_chat/gemma4:26b" selected>Default local: gemma4:26b</option>
-                    <option value="ollama_chat/gemma3:12b">Alternate larger: gemma3:12b</option>
-                    <option value="ollama_chat/deepseek-r1:8b">Reasoning test: deepseek-r1:8b</option>
-                  </select></label>
-                  <label class="mc-field" data-mc-component-id="code-editor.aider.timeout-seconds" data-mc-component-kind="input" data-mc-component-label="Timeout Seconds" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run">timeout seconds<input id="aider-timeout-seconds" type="number" min="1" step="1" value="600" inputmode="numeric" data-mc-widget-id="code-editor.aider-timeout-seconds" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Timeout Seconds"></label>
-                  <label data-mc-component-id="code-editor.aider.selected-files" data-mc-component-kind="input" data-mc-component-label="Selected Files" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="main_computer/web/applications/scripts/code-editor-file-map.js">selected files<textarea id="aider-files" readonly placeholder="Mark files in the explorer on the left." data-mc-widget-id="code-editor.aider-files" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Selected Files"></textarea></label>
-                <section class="code-editor-doc-viewport" id="code-editor-doc-viewport" data-mode="collapsed" data-mc-component-id="code-editor.viewport.root" data-mc-component-kind="panel" data-mc-component-label="Documentation Viewport" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.documentation-viewport" data-mc-source="main_computer/web/applications/scripts/code-editor-documentation-viewport.js; /api/applications/component-docs/read">
-                  <div class="code-editor-doc-viewport-toolbar mc-toolbar" data-mc-component-id="code-editor.viewport.toolbar" data-mc-component-kind="toolbar" data-mc-component-label="Documentation Viewport Toolbar" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">
-                    <label class="mc-field" data-mc-component-id="code-editor.viewport.mode" data-mc-component-kind="input" data-mc-component-label="Viewport Mode" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">mode<select id="code-editor-doc-viewport-mode"><option value="docs">Documentation</option><option value="inspect">Inspect</option><option value="script">Script Controlled</option><option value="backend">Backend Controlled</option><option value="collapsed" selected>Collapsed</option></select></label>
-                    <label class="mc-field" data-mc-component-id="code-editor.viewport.doc-target" data-mc-component-kind="input" data-mc-component-label="Documentation Target" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">target<input id="code-editor-doc-target" list="code-editor-doc-targets" value="code-editor.viewport.root" placeholder="code-editor.aider.run"></label>
-                    <datalist id="code-editor-doc-targets"><option value="code-editor.viewport.root"></option><option value="code-editor.root"></option><option value="code-editor.aider.run"></option></datalist>
-                    <button type="button" id="code-editor-doc-load" data-mc-component-id="code-editor.viewport.load-doc" data-mc-component-kind="action" data-mc-component-label="Load Documentation" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">Load Documentation</button>
-                    <label class="mc-field" data-mc-component-id="code-editor.viewport.resolution-preset" data-mc-component-kind="input" data-mc-component-label="Resolution Preset" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">preset<select id="code-editor-doc-resolution"><option value="docs-compact">Docs Compact 720x480</option><option value="docs-wide" selected>Docs Wide 1024x640</option><option value="desktop">Desktop 1440x900</option><option value="mobile">Mobile 390x844</option><option value="custom">Custom</option></select></label>
-                    <label class="mc-field" data-mc-component-id="code-editor.viewport.width" data-mc-component-kind="input" data-mc-component-label="Width Override" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">width<input id="code-editor-doc-width" type="number" min="240" max="1920" step="10" value="1024"></label>
-                    <label class="mc-field" data-mc-component-id="code-editor.viewport.height" data-mc-component-kind="input" data-mc-component-label="Height Override" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">height<input id="code-editor-doc-height" type="number" min="180" max="1080" step="10" value="640"></label>
-                    <button type="button" id="code-editor-doc-apply-resolution" data-mc-component-id="code-editor.viewport.apply-resolution" data-mc-component-kind="action" data-mc-component-label="Apply Resolution" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">Apply Resolution</button>
-                    <label class="mc-field" data-mc-component-id="code-editor.viewport.snap-mode" data-mc-component-kind="input" data-mc-component-label="Snap Mode" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">snap<select id="code-editor-doc-snap"><option value="docs-compact">docs-compact</option><option value="docs-wide" selected>docs-wide</option><option value="workspace">workspace</option><option value="full">full</option></select></label>
-                    <button type="button" id="code-editor-doc-collapse" data-mc-component-id="code-editor.viewport.collapse-toggle" data-mc-component-kind="action" data-mc-component-label="Collapse Viewport" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">Expand Viewport</button>
-                  </div>
-                  <div class="code-editor-doc-status" id="code-editor-doc-status" data-mc-component-id="code-editor.viewport.status" data-mc-component-kind="status" data-mc-component-label="Viewport Status" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">Documentation viewport ready.</div>
-                  <div class="code-editor-doc-surface" data-mc-component-id="code-editor.viewport.surface" data-mc-component-kind="output" data-mc-component-label="HTML Documentation Render Surface" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">
-                    <div class="code-editor-doc-visual" data-mc-component-id="code-editor.viewport.visual" data-mc-component-kind="output" data-mc-component-label="Viewport Visual" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">
-                      <iframe id="code-editor-doc-frame" title="Generated component documentation viewport" sandbox="" referrerpolicy="no-referrer"></iframe>
-                      <canvas id="code-editor-doc-vram" class="code-editor-doc-vram vram-style" width="320" height="200" hidden data-mc-component-id="code-editor.viewport.vram-canvas" data-mc-component-kind="output" data-mc-component-label="VRAM Canvas" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport"></canvas>
-                      <pre id="code-editor-doc-inspect" hidden></pre>
-                    </div>
-                    <aside class="code-editor-doc-script-widget" id="code-editor-doc-script-widget" hidden data-mc-component-id="code-editor.viewport.script-widget" data-mc-component-kind="panel" data-mc-component-label="VRAM Script Widget" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">
-                      <label class="mc-field" data-mc-component-id="code-editor.viewport.script-source" data-mc-component-kind="input" data-mc-component-label="VRAM Script Source" data-mc-component-owner="code-editor.viewport.script-widget" data-mc-feature-id="code-editor.feature.documentation-viewport">vram script<textarea id="code-editor-doc-script-source" spellcheck="false" data-mc-widget-id="code-editor.viewport-script-source" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="VRAM Script Source">const { vram } = viewport;
+<div class="code-editor-app mc-app" id="code-editor-app" aria-label="MCEL Code Studio" data-mc-widget-id="code-editor.root" data-mc-widget-kind="container" data-mc-widget-class="box" data-mc-widget-label="Code Editor" data-mc-component-id="code-editor.root" data-mc-component-kind="app" data-mc-component-label="Code Editor" data-mc-component-owner="applications.workspace" data-mc-feature-id="code-editor" data-mc-source="main_computer/web/applications/apps/code-editor.html; main_computer/web/applications/styles/code-editor.css">
+  <div class="code-studio-shell mc-shell" data-mc-component-id="code-editor.studio.shell" data-mc-component-kind="workspace" data-mc-component-label="MCEL Code Studio Shell" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-use-case="source-safe-code-editor">
+    <div class="code-studio-titlebar" data-mc-component-id="code-editor.studio.titlebar" data-mc-component-kind="toolbar" data-mc-component-label="Code Studio Title Bar" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <div class="code-studio-window-controls" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="code-studio-command-center" role="search" aria-label="Command center">
+        <span class="code-studio-command-icon">⌘</span>
+        <span>MCEL Code Studio — source-safe editor example</span>
+      </div>
+      <div class="code-studio-title-actions" aria-label="Editor actions">
+        <button type="button" id="code-studio-validate" data-mc-component-id="code-editor.studio.validate" data-mc-component-kind="action" data-mc-component-label="Validate Code Studio Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Validate</button>
+        <button type="button" id="code-studio-serialize" data-mc-component-id="code-editor.studio.serialize" data-mc-component-kind="action" data-mc-component-label="Serialize Clean Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Serialize</button>
+        <button type="button" id="code-editor-gridstack-toggle" data-mc-component-id="code-editor.studio.gridstack-toggle" data-mc-component-kind="action" data-mc-component-label="Toggle Code Editor GridStack" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Unlock layout</button>
+        <button type="button" id="code-editor-gridstack-reset" data-mc-component-id="code-editor.studio.gridstack-reset" data-mc-component-kind="action" data-mc-component-label="Reset Code Editor GridStack" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Reset layout</button>
+        <span class="code-editor-gridstack-status" id="code-editor-gridstack-status" data-mc-component-id="code-editor.studio.gridstack-status" data-mc-component-kind="status" data-mc-component-label="GridStack Status" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Layout locked</span>
+      </div>
+    </div>
+
+    <div class="code-studio-body" data-mc-component-id="code-editor.studio.body" data-mc-component-kind="layout" data-mc-component-label="VS Code Style Workbench" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <nav class="code-studio-activitybar" aria-label="Activity bar">
+        <button type="button" class="active" data-code-studio-panel="explorer" title="Explorer">▱</button>
+        <button type="button" data-code-studio-panel="source" title="Source">⌘</button>
+        <button type="button" data-code-studio-panel="runtime" title="Runtime">◫</button>
+        <button type="button" data-code-studio-panel="contract" title="MCEL contract">✓</button>
+        <button type="button" data-code-studio-panel="assistant" title="Assistant">✦</button>
+      </nav>
+
+      <aside class="code-studio-sidebar" aria-label="Explorer and file map" data-mc-component-id="code-editor.studio.sidebar" data-mc-component-kind="panel" data-mc-component-label="VS Code Style Explorer" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+        <div class="code-studio-sidebar-title">Explorer</div>
+        <div class="code-studio-open-editors">
+          <strong>Open Editors</strong>
+          <button type="button" class="code-studio-file active" data-code-studio-file="src/app.js">src/app.js</button>
+          <button type="button" class="code-studio-file" data-code-studio-file="tests/app.test.js">tests/app.test.js</button>
+          <button type="button" class="code-studio-file" data-code-studio-file="mcel.contract.json">mcel.contract.json</button>
+        </div>
+        <div class="code-studio-tree" aria-label="Project tree">
+          <strong>MCEL-WORKSPACE</strong>
+          <div>▾ src</div>
+          <button type="button" data-code-studio-file="src/app.js">app.js</button>
+          <div>▾ tests</div>
+          <button type="button" data-code-studio-file="tests/app.test.js">app.test.js</button>
+          <div>▾ .mcel</div>
+          <button type="button" data-code-studio-file="mcel.contract.json">contract.json</button>
+        </div>
+        <div class="code-studio-file-map-dock">
+          <div class="code-studio-panel-heading">
+            <strong>Repo file map</strong>
+            <span>Real backend hook preserved</span>
+          </div>
+          <div aria-label="Editor file map" class="file-map-panel mc-panel mc-sidebar" data-grid-key="file-map-panel" data-mc-component-id="code-editor.file-map.panel" data-mc-component-kind="panel" data-mc-component-label="File Map" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.file-map" data-mc-source="main_computer/web/applications/scripts/code-editor-file-map.js; /api/applications/editor/files" data-mc-widget-class="box" data-mc-widget-id="code-editor.file-map-panel" data-mc-widget-kind="panel" data-mc-widget-label="File Map Panel" data-widget-label="Editor File Map">
+<div class="file-map-toolbar mc-toolbar" data-mc-component-id="code-editor.file-map.toolbar" data-mc-component-kind="toolbar" data-mc-component-label="File Map Toolbar" data-mc-component-owner="code-editor.file-map.panel" data-mc-feature-id="code-editor.feature.file-map">
+<label class="mc-field" data-mc-component-id="code-editor.file-map.search" data-mc-component-kind="input" data-mc-component-label="File Search" data-mc-component-owner="code-editor.file-map.toolbar" data-mc-feature-id="code-editor.feature.file-map">file search<input data-mc-widget-class="input" data-mc-widget-id="code-editor.file-map-search" data-mc-widget-kind="input" data-mc-widget-label="File Search" id="file-map-search" placeholder="viewport, tests, pyproject"/></label>
+<button data-mc-component-id="code-editor.file-map.refresh" data-mc-component-kind="action" data-mc-component-label="Load Files" data-mc-component-owner="code-editor.file-map.toolbar" data-mc-feature-id="code-editor.feature.file-map" data-mc-widget-class="action" data-mc-widget-id="code-editor.file-map-refresh" data-mc-widget-kind="action" data-mc-widget-label="Load Files" id="file-map-refresh" type="button">Load Files</button>
+<button data-mc-component-id="code-editor.file-map.apply" data-mc-component-kind="action" data-mc-component-label="Use Marked" data-mc-component-owner="code-editor.file-map.toolbar" data-mc-feature-id="code-editor.feature.file-map" data-mc-widget-class="action" data-mc-widget-id="code-editor.file-map-apply" data-mc-widget-kind="action" data-mc-widget-label="Use Marked" id="file-map-apply" type="button">Use Marked</button>
+</div>
+<div class="file-map-status mc-output" data-mc-component-id="code-editor.file-map.status" data-mc-component-kind="output" data-mc-component-label="File Map Status" data-mc-component-owner="code-editor.file-map.panel" data-mc-feature-id="code-editor.feature.file-map" data-mc-widget-class="output" data-mc-widget-id="code-editor.file-map-status" data-mc-widget-kind="output" data-mc-widget-label="File Map Status" id="file-map-status">Load the file explorer and mark what Aider should include in the map.</div>
+<div class="file-map-list mc-fill" data-mc-component-id="code-editor.file-map.list" data-mc-component-kind="repeater" data-mc-component-label="File Map List" data-mc-component-owner="code-editor.file-map.panel" data-mc-feature-id="code-editor.feature.file-map" data-mc-widget-class="list" data-mc-widget-id="code-editor.file-map-list" data-mc-widget-kind="repeater" data-mc-widget-label="File Map List" id="file-map-list">
+<div class="file-map-empty">No directory loaded yet.</div>
+</div>
+</div>
+        </div>
+      </aside>
+
+      <section class="code-studio-editor-group" aria-label="Code editor workbench" data-mc-component-id="code-editor.studio.editor-group" data-mc-component-kind="workspace" data-mc-component-label="Editor Group" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+        <div class="code-studio-tabs" role="tablist" aria-label="Editor tabs">
+          <button type="button" class="active" data-code-studio-tab="source">source.html</button>
+          <button type="button" data-code-studio-tab="runtime">runtime preview</button>
+          <button type="button" data-code-studio-tab="serialized">serialized.html</button>
+          <button type="button" data-code-studio-tab="contract">contract report</button>
+        </div>
+
+        <section class="code-studio-editor-pane active" data-code-studio-pane="source" aria-label="Author-owned source editor" data-mc-component-id="code-editor.studio.source-pane" data-mc-component-kind="editor" data-mc-component-label="Author Source Editor" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+          <div class="code-studio-pane-toolbar">
+            <strong>Author-owned source</strong>
+            <span>Write only the durable source. MCEL generates the workbench around it.</span>
+          </div>
+          <div class="code-studio-code-frame">
+            <pre class="code-studio-line-gutter" id="code-studio-line-gutter" aria-hidden="true">1</pre>
+            <textarea id="code-studio-source-editor" spellcheck="false" aria-label="MCEL source-safe code editor example source" data-mc-component-id="code-editor.studio.source-editor" data-mc-component-kind="input" data-mc-component-label="MCEL Source Editor" data-mc-component-owner="code-editor.studio.source-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio">&lt;section
+  data-mc-component=&quot;code-workspace&quot;
+  data-mc-use-case=&quot;source-safe-code-editor&quot;
+  data-mc-source-id=&quot;workspace.main&quot;
+&gt;
+  &lt;header&gt;
+    &lt;h1 data-mc-field=&quot;workspace-title&quot; data-mc-required&gt;MCEL Code Studio&lt;/h1&gt;
+    &lt;p data-mc-field=&quot;workspace-summary&quot;&gt;
+      A code editor source model whose live chrome, diagnostics, assistant output,
+      and runtime decorations stay outside the saved source.
+    &lt;/p&gt;
+  &lt;/header&gt;
+
+  &lt;article
+    data-mc-component=&quot;code-file&quot;
+    data-mc-field=&quot;active-file&quot;
+    data-mc-file-path=&quot;src/app.js&quot;
+    data-mc-language=&quot;javascript&quot;
+    data-mc-required
+  &gt;export function bootStudio(root) {
+  const editor = root.querySelector(&quot;[data-editor]&quot;);
+  editor.textContent = &quot;MCEL keeps editor chrome out of source.&quot;;
+  return editor.textContent;
+}
+  &lt;/article&gt;
+
+  &lt;article
+    data-mc-component=&quot;code-file&quot;
+    data-mc-field=&quot;test-file&quot;
+    data-mc-file-path=&quot;tests/app.test.js&quot;
+    data-mc-language=&quot;javascript&quot;
+  &gt;import { bootStudio } from &quot;../src/app.js&quot;;
+
+test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
+  const root = document.createElement(&quot;main&quot;);
+  const editor = document.createElement(&quot;pre&quot;);
+  editor.dataset.editor = &quot;true&quot;;
+  root.append(editor);
+  expect(bootStudio(root)).toMatch(&quot;MCEL keeps&quot;);
+});
+  &lt;/article&gt;
+&lt;/section&gt;</textarea>
+          </div>
+        </section>
+
+        <section class="code-studio-editor-pane" data-code-studio-pane="runtime" aria-label="Generated runtime preview" data-mc-component-id="code-editor.studio.runtime-pane" data-mc-component-kind="preview" data-mc-component-label="Runtime Preview" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+          <div class="code-studio-pane-toolbar">
+            <strong>Generated runtime</strong>
+            <span>Runtime chrome is discardable and marked generated.</span>
+            <button type="button" id="code-studio-mount-runtime">Mount runtime</button>
+            <button type="button" id="code-studio-damage-runtime">Break runtime</button>
+            <button type="button" id="code-studio-repair-runtime">Repair from source</button>
+            <button type="button" id="code-studio-commit-runtime">Commit editor draft</button>
+          </div>
+          <div class="code-studio-runtime-preview" id="code-studio-runtime-preview" data-mc-component-id="code-editor.studio.runtime-preview" data-mc-component-kind="output" data-mc-component-label="Generated Runtime Preview" data-mc-component-owner="code-editor.studio.runtime-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio"></div>
+        </section>
+
+        <section class="code-studio-editor-pane" data-code-studio-pane="serialized" aria-label="Serialized clean source" data-mc-component-id="code-editor.studio.serialized-pane" data-mc-component-kind="output" data-mc-component-label="Serialized Clean Source" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+          <div class="code-studio-pane-toolbar">
+            <strong>Serialized clean source</strong>
+            <span>The save/export artifact excludes generated runtime nodes.</span>
+          </div>
+          <pre class="code-studio-output" id="code-studio-serialized-output" data-mc-component-id="code-editor.studio.serialized-output" data-mc-component-kind="output" data-mc-component-label="Serialized Source Output" data-mc-component-owner="code-editor.studio.serialized-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio"></pre>
+        </section>
+
+        <section class="code-studio-editor-pane" data-code-studio-pane="contract" aria-label="MCEL contract report" data-mc-component-id="code-editor.studio.contract-pane" data-mc-component-kind="output" data-mc-component-label="MCEL Contract Report" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+          <div class="code-studio-pane-toolbar">
+            <strong>MCEL contract report</strong>
+            <span>Proof surface for why this app is better than a generic editor shell.</span>
+          </div>
+          <div class="code-studio-contract-report" id="code-studio-contract-report" data-mc-component-id="code-editor.studio.contract-report" data-mc-component-kind="output" data-mc-component-label="Code Studio Contract Report" data-mc-component-owner="code-editor.studio.contract-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio"></div>
+        </section>
+      </section>
+
+      <aside class="code-studio-inspector" aria-label="MCEL inspector" data-mc-component-id="code-editor.studio.inspector" data-mc-component-kind="panel" data-mc-component-label="MCEL Inspector" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+        <div class="code-studio-panel-heading">
+          <strong>Why MCEL here?</strong>
+          <span>Not another React clone</span>
+        </div>
+        <ul class="code-studio-proof-list" id="code-studio-proof-list">
+          <li>Author source is the canonical artifact.</li>
+          <li>Editor chrome is generated and discardable.</li>
+          <li>Dirty runtime state does not serialize until committed.</li>
+          <li>Broken runtime chrome can be repaired from source intent.</li>
+          <li>Export is blocked when required source fields are missing.</li>
+        </ul>
+        <div class="code-studio-status-card">
+          <strong>Status</strong>
+          <p id="code-studio-status">MCEL Code Studio ready.</p>
+        </div>
+        <div class="code-studio-contract-envelope">
+          <strong>Contract envelope</strong>
+          <pre id="code-studio-contract-envelope" aria-label="Contract envelope summary">{
+  "useCase": "source-safe-code-editor",
+  "canonical": "author source",
+  "runtime": "discardable"
+}</pre>
+        </div>
+      </aside>
+    </div>
+
+    <section class="code-studio-bottom-panel" id="code-studio-bottom-panel" data-expanded="false" aria-label="Terminal assistant and documentation viewport" data-mc-component-id="code-editor.studio.bottom-panel" data-mc-component-kind="panel" data-mc-component-label="Assistant and Documentation Panel" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <div class="code-studio-bottom-tabs">
+        <strong>Assistant / terminal / docs</strong>
+        <span>The existing Aider backend, file archive, and documentation viewport stay wired in as a real completion path.</span>
+        <button type="button" id="code-studio-toggle-assistant" aria-expanded="false" aria-controls="code-studio-bottom-panel">Open assistant dock</button>
+      </div>
+      <div class="aider-shell code-studio-aider-shell">
+        <div class="aider-workspace" data-grid-key="aider-workspace" data-mc-component-id="code-editor.aider.workspace" data-mc-component-kind="workspace" data-mc-component-label="Aider Workspace" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="main_computer/web/applications/scripts/code-editor-aider-actions.js; main_computer/web/applications/scripts/code-editor-aider-output.js" data-mc-widget-class="box" data-mc-widget-id="code-editor.aider-workspace" data-mc-widget-kind="container" data-mc-widget-label="Aider Workspace" data-widget-label="Aider Workspace">
+<div class="aider-grid" data-mc-component-id="code-editor.aider.settings" data-mc-component-kind="form" data-mc-component-label="Aider Settings" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-run">
+<label class="mc-field" data-mc-component-id="code-editor.aider.repo" data-mc-component-kind="input" data-mc-component-label="Repository" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run">repository<input data-mc-widget-class="input" data-mc-widget-id="code-editor.aider-repo" data-mc-widget-kind="input" data-mc-widget-label="Repository" id="aider-repo" value="."/></label>
+<!-- <select id="aider-model"> static hook retained for viewport tests. -->
+<label class="mc-field" data-mc-component-id="code-editor.aider.model" data-mc-component-kind="input" data-mc-component-label="Model" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run">model<select data-mc-widget-class="input" data-mc-widget-id="code-editor.aider-model" data-mc-widget-kind="input" data-mc-widget-label="Model" id="aider-model">
+<option value="ollama_chat/llama3.1:8b">Balanced: llama3.1:8b</option>
+<option value="ollama_chat/gemma4:e4b">Fast quality: gemma4:e4b</option>
+<option selected="" value="ollama_chat/gemma4:26b">Default local: gemma4:26b</option>
+<option value="ollama_chat/gemma3:12b">Alternate larger: gemma3:12b</option>
+<option value="ollama_chat/deepseek-r1:8b">Reasoning test: deepseek-r1:8b</option>
+</select></label>
+<label class="mc-field" data-mc-component-id="code-editor.aider.timeout-seconds" data-mc-component-kind="input" data-mc-component-label="Timeout Seconds" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run">timeout seconds<input data-mc-widget-class="input" data-mc-widget-id="code-editor.aider-timeout-seconds" data-mc-widget-kind="input" data-mc-widget-label="Timeout Seconds" id="aider-timeout-seconds" inputmode="numeric" min="1" step="1" type="number" value="600"/></label>
+<label data-mc-component-id="code-editor.aider.selected-files" data-mc-component-kind="input" data-mc-component-label="Selected Files" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="main_computer/web/applications/scripts/code-editor-file-map.js">selected files<textarea data-mc-widget-class="input" data-mc-widget-id="code-editor.aider-files" data-mc-widget-kind="input" data-mc-widget-label="Selected Files" id="aider-files" placeholder="Mark files in the explorer on the left." readonly=""></textarea></label>
+<section id="code-editor-doc-viewport" data-mode="collapsed" class="code-editor-doc-viewport" data-mc-component-id="code-editor.viewport.root" data-mc-component-kind="panel" data-mc-component-label="Documentation Viewport" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.documentation-viewport" data-mc-source="main_computer/web/applications/scripts/code-editor-documentation-viewport.js; /api/applications/component-docs/read" >
+<div class="code-editor-doc-viewport-toolbar mc-toolbar" data-mc-component-id="code-editor.viewport.toolbar" data-mc-component-kind="toolbar" data-mc-component-label="Documentation Viewport Toolbar" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">
+<label class="mc-field" data-mc-component-id="code-editor.viewport.mode" data-mc-component-kind="input" data-mc-component-label="Viewport Mode" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">mode<select id="code-editor-doc-viewport-mode"><option value="docs">Documentation</option><option value="inspect">Inspect</option><option value="script">Script Controlled</option><option value="backend">Backend Controlled</option><option value="collapsed" selected>Collapsed</option></select></label>
+<label class="mc-field" data-mc-component-id="code-editor.viewport.doc-target" data-mc-component-kind="input" data-mc-component-label="Documentation Target" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">target<input id="code-editor-doc-target" list="code-editor-doc-targets" placeholder="code-editor.aider.run" value="code-editor.viewport.root"/></label>
+<datalist id="code-editor-doc-targets"><option value="code-editor.viewport.root"></option><option value="code-editor.root"></option><option value="code-editor.aider.run"></option></datalist>
+<button data-mc-component-id="code-editor.viewport.load-doc" data-mc-component-kind="action" data-mc-component-label="Load Documentation" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport" id="code-editor-doc-load" type="button">Load Documentation</button>
+<label class="mc-field" data-mc-component-id="code-editor.viewport.resolution-preset" data-mc-component-kind="input" data-mc-component-label="Resolution Preset" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">preset<select id="code-editor-doc-resolution"><option value="docs-compact">Docs Compact 720x480</option><option selected="" value="docs-wide">Docs Wide 1024x640</option><option value="desktop">Desktop 1440x900</option><option value="mobile">Mobile 390x844</option><option value="custom">Custom</option></select></label>
+<label class="mc-field" data-mc-component-id="code-editor.viewport.width" data-mc-component-kind="input" data-mc-component-label="Width Override" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">width<input id="code-editor-doc-width" max="1920" min="240" step="10" type="number" value="1024"/></label>
+<label class="mc-field" data-mc-component-id="code-editor.viewport.height" data-mc-component-kind="input" data-mc-component-label="Height Override" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">height<input id="code-editor-doc-height" max="1080" min="180" step="10" type="number" value="640"/></label>
+<button data-mc-component-id="code-editor.viewport.apply-resolution" data-mc-component-kind="action" data-mc-component-label="Apply Resolution" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport" id="code-editor-doc-apply-resolution" type="button">Apply Resolution</button>
+<label class="mc-field" data-mc-component-id="code-editor.viewport.snap-mode" data-mc-component-kind="input" data-mc-component-label="Snap Mode" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport">snap<select id="code-editor-doc-snap"><option value="docs-compact">docs-compact</option><option selected="" value="docs-wide">docs-wide</option><option value="workspace">workspace</option><option value="full">full</option></select></label>
+<button data-mc-component-id="code-editor.viewport.collapse-toggle" data-mc-component-kind="action" data-mc-component-label="Collapse Viewport" data-mc-component-owner="code-editor.viewport.toolbar" data-mc-feature-id="code-editor.feature.documentation-viewport" id="code-editor-doc-collapse" type="button">Expand Viewport</button>
+</div>
+<div class="code-editor-doc-status" data-mc-component-id="code-editor.viewport.status" data-mc-component-kind="status" data-mc-component-label="Viewport Status" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport" id="code-editor-doc-status">Documentation viewport ready.</div>
+<div class="code-editor-doc-surface" data-mc-component-id="code-editor.viewport.surface" data-mc-component-kind="output" data-mc-component-label="HTML Documentation Render Surface" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">
+<div class="code-editor-doc-visual" data-mc-component-id="code-editor.viewport.visual" data-mc-component-kind="output" data-mc-component-label="Viewport Visual" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">
+<iframe id="code-editor-doc-frame" referrerpolicy="no-referrer" sandbox="" title="Generated component documentation viewport"></iframe>
+<canvas id="code-editor-doc-vram" class="code-editor-doc-vram vram-style" data-mc-component-id="code-editor.viewport.vram-canvas" data-mc-component-kind="output" data-mc-component-label="VRAM Canvas" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport" height="200" hidden width="320"></canvas>
+<pre hidden="" id="code-editor-doc-inspect"></pre>
+</div>
+<aside id="code-editor-doc-script-widget" hidden class="code-editor-doc-script-widget" data-mc-component-id="code-editor.viewport.script-widget" data-mc-component-kind="panel" data-mc-component-label="VRAM Script Widget" data-mc-component-owner="code-editor.viewport.root" data-mc-feature-id="code-editor.feature.documentation-viewport">
+<label class="mc-field" data-mc-component-id="code-editor.viewport.script-source" data-mc-component-kind="input" data-mc-component-label="VRAM Script Source" data-mc-component-owner="code-editor.viewport.script-widget" data-mc-feature-id="code-editor.feature.documentation-viewport">vram script<textarea data-mc-widget-class="input" data-mc-widget-id="code-editor.viewport-script-source" data-mc-widget-kind="input" data-mc-widget-label="VRAM Script Source" id="code-editor-doc-script-source" spellcheck="false">const { vram } = viewport;
 
 vram.reset({ width: 320, height: 200, fill: [8, 10, 12, 255] });
 vram.fillRect(18, 18, 96, 52, [64, 128, 255, 255]);
 vram.fillRect(38, 38, 136, 76, [255, 210, 80, 220]);
 
 const wave = [];
-for (let x = 0; x < 320; x += 1) {
+for (let x = 0; x &lt; 320; x += 1) {
   const y = 100 + Math.round(Math.sin(x / 12) * 22);
   wave.push([x, y, [80, 255, 180, 255]]);
 }
@@ -61,52 +235,62 @@ vram.setPixels(wave);
 vram.setPixel(160, 100, [255, 80, 120, 255]);
 console.log("VRAM size", vram.getSize());
 console.log("Center pixel", vram.getPixel(160, 100));</textarea></label>
-                      <div class="code-editor-doc-script-actions mc-action-row" data-mc-component-id="code-editor.viewport.script-actions" data-mc-component-kind="toolbar" data-mc-component-label="VRAM Script Actions" data-mc-component-owner="code-editor.viewport.script-widget" data-mc-feature-id="code-editor.feature.documentation-viewport">
-                        <button type="button" id="code-editor-doc-script-run" data-mc-component-id="code-editor.viewport.script-run" data-mc-component-kind="action" data-mc-component-label="Run VRAM Script" data-mc-component-owner="code-editor.viewport.script-actions" data-mc-feature-id="code-editor.feature.documentation-viewport">Run Script</button>
-                        <button type="button" id="code-editor-doc-vram-reset" data-mc-component-id="code-editor.viewport.vram-reset" data-mc-component-kind="action" data-mc-component-label="Reset VRAM" data-mc-component-owner="code-editor.viewport.script-actions" data-mc-feature-id="code-editor.feature.documentation-viewport">Reset VRAM</button>
-                      </div>
-                      <div class="code-editor-doc-script-hint" data-mc-component-id="code-editor.viewport.script-api-hint" data-mc-component-kind="help" data-mc-component-label="VRAM Script API Hint" data-mc-component-owner="code-editor.viewport.script-widget" data-mc-feature-id="code-editor.feature.documentation-viewport">API: viewport.vram.reset(), blitImage(), setPixel(), setPixels(), fillRect(), getPixel(), getImageData().</div>
-                      <pre class="code-editor-doc-script-log" id="code-editor-doc-script-log" data-mc-component-id="code-editor.viewport.script-log" data-mc-component-kind="output" data-mc-component-label="VRAM Script Log" data-mc-component-owner="code-editor.viewport.script-widget" data-mc-feature-id="code-editor.feature.documentation-viewport"></pre>
-                    </aside>
-                  </div>
-                </section>
-                  <label class="mc-field" data-mc-component-id="code-editor.aider.instruction" data-mc-component-kind="input" data-mc-component-label="Instruction" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run">instruction<textarea id="aider-instruction" placeholder="Describe the code change Aider should prepare." data-mc-widget-id="code-editor.aider-instruction" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Instruction"></textarea></label>
-                </div>
-                <div class="aider-actions mc-action-row" data-mc-component-id="code-editor.aider.actions" data-mc-component-kind="toolbar" data-mc-component-label="Aider Actions" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-run">
-                  <button type="button" id="aider-preview" data-mc-widget-id="code-editor.aider-preview" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Preview Command" data-mc-component-id="code-editor.aider.preview" data-mc-component-kind="action" data-mc-component-label="Preview Command" data-mc-component-owner="code-editor.aider.actions" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="/api/applications/aider/prepare">Preview Command</button>
-                  <button type="button" id="aider-run" data-mc-widget-id="code-editor.aider-run" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Run Aider" data-mc-component-id="code-editor.aider.run" data-mc-component-kind="action" data-mc-component-label="Run Aider" data-mc-component-owner="code-editor.aider.actions" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="/api/applications/aider/run">Run Aider</button>
-                  <span class="aider-dry-run" data-mc-widget-id="code-editor.aider-dry-run" data-mc-widget-kind="field" data-mc-widget-class="input" data-mc-widget-label="Dry Run First" data-mc-component-id="code-editor.aider.dry-run" data-mc-component-kind="input" data-mc-component-label="Dry Run First" data-mc-component-owner="code-editor.aider.actions" data-mc-feature-id="code-editor.feature.aider-run"><input id="aider-dry-run" type="checkbox" checked> dry run first</span>
-                </div>
-                <div class="aider-output mc-output" id="aider-output" data-mc-widget-id="code-editor.aider-output" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Aider Output" data-mc-component-id="code-editor.aider.output" data-mc-component-kind="output" data-mc-component-label="Aider Output" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-run"><div class="aider-result">Aider action dock ready. Preview validates paths and shows the command before any run.</div></div>
-                <div class="aider-context-toolbar mc-toolbar" data-mc-component-id="code-editor.aider.context-toolbar" data-mc-component-kind="toolbar" data-mc-component-label="Aider Context Toolbar" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-context" data-mc-source="main_computer/web/applications/scripts/code-editor-aider-context.js; /api/applications/aider/context">
-                  <div class="aider-context-meta mc-output" id="aider-session-meta" data-mc-widget-id="code-editor.aider-session-meta" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Aider Session Metadata" data-mc-component-id="code-editor.aider.session-meta" data-mc-component-kind="output" data-mc-component-label="Aider Session Metadata" data-mc-component-owner="code-editor.aider.context-toolbar" data-mc-feature-id="code-editor.feature.aider-context">Loading Aider web context...</div>
-                  <div class="aider-context-actions mc-action-row">
-                    <button type="button" id="aider-archive-current" data-mc-widget-id="code-editor.aider-archive-current" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Archive Current" data-mc-component-id="code-editor.aider.archive-current" data-mc-component-kind="action" data-mc-component-label="Archive Current" data-mc-component-owner="code-editor.aider.context-toolbar" data-mc-feature-id="code-editor.feature.aider-context" data-mc-source="/api/applications/aider/context/archive">Archive Current</button>
-                    <button type="button" id="aider-reset-context" data-mc-widget-id="code-editor.aider-reset-context" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="New Blank Context" data-mc-component-id="code-editor.aider.reset-context" data-mc-component-kind="action" data-mc-component-label="New Blank Context" data-mc-component-owner="code-editor.aider.context-toolbar" data-mc-feature-id="code-editor.feature.aider-context" data-mc-source="/api/applications/aider/context/reset">New Blank Context</button>
-                  </div>
-                </div>
-                <div class="aider-history-panel mc-fill" data-mc-component-id="code-editor.aider.history-panel" data-mc-component-kind="panel" data-mc-component-label="Aider Context History" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-context">
-                  <div class="aider-history-list-wrap mc-panel">
-                    <div class="aider-panel-title mc-panel-header">
-                      <strong>Web Context History</strong>
-                      <span>Each Aider dock action is kept here so the current web context stays visible between runs.</span>
-                    </div>
-                    <div class="aider-history-list mc-fill" id="aider-history-list" data-mc-widget-id="code-editor.aider-history-list" data-mc-widget-kind="repeater" data-mc-widget-class="list" data-mc-widget-label="Web Context History" data-mc-component-id="code-editor.aider.history-list" data-mc-component-kind="repeater" data-mc-component-label="Web Context History" data-mc-component-owner="code-editor.aider.history-panel" data-mc-feature-id="code-editor.feature.aider-context">
-                      <div class="aider-history-empty">No Aider web-context history yet.</div>
-                    </div>
-                  </div>
-                  <div class="aider-archive-panel mc-panel" data-mc-widget-id="code-editor.aider-archive-panel" data-mc-widget-kind="panel" data-mc-widget-class="box" data-mc-widget-label="Archived Contexts Panel" data-mc-component-id="code-editor.aider.archive-panel" data-mc-component-kind="panel" data-mc-component-label="Archived Contexts" data-mc-component-owner="code-editor.aider.history-panel" data-mc-feature-id="code-editor.feature.aider-context">
-                    <div class="aider-panel-title mc-panel-header">
-                      <strong>Archived Contexts</strong>
-                      <span>Switch archived content to reattach its saved history and any backend activity still running for that thread.</span>
-                    </div>
-                    <select class="mc-fill" id="aider-archive-list" size="6" aria-label="Archived Aider content threads" data-mc-widget-id="code-editor.aider-archive-list" data-mc-widget-kind="repeater" data-mc-widget-class="list" data-mc-widget-label="Archived Contexts" data-mc-component-id="code-editor.aider.archive-list" data-mc-component-kind="repeater" data-mc-component-label="Archived Contexts" data-mc-component-owner="code-editor.aider.archive-panel" data-mc-feature-id="code-editor.feature.aider-context"></select>
-                    <div class="aider-archive-meta mc-output" id="aider-archive-meta" data-mc-widget-id="code-editor.aider-archive-meta" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Archive Metadata" data-mc-component-id="code-editor.aider.archive-meta" data-mc-component-kind="output" data-mc-component-label="Archive Metadata" data-mc-component-owner="code-editor.aider.archive-panel" data-mc-feature-id="code-editor.feature.aider-context">No archived contexts yet.</div>
-                    <div class="aider-archive-actions mc-action-row">
-                      <button type="button" id="aider-load-archive" data-mc-widget-id="code-editor.aider-load-archive" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Switch to Selected Content" data-mc-component-id="code-editor.aider.load-archive" data-mc-component-kind="action" data-mc-component-label="Switch to Selected Content" data-mc-component-owner="code-editor.aider.archive-panel" data-mc-feature-id="code-editor.feature.aider-context" data-mc-source="/api/applications/aider/context/load">Switch to Selected Content</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+<div class="code-editor-doc-script-actions mc-action-row" data-mc-component-id="code-editor.viewport.script-actions" data-mc-component-kind="toolbar" data-mc-component-label="VRAM Script Actions" data-mc-component-owner="code-editor.viewport.script-widget" data-mc-feature-id="code-editor.feature.documentation-viewport">
+<button data-mc-component-id="code-editor.viewport.script-run" data-mc-component-kind="action" data-mc-component-label="Run VRAM Script" data-mc-component-owner="code-editor.viewport.script-actions" data-mc-feature-id="code-editor.feature.documentation-viewport" id="code-editor-doc-script-run" type="button">Run Script</button>
+<button data-mc-component-id="code-editor.viewport.vram-reset" data-mc-component-kind="action" data-mc-component-label="Reset VRAM" data-mc-component-owner="code-editor.viewport.script-actions" data-mc-feature-id="code-editor.feature.documentation-viewport" id="code-editor-doc-vram-reset" type="button">Reset VRAM</button>
+</div>
+<div class="code-editor-doc-script-hint" data-mc-component-id="code-editor.viewport.script-api-hint" data-mc-component-kind="help" data-mc-component-label="VRAM Script API Hint" data-mc-component-owner="code-editor.viewport.script-widget" data-mc-feature-id="code-editor.feature.documentation-viewport">API: viewport.vram.reset(), blitImage(), setPixel(), setPixels(), fillRect(), getPixel(), getImageData().</div>
+<pre class="code-editor-doc-script-log" data-mc-component-id="code-editor.viewport.script-log" data-mc-component-kind="output" data-mc-component-label="VRAM Script Log" data-mc-component-owner="code-editor.viewport.script-widget" data-mc-feature-id="code-editor.feature.documentation-viewport" id="code-editor-doc-script-log"></pre>
+</aside>
+</div>
+</section>
+<label class="mc-field" data-mc-component-id="code-editor.aider.instruction" data-mc-component-kind="input" data-mc-component-label="Instruction" data-mc-component-owner="code-editor.aider.settings" data-mc-feature-id="code-editor.feature.aider-run">instruction<textarea data-mc-widget-class="input" data-mc-widget-id="code-editor.aider-instruction" data-mc-widget-kind="input" data-mc-widget-label="Instruction" id="aider-instruction" placeholder="Describe the code change Aider should prepare."></textarea></label>
+</div>
+<div class="aider-actions mc-action-row" data-mc-component-id="code-editor.aider.actions" data-mc-component-kind="toolbar" data-mc-component-label="Aider Actions" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-run">
+<button data-mc-component-id="code-editor.aider.preview" data-mc-component-kind="action" data-mc-component-label="Preview Command" data-mc-component-owner="code-editor.aider.actions" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="/api/applications/aider/prepare" data-mc-widget-class="action" data-mc-widget-id="code-editor.aider-preview" data-mc-widget-kind="action" data-mc-widget-label="Preview Command" id="aider-preview" type="button">Preview Command</button>
+<button data-mc-component-id="code-editor.aider.run" data-mc-component-kind="action" data-mc-component-label="Run Aider" data-mc-component-owner="code-editor.aider.actions" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="/api/applications/aider/run" data-mc-widget-class="action" data-mc-widget-id="code-editor.aider-run" data-mc-widget-kind="action" data-mc-widget-label="Run Aider" id="aider-run" type="button">Run Aider</button>
+<span class="aider-dry-run" data-mc-component-id="code-editor.aider.dry-run" data-mc-component-kind="input" data-mc-component-label="Dry Run First" data-mc-component-owner="code-editor.aider.actions" data-mc-feature-id="code-editor.feature.aider-run" data-mc-widget-class="input" data-mc-widget-id="code-editor.aider-dry-run" data-mc-widget-kind="field" data-mc-widget-label="Dry Run First"><input checked="" id="aider-dry-run" type="checkbox"/> dry run first</span>
+</div>
+<div class="aider-output mc-output" data-mc-component-id="code-editor.aider.output" data-mc-component-kind="output" data-mc-component-label="Aider Output" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-run" data-mc-widget-class="output" data-mc-widget-id="code-editor.aider-output" data-mc-widget-kind="output" data-mc-widget-label="Aider Output" id="aider-output"><div class="aider-result">Aider action dock ready. Preview validates paths and shows the command before any run.</div></div>
+<div class="aider-context-toolbar mc-toolbar" data-mc-component-id="code-editor.aider.context-toolbar" data-mc-component-kind="toolbar" data-mc-component-label="Aider Context Toolbar" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-context" data-mc-source="main_computer/web/applications/scripts/code-editor-aider-context.js; /api/applications/aider/context">
+<div class="aider-context-meta mc-output" data-mc-component-id="code-editor.aider.session-meta" data-mc-component-kind="output" data-mc-component-label="Aider Session Metadata" data-mc-component-owner="code-editor.aider.context-toolbar" data-mc-feature-id="code-editor.feature.aider-context" data-mc-widget-class="output" data-mc-widget-id="code-editor.aider-session-meta" data-mc-widget-kind="output" data-mc-widget-label="Aider Session Metadata" id="aider-session-meta">Loading Aider web context...</div>
+<div class="aider-context-actions mc-action-row">
+<button data-mc-component-id="code-editor.aider.archive-current" data-mc-component-kind="action" data-mc-component-label="Archive Current" data-mc-component-owner="code-editor.aider.context-toolbar" data-mc-feature-id="code-editor.feature.aider-context" data-mc-source="/api/applications/aider/context/archive" data-mc-widget-class="action" data-mc-widget-id="code-editor.aider-archive-current" data-mc-widget-kind="action" data-mc-widget-label="Archive Current" id="aider-archive-current" type="button">Archive Current</button>
+<button data-mc-component-id="code-editor.aider.reset-context" data-mc-component-kind="action" data-mc-component-label="New Blank Context" data-mc-component-owner="code-editor.aider.context-toolbar" data-mc-feature-id="code-editor.feature.aider-context" data-mc-source="/api/applications/aider/context/reset" data-mc-widget-class="action" data-mc-widget-id="code-editor.aider-reset-context" data-mc-widget-kind="action" data-mc-widget-label="New Blank Context" id="aider-reset-context" type="button">New Blank Context</button>
+</div>
+</div>
+<div class="aider-history-panel mc-fill" data-mc-component-id="code-editor.aider.history-panel" data-mc-component-kind="panel" data-mc-component-label="Aider Context History" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-context">
+<div class="aider-history-list-wrap mc-panel">
+<div class="aider-panel-title mc-panel-header">
+<strong>Web Context History</strong>
+<span>Each Aider dock action is kept here so the current web context stays visible between runs.</span>
+</div>
+<div class="aider-history-list mc-fill" data-mc-component-id="code-editor.aider.history-list" data-mc-component-kind="repeater" data-mc-component-label="Web Context History" data-mc-component-owner="code-editor.aider.history-panel" data-mc-feature-id="code-editor.feature.aider-context" data-mc-widget-class="list" data-mc-widget-id="code-editor.aider-history-list" data-mc-widget-kind="repeater" data-mc-widget-label="Web Context History" id="aider-history-list">
+<div class="aider-history-empty">No Aider web-context history yet.</div>
+</div>
+</div>
+<div class="aider-archive-panel mc-panel" data-mc-component-id="code-editor.aider.archive-panel" data-mc-component-kind="panel" data-mc-component-label="Archived Contexts" data-mc-component-owner="code-editor.aider.history-panel" data-mc-feature-id="code-editor.feature.aider-context" data-mc-widget-class="box" data-mc-widget-id="code-editor.aider-archive-panel" data-mc-widget-kind="panel" data-mc-widget-label="Archived Contexts Panel">
+<div class="aider-panel-title mc-panel-header">
+<strong>Archived Contexts</strong>
+<span>Switch archived content to reattach its saved history and any backend activity still running for that thread.</span>
+</div>
+<select aria-label="Archived Aider content threads" class="mc-fill" data-mc-component-id="code-editor.aider.archive-list" data-mc-component-kind="repeater" data-mc-component-label="Archived Contexts" data-mc-component-owner="code-editor.aider.archive-panel" data-mc-feature-id="code-editor.feature.aider-context" data-mc-widget-class="list" data-mc-widget-id="code-editor.aider-archive-list" data-mc-widget-kind="repeater" data-mc-widget-label="Archived Contexts" id="aider-archive-list" size="6"></select>
+<div class="aider-archive-meta mc-output" data-mc-component-id="code-editor.aider.archive-meta" data-mc-component-kind="output" data-mc-component-label="Archive Metadata" data-mc-component-owner="code-editor.aider.archive-panel" data-mc-feature-id="code-editor.feature.aider-context" data-mc-widget-class="output" data-mc-widget-id="code-editor.aider-archive-meta" data-mc-widget-kind="output" data-mc-widget-label="Archive Metadata" id="aider-archive-meta">No archived contexts yet.</div>
+<div class="aider-archive-actions mc-action-row">
+<button data-mc-component-id="code-editor.aider.load-archive" data-mc-component-kind="action" data-mc-component-label="Switch to Selected Content" data-mc-component-owner="code-editor.aider.archive-panel" data-mc-feature-id="code-editor.feature.aider-context" data-mc-source="/api/applications/aider/context/load" data-mc-widget-class="action" data-mc-widget-id="code-editor.aider-load-archive" data-mc-widget-kind="action" data-mc-widget-label="Switch to Selected Content" id="aider-load-archive" type="button">Switch to Selected Content</button>
+</div>
+</div>
+</div>
+</div>
+      </div>
+    </section>
+
+    <footer class="code-studio-statusbar" data-mc-component-id="code-editor.studio.statusbar" data-mc-component-kind="status" data-mc-component-label="Code Studio Status Bar" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <span>main</span>
+      <span>MCEL source-safe-code-editor</span>
+      <span id="code-studio-runtime-state">runtime: clean</span>
+      <span>UTF-8</span>
+      <span>JavaScript</span>
+    </footer>
+  </div>
+</div>

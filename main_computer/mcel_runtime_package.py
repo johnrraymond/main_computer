@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.9"
+MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.13"
 
 MCEL_RUNTIME_MODULES: tuple[str, ...] = (
     "main_computer/web/applications/scripts/mcel-contract.js",
     "main_computer/web/applications/scripts/mcel-engine.js",
+    "main_computer/web/applications/scripts/mcel-scm.js",
     "main_computer/web/applications/scripts/mcel-law-registry.js",
     "main_computer/web/applications/scripts/mcel-editor.js",
     "main_computer/web/applications/scripts/mcel-style-law.js",
@@ -195,7 +196,7 @@ def package_mcel_runtime(
 
 
 _MCEL_RUNTIME_WRAPPER = r'''
-  const mcelRuntimeVersion = "mcel-runtime.v0.1.9";
+  const mcelRuntimeVersion = "mcel-runtime.v0.1.10";
   const runtimeEntry = "runtime.js";
   const runtimeDefaults = Object.freeze({
     mode: "site",

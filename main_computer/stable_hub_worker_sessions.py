@@ -1809,6 +1809,7 @@ class StableHubWorkerMarketDirectory:
         worker_msk_id: str,
         worker_wallet_address: str,
         worker_account_id: str,
+        force_active_sessions: bool = False,
     ) -> dict[str, Any]:
         worker_id = normalize_worker_id(worker_id)
         profile = normalize_worker_market_profile(market_profile)
@@ -1820,7 +1821,8 @@ class StableHubWorkerMarketDirectory:
             active_sessions = int(profile.get("active_sessions") or 0)
             owner_connection_id = str(owner.get("connection_id") or "")
             if (
-                isinstance(previous, dict)
+                not force_active_sessions
+                and isinstance(previous, dict)
                 and previous.get("status") == "live"
                 and str(previous.get("connection_id") or "") == owner_connection_id
             ):
@@ -2163,6 +2165,18 @@ class StableHubAcceptedWorkSessionDirectory:
             "work": json.loads(json.dumps(work)),
             "worker_acceptance": json.loads(json.dumps(worker_acceptance)),
             "payout": json.loads(json.dumps(payout or {})),
+            "stream_events": [
+                {
+                    "type": "accepted",
+                    "seq": 0,
+                    "session_id": session_id,
+                    "request_id": request_id,
+                    "run_id": str(run_id),
+                    "status": "accepted",
+                    "hub_received_at": now,
+                    "created_at": now,
+                }
+            ],
             "completed_at": "",
             "failed_at": "",
         }
@@ -2186,6 +2200,93 @@ class StableHubAcceptedWorkSessionDirectory:
             request_index[index_key] = session_id
             self.store.save(data)
             return dict(record)
+
+    def append_stream_event(self, session_id: str, event: dict[str, Any]) -> dict[str, Any]:
+        """Append a requester-visible session stream event.
+
+        The accepted-session record is the owner Hub's durable-ish replay buffer for
+        exp live-session streaming.  Events stored here must be session/request
+        scoped and must not rely on worker ids, socket ids, or wallet addresses as
+        public routing facts.
+        """
+
+        session_id = normalize_session_id(session_id)
+        now = utc_now()
+        with self._lock:
+            data = self.store.load()
+            sessions = data.setdefault("accepted_sessions", {})
+            record = sessions.get(session_id)
+            if not isinstance(record, dict):
+                raise StableHubWorkerSessionError("accepted work session does not exist.")
+            events = record.get("stream_events")
+            if not isinstance(events, list):
+                events = []
+            next_seq = 0
+            for existing in events:
+                if not isinstance(existing, dict):
+                    continue
+                try:
+                    next_seq = max(next_seq, int(existing.get("seq") or 0) + 1)
+                except (TypeError, ValueError):
+                    continue
+            clean_event = json.loads(json.dumps(dict(event), default=str))
+            clean_event["seq"] = next_seq
+            clean_event["session_id"] = session_id
+            clean_event.setdefault("request_id", str(record.get("request_id") or ""))
+            clean_event.setdefault("run_id", str(record.get("run_id") or ""))
+            clean_event.setdefault("hub_received_at", now)
+            clean_event.setdefault("created_at", now)
+            if not clean_event.get("type"):
+                clean_event["type"] = "event"
+            record = dict(record)
+            record["stream_events"] = [*events, clean_event]
+            sessions[session_id] = record
+            self.store.save(data)
+            return dict(clean_event)
+
+    def list_stream_events(self, session_id: str, *, after_seq: int = -1) -> list[dict[str, Any]]:
+        session_id = normalize_session_id(session_id)
+        with self._lock:
+            data = self.store.load()
+            record = data.get("accepted_sessions", {}).get(session_id)
+            if not isinstance(record, dict):
+                raise StableHubWorkerSessionError("accepted work session does not exist.")
+            events = record.get("stream_events")
+            if not isinstance(events, list):
+                return []
+            result: list[dict[str, Any]] = []
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                try:
+                    seq = int(event.get("seq") or 0)
+                except (TypeError, ValueError):
+                    seq = 0
+                if seq > int(after_seq):
+                    result.append(dict(event))
+            return result
+
+    def _append_terminal_stream_event_unlocked(self, record: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        events = record.get("stream_events")
+        if not isinstance(events, list):
+            events = []
+        next_seq = 0
+        for existing in events:
+            if not isinstance(existing, dict):
+                continue
+            try:
+                next_seq = max(next_seq, int(existing.get("seq") or 0) + 1)
+            except (TypeError, ValueError):
+                continue
+        clean_event = json.loads(json.dumps(dict(event), default=str))
+        clean_event["seq"] = next_seq
+        clean_event.setdefault("session_id", str(record.get("session_id") or ""))
+        clean_event.setdefault("request_id", str(record.get("request_id") or ""))
+        clean_event.setdefault("run_id", str(record.get("run_id") or ""))
+        clean_event.setdefault("hub_received_at", utc_now())
+        clean_event.setdefault("created_at", clean_event.get("hub_received_at") or utc_now())
+        record["stream_events"] = [*events, clean_event]
+        return clean_event
 
     def record_succeeded(
         self,
@@ -2214,6 +2315,19 @@ class StableHubAcceptedWorkSessionDirectory:
             record["completed_at"] = now
             record["worker_result"] = json.loads(json.dumps(worker_result))
             record["payout"] = json.loads(json.dumps(payout))
+            result_payload = worker_result.get("result") if isinstance(worker_result.get("result"), dict) else {}
+            response_payload = result_payload.get("response") if isinstance(result_payload.get("response"), dict) else {}
+            terminal_event: dict[str, Any] = {
+                "type": "result",
+                "status": "succeeded",
+                "content": str(response_payload.get("content") or ""),
+                "response": {
+                    key: value
+                    for key, value in response_payload.items()
+                    if key in {"content", "provider", "model", "role"}
+                },
+            }
+            self._append_terminal_stream_event_unlocked(record, terminal_event)
             execution = dict(record.get("execution") or {})
             execution["status"] = "succeeded"
             record["execution"] = execution
@@ -2246,6 +2360,15 @@ class StableHubAcceptedWorkSessionDirectory:
             record["failed_at"] = now
             record["worker_failure"] = json.loads(json.dumps(worker_failure))
             record["payout"] = json.loads(json.dumps(payout))
+            error_text = str(worker_failure.get("error") or worker_failure.get("message") or "worker_failed")
+            self._append_terminal_stream_event_unlocked(
+                record,
+                {
+                    "type": "failed",
+                    "status": "failed",
+                    "error": error_text,
+                },
+            )
             execution = dict(record.get("execution") or {})
             execution["status"] = "failed"
             record["execution"] = execution

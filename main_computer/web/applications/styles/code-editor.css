@@ -627,3 +627,1024 @@
     }
     [data-mc-widget-kind="repeater"][data-mc-item-display-preset="compact"] option {
       min-height: 18px;
+
+
+/* MCEL Code Studio flagship example: a VS Code-like source-safe editor shell. */
+.code-studio-shell {
+  display: grid;
+  grid-template-rows: 42px minmax(560px, 1fr) minmax(280px, auto) 26px;
+  min-height: 920px;
+  border: 1px solid #2d2d30;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.45);
+}
+
+.code-studio-titlebar,
+.code-studio-statusbar,
+.code-studio-bottom-tabs,
+.code-studio-tabs,
+.code-studio-pane-toolbar {
+  display: flex;
+  align-items: center;
+}
+
+.code-studio-titlebar {
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid #2d2d30;
+  background: #323233;
+  color: #cccccc;
+}
+
+.code-studio-window-controls {
+  display: inline-flex;
+  gap: 7px;
+}
+
+.code-studio-window-controls span {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #6a6a6a;
+}
+
+.code-studio-window-controls span:nth-child(1) { background: #ff5f57; }
+.code-studio-window-controls span:nth-child(2) { background: #ffbd2e; }
+.code-studio-window-controls span:nth-child(3) { background: #28c840; }
+
+.code-studio-command-center {
+  flex: 1;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 6px 12px;
+  border: 1px solid #454545;
+  border-radius: 6px;
+  background: #252526;
+  text-align: center;
+  font-size: 12px;
+}
+
+.code-studio-command-icon {
+  margin-right: 8px;
+  color: #8ab4f8;
+}
+
+.code-studio-title-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.code-studio-title-actions button,
+.code-studio-pane-toolbar button,
+.code-studio-tree button,
+.code-studio-file,
+.code-studio-activitybar button {
+  border: 1px solid #3c3c3c;
+  border-radius: 5px;
+  background: #2d2d30;
+  color: #d4d4d4;
+  cursor: pointer;
+}
+
+.code-studio-title-actions button,
+.code-studio-pane-toolbar button {
+  padding: 6px 10px;
+}
+
+.code-studio-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 50px minmax(230px, 320px) minmax(430px, 1fr) minmax(260px, 360px);
+  background: #1e1e1e;
+}
+
+.code-studio-activitybar {
+  display: grid;
+  grid-auto-rows: 46px;
+  align-content: start;
+  justify-items: stretch;
+  border-right: 1px solid #2d2d30;
+  background: #333333;
+}
+
+.code-studio-activitybar button {
+  border: 0;
+  border-radius: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: #bdbdbd;
+  font-size: 20px;
+}
+
+.code-studio-activitybar button.active,
+.code-studio-activitybar button:hover {
+  border-left-color: #ffffff;
+  color: #ffffff;
+}
+
+.code-studio-sidebar,
+.code-studio-inspector {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid #2d2d30;
+  background: #252526;
+}
+
+.code-studio-inspector {
+  border-right: 0;
+  border-left: 1px solid #2d2d30;
+  padding: 14px;
+}
+
+.code-studio-sidebar-title {
+  padding: 12px 14px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #bbbbbb;
+}
+
+.code-studio-open-editors,
+.code-studio-tree,
+.code-studio-file-map-dock {
+  padding: 10px 12px;
+  border-top: 1px solid #333333;
+}
+
+.code-studio-open-editors strong,
+.code-studio-tree strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #cccccc;
+}
+
+.code-studio-file,
+.code-studio-tree button,
+.code-studio-tree div {
+  display: block;
+  width: 100%;
+  margin: 2px 0;
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: #cccccc;
+  text-align: left;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.code-studio-file.active,
+.code-studio-tree button:hover {
+  background: #37373d;
+}
+
+.code-studio-file-map-dock .file-map-panel {
+  margin-top: 10px;
+  max-height: 390px;
+  border-color: #3c3c3c;
+  background: #1e1e1e;
+}
+
+.code-studio-editor-group {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr);
+  background: #1e1e1e;
+}
+
+.code-studio-tabs {
+  gap: 1px;
+  overflow-x: auto;
+  border-bottom: 1px solid #2d2d30;
+  background: #252526;
+}
+
+.code-studio-tabs button {
+  min-width: 120px;
+  padding: 10px 14px;
+  border: 0;
+  border-right: 1px solid #2d2d30;
+  background: #2d2d2d;
+  color: #bbbbbb;
+  text-align: left;
+}
+
+.code-studio-tabs button.active {
+  background: #1e1e1e;
+  color: #ffffff;
+  box-shadow: inset 0 2px 0 #007acc;
+}
+
+.code-studio-editor-pane {
+  display: none;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.code-studio-editor-pane.active {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.code-studio-pane-toolbar {
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2d2d30;
+  background: #1f1f1f;
+  color: #cccccc;
+}
+
+.code-studio-pane-toolbar span {
+  color: #8f8f8f;
+  font-size: 12px;
+}
+
+.code-studio-code-frame {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(42px, auto) minmax(0, 1fr);
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.code-studio-line-gutter {
+  min-height: 0;
+  margin: 0;
+  padding: 14px 10px;
+  overflow: hidden;
+  border-right: 1px solid #2d2d30;
+  background: #1b1b1b;
+  color: #858585;
+  text-align: right;
+  user-select: none;
+}
+
+#code-studio-source-editor {
+  width: 100%;
+  min-height: 100%;
+  border: 0;
+  resize: none;
+  outline: none;
+  padding: 14px 16px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+.code-studio-runtime-preview {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+  background: #111111;
+}
+
+.code-studio-runtime-window {
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #1f1f1f;
+}
+
+.code-studio-runtime-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #383838;
+  background: #252526;
+}
+
+.code-studio-runtime-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  min-height: 310px;
+}
+
+.code-studio-runtime-files {
+  padding: 12px;
+  border-right: 1px solid #333333;
+  background: #202020;
+}
+
+.code-studio-runtime-files button {
+  display: block;
+  width: 100%;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 0;
+  background: #2d2d30;
+  color: #d4d4d4;
+  text-align: left;
+}
+
+.code-studio-runtime-editor {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.code-studio-runtime-editor label {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.code-studio-runtime-editor textarea {
+  min-height: 220px;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  background: #141414;
+  color: #d4d4d4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.code-studio-runtime-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid #333333;
+}
+
+.code-studio-runtime-badges span,
+.code-studio-proof-list li,
+.code-studio-contract-row {
+  border: 1px solid #3c3c3c;
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: #252526;
+  color: #cccccc;
+  font-size: 12px;
+}
+
+.code-studio-output,
+.code-studio-contract-report,
+#code-studio-contract-envelope {
+  min-height: 0;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  background: #111111;
+  color: #d4d4d4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.code-studio-contract-report {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.code-studio-contract-row {
+  border-radius: 7px;
+  white-space: normal;
+}
+
+.code-studio-contract-row.pass {
+  border-color: rgba(70, 190, 130, 0.45);
+}
+
+.code-studio-contract-row.fail {
+  border-color: rgba(255, 95, 87, 0.55);
+}
+
+.code-studio-panel-heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.code-studio-panel-heading span {
+  color: #999999;
+  font-size: 12px;
+}
+
+.code-studio-proof-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0 0 16px;
+  list-style: none;
+}
+
+.code-studio-status-card,
+.code-studio-contract-envelope {
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 12px;
+  background: #1e1e1e;
+}
+
+.code-studio-bottom-panel {
+  min-height: 0;
+  border-top: 1px solid #2d2d30;
+  background: #181818;
+  overflow: auto;
+}
+
+.code-studio-bottom-tabs {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2d2d30;
+  background: #252526;
+  color: #cccccc;
+}
+
+.code-studio-bottom-tabs span {
+  color: #999999;
+  font-size: 12px;
+}
+
+.code-studio-aider-shell {
+  display: block;
+  width: auto;
+  border: 0;
+  border-radius: 0;
+  padding: 12px;
+  background: #181818;
+}
+
+.code-studio-aider-shell .aider-workspace {
+  display: grid;
+}
+
+.code-studio-statusbar {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 10px;
+  background: #007acc;
+  color: #ffffff;
+  font-size: 12px;
+}
+
+@media (max-width: 1200px) {
+  .code-studio-body {
+    grid-template-columns: 50px minmax(210px, 280px) minmax(0, 1fr);
+  }
+
+  .code-studio-inspector {
+    grid-column: 2 / -1;
+    border-top: 1px solid #2d2d30;
+  }
+}
+
+@media (max-width: 860px) {
+  .code-studio-shell {
+    grid-template-rows: auto auto auto auto;
+  }
+
+  .code-studio-titlebar,
+  .code-studio-statusbar {
+    flex-wrap: wrap;
+    min-height: 42px;
+  }
+
+  .code-studio-body {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .code-studio-sidebar,
+  .code-studio-inspector {
+    grid-column: 2;
+  }
+
+  .code-studio-editor-group {
+    grid-column: 1 / -1;
+  }
+}
+
+.code-editor-gridstack-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid #3c3c3c;
+  border-radius: 999px;
+  color: #c7c7c7;
+  font-size: 12px;
+}
+
+
+/* Code Studio layout reset.
+   The first Code Studio pass proved why this must be a locked workbench, not a page-length pile of panels.
+   These rules scope the editor away from the global application <main>/<header>/button styles and cap every
+   generated panel inside a real VS Code-like viewport. */
+.code-editor-app {
+  width: 100%;
+  min-width: 0;
+  height: clamp(720px, calc(100dvh - 150px), 1040px);
+  min-height: 0;
+  max-height: calc(100dvh - 112px);
+  overflow: hidden;
+  border: 1px solid #2d2d30;
+  border-radius: 10px;
+  background: #1e1e1e;
+}
+
+@supports not (height: 100dvh) {
+  .code-editor-app {
+    height: clamp(720px, calc(100vh - 150px), 1040px);
+    max-height: calc(100vh - 112px);
+  }
+}
+
+.code-editor-app button,
+.code-editor-app input,
+.code-editor-app select,
+.code-editor-app textarea {
+  font: 500 12px/1.4 "Segoe UI", system-ui, sans-serif;
+}
+
+.code-editor-app button {
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  background: #2d2d30;
+  color: #d4d4d4;
+  padding: 5px 9px;
+  box-shadow: none;
+}
+
+.code-editor-app button:hover {
+  border-color: #007acc;
+  color: #ffffff;
+}
+
+.code-editor-app input,
+.code-editor-app select,
+.code-editor-app textarea {
+  border: 1px solid #3c3c3c;
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
+.code-studio-shell {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr) 24px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.code-studio-titlebar {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border-bottom: 1px solid #2d2d30;
+  background: #323233;
+}
+
+.code-studio-command-center {
+  width: min(720px, 100%);
+  max-width: none;
+  min-width: 0;
+  justify-self: center;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.code-studio-title-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 6px;
+}
+
+.code-studio-title-actions button {
+  white-space: nowrap;
+  padding: 4px 8px;
+}
+
+.code-editor-gridstack-status {
+  min-height: 22px;
+  white-space: nowrap;
+  padding: 0 7px;
+}
+
+.code-studio-body {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 48px clamp(230px, 18vw, 300px) minmax(480px, 1fr) clamp(280px, 22vw, 360px);
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.code-studio-activitybar {
+  display: grid;
+  grid-auto-rows: 48px;
+  align-content: start;
+  gap: 0;
+  padding: 0;
+  border-right: 1px solid #2d2d30;
+  background: #333333;
+}
+
+.code-studio-activitybar button {
+  width: 100%;
+  min-height: 48px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #c5c5c5;
+  font-size: 18px;
+}
+
+.code-studio-sidebar {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  border-right: 1px solid #2d2d30;
+  background: #252526;
+}
+
+.code-studio-open-editors,
+.code-studio-tree,
+.code-studio-file-map-dock {
+  min-width: 0;
+  min-height: 0;
+}
+
+.code-studio-tree {
+  overflow: auto;
+  max-height: 180px;
+}
+
+.code-studio-file-map-dock {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.code-studio-file-map-dock .file-map-panel {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  margin: 8px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #1e1e1e;
+}
+
+.code-studio-file-map-dock .file-map-toolbar {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.code-studio-file-map-dock .file-map-toolbar button {
+  width: 100%;
+}
+
+.code-studio-file-map-dock .file-map-status {
+  min-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-studio-file-map-dock .file-map-list {
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  overflow: auto;
+  padding: 6px;
+  scrollbar-gutter: stable;
+}
+
+.code-studio-file-map-dock .file-map-row {
+  min-height: 22px;
+  grid-template-columns: 18px auto minmax(0, 1fr) auto;
+  gap: 5px;
+  font-size: 11px;
+}
+
+.code-studio-file-map-dock .file-map-expander {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0;
+}
+
+.code-studio-editor-group {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: none;
+  grid-template-rows: 35px minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.code-studio-tabs {
+  min-width: 0;
+  height: 35px;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid #2d2d30;
+}
+
+.code-studio-tabs button {
+  min-width: 132px;
+  border-radius: 0;
+  border-width: 0 1px 0 0;
+  border-color: #2d2d30;
+  background: #2d2d2d;
+  color: #cccccc;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.code-studio-editor-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.code-studio-editor-pane.active {
+  display: grid;
+  grid-template-rows: 42px minmax(0, 1fr);
+}
+
+.code-studio-pane-toolbar {
+  min-width: 0;
+  min-height: 0;
+  gap: 10px;
+  padding: 8px 12px;
+  overflow: hidden;
+}
+
+.code-studio-pane-toolbar span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.code-studio-code-frame,
+.code-studio-runtime-preview,
+.code-studio-output,
+.code-studio-contract-report {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+
+#code-studio-source-editor {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.code-studio-runtime-preview {
+  padding: 14px;
+}
+
+.code-studio-runtime-layout {
+  min-height: 0;
+}
+
+.code-studio-runtime-editor textarea {
+  width: 100%;
+  min-height: 280px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.code-studio-inspector {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, auto) auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+  border-left: 1px solid #2d2d30;
+  border-right: 0;
+  padding: 12px;
+  background: #252526;
+}
+
+.code-studio-proof-list {
+  min-height: 0;
+  max-height: 190px;
+  overflow: auto;
+}
+
+.code-studio-status-card {
+  margin-top: 0;
+}
+
+.code-studio-contract-envelope {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  margin-top: 0;
+}
+
+#code-studio-contract-envelope {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.code-studio-bottom-panel {
+  position: absolute;
+  left: 48px;
+  right: 0;
+  bottom: 24px;
+  z-index: 40;
+  height: 38px;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr);
+  overflow: hidden;
+  border-top: 1px solid #2d2d30;
+  background: #181818;
+  box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.35);
+}
+
+.code-studio-bottom-panel[data-expanded="true"] {
+  height: min(360px, 45%);
+}
+
+.code-studio-bottom-tabs {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border-bottom: 1px solid #2d2d30;
+  background: #252526;
+}
+
+.code-studio-bottom-tabs span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.code-studio-bottom-panel[data-expanded="false"] .code-studio-aider-shell {
+  display: none;
+}
+
+.code-studio-aider-shell {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  overflow: hidden;
+  padding: 10px;
+  background: #181818;
+}
+
+.code-studio-aider-shell .aider-workspace {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+}
+
+.code-studio-aider-shell .aider-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.code-studio-aider-shell #aider-files,
+.code-studio-aider-shell #aider-instruction {
+  min-height: 90px;
+  max-height: 140px;
+  resize: vertical;
+}
+
+.code-studio-aider-shell .aider-history-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 10px;
+  overflow: hidden;
+}
+
+.code-studio-aider-shell .aider-history-list-wrap,
+.code-studio-aider-shell .aider-archive-panel,
+.code-studio-aider-shell .aider-output {
+  min-height: 0;
+  overflow: auto;
+}
+
+.code-studio-statusbar {
+  min-width: 0;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  overflow: hidden;
+  background: #007acc;
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.code-studio-statusbar span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1250px) {
+  .code-studio-body {
+    grid-template-columns: 48px clamp(220px, 26vw, 300px) minmax(0, 1fr);
+  }
+
+  .code-studio-inspector {
+    display: none;
+  }
+}
+
+@media (max-width: 820px) {
+  .code-editor-app {
+    height: auto;
+    max-height: none;
+    min-height: 720px;
+    overflow: auto;
+  }
+
+  .code-studio-shell {
+    min-height: 720px;
+    grid-template-rows: auto minmax(0, 1fr) 24px;
+  }
+
+  .code-studio-titlebar {
+    grid-template-columns: 1fr;
+    padding: 8px;
+  }
+
+  .code-studio-title-actions {
+    justify-content: start;
+    flex-wrap: wrap;
+  }
+
+  .code-studio-body {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .code-studio-sidebar {
+    display: none;
+  }
+
+  .code-studio-editor-group {
+    grid-column: 2;
+  }
+
+  .code-studio-bottom-panel {
+    left: 42px;
+  }
+}

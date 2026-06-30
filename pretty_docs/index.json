@@ -25,6 +25,18 @@
       "order": 37
     },
     {
+      "path": "mcel-code-studio-example.md",
+      "title": "MCEL Code Studio Example",
+      "kind": "markdown",
+      "order": 38
+    },
+    {
+      "path": "mcel-debug-observability.md",
+      "title": "MCEL Debug Observability",
+      "kind": "markdown",
+      "order": 39
+    },
+    {
       "path": "website-builder-remote-coolify-publishing.md",
       "title": "Website Builder Remote Coolify Publishing",
       "kind": "markdown",

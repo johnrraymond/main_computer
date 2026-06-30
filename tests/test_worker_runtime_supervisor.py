@@ -131,8 +131,10 @@ def test_worker_runtime_status_read_is_display_only(tmp_path, monkeypatch) -> No
     status = service.read_worker_runtime_status()
 
     assert status["autoConnect"] == {"network": "dev", "enabled": True}
-    assert status["runtime"]["state"] in {"RECONNECTING", "CONNECTED"}
-    assert status["runtimeDisplay"]["center"] in {"RECONNECTING", "CONNECTED"}
+    assert status["runtime"]["state"] == "RECONNECTING"
+    assert status["runtime"]["allowed_to_accept"] is False
+    assert status["runtime"]["heartbeat_result"] is None
+    assert status["runtimeDisplay"]["center"] == "RECONNECTING"
 
 
 class _FakeRuntimeForSupervisor:
@@ -169,6 +171,11 @@ class _FakeRuntimeForSupervisor:
                 "lastCheckedAt": heartbeat_at,
                 "last_checked_at": heartbeat_at,
                 "lastError": "",
+                "heartbeat_result": {
+                    "ok": True,
+                    "transport": "websocket",
+                    "live_session": {"alive": True, "active_work_count": 0},
+                },
             },
         }
 
@@ -222,6 +229,39 @@ def test_worker_runtime_supervisor_marks_stale_connected_cache_as_reconnecting()
     assert status["runtime"]["stale"] is True
     assert status["runtimeDisplay"]["center"] == "RECONNECTING"
     assert status["runtimeDisplay"]["sw"] == "Supervisor stale"
+    assert status["supervisor"]["supervisor_stale"] is True
+
+
+def test_worker_runtime_supervisor_reconciles_stale_connected_cache_on_status() -> None:
+    runtime = _FakeRuntimeForSupervisor()
+    supervisor = WorkerRuntimeSupervisor(runtime, interval_s=1)
+    supervisor.update_status(runtime._status(heartbeat_at="2026-01-01T00:00:00+00:00"))
+
+    with supervisor._status_lock:
+        supervisor._latest_status_at -= 120.0
+
+    supervisor.ensure_started = lambda reason="runtime-status": False  # type: ignore[method-assign]
+    status = supervisor.status(ensure_running=True)
+
+    assert runtime.reconcile_count == 1
+    assert status["runtime"]["state"] == "CONNECTED"
+    assert status["runtimeDisplay"]["center"] == "CONNECTED"
+
+
+def test_worker_runtime_supervisor_marks_connected_cache_without_live_session_as_reconnecting() -> None:
+    runtime = _FakeRuntimeForSupervisor()
+    supervisor = WorkerRuntimeSupervisor(runtime, interval_s=1)
+    status_without_live = runtime._status(heartbeat_at="2026-01-01T00:00:00+00:00")
+    status_without_live["runtime"]["heartbeat_result"] = None
+    supervisor.update_status(status_without_live)
+
+    status = supervisor.status(ensure_running=False)
+
+    assert status["runtime"]["state"] == "RECONNECTING"
+    assert status["runtime"]["allowed_to_accept"] is False
+    assert status["runtime"]["missing_live_session"] is True
+    assert status["runtimeDisplay"]["center"] == "RECONNECTING"
+    assert status["runtimeDisplay"]["sw"] == "Live session missing"
     assert status["supervisor"]["supervisor_stale"] is True
 
 
@@ -279,3 +319,93 @@ def test_worker_runtime_supervisor_fresh_success_exposes_stable_diagnostics_cont
     assert diagnostics["supervisorStale"] is False
     assert status["runtime"]["state"] == "CONNECTED"
     assert status["runtimeDisplay"]["center"] == "CONNECTED"
+
+
+def test_worker_runtime_status_response_is_compact_and_redacted_by_default(tmp_path) -> None:
+    server = _DummyServer(tmp_path)
+    service = WorkerRuntimeService(server)
+    sensitive_wallet = "0x" + "a" * 40
+    status = {
+        "ok": True,
+        "autoConnect": {"network": "dev", "enabled": True},
+        "runtimeDisplay": {"center": "CONNECTED"},
+        "status": "available",
+        "statusLabel": "Available",
+        "reason": "ok",
+        "identity": {
+            "wallet": sensitive_wallet,
+            "creditWallet": sensitive_wallet,
+            "workerId": "local-worker-001",
+        },
+        "signedOrder": {
+            "wallet": sensitive_wallet,
+            "multisession_key_id": "msk_secret",
+        },
+        "settings": {
+            "signedWorkerConnection": {
+                "wallet_address": sensitive_wallet,
+                "multisession_key_id": "msk_secret",
+            }
+        },
+        "localPolicy": {"allowed": True, "reason": "AI idle", "source": "local_ai_capacity_v1"},
+        "worker": {"pricingPolicy": "fixed", "pool": {"wallet_address": sensitive_wallet}},
+        "runtime": {
+            "enabled": True,
+            "state": "CONNECTED",
+            "phase": "accepting",
+            "allowed_to_accept": True,
+            "allowedToAccept": True,
+            "active_jobs": 0,
+            "activeJobs": 0,
+            "hub_status": "available",
+            "hubAvailability": "available",
+            "reason": "ok",
+            "last_checked_at": "2026-01-01T00:00:00+00:00",
+            "lastCheckedAt": "2026-01-01T00:00:00+00:00",
+            "last_heartbeat_at": "2026-01-01T00:00:00+00:00",
+            "lastHeartbeatAt": "2026-01-01T00:00:00+00:00",
+            "heartbeat_result": {
+                "ok": True,
+                "transport": "websocket",
+                "endpoint": "/api/hub/v1/workers/live-session",
+                "worker": {
+                    "status": "available",
+                    "active_requests": 0,
+                    "max_concurrency": 1,
+                    "capabilities": {
+                        "capabilities": ["chat.completions"],
+                        "credit_wallet": sensitive_wallet,
+                        "multisession_key_id": "msk_secret",
+                        "worker_instance_id": "local-worker-001",
+                    },
+                },
+                "live_session": {
+                    "alive": True,
+                    "active_work_count": 0,
+                    "worker_instance_id": "conn_secret",
+                    "accepted": {"connection_id": "conn_secret", "wallet_address": sensitive_wallet},
+                    "last_offer": {"multisession_key_id": "msk_secret"},
+                },
+            },
+            "policy": {
+                "local_policy": {"allowed": True, "reason": "AI idle", "source": "local_ai_capacity_v1"},
+                "signed_order": {"wallet": sensitive_wallet, "multisession_key_id": "msk_secret"},
+            },
+            "setup": {"state": "ready", "ready": True, "network": "dev", "missing": []},
+        },
+        "supervisor": {"thread_alive": True, "supervisorStale": False},
+    }
+
+    compact = service._worker_runtime_status_response_payload(status)
+    compact_text = str(compact)
+
+    assert "settings" not in compact
+    assert "signedOrder" not in compact
+    assert "identity" not in compact
+    assert sensitive_wallet not in compact_text
+    assert "msk_secret" not in compact_text
+    assert "local-worker-001" not in compact_text
+    assert "conn_secret" not in compact_text
+    assert compact["runtime"]["heartbeat_result"]["live_session"]["alive"] is True
+    assert compact["runtime"]["heartbeat_result"]["worker"]["capabilities"] == ["chat.completions"]
+    assert compact["supervisor"]["thread_alive"] is True

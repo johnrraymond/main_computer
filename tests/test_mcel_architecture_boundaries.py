@@ -22,6 +22,9 @@ MCEL_LAYER_INVENTORY = {
         "main_computer/web/applications/scripts/mcel-engine.js",
         "main_computer/web/applications/scripts/mcel-editor.js",
     ],
+    "strict-composition": [
+        "main_computer/web/applications/scripts/mcel-scm.js",
+    ],
     "law-internal": [
         "main_computer/web/applications/scripts/mcel-law-registry.js",
         "main_computer/web/applications/scripts/mcel-style-law.js",
@@ -107,6 +110,13 @@ CORE_FACADE_METHODS = [
     "buildSubsumptionLattice",
     "buildAdoptionCase",
     "buildWorkbenchPlan",
+    "defineComponent",
+    "validateComponentManifest",
+    "listComponentDefinitions",
+    "componentDefinition",
+    "createComponentInstance",
+    "transition",
+    "exportScmEvidence",
     "listChromes",
     "normalizeChrome",
     "describeChrome",

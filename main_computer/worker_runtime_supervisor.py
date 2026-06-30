@@ -147,6 +147,33 @@ class WorkerRuntimeSupervisor:
                 "latestStatusAgeSeconds": latest_status_age,
             }
 
+    @staticmethod
+    def _status_has_live_session_proof(status: dict[str, Any] | None) -> bool:
+        if not isinstance(status, dict):
+            return False
+        runtime = status.get("runtime")
+        if not isinstance(runtime, dict):
+            return False
+        heartbeat = runtime.get("heartbeat_result")
+        if not isinstance(heartbeat, dict):
+            return False
+        live_session = heartbeat.get("live_session")
+        return isinstance(live_session, dict) and bool(live_session.get("alive"))
+
+    @staticmethod
+    def _status_claims_connected(status: dict[str, Any] | None) -> bool:
+        if not isinstance(status, dict):
+            return False
+        runtime = status.get("runtime")
+        if not isinstance(runtime, dict):
+            return False
+        runtime_state = str(runtime.get("state") or "").strip().upper()
+        phase = str(runtime.get("phase") or "").strip()
+        return runtime_state in {"CONNECTED", "ACTIVE"} or phase == "accepting"
+
+    def _connected_cache_is_missing_live_proof(self, status: dict[str, Any] | None) -> bool:
+        return self._status_claims_connected(status) and not self._status_has_live_session_proof(status)
+
     def _cached_connected_state_is_stale(self, diagnostics: dict[str, Any]) -> bool:
         last_success_age = diagnostics.get("last_success_age_s")
         if isinstance(last_success_age, (int, float)):
@@ -166,7 +193,8 @@ class WorkerRuntimeSupervisor:
             runtime = {}
             payload["runtime"] = runtime
         runtime_state = str(runtime.get("state") or "").strip().upper()
-        if runtime_state in {"CONNECTED", "ACTIVE"} and self._cached_connected_state_is_stale(diagnostics):
+        missing_live_proof = self._connected_cache_is_missing_live_proof(payload)
+        if runtime_state in {"CONNECTED", "ACTIVE"} and (missing_live_proof or self._cached_connected_state_is_stale(diagnostics)):
             stale_connected = True
             display = {
                 "state": "RECONNECTING",
@@ -174,15 +202,23 @@ class WorkerRuntimeSupervisor:
                 "tone": "warn",
                 "nw": "Cached worker state",
                 "ne": "Backend supervisor",
-                "sw": "Supervisor stale",
+                "sw": "Live session missing" if missing_live_proof else "Supervisor stale",
                 "se": "Heartbeat pending",
-                "foot": "Waiting for backend heartbeat.",
+                "foot": "Waiting for backend live-session heartbeat.",
             }
             runtime["state"] = "RECONNECTING"
             runtime["stale"] = True
             runtime["supervisor_stale"] = True
             runtime["supervisorStale"] = True
-            runtime["reason"] = "Worker runtime supervisor has not produced a fresh heartbeat."
+            runtime["missing_live_session"] = bool(missing_live_proof)
+            runtime["missingLiveSession"] = bool(missing_live_proof)
+            runtime["allowed_to_accept"] = False
+            runtime["allowedToAccept"] = False
+            runtime["reason"] = (
+                "Worker runtime supervisor has not produced a live-session heartbeat."
+                if missing_live_proof
+                else "Worker runtime supervisor has not produced a fresh heartbeat."
+            )
             runtime["display"] = display
             payload["runtimeDisplay"] = display
 
@@ -199,6 +235,24 @@ class WorkerRuntimeSupervisor:
         with self._status_lock:
             latest = copy.deepcopy(self._latest_status) if isinstance(self._latest_status, dict) else None
         if isinstance(latest, dict):
+            if ensure_running and self._status_claims_connected(latest):
+                diagnostics = self.diagnostics()
+                missing_live_proof = self._connected_cache_is_missing_live_proof(latest)
+                stale_connected = self._cached_connected_state_is_stale(diagnostics)
+                if missing_live_proof or stale_connected:
+                    try:
+                        reason = (
+                            "runtime-status-missing-live-session"
+                            if missing_live_proof
+                            else "runtime-status-stale-connected-cache"
+                        )
+                        return self.reconcile_now(reason=reason, send_heartbeat=True)
+                    except Exception as exc:
+                        error_iso = _now_iso()
+                        with self._status_lock:
+                            self._last_error = str(exc)
+                            self._last_error_at = error_iso
+                            self._error_count += 1
             return self._with_supervisor_metadata(latest)
         try:
             status = self.runtime.read_worker_runtime_status()
@@ -236,6 +290,24 @@ class WorkerRuntimeSupervisor:
                     "foot": "Check server logs.",
                 },
             }
+        if ensure_running and self._status_claims_connected(status):
+            diagnostics = self.diagnostics()
+            missing_live_proof = self._connected_cache_is_missing_live_proof(status)
+            stale_connected = self._cached_connected_state_is_stale(diagnostics)
+            if missing_live_proof or stale_connected:
+                try:
+                    reason = (
+                        "runtime-status-read-missing-live-session"
+                        if missing_live_proof
+                        else "runtime-status-read-stale-connected-cache"
+                    )
+                    return self.reconcile_now(reason=reason, send_heartbeat=True)
+                except Exception as exc:
+                    error_iso = _now_iso()
+                    with self._status_lock:
+                        self._last_error = str(exc)
+                        self._last_error_at = error_iso
+                        self._error_count += 1
         self.update_status(status)
         return self._with_supervisor_metadata(status)
 

@@ -430,6 +430,457 @@
         };
       }
 
+
+      const debugMechanisms = Object.freeze([
+        Object.freeze({id: "mcel.debug.operation.timeline.v1", layer: "core", claim: "Every public MCEL operation can leave a timestamped envelope."}),
+        Object.freeze({id: "mcel.debug.page.metrics.v1", layer: "browser", claim: "A capture records viewport and document height so page-stack failures are visible."}),
+        Object.freeze({id: "mcel.debug.root.identity.v1", layer: "source", claim: "A capture records the selected root selector, source id, and component attributes."}),
+        Object.freeze({id: "mcel.debug.css.computed-style.v1", layer: "style", claim: "A capture records computed display/background/overflow for critical nodes."}),
+        Object.freeze({id: "mcel.debug.css.not-winning.v1", layer: "style", claim: "Expected computed styles can fail closed when scoped CSS is not winning."}),
+        Object.freeze({id: "mcel.debug.theme-leak.v1", layer: "style", claim: "Global button/theme leakage is detected with color and selector evidence."}),
+        Object.freeze({id: "mcel.debug.grid-contract.v1", layer: "layout", claim: "Grid-owned shells report when display:grid is missing at runtime."}),
+        Object.freeze({id: "mcel.debug.stacked-children.v1", layer: "layout", claim: "Workbench children that should share a row report top/height evidence when stacked."}),
+        Object.freeze({id: "mcel.debug.scroll-boundary.v1", layer: "layout", claim: "Page-level scroll bloat is reported separately from intended internal scroll areas."}),
+        Object.freeze({id: "mcel.debug.dominant-element.v1", layer: "layout", claim: "The largest rendered elements are listed so runaway panels are obvious."}),
+        Object.freeze({id: "mcel.debug.collapsed-dock.v1", layer: "interaction", claim: "Docks expected to be collapsed report if they dominate the app."}),
+        Object.freeze({id: "mcel.debug.generated-boundary.v1", layer: "runtime", claim: "Generated/runtime-owned parts are counted and tagged for source firewall studies."}),
+        Object.freeze({id: "mcel.debug.serializer-firewall.v1", layer: "serializer", claim: "Serialization captures can include whether generated runtime artifacts survived."}),
+        Object.freeze({id: "mcel.debug.repair-evidence.v1", layer: "repair", claim: "Repair captures can be attached to the before/after runtime envelope."}),
+        Object.freeze({id: "mcel.debug.a11y-snapshot.v1", layer: "a11y", claim: "A capture can include label, role, hidden, inert, and focus warnings."}),
+        Object.freeze({id: "mcel.debug.contract-clause.v1", layer: "contract", claim: "Debug issues can point back to user-space contract clauses instead of vague failures."}),
+        Object.freeze({id: "mcel.debug.failure-packet.v1", layer: "study", claim: "The packet is JSON-safe and ready to paste into a bug report."}),
+        Object.freeze({id: "mcel.debug.no-hidden-magic.v1", layer: "study", claim: "A capture records what was inspected and what was not inspectable."})
+      ]);
+
+      function listDebugMechanisms() {
+        return debugMechanisms.map((mechanism) => ({...mechanism}));
+      }
+
+      function debugNow() {
+        try {
+          return new Date().toISOString();
+        } catch (_error) {
+          return "unknown-time";
+        }
+      }
+
+      function debugStableHash(value) {
+        const text = String(value || "");
+        let hash = 2166136261;
+        for (let index = 0; index < text.length; index += 1) {
+          hash ^= text.charCodeAt(index);
+          hash = Math.imul(hash, 16777619);
+        }
+        return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+      }
+
+      function debugSafeText(value, max = 160) {
+        return String(value || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, max);
+      }
+
+      function debugNodeLabel(node) {
+        if (!node) return "null";
+        if (node.nodeType === 9) return "document";
+        const tag = String(node.tagName || "node").toLowerCase();
+        const id = node.id ? `#${node.id}` : "";
+        const classes = typeof node.className === "string" && node.className.trim()
+          ? `.${node.className.trim().split(/\s+/).slice(0, 4).join(".")}`
+          : "";
+        return `${tag}${id}${classes}`;
+      }
+
+      function debugElementPath(node, root = null) {
+        if (!node || node.nodeType !== 1) return debugNodeLabel(node);
+        const parts = [];
+        let current = node;
+        while (current && current.nodeType === 1 && current !== root && parts.length < 8) {
+          let part = String(current.tagName || "node").toLowerCase();
+          if (current.id) {
+            part += `#${current.id}`;
+            parts.unshift(part);
+            break;
+          }
+          if (typeof current.className === "string" && current.className.trim()) {
+            part += `.${current.className.trim().split(/\s+/).slice(0, 2).join(".")}`;
+          }
+          const parent = current.parentElement;
+          if (parent) {
+            const siblings = [...parent.children].filter((item) => item.tagName === current.tagName);
+            if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+          }
+          parts.unshift(part);
+          current = parent;
+        }
+        return parts.join(" > ") || debugNodeLabel(node);
+      }
+
+      function debugRect(node) {
+        if (!node?.getBoundingClientRect) return null;
+        const rect = node.getBoundingClientRect();
+        const round = (value) => Math.round(Number(value || 0) * 100) / 100;
+        return {
+          x: round(rect.x),
+          y: round(rect.y),
+          w: round(rect.width),
+          h: round(rect.height),
+          right: round(rect.right),
+          bottom: round(rect.bottom)
+        };
+      }
+
+      function debugDocumentFor(root) {
+        if (root?.nodeType === 9) return root;
+        return root?.ownerDocument || (typeof document !== "undefined" ? document : null);
+      }
+
+      function debugWindowFor(doc) {
+        return doc?.defaultView || (typeof window !== "undefined" ? window : null);
+      }
+
+      function debugComputed(node, properties = []) {
+        const doc = debugDocumentFor(node);
+        const view = debugWindowFor(doc);
+        if (!node || !view?.getComputedStyle) return null;
+        const computed = view.getComputedStyle(node);
+        const result = {};
+        properties.forEach((property) => {
+          result[property] = computed.getPropertyValue(property);
+        });
+        return result;
+      }
+
+      function debugIsLightYellowish(color) {
+        const match = String(color || "").match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (!match) return false;
+        const red = Number(match[1]);
+        const green = Number(match[2]);
+        const blue = Number(match[3]);
+        return red > 180 && green > 130 && blue < 140;
+      }
+
+      function debugResolveRoot(targetOrOptions, options = {}) {
+        const looksLikeOptions = targetOrOptions &&
+          typeof targetOrOptions === "object" &&
+          !targetOrOptions.nodeType &&
+          (
+            targetOrOptions.root ||
+            targetOrOptions.rootSelector ||
+            targetOrOptions.name ||
+            targetOrOptions.expected ||
+            targetOrOptions.probes ||
+            targetOrOptions.reason
+          );
+        const opts = looksLikeOptions ? targetOrOptions : options;
+        const explicitRoot = looksLikeOptions ? opts.root : targetOrOptions;
+        const doc = debugDocumentFor(explicitRoot);
+        const root = explicitRoot ||
+          (opts.rootSelector && doc?.querySelector ? doc.querySelector(opts.rootSelector) : null) ||
+          doc?.body ||
+          null;
+        return {root, doc: debugDocumentFor(root) || doc, options: opts};
+      }
+
+      function debugElementSummary(node, root = null) {
+        if (!node) return null;
+        const rect = debugRect(node);
+        const style = debugComputed(node, [
+          "display",
+          "position",
+          "overflow",
+          "overflow-x",
+          "overflow-y",
+          "height",
+          "min-height",
+          "max-height",
+          "grid-template-columns",
+          "grid-template-rows",
+          "background-color",
+          "color"
+        ]);
+        return {
+          label: debugNodeLabel(node),
+          path: debugElementPath(node, root),
+          id: node.id || "",
+          className: String(node.className || "").slice(0, 180),
+          text: debugSafeText(node.textContent, 120),
+          rect,
+          style
+        };
+      }
+
+      function debugLargestElements(root, limit = 20) {
+        if (!root?.querySelectorAll) return [];
+        return [...root.querySelectorAll("*")]
+          .map((node) => debugElementSummary(node, root))
+          .filter((summary) => summary?.rect && summary.rect.w > 20 && summary.rect.h > 20)
+          .sort((left, right) => right.rect.h - left.rect.h)
+          .slice(0, limit);
+      }
+
+      function debugChildrenStacking(container, root) {
+        if (!container?.children) return null;
+        const visible = [...container.children]
+          .map((child) => ({child, rect: debugRect(child)}))
+          .filter((item) => item.rect && item.rect.w > 10 && item.rect.h > 10);
+        const tops = [...new Set(visible.map((item) => Math.round(item.rect.y)))];
+        return {
+          stacked: tops.length > 2,
+          uniqueTops: tops,
+          children: visible.map((item) => ({
+            label: debugNodeLabel(item.child),
+            path: debugElementPath(item.child, root),
+            top: Math.round(item.rect.y),
+            height: Math.round(item.rect.h),
+            width: Math.round(item.rect.w)
+          }))
+        };
+      }
+
+      function captureDebugEnvelope(targetOrOptions = null, options = {}) {
+        const {root, doc, options: opts} = debugResolveRoot(targetOrOptions, options);
+        const view = debugWindowFor(doc);
+        const issues = [];
+        const inspected = [];
+        const skipped = [];
+
+        function addIssue(id, severity, message, data = {}) {
+          issues.push({
+            id,
+            severity,
+            message,
+            data,
+            contractClause: data.contractClause || null
+          });
+        }
+
+        function inspectSelector(name, selector) {
+          if (!selector || !doc?.querySelector) {
+            skipped.push({name, selector, reason: "selector-unavailable"});
+            return null;
+          }
+          const node = doc.querySelector(selector);
+          if (!node) {
+            skipped.push({name, selector, reason: "not-found"});
+            return null;
+          }
+          inspected.push({name, selector, label: debugNodeLabel(node)});
+          return node;
+        }
+
+        const expected = opts.expected || {};
+        const selectors = opts.selectors || {};
+        const rootSelector = opts.rootSelector || selectors.root || "";
+        const rootSummary = debugElementSummary(root, root);
+
+        if (!root) {
+          addIssue(
+            "mcel.debug.root.missing",
+            "critical",
+            "No debug root could be resolved. MCEL cannot explain this page without a target root.",
+            {rootSelector}
+          );
+        }
+
+        const viewport = view ? {
+          width: Number(view.innerWidth || 0),
+          height: Number(view.innerHeight || 0),
+          scrollY: Number(view.scrollY || 0),
+          devicePixelRatio: Number(view.devicePixelRatio || 1)
+        } : null;
+        const documentHeight = doc?.scrollingElement?.scrollHeight || doc?.body?.scrollHeight || 0;
+        const documentMetrics = {
+          readyState: doc?.readyState || "",
+          url: doc?.location?.href || view?.location?.href || "",
+          title: doc?.title || "",
+          documentHeight,
+          bodyHeight: doc?.body?.scrollHeight || 0,
+          elementHeight: doc?.documentElement?.scrollHeight || 0,
+          viewportToDocumentRatio: viewport?.height ? Math.round((documentHeight / viewport.height) * 100) / 100 : null
+        };
+
+        if (viewport?.height && expected.maxDocumentHeightRatio && documentHeight > viewport.height * expected.maxDocumentHeightRatio) {
+          addIssue(
+            "mcel.debug.page.too-tall",
+            "critical",
+            "The document is much taller than the viewport; the app is probably leaking internal panels into page scroll.",
+            {
+              documentHeight,
+              viewportHeight: viewport.height,
+              maxRatio: expected.maxDocumentHeightRatio,
+              ratio: documentMetrics.viewportToDocumentRatio,
+              contractClause: "mcel.user.runtime-generation-is-discardable.v1"
+            }
+          );
+        }
+
+        if (rootSummary?.rect && viewport?.height && expected.maxRootHeightRatio && rootSummary.rect.h > viewport.height * expected.maxRootHeightRatio) {
+          addIssue(
+            "mcel.debug.root.too-tall",
+            "critical",
+            "The MCEL root is taller than its allowed workbench envelope.",
+            {
+              rootHeight: rootSummary.rect.h,
+              viewportHeight: viewport.height,
+              maxRatio: expected.maxRootHeightRatio,
+              contractClause: "mcel.user.runtime-generation-is-discardable.v1"
+            }
+          );
+        }
+
+        if (expected.rootBackground && rootSummary?.style?.["background-color"] !== expected.rootBackground) {
+          addIssue(
+            "mcel.debug.css.not-winning",
+            "critical",
+            "The root computed background does not match the expected scoped style.",
+            {
+              actual: rootSummary.style?.["background-color"] || "",
+              expected: expected.rootBackground,
+              rootSelector,
+              mechanism: "mcel.debug.css.not-winning.v1",
+              contractClause: "mcel.user.validation-is-evidence-not-trust.v1"
+            }
+          );
+        }
+
+        (expected.displayGridSelectors || []).forEach((selector) => {
+          const node = inspectSelector("grid", selector);
+          const style = debugComputed(node, ["display", "grid-template-columns", "grid-template-rows"]);
+          if (node && style?.display !== "grid") {
+            addIssue(
+              "mcel.debug.layout.grid-missing",
+              "critical",
+              "A selector that is required to be a grid is not display:grid at runtime.",
+              {
+                selector,
+                actualDisplay: style?.display || "",
+                gridTemplateColumns: style?.["grid-template-columns"] || "",
+                gridTemplateRows: style?.["grid-template-rows"] || "",
+                mechanism: "mcel.debug.grid-contract.v1",
+                contractClause: "mcel.user.validation-is-evidence-not-trust.v1"
+              }
+            );
+          }
+        });
+
+        (expected.stackedChildrenSelectors || []).forEach((selector) => {
+          const node = inspectSelector("stacking", selector);
+          const stacking = debugChildrenStacking(node, root);
+          if (stacking?.stacked) {
+            addIssue(
+              "mcel.debug.layout.children-stacked",
+              "critical",
+              "The main workbench children do not share a row; this is the vertical pile failure.",
+              {
+                selector,
+                childTops: stacking.children,
+                mechanism: "mcel.debug.stacked-children.v1",
+                contractClause: "mcel.user.validation-is-evidence-not-trust.v1"
+              }
+            );
+          }
+        });
+
+        (expected.collapsedSelectors || []).forEach((selector) => {
+          const node = inspectSelector("collapsed", selector);
+          const rect = debugRect(node);
+          const expanded = node?.dataset?.expanded === "true" || node?.getAttribute?.("aria-expanded") === "true";
+          const maxHeight = Number(expected.maxCollapsedHeight || 80);
+          if (node && rect && !expanded && rect.h > maxHeight) {
+            addIssue(
+              "mcel.debug.layout.dock-not-collapsed",
+              "high",
+              "A dock expected to be collapsed is consuming visible space.",
+              {
+                selector,
+                height: rect.h,
+                maxHeight,
+                dataExpanded: node?.dataset?.expanded || "",
+                mechanism: "mcel.debug.collapsed-dock.v1",
+                contractClause: "mcel.user.runtime-generation-is-discardable.v1"
+              }
+            );
+          }
+        });
+
+        if (expected.forbidYellowGlobalThemeLeak !== false && root?.querySelectorAll) {
+          const leakingButtons = [...root.querySelectorAll("button")]
+            .map((button) => {
+              const style = debugComputed(button, ["background-color", "color"]);
+              return {button, style};
+            })
+            .filter((item) => debugIsLightYellowish(item.style?.["background-color"]))
+            .slice(0, 10);
+
+          if (leakingButtons.length) {
+            addIssue(
+              "mcel.debug.css.global-theme-leak",
+              "critical",
+              "Buttons inside the MCEL root are using a global yellow theme instead of a scoped component style.",
+              {
+                count: leakingButtons.length,
+                samples: leakingButtons.map((item) => ({
+                  text: debugSafeText(item.button.textContent, 80),
+                  path: debugElementPath(item.button, root),
+                  backgroundColor: item.style?.["background-color"] || "",
+                  color: item.style?.color || ""
+                })),
+                mechanism: "mcel.debug.theme-leak.v1",
+                contractClause: "mcel.user.validation-is-evidence-not-trust.v1"
+              }
+            );
+          }
+        }
+
+        const selectorSummaries = {};
+        Object.entries(selectors).forEach(([name, selector]) => {
+          if (name === "root") return;
+          const node = inspectSelector(name, selector);
+          selectorSummaries[name] = debugElementSummary(node, root);
+        });
+
+        const sourceSelector = `[${attributes.type}]`;
+        const generatedSelector = `[${attributes.generated}="true"]`;
+        const sourceCount = root?.querySelectorAll ? root.querySelectorAll(sourceSelector).length : 0;
+        const generatedCount = root?.querySelectorAll ? root.querySelectorAll(generatedSelector).length : 0;
+
+        return {
+          kind: "mcel-debug-envelope",
+          contractVersion: contract.contractVersion,
+          generatedAt: debugNow(),
+          captureId: debugStableHash(`${opts.name || "mcel"}:${opts.reason || ""}:${documentMetrics.url}:${documentHeight}:${issues.length}`),
+          name: opts.name || "mcel-debug-capture",
+          reason: opts.reason || "manual-debug-capture",
+          ok: issues.length === 0,
+          mechanismCount: debugMechanisms.length,
+          mechanisms: listDebugMechanisms(),
+          issues,
+          inspected,
+          skipped,
+          viewport,
+          documentMetrics,
+          root: rootSummary,
+          selectors: selectorSummaries,
+          largestElements: debugLargestElements(root, Number(opts.largestLimit || 20)),
+          sourceBoundary: {
+            sourceSelector,
+            generatedSelector,
+            sourceCount,
+            generatedCount,
+            sourceIds: root?.querySelectorAll ? [...root.querySelectorAll(sourceSelector)].slice(0, 20).map((node) => ({
+              label: debugNodeLabel(node),
+              path: debugElementPath(node, root),
+              sourceIndex: node.getAttribute?.(attributes.sourceIndex) || "",
+              type: node.getAttribute?.(attributes.type) || "",
+              component: node.getAttribute?.(attributes.componentName) || ""
+            })) : []
+          }
+        };
+      }
+
+
       function formatHtml(html) {
         return String(html || "")
           .replace(/></g, ">\n<")
@@ -676,6 +1127,8 @@
         damageRuntimeRoot,
         computeA11y,
         debuggerStateFor,
+        captureDebugEnvelope,
+        listDebugMechanisms,
         stripGeneratedParts,
         formatHtml,
         normalizeValue,
