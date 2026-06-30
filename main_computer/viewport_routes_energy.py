@@ -158,6 +158,8 @@ class _WorkerHubLiveSessionClient:
         self._state_lock = threading.RLock()
         self._stop_event = threading.Event()
         self._reader_thread: threading.Thread | None = None
+        self._keepalive_thread: threading.Thread | None = None
+        self.keepalive_interval_s = 10.0
 
     @property
     def is_alive(self) -> bool:
@@ -249,6 +251,12 @@ class _WorkerHubLiveSessionClient:
             daemon=True,
         )
         self._reader_thread.start()
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop,
+            name=f"main-computer-worker-live-session-keepalive-{self.worker_id}",
+            daemon=True,
+        )
+        self._keepalive_thread.start()
         return self.snapshot()
 
     def close(self, reason: str = "closed_by_runtime") -> None:
@@ -297,6 +305,47 @@ class _WorkerHubLiveSessionClient:
                 "has_active_work": self.active_work_count > 0,
                 "alive": self.is_alive,
             }
+
+    def _send_keepalive(self) -> None:
+        self._send_json(
+            {
+                "type": "worker.pong",
+                "keepalive": True,
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    def _keepalive_loop(self) -> None:
+        """Keep the live-session WebSocket active while local AI is pre-filling.
+
+        The Hub sends an initial ``hub.ping`` during authentication, but the
+        request thread then blocks reading worker messages.  Real local models can
+        spend longer than common 30 second idle limits before producing a first
+        token or terminal result, so the worker must keep the socket visible to
+        the Hub while an offer is running.
+        """
+
+        while not self._stop_event.wait(max(2.0, float(self.keepalive_interval_s or 10.0))):
+            if not self.is_alive:
+                return
+            try:
+                self._send_keepalive()
+            except Exception as exc:
+                with self._state_lock:
+                    if not self._stop_event.is_set():
+                        self.last_error = f"Worker live-session keepalive failed: {exc}"
+                        self.close_reason = "keepalive_failed"
+                    if not self.closed_at:
+                        self.closed_at = datetime.now(timezone.utc).isoformat()
+                self._stop_event.set()
+                sock = self._socket
+                self._socket = None
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                return
 
     def _reader_loop(self) -> None:
         try:

@@ -80,6 +80,7 @@ def test_code_studio_scm_manifest_is_loaded_after_mcel_core() -> None:
         "applications/scripts/mcel-scm.js",
         "applications/scripts/mcel-core.js",
         "applications/scripts/code-editor-scm-manifest.js",
+        "applications/scripts/code-editor-mcel-studio.js",
     ]
     positions = [markup.index(include) for include in include_order]
 
@@ -124,7 +125,7 @@ process.stdout.write(JSON.stringify({{
     assert data["registered"] is True
     assert data["componentName"] == "CodeStudio"
     assert data["definitionName"] == "CodeStudio"
-    assert data["version"] == "2.4.0"
+    assert data["version"] == "2.6.0"
     assert data["contract"] == "mcel.scm.code-studio.v1"
     assert data["validation"]["ok"] is True
     assert data["owns"]["source"] == ["workspace.manifest", "workspace.files"]
@@ -488,7 +489,7 @@ process.stdout.write(JSON.stringify({{
 
     data = _run_node_json(tmp_path, script)
 
-    assert data["version"] == "2.4.0"
+    assert data["version"] == "2.6.0"
     assert data["layoutRoot"] == "#code-editor-app"
     assert data["layoutSlots"] == [
         "activitybar",
@@ -598,3 +599,114 @@ process.stdout.write(JSON.stringify({{
     assert "SCM_LAYOUT_STATE_MAX_HEIGHT_EXCEEDED" in data["codes"]
     assert data["bodyViolation"]["actual"] == "block"
     assert data["bodyViolation"]["expected"] == "grid"
+
+
+def test_code_studio_scm_manifest_declares_serialization_and_repair_contracts(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const definition = MCEL.componentDefinition("CodeStudio");
+process.stdout.write(JSON.stringify({{
+  version: definition && definition.version,
+  serializationSourceOwns: definition.serializationContract.sourceOwns,
+  serializationRuntimeOnly: definition.serializationContract.runtimeOnly,
+  serializationWriteTo: definition.serializationContract.output.writeTo,
+  serializationDirtyBlockedBy: definition.serializationContract.dirtyState.blockedBy,
+  repairAllowed: definition.repairContract.allowed,
+  repairForbidden: definition.repairContract.forbidden,
+  repairStrategies: Object.keys(definition.repairContract.strategies)
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["version"] == "2.6.0"
+    assert data["serializationSourceOwns"] == [
+        "source.workspace.manifest",
+        "source.workspace.files",
+    ]
+    assert "runtime.editor.chrome" in data["serializationRuntimeOnly"]
+    assert data["serializationWriteTo"] == "runtime.serializedOutput"
+    assert data["serializationDirtyBlockedBy"] == ["state.dirty", "state.drafts"]
+    assert data["repairAllowed"] == [
+        "runtime.workbench.shell",
+        "runtime.editor.chrome",
+        "runtime.validationReport",
+    ]
+    assert "source.workspace.files" in data["repairForbidden"]
+    assert data["repairStrategies"] == ["rebuildWorkbenchShell"]
+
+
+def test_code_studio_scm_serialization_blocks_dirty_drafts_and_clean_export_omits_runtime(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const clean = McelCodeStudioScm.createDefaultInstance({{mcel: MCEL}});
+const cleanResult = MCEL.serializeComponent(clean);
+
+const dirty = McelCodeStudioScm.createDefaultInstance({{
+  mcel: MCEL,
+  state: {{
+    ...McelCodeStudioScm.defaultState(),
+    dirty: true,
+    drafts: {{"src-app": "changed"}}
+  }}
+}});
+let blocked = null;
+try {{
+  MCEL.serializeComponent(dirty);
+}} catch (error) {{
+  blocked = error.violation;
+}}
+
+process.stdout.write(JSON.stringify({{
+  cleanOk: cleanResult.ok,
+  serializedHasFiles: cleanResult.serialized.includes('"files"'),
+  serializedHasRuntimeChrome: cleanResult.serialized.includes("editor.chrome"),
+  runtimeOutputMatches: clean.runtime.serializedOutput === cleanResult.serialized,
+  blockedCode: blocked && blocked.code,
+  blockedPaths: blocked && blocked.blockedBy.map((entry) => entry.path)
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["cleanOk"] is True
+    assert data["serializedHasFiles"] is True
+    assert data["serializedHasRuntimeChrome"] is False
+    assert data["runtimeOutputMatches"] is True
+    assert data["blockedCode"] == "SCM_SERIALIZATION_DIRTY_STATE_BLOCKED"
+    assert data["blockedPaths"] == ["state.dirty", "state.drafts"]
+
+
+def test_code_studio_scm_repair_rebuilds_runtime_without_changing_source(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const instance = McelCodeStudioScm.createDefaultInstance({{mcel: MCEL}});
+const sourceBefore = JSON.stringify(instance.source);
+const result = MCEL.repairComponent(instance, "rebuildWorkbenchShell");
+const sourceAfter = JSON.stringify(instance.source);
+const packet = MCEL.exportScmEvidence(instance);
+
+process.stdout.write(JSON.stringify({{
+  ok: result.ok,
+  sourceUnchanged: sourceBefore === sourceAfter,
+  shellMounted: instance.runtime.workbench.shell.mounted,
+  shellDamaged: instance.runtime.workbench.shell.damaged,
+  chromeSerialize: instance.runtime.editor.chrome.serialize,
+  validationKind: instance.runtime.validationReport.kind,
+  phases: packet.evidence.map((entry) => entry.phase)
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["ok"] is True
+    assert data["sourceUnchanged"] is True
+    assert data["shellMounted"] is True
+    assert data["shellDamaged"] is False
+    assert data["chromeSerialize"] == "omit"
+    assert data["validationKind"] == "repair-report"
+    assert "repair-start" in data["phases"]
+    assert "repair-commit" in data["phases"]

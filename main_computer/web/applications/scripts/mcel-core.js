@@ -313,6 +313,18 @@
         return requireScm().checkStyleContract(instance, observation);
       }
 
+      function serializeComponent(instance, options = {}) {
+        return requireScm().serializeComponent(instance, options);
+      }
+
+      function createRepairContext(instance, strategyName) {
+        return requireScm().createRepairContext(instance, strategyName);
+      }
+
+      function repairComponent(instance, strategyName, payload = {}) {
+        return requireScm().repairComponent(instance, strategyName, payload);
+      }
+
       function transition(instance, transitionName, payload = {}) {
         return requireScm().transition(instance, transitionName, payload);
       }
@@ -436,6 +448,9 @@
         cancelEffect,
         checkLayoutContract,
         checkStyleContract,
+        serializeComponent,
+        createRepairContext,
+        repairComponent,
         transition,
         exportScmEvidence,
         defineRoute,

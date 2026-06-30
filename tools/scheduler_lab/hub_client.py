@@ -260,6 +260,21 @@ class HubClient:
             payload["chain_id"] = auth.get("chain_id", node.get("chain_id", ""))
         return self.post_json("/api/hub/v1/workers/poll", payload)
 
+    def submit_worker_stream_event(self, node: dict[str, Any], lease: dict[str, Any], event: dict[str, Any]) -> HubHttpResponse:
+        payload = {
+            "worker_node_id": str(node.get("node_id")),
+            "request_id": str(lease.get("request_id") or ""),
+            "lease_id": str(lease.get("lease_id") or ""),
+            "event": dict(event),
+        }
+        if lease.get("worker_instance_id"):
+            payload["worker_instance_id"] = str(lease.get("worker_instance_id") or "")
+        auth = _node_multisession_authorization(node)
+        if auth:
+            payload["multisession_authorization"] = auth
+            payload["chain_id"] = auth.get("chain_id", node.get("chain_id", ""))
+        return self.post_json("/api/hub/v1/workers/stream-events", payload)
+
     def submit_worker_result(self, node: dict[str, Any], lease: dict[str, Any], result: dict[str, Any]) -> HubHttpResponse:
         payload = {
             "worker_node_id": str(node.get("node_id")),
@@ -267,11 +282,32 @@ class HubClient:
             "lease_id": str(lease.get("lease_id") or ""),
             "result": result,
         }
+        if lease.get("worker_instance_id"):
+            payload["worker_instance_id"] = str(lease.get("worker_instance_id") or "")
         auth = _node_multisession_authorization(node)
         if auth:
             payload["multisession_authorization"] = auth
             payload["chain_id"] = auth.get("chain_id", node.get("chain_id", ""))
         return self.post_json("/api/hub/v1/workers/results", payload)
+
+    def stream_request_events(
+        self,
+        request_id: str,
+        *,
+        after: int = 0,
+        timeout_seconds: float | None = None,
+        heartbeat_seconds: float | None = None,
+    ) -> Iterator[HubStreamEvent]:
+        query: dict[str, str] = {"after": str(max(0, int(after or 0)))}
+        if timeout_seconds is not None:
+            query["timeout_seconds"] = str(max(0.1, float(timeout_seconds)))
+        if heartbeat_seconds is not None:
+            query["heartbeat_seconds"] = str(max(0.25, float(heartbeat_seconds)))
+        suffix = urlencode(query)
+        path = f"/api/hub/v1/requests/{str(request_id).strip()}/stream"
+        if suffix:
+            path = f"{path}?{suffix}"
+        return self.stream_request("GET", path)
 
     def submit_request(
         self,

@@ -1329,6 +1329,23 @@ class HubDispatcher:
             result=result,
         )
 
+    def submit_worker_stream_event(
+        self,
+        *,
+        worker_node_id: str,
+        request_id: str,
+        lease_id: str,
+        event: dict[str, Any],
+        worker_instance_id: str = "",
+    ) -> dict[str, Any]:
+        return self.plex_service.submit_worker_stream_event(
+            worker_node_id=worker_node_id,
+            worker_instance_id=worker_instance_id,
+            request_id=request_id,
+            lease_id=lease_id,
+            event=event,
+        )
+
     def get_request_status(self, request_id: str) -> dict[str, Any]:
         return self.plex_service.get_status(request_id).as_dict()
 
@@ -1347,6 +1364,15 @@ class HubDispatcher:
 
     def get_request_events(self, request_id: str) -> list[dict[str, Any]]:
         return self.plex_service.get_events(request_id)
+
+    def wait_for_request_events(
+        self,
+        request_id: str,
+        *,
+        after: int = 0,
+        timeout_s: float = 30.0,
+    ):
+        return self.plex_service.wait_for_events(request_id, after=after, timeout_s=timeout_s)
 
     def submit_request_feedback(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.plex_service.submit_requester_feedback(request_id, payload)
@@ -1602,6 +1628,127 @@ class _JsonHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(payload)
+
+    def _send_jsonl_payload(self, payload: dict[str, Any]) -> None:
+        self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+        self.wfile.flush()
+
+    def _request_stream_payload(
+        self,
+        *,
+        request_id: str,
+        event_index: int,
+        event: dict[str, Any],
+        record: Any,
+    ) -> dict[str, Any]:
+        event_type = str(event.get("type") or event.get("event") or "message").strip() or "message"
+        stream_event = str(event.get("stream_event") or event.get("stream_event_type") or "").strip()
+        event_name = stream_event if event_type == "worker.stream.event" and stream_event else event_type
+        payload: dict[str, Any] = {
+            "event": event_name,
+            "request_event_type": event_type,
+            "event_index": int(event_index),
+            "request_id": request_id,
+            "state": str(event.get("state") or getattr(record, "state", "") or ""),
+            "created_at": str(event.get("created_at", "") or ""),
+            "payload": dict(event),
+        }
+        for key in (
+            "stream_event",
+            "text",
+            "delta",
+            "content_delta",
+            "thinking_delta",
+            "message",
+            "progress",
+            "token_count",
+            "worker_node_id",
+            "worker_instance_id",
+            "lease_id",
+        ):
+            if key in event:
+                payload[key] = event[key]
+        return payload
+
+    def _stream_request_events(self, request_id: str, query: dict[str, list[str]]) -> None:
+        try:
+            next_index = max(0, int(str(query.get("after", ["0"])[0] or "0")))
+        except (TypeError, ValueError):
+            next_index = 0
+        try:
+            max_seconds = max(0.1, min(600.0, float(str(query.get("timeout_seconds", ["30"])[0] or "30"))))
+        except (TypeError, ValueError):
+            max_seconds = 30.0
+        try:
+            heartbeat_seconds = max(0.25, min(30.0, float(str(query.get("heartbeat_seconds", ["5"])[0] or "5"))))
+        except (TypeError, ValueError):
+            heartbeat_seconds = 5.0
+
+        self.send_response(int(HTTPStatus.OK))
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        started = time.monotonic()
+        terminal_states = {"completed", "failed", "cancelled", "expired"}
+        try:
+            self._send_jsonl_payload(
+                {
+                    "event": "open",
+                    "request_id": request_id,
+                    "transport": "hub-request-jsonl",
+                    "after": next_index,
+                }
+            )
+            while True:
+                remaining = max_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    self._send_jsonl_payload(
+                        {
+                            "event": "timeout",
+                            "request_id": request_id,
+                            "next_event_index": next_index,
+                        }
+                    )
+                    return
+                events, record = self.server.dispatcher.wait_for_request_events(
+                    request_id,
+                    after=next_index,
+                    timeout_s=min(heartbeat_seconds, remaining),
+                )
+                for event in events:
+                    self._send_jsonl_payload(
+                        self._request_stream_payload(
+                            request_id=request_id,
+                            event_index=next_index,
+                            event=event,
+                            record=record,
+                        )
+                    )
+                    next_index += 1
+                if str(getattr(record, "state", "")) in terminal_states:
+                    self._send_jsonl_payload(
+                        {
+                            "event": "done",
+                            "request_id": request_id,
+                            "state": str(getattr(record, "state", "")),
+                            "next_event_index": next_index,
+                        }
+                    )
+                    return
+                if not events:
+                    self._send_jsonl_payload(
+                        {
+                            "event": "heartbeat",
+                            "request_id": request_id,
+                            "next_event_index": next_index,
+                            "state": str(getattr(record, "state", "")),
+                        }
+                    )
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
 
 class HubHttpServer(ThreadingHTTPServer):
@@ -3418,6 +3565,19 @@ class HubServerHandler(_JsonHandler):
             ]
             self._send_json({"ok": True, "request_id": request_id, "charges": charges, "charge_count": len(charges)})
             return
+        if path.startswith("/api/hub/v1/requests/") and path.endswith("/stream"):
+            request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/stream").strip("/")
+            if not request_id or "/" in request_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                # Verify the request exists before switching the response into JSONL streaming mode.
+                self.server.dispatcher.get_request_status(request_id)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._stream_request_events(request_id, query)
+            return
         if path.startswith("/api/hub/v1/requests/") and path.endswith("/events"):
             request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/events").strip("/")
             if not request_id or "/" in request_id:
@@ -4098,6 +4258,71 @@ class HubServerHandler(_JsonHandler):
                     raise
                 finally:
                     self._worker_route_exit(diag_id, "worker.poll", diag_started_at)
+            if path in {"/api/hub/v1/workers/stream-events", "/api/hub/workers/stream-events"}:
+                diag_id, diag_started_at = self._worker_route_diag_start("worker.stream_events", path)
+                if not self._worker_route_enter_or_reject(diag_id, "worker.stream_events", diag_started_at):
+                    return
+                try:
+                    self._worker_route_diag_step(diag_id, "worker.stream_events", "read_json.start", diag_started_at)
+                    body = self._read_json()
+                    worker_id = str(body.get("worker_node_id") or body.get("node_id") or "")
+                    worker_instance_id = str(body.get("worker_instance_id") or body.get("connection_id") or worker_id).strip()
+                    stream_event = body.get("event") if isinstance(body.get("event"), dict) else body.get("stream_event")
+                    if not isinstance(stream_event, dict):
+                        raise ValueError("event object is required.")
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.stream_events",
+                        "read_json.done",
+                        diag_started_at,
+                        worker_node_id=worker_id,
+                        request_id=str(body.get("request_id", "")),
+                        lease_id=str(body.get("lease_id", "")),
+                        stream_event=str(stream_event.get("event") or stream_event.get("type") or stream_event.get("stream_event") or ""),
+                        body_keys=sorted(str(key) for key in body.keys()),
+                    )
+                    current_worker = self.server.registry.get_worker(worker_id, worker_instance_id=worker_instance_id)
+                    self._authorize_worker_route(
+                        body=body,
+                        worker_id=worker_id,
+                        current_worker=current_worker,
+                    )
+                    self._worker_route_diag_step(diag_id, "worker.stream_events", "dispatcher.submit_worker_stream_event.start", diag_started_at, worker_node_id=worker_id)
+                    response_payload = self.server.dispatcher.submit_worker_stream_event(
+                        worker_node_id=worker_id,
+                        worker_instance_id=worker_instance_id,
+                        request_id=str(body.get("request_id", "")),
+                        lease_id=str(body.get("lease_id", "")),
+                        event=stream_event,
+                    )
+                    self._worker_route_diag_step(diag_id, "worker.stream_events", "dispatcher.submit_worker_stream_event.done", diag_started_at, worker_node_id=worker_id)
+                    self._worker_route_diag_step(diag_id, "worker.stream_events", "send_json.start", diag_started_at, status=200)
+                    self._send_json(response_payload)
+                    self._worker_route_diag_step(diag_id, "worker.stream_events", "send_json.done", diag_started_at, status=200)
+                    return
+                except HubCreditAuthorizationError as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.stream_events",
+                        "auth_error",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                    return
+                except Exception as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.stream_events",
+                        "exception",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    raise
+                finally:
+                    self._worker_route_exit(diag_id, "worker.stream_events", diag_started_at)
             if path in {"/api/hub/v1/workers/results", "/api/hub/workers/results"}:
                 diag_id, diag_started_at = self._worker_route_diag_start("worker.results", path)
                 if not self._worker_route_enter_or_reject(diag_id, "worker.results", diag_started_at):

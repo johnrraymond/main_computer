@@ -1,6 +1,6 @@
 var McelCodeStudioScm = (() => {
       const COMPONENT_NAME = "CodeStudio";
-      const COMPONENT_VERSION = "2.4.0";
+      const COMPONENT_VERSION = "2.6.0";
       const COMPONENT_CONTRACT = "mcel.scm.code-studio.v1";
       const ROUTE_NAME = "workspace.file";
       const ROUTE_VERSION = "1.1.0";
@@ -316,6 +316,122 @@ var McelCodeStudioScm = (() => {
           forbiddenComputed: {
             "button": {
               backgroundColor: "rgb(246, 199, 91)"
+            }
+          }
+        },
+
+        serializationContract: {
+          sourceOwns: [
+            "source.workspace.manifest",
+            "source.workspace.files"
+          ],
+
+          runtimeOnly: [
+            "runtime.workbench.shell",
+            "runtime.editor.chrome",
+            "runtime.loadedFile",
+            "runtime.serializedOutput",
+            "runtime.validationReport",
+            "runtime.assistantSession"
+          ],
+
+          commitRequiredFor: [
+            "source.workspace.manifest",
+            "source.workspace.files"
+          ],
+
+          dirtyState: {
+            blockedBy: [
+              "state.dirty",
+              "state.drafts"
+            ]
+          },
+
+          failIfRuntimeLeaks: true,
+
+          runtimeLeakMarkers: [
+            "data-mc-runtime",
+            "data-mc-generated",
+            "code-studio-shell",
+            "code-studio-titlebar",
+            "code-studio-bottom-panel"
+          ],
+
+          output: {
+            format: "clean-source-json",
+            includeDebug: false,
+            includeRuntime: false,
+            includeEditorChrome: false,
+            writeTo: "runtime.serializedOutput"
+          }
+        },
+
+        repairContract: {
+          allowed: [
+            "runtime.workbench.shell",
+            "runtime.editor.chrome",
+            "runtime.validationReport"
+          ],
+
+          forbidden: [
+            "source.workspace.manifest",
+            "source.workspace.files",
+            "state.activeFileId",
+            "state.openTabs",
+            "state.drafts",
+            "state.dirty"
+          ],
+
+          strategies: {
+            rebuildWorkbenchShell: {
+              reads: [
+                "source.workspace.manifest",
+                "source.workspace.files",
+                "state.openTabs",
+                "state.activeFileId",
+                "runtime.workbench.shell",
+                "runtime.editor.chrome"
+              ],
+
+              writes: [
+                "runtime.workbench.shell",
+                "runtime.editor.chrome",
+                "runtime.validationReport"
+              ],
+
+              apply(ctx) {
+                const manifest = ctx.get("source.workspace.manifest");
+                const files = ctx.get("source.workspace.files");
+                const openTabs = ctx.get("state.openTabs");
+                const activeFileId = ctx.get("state.activeFileId");
+                ctx.set("runtime.workbench.shell", {
+                  mounted: true,
+                  damaged: false,
+                  rebuilt: true,
+                  title: manifest?.title || "MCEL Code Studio",
+                  fileCount: Array.isArray(files) ? files.length : 0,
+                  openTabs: Array.isArray(openTabs) ? openTabs.slice() : [],
+                  activeFileId: activeFileId || null
+                });
+                ctx.set("runtime.editor.chrome", {
+                  generated: true,
+                  serialize: "omit",
+                  repaired: true
+                });
+                ctx.set("runtime.validationReport", {
+                  kind: "repair-report",
+                  strategy: "rebuildWorkbenchShell",
+                  ok: true,
+                  sourceUnchanged: true
+                });
+                return "rebuildWorkbenchShell";
+              },
+
+              post(ctx) {
+                const shell = ctx.get("runtime.workbench.shell");
+                const chrome = ctx.get("runtime.editor.chrome");
+                return Boolean(shell?.mounted) && shell.damaged === false && chrome?.serialize === "omit";
+              }
             }
           }
         },

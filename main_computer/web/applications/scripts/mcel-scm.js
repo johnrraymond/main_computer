@@ -911,6 +911,218 @@ var McelLabScm = (() => {
         }
       }
 
+      function validateContractPathList(componentName, contractCode, fieldName, value, allowedRoots, manifest, issues, options = {}) {
+        if (!Array.isArray(value)) {
+          issues.push(violation(`SCM_${contractCode}_${fieldName.toUpperCase()}_INVALID`, {
+            phase: "validate-manifest",
+            componentName,
+            fieldName,
+            message: `Component ${componentName} ${fieldName} must be an array.`
+          }));
+          return [];
+        }
+
+        const paths = normalizePathList(value);
+        value.forEach((rawPath) => {
+          const normalized = normalizePath(rawPath);
+          const root = rootForPath(normalized);
+          if (!normalized || !root || !allowedRoots.includes(root)) {
+            issues.push(violation(`SCM_${contractCode}_${fieldName.toUpperCase()}_PATH_INVALID`, {
+              phase: "validate-manifest",
+              componentName,
+              fieldName,
+              path: safeString(rawPath),
+              allowedRoots,
+              message: `Component ${componentName} ${fieldName} path ${safeString(rawPath)} is not allowed for this contract.`
+            }));
+            return;
+          }
+
+          if (options.requireOwned !== false && !isOwnedPath(manifest, normalized)) {
+            issues.push(violation(`SCM_${contractCode}_${fieldName.toUpperCase()}_PATH_UNOWNED`, {
+              phase: "validate-manifest",
+              componentName,
+              fieldName,
+              path: normalized,
+              message: `Component ${componentName} ${fieldName} path ${normalized} is not owned by the component.`
+            }));
+          }
+        });
+        return paths;
+      }
+
+      function normalizeDirtyStateContract(dirtyState) {
+        if (!isPlainObject(dirtyState)) return {blockedBy: []};
+        return {
+          blockedBy: normalizePathList(dirtyState.blockedBy)
+        };
+      }
+
+      function validateSerializationContract(componentName, manifest, issues) {
+        if (manifest.serializationContract === undefined) return;
+        const contract = manifest.serializationContract;
+        if (!isPlainObject(contract)) {
+          issues.push(violation("SCM_SERIALIZATION_CONTRACT_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} serializationContract must be an object.`
+          }));
+          return;
+        }
+
+        const sourceOwns = validateContractPathList(componentName, "SERIALIZATION", "sourceOwns", contract.sourceOwns, ["source"], manifest, issues);
+        if (sourceOwns.length === 0) {
+          issues.push(violation("SCM_SERIALIZATION_SOURCE_OWNS_EMPTY", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} serializationContract must declare at least one source-owned path.`
+          }));
+        }
+
+        validateContractPathList(componentName, "SERIALIZATION", "runtimeOnly", contract.runtimeOnly || [], ["runtime"], manifest, issues);
+        validateContractPathList(componentName, "SERIALIZATION", "commitRequiredFor", contract.commitRequiredFor || [], ["source"], manifest, issues);
+
+        if (contract.dirtyState !== undefined) {
+          if (!isPlainObject(contract.dirtyState)) {
+            issues.push(violation("SCM_SERIALIZATION_DIRTY_STATE_INVALID", {
+              phase: "validate-manifest",
+              componentName,
+              message: `Component ${componentName} serializationContract dirtyState must be an object.`
+            }));
+          } else {
+            validateContractPathList(componentName, "SERIALIZATION", "blockedBy", contract.dirtyState.blockedBy || [], ["state"], manifest, issues);
+          }
+        }
+
+        if (contract.failIfRuntimeLeaks !== undefined && typeof contract.failIfRuntimeLeaks !== "boolean") {
+          issues.push(violation("SCM_SERIALIZATION_FAIL_IF_RUNTIME_LEAKS_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} serializationContract failIfRuntimeLeaks must be boolean when provided.`
+          }));
+        }
+
+        if (contract.runtimeLeakMarkers !== undefined && !Array.isArray(contract.runtimeLeakMarkers)) {
+          issues.push(violation("SCM_SERIALIZATION_RUNTIME_LEAK_MARKERS_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} serializationContract runtimeLeakMarkers must be an array when provided.`
+          }));
+        }
+
+        if (contract.output !== undefined) {
+          if (!isPlainObject(contract.output)) {
+            issues.push(violation("SCM_SERIALIZATION_OUTPUT_INVALID", {
+              phase: "validate-manifest",
+              componentName,
+              message: `Component ${componentName} serializationContract output must be an object when provided.`
+            }));
+          } else {
+            if (contract.output.includeRuntime === true || contract.output.includeEditorChrome === true) {
+              issues.push(violation("SCM_SERIALIZATION_OUTPUT_RUNTIME_NOT_ALLOWED", {
+                phase: "validate-manifest",
+                componentName,
+                message: `Component ${componentName} serialization output cannot include runtime or editor chrome in patch 7.`
+              }));
+            }
+            if (contract.output.writeTo !== undefined) {
+              const writeTo = normalizePath(contract.output.writeTo);
+              if (!writeTo || rootForPath(writeTo) !== "runtime" || !isOwnedPath(manifest, writeTo)) {
+                issues.push(violation("SCM_SERIALIZATION_OUTPUT_WRITE_TO_INVALID", {
+                  phase: "validate-manifest",
+                  componentName,
+                  path: safeString(contract.output.writeTo),
+                  message: `Component ${componentName} serialization output writeTo must target an owned runtime path.`
+                }));
+              }
+            }
+          }
+        }
+      }
+
+      function validateRepairContract(componentName, manifest, issues) {
+        if (manifest.repairContract === undefined) return;
+        const contract = manifest.repairContract;
+        if (!isPlainObject(contract)) {
+          issues.push(violation("SCM_REPAIR_CONTRACT_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} repairContract must be an object.`
+          }));
+          return;
+        }
+
+        const allowed = validateContractPathList(componentName, "REPAIR", "allowed", contract.allowed, ["runtime"], manifest, issues);
+        if (allowed.length === 0) {
+          issues.push(violation("SCM_REPAIR_ALLOWED_EMPTY", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} repairContract must declare at least one allowed runtime path.`
+          }));
+        }
+
+        validateContractPathList(componentName, "REPAIR", "forbidden", contract.forbidden || [], ["source", "state", "runtime"], manifest, issues, {requireOwned: false});
+
+        if (!isPlainObject(contract.strategies) || Object.keys(contract.strategies).length === 0) {
+          issues.push(violation("SCM_REPAIR_STRATEGIES_MISSING", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} repairContract must declare repair strategies.`
+          }));
+          return;
+        }
+
+        Object.keys(contract.strategies).forEach((strategyName) => {
+          const strategy = contract.strategies[strategyName];
+          if (!validName(strategyName) || !isPlainObject(strategy)) {
+            issues.push(violation("SCM_REPAIR_STRATEGY_INVALID", {
+              phase: "validate-manifest",
+              componentName,
+              strategyName,
+              message: `Repair strategy ${strategyName} must be a named object.`
+            }));
+            return;
+          }
+
+          const reads = validateContractPathList(componentName, "REPAIR", `${strategyName}Reads`, strategy.reads || [], ["source", "state", "runtime"], manifest, issues, {requireOwned: false});
+          const writes = validateContractPathList(componentName, "REPAIR", `${strategyName}Writes`, strategy.writes, ["runtime"], manifest, issues);
+
+          writes.forEach((path) => {
+            if (!isAllowedPath(path, allowed)) {
+              issues.push(violation("SCM_REPAIR_STRATEGY_WRITE_NOT_ALLOWED", {
+                phase: "validate-manifest",
+                componentName,
+                strategyName,
+                path,
+                allowed,
+                message: `Repair strategy ${strategyName} writes ${path} outside repairContract.allowed.`
+              }));
+            }
+            if (Array.isArray(contract.forbidden) && isAllowedPath(path, normalizePathList(contract.forbidden))) {
+              issues.push(violation("SCM_REPAIR_STRATEGY_WRITE_FORBIDDEN", {
+                phase: "validate-manifest",
+                componentName,
+                strategyName,
+                path,
+                forbidden: normalizePathList(contract.forbidden),
+                message: `Repair strategy ${strategyName} writes forbidden path ${path}.`
+              }));
+            }
+          });
+
+          reads.forEach((path) => {
+            if (!rootForPath(path)) {
+              issues.push(violation("SCM_REPAIR_STRATEGY_READ_INVALID", {
+                phase: "validate-manifest",
+                componentName,
+                strategyName,
+                path
+              }));
+            }
+          });
+        });
+      }
+
       const ROUTE_SCHEMA_TYPES = Object.freeze(["id", "string", "integer", "boolean", "enum"]);
       const ROUTE_BUILTIN_ENTER_STEPS = Object.freeze(["validateParams", "checkPermissions", "mountComponent"]);
 
@@ -2212,6 +2424,8 @@ var McelLabScm = (() => {
         validateChildComposition(componentName, manifest, transitionNames, issues);
         validateLayoutContract(componentName, manifest, issues);
         validateStyleContract(componentName, manifest, issues);
+        validateSerializationContract(componentName, manifest, issues);
+        validateRepairContract(componentName, manifest, issues);
 
         return {
           kind: "mcel-scm-manifest-validation",
@@ -2261,6 +2475,30 @@ var McelLabScm = (() => {
           child.mayMutate = normalizePathList(child.mayMutate);
           child.maySerialize = child.maySerialize === true;
         });
+        if (isPlainObject(copy.serializationContract)) {
+          const contract = copy.serializationContract;
+          contract.sourceOwns = normalizePathList(contract.sourceOwns);
+          contract.runtimeOnly = normalizePathList(contract.runtimeOnly || []);
+          contract.commitRequiredFor = normalizePathList(contract.commitRequiredFor || []);
+          contract.failIfRuntimeLeaks = contract.failIfRuntimeLeaks !== false;
+          contract.runtimeLeakMarkers = Array.isArray(contract.runtimeLeakMarkers)
+            ? contract.runtimeLeakMarkers.map(safeString).filter(Boolean)
+            : [];
+          contract.dirtyState = normalizeDirtyStateContract(contract.dirtyState);
+          contract.output = isPlainObject(contract.output) ? contract.output : {};
+          if (contract.output.writeTo !== undefined) contract.output.writeTo = normalizePath(contract.output.writeTo);
+        }
+        if (isPlainObject(copy.repairContract)) {
+          const contract = copy.repairContract;
+          contract.allowed = normalizePathList(contract.allowed);
+          contract.forbidden = normalizePathList(contract.forbidden || []);
+          contract.strategies = isPlainObject(contract.strategies) ? contract.strategies : {};
+          Object.keys(contract.strategies).forEach((strategyName) => {
+            const strategy = contract.strategies[strategyName];
+            strategy.reads = normalizePathList(strategy.reads || []);
+            strategy.writes = normalizePathList(strategy.writes);
+          });
+        }
         return deepFreeze(copy);
       }
 
@@ -3273,6 +3511,448 @@ var McelLabScm = (() => {
         };
       }
 
+      function truthyForDirty(value) {
+        if (Array.isArray(value)) return value.length > 0;
+        if (isPlainObject(value)) return Object.keys(value).length > 0;
+        return Boolean(value);
+      }
+
+      function sourceRuntimeLeakMarkers(contract) {
+        const defaults = [
+          "data-mc-runtime",
+          "data-mc-generated",
+          "data-mcel-runtime",
+          "data-mcel-generated",
+          "code-studio-shell",
+          "code-studio-titlebar",
+          "code-studio-activitybar",
+          "code-studio-sidebar",
+          "code-studio-bottom-panel",
+          "code-studio-inspector"
+        ];
+        const declared = Array.isArray(contract?.runtimeLeakMarkers)
+          ? contract.runtimeLeakMarkers.map(safeString).filter(Boolean)
+          : [];
+        return [...defaults, ...declared].filter((marker, index, list) => marker && list.indexOf(marker) === index);
+      }
+
+      function findRuntimeLeaks(value, options = {}, path = "source", leaks = [], seen = new Set()) {
+        if (value === undefined || value === null) return leaks;
+        if (typeof value === "string") {
+          const marker = (options.markers || []).find((entry) => entry && value.includes(entry));
+          if (marker) {
+            leaks.push({
+              path,
+              marker,
+              value: value.length > 160 ? `${value.slice(0, 157)}...` : value
+            });
+          }
+          return leaks;
+        }
+        if (typeof value !== "object") return leaks;
+        if (seen.has(value)) return leaks;
+        seen.add(value);
+
+        if (Array.isArray(value)) {
+          value.forEach((item, index) => findRuntimeLeaks(item, options, `${path}.${index}`, leaks, seen));
+          seen.delete(value);
+          return leaks;
+        }
+
+        Object.keys(value).forEach((key) => {
+          const childPath = `${path}.${key}`;
+          const childValue = value[key];
+          const normalizedKey = key.replace(/[_-]/g, "").toLowerCase();
+          if (["datamcruntime", "datamcgenerated", "datamcelruntime", "datamcelgenerated", "mcruntime", "mcgenerated", "runtimeonly"].includes(normalizedKey)) {
+            if (childValue === true || childValue === "true" || childValue === 1) {
+              leaks.push({
+                path: childPath,
+                marker: key,
+                value: jsonSafe(childValue)
+              });
+            }
+          }
+          if ((normalizedKey === "generated" || normalizedKey === "runtime") && childValue === true) {
+            leaks.push({
+              path: childPath,
+              marker: key,
+              value: true
+            });
+          }
+          findRuntimeLeaks(childValue, options, childPath, leaks, seen);
+        });
+        seen.delete(value);
+        return leaks;
+      }
+
+      function serializationContractFor(instance) {
+        assertComponentInstance(instance, "serialize", {});
+        const contract = instance.definition?.serializationContract;
+        if (!isPlainObject(contract)) {
+          throwViolation(violation("SCM_SERIALIZATION_CONTRACT_MISSING", {
+            phase: "serialize",
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            message: `Component ${instance.componentName} cannot serialize without serializationContract.`
+          }), instance);
+        }
+        return contract;
+      }
+
+      function serializeComponent(instance, options = {}) {
+        const contract = serializationContractFor(instance);
+        const dirtyState = normalizeDirtyStateContract(contract.dirtyState);
+        const blocked = [];
+
+        recordEvidence(instance, {
+          kind: "mcel-scm-evidence",
+          contractVersion: CONTRACT_VERSION,
+          generatedAt: now(),
+          phase: "serialize-start",
+          ok: true,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          sourceOwns: contract.sourceOwns || [],
+          runtimeOnly: contract.runtimeOnly || []
+        });
+
+        dirtyState.blockedBy.forEach((path) => {
+          const value = readRaw(instance, path);
+          if (truthyForDirty(value)) {
+            blocked.push({
+              path,
+              value: jsonSafe(value)
+            });
+          }
+        });
+
+        if (blocked.length) {
+          throwViolation(violation("SCM_SERIALIZATION_DIRTY_STATE_BLOCKED", {
+            phase: "serialize",
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            blockedBy: blocked,
+            message: `Component ${instance.componentName} cannot serialize while dirty state is present.`
+          }), instance);
+        }
+
+        const cleanSource = cloneValue(instance.source || {});
+        const leaks = contract.failIfRuntimeLeaks === false
+          ? []
+          : findRuntimeLeaks(cleanSource, {markers: sourceRuntimeLeakMarkers(contract)});
+
+        if (leaks.length) {
+          throwViolation(violation("SCM_SERIALIZATION_RUNTIME_LEAK_DETECTED", {
+            phase: "serialize",
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            leaks: leaks.map((leak) => jsonSafe(leak)),
+            message: `Component ${instance.componentName} source contains runtime/generated leakage.`
+          }), instance);
+        }
+
+        const output = isPlainObject(contract.output) ? contract.output : {};
+        const format = safeString(options.format || output.format || "clean-source-json");
+        let serialized = cleanSource;
+        if (format.includes("json")) {
+          serialized = JSON.stringify(cleanSource, null, 2);
+        }
+
+        if (output.writeTo) {
+          const writePath = normalizePath(output.writeTo);
+          if (!writePath || rootForPath(writePath) !== "runtime" || !isOwnedPath(instance.definition, writePath)) {
+            throwViolation(violation("SCM_SERIALIZATION_OUTPUT_WRITE_TO_INVALID", {
+              phase: "serialize",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              path: safeString(output.writeTo),
+              message: `Component ${instance.componentName} serialization output writeTo must target an owned runtime path.`
+            }), instance);
+          }
+          writeRaw(instance, writePath, serialized);
+        }
+
+        const entry = {
+          kind: "mcel-scm-evidence",
+          contractVersion: CONTRACT_VERSION,
+          generatedAt: now(),
+          phase: "serialize-commit",
+          ok: true,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          format,
+          sourceBoundaryCount: Array.isArray(contract.sourceOwns) ? contract.sourceOwns.length : 0,
+          runtimeBoundaryCount: Array.isArray(contract.runtimeOnly) ? contract.runtimeOnly.length : 0,
+          outputWrittenTo: safeString(output.writeTo || "")
+        };
+        recordEvidence(instance, entry);
+
+        return {
+          kind: "mcel-scm-serialization-result",
+          contractVersion: CONTRACT_VERSION,
+          generatedAt: now(),
+          ok: true,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          format,
+          source: cleanSource,
+          serialized,
+          evidence: jsonSafe(entry)
+        };
+      }
+
+      function repairContractFor(instance, strategyName) {
+        assertComponentInstance(instance, "repair", {strategyName});
+        const contract = instance.definition?.repairContract;
+        if (!isPlainObject(contract)) {
+          throwViolation(violation("SCM_REPAIR_CONTRACT_MISSING", {
+            phase: "repair",
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            strategyName: safeString(strategyName),
+            message: `Component ${instance.componentName} cannot repair without repairContract.`
+          }), instance);
+        }
+        return contract;
+      }
+
+      function createRepairContext(instance, strategyName) {
+        const contract = repairContractFor(instance, strategyName);
+        const name = safeString(strategyName);
+        const strategy = contract.strategies?.[name];
+        if (!strategy) {
+          throwViolation(violation("SCM_UNKNOWN_REPAIR_STRATEGY", {
+            phase: "repair",
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            strategyName: name,
+            message: `Unknown SCM repair strategy ${name} on component ${instance.componentName}.`
+          }), instance);
+        }
+
+        const declaredReads = normalizePathList(strategy.reads);
+        const declaredWrites = normalizePathList(strategy.writes);
+        const allowed = normalizePathList(contract.allowed);
+        const forbidden = normalizePathList(contract.forbidden || []);
+
+        function checkPath(path, access) {
+          const normalized = normalizePath(path);
+          if (!normalized || !rootForPath(normalized)) {
+            throwViolation(violation("SCM_REPAIR_INVALID_PATH", {
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              path: safeString(path),
+              declaredReads,
+              declaredWrites,
+              message: `Repair strategy ${name} attempted ${access} with invalid path ${safeString(path)}.`
+            }), instance);
+          }
+          return normalized;
+        }
+
+        function assertRead(path) {
+          const normalized = checkPath(path, "read");
+          if (!isAllowedPath(normalized, declaredReads)) {
+            throwViolation(violation("SCM_REPAIR_UNDECLARED_READ", {
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              path: normalized,
+              declaredReads,
+              declaredWrites,
+              message: `Repair strategy ${name} attempted to read ${normalized} without declaring it.`
+            }), instance);
+          }
+          return normalized;
+        }
+
+        function assertWrite(path) {
+          const normalized = checkPath(path, "write");
+          if (!isAllowedPath(normalized, declaredWrites)) {
+            throwViolation(violation("SCM_REPAIR_UNDECLARED_WRITE", {
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              path: normalized,
+              declaredReads,
+              declaredWrites,
+              message: `Repair strategy ${name} attempted to write ${normalized} without declaring it.`
+            }), instance);
+          }
+          if (!isAllowedPath(normalized, allowed)) {
+            throwViolation(violation("SCM_REPAIR_WRITE_NOT_ALLOWED", {
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              path: normalized,
+              allowed,
+              message: `Repair strategy ${name} attempted to write ${normalized} outside repairContract.allowed.`
+            }), instance);
+          }
+          if (isAllowedPath(normalized, forbidden)) {
+            throwViolation(violation("SCM_REPAIR_WRITE_FORBIDDEN", {
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              path: normalized,
+              forbidden,
+              message: `Repair strategy ${name} attempted to write forbidden path ${normalized}.`
+            }), instance);
+          }
+          if (rootForPath(normalized) !== "runtime") {
+            throwViolation(violation("SCM_REPAIR_SOURCE_WRITE_BLOCKED", {
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              path: normalized,
+              message: `Repair strategy ${name} may only write runtime paths.`
+            }), instance);
+          }
+          return normalized;
+        }
+
+        return Object.freeze({
+          kind: "mcel-scm-repair-context",
+          contractVersion: CONTRACT_VERSION,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          strategyName: name,
+
+          get(path) {
+            return cloneValue(readRaw(instance, assertRead(path)));
+          },
+
+          set(path, value) {
+            return writeRaw(instance, assertWrite(path), value);
+          },
+
+          delete(path) {
+            return deleteRaw(instance, assertWrite(path));
+          },
+
+          evidence(entry) {
+            return recordEvidence(instance, {
+              kind: "mcel-scm-evidence",
+              contractVersion: CONTRACT_VERSION,
+              generatedAt: now(),
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              ...jsonSafe(entry || {})
+            });
+          }
+        });
+      }
+
+      function repairComponent(instance, strategyName, payload = {}) {
+        const contract = repairContractFor(instance, strategyName);
+        const name = safeString(strategyName);
+        const strategy = contract.strategies?.[name];
+        if (!strategy) {
+          throwViolation(violation("SCM_UNKNOWN_REPAIR_STRATEGY", {
+            phase: "repair",
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            strategyName: name,
+            message: `Unknown SCM repair strategy ${name} on component ${instance.componentName}.`
+          }), instance);
+        }
+
+        const beforeSource = cloneValue(instance.source);
+        const beforeRuntime = cloneValue(instance.runtime);
+        const beforeSourceJson = JSON.stringify(jsonSafe(beforeSource));
+
+        recordEvidence(instance, {
+          kind: "mcel-scm-evidence",
+          contractVersion: CONTRACT_VERSION,
+          generatedAt: now(),
+          phase: "repair-start",
+          ok: true,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          strategyName: name,
+          allowed: contract.allowed || [],
+          forbidden: contract.forbidden || []
+        });
+
+        const ctx = createRepairContext(instance, name);
+        let result = null;
+        try {
+          if (typeof strategy.apply === "function") result = strategy.apply(ctx, payload);
+          if (typeof strategy.post === "function") {
+            const postResult = strategy.post(ctx, payload, result);
+            if (postResult === false) {
+              throwViolation(violation("SCM_REPAIR_POSTCONDITION_FAILED", {
+                phase: "repair",
+                componentName: instance.componentName,
+                instanceId: instance.id,
+                strategyName: name,
+                message: `Repair strategy ${name} postcondition failed.`
+              }), instance);
+            }
+          }
+
+          const afterSourceJson = JSON.stringify(jsonSafe(instance.source));
+          if (afterSourceJson !== beforeSourceJson) {
+            instance.source = beforeSource;
+            throwViolation(violation("SCM_REPAIR_SOURCE_CHANGED", {
+              phase: "repair",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              strategyName: name,
+              message: `Repair strategy ${name} changed source; source was restored and repair failed closed.`
+            }), instance);
+          }
+
+          const entry = {
+            kind: "mcel-scm-evidence",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            phase: "repair-commit",
+            ok: true,
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            strategyName: name,
+            sourceUnchanged: true,
+            runtimeBefore: jsonSafe(beforeRuntime),
+            runtimeAfter: jsonSafe(instance.runtime)
+          };
+          recordEvidence(instance, entry);
+
+          return {
+            kind: "mcel-scm-repair-result",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            ok: true,
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            strategyName: name,
+            result: jsonSafe(result),
+            source: cloneValue(instance.source),
+            runtime: cloneValue(instance.runtime),
+            evidence: jsonSafe(entry)
+          };
+        } catch (error) {
+          if (error?.violation?.kind === "mcel-scm-violation") throw error;
+          throwViolation(violation("SCM_REPAIR_EXCEPTION", {
+            phase: "repair",
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            strategyName: name,
+            message: error?.message || String(error),
+            errorName: error?.name || "Error"
+          }), instance);
+        }
+      }
+
       function transition(instance, transitionName, payload = {}) {
         assertComponentInstance(instance, "transition", {transitionName});
 
@@ -3375,6 +4055,9 @@ var McelLabScm = (() => {
         cancelEffect,
         checkLayoutContract,
         checkStyleContract,
+        serializeComponent,
+        createRepairContext,
+        repairComponent,
         transition,
         exportEvidence,
         defineRoute,

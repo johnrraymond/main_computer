@@ -498,6 +498,24 @@ def test_worker_live_session_default_local_ai_timeout_is_generous(monkeypatch: p
     ) == 12.0
 
 
+def test_worker_live_session_client_keepalive_uses_worker_pong_contract() -> None:
+    sent_messages: list[dict[str, object]] = []
+    client = _WorkerHubLiveSessionClient(
+        hub_url="http://127.0.0.1:8871",
+        worker_id="worker-local-ai",
+        auth_message={"type": "worker.auth"},
+    )
+    client._send_json = sent_messages.append  # type: ignore[method-assign]
+
+    client._send_keepalive()
+
+    assert sent_messages
+    keepalive = sent_messages[0]
+    assert keepalive["type"] == "worker.pong"
+    assert keepalive["keepalive"] is True
+    assert "sent_at" in keepalive
+
+
 def test_worker_live_session_client_times_out_stuck_local_executor(monkeypatch: pytest.MonkeyPatch) -> None:
     sent_messages: list[dict[str, object]] = []
 

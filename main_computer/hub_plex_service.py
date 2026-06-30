@@ -40,6 +40,7 @@ PHASE9_PRICING_MODE = "market_offer_fixed_per_call_v0"
 PHASE9_PRICING_TYPE = "fixed_per_call_v0"
 PHASE9_EXECUTION_MODE = "worker_pull_v0"
 DEFAULT_REQUESTER_RESULT_RETENTION_WINDOW_SECONDS = 3600
+TERMINAL_REQUEST_STATES = {"completed", "failed", "cancelled", "expired"}
 
 
 def _credit_wei_from_decimal(value: Any, *, default: str = "0", minimum_wei: int = 0) -> int:
@@ -429,6 +430,7 @@ class RequestStateStore:
         self.root = root
         self.path = root / "hub_requests.json"
         self._lock = threading.Lock()
+        self._events_condition = threading.Condition(self._lock)
         self.root.mkdir(parents=True, exist_ok=True)
 
     def create(self, record: HubRequestRecord) -> HubRequestRecord:
@@ -436,6 +438,7 @@ class RequestStateStore:
             data = self._load_unlocked()
             data[record.request_id] = record.as_dict()
             self._save_unlocked(data)
+            self._events_condition.notify_all()
         return record
 
     def get(self, request_id: str) -> HubRequestRecord | None:
@@ -478,6 +481,32 @@ class RequestStateStore:
             raise KeyError(f"Unknown hub request: {request_id}")
         return [dict(event) for event in record.events]
 
+    def wait_for_events(
+        self,
+        request_id: str,
+        *,
+        after: int = 0,
+        timeout_s: float = 30.0,
+    ) -> tuple[list[dict[str, Any]], HubRequestRecord]:
+        clean = str(request_id or "").strip()
+        if not clean:
+            raise ValueError("request_id is required.")
+        deadline = time.monotonic() + max(0.0, float(timeout_s or 0.0))
+        next_index = max(0, int(after or 0))
+        with self._events_condition:
+            while True:
+                payload = self._load_unlocked().get(clean)
+                if not isinstance(payload, dict):
+                    raise KeyError(f"Unknown hub request: {clean}")
+                record = HubRequestRecord.from_dict(payload)
+                events = [dict(event) for event in record.events]
+                if len(events) > next_index or record.state in TERMINAL_REQUEST_STATES:
+                    return events[next_index:], record
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return [], record
+                self._events_condition.wait(min(remaining, 5.0))
+
     def update(self, request_id: str, **changes: Any) -> HubRequestRecord:
         clean = str(request_id or "").strip()
         if not clean:
@@ -505,6 +534,7 @@ class RequestStateStore:
                 record.events.append(event_payload)
             data[clean] = record.as_dict()
             self._save_unlocked(data)
+            self._events_condition.notify_all()
             return record
 
     def cancel(self, request_id: str) -> HubRequestRecord:
@@ -524,7 +554,7 @@ class RequestStateStore:
                 if not isinstance(payload, dict):
                     continue
                 record = HubRequestRecord.from_dict(payload)
-                if record.state in {"completed", "failed", "cancelled", "expired"}:
+                if record.state in TERMINAL_REQUEST_STATES:
                     continue
                 deadline = parse_utc(record.deadline_at)
                 if deadline is None or deadline >= now:
@@ -545,6 +575,7 @@ class RequestStateStore:
                 changed += 1
             if changed:
                 self._save_unlocked(data)
+                self._events_condition.notify_all()
         return changed
 
     def metrics(self) -> dict[str, Any]:
@@ -554,7 +585,7 @@ class RequestStateStore:
         for record in records:
             by_state[record.state] = by_state.get(record.state, 0) + 1
         active_states = {"submitted", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
-        terminal_states = {"completed", "failed", "cancelled", "expired"}
+        terminal_states = TERMINAL_REQUEST_STATES
         return {
             "requests": {
                 "total_recent": len(records),
@@ -1309,7 +1340,7 @@ class AIRequestPlexService:
         record = self.request_store.get(clean_request_id)
         if record is None:
             raise KeyError(f"Unknown hub request: {clean_request_id}")
-        if record.state == "completed" or record.charge_id:
+        if record.state == "completed":
             if record.selected_worker_node_id and record.selected_worker_node_id != clean_worker_id:
                 raise ValueError("Worker result replay was submitted by the wrong worker.")
             if record.selected_worker_instance_id and record.selected_worker_instance_id != clean_worker_instance_id:
@@ -1325,8 +1356,8 @@ class AIRequestPlexService:
                     polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}",
                 ).as_dict(),
             }
-        if record.state != "leased":
-            raise ValueError(f"Request is not leased; current state is {record.state}.")
+        if record.state not in {"leased", "running"}:
+            raise ValueError(f"Request is not leased or running; current state is {record.state}.")
         if record.lease_id != clean_lease_id:
             raise ValueError("Worker result lease_id does not match the active lease.")
         if record.selected_worker_node_id != clean_worker_id:
@@ -1561,6 +1592,98 @@ class AIRequestPlexService:
 
     def get_events(self, request_id: str) -> list[dict[str, Any]]:
         return self.request_store.events(request_id)
+
+    def wait_for_events(
+        self,
+        request_id: str,
+        *,
+        after: int = 0,
+        timeout_s: float = 30.0,
+    ) -> tuple[list[dict[str, Any]], HubRequestRecord]:
+        return self.request_store.wait_for_events(request_id, after=after, timeout_s=timeout_s)
+
+    def submit_worker_stream_event(
+        self,
+        *,
+        worker_node_id: str,
+        request_id: str,
+        lease_id: str,
+        event: dict[str, Any],
+        worker_instance_id: str = "",
+        polling_base_path: str = "/api/hub/v1/requests",
+    ) -> dict[str, Any]:
+        """Accept one incremental worker-pull stream event for requester playback."""
+
+        self._expire_worker_pull_leases()
+        clean_worker_id = clean_node_id(worker_node_id, default="hub-worker")
+        clean_worker_instance_id = (
+            clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_worker_id
+        )
+        clean_request_id = str(request_id or "").strip()
+        clean_lease_id = str(lease_id or "").strip()
+        if not clean_request_id or not clean_lease_id:
+            raise ValueError("request_id and lease_id are required.")
+        if not isinstance(event, dict):
+            raise ValueError("event must be a JSON object.")
+        record = self.request_store.get(clean_request_id)
+        if record is None:
+            raise KeyError(f"Unknown hub request: {clean_request_id}")
+        if record.state not in {"leased", "running"}:
+            raise ValueError(f"Request is not leased or running; current state is {record.state}.")
+        if record.lease_id != clean_lease_id:
+            raise ValueError("Worker stream event lease_id does not match the active lease.")
+        if record.selected_worker_node_id != clean_worker_id:
+            raise ValueError("Worker stream event was submitted by the wrong worker.")
+        if record.selected_worker_instance_id and record.selected_worker_instance_id != clean_worker_instance_id:
+            raise ValueError("Worker stream event was submitted by the wrong worker instance.")
+        lease_deadline = parse_utc(record.lease_expires_at)
+        if lease_deadline is not None and lease_deadline < datetime.now(tz=timezone.utc):
+            self._fail_worker_pull_lease_timeout(record)
+            raise ValueError("Worker stream event lease has expired; request failed without charging requester.")
+
+        stream_event = str(
+            event.get("event")
+            or event.get("type")
+            or event.get("stream_event")
+            or event.get("stream_event_type")
+            or "message"
+        ).strip() or "message"
+        event_payload: dict[str, Any] = {
+            "worker_node_id": clean_worker_id,
+            "worker_instance_id": clean_worker_instance_id,
+            "lease_id": clean_lease_id,
+            "worker_pull_v0": True,
+            "worker_stream": True,
+            "stream_event": stream_event,
+            "payload": dict(event),
+        }
+        for key in (
+            "sequence",
+            "text",
+            "delta",
+            "content_delta",
+            "thinking_delta",
+            "message",
+            "progress",
+            "token_count",
+            "done",
+        ):
+            if key in event:
+                event_payload[key] = event[key]
+        updated = self.request_store.update(
+            record.request_id,
+            state="running",
+            event_type="worker.stream.event",
+            event=event_payload,
+        )
+        return {
+            "ok": True,
+            "stream_event": stream_event,
+            "request": HubRequestStatus.from_record(
+                updated,
+                polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}",
+            ).as_dict(),
+        }
 
     def submit_requester_feedback(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Submit requester/agent feedback against a completed request.
@@ -2788,7 +2911,7 @@ class AIRequestPlexService:
     def _expire_worker_pull_leases(self) -> int:
         now = datetime.now(tz=timezone.utc)
         changed = 0
-        for record in self.request_store.list(limit=500, states={"leased"}):
+        for record in self.request_store.list(limit=500, states={"leased", "running"}):
             deadline = parse_utc(record.lease_expires_at)
             if deadline is None or deadline >= now:
                 continue

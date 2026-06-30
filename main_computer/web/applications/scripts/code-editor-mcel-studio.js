@@ -27,7 +27,226 @@
         damaged: false,
         selectedPath: "src/app.js",
         lastReport: null,
+        lastScmGates: null,
       };
+
+      let scmInstance = null;
+
+      function resolveScmBridge() {
+        const mcel = window.MCEL || null;
+        const studio = window.McelCodeStudioScm || null;
+        if (!mcel || !studio || typeof studio.createDefaultInstance !== "function") return null;
+        return {mcel, studio};
+      }
+
+      function normalizeScmFileId(value, fallback = "file") {
+        const normalized = String(value || fallback || "file")
+          .trim()
+          .replace(/[^A-Za-z0-9_-]+/g, "-")
+          .replace(/^-+|-+$/g, "");
+        return normalized || "file";
+      }
+
+      function sourceForScm(fields = workspaceFields()) {
+        return {
+          workspace: {
+            manifest: {
+              id: "workspace-main",
+              title: fields.title || "MCEL Code Studio",
+              summary: fields.summary || "Source-safe code editor example."
+            },
+            files: fields.files.map((entry, index) => ({
+              id: normalizeScmFileId(entry.field || entry.path, `file-${index + 1}`),
+              path: entry.path,
+              language: entry.language,
+              text: entry.value
+            }))
+          }
+        };
+      }
+
+      function selectedScmFileId(fields = workspaceFields()) {
+        const file = selectedFile(fields);
+        return file ? normalizeScmFileId(file.field || file.path, `file-${file.index + 1}`) : null;
+      }
+
+      function syncScmInstance() {
+        const bridge = resolveScmBridge();
+        if (!bridge) return null;
+
+        const fields = workspaceFields();
+        const source = sourceForScm(fields);
+        const activeFileId = selectedScmFileId(fields);
+        const selectedPanel = root.querySelector("[data-code-studio-tab].active")?.dataset.codeStudioTab || "source";
+        const bottomDockExpanded = root.querySelector("#code-studio-bottom-panel")?.dataset.expanded === "true";
+
+        if (!scmInstance) {
+          scmInstance = bridge.studio.createDefaultInstance({
+            id: "code-studio-live-scm-instance",
+            source,
+            state: {
+              activeFileId,
+              openTabs: activeFileId ? [activeFileId] : [],
+              selectedPanel,
+              bottomDockExpanded,
+              dirty: studioState.dirty
+            }
+          });
+        }
+
+        scmInstance.source = source;
+        scmInstance.state.activeFileId = activeFileId;
+        scmInstance.state.selectedPanel = selectedPanel;
+        scmInstance.state.bottomDockExpanded = bottomDockExpanded;
+        scmInstance.state.dirty = Boolean(studioState.dirty);
+        scmInstance.state.openTabs = Array.from(new Set([...(scmInstance.state.openTabs || []), activeFileId].filter(Boolean)));
+        scmInstance.runtime.loadedFile = source.workspace.files.find((file) => file.id === activeFileId) || null;
+        scmInstance.runtime.workbench = scmInstance.runtime.workbench || {};
+        scmInstance.runtime.workbench.shell = {
+          ...(scmInstance.runtime.workbench.shell || {}),
+          mounted: Boolean(studioState.mounted),
+          damaged: Boolean(studioState.damaged),
+          selectedPath: studioState.selectedPath
+        };
+
+        return scmInstance;
+      }
+
+      function exportScmEvidence() {
+        const bridge = resolveScmBridge();
+        const instance = syncScmInstance();
+        if (!bridge || !instance || typeof bridge.mcel.exportScmEvidence !== "function") {
+          return {
+            kind: "mcel-scm-evidence-packet",
+            componentName: "CodeStudio",
+            instanceId: "",
+            evidence: [],
+            unavailable: true
+          };
+        }
+        return bridge.mcel.exportScmEvidence(instance);
+      }
+
+      function runScmGate(label, callback) {
+        const bridge = resolveScmBridge();
+        const instance = syncScmInstance();
+        if (!bridge || !instance) {
+          return {
+            label,
+            ok: true,
+            skipped: true,
+            message: "SCM runtime is not available in this page load."
+          };
+        }
+
+        try {
+          const result = callback(bridge.mcel, instance);
+          return {
+            label,
+            ok: result?.ok !== false,
+            kind: result?.kind || "mcel-scm-operation-result",
+            code: "",
+            result
+          };
+        } catch (error) {
+          const violation = error?.violation || null;
+          return {
+            label,
+            ok: false,
+            kind: violation?.kind || "mcel-scm-violation",
+            code: violation?.code || "SCM_OPERATION_EXCEPTION",
+            message: violation?.message || error?.message || String(error),
+            violation
+          };
+        }
+      }
+
+      function runScmTransition(name, payload = {}) {
+        return runScmGate(`transition:${name}`, (mcel, instance) => mcel.transition(instance, name, payload));
+      }
+
+      function readComputed(selector, properties) {
+        const node = root.querySelector(selector);
+        if (!node || typeof window.getComputedStyle !== "function") return {};
+        const computed = window.getComputedStyle(node);
+        return properties.reduce((values, property) => {
+          values[property] = computed[property] || computed.getPropertyValue(property) || "";
+          return values;
+        }, {});
+      }
+
+      function collectLayoutObservation() {
+        const bottomDock = root.querySelector("#code-studio-bottom-panel");
+        const rootRect = root.getBoundingClientRect?.() || {height: 0};
+        const documentHeight = document.documentElement?.scrollHeight || rootRect.height || 0;
+        const rootHeight = rootRect.height || root.offsetHeight || 1;
+
+        return {
+          computed: {
+            ".code-studio-shell": readComputed(".code-studio-shell", ["display", "overflow"]),
+            ".code-studio-body": readComputed(".code-studio-body", ["display"])
+          },
+          regions: {
+            activitybar: Boolean(root.querySelector(".code-studio-activitybar")),
+            sidebar: Boolean(root.querySelector(".code-studio-sidebar")),
+            editorGroup: Boolean(root.querySelector(".code-studio-editor-group")),
+            inspector: Boolean(root.querySelector(".code-studio-inspector")),
+            bottomDock: Boolean(bottomDock),
+            statusbar: Boolean(root.querySelector(".code-studio-statusbar"))
+          },
+          rects: {
+            "#code-studio-bottom-panel": {
+              height: bottomDock?.getBoundingClientRect?.().height || bottomDock?.offsetHeight || 0
+            }
+          },
+          documentHeightRatio: rootHeight ? documentHeight / rootHeight : 1
+        };
+      }
+
+      function collectStyleObservation() {
+        return {
+          computed: {
+            "#code-editor-app": readComputed("#code-editor-app", ["backgroundColor"]),
+            ".code-studio-body": readComputed(".code-studio-body", ["display"]),
+            ".code-studio-titlebar button": readComputed(".code-studio-titlebar button", ["backgroundColor", "color"]),
+            "button": readComputed("button", ["backgroundColor"])
+          },
+          globalLeakage: []
+        };
+      }
+
+      function runScmRuntimeChecks() {
+        const bridge = resolveScmBridge();
+        const available = Boolean(bridge);
+        const layout = runScmGate("layout", (mcel, instance) => mcel.checkLayoutContract(instance, collectLayoutObservation()));
+        const style = runScmGate("style", (mcel, instance) => mcel.checkStyleContract(instance, collectStyleObservation()));
+        const validation = runScmGate("effect:runValidation", (mcel, instance) => mcel.runEffect(instance, "runValidation", {
+          selectedPath: studioState.selectedPath
+        }));
+        const evidence = exportScmEvidence();
+        const gates = {
+          available,
+          ok: [layout, style, validation].every((entry) => entry.ok),
+          layout: {
+            ok: layout.ok,
+            code: layout.code || "",
+            violations: layout.result?.violations || []
+          },
+          style: {
+            ok: style.ok,
+            code: style.code || "",
+            violations: style.result?.violations || []
+          },
+          validation: {
+            ok: validation.ok,
+            code: validation.code || ""
+          },
+          evidenceCount: evidence.evidence.length,
+          recentEvidence: evidence.evidence.slice(-8)
+        };
+        studioState.lastScmGates = gates;
+        return gates;
+      }
 
       function escapeHtml(value) {
         return String(value ?? "")
@@ -133,6 +352,8 @@
         runtimePreview.querySelectorAll("[data-code-studio-runtime-file]").forEach((button) => {
           button.addEventListener("click", () => {
             studioState.selectedPath = button.dataset.codeStudioRuntimeFile || "";
+            const fields = workspaceFields();
+            runScmTransition("openFile", {fileId: selectedScmFileId(fields)});
             renderRuntime();
           });
         });
@@ -141,8 +362,9 @@
           draft.addEventListener("input", () => {
             studioState.dirty = true;
             studioState.damaged = false;
+            runScmTransition("editDraft", {text: draft.value});
             setRuntimeLabel();
-            setStatus("Runtime draft changed. Source is still unchanged until Commit editor draft.");
+            setStatus("Runtime draft changed through SCM editDraft. Source is still unchanged until Commit editor draft.");
           });
         }
         studioState.mounted = true;
@@ -186,6 +408,12 @@
             text: "Selected file has enough source content to regenerate the runtime editor.",
           },
         ];
+        const scmGates = runScmRuntimeChecks();
+        checks.push({
+          id: "mcel-code-editor-scm-runtime-gates",
+          ok: scmGates.available,
+          text: "Live Code Studio called SCM layout, style, and validation-effect gates and captured evidence.",
+        });
         const failed = checks.filter((check) => !check.ok);
         studioState.lastReport = {
           ok: failed.length === 0,
@@ -193,9 +421,10 @@
           selectedPath: file?.path || "",
           checks,
           failed: failed.map((check) => check.id),
+          scm: scmGates,
         };
         renderContractReport(studioState.lastReport);
-        setStatus(studioState.lastReport.ok ? "Validation passed: source can mount, repair, and serialize." : `Validation blocked: ${failed.length} contract check(s) failed.`);
+        setStatus(studioState.lastReport.ok ? "Validation passed: source can mount, repair, serialize, and emit SCM evidence." : `Validation blocked: ${failed.length} contract check(s) failed.`);
         return studioState.lastReport;
       }
 
@@ -217,6 +446,15 @@
             ok: report.ok,
             failed: report.failed,
             mcelClauses: mcelEnvelope?.clauses?.length || 0,
+            scm: {
+              available: Boolean(report.scm?.available),
+              ok: Boolean(report.scm?.ok),
+              layoutOk: Boolean(report.scm?.layout?.ok),
+              styleOk: Boolean(report.scm?.style?.ok),
+              validationEffectOk: Boolean(report.scm?.validation?.ok),
+              evidenceCount: report.scm?.evidenceCount || 0,
+              recentEvidence: report.scm?.recentEvidence || []
+            },
             userPlanningModel: [
               "author source is canonical",
               "runtime editor chrome is generated",
@@ -236,11 +474,20 @@
           showPane("serialized");
           return "";
         }
+
+        const scmGate = runScmGate("serialize", (mcel, instance) => mcel.serializeComponent(instance));
+        if (!scmGate.ok) {
+          serializedOutput.textContent = `SCM serialization blocked: ${scmGate.code || scmGate.message || "contract violation"}`;
+          showPane("serialized");
+          setStatus("SCM serialization gate blocked export. Commit or repair the runtime state first.");
+          return "";
+        }
+
         doc.querySelectorAll('[data-mc-generated="runtime"], [data-mc-serialize="omit"]').forEach((node) => node.remove());
         const clean = workspace.outerHTML.trim();
         serializedOutput.textContent = clean;
         showPane("serialized");
-        setStatus("Serialized clean source. Runtime chrome was excluded.");
+        setStatus("Serialized clean source. SCM serialization gate passed and runtime chrome was excluded.");
         return clean;
       }
 
@@ -260,9 +507,17 @@
           showPane("contract");
           return;
         }
+
+        const scmGate = runScmGate("repair:rebuildWorkbenchShell", (mcel, instance) => mcel.repairComponent(instance, "rebuildWorkbenchShell"));
+        if (!scmGate.ok) {
+          showPane("contract");
+          setStatus(`SCM repair gate blocked runtime repair: ${scmGate.code || scmGate.message || "contract violation"}.`);
+          return;
+        }
+
         renderRuntime();
         showPane("runtime");
-        setStatus("Runtime repaired from author-owned source intent.");
+        setStatus("Runtime repaired from author-owned source intent through the SCM repair gate.");
       }
 
       function commitRuntimeDraft() {
@@ -277,6 +532,18 @@
           setStatus("Cannot commit: source workspace or selected file is missing.");
           return;
         }
+
+        const editGate = runScmTransition("editDraft", {text: draft.value});
+        if (!editGate.ok) {
+          setStatus(`SCM editDraft transition blocked commit: ${editGate.code || editGate.message || "contract violation"}.`);
+          return;
+        }
+        const commitGate = runScmTransition("commitDraft");
+        if (!commitGate.ok) {
+          setStatus(`SCM commitDraft transition blocked commit: ${commitGate.code || commitGate.message || "contract violation"}.`);
+          return;
+        }
+
         const target = [...workspace.querySelectorAll('[data-mc-component="code-file"]')]
           .find((node) => node.getAttribute("data-mc-file-path") === file.path);
         if (!target) {
@@ -287,21 +554,35 @@
         sourceEditor.value = workspace.outerHTML.trim();
         studioState.dirty = false;
         syncLineGutter();
+        syncScmInstance();
         renderRuntime();
-        setStatus("Runtime draft committed into author-owned source.");
+        setStatus("Runtime draft committed into author-owned source through SCM editDraft/commitDraft transitions.");
       }
 
       tabButtons.forEach((button) => {
-        button.addEventListener("click", () => showPane(button.dataset.codeStudioTab || "source"));
+        button.addEventListener("click", () => {
+          const panel = button.dataset.codeStudioTab || "source";
+          runScmTransition("selectPanel", {panel});
+          showPane(panel);
+        });
       });
       root.querySelectorAll("[data-code-studio-panel]").forEach((button) => {
         button.addEventListener("click", () => {
           root.querySelectorAll("[data-code-studio-panel]").forEach((entry) => entry.classList.remove("active"));
           button.classList.add("active");
           const panel = button.dataset.codeStudioPanel;
-          if (panel === "runtime") renderRuntime();
-          if (panel === "contract") validateSource();
-          if (panel === "source" || panel === "explorer") showPane("source");
+          if (panel === "runtime") {
+            runScmTransition("selectPanel", {panel: "runtime"});
+            renderRuntime();
+          }
+          if (panel === "contract") {
+            runScmTransition("selectPanel", {panel: "contract"});
+            validateSource();
+          }
+          if (panel === "source" || panel === "explorer") {
+            runScmTransition("selectPanel", {panel: "source"});
+            showPane("source");
+          }
           if (panel === "assistant") {
             const dock = root.querySelector("#code-studio-bottom-panel");
             const dockToggle = root.querySelector("#code-studio-toggle-assistant");
@@ -317,6 +598,8 @@
         button.addEventListener("click", () => {
           studioState.selectedPath = button.dataset.codeStudioFile || studioState.selectedPath;
           root.querySelectorAll("[data-code-studio-file]").forEach((entry) => entry.classList.toggle("active", entry === button));
+          const fields = workspaceFields();
+          runScmTransition("openFile", {fileId: selectedScmFileId(fields)});
           renderRuntime();
           showPane("runtime");
         });
@@ -327,6 +610,7 @@
       const assistantToggle = root.querySelector("#code-studio-toggle-assistant");
       assistantToggle?.addEventListener("click", () => {
         const expanded = assistantDock?.dataset.expanded === "true";
+        runScmTransition("toggleBottomDock");
         if (assistantDock) assistantDock.dataset.expanded = expanded ? "false" : "true";
         assistantToggle.setAttribute("aria-expanded", expanded ? "false" : "true");
         assistantToggle.textContent = expanded ? "Open assistant dock" : "Close assistant dock";
@@ -336,8 +620,9 @@
         syncLineGutter();
         studioState.mounted = false;
         studioState.damaged = false;
+        syncScmInstance();
         setRuntimeLabel();
-        setStatus("Source changed. Remount or validate to refresh the MCEL runtime.");
+        setStatus("Source changed. Remount or validate to refresh the MCEL runtime and SCM evidence.");
       });
       sourceEditor.addEventListener("scroll", () => {
         if (gutter) gutter.scrollTop = sourceEditor.scrollTop;
@@ -360,6 +645,12 @@
         repairRuntime,
         serialize: serializeCleanSource,
         commitRuntimeDraft,
+        syncScmInstance,
+        checkScmContracts: runScmRuntimeChecks,
+        exportScmEvidence,
+        getScmInstance() {
+          return syncScmInstance();
+        },
       };
 
       syncLineGutter();

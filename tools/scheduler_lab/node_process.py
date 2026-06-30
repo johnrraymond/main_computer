@@ -738,6 +738,75 @@ def maybe_start_local_work_sync(
     return True
 
 
+def _worker_streaming_enabled(args: argparse.Namespace, node: dict[str, Any]) -> bool:
+    raw_node = str(node.get("worker_streaming_enabled", "") or "").strip().lower()
+    if raw_node in {"0", "false", "no", "off"}:
+        return False
+    if raw_node in {"1", "true", "yes", "on"}:
+        return True
+    return bool(getattr(args, "worker_streaming", True))
+
+
+def _sleep_and_stream_worker_progress_sync(
+    *,
+    node: dict[str, Any],
+    lease: dict[str, Any],
+    runtime_ms: float,
+    result_content: str,
+    args: argparse.Namespace,
+    sink: SyncEventSink,
+    client: HubClient,
+    runner: NodeHttpRunner,
+) -> None:
+    if runtime_ms <= 0:
+        return
+    if not _worker_streaming_enabled(args, node):
+        time.sleep(runtime_ms / 1000.0)
+        return
+
+    chunk_count = max(1, int(getattr(args, "worker_stream_chunks", 4) or 4))
+    chunk_count = min(chunk_count, max(1, len(result_content.split())))
+    words = result_content.split()
+    if not words:
+        time.sleep(runtime_ms / 1000.0)
+        return
+
+    emitted_text = ""
+    per_chunk_sleep = runtime_ms / 1000.0 / chunk_count
+    for chunk_index in range(chunk_count):
+        if per_chunk_sleep > 0:
+            time.sleep(per_chunk_sleep)
+        end = round(len(words) * (chunk_index + 1) / chunk_count)
+        end = max(1, min(len(words), end))
+        chunk_text = " ".join(words[:end])
+        delta = chunk_text[len(emitted_text):].lstrip() if emitted_text else chunk_text
+        emitted_text = chunk_text
+        event = {
+            "event": "token",
+            "sequence": chunk_index + 1,
+            "text": chunk_text,
+            "delta": delta,
+            "content_delta": delta,
+            "progress": round((chunk_index + 1) / chunk_count, 6),
+        }
+        fields = {
+            "lease_id": lease.get("lease_id"),
+            "request_id": lease.get("request_id"),
+            "worker_node_id": node.get("node_id"),
+            "stream_event": "token",
+            "stream_sequence": chunk_index + 1,
+        }
+        sink.emit(event_payload("worker.stream.local_emitted", node, **fields))
+        runner.call_once(
+            "worker.stream.submitted",
+            client.submit_worker_stream_event,
+            node,
+            lease,
+            event,
+            _event_fields=fields,
+        )
+
+
 def execute_lease_sync(
     node: dict[str, Any],
     lease: dict[str, Any],
@@ -791,7 +860,17 @@ def execute_lease_sync(
         runtime_ms = sample_lognormal_ms(rng, slow_ms if rng.random() < 0.15 else normal_ms, 0.45, clamp_min=10, clamp_max=args.max_runtime_ms)
         execution_started_ts = utc_now()
         sink.emit(event_payload("worker.execution.started", node, lease_id=lease.get("lease_id"), request_id=lease.get("request_id"), worker_node_id=node.get("node_id"), execution_started_ts=execution_started_ts, runtime_ms=round(runtime_ms, 3)))
-    time.sleep(runtime_ms / 1000.0)
+    result_content = f"scheduler lab result from {node.get('node_id')} for {lease.get('request_id')}"
+    _sleep_and_stream_worker_progress_sync(
+        node=node,
+        lease=lease,
+        runtime_ms=runtime_ms,
+        result_content=result_content,
+        args=args,
+        sink=sink,
+        client=client,
+        runner=runner,
+    )
     execution_finished_ts = utc_now()
     sink.emit(event_payload("worker.execution.finished", node, lease_id=lease.get("lease_id"), request_id=lease.get("request_id"), worker_node_id=node.get("node_id"), execution_started_ts=locals().get("execution_started_ts"), execution_finished_ts=execution_finished_ts, runtime_ms=round(runtime_ms, 3)))
 
@@ -808,7 +887,7 @@ def execute_lease_sync(
 
     result = {
         "status": "success",
-        "content": f"scheduler lab result from {node.get('node_id')} for {lease.get('request_id')}",
+        "content": result_content,
         "provider": "scheduler-lab",
         "model": lease.get("model") or node.get("model"),
         "metadata": {
@@ -1127,6 +1206,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-poll-interval-ms", type=float, default=float(os.environ.get("WORKER_POLL_INTERVAL_MS", "500")))
     parser.add_argument("--worker-register-retry-interval-ms", type=float, default=float(os.environ.get("WORKER_REGISTER_RETRY_INTERVAL_MS", "1000")))
     parser.add_argument("--lease-seconds", type=float, default=float(os.environ.get("LEASE_SECONDS", "45")))
+    parser.add_argument("--worker-streaming", dest="worker_streaming", action="store_true", default=str(os.environ.get("WORKER_STREAMING", "1")).lower() in {"1", "true", "yes", "on"})
+    parser.add_argument("--no-worker-streaming", dest="worker_streaming", action="store_false")
+    parser.add_argument("--worker-stream-chunks", type=int, default=int(os.environ.get("WORKER_STREAM_CHUNKS", "4")))
     parser.add_argument("--worktime", default=os.environ.get("LAB_WORKTIME", ""))
     parser.add_argument("--warm", default=os.environ.get("LAB_WARM", ""))
     parser.add_argument("--b2bfailures", type=int, default=int(os.environ.get("B2B_FAILURES", "10")))
@@ -1148,6 +1230,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--b2bfailures must be >= 0")
     if args.forced_alive < 0:
         raise SystemExit("--forced-alive must be >= 0")
+    if args.worker_stream_chunks < 1:
+        raise SystemExit("--worker-stream-chunks must be >= 1")
     try:
         args.worktime_distribution = parse_worktime_spec(args.worktime)
         args.warm_distribution = parse_warm_spec(args.warm)

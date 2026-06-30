@@ -189,6 +189,124 @@ class BridgeEscrowWorkerPullV0Tests(unittest.TestCase):
         self.assertEqual(charges["charge_count"], 1)
         self.assertEqual(charges["charges"][0]["charged_credits"], 5_500_000)
 
+    def test_worker_stream_events_reach_requester_before_final_result(self) -> None:
+        hub, hub_base = self._start_hub(credits_per_request=5)
+        account_id = "requester-stream"
+        hub.credit_ledger.issue(account_id=account_id, credits=100, memo="fund streaming requester")
+
+        registered = post_json(
+            f"{hub_base}/api/hub/v1/workers/register",
+            {
+                "node_id": "Streaming Worker 01",
+                "endpoint": "http://127.0.0.1:1",
+                "model": "mock-fast-chat",
+                "credits_per_request": 5,
+                "capabilities": {"provider": "mock", "worker_pull_v0": True},
+            },
+        )
+        self.assertTrue(registered["ok"])
+
+        submitted = post_json(
+            f"{hub_base}/api/hub/v1/requests",
+            {
+                "account_id": account_id,
+                "client_node_id": account_id,
+                "model": "mock-fast-chat",
+                "prompt": "stream before final",
+                "max_credits": 10,
+                "execution_mode": "worker_pull_v0",
+                "metadata": {"worker_pull_v0": True},
+                "idempotency_key": "worker-stream-test-01",
+            },
+        )["request"]
+        lease = post_json(
+            f"{hub_base}/api/hub/v1/workers/poll",
+            {"worker_node_id": "streaming-worker-01", "lease_seconds": 10},
+        )["lease"]
+        self.assertEqual(lease["request_id"], submitted["request_id"])
+
+        streamed_events: list[dict] = []
+        token_seen = threading.Event()
+        done_seen = threading.Event()
+        reader_errors: list[BaseException] = []
+
+        def read_stream() -> None:
+            try:
+                with urlopen(
+                    f"{hub_base}/api/hub/v1/requests/{lease['request_id']}/stream?timeout_seconds=5&heartbeat_seconds=0.25",
+                    timeout=10,
+                ) as response:
+                    for raw_line in response:
+                        if not raw_line.strip():
+                            continue
+                        event = json.loads(raw_line.decode("utf-8"))
+                        streamed_events.append(event)
+                        if event.get("event") == "token":
+                            token_seen.set()
+                        if event.get("event") == "done":
+                            done_seen.set()
+                            return
+            except BaseException as exc:  # pragma: no cover - surfaced by assertions below.
+                reader_errors.append(exc)
+
+        reader = threading.Thread(target=read_stream, daemon=True)
+        reader.start()
+        time.sleep(0.1)
+
+        submitted_stream_event = post_json(
+            f"{hub_base}/api/hub/v1/workers/stream-events",
+            {
+                "worker_node_id": "streaming-worker-01",
+                "request_id": lease["request_id"],
+                "lease_id": lease["lease_id"],
+                "event": {
+                    "event": "token",
+                    "sequence": 1,
+                    "text": "partial answer",
+                    "delta": "partial answer",
+                    "content_delta": "partial answer",
+                },
+            },
+        )
+        self.assertTrue(submitted_stream_event["ok"])
+        self.assertTrue(token_seen.wait(2), streamed_events)
+        self.assertFalse(reader_errors)
+
+        live_status = get_json(f"{hub_base}/api/hub/v1/requests/{lease['request_id']}")["request"]
+        self.assertEqual(live_status["state"], "running")
+        self.assertIsNone(live_status.get("response"))
+
+        completed = post_json(
+            f"{hub_base}/api/hub/v1/workers/results",
+            {
+                "worker_node_id": "streaming-worker-01",
+                "request_id": lease["request_id"],
+                "lease_id": lease["lease_id"],
+                "result": {
+                    "status": "success",
+                    "response": {
+                        "content": "partial answer completed",
+                        "provider": "mock-worker",
+                        "model": "mock-fast-chat",
+                    },
+                },
+            },
+        )["request"]
+        self.assertEqual(completed["state"], "completed")
+        self.assertTrue(done_seen.wait(2), streamed_events)
+        reader.join(2)
+        self.assertFalse(reader_errors)
+
+        token_events = [event for event in streamed_events if event.get("event") == "token"]
+        self.assertEqual(token_events[-1]["delta"], "partial answer")
+        done_index = next(index for index, event in enumerate(streamed_events) if event.get("event") == "done")
+        token_index = next(index for index, event in enumerate(streamed_events) if event.get("event") == "token")
+        self.assertLess(token_index, done_index)
+
+        stored_events = get_json(f"{hub_base}/api/hub/v1/requests/{lease['request_id']}/events")["events"]
+        stored_types = [event["type"] for event in stored_events]
+        self.assertLess(stored_types.index("worker.stream.event"), stored_types.index("request.completed"))
+
     def test_insufficient_funds_request_never_becomes_pollable(self) -> None:
         _hub, hub_base = self._start_hub(credits_per_request=5)
         post_json(

@@ -8,6 +8,7 @@ from main_computer.viewport import APPLICATIONS_INDEX_HTML
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = ROOT / "main_computer" / "web" / "applications" / "apps" / "code-editor.html"
+APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
 STYLE_PATH = ROOT / "main_computer" / "web" / "applications" / "styles" / "code-editor.css"
 SCRIPT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-mcel-studio.js"
 PRETTY_DOC = ROOT / "pretty_docs" / "mcel-code-studio-example.md"
@@ -94,6 +95,18 @@ class McelCodeStudioAppTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(text, APPLICATIONS_INDEX_HTML)
 
+    def test_code_studio_live_script_loads_after_scm_manifest(self) -> None:
+        include_order = [
+            "applications/scripts/mcel-scm.js",
+            "applications/scripts/mcel-core.js",
+            "applications/scripts/code-editor-scm-manifest.js",
+            "applications/scripts/code-editor-mcel-studio.js",
+        ]
+        applications_html = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        positions = [applications_html.index(include) for include in include_order]
+
+        self.assertEqual(positions, sorted(positions))
+
     def test_code_studio_script_exposes_contract_workflow(self) -> None:
         script = SCRIPT_PATH.read_text(encoding="utf-8")
         expected = [
@@ -109,6 +122,15 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "source-safe-code-editor",
             "code-studio-toggle-assistant",
             "code-studio-bottom-panel",
+            "syncScmInstance",
+            "runScmRuntimeChecks",
+            "SCM serialization gate passed",
+            "mcel.serializeComponent",
+            "mcel.repairComponent",
+            "mcel.checkLayoutContract",
+            "mcel.checkStyleContract",
+            "mcel.runEffect",
+            "exportScmEvidence",
             "Layout locked",
         ]
         for text in expected:

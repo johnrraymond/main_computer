@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.14"
+MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.15"
 
 MCEL_RUNTIME_MODULES: tuple[str, ...] = (
     "main_computer/web/applications/scripts/mcel-contract.js",
