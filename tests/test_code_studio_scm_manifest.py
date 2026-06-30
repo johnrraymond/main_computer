@@ -125,7 +125,7 @@ process.stdout.write(JSON.stringify({{
     assert data["registered"] is True
     assert data["componentName"] == "CodeStudio"
     assert data["definitionName"] == "CodeStudio"
-    assert data["version"] == "2.6.0"
+    assert data["version"] == "2.9.0"
     assert data["contract"] == "mcel.scm.code-studio.v1"
     assert data["validation"]["ok"] is True
     assert data["owns"]["source"] == ["workspace.manifest", "workspace.files"]
@@ -489,7 +489,7 @@ process.stdout.write(JSON.stringify({{
 
     data = _run_node_json(tmp_path, script)
 
-    assert data["version"] == "2.6.0"
+    assert data["version"] == "2.9.0"
     assert data["layoutRoot"] == "#code-editor-app"
     assert data["layoutSlots"] == [
         "activitybar",
@@ -620,7 +620,7 @@ process.stdout.write(JSON.stringify({{
 
     data = _run_node_json(tmp_path, script)
 
-    assert data["version"] == "2.6.0"
+    assert data["version"] == "2.9.0"
     assert data["serializationSourceOwns"] == [
         "source.workspace.manifest",
         "source.workspace.files",

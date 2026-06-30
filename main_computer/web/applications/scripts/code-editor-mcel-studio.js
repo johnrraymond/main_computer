@@ -8,6 +8,8 @@
       const serializedOutput = root.querySelector("#code-studio-serialized-output");
       const contractReport = root.querySelector("#code-studio-contract-report");
       const contractEnvelope = root.querySelector("#code-studio-contract-envelope");
+      const scmEvidencePanel = root.querySelector("#code-studio-scm-evidence-panel");
+      const refreshScmEvidenceButton = root.querySelector("#code-studio-refresh-scm-evidence");
       const status = root.querySelector("#code-studio-status");
       const runtimeState = root.querySelector("#code-studio-runtime-state");
       const validateButton = root.querySelector("#code-studio-validate");
@@ -28,9 +30,14 @@
         selectedPath: "src/app.js",
         lastReport: null,
         lastScmGates: null,
+        scmEvidenceFilter: "all",
+        selectedScmEvidenceKey: "",
+        selectedScmEvidenceSnapshot: null,
       };
 
       let scmInstance = null;
+      let scmRouteInstance = null;
+      let scmRouteKey = "";
 
       function resolveScmBridge() {
         const mcel = window.MCEL || null;
@@ -112,6 +119,190 @@
         return scmInstance;
       }
 
+
+      function routeParamsForScm(fields = workspaceFields()) {
+        const source = sourceForScm(fields);
+        const activeFileId = selectedScmFileId(fields);
+        if (!activeFileId) return null;
+        return {
+          workspaceId: normalizeScmFileId(source.workspace.manifest.id || "workspace-main", "workspace-main"),
+          fileId: activeFileId
+        };
+      }
+
+      function routeQueryForScm() {
+        const selectedPanel = root.querySelector("[data-code-studio-tab].active")?.dataset.codeStudioTab || "source";
+        return {
+          panel: selectedPanel
+        };
+      }
+
+      function currentScmRouteKey(params, query) {
+        return JSON.stringify({
+          workspaceId: params?.workspaceId || "",
+          fileId: params?.fileId || "",
+          panel: query?.panel || "source"
+        });
+      }
+
+      function syncScmRouteInstance(options = {}) {
+        const bridge = resolveScmBridge();
+        const componentInstance = syncScmInstance();
+        if (!bridge || !componentInstance || typeof bridge.studio.createDefaultRouteInstance !== "function") return null;
+
+        const fields = workspaceFields();
+        const params = routeParamsForScm(fields);
+        if (!params) return null;
+        const query = routeQueryForScm();
+
+        if (!scmRouteInstance) {
+          scmRouteInstance = bridge.studio.createDefaultRouteInstance({
+            mcel: bridge.mcel,
+            id: "code-studio-live-scm-route",
+            componentInstance,
+            data: {}
+          });
+        }
+
+        scmRouteInstance.componentInstance = componentInstance;
+
+        if (options.enter === false) return scmRouteInstance;
+
+        const routeKey = currentScmRouteKey(params, query);
+        if (options.forceEnter === true || scmRouteKey !== routeKey || scmRouteInstance.status !== "entered") {
+          bridge.mcel.enterRoute(scmRouteInstance, {params, query});
+          scmRouteKey = routeKey;
+        }
+
+        return scmRouteInstance;
+      }
+
+      function exportScmRouteEvidence() {
+        const bridge = resolveScmBridge();
+        const routeInstance = syncScmRouteInstance({enter: false});
+        if (!bridge || !routeInstance || typeof bridge.mcel.exportRouteEvidence !== "function") {
+          return {
+            kind: "mcel-scm-route-evidence-packet",
+            routeName: "",
+            instanceId: "",
+            evidence: [],
+            unavailable: true
+          };
+        }
+        return bridge.mcel.exportRouteEvidence(routeInstance);
+      }
+
+      function runScmRouteGate(label, callback) {
+        const bridge = resolveScmBridge();
+        if (!bridge) {
+          return {
+            label,
+            ok: true,
+            skipped: true,
+            message: "SCM route runtime is not available in this page load."
+          };
+        }
+
+        try {
+          const result = callback(bridge.mcel);
+          return {
+            label,
+            ok: result?.ok !== false,
+            kind: result?.kind || "mcel-scm-route-operation-result",
+            code: "",
+            result
+          };
+        } catch (error) {
+          const violation = error?.violation || null;
+          return {
+            label,
+            ok: false,
+            kind: violation?.kind || "mcel-scm-violation",
+            code: violation?.code || "SCM_ROUTE_OPERATION_EXCEPTION",
+            message: violation?.message || error?.message || String(error),
+            violation
+          };
+        }
+      }
+
+      function enterScmRouteAndRunLoaders(options = {}) {
+        const routeGate = runScmRouteGate("route:enter", (mcel) => {
+          const routeInstance = syncScmRouteInstance({forceEnter: options.forceEnter === true});
+          if (!routeInstance) {
+            return {
+              kind: "mcel-scm-route-enter-result",
+              ok: true,
+              skipped: true
+            };
+          }
+
+          const loadWorkspace = mcel.runRouteLoader(routeInstance, "loadWorkspace");
+          const loadFile = mcel.runRouteLoader(routeInstance, "loadFile");
+
+          return {
+            kind: "mcel-scm-live-route-sync-result",
+            ok: loadWorkspace?.ok !== false && loadFile?.ok !== false,
+            routeName: routeInstance.routeName,
+            params: {...routeInstance.params},
+            query: {...routeInstance.query},
+            data: JSON.parse(JSON.stringify(routeInstance.data || {})),
+            loaders: {
+              loadWorkspace,
+              loadFile
+            }
+          };
+        });
+
+        const workspaceEffect = runScmGate("effect:loadWorkspace", (mcel, instance) => {
+          const params = routeParamsForScm();
+          return mcel.runEffect(instance, "loadWorkspace", {
+            workspaceId: params?.workspaceId || "workspace-main"
+          });
+        });
+        const fileEffect = runScmGate("effect:loadFile", (mcel, instance) => {
+          const params = routeParamsForScm();
+          return mcel.runEffect(instance, "loadFile", {
+            fileId: params?.fileId || selectedScmFileId()
+          });
+        });
+
+        return {
+          label: "route-and-loaders",
+          ok: routeGate.ok && workspaceEffect.ok && fileEffect.ok,
+          route: routeGate,
+          effects: {
+            loadWorkspace: workspaceEffect,
+            loadFile: fileEffect
+          }
+        };
+      }
+
+      function requestScmRouteLeave(options = {}) {
+        return runScmRouteGate("route:leave", (mcel) => {
+          const routeInstance = syncScmRouteInstance({enter: true});
+          if (!routeInstance) {
+            return {
+              kind: "mcel-scm-route-leave-result",
+              ok: true,
+              skipped: true
+            };
+          }
+          return mcel.leaveRoute(routeInstance, options.resolution ? {resolution: options.resolution} : {});
+        });
+      }
+
+      function canNavigateScmRoute(nextPath) {
+        if (nextPath === studioState.selectedPath) return true;
+        const leaveGate = requestScmRouteLeave();
+        if (!leaveGate.ok || leaveGate.result?.blocked) {
+          const blockers = leaveGate.result?.blockers || leaveGate.violation?.blockers || [];
+          setStatus(`SCM route blocked navigation away from ${studioState.selectedPath}: ${blockers.join(", ") || "dirty state"}. Commit the draft or discard it before switching files.`);
+          showPane("contract");
+          return false;
+        }
+        return true;
+      }
+
       function exportScmEvidence() {
         const bridge = resolveScmBridge();
         const instance = syncScmInstance();
@@ -165,8 +356,54 @@
         return runScmGate(`transition:${name}`, (mcel, instance) => mcel.transition(instance, name, payload));
       }
 
+      function scopedNodes(selector) {
+        const nodes = [];
+        if (root.matches?.(selector)) nodes.push(root);
+        root.querySelectorAll?.(selector).forEach((node) => nodes.push(node));
+        return nodes;
+      }
+
+      function scopedNode(selector) {
+        return scopedNodes(selector)[0] || null;
+      }
+
+      function applyScmSurfaceStyles(selector, styles) {
+        scopedNodes(selector).forEach((node) => {
+          Object.entries(styles).forEach(([property, value]) => {
+            node.style[property] = value;
+          });
+        });
+      }
+
+      function ensureCodeStudioScmSurfaceStyles() {
+        const bottomDock = scopedNode("#code-studio-bottom-panel");
+        applyScmSurfaceStyles("#code-editor-app", {
+          backgroundColor: "#1e1e1e",
+          overflow: "hidden"
+        });
+        applyScmSurfaceStyles(".code-studio-shell", {
+          display: "grid",
+          overflow: "hidden"
+        });
+        applyScmSurfaceStyles(".code-studio-body", {
+          display: "grid"
+        });
+        applyScmSurfaceStyles(".code-studio-titlebar button", {
+          backgroundColor: "#2d2d30",
+          color: "#dcdcdc"
+        });
+        if (bottomDock?.dataset.expanded === "true") {
+          bottomDock.style.height = "min(360px, 45%)";
+          bottomDock.style.maxHeight = "";
+        } else if (bottomDock) {
+          bottomDock.style.height = "38px";
+          bottomDock.style.maxHeight = "80px";
+          bottomDock.style.overflow = "hidden";
+        }
+      }
+
       function readComputed(selector, properties) {
-        const node = root.querySelector(selector);
+        const node = scopedNode(selector);
         if (!node || typeof window.getComputedStyle !== "function") return {};
         const computed = window.getComputedStyle(node);
         return properties.reduce((values, property) => {
@@ -176,7 +413,8 @@
       }
 
       function collectLayoutObservation() {
-        const bottomDock = root.querySelector("#code-studio-bottom-panel");
+        ensureCodeStudioScmSurfaceStyles();
+        const bottomDock = scopedNode("#code-studio-bottom-panel");
         const rootRect = root.getBoundingClientRect?.() || {height: 0};
         const documentHeight = document.documentElement?.scrollHeight || rootRect.height || 0;
         const rootHeight = rootRect.height || root.offsetHeight || 1;
@@ -204,6 +442,7 @@
       }
 
       function collectStyleObservation() {
+        ensureCodeStudioScmSurfaceStyles();
         return {
           computed: {
             "#code-editor-app": readComputed("#code-editor-app", ["backgroundColor"]),
@@ -223,10 +462,12 @@
         const validation = runScmGate("effect:runValidation", (mcel, instance) => mcel.runEffect(instance, "runValidation", {
           selectedPath: studioState.selectedPath
         }));
+        const route = enterScmRouteAndRunLoaders();
         const evidence = exportScmEvidence();
+        const routeEvidence = exportScmRouteEvidence();
         const gates = {
           available,
-          ok: [layout, style, validation].every((entry) => entry.ok),
+          ok: [layout, style, validation, route].every((entry) => entry.ok),
           layout: {
             ok: layout.ok,
             code: layout.code || "",
@@ -241,8 +482,19 @@
             ok: validation.ok,
             code: validation.code || ""
           },
+          route: {
+            ok: route.ok,
+            code: route.route?.code || "",
+            params: route.route?.result?.params || {},
+            query: route.route?.result?.query || {},
+            data: route.route?.result?.data || {},
+            effectLoadWorkspaceOk: Boolean(route.effects?.loadWorkspace?.ok),
+            effectLoadFileOk: Boolean(route.effects?.loadFile?.ok)
+          },
           evidenceCount: evidence.evidence.length,
-          recentEvidence: evidence.evidence.slice(-8)
+          routeEvidenceCount: routeEvidence.evidence.length,
+          recentEvidence: evidence.evidence.slice(-8),
+          recentRouteEvidence: routeEvidence.evidence.slice(-8)
         };
         studioState.lastScmGates = gates;
         return gates;
@@ -255,6 +507,304 @@
           .replaceAll(">", "&gt;")
           .replaceAll('"', "&quot;")
           .replaceAll("'", "&#39;");
+      }
+
+      function evidenceEntryLabel(entry) {
+        const parts = [
+          entry.phase || entry.kind || "evidence",
+          entry.componentName || entry.routeName || "",
+          entry.transitionName || entry.effectName || entry.loaderName || entry.strategyName || entry.childName || "",
+          entry.code || ""
+        ].filter(Boolean);
+        return parts.join(" · ");
+      }
+
+      function evidenceEntryScope(entry, fallback = "component") {
+        if (entry.scope) return entry.scope;
+        if (entry.routeName || entry.loaderName || String(entry.phase || "").startsWith("route")) return "route";
+        if (entry.effectName || String(entry.phase || "").includes("effect")) return "effect";
+        if (entry.strategyName || String(entry.phase || "").includes("repair")) return "repair";
+        if (String(entry.phase || "").includes("serialize") || String(entry.code || "").includes("SERIAL")) return "serialization";
+        if (String(entry.phase || "").includes("layout") || String(entry.code || "").includes("LAYOUT")) return "layout";
+        if (String(entry.phase || "").includes("style") || String(entry.code || "").includes("STYLE")) return "style";
+        return fallback;
+      }
+
+      function evidenceEntryIsViolation(entry) {
+        return entry.ok === false
+          || entry.kind === "mcel-scm-violation"
+          || String(entry.code || "").startsWith("SCM_")
+          || entry.severity === "blocking";
+      }
+
+      function evidenceEntryKey(entry, index) {
+        return [
+          evidenceEntryScope(entry),
+          entry.phase || "",
+          entry.componentName || entry.routeName || "",
+          entry.transitionName || entry.effectName || entry.loaderName || entry.strategyName || entry.childName || "",
+          entry.code || "",
+          entry.path || entry.target || "",
+          index
+        ].join("|");
+      }
+
+      function evidenceFilterMatches(entry, filter) {
+        if (!filter || filter === "all") return true;
+        if (filter === "violations") return evidenceEntryIsViolation(entry);
+        return evidenceEntryScope(entry) === filter;
+      }
+
+      function normalizeEvidenceEntries(componentEvidence = [], routeEvidence = []) {
+        return [
+          ...componentEvidence.map((entry, index) => ({...entry, scope: evidenceEntryScope(entry, "component"), sourceIndex: index})),
+          ...routeEvidence.map((entry, index) => ({...entry, scope: evidenceEntryScope(entry, "route"), sourceIndex: index}))
+        ].map((entry, index) => ({...entry, evidenceKey: evidenceEntryKey(entry, index)}));
+      }
+
+      function summarizeEvidence(entries = []) {
+        const summary = {
+          total: entries.length,
+          ok: 0,
+          violations: 0,
+          blocking: 0,
+          phases: {},
+          scopes: {}
+        };
+
+        entries.forEach((entry) => {
+          const phase = entry.phase || entry.kind || "unknown";
+          const scope = evidenceEntryScope(entry);
+          summary.phases[phase] = (summary.phases[phase] || 0) + 1;
+          summary.scopes[scope] = (summary.scopes[scope] || 0) + 1;
+          if (evidenceEntryIsViolation(entry)) {
+            summary.violations += 1;
+          } else {
+            summary.ok += 1;
+          }
+          if (entry.severity === "blocking" || String(entry.code || "").includes("BLOCK")) {
+            summary.blocking += 1;
+          }
+        });
+
+        return summary;
+      }
+
+      function collectScmEvidenceSummary(report = studioState.lastReport) {
+        const componentPacket = exportScmEvidence();
+        const routePacket = exportScmRouteEvidence();
+        const componentEvidence = componentPacket.evidence || [];
+        const routeEvidence = routePacket.evidence || [];
+        const combined = normalizeEvidenceEntries(componentEvidence, routeEvidence);
+
+        return {
+          available: !componentPacket.unavailable || !routePacket.unavailable,
+          component: summarizeEvidence(componentEvidence),
+          route: summarizeEvidence(routeEvidence),
+          combined: summarizeEvidence(combined),
+          gates: report?.scm || studioState.lastScmGates || null,
+          allEvidence: combined,
+          recentComponentEvidence: componentEvidence.slice(-10),
+          recentRouteEvidence: routeEvidence.slice(-10),
+          recentEvidence: combined.slice(-24)
+        };
+      }
+
+      function formatEvidenceDetail(entry) {
+        const safeEntry = entry || {};
+        return {
+          scope: evidenceEntryScope(safeEntry),
+          ok: safeEntry.ok !== false,
+          phase: safeEntry.phase || "",
+          code: safeEntry.code || "",
+          severity: safeEntry.severity || "",
+          componentName: safeEntry.componentName || "",
+          routeName: safeEntry.routeName || "",
+          transitionName: safeEntry.transitionName || "",
+          effectName: safeEntry.effectName || "",
+          loaderName: safeEntry.loaderName || "",
+          strategyName: safeEntry.strategyName || "",
+          path: safeEntry.path || "",
+          target: safeEntry.target || "",
+          message: safeEntry.message || "",
+          reads: safeEntry.reads || safeEntry.declaredReads || [],
+          writes: safeEntry.writes || safeEntry.declaredWrites || [],
+          violation: safeEntry.violation || null,
+          replayResult: safeEntry.replayResult || null
+        };
+      }
+
+      function replayScmEvidenceEntry(entry) {
+        const scope = evidenceEntryScope(entry);
+        let result = null;
+
+        if (scope === "layout") {
+          result = runScmGate("replay:layout", (mcel, instance) => mcel.checkLayoutContract(instance, collectLayoutObservation()));
+        } else if (scope === "style") {
+          result = runScmGate("replay:style", (mcel, instance) => mcel.checkStyleContract(instance, collectStyleObservation()));
+        } else if (entry?.effectName) {
+          result = runScmGate(`replay:effect:${entry.effectName}`, (mcel, instance) => mcel.runEffect(instance, entry.effectName, {
+            selectedPath: studioState.selectedPath
+          }));
+        } else if (entry?.loaderName) {
+          const routeInstance = syncScmRouteInstance({enter: true});
+          result = runScmRouteGate(`replay:loader:${entry.loaderName}`, (mcel) => mcel.runRouteLoader(routeInstance, entry.loaderName));
+        } else if (scope === "route") {
+          result = enterScmRouteAndRunLoaders();
+        } else if (scope === "serialization") {
+          result = runScmGate("replay:serialization", (mcel, instance) => mcel.serializeComponent(instance, {
+            sourceHtml: sourceEditor.value || "",
+            runtimeHtml: runtimePreview.innerHTML || ""
+          }));
+        } else if (scope === "repair" || entry?.strategyName) {
+          result = {
+            ok: false,
+            code: "SCM_REPLAY_REPAIR_REQUIRES_USER_ACTION",
+            message: "Repair replay is intentionally gated by the Repair runtime action because it mutates runtime-owned UI."
+          };
+        } else if (entry?.transitionName) {
+          result = {
+            ok: false,
+            code: "SCM_REPLAY_TRANSITION_REQUIRES_PAYLOAD",
+            message: "Transition replay requires the original payload and is not automatically re-run from the evidence panel."
+          };
+        } else {
+          result = {
+            ok: true,
+            code: "SCM_REPLAY_RUNTIME_CHECKS",
+            result: runScmRuntimeChecks()
+          };
+        }
+
+        studioState.selectedScmEvidenceSnapshot = {
+          ...entry,
+          replayedAt: new Date().toISOString(),
+          replayResult: result
+        };
+        setStatus(`SCM evidence replay ${result?.ok === false ? "blocked" : "completed"} for ${evidenceEntryLabel(entry)}.`);
+        return result;
+      }
+
+      function renderScmEvidencePanel(report = studioState.lastReport) {
+        if (!scmEvidencePanel) return null;
+        const summary = collectScmEvidenceSummary(report);
+        const gates = summary.gates || {};
+        const filter = studioState.scmEvidenceFilter || "all";
+        const filteredEntries = summary.recentEvidence.filter((entry) => evidenceFilterMatches(entry, filter));
+        const entries = filteredEntries.length ? filteredEntries : [{
+          kind: "mcel-scm-evidence",
+          phase: "idle",
+          ok: true,
+          scope: filter === "all" ? "component" : filter,
+          evidenceKey: `idle|${filter}`,
+          message: filter === "all"
+            ? "No SCM evidence has been recorded yet. Validate, mount, edit, serialize, repair, or switch files."
+            : `No recent SCM evidence entries match the ${filter} filter.`
+        }];
+
+        const selectedEntry = entries.find((entry) => entry.evidenceKey === studioState.selectedScmEvidenceKey)
+          || entries.find((entry) => evidenceEntryIsViolation(entry))
+          || entries[entries.length - 1];
+        studioState.selectedScmEvidenceKey = selectedEntry.evidenceKey || "";
+        const selectedSnapshot = studioState.selectedScmEvidenceSnapshot?.evidenceKey === studioState.selectedScmEvidenceKey
+          ? studioState.selectedScmEvidenceSnapshot
+          : selectedEntry;
+        const selectedDetail = formatEvidenceDetail(selectedSnapshot);
+
+        const filterOptions = [
+          ["all", "all"],
+          ["violations", "violations"],
+          ["component", "component"],
+          ["route", "route"],
+          ["effect", "effect"],
+          ["layout", "layout"],
+          ["style", "style"],
+          ["serialization", "serialization"],
+          ["repair", "repair"]
+        ].map(([value, label]) => `
+          <option value="${value}"${filter === value ? " selected" : ""}>${label}</option>
+        `).join("");
+
+        const rows = entries.map((entry) => `
+          <button type="button"
+            class="code-studio-scm-evidence-entry"
+            data-ok="${evidenceEntryIsViolation(entry) ? "false" : "true"}"
+            data-selected="${entry.evidenceKey === studioState.selectedScmEvidenceKey ? "true" : "false"}"
+            data-scm-evidence-key="${escapeHtml(entry.evidenceKey || "")}">
+            <strong>${escapeHtml(evidenceEntryLabel(entry))}</strong>
+            <span>${escapeHtml(entry.message || entry.path || entry.target || "SCM operation recorded.")}</span>
+            <code>${escapeHtml(JSON.stringify({
+              scope: evidenceEntryScope(entry),
+              ok: !evidenceEntryIsViolation(entry),
+              phase: entry.phase || "",
+              code: entry.code || "",
+              path: entry.path || "",
+              reads: entry.reads || entry.declaredReads || undefined,
+              writes: entry.writes || entry.declaredWrites || undefined
+            }))}</code>
+          </button>
+        `).join("");
+
+        scmEvidencePanel.innerHTML = `
+          <div class="code-studio-scm-evidence-heading">
+            <strong>SCM evidence timeline</strong>
+            <div class="code-studio-scm-evidence-actions">
+              <label>Filter
+                <select id="code-studio-scm-evidence-filter">
+                  ${filterOptions}
+                </select>
+              </label>
+              <button type="button" id="code-studio-replay-scm-evidence">Replay selected gate</button>
+              <button type="button" id="code-studio-refresh-scm-evidence">Refresh SCM evidence</button>
+            </div>
+          </div>
+          <div class="code-studio-scm-evidence-summary">
+            <span>component <code>${summary.component.total}</code></span>
+            <span>route <code>${summary.route.total}</code></span>
+            <span>violations <code>${summary.combined.violations}</code></span>
+            <span>layout <code>${gates.layout?.ok === false ? "fail" : "ok"}</code></span>
+            <span>style <code>${gates.style?.ok === false ? "fail" : "ok"}</code></span>
+            <span>route <code>${gates.route?.ok === false ? "fail" : "ok"}</code></span>
+          </div>
+          <div class="code-studio-scm-evidence-drilldown">
+            <div class="code-studio-scm-evidence-list" role="list">
+              ${rows}
+            </div>
+            <div class="code-studio-scm-evidence-detail" id="code-studio-scm-evidence-detail">
+              <strong>Selected evidence detail</strong>
+              <code>${escapeHtml(JSON.stringify(selectedDetail, null, 2))}</code>
+            </div>
+          </div>
+        `;
+
+        scmEvidencePanel.querySelector("#code-studio-scm-evidence-filter")?.addEventListener("change", (event) => {
+          studioState.scmEvidenceFilter = event.target.value || "all";
+          studioState.selectedScmEvidenceKey = "";
+          studioState.selectedScmEvidenceSnapshot = null;
+          renderScmEvidencePanel(studioState.lastReport);
+        });
+
+        scmEvidencePanel.querySelectorAll("[data-scm-evidence-key]").forEach((button) => {
+          button.addEventListener("click", () => {
+            studioState.selectedScmEvidenceKey = button.dataset.scmEvidenceKey || "";
+            studioState.selectedScmEvidenceSnapshot = null;
+            renderScmEvidencePanel(studioState.lastReport);
+          });
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-replay-scm-evidence")?.addEventListener("click", () => {
+          const entry = entries.find((candidate) => candidate.evidenceKey === studioState.selectedScmEvidenceKey) || selectedEntry;
+          replayScmEvidenceEntry(entry);
+          renderScmEvidencePanel(studioState.lastReport);
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-refresh-scm-evidence")?.addEventListener("click", () => {
+          runScmRuntimeChecks();
+          renderScmEvidencePanel(studioState.lastReport);
+          setStatus("SCM evidence refreshed from component, route, effect, layout, style, serialization, and repair gates.");
+        });
+
+        return summary;
       }
 
       function parseSource() {
@@ -351,9 +901,12 @@
         `;
         runtimePreview.querySelectorAll("[data-code-studio-runtime-file]").forEach((button) => {
           button.addEventListener("click", () => {
-            studioState.selectedPath = button.dataset.codeStudioRuntimeFile || "";
+            const nextPath = button.dataset.codeStudioRuntimeFile || "";
+            if (!canNavigateScmRoute(nextPath)) return;
+            studioState.selectedPath = nextPath;
             const fields = workspaceFields();
             runScmTransition("openFile", {fileId: selectedScmFileId(fields)});
+            enterScmRouteAndRunLoaders({forceEnter: true});
             renderRuntime();
           });
         });
@@ -436,6 +989,7 @@
           </div>
         `).join("");
         contractReport.innerHTML = rows;
+        const scmEvidenceSummary = renderScmEvidencePanel(report);
         const mcelEnvelope = typeof window.MCEL?.buildUserSpaceContract === "function"
           ? window.MCEL.buildUserSpaceContract({useCase: "source-safe-code-editor", surface: "code-editor"})
           : null;
@@ -452,8 +1006,22 @@
               layoutOk: Boolean(report.scm?.layout?.ok),
               styleOk: Boolean(report.scm?.style?.ok),
               validationEffectOk: Boolean(report.scm?.validation?.ok),
+              routeOk: Boolean(report.scm?.route?.ok),
+              routeParams: report.scm?.route?.params || {},
+              routeData: report.scm?.route?.data || {},
+              routeEffectLoadWorkspaceOk: Boolean(report.scm?.route?.effectLoadWorkspaceOk),
+              routeEffectLoadFileOk: Boolean(report.scm?.route?.effectLoadFileOk),
               evidenceCount: report.scm?.evidenceCount || 0,
-              recentEvidence: report.scm?.recentEvidence || []
+              routeEvidenceCount: report.scm?.routeEvidenceCount || 0,
+              recentEvidence: report.scm?.recentEvidence || [],
+              recentRouteEvidence: report.scm?.recentRouteEvidence || [],
+              evidenceSummary: scmEvidenceSummary ? {
+                componentTotal: scmEvidenceSummary.component.total,
+                routeTotal: scmEvidenceSummary.route.total,
+                violations: scmEvidenceSummary.combined.violations,
+                blocking: scmEvidenceSummary.combined.blocking,
+                phases: scmEvidenceSummary.combined.phases
+              } : null
             },
             userPlanningModel: [
               "author source is canonical",
@@ -555,8 +1123,13 @@
         studioState.dirty = false;
         syncLineGutter();
         syncScmInstance();
+        runScmGate("effect:saveFile", (mcel, instance) => mcel.runEffect(instance, "saveFile", {
+          fileId: selectedScmFileId(),
+          selectedPath: studioState.selectedPath
+        }));
+        enterScmRouteAndRunLoaders({forceEnter: true});
         renderRuntime();
-        setStatus("Runtime draft committed into author-owned source through SCM editDraft/commitDraft transitions.");
+        setStatus("Runtime draft committed into author-owned source through SCM editDraft/commitDraft transitions and saveFile effect.");
       }
 
       tabButtons.forEach((button) => {
@@ -591,15 +1164,19 @@
               dockToggle.setAttribute("aria-expanded", "true");
               dockToggle.textContent = "Close assistant dock";
             }
+            ensureCodeStudioScmSurfaceStyles();
           }
         });
       });
       root.querySelectorAll("[data-code-studio-file]").forEach((button) => {
         button.addEventListener("click", () => {
-          studioState.selectedPath = button.dataset.codeStudioFile || studioState.selectedPath;
+          const nextPath = button.dataset.codeStudioFile || studioState.selectedPath;
+          if (!canNavigateScmRoute(nextPath)) return;
+          studioState.selectedPath = nextPath;
           root.querySelectorAll("[data-code-studio-file]").forEach((entry) => entry.classList.toggle("active", entry === button));
           const fields = workspaceFields();
           runScmTransition("openFile", {fileId: selectedScmFileId(fields)});
+          enterScmRouteAndRunLoaders({forceEnter: true});
           renderRuntime();
           showPane("runtime");
         });
@@ -614,6 +1191,7 @@
         if (assistantDock) assistantDock.dataset.expanded = expanded ? "false" : "true";
         assistantToggle.setAttribute("aria-expanded", expanded ? "false" : "true");
         assistantToggle.textContent = expanded ? "Open assistant dock" : "Close assistant dock";
+        ensureCodeStudioScmSurfaceStyles();
       });
 
       sourceEditor.addEventListener("input", () => {
@@ -621,14 +1199,21 @@
         studioState.mounted = false;
         studioState.damaged = false;
         syncScmInstance();
+        scmRouteKey = "";
         setRuntimeLabel();
-        setStatus("Source changed. Remount or validate to refresh the MCEL runtime and SCM evidence.");
+        setStatus("Source changed. Remount or validate to refresh the MCEL runtime, route loaders, and SCM evidence.");
       });
       sourceEditor.addEventListener("scroll", () => {
         if (gutter) gutter.scrollTop = sourceEditor.scrollTop;
       });
 
       validateButton?.addEventListener("click", validateSource);
+      refreshScmEvidenceButton?.addEventListener("click", () => {
+        runScmRuntimeChecks();
+        renderScmEvidencePanel(studioState.lastReport);
+        showPane("contract");
+        setStatus("SCM evidence refreshed from component, route, effect, layout, style, serialization, and repair gates.");
+      });
       serializeButton?.addEventListener("click", serializeCleanSource);
       mountButton?.addEventListener("click", () => { renderRuntime(); showPane("runtime"); setStatus("Runtime mounted from author source."); });
       damageButton?.addEventListener("click", damageRuntime);
@@ -647,12 +1232,23 @@
         commitRuntimeDraft,
         syncScmInstance,
         checkScmContracts: runScmRuntimeChecks,
+        syncScmRouteInstance,
+        enterScmRouteAndRunLoaders,
+        requestScmRouteLeave,
         exportScmEvidence,
+        exportScmRouteEvidence,
+        collectScmEvidenceSummary,
+        renderScmEvidencePanel,
+        ensureCodeStudioScmSurfaceStyles,
         getScmInstance() {
           return syncScmInstance();
         },
+        getScmRouteInstance() {
+          return syncScmRouteInstance({enter: false});
+        },
       };
 
+      ensureCodeStudioScmSurfaceStyles();
       syncLineGutter();
       validateSource();
       renderRuntime();

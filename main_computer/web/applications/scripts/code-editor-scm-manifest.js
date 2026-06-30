@@ -1,6 +1,6 @@
 var McelCodeStudioScm = (() => {
       const COMPONENT_NAME = "CodeStudio";
-      const COMPONENT_VERSION = "2.6.0";
+      const COMPONENT_VERSION = "2.9.0";
       const COMPONENT_CONTRACT = "mcel.scm.code-studio.v1";
       const ROUTE_NAME = "workspace.file";
       const ROUTE_VERSION = "1.1.0";

@@ -1020,6 +1020,119 @@
   border-color: rgba(255, 95, 87, 0.55);
 }
 
+.code-studio-scm-evidence {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  margin-top: 12px;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  background: #111111;
+  color: #d4d4d4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.code-studio-scm-evidence-heading,
+.code-studio-scm-evidence-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.code-studio-scm-evidence-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.code-studio-scm-evidence-actions label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: #bdbdbd;
+}
+
+.code-studio-scm-evidence-actions select,
+.code-studio-scm-evidence-actions button,
+.code-studio-scm-evidence-heading button {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.code-studio-scm-evidence-drilldown {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.85fr);
+  gap: 10px;
+  min-height: 0;
+}
+
+.code-studio-scm-evidence-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 0;
+}
+
+.code-studio-scm-evidence-entry {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  border: 1px solid #3c3c3c;
+  border-radius: 7px;
+  padding: 8px;
+  background: #1e1e1e;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.code-studio-scm-evidence-entry[data-ok="true"] {
+  border-color: rgba(70, 190, 130, 0.45);
+}
+
+.code-studio-scm-evidence-entry[data-ok="false"] {
+  border-color: rgba(255, 95, 87, 0.55);
+}
+
+.code-studio-scm-evidence-entry[data-selected="true"] {
+  outline: 2px solid rgba(86, 156, 214, 0.65);
+  outline-offset: 1px;
+}
+
+.code-studio-scm-evidence-detail {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #3c3c3c;
+  border-radius: 7px;
+  padding: 10px;
+  background: #181818;
+}
+
+.code-studio-scm-evidence-detail code {
+  display: block;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.code-studio-scm-evidence-entry code,
+.code-studio-scm-evidence-summary code,
+.code-studio-scm-evidence-detail code {
+  color: #9cdcfe;
+}
+
 .code-studio-panel-heading {
   display: grid;
   gap: 4px;
@@ -1236,6 +1349,11 @@
 .code-studio-title-actions button {
   white-space: nowrap;
   padding: 4px 8px;
+}
+
+.code-studio-titlebar button {
+  background: #2d2d30;
+  color: #dcdcdc;
 }
 
 .code-editor-gridstack-status {

@@ -30,6 +30,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'id="code-studio-runtime-preview"',
             'id="code-studio-serialized-output"',
             'id="code-studio-contract-report"',
+            'id="code-studio-scm-evidence-panel"',
+            'id="code-studio-refresh-scm-evidence"',
             'id="code-studio-damage-runtime"',
             'id="code-studio-repair-runtime"',
             'id="code-studio-bottom-panel" data-expanded="false"',
@@ -62,6 +64,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "grid-template-columns: none;",
             "padding: 0;",
             ".code-studio-bottom-panel[data-expanded=\"false\"] .code-studio-aider-shell",
+            ".code-studio-titlebar button {",
+            "color: #dcdcdc;",
         ]
         for text in expected:
             with self.subTest(text=text):
@@ -130,12 +134,128 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "mcel.checkLayoutContract",
             "mcel.checkStyleContract",
             "mcel.runEffect",
+            "mcel.enterRoute",
+            "mcel.runRouteLoader",
+            "mcel.leaveRoute",
             "exportScmEvidence",
+            "exportScmRouteEvidence",
+            "syncScmRouteInstance",
+            "enterScmRouteAndRunLoaders",
+            "requestScmRouteLeave",
+            "collectScmEvidenceSummary",
+            "renderScmEvidencePanel",
+            "ensureCodeStudioScmSurfaceStyles",
+            "function scopedNodes",
+            "root.matches?.(selector)",
+            "backgroundColor: \"#1e1e1e\"",
+            "bottomDock.style.maxHeight = \"80px\"",
+            "evidenceFilterMatches",
+            "formatEvidenceDetail",
+            "replayScmEvidenceEntry",
+            "code-studio-scm-evidence-entry",
+            "code-studio-scm-evidence-detail",
+            "code-studio-replay-scm-evidence",
+            "Replay selected gate",
+            "SCM evidence refreshed",
+            "SCM route blocked navigation",
             "Layout locked",
         ]
         for text in expected:
             with self.subTest(text=text):
                 self.assertIn(text, script)
+
+
+    def test_code_studio_live_script_wires_structured_route_lifecycle(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        expected = [
+            "let scmRouteInstance = null;",
+            "function routeParamsForScm",
+            "function routeQueryForScm",
+            "function syncScmRouteInstance",
+            "function enterScmRouteAndRunLoaders",
+            "function requestScmRouteLeave",
+            "function canNavigateScmRoute",
+            'mcel.runRouteLoader(routeInstance, "loadWorkspace")',
+            'mcel.runRouteLoader(routeInstance, "loadFile")',
+            'mcel.runEffect(instance, "loadWorkspace"',
+            'mcel.runEffect(instance, "loadFile"',
+            'mcel.runEffect(instance, "saveFile"',
+            "mcel.enterRoute(scmRouteInstance",
+            "mcel.leaveRoute(routeInstance",
+            "recentRouteEvidence",
+        ]
+        for text in expected:
+            with self.subTest(text=text):
+                self.assertIn(text, script)
+
+        runtime_switch = script.index('button.dataset.codeStudioRuntimeFile || ""')
+        runtime_leave = script.rfind("canNavigateScmRoute", 0, runtime_switch + 250)
+        runtime_select = script.index("studioState.selectedPath = nextPath;", runtime_switch)
+        self.assertLess(runtime_leave, runtime_select)
+
+        explorer_switch = script.index("button.dataset.codeStudioFile || studioState.selectedPath")
+        explorer_leave = script.rfind("canNavigateScmRoute", 0, explorer_switch + 250)
+        explorer_select = script.index("studioState.selectedPath = nextPath;", explorer_switch)
+        self.assertLess(explorer_leave, explorer_select)
+
+
+    def test_code_studio_scm_evidence_panel_is_visible_and_refreshable(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            "SCM evidence timeline",
+            'id="code-studio-scm-evidence-panel"',
+            'id="code-studio-refresh-scm-evidence"',
+            'id="code-studio-scm-evidence-filter"',
+            'id="code-studio-replay-scm-evidence"',
+            'id="code-studio-scm-evidence-detail"',
+            "Replay selected gate",
+            'data-mc-component-id="code-editor.studio.scm-evidence"',
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_style = [
+            ".code-studio-scm-evidence {",
+            ".code-studio-scm-evidence-summary",
+            ".code-studio-scm-evidence-actions",
+            ".code-studio-scm-evidence-drilldown",
+            ".code-studio-scm-evidence-entry",
+            ".code-studio-scm-evidence-entry[data-ok=\"false\"]",
+            ".code-studio-scm-evidence-entry[data-selected=\"true\"]",
+            ".code-studio-scm-evidence-detail",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        expected_script = [
+            'const scmEvidencePanel = root.querySelector("#code-studio-scm-evidence-panel");',
+            'const refreshScmEvidenceButton = root.querySelector("#code-studio-refresh-scm-evidence");',
+            "function collectScmEvidenceSummary",
+            "function renderScmEvidencePanel",
+            "function evidenceEntryScope",
+            "function evidenceFilterMatches",
+            "function formatEvidenceDetail",
+            "function replayScmEvidenceEntry",
+            "normalizeEvidenceEntries",
+            "recentComponentEvidence",
+            "recentRouteEvidence",
+            "evidenceSummary",
+            "code-studio-scm-evidence-filter",
+            "code-studio-replay-scm-evidence",
+            "code-studio-scm-evidence-detail",
+            "SCM evidence replay",
+            "SCM evidence refreshed",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
 
     def test_pretty_doc_explains_better_than_react_lane(self) -> None:
         doc = PRETTY_DOC.read_text(encoding="utf-8")

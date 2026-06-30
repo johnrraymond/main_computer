@@ -148,6 +148,34 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
             <span>Proof surface for why this app is better than a generic editor shell.</span>
           </div>
           <div class="code-studio-contract-report" id="code-studio-contract-report" data-mc-component-id="code-editor.studio.contract-report" data-mc-component-kind="output" data-mc-component-label="Code Studio Contract Report" data-mc-component-owner="code-editor.studio.contract-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio"></div>
+          <div class="code-studio-scm-evidence" id="code-studio-scm-evidence-panel" data-mc-component-id="code-editor.studio.scm-evidence" data-mc-component-kind="output" data-mc-component-label="SCM Evidence Panel" data-mc-component-owner="code-editor.studio.contract-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+            <div class="code-studio-scm-evidence-heading">
+              <strong>SCM evidence timeline</strong>
+              <div class="code-studio-scm-evidence-actions">
+                <label>Filter
+                  <select id="code-studio-scm-evidence-filter">
+                    <option value="all">all</option>
+                    <option value="violations">violations</option>
+                    <option value="component">component</option>
+                    <option value="route">route</option>
+                    <option value="effect">effect</option>
+                    <option value="layout">layout</option>
+                    <option value="style">style</option>
+                    <option value="serialization">serialization</option>
+                    <option value="repair">repair</option>
+                  </select>
+                </label>
+                <button type="button" id="code-studio-replay-scm-evidence">Replay selected gate</button>
+                <button type="button" id="code-studio-export-scm-evidence-packet">Export SCM Evidence Packet</button>
+                <button type="button" id="code-studio-download-scm-evidence-packet">Download packet</button>
+                <button type="button" id="code-studio-refresh-scm-evidence">Refresh SCM evidence</button>
+              </div>
+            </div>
+            <div class="code-studio-scm-evidence-detail" id="code-studio-scm-evidence-detail">
+              <strong>Selected evidence detail</strong>
+              <p>Validate, mount, edit, serialize, repair, or switch files to populate the component and route evidence stream.</p>
+            </div>
+          </div>
         </section>
       </section>
 
