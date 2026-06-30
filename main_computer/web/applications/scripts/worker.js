@@ -568,16 +568,52 @@
       return workerLowerAddress(key?.walletAddress || key?.wallet_address || "") === wallet;
     }
 
-    function workerActiveMultisessionKey() {
+    function workerNormalizeHubUrl(value) {
+      return String(value || "").trim().replace(/\/+$/, "");
+    }
+
+    function workerMultisessionKeyMatchesSelectedHub(key) {
+      const selectedHub = workerNormalizeHubUrl(workerSelectedHubUrl());
+      const keyHub = workerNormalizeHubUrl(key?.hubUrl || key?.hub_url || "");
+      return Boolean(selectedHub && keyHub && selectedHub === keyHub);
+    }
+
+    function workerActiveMultisessionKey({walletAddress = null, allowSelectedHubFallback = false} = {}) {
       const activeId = String(workerBridgeState.activeMultisessionKeyId || "");
-      const activeKeys = workerBridgeState.multisessionKeys.filter((key) => (
-        key.status === "active"
-        && workerMultisessionKeyMatchesWallet(key)
-      ));
+      const wallet = walletAddress === null
+        ? workerLowerAddress(workerBridgeState.wallet.address)
+        : workerLowerAddress(walletAddress);
+      const activeKeys = workerBridgeState.multisessionKeys.filter((key) => {
+        if (key.status !== "active") return false;
+        if (wallet) return workerMultisessionKeyMatchesWallet(key, wallet);
+        return Boolean(allowSelectedHubFallback && workerMultisessionKeyMatchesSelectedHub(key));
+      });
       if (activeId) {
-        return activeKeys.find((key) => key.id === activeId || key.localRef === activeId) || activeKeys[0] || null;
+        const explicit = activeKeys.find((key) => key.id === activeId || key.localRef === activeId);
+        if (explicit) return explicit;
       }
-      return activeKeys[0] || null;
+      if (wallet) return activeKeys[0] || null;
+      return activeKeys.length === 1 ? activeKeys[0] : null;
+    }
+
+    function workerNetworkSignedWalletAddress() {
+      const signed = workerNetworkSignedConnection();
+      const wallet = signed.wallet && typeof signed.wallet === "object" ? signed.wallet : {};
+      return workerLowerAddress(signed.credit_wallet || signed.wallet_address || wallet.address || "");
+    }
+
+    function workerNetworkAuthorizedWalletAddress() {
+      loadWorkerBridgeState();
+      const browserWallet = workerBridgeState.wallet || {};
+      const browserAddress = workerLowerAddress(browserWallet.address || "");
+      if (workerWalletValidAddress(browserAddress)) return browserAddress;
+
+      const signedWallet = workerNetworkSignedWalletAddress();
+      if (workerWalletValidAddress(signedWallet)) return signedWallet;
+
+      const activeKey = workerActiveMultisessionKey({allowSelectedHubFallback: true});
+      const keyWallet = workerLowerAddress(activeKey?.walletAddress || activeKey?.wallet_address || "");
+      return workerWalletValidAddress(keyWallet) ? keyWallet : "";
     }
 
     function workerErrorText(error) {
@@ -3312,7 +3348,7 @@
       return WORKER_RING_LABELS[normalized] || WORKER_RING_LABELS[WORKER_DEFAULT_RING];
     }
 
-    function workerNetworkWalletConnectedToSelected() {
+    function workerNetworkBrowserWalletConnectedToSelected() {
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
       if (selected === WORKER_NETWORK_NONE) return false;
       loadWorkerBridgeState();
@@ -3323,6 +3359,23 @@
         Boolean(wallet.connected)
         && workerWalletValidAddress(walletAddress)
         && walletChainId === workerSelectedWalletChainIdHex()
+      );
+    }
+
+    function workerNetworkWalletConnectedToSelected() {
+      if (workerNetworkBrowserWalletConnectedToSelected()) return true;
+      const walletAddress = workerNetworkAuthorizedWalletAddress();
+      if (!workerWalletValidAddress(walletAddress)) return false;
+      const activeKey = workerActiveMultisessionKey({walletAddress, allowSelectedHubFallback: true});
+      if (activeKey && workerMultisessionKeyMatchesSelectedHub(activeKey)) return true;
+      const signed = workerNetworkSignedConnection();
+      const signedWallet = workerNetworkSignedWalletAddress();
+      const signedHub = workerNormalizeHubUrl(signed.hub_url || "");
+      return (
+        signed.network === workerNetworkKey(workerNetworkSession.selected_network)
+        && workerWalletValidAddress(signedWallet)
+        && signedWallet === workerLowerAddress(walletAddress)
+        && (!signedHub || signedHub === workerNormalizeHubUrl(workerSelectedHubUrl()))
       );
     }
 
@@ -3373,11 +3426,16 @@
     function workerNetworkSignedForSelected() {
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
       const signed = workerNetworkSignedConnection();
+      const signedWallet = workerNetworkSignedWalletAddress();
+      const authorizedWallet = workerNetworkAuthorizedWalletAddress();
+      const signedHub = workerNormalizeHubUrl(signed.hub_url || "");
+      const selectedHub = workerNormalizeHubUrl(workerSelectedHubUrl());
       return (
         signed.network === selected
         && String(signed.requested_ring || "") === String(workerNetworkSession.requested_ring || "")
-        && workerWalletValidAddress(signed.wallet_address || "")
-        && workerNetworkWalletConnectedToSelected()
+        && workerWalletValidAddress(signedWallet)
+        && (!authorizedWallet || signedWallet === workerLowerAddress(authorizedWallet))
+        && (!signedHub || !selectedHub || signedHub === selectedHub)
       );
     }
 
@@ -4081,13 +4139,12 @@
     }
 
     function workerNetworkWalletAddress() {
-      loadWorkerBridgeState();
-      return workerBridgeState.wallet?.address || "";
+      return workerNetworkAuthorizedWalletAddress();
     }
 
     function workerNetworkCanWorkNow() {
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
-      const walletAddress = workerNetworkWalletAddress();
+      const walletAddress = workerNetworkAuthorizedWalletAddress();
       return (
         selected !== WORKER_NETWORK_NONE
         && workerNetworkSession.connection_status === "connected"
@@ -4238,7 +4295,7 @@
         if (selected === WORKER_NETWORK_NONE) {
           workerNetworkHelp.textContent = "No active worker Hub selected. Select Mainnet, Testnet, Test, or Dev to reach a Hub.";
         } else if (hubConnected && !walletConnectedToSelected) {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet to ${workerNetworkDisplayName(selected)} before completing Worker setup.`;
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet or load an active saved worker multi-session key before completing Worker setup.`;
         } else if (hubConnected && walletConnectedToSelected && !signedForSelected) {
           workerNetworkHelp.textContent = `Wallet is ready for ${workerNetworkDisplayName(selected)}. Choose a ring and complete Worker setup before accepting jobs.`;
         } else if (hubConnected && hubRegistered && workerRuntimeStatus.phase === "accepting") {
@@ -4432,9 +4489,9 @@
     }
 
     function buildWorkerNetworkWorkNowPayload({durationSeconds = 0, action = "work-now", activeMultisessionKey = null} = {}) {
-      const walletAddress = workerLowerAddress(workerNetworkWalletAddress());
+      const walletAddress = workerLowerAddress(workerNetworkAuthorizedWalletAddress());
       if (action !== "finish" && !workerWalletValidAddress(walletAddress)) {
-        throw new Error("Connect the matching wallet before using Work now.");
+        throw new Error("Connect the matching wallet or load an active saved worker multi-session key before using Work now.");
       }
       const payload = buildWorkerNetworkRegistrationPayload({walletAddress, activeMultisessionKey});
       payload.action = action;
@@ -4502,7 +4559,7 @@
         return;
       }
       if (!workerNetworkCanWorkNow()) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Select a reachable Hub session and connect the matching wallet before using Work now.";
+        if (workerSaveStatus) workerSaveStatus.textContent = "Select a reachable Hub session and connect the matching wallet or load an active saved worker multi-session key before using Work now.";
         renderWorkerNetworkSurface();
         return;
       }
@@ -4511,8 +4568,18 @@
       renderWorkerNetworkSurface();
       try {
         let data;
-        let activeMultisessionKey = workerActiveMultisessionKey();
+        const authorizedWallet = workerNetworkAuthorizedWalletAddress();
+        let activeMultisessionKey = workerActiveMultisessionKey({
+          walletAddress: authorizedWallet,
+          allowSelectedHubFallback: true
+        });
+        if (!workerNetworkRegistrationReadyForSelected() && !activeMultisessionKey && workerWalletValidAddress(authorizedWallet)) {
+          activeMultisessionKey = await workerLoadMultisessionKeysForWallet(authorizedWallet, "work-now-cached-key");
+        }
         if (!workerNetworkRegistrationReadyForSelected() && !activeMultisessionKey) {
+          if (!workerNetworkBrowserWalletConnectedToSelected()) {
+            throw new Error("No active saved worker multi-session key is loaded for this Hub. Connect the matching wallet once to request a key, then try Work now again.");
+          }
           workerSetSaveStatus("No active multi-session key is loaded for this Hub. Signing a fresh key request before worker registration…");
           activeMultisessionKey = await workerRequestReplacementMultisessionKeyForStart({
             reason: "work-now-no-active-key",
@@ -4532,8 +4599,11 @@
             error: staleMessage
           });
           workerMarkMultisessionKeyInactiveOnHub("", staleMessage);
-          await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address, "work-now-key-inactive");
+          await workerLoadMultisessionKeysForWallet(authorizedWallet || workerBridgeState.wallet.address, "work-now-key-inactive");
           workerSetSaveStatus("Saved multi-session key is inactive on this Hub. Signing a fresh key request and retrying worker registration…");
+          if (!workerNetworkBrowserWalletConnectedToSelected()) {
+            throw new Error("Saved worker multi-session key is inactive on this Hub and the matching wallet is not connected, so a replacement key cannot be signed.");
+          }
           activeMultisessionKey = await workerRequestReplacementMultisessionKeyForStart({
             reason: "hub-reported-saved-key-inactive",
             statusMessage: "Saved multi-session key is inactive on this Hub; signing a fresh key request and retrying worker registration…"

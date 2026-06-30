@@ -974,6 +974,91 @@ def test_worker_runtime_status_truth_hub_registration_missing_is_separate_from_w
 
 
 
+def test_worker_runtime_cached_multisession_key_avoids_false_wallet_missing_for_new_user(tmp_path: Path) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8770"})(),
+            "signal": lambda *args, **kwargs: None,
+            "chat_ai_processes": type(
+                "ChatAI",
+                (),
+                {
+                    "local_ai_capacity_snapshot": lambda self, *, thread_id="", max_local_concurrency=1: {
+                        "ok": True,
+                        "available_now": True,
+                        "busy": False,
+                        "reason_code": "local_ai_available",
+                        "user_message": "AI is idle.",
+                        "active_run_count": 0,
+                        "active_runs": [],
+                    }
+                },
+            )(),
+        },
+    )()
+
+    cache_path = tmp_path / ".main_computer" / "worker_multisession_keys.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": "main-computer-worker-multisession-key-cache-v1",
+                "keys": {
+                    "msk_cached_new_user": {
+                        "id": "msk_cached_new_user",
+                        "status": "active",
+                        "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+                        "chain_id": "42424242",
+                        "hub_url": "http://127.0.0.1:8770",
+                        "created_at": "2026-06-30T00:00:00+00:00",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = harness._sanitize_worker_settings(
+        {
+            "selectedNetwork": "dev",
+            "workerAutoConnectNetwork": "dev",
+            "sellerEnabled": True,
+            "rentalEnabled": True,
+            "sellerAvailabilityMode": "ai_idle",
+            "sellerOnlyWhenIdle": False,
+            "rentalOnlyWhenIdle": False,
+            "workerConnectedHubUrl": "http://127.0.0.1:8770",
+            "workerConnectionStatus": "connected",
+            "workerRegisteredId": "",
+            "workerHubRegistration": {},
+            "signedWorkerConnection": {
+                "network": "dev",
+                "requested_ring": "3",
+                "hub_url": "http://127.0.0.1:8770",
+                "chain_id": "42424242",
+                "status": "signed",
+                "worker_start_status": "not_started",
+                "hub_registration_status": "not_submitted",
+            },
+        }
+    )
+
+    _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
+
+    setup = status["runtime"]["setup"]
+    assert status["status"] == "not_accepting"
+    assert status["reason"] == "Worker registration has not been submitted to the Hub."
+    assert status["next"] == "Work now."
+    assert setup["ready"] is False
+    assert setup["missing"] == ["worker_start", "registration"]
+    assert setup["multisessionAuthorizationPresent"] is True
+    assert setup["authorizationError"] == ""
+
+
 def test_worker_runtime_status_truth_hub_registration_failed_after_worker_start(tmp_path: Path) -> None:
     harness = _WorkerRoutesHarness()
     harness.server = type(

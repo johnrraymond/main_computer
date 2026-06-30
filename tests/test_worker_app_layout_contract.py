@@ -542,7 +542,7 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "Worker runtime connected" in js
     assert "Active Hub Session" in html
     assert "Hub session" in html
-    assert "Connect your wallet to ${workerNetworkDisplayName(selected)} before completing Worker setup." in js
+    assert "Connect your wallet or load an active saved worker multi-session key before completing Worker setup." in js
     assert "workerNetworkConnectWallet" not in js
     assert "workerNetworkWorkNow.disabled = workerNetworkWorkNowInFlight || workerMultisessionInFlight || (!workerWorkNowOverrideActive() && !workerNetworkCanWorkNow())" in js
     assert "Work now" in js
@@ -550,8 +550,14 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "Finish after current request" in html
     assert "work-now-no-active-key" in js
     assert "No active multi-session key is loaded for this Hub. Signing a fresh key request before worker registration…" in js
+    assert "function workerNetworkAuthorizedWalletAddress" in js
+    assert "allowSelectedHubFallback: true" in js
+    assert "workerNetworkBrowserWalletConnectedToSelected" in js
+    assert "work-now-cached-key" in js
+    assert "Connect the matching wallet or load an active saved worker multi-session key before using Work now." in js
     can_start_body = js[js.index("function workerNetworkCanWorkNow()"):js.index("function workerNetworkSetText", js.index("function workerNetworkCanWorkNow()"))]
     assert "Boolean(workerActiveMultisessionKey())" not in can_start_body
+    assert "workerNetworkAuthorizedWalletAddress()" in can_start_body
     assert "!workerMultisessionInFlight" in can_start_body
     assert "workerRuntimeActivate" not in js
     assert "workerRuntimeStop" not in js

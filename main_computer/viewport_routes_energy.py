@@ -1719,6 +1719,7 @@ class ViewportEnergyRoutesMixin:
         if not hub_url:
             missing.append("hub_url")
 
+        cached_multisession_wallets = self._worker_runtime_cached_multisession_wallets_for_hub(hub_url)
         if signed_order.get("status") == "ready" and worker_id and hub_url:
             try:
                 authorization = self._worker_runtime_multisession_authorization(settings=cleaned, hub_url=hub_url)
@@ -1729,7 +1730,14 @@ class ViewportEnergyRoutesMixin:
             signed = cleaned.get("signedWorkerConnection") if isinstance(cleaned.get("signedWorkerConnection"), dict) else {}
             wallet = str(signed.get("credit_wallet") or signed.get("wallet_address") or "").strip()
             if not wallet:
-                missing.append("wallet")
+                if cached_multisession_wallets:
+                    authorization = {
+                        "kind": "cached_worker_multisession_key",
+                        "wallet_address": cached_multisession_wallets[0],
+                        "hub_url": hub_url,
+                    }
+                else:
+                    missing.append("wallet")
 
         seen_missing = list(dict.fromkeys(missing))
         return {
@@ -1780,6 +1788,36 @@ class ViewportEnergyRoutesMixin:
             str(settings.get("workerConnectedHubUrl") or signed.get("hub_url") or settings.get("registrationHubUrl") or self.server.config.hub_url),
             allow_empty=True,
         )
+
+    def _worker_runtime_cached_multisession_wallets_for_hub(self, hub_url: str) -> list[str]:
+        normalized_hub_url = self._clean_hub_url(str(hub_url or ""), allow_empty=True)
+        if not normalized_hub_url:
+            return []
+        try:
+            data = self._load_worker_multisession_key_cache()
+        except Exception:
+            return []
+
+        wallets: list[str] = []
+        seen: set[str] = set()
+        keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
+        for value in keys.values():
+            if not isinstance(value, dict):
+                continue
+            if str(value.get("status") or "").strip().lower() != "active":
+                continue
+            try:
+                record_hub_url = self._clean_hub_url(str(value.get("hub_url") or ""), allow_empty=True)
+                wallet = self._normalize_worker_wallet_address(value.get("wallet_address"))
+            except Exception:
+                continue
+            if record_hub_url and record_hub_url != normalized_hub_url:
+                continue
+            if wallet in seen:
+                continue
+            seen.add(wallet)
+            wallets.append(wallet)
+        return wallets
 
     def _worker_local_ai_capacity_snapshot(self, *, max_local_concurrency: int = 1) -> dict[str, Any]:
         manager = getattr(getattr(self, "server", None), "chat_ai_processes", None)
@@ -3142,6 +3180,14 @@ class ViewportEnergyRoutesMixin:
                 "next": "Turn on Accept paid jobs when you want this computer to work.",
             }
         if not wallet or not credit_wallet:
+            cached_wallets = self._worker_runtime_cached_multisession_wallets_for_hub(self._worker_runtime_hub_url(settings))
+            if cached_wallets:
+                return {
+                    "status": "not_accepting",
+                    "label": "Not accepting",
+                    "reason": "Worker registration has not been submitted to the Hub.",
+                    "next": "Work now.",
+                }
             return {
                 "status": "not_accepting",
                 "label": "Not accepting",
