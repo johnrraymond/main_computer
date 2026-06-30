@@ -21,7 +21,7 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     text = result.output_path.read_text(encoding="utf-8")
 
     assert result.size_bytes == len(text.encode("utf-8"))
-    assert result.version == "mcel-runtime.v0.1.13"
+    assert result.version == "mcel-runtime.v0.1.14"
     assert result.helper_functions == ("isolatedSiteCss",)
     assert MCEL_LAB_HELPER_FILE in result.source_files
     for source_file in MCEL_RUNTIME_MODULES:

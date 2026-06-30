@@ -227,6 +227,24 @@ var McelLabScm = (() => {
         if (code === "SCM_ROUTE_LEAVE_BLOCKED") {
           return `Route ${details.routeName || ""} blocked navigation because dirty state is present.`;
         }
+        if (code === "SCM_LAYOUT_COMPUTED_MISMATCH") {
+          return `Layout contract expected ${details.selector || ""}.${details.property || ""} to be ${details.expected || ""}.`;
+        }
+        if (code === "SCM_LAYOUT_REGION_MISSING") {
+          return `Layout contract expected required region ${details.regionName || ""} to be present.`;
+        }
+        if (code === "SCM_LAYOUT_DOCUMENT_HEIGHT_RATIO_EXCEEDED") {
+          return `Layout contract document height ratio exceeded the declared maximum.`;
+        }
+        if (code === "SCM_STYLE_COMPUTED_MISMATCH") {
+          return `Style contract expected ${details.selector || ""}.${details.property || ""} to be ${details.expected || ""}.`;
+        }
+        if (code === "SCM_STYLE_FORBIDDEN_COMPUTED_MATCH") {
+          return `Style contract detected forbidden computed style on ${details.selector || ""}.`;
+        }
+        if (code === "SCM_STYLE_GLOBAL_LEAKAGE_DETECTED") {
+          return `Style contract detected global style leakage.`;
+        }
         return details.message || `SCM violation ${code}.`;
       }
 
@@ -653,6 +671,244 @@ var McelLabScm = (() => {
             }));
           }
         });
+      }
+
+
+      function validateComputedMap(componentName, contractName, propertyName, value, issues) {
+        if (value === undefined) return;
+        if (!isPlainObject(value)) {
+          issues.push(violation(`SCM_${contractName}_COMPUTED_MAP_INVALID`, {
+            phase: "validate-manifest",
+            componentName,
+            property: propertyName,
+            message: `${contractName.toLowerCase()} ${propertyName} must be an object keyed by selector.`
+          }));
+          return;
+        }
+
+        Object.keys(value).forEach((selector) => {
+          const declarations = value[selector];
+          if (!safeString(selector) || !isPlainObject(declarations)) {
+            issues.push(violation(`SCM_${contractName}_COMPUTED_SELECTOR_INVALID`, {
+              phase: "validate-manifest",
+              componentName,
+              selector,
+              property: propertyName,
+              message: `${contractName.toLowerCase()} selector ${selector} must map to computed declarations.`
+            }));
+            return;
+          }
+
+          Object.keys(declarations).forEach((computedName) => {
+            if (!safeString(computedName)) {
+              issues.push(violation(`SCM_${contractName}_COMPUTED_PROPERTY_INVALID`, {
+                phase: "validate-manifest",
+                componentName,
+                selector,
+                property: propertyName,
+                computedName,
+                message: `${contractName.toLowerCase()} computed declaration names must be non-empty.`
+              }));
+            }
+          });
+        });
+      }
+
+      function validateLayoutContract(componentName, manifest, issues) {
+        if (manifest.layoutContract === undefined) return;
+        const contract = manifest.layoutContract;
+        if (!isPlainObject(contract)) {
+          issues.push(violation("SCM_LAYOUT_CONTRACT_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} layoutContract must be an object.`
+          }));
+          return;
+        }
+
+        if (!safeString(contract.root)) {
+          issues.push(violation("SCM_LAYOUT_ROOT_MISSING", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} layoutContract must declare root.`
+          }));
+        }
+
+        validateComputedMap(componentName, "LAYOUT", "requiredComputed", contract.requiredComputed, issues);
+
+        if (contract.maxDocumentHeightRatio !== undefined) {
+          const ratio = Number(contract.maxDocumentHeightRatio);
+          if (!Number.isFinite(ratio) || ratio <= 0) {
+            issues.push(violation("SCM_LAYOUT_HEIGHT_RATIO_INVALID", {
+              phase: "validate-manifest",
+              componentName,
+              value: contract.maxDocumentHeightRatio,
+              message: `Component ${componentName} layoutContract maxDocumentHeightRatio must be a positive number.`
+            }));
+          }
+        }
+
+        if (contract.regions !== undefined) {
+          if (!isPlainObject(contract.regions)) {
+            issues.push(violation("SCM_LAYOUT_REGIONS_INVALID", {
+              phase: "validate-manifest",
+              componentName,
+              message: `Component ${componentName} layoutContract regions must be an object.`
+            }));
+          } else {
+            const declaredSlots = ownedLayoutSlots(manifest);
+            Object.keys(contract.regions).forEach((regionName) => {
+              const region = contract.regions[regionName];
+              if (!validName(regionName) || !isPlainObject(region)) {
+                issues.push(violation("SCM_LAYOUT_REGION_INVALID", {
+                  phase: "validate-manifest",
+                  componentName,
+                  regionName,
+                  message: `Layout region ${regionName} must be a named object.`
+                }));
+                return;
+              }
+
+              const slot = safeString(region.slot || regionName);
+              if (!safeString(region.selector)) {
+                issues.push(violation("SCM_LAYOUT_REGION_SELECTOR_MISSING", {
+                  phase: "validate-manifest",
+                  componentName,
+                  regionName,
+                  slot,
+                  message: `Layout region ${regionName} must declare selector.`
+                }));
+              }
+              if (declaredSlots.length && !declaredSlots.includes(slot)) {
+                issues.push(violation("SCM_LAYOUT_REGION_SLOT_UNOWNED", {
+                  phase: "validate-manifest",
+                  componentName,
+                  regionName,
+                  slot,
+                  declaredLayoutSlots: declaredSlots,
+                  message: `Layout region ${regionName} targets unowned slot ${slot}.`
+                }));
+              }
+            });
+          }
+        }
+
+        if (contract.states !== undefined) {
+          if (!isPlainObject(contract.states)) {
+            issues.push(violation("SCM_LAYOUT_STATES_INVALID", {
+              phase: "validate-manifest",
+              componentName,
+              message: `Component ${componentName} layoutContract states must be an object.`
+            }));
+          } else {
+            Object.keys(contract.states).forEach((stateName) => {
+              const state = contract.states[stateName];
+              if (!validName(stateName) || !isPlainObject(state)) {
+                issues.push(violation("SCM_LAYOUT_STATE_INVALID", {
+                  phase: "validate-manifest",
+                  componentName,
+                  stateName,
+                  message: `Layout state ${stateName} must be a named object.`
+                }));
+                return;
+              }
+              if (!safeString(state.when)) {
+                issues.push(violation("SCM_LAYOUT_STATE_WHEN_MISSING", {
+                  phase: "validate-manifest",
+                  componentName,
+                  stateName,
+                  message: `Layout state ${stateName} must declare when.`
+                }));
+              }
+              if (!safeString(state.selector)) {
+                issues.push(violation("SCM_LAYOUT_STATE_SELECTOR_MISSING", {
+                  phase: "validate-manifest",
+                  componentName,
+                  stateName,
+                  message: `Layout state ${stateName} must declare selector.`
+                }));
+              }
+              if (state.maxHeight !== undefined) {
+                const maxHeight = Number(state.maxHeight);
+                if (!Number.isFinite(maxHeight) || maxHeight < 0) {
+                  issues.push(violation("SCM_LAYOUT_STATE_MAX_HEIGHT_INVALID", {
+                    phase: "validate-manifest",
+                    componentName,
+                    stateName,
+                    value: state.maxHeight,
+                    message: `Layout state ${stateName} maxHeight must be a non-negative number.`
+                  }));
+                }
+              }
+            });
+          }
+        }
+
+        if (contract.failClosed !== undefined && typeof contract.failClosed !== "boolean") {
+          issues.push(violation("SCM_LAYOUT_FAIL_CLOSED_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} layoutContract failClosed must be boolean when provided.`
+          }));
+        }
+      }
+
+      function validateStyleContract(componentName, manifest, issues) {
+        if (manifest.styleContract === undefined) return;
+        const contract = manifest.styleContract;
+        if (!isPlainObject(contract)) {
+          issues.push(violation("SCM_STYLE_CONTRACT_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} styleContract must be an object.`
+          }));
+          return;
+        }
+
+        const scope = safeString(contract.scope || "open");
+        if (!["open", "sealed"].includes(scope)) {
+          issues.push(violation("SCM_STYLE_SCOPE_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            scope,
+            message: `Component ${componentName} styleContract scope must be open or sealed.`
+          }));
+        }
+
+        const ownedStyles = Array.isArray(manifest?.owns?.style)
+          ? manifest.owns.style.map((styleName) => safeString(styleName)).filter(Boolean)
+          : [];
+        if (!Array.isArray(contract.owns)) {
+          issues.push(violation("SCM_STYLE_OWNS_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} styleContract owns must be an array.`
+          }));
+        } else {
+          contract.owns.forEach((styleName) => {
+            const normalized = safeString(styleName);
+            if (!normalized || !ownedStyles.includes(normalized)) {
+              issues.push(violation("SCM_STYLE_OWNERSHIP_UNDECLARED", {
+                phase: "validate-manifest",
+                componentName,
+                styleName: normalized,
+                declaredStyles: ownedStyles,
+                message: `Component ${componentName} styleContract owns undeclared style ${normalized}.`
+              }));
+            }
+          });
+        }
+
+        validateComputedMap(componentName, "STYLE", "expectedComputed", contract.expectedComputed, issues);
+        validateComputedMap(componentName, "STYLE", "forbiddenComputed", contract.forbiddenComputed, issues);
+
+        if (contract.forbidsGlobalLeakage !== undefined && typeof contract.forbidsGlobalLeakage !== "boolean") {
+          issues.push(violation("SCM_STYLE_FORBIDS_GLOBAL_LEAKAGE_INVALID", {
+            phase: "validate-manifest",
+            componentName,
+            message: `Component ${componentName} styleContract forbidsGlobalLeakage must be boolean when provided.`
+          }));
+        }
       }
 
       const ROUTE_SCHEMA_TYPES = Object.freeze(["id", "string", "integer", "boolean", "enum"]);
@@ -1954,6 +2210,8 @@ var McelLabScm = (() => {
 
         validateComponentEffects(componentName, manifest, issues);
         validateChildComposition(componentName, manifest, transitionNames, issues);
+        validateLayoutContract(componentName, manifest, issues);
+        validateStyleContract(componentName, manifest, issues);
 
         return {
           kind: "mcel-scm-manifest-validation",
@@ -2722,6 +2980,299 @@ var McelLabScm = (() => {
         });
       }
 
+
+      function observedMap(observation, primaryName, fallbackName) {
+        if (isPlainObject(observation?.[primaryName])) return observation[primaryName];
+        if (fallbackName && isPlainObject(observation?.[fallbackName])) return observation[fallbackName];
+        return {};
+      }
+
+      function observedComputedValue(observation, selector, property) {
+        const computed = observedMap(observation, "computed", "computedStyles");
+        const selectorComputed = isPlainObject(computed[selector]) ? computed[selector] : {};
+        if (Object.prototype.hasOwnProperty.call(selectorComputed, property)) return selectorComputed[property];
+        return undefined;
+      }
+
+      function observedRegionPresent(observation, regionName, selector, slot) {
+        const regions = observedMap(observation, "regions", "regionPresence");
+        if (Object.prototype.hasOwnProperty.call(regions, regionName)) return regions[regionName] === true;
+        if (slot && Object.prototype.hasOwnProperty.call(regions, slot)) return regions[slot] === true;
+        if (selector && Object.prototype.hasOwnProperty.call(regions, selector)) return regions[selector] === true;
+        if (Array.isArray(observation?.presentSelectors) && selector) return observation.presentSelectors.includes(selector);
+        return false;
+      }
+
+      function observedRect(observation, selector) {
+        const rects = observedMap(observation, "rects", "layoutRects");
+        return isPlainObject(rects[selector]) ? rects[selector] : {};
+      }
+
+      function observedDocumentHeightRatio(observation) {
+        if (observation?.documentHeightRatio !== undefined) return Number(observation.documentHeightRatio);
+        if (isPlainObject(observation?.metrics) && observation.metrics.documentHeightRatio !== undefined) return Number(observation.metrics.documentHeightRatio);
+        if (isPlainObject(observation?.documentMetrics) && observation.documentMetrics.documentHeightRatio !== undefined) {
+          return Number(observation.documentMetrics.documentHeightRatio);
+        }
+        return null;
+      }
+
+      function statePredicateApplies(instance, expression) {
+        const text = safeString(expression);
+        const match = /^state\.([A-Za-z][A-Za-z0-9_$-]*)\s*===\s*(true|false|null)$/.exec(text);
+        if (!match) return false;
+        const value = instance.state ? instance.state[match[1]] : undefined;
+        const expected = match[2] === "true" ? true : match[2] === "false" ? false : null;
+        return value === expected;
+      }
+
+      function checkLayoutContract(instance, observation = {}) {
+        assertComponentInstance(instance, "layout-check", {});
+        const contract = instance.definition?.layoutContract;
+        const issues = [];
+
+        if (!isPlainObject(contract)) {
+          const entry = {
+            kind: "mcel-scm-evidence",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            phase: "layout-check",
+            ok: true,
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            skipped: true,
+            message: `Component ${instance.componentName} has no layoutContract.`
+          };
+          recordEvidence(instance, entry);
+          return {
+            kind: "mcel-scm-layout-check-result",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            ok: true,
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            skipped: true,
+            violations: [],
+            evidence: jsonSafe(entry)
+          };
+        }
+
+        const requiredComputed = isPlainObject(contract.requiredComputed) ? contract.requiredComputed : {};
+        Object.keys(requiredComputed).forEach((selector) => {
+          const declarations = requiredComputed[selector];
+          if (!isPlainObject(declarations)) return;
+          Object.keys(declarations).forEach((property) => {
+            const expected = declarations[property];
+            const actual = observedComputedValue(observation, selector, property);
+            if (String(actual) !== String(expected)) {
+              issues.push(violation("SCM_LAYOUT_COMPUTED_MISMATCH", {
+                phase: "layout-check",
+                componentName: instance.componentName,
+                instanceId: instance.id,
+                selector,
+                property,
+                expected,
+                actual
+              }));
+            }
+          });
+        });
+
+        const regions = isPlainObject(contract.regions) ? contract.regions : {};
+        Object.keys(regions).forEach((regionName) => {
+          const region = regions[regionName];
+          if (!isPlainObject(region) || region.required === false) return;
+          const selector = safeString(region.selector);
+          const slot = safeString(region.slot || regionName);
+          if (!observedRegionPresent(observation, regionName, selector, slot)) {
+            issues.push(violation("SCM_LAYOUT_REGION_MISSING", {
+              phase: "layout-check",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              regionName,
+              selector,
+              slot
+            }));
+          }
+        });
+
+        if (contract.maxDocumentHeightRatio !== undefined) {
+          const ratio = observedDocumentHeightRatio(observation);
+          const maxRatio = Number(contract.maxDocumentHeightRatio);
+          if (ratio !== null && Number.isFinite(ratio) && Number.isFinite(maxRatio) && ratio > maxRatio) {
+            issues.push(violation("SCM_LAYOUT_DOCUMENT_HEIGHT_RATIO_EXCEEDED", {
+              phase: "layout-check",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              actual: ratio,
+              expectedMax: maxRatio
+            }));
+          }
+        }
+
+        const states = isPlainObject(contract.states) ? contract.states : {};
+        Object.keys(states).forEach((stateName) => {
+          const state = states[stateName];
+          if (!isPlainObject(state) || !statePredicateApplies(instance, state.when)) return;
+          if (state.maxHeight === undefined) return;
+          const selector = safeString(state.selector);
+          const rect = observedRect(observation, selector);
+          const actualHeight = Number(rect.height);
+          const maxHeight = Number(state.maxHeight);
+          if (Number.isFinite(actualHeight) && Number.isFinite(maxHeight) && actualHeight > maxHeight) {
+            issues.push(violation("SCM_LAYOUT_STATE_MAX_HEIGHT_EXCEEDED", {
+              phase: "layout-check",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              stateName,
+              selector,
+              actual: actualHeight,
+              expectedMax: maxHeight,
+              message: `Layout state ${stateName} expected ${selector} height to be at most ${maxHeight}.`
+            }));
+          }
+        });
+
+        issues.forEach((issue) => recordEvidence(instance, issue));
+        const entry = {
+          kind: "mcel-scm-evidence",
+          contractVersion: CONTRACT_VERSION,
+          generatedAt: now(),
+          phase: "layout-check",
+          ok: issues.length === 0,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          root: contract.root || "",
+          violationCount: issues.length
+        };
+        recordEvidence(instance, entry);
+
+        return {
+          kind: "mcel-scm-layout-check-result",
+          contractVersion: CONTRACT_VERSION,
+          generatedAt: now(),
+          ok: issues.length === 0,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          violations: issues.map((issue) => jsonSafe(issue)),
+          evidence: jsonSafe(entry)
+        };
+      }
+
+      function checkStyleContract(instance, observation = {}) {
+        assertComponentInstance(instance, "style-check", {});
+        const contract = instance.definition?.styleContract;
+        const issues = [];
+
+        if (!isPlainObject(contract)) {
+          const entry = {
+            kind: "mcel-scm-evidence",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            phase: "style-check",
+            ok: true,
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            skipped: true,
+            message: `Component ${instance.componentName} has no styleContract.`
+          };
+          recordEvidence(instance, entry);
+          return {
+            kind: "mcel-scm-style-check-result",
+            contractVersion: CONTRACT_VERSION,
+            generatedAt: now(),
+            ok: true,
+            componentName: instance.componentName,
+            instanceId: instance.id,
+            skipped: true,
+            violations: [],
+            evidence: jsonSafe(entry)
+          };
+        }
+
+        const expectedComputed = isPlainObject(contract.expectedComputed) ? contract.expectedComputed : {};
+        Object.keys(expectedComputed).forEach((selector) => {
+          const declarations = expectedComputed[selector];
+          if (!isPlainObject(declarations)) return;
+          Object.keys(declarations).forEach((property) => {
+            const expected = declarations[property];
+            const actual = observedComputedValue(observation, selector, property);
+            if (String(actual) !== String(expected)) {
+              issues.push(violation("SCM_STYLE_COMPUTED_MISMATCH", {
+                phase: "style-check",
+                componentName: instance.componentName,
+                instanceId: instance.id,
+                selector,
+                property,
+                expected,
+                actual
+              }));
+            }
+          });
+        });
+
+        const forbiddenComputed = isPlainObject(contract.forbiddenComputed) ? contract.forbiddenComputed : {};
+        Object.keys(forbiddenComputed).forEach((selector) => {
+          const declarations = forbiddenComputed[selector];
+          if (!isPlainObject(declarations)) return;
+          Object.keys(declarations).forEach((property) => {
+            const forbidden = declarations[property];
+            const actual = observedComputedValue(observation, selector, property);
+            if (actual !== undefined && String(actual) === String(forbidden)) {
+              issues.push(violation("SCM_STYLE_FORBIDDEN_COMPUTED_MATCH", {
+                phase: "style-check",
+                componentName: instance.componentName,
+                instanceId: instance.id,
+                selector,
+                property,
+                forbidden,
+                actual
+              }));
+            }
+          });
+        });
+
+        if (contract.forbidsGlobalLeakage === true && Array.isArray(observation?.globalLeakage)) {
+          observation.globalLeakage.forEach((leak) => {
+            issues.push(violation("SCM_STYLE_GLOBAL_LEAKAGE_DETECTED", {
+              phase: "style-check",
+              componentName: instance.componentName,
+              instanceId: instance.id,
+              selector: safeString(leak?.selector),
+              property: safeString(leak?.property),
+              actual: leak?.value,
+              source: safeString(leak?.source),
+              message: `Style contract detected global leakage on ${safeString(leak?.selector)}.`
+            }));
+          });
+        }
+
+        issues.forEach((issue) => recordEvidence(instance, issue));
+        const entry = {
+          kind: "mcel-scm-evidence",
+          contractVersion: CONTRACT_VERSION,
+          generatedAt: now(),
+          phase: "style-check",
+          ok: issues.length === 0,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          scope: contract.scope || "open",
+          violationCount: issues.length
+        };
+        recordEvidence(instance, entry);
+
+        return {
+          kind: "mcel-scm-style-check-result",
+          contractVersion: CONTRACT_VERSION,
+          generatedAt: now(),
+          ok: issues.length === 0,
+          componentName: instance.componentName,
+          instanceId: instance.id,
+          violations: issues.map((issue) => jsonSafe(issue)),
+          evidence: jsonSafe(entry)
+        };
+      }
+
       function transition(instance, transitionName, payload = {}) {
         assertComponentInstance(instance, "transition", {transitionName});
 
@@ -2822,6 +3373,8 @@ var McelLabScm = (() => {
         createEffectContext,
         runEffect,
         cancelEffect,
+        checkLayoutContract,
+        checkStyleContract,
         transition,
         exportEvidence,
         defineRoute,

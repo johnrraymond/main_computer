@@ -2094,7 +2094,9 @@ class StableHubAcceptedWorkSessionDirectory:
         closed socket must not keep capacity busy after the worker is gone.
         """
 
-        worker_id = normalize_worker_id(worker_id)
+        clean_worker_id = str(worker_id or "").strip()
+        if clean_worker_id:
+            clean_worker_id = normalize_worker_id(clean_worker_id)
         clean_connection_id = str(connection_id or "").strip()
         clean_exclude_connection_id = str(exclude_connection_id or "").strip()
         with self._lock:
@@ -2103,7 +2105,7 @@ class StableHubAcceptedWorkSessionDirectory:
             for record in data.get("accepted_sessions", {}).values():
                 if not isinstance(record, dict):
                     continue
-                if str(record.get("worker_id") or "") != worker_id:
+                if clean_worker_id and str(record.get("worker_id") or "") != clean_worker_id:
                     continue
                 if str(record.get("status") or "") not in {"accepted", "running"}:
                     continue

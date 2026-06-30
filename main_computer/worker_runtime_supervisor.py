@@ -34,6 +34,7 @@ class WorkerRuntimeSupervisor:
         self._kick_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._status_lock = threading.RLock()
+        self._status_update_event = threading.Event()
         self._latest_status: dict[str, Any] | None = None
         self._latest_status_at = 0.0
         self._latest_status_at_iso = ""
@@ -50,12 +51,29 @@ class WorkerRuntimeSupervisor:
         self._success_count = 0
         self._error_count = 0
 
-    def start(self) -> None:
+    def start(
+        self,
+        *,
+        wait_for_initial_reconcile: bool = False,
+        wait_timeout_s: float | None = None,
+    ) -> None:
+        """Start the backend runtime owner.
+
+        ``runtime-status`` can still autostart the supervisor as a safety net, but
+        the normal app boot path must not require a browser page to hit that
+        endpoint before workers become routeable.  Callers that own process startup
+        can wait for the first reconcile so the live-session socket is published
+        before the UI/requester path races ahead.
+        """
+
         if self._thread is not None and self._thread.is_alive():
             self.kick("already-started")
+            if wait_for_initial_reconcile:
+                self.wait_for_status_update(timeout_s=wait_timeout_s)
             return
         self._stop_event.clear()
         self._kick_event.set()
+        self._status_update_event.clear()
         with self._status_lock:
             self._started_at = _now_iso()
             self._stopped_at = ""
@@ -65,6 +83,8 @@ class WorkerRuntimeSupervisor:
             daemon=True,
         )
         self._thread.start()
+        if wait_for_initial_reconcile:
+            self.wait_for_status_update(timeout_s=wait_timeout_s)
 
     def ensure_started(self, reason: str = "ensure-started") -> bool:
         thread = self._thread
@@ -101,6 +121,15 @@ class WorkerRuntimeSupervisor:
             self._latest_status_at = now
             self._latest_status_at_iso = now_iso
             self._last_error = ""
+        self._status_update_event.set()
+
+    def wait_for_status_update(self, *, timeout_s: float | None = None) -> bool:
+        try:
+            timeout = float(timeout_s) if timeout_s is not None else min(10.0, max(2.0, self.interval_s))
+        except (TypeError, ValueError):
+            timeout = min(10.0, max(2.0, self.interval_s))
+        return self._status_update_event.wait(max(0.0, timeout))
+
 
     def diagnostics(self) -> dict[str, Any]:
         thread = self._thread

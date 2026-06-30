@@ -1,6 +1,6 @@
 var McelCodeStudioScm = (() => {
       const COMPONENT_NAME = "CodeStudio";
-      const COMPONENT_VERSION = "2.3.0";
+      const COMPONENT_VERSION = "2.4.0";
       const COMPONENT_CONTRACT = "mcel.scm.code-studio.v1";
       const ROUTE_NAME = "workspace.file";
       const ROUTE_VERSION = "1.1.0";
@@ -225,6 +225,98 @@ var McelCodeStudioScm = (() => {
               "runtime.assistantSession"
             ],
             maySerialize: false
+          }
+        },
+
+        layoutContract: {
+          root: "#code-editor-app",
+          failClosed: true,
+          maxDocumentHeightRatio: 1.6,
+
+          requiredComputed: {
+            ".code-studio-shell": {
+              display: "grid",
+              overflow: "hidden"
+            },
+
+            ".code-studio-body": {
+              display: "grid"
+            }
+          },
+
+          regions: {
+            activitybar: {
+              selector: ".code-studio-activitybar",
+              slot: "activitybar",
+              required: true
+            },
+
+            sidebar: {
+              selector: ".code-studio-sidebar",
+              slot: "sidebar",
+              required: true
+            },
+
+            editorGroup: {
+              selector: ".code-studio-editor-group",
+              slot: "editorGroup",
+              required: true
+            },
+
+            inspector: {
+              selector: ".code-studio-inspector",
+              slot: "inspector",
+              required: true
+            },
+
+            bottomDock: {
+              selector: "#code-studio-bottom-panel",
+              slot: "bottomDock",
+              required: true
+            },
+
+            statusbar: {
+              selector: ".code-studio-statusbar",
+              slot: "statusbar",
+              required: true
+            }
+          },
+
+          states: {
+            bottomDockCollapsed: {
+              when: "state.bottomDockExpanded === false",
+              selector: "#code-studio-bottom-panel",
+              maxHeight: 80
+            }
+          }
+        },
+
+        styleContract: {
+          scope: "sealed",
+          owns: [
+            "codeStudioTheme"
+          ],
+          forbidsGlobalLeakage: true,
+
+          expectedComputed: {
+            "#code-editor-app": {
+              backgroundColor: "rgb(30, 30, 30)"
+            },
+
+            ".code-studio-body": {
+              display: "grid"
+            },
+
+            ".code-studio-titlebar button": {
+              backgroundColor: "rgb(45, 45, 48)",
+              color: "rgb(220, 220, 220)"
+            }
+          },
+
+          forbiddenComputed: {
+            "button": {
+              backgroundColor: "rgb(246, 199, 91)"
+            }
           }
         },
 

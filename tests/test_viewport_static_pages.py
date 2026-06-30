@@ -564,10 +564,19 @@ class ViewportStaticPageTests(unittest.TestCase):
         previous_cwd = Path.cwd()
         observed: dict[str, object] = {}
 
+        class FakeWorkerRuntimeSupervisor:
+            def start(self, **kwargs: object) -> None:
+                observed["worker_runtime_supervisor_start"] = kwargs
+
+            def stop(self) -> None:
+                observed["worker_runtime_supervisor_stop"] = True
+
+
         class FakeViewportServer:
             def __init__(self, server_address, config, *, verbose=True):
                 self.server_port = server_address[1]
                 self.provider_name = "fake-provider"
+                self.worker_runtime_supervisor = FakeWorkerRuntimeSupervisor()
                 observed["instance"] = self
 
             def signal(self, name: str, **fields: object) -> None:
@@ -591,6 +600,8 @@ class ViewportStaticPageTests(unittest.TestCase):
             self.assertTrue(observed.get("pid_exists_during_run"))
             self.assertEqual(str(os.getpid()), observed.get("pid_text_during_run"))
             self.assertFalse((Path(tempdir.name) / ".main_computer_viewport.pid").exists())
+            self.assertEqual({"wait_for_initial_reconcile": True}, observed.get("worker_runtime_supervisor_start"))
+            self.assertTrue(observed.get("worker_runtime_supervisor_stop"))
             self.assertTrue(observed.get("server_closed"))
         finally:
             os.chdir(previous_cwd)

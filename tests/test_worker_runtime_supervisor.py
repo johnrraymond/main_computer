@@ -215,6 +215,24 @@ def test_worker_runtime_supervisor_status_autostarts_background_owner() -> None:
         supervisor.stop()
 
 
+def test_worker_runtime_supervisor_start_can_publish_readiness_before_any_status_request() -> None:
+    runtime = _FakeRuntimeForSupervisor()
+    supervisor = WorkerRuntimeSupervisor(runtime, interval_s=60)
+
+    try:
+        supervisor.start(wait_for_initial_reconcile=True, wait_timeout_s=2)
+        status = supervisor.status(ensure_running=False)
+
+        assert runtime.reconcile_count >= 1
+        assert status["runtime"]["state"] == "CONNECTED"
+        assert status["runtime"]["phase"] == "accepting"
+        assert status["runtime"]["heartbeat_result"]["live_session"]["alive"] is True
+        assert status["supervisor"]["thread_alive"] is True
+        assert any(name == "worker-runtime-supervisor-reconcile" for name, _fields in runtime.server.signals)
+    finally:
+        supervisor.stop()
+
+
 def test_worker_runtime_supervisor_marks_stale_connected_cache_as_reconnecting() -> None:
     runtime = _FakeRuntimeForSupervisor()
     supervisor = WorkerRuntimeSupervisor(runtime, interval_s=1)

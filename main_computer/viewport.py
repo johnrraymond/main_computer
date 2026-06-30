@@ -49,6 +49,7 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
         pid_file=viewport_pid_file,
         fallback=config.fallback,
     )
+    server.worker_runtime_supervisor.start(wait_for_initial_reconcile=True)
     print(f"Main Computer viewport: http://{host}:{server.server_port}")
     print("Press Ctrl+C to stop.")
     try:
@@ -57,6 +58,7 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
         server.signal("server-interrupt")
         print("\nViewport stopped.")
     finally:
+        server.worker_runtime_supervisor.stop()
         if _viewport_pid_path(control_root) == viewport_pid_file:
             _clear_viewport_pid_file(viewport_pid_file)
         server.signal("server-stop")

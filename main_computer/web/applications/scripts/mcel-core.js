@@ -305,6 +305,14 @@
         return requireScm().cancelEffect(instance, effectName, reason);
       }
 
+      function checkLayoutContract(instance, observation = {}) {
+        return requireScm().checkLayoutContract(instance, observation);
+      }
+
+      function checkStyleContract(instance, observation = {}) {
+        return requireScm().checkStyleContract(instance, observation);
+      }
+
       function transition(instance, transitionName, payload = {}) {
         return requireScm().transition(instance, transitionName, payload);
       }
@@ -426,6 +434,8 @@
         createEffectContext,
         runEffect,
         cancelEffect,
+        checkLayoutContract,
+        checkStyleContract,
         transition,
         exportScmEvidence,
         defineRoute,

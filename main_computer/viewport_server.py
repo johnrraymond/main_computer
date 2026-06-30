@@ -216,7 +216,7 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
         workspace=config.workspace,
         pid_file=viewport_pid_file,
     )
-    server.worker_runtime_supervisor.start()
+    server.worker_runtime_supervisor.start(wait_for_initial_reconcile=True)
     print(f"Main Computer viewport: http://{host}:{server.server_port}")
     print("Press Ctrl+C to stop.")
     try:

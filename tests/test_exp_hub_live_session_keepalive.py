@@ -185,6 +185,10 @@ _PRIVATE_WORKER_FIELDS = {
     "msk_id",
     "selected_worker",
     "accepted_session",
+    "credit_wallet",
+    "payout_wallet_address",
+    "log_file",
+    "raw_stream_events",
 }
 
 
@@ -512,9 +516,7 @@ def test_exp_hub_live_session_selection_repairs_missing_market_row_without_worke
         assert _ws_recv_json(worker_sock)["type"] == "hub.pong.accepted"
 
         data = hub.stable_worker_market_directory.store.load()
-        assert data["market_workers"]
-        data["market_workers"] = {}
-        hub.stable_worker_market_directory.store.save(data)
+        assert data.get("market_workers", {}) == {}
 
         response_holder: dict[str, object] = {}
 
@@ -620,9 +622,18 @@ def test_exp_hub_live_session_selection_repairs_stale_capacity_without_worker_pa
         assert _ws_recv_json(worker_sock)["type"] == "hub.pong.accepted"
 
         data = hub.stable_worker_market_directory.store.load()
-        worker_id = next(iter(data["market_workers"]))
-        data["market_workers"][worker_id]["active_sessions"] = 1
-        data["market_workers"][worker_id]["updated_at"] = "2026-01-01T00:00:00+00:00"
+        data.setdefault("market_workers", {})["local-worker-001"] = {
+            "worker_id": "local-worker-001",
+            "status": "live",
+            "connection_id": "conn_legacy_stale",
+            "owner_hub_id": hub.stable_hub_node.hub_id,
+            "rings": ["ring-3"],
+            "capabilities": ["chat.completions"],
+            "price": {"amount": "1", "unit": "compute_credit"},
+            "max_concurrency": 1,
+            "active_sessions": 1,
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }
         hub.stable_worker_market_directory.store.save(data)
 
         response_holder: dict[str, object] = {}
@@ -846,9 +857,7 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
         assert stream["bounce"]["required"] is True
         assert stream["payout"]["charge_id"] == terminal_ack["payout"]["charge_id"]
 
-        market_after_first = hub.stable_worker_market_directory.list_workers()[0] if hub.stable_worker_market_directory.list_workers() else None
-        assert market_after_first is not None
-        assert market_after_first["active_sessions"] == 0
+        assert hub.stable_worker_market_directory.list_workers() == []
 
         second_response_holder: dict[str, object] = {}
 
@@ -926,9 +935,7 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
         assert second_stream["status"] == "succeeded"
         assert second_stream["payout"]["charge_id"] == terminal_ack_2["payout"]["charge_id"]
 
-        market_after_second = hub.stable_worker_market_directory.list_workers()[0] if hub.stable_worker_market_directory.list_workers() else None
-        assert market_after_second is not None
-        assert market_after_second["active_sessions"] == 0
+        assert hub.stable_worker_market_directory.list_workers() == []
     finally:
         if worker_sock is not None:
             try:
@@ -1226,9 +1233,7 @@ def test_exp_hub_marks_direct_live_session_failed_when_worker_socket_closes_afte
         assert "connection_id" not in json.dumps(stream)
         assert stream["payout"]["legacy_worker_pull_lease"] is False
 
-        market_after_close = hub.stable_worker_market_directory.list_workers()[0] if hub.stable_worker_market_directory.list_workers() else None
-        assert market_after_close is not None
-        assert market_after_close["active_sessions"] == 0
+        assert hub.stable_worker_market_directory.list_workers() == []
     finally:
         if worker_sock is not None:
             try:
@@ -1370,9 +1375,7 @@ def test_exp_hub_dev_socket_reconnect_does_not_expose_or_reuse_worker_identity(t
         assert closed_stream["status"] == "failed"
         assert closed_stream["request"]["terminal_reason"] in {"worker_connection_closed", "worker_connection_lost"}
 
-        market_after_reconnect = hub.stable_worker_market_directory.list_workers()[-1] if hub.stable_worker_market_directory.list_workers() else None
-        assert market_after_reconnect is not None
-        assert market_after_reconnect["active_sessions"] == 0
+        assert hub.stable_worker_market_directory.list_workers() == []
     finally:
         for sock in (old_sock, new_sock):
             if sock is not None:
@@ -1413,7 +1416,7 @@ def _configure_exp_test_hub_topology(
     )
 
 
-def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) -> None:
+def test_exp_hub_entry_hub_does_not_route_by_legacy_remote_worker_id_rows(tmp_path: Path) -> None:
     config = MainComputerConfig(
         workspace=tmp_path,
         hub_root=tmp_path / "hub-runtime",
@@ -1432,7 +1435,7 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
     owner_id = _exp_fdb_stable_hub_id(owner_hub.server_port)
     topology = StableHubTopology(
         kind="main_computer.stable_hub_topology.v1",
-        cluster_id="pytest-exp-handoff-cluster",
+        cluster_id="pytest-exp-live-handoff-cluster",
         network={"network_key": "dev", "kind": "local-dev-chain", "chain_id": 42424242},
         storage={"backend": "memory"},
         entry_urls=(entry_url, owner_url),
@@ -1441,7 +1444,7 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
                 hub_id=entry_id,
                 hub_url=entry_url,
                 public_url=entry_url,
-                roles=("entry", "requester", "execution"),
+                roles=("entry", "requester"),
             ),
             StableHubNode(
                 hub_id=owner_id,
@@ -1455,11 +1458,11 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
     _configure_exp_test_hub_topology(entry_hub, topology=topology, hub_id=entry_id, store=shared_store)
     _configure_exp_test_hub_topology(owner_hub, topology=topology, hub_id=owner_id, store=shared_store)
 
-    requester_account = "requester-exp-handoff"
+    requester_account = "requester-exp-no-legacy-handoff"
     owner_hub.credit_ledger.issue(
         account_id=requester_account,
         credits=25,
-        memo="fund exp handoff requester on execution hub",
+        memo="fund direct owner requester",
     )
 
     entry_thread = threading.Thread(target=entry_hub.serve_forever, daemon=True)
@@ -1473,6 +1476,8 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
             worker_sock,
             {
                 "type": "worker.auth",
+                "worker_id": "local-worker-001",
+                "worker_node_id": "local-worker-001",
                 "market": {
                     "rings": ["ring-3"],
                     "price": {"amount": "1", "unit": "compute_credit"},
@@ -1482,55 +1487,70 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
             },
         )
         accepted_auth = _ws_recv_json(worker_sock)
+        _assert_no_worker_private_fields(accepted_auth)
         ping = _ws_recv_json(worker_sock)
-        _ws_send_json(
-            worker_sock,
-            {
-                "type": "worker.pong",
-                "ping_id": ping["ping_id"],
-            },
-        )
+        _ws_send_json(worker_sock, {"type": "worker.pong", "ping_id": ping["ping_id"]})
         assert _ws_recv_json(worker_sock)["type"] == "hub.pong.accepted"
 
-        entry_identity = json.loads(
-            urlopen(f"{entry_url}/api/hub/v1/hub-identity", timeout=5).read().decode("utf-8")
+        data = shared_store.load()
+        data.setdefault("market_workers", {})["local-worker-001"] = {
+            "worker_id": "local-worker-001",
+            "status": "live",
+            "owner_hub_id": owner_id,
+            "owner_hub_url": owner_url,
+            "connection_id": "conn_legacy_remote",
+            "rings": ["ring-3"],
+            "capabilities": ["text"],
+            "price": {"amount": "1", "unit": "compute_credit"},
+            "max_concurrency": 1,
+            "active_sessions": 0,
+        }
+        shared_store.save(data)
+
+        entry_status, entry_payload = _post_json_status(
+            entry_url + "/api/hub/v1/work/requests",
+            {
+                "request_id": "exp-remote-legacy-row-req-1",
+                "client_node_id": "requester-exp-no-legacy-handoff",
+                "account_id": requester_account,
+                "max_credits": 3,
+                "ring": "ring-3",
+                "capabilities": ["text"],
+                "input": {"prompt": "entry must not use legacy durable worker id rows"},
+                "messages": [{"role": "user", "content": "entry must not use legacy durable worker id rows"}],
+            },
+            timeout=10,
         )
-        assert entry_identity["contract"]["hub_to_hub_handoff"] == "owner-hub-forwarding-v1"
-        assert entry_identity["peer_hubs"][0]["hub_id"] == owner_id
+        assert entry_status == 409
+        assert entry_payload["error"] == "no_live_worker_available"
+        _assert_no_worker_private_fields(entry_payload)
 
-        work_response_holder: dict[str, object] = {}
+        response_holder: dict[str, object] = {}
 
-        def submit_work_to_entry() -> None:
+        def submit_work_to_owner() -> None:
             status, payload = _post_json_status(
-                entry_url + "/api/hub/v1/work/requests",
+                owner_url + "/api/hub/v1/work/requests",
                 {
-                    "request_id": "exp-remote-req-1",
-                    "client_node_id": "requester-exp-handoff",
+                    "request_id": "exp-owner-direct-no-legacy-req-1",
+                    "client_node_id": "requester-exp-no-legacy-handoff",
                     "account_id": requester_account,
                     "max_credits": 3,
                     "ring": "ring-3",
                     "capabilities": ["text"],
-                    "input": {"prompt": "hello through exp remote handoff"},
-                    "messages": [{"role": "user", "content": "hello through exp remote handoff"}],
+                    "input": {"prompt": "owner direct live socket works"},
+                    "messages": [{"role": "user", "content": "owner direct live socket works"}],
                 },
                 timeout=10,
             )
-            work_response_holder["status"] = status
-            work_response_holder["payload"] = payload
+            response_holder["status"] = status
+            response_holder["payload"] = payload
 
-        submit_thread = threading.Thread(target=submit_work_to_entry, daemon=True)
+        submit_thread = threading.Thread(target=submit_work_to_owner, daemon=True)
         submit_thread.start()
         offer = _ws_recv_json(worker_sock)
         assert offer["type"] == "hub.work.offer"
         _assert_no_worker_private_fields(offer)
-        assert offer["service"] == "main_computer.exp_fdb_hub"
-        assert offer["execution_hub"]["hub_id"] == owner_id
-        assert offer["execution_hub"]["hub_url"] == owner_url
-        assert offer["execution_hub"]["local_owner"] is True
-        assert offer["execution_hub"]["handoff"] is False
-        assert "lease_id" not in offer
-        assert offer["pricing"]["legacy_worker_pull_lease"] is False
-        assert offer["selected_offer"]["legacy_worker_pull_lease"] is False
+        assert "local-worker-001" not in json.dumps(offer)
 
         _ws_send_json(
             worker_sock,
@@ -1541,29 +1561,6 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
                 "request_id": offer["request_id"],
             },
         )
-        submit_thread.join(timeout=10)
-        assert not submit_thread.is_alive()
-        assert work_response_holder["status"] == 200
-        accepted_work = work_response_holder["payload"]
-        assert accepted_work["ok"] is True
-        assert accepted_work["accepted"] is True
-        assert accepted_work["hub_id"] == entry_id
-        assert accepted_work["entry_hub_id"] == entry_id
-        assert accepted_work["accepted_by_hub_id"] == owner_id
-        assert accepted_work["hub_to_hub_handoff"] is True
-        assert accepted_work["execution_hub"] == {
-            "hub_id": owner_id,
-            "hub_url": owner_url,
-            "local_owner": False,
-            "handoff": True,
-        }
-        assert accepted_work["worker_hub"] == accepted_work["execution_hub"]
-        assert accepted_work["bounce"]["required"] is True
-        assert accepted_work["bounce"]["same_hub"] is False
-        assert accepted_work["continuation"]["hub_id"] == owner_id
-        assert accepted_work["continuation"]["hub_url"] == owner_url
-        assert accepted_work["continuation_url"].startswith(owner_url + "/api/hub/v1/work/sessions/")
-
         _ws_send_json(
             worker_sock,
             {
@@ -1574,32 +1571,22 @@ def test_exp_hub_forwards_remote_live_session_work_to_owner_hub(tmp_path: Path) 
                 "result": {
                     "status": "success",
                     "response": {
-                        "content": "exp remote handoff result",
+                        "content": "owner direct result",
                         "provider": "exp-live-worker",
-                        "model": "live-session-worker",
+                        "model": "micro-agent-local",
                     },
                 },
             },
         )
         terminal_ack = _ws_recv_json(worker_sock)
         assert terminal_ack["type"] == "hub.work.result.accepted"
-        assert terminal_ack["ok"] is True
-        assert terminal_ack["status"] == "succeeded"
-        assert terminal_ack["payout"]["status"] == "charged"
-        assert terminal_ack["payout"]["charge_id"]
-        assert terminal_ack["payout"]["worker_earning_id"]
-
-        stream_status, stream = _get_json_status(str(accepted_work["continuation_url"]))
-        assert stream_status == 200
-        assert stream["ok"] is True
-        assert stream["session_id"] == offer["session_id"]
-        assert stream["status"] == "succeeded"
-        assert stream["execution_hub"]["hub_id"] == owner_id
-        assert stream["execution_hub"]["hub_url"] == owner_url
-        assert stream["execution_hub"]["local_owner"] is True
-        assert stream["execution_hub"]["handoff"] is False
-        assert stream["payout"]["charge_id"] == terminal_ack["payout"]["charge_id"]
-
+        _assert_no_worker_private_fields(terminal_ack)
+        submit_thread.join(timeout=10)
+        assert not submit_thread.is_alive()
+        assert response_holder["status"] == 200
+        accepted_work = response_holder["payload"]
+        _assert_no_worker_private_fields(accepted_work)
+        assert "local-worker-001" not in json.dumps(accepted_work)
     finally:
         if worker_sock is not None:
             try:

@@ -124,7 +124,7 @@ process.stdout.write(JSON.stringify({{
     assert data["registered"] is True
     assert data["componentName"] == "CodeStudio"
     assert data["definitionName"] == "CodeStudio"
-    assert data["version"] == "2.3.0"
+    assert data["version"] == "2.4.0"
     assert data["contract"] == "mcel.scm.code-studio.v1"
     assert data["validation"]["ok"] is True
     assert data["owns"]["source"] == ["workspace.manifest", "workspace.files"]
@@ -469,3 +469,132 @@ def test_code_studio_scm_manifest_does_not_rewrite_existing_studio_behavior() ->
     assert "addEventListener" not in script
     assert "innerHTML" not in script
     assert re.search(r"\bregister\(\);", script), "manifest should register itself without editing the UI"
+
+
+def test_code_studio_scm_manifest_declares_layout_and_style_contracts(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const definition = MCEL.componentDefinition("CodeStudio");
+process.stdout.write(JSON.stringify({{
+  version: definition && definition.version,
+  layoutRoot: definition && definition.layoutContract && definition.layoutContract.root,
+  layoutSlots: Object.keys(definition.layoutContract.regions || {{}}),
+  styleScope: definition && definition.styleContract && definition.styleContract.scope,
+  styleOwns: definition && definition.styleContract && definition.styleContract.owns,
+  hasForbiddenButton: Boolean(definition.styleContract.forbiddenComputed.button)
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["version"] == "2.4.0"
+    assert data["layoutRoot"] == "#code-editor-app"
+    assert data["layoutSlots"] == [
+        "activitybar",
+        "sidebar",
+        "editorGroup",
+        "inspector",
+        "bottomDock",
+        "statusbar",
+    ]
+    assert data["styleScope"] == "sealed"
+    assert data["styleOwns"] == ["codeStudioTheme"]
+    assert data["hasForbiddenButton"] is True
+
+
+def test_code_studio_scm_layout_and_style_checks_produce_evidence(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const instance = McelCodeStudioScm.createDefaultInstance({{mcel: MCEL}});
+const layoutPass = MCEL.checkLayoutContract(instance, {{
+  computed: {{
+    ".code-studio-shell": {{display: "grid", overflow: "hidden"}},
+    ".code-studio-body": {{display: "grid"}}
+  }},
+  regions: {{
+    activitybar: true,
+    sidebar: true,
+    editorGroup: true,
+    inspector: true,
+    bottomDock: true,
+    statusbar: true
+  }},
+  rects: {{
+    "#code-studio-bottom-panel": {{height: 72}}
+  }},
+  documentHeightRatio: 1.1
+}});
+const styleFail = MCEL.checkStyleContract(instance, {{
+  computed: {{
+    "#code-editor-app": {{backgroundColor: "rgb(30, 30, 30)"}},
+    ".code-studio-body": {{display: "grid"}},
+    ".code-studio-titlebar button": {{
+      backgroundColor: "rgb(246, 199, 91)",
+      color: "rgb(220, 220, 220)"
+    }},
+    "button": {{backgroundColor: "rgb(246, 199, 91)"}}
+  }}
+}});
+const packet = MCEL.exportScmEvidence(instance);
+
+process.stdout.write(JSON.stringify({{
+  layoutOk: layoutPass.ok,
+  styleOk: styleFail.ok,
+  styleCodes: styleFail.violations.map((entry) => entry.code),
+  phases: packet.evidence.map((entry) => entry.phase),
+  evidenceCodes: packet.evidence.map((entry) => entry.code).filter(Boolean)
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["layoutOk"] is True
+    assert data["styleOk"] is False
+    assert "SCM_STYLE_COMPUTED_MISMATCH" in data["styleCodes"]
+    assert "SCM_STYLE_FORBIDDEN_COMPUTED_MATCH" in data["styleCodes"]
+    assert "layout-check" in data["phases"]
+    assert "style-check" in data["phases"]
+    assert "SCM_STYLE_FORBIDDEN_COMPUTED_MATCH" in data["evidenceCodes"]
+
+
+def test_code_studio_scm_layout_check_catches_known_grid_failure_shape(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const instance = McelCodeStudioScm.createDefaultInstance({{mcel: MCEL}});
+const result = MCEL.checkLayoutContract(instance, {{
+  computed: {{
+    ".code-studio-shell": {{display: "grid", overflow: "hidden"}},
+    ".code-studio-body": {{display: "block"}}
+  }},
+  regions: {{
+    activitybar: true,
+    sidebar: true,
+    editorGroup: true,
+    inspector: true,
+    bottomDock: true,
+    statusbar: true
+  }},
+  rects: {{
+    "#code-studio-bottom-panel": {{height: 130}}
+  }},
+  documentHeightRatio: 15.64
+}});
+
+process.stdout.write(JSON.stringify({{
+  ok: result.ok,
+  codes: result.violations.map((entry) => entry.code),
+  bodyViolation: result.violations.find((entry) => entry.selector === ".code-studio-body")
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["ok"] is False
+    assert "SCM_LAYOUT_COMPUTED_MISMATCH" in data["codes"]
+    assert "SCM_LAYOUT_DOCUMENT_HEIGHT_RATIO_EXCEEDED" in data["codes"]
+    assert "SCM_LAYOUT_STATE_MAX_HEIGHT_EXCEEDED" in data["codes"]
+    assert data["bodyViolation"]["actual"] == "block"
+    assert data["bodyViolation"]["expected"] == "grid"
