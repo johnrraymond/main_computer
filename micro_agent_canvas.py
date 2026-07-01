@@ -1119,6 +1119,19 @@ def _runtime_indicates_live_worker(payload: dict[str, Any]) -> bool:
     return phase == "accepting" and (allowed or state in {"CONNECTED", "ACTIVE"} or hub_status in {"available", "busy"})
 
 
+def _key_id_from_worker_key_record(record: dict[str, Any]) -> str:
+    return str(
+        record.get("id")
+        or record.get("key_id")
+        or record.get("multisession_key_id")
+        or ""
+    ).strip()
+
+
+def _worker_key_record_is_active(record: dict[str, Any]) -> bool:
+    return str(record.get("status") or "").strip().lower() == "active"
+
+
 def _load_or_request_app_multisession_key(
     *,
     args: Any,
@@ -1127,9 +1140,27 @@ def _load_or_request_app_multisession_key(
     hub_status: dict[str, Any],
     resolution: PrivateKeyResolution,
 ) -> str:
+    """Ensure the app has a worker multi-session key and return its id when public.
+
+    Worker key ids are bearer credentials. The Worker app intentionally redacts
+    them from public load/request responses after they have been stored locally.
+    That is still a usable state: /work-now can resolve the active saved key on
+    the app/control server by wallet + Hub. Returning an empty string means
+    "cached server-side key exists; do not put a key id in the client payload."
+    """
     base = app_url.rstrip("/")
     chain_id = normalize_chain_id(_chain_id_from_status(hub_status))
     load_payload = {"wallet_address": resolution.wallet_address, "hub_url": hub_url}
+
+    def active_key_id_or_server_side_marker(container: dict[str, Any]) -> tuple[bool, str]:
+        active = container.get("active_key") if isinstance(container.get("active_key"), dict) else {}
+        if not active and isinstance(container.get("key"), dict):
+            active = container["key"]
+        if not isinstance(active, dict) or not _worker_key_record_is_active(active):
+            return False, ""
+        key_id = _key_id_from_worker_key_record(active)
+        return True, key_id
+
     status, loaded = http_json(
         "POST",
         f"{base}/api/applications/worker/multisession-keys/load",
@@ -1137,11 +1168,13 @@ def _load_or_request_app_multisession_key(
         timeout=15.0,
     )
     if status < 400 and loaded.get("ok") is not False:
-        active = loaded.get("active_key") if isinstance(loaded.get("active_key"), dict) else {}
-        key_id = str(active.get("id") or active.get("key_id") or active.get("multisession_key_id") or "").strip()
+        has_active_key, key_id = active_key_id_or_server_side_marker(loaded)
         if key_id:
             print(f"[worker] using saved worker multi-session key {key_id[:10]}…")
             return key_id
+        if has_active_key:
+            print("[worker] using saved server-side worker multi-session key.")
+            return ""
 
     message = build_multisession_key_message(
         wallet_address=resolution.wallet_address,
@@ -1179,21 +1212,27 @@ def _load_or_request_app_multisession_key(
                 load_payload,
                 timeout=15.0,
             )
-            active = reloaded.get("active_key") if isinstance(reloaded.get("active_key"), dict) else {}
-            key_id = str(active.get("id") or active.get("key_id") or active.get("multisession_key_id") or "").strip()
-            if reload_status < 400 and key_id:
-                return key_id
+            if reload_status < 400:
+                has_active_key, key_id = active_key_id_or_server_side_marker(reloaded)
+                if key_id:
+                    return key_id
+                if has_active_key:
+                    print("[worker] using saved server-side worker multi-session key.")
+                    return ""
         raise RuntimeError(f"worker multi-session key request failed HTTP {status}: {requested}")
 
     for container_name in ("local_cache", ""):
         container = requested.get(container_name) if container_name else requested
         if isinstance(container, dict):
             key = container.get("key") if isinstance(container.get("key"), dict) else {}
-            key_id = str(key.get("id") or key.get("key_id") or key.get("multisession_key_id") or "").strip()
+            key_id = _key_id_from_worker_key_record(key)
             if key_id:
                 print(f"[worker] issued local worker multi-session key {key_id[:10]}…")
                 return key_id
-    raise RuntimeError(f"worker multi-session key response did not include a key id: {requested}")
+            if _worker_key_record_is_active(key):
+                print("[worker] saved server-side worker multi-session key.")
+                return ""
+    raise RuntimeError(f"worker multi-session key response did not include an active key record: {requested}")
 
 
 def ensure_local_worker_available(

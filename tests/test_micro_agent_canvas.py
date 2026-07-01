@@ -466,6 +466,108 @@ def test_ensure_local_worker_available_selects_network_requests_key_and_posts_wo
     ]
 
 
+
+
+def test_ensure_local_worker_available_accepts_redacted_server_side_worker_key(monkeypatch):
+    canvas = _load_canvas_module()
+    from main_computer.multisession_key_signing import private_key_to_address
+
+    private_key = "0x1"
+    wallet = private_key_to_address(private_key)
+    calls = []
+
+    def fake_http_json(method, url, payload=None, timeout=15.0):
+        calls.append((method, url, payload))
+        if url.endswith("/api/applications/worker/runtime-status"):
+            seen_runtime = sum(1 for _method, prior_url, _payload in calls if prior_url.endswith("/api/applications/worker/runtime-status"))
+            if seen_runtime <= 2:
+                return 200, {"ok": True, "runtime": {"phase": "not_accepting", "allowed_to_accept": False}}
+            return 200, {"ok": True, "runtime": {"phase": "accepting", "allowed_to_accept": True, "hub_status": "available"}}
+        if url.endswith("/api/applications/worker/network-session"):
+            return 200, {"ok": True, "session": {"connection_status": "connected"}}
+        if url.endswith("/api/applications/worker/settings") and method == "GET":
+            return 200, {"ok": True, "settings": {}}
+        if url.endswith("/api/applications/worker/settings") and method == "POST":
+            return 200, {"ok": True, "settings": payload["settings"]}
+        if url.endswith("/api/applications/worker/multisession-keys/load"):
+            return 200, {
+                "ok": True,
+                "active_key": None,
+                "keys": [],
+            }
+        if url.endswith("/api/applications/worker/multisession-key/request"):
+            return 200, {
+                "ok": True,
+                "key": {
+                    "status": "active",
+                    "wallet_address": wallet,
+                    "hub_url": "http://127.0.0.1:8871",
+                    "server_side_key": True,
+                    "key_redacted": True,
+                },
+                "key_revealed_once": False,
+                "local_cache": {
+                    "stored": True,
+                    "key": {
+                        "status": "active",
+                        "wallet_address": wallet,
+                        "hub_url": "http://127.0.0.1:8871",
+                        "server_side_key": True,
+                        "key_redacted": True,
+                    },
+                },
+            }
+        if url.endswith("/api/applications/worker/work-now"):
+            assert "active_multisession_key_id" not in payload
+            assert "multisession_key_id" not in payload
+            assert payload["wallet_address"] == wallet
+            assert payload["hub_url"] == "http://127.0.0.1:8871"
+            return 200, {"ok": True, "runtime": {"phase": "accepting", "allowed_to_accept": True}}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(canvas, "http_json", fake_http_json)
+    monkeypatch.setattr(canvas.time, "sleep", lambda _seconds: None)
+    args = SimpleNamespace(
+        app="http://127.0.0.1:8765",
+        no_auto_worker=False,
+        private_key=private_key,
+        private_key_file="",
+        wallet="",
+        ring="3",
+        capability="chat.completions",
+        worker_model="gemma4:26b",
+        worker_credits_per_token="0.001",
+        worker_target_tokens=1024,
+        worker_availability_mode="ai_idle",
+        auto_worker_seconds=3600,
+        auto_worker_timeout=1.0,
+        msk_lifetime_minutes=10,
+    )
+
+    ok = canvas.ensure_local_worker_available(
+        args=args,
+        hub_url="http://127.0.0.1:8871",
+        hub_status={
+            "ok": True,
+            "network": {"network_key": "dev", "chain_id": 42424242},
+            "serving_hub": {"hub_id": "dev-hub1"},
+        },
+    )
+
+    assert ok is True
+    assert [url.rsplit("/", 1)[-1] for _method, url, _payload in calls] == [
+        "runtime-status",
+        "runtime-status",
+        "network-session",
+        "settings",
+        "settings",
+        "load",
+        "request",
+        "work-now",
+        "runtime-status",
+    ]
+
+
 def test_local_worker_app_url_candidates_probe_control_app_before_legacy_standalone_worker(monkeypatch, tmp_path: Path):
     canvas = _load_canvas_module()
 
