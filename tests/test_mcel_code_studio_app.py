@@ -151,6 +151,10 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "bottomDock.style.maxHeight = \"80px\"",
             "evidenceFilterMatches",
             "formatEvidenceDetail",
+            "buildScmEvidenceDebugPacket",
+            "exportScmEvidenceDebugPacket",
+            "copyCurrentScmEvidenceDebugPacket",
+            "downloadCurrentScmEvidenceDebugPacket",
             "replayScmEvidenceEntry",
             "code-studio-scm-evidence-entry",
             "code-studio-scm-evidence-detail",
@@ -211,8 +215,12 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'id="code-studio-refresh-scm-evidence"',
             'id="code-studio-scm-evidence-filter"',
             'id="code-studio-replay-scm-evidence"',
+            'id="code-studio-export-scm-evidence-packet"',
+            'id="code-studio-download-scm-evidence-packet"',
             'id="code-studio-scm-evidence-detail"',
             "Replay selected gate",
+            "Export SCM Evidence Packet",
+            "Download packet",
             'data-mc-component-id="code-editor.studio.scm-evidence"',
         ]
         for text in expected_markup:
@@ -248,13 +256,70 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "evidenceSummary",
             "code-studio-scm-evidence-filter",
             "code-studio-replay-scm-evidence",
+            "code-studio-export-scm-evidence-packet",
+            "code-studio-download-scm-evidence-packet",
             "code-studio-scm-evidence-detail",
+            "mcel-code-studio-scm-debug-packet",
             "SCM evidence replay",
+            "SCM evidence debug packet exported",
             "SCM evidence refreshed",
         ]
         for text in expected_script:
             with self.subTest(script=text):
                 self.assertIn(text, script)
+
+
+    def test_code_studio_scm_evidence_export_packet_shape_is_stable(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'id="code-studio-export-scm-evidence-packet"',
+            'id="code-studio-download-scm-evidence-packet"',
+            "Export SCM Evidence Packet",
+            "Download packet",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_packet_shape = [
+            'kind: "mcel-code-studio-scm-debug-packet"',
+            "packetVersion: SCM_EVIDENCE_PACKET_VERSION",
+            "MCEL_RUNTIME_PACKAGE_VERSION",
+            "versions: {",
+            "runtimePackage: MCEL_RUNTIME_PACKAGE_VERSION",
+            "workspace: {",
+            "route: {",
+            "filters: {",
+            "dirtyState: collectDirtyStateSummary(fields)",
+            "gates: collectGateStatus(gates)",
+            "evidence: {",
+            "component: summary.componentPacket",
+            "route: summary.routePacket",
+            "selectedEvidence: formatEvidenceDetail(selectedEntry)",
+            "lastReplayResult: studioState.lastScmReplayResult",
+            "lastReport: report ? {",
+            "copyScmEvidenceDebugPacket",
+            "downloadScmEvidenceDebugPacket",
+        ]
+        for text in expected_packet_shape:
+            with self.subTest(packet=text):
+                self.assertIn(text, script)
+
+        packet_start = script.index('kind: "mcel-code-studio-scm-debug-packet"')
+        for later in [
+            "versions: {",
+            "workspace: {",
+            "filters: {",
+            "dirtyState:",
+            "gates:",
+            "evidence: {",
+            "selectedEvidence:",
+            "lastReplayResult:",
+        ]:
+            with self.subTest(order=later):
+                self.assertGreater(script.index(later, packet_start), packet_start)
 
 
     def test_pretty_doc_explains_better_than_react_lane(self) -> None:

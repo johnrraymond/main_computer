@@ -20,6 +20,19 @@
       const commitButton = root.querySelector("#code-studio-commit-runtime");
       const panes = [...root.querySelectorAll("[data-code-studio-pane]")];
       const tabButtons = [...root.querySelectorAll("[data-code-studio-tab]")];
+      const SCM_EVIDENCE_FILTERS = [
+        "all",
+        "violations",
+        "component",
+        "route",
+        "effect",
+        "layout",
+        "style",
+        "serialization",
+        "repair"
+      ];
+      const SCM_EVIDENCE_PACKET_VERSION = "1.0.0";
+      const MCEL_RUNTIME_PACKAGE_VERSION = "mcel-runtime.v0.1.15";
 
       if (!sourceEditor || !runtimePreview) return;
 
@@ -33,6 +46,13 @@
         scmEvidenceFilter: "all",
         selectedScmEvidenceKey: "",
         selectedScmEvidenceSnapshot: null,
+        lastScmReplayResult: null,
+        lastScmDebugPacket: null,
+        lastScmDebugPacketJson: "",
+        lastScmDebugPacketExport: null,
+        lastSerializationGate: null,
+        lastRepairGate: null,
+        lastSaveFileEffectGate: null,
       };
 
       let scmInstance = null;
@@ -599,6 +619,8 @@
 
         return {
           available: !componentPacket.unavailable || !routePacket.unavailable,
+          componentPacket,
+          routePacket,
           component: summarizeEvidence(componentEvidence),
           route: summarizeEvidence(routeEvidence),
           combined: summarizeEvidence(combined),
@@ -608,6 +630,270 @@
           recentRouteEvidence: routeEvidence.slice(-10),
           recentEvidence: combined.slice(-24)
         };
+      }
+
+      function idleScmEvidenceEntry(filter = "all") {
+        return {
+          kind: "mcel-scm-evidence",
+          phase: "idle",
+          ok: true,
+          scope: filter === "all" ? "component" : filter,
+          evidenceKey: `idle|${filter}`,
+          message: filter === "all"
+            ? "No SCM evidence has been recorded yet. Validate, mount, edit, serialize, repair, or switch files."
+            : `No recent SCM evidence entries match the ${filter} filter.`
+        };
+      }
+
+      function visibleScmEvidenceEntries(summary, filter = studioState.scmEvidenceFilter || "all") {
+        const entries = (summary?.recentEvidence || []).filter((entry) => evidenceFilterMatches(entry, filter));
+        return entries.length ? entries : [idleScmEvidenceEntry(filter)];
+      }
+
+      function resolveSelectedScmEvidence(summary, filter = studioState.scmEvidenceFilter || "all", entries = null) {
+        const candidates = entries || visibleScmEvidenceEntries(summary, filter);
+        return candidates.find((entry) => entry.evidenceKey === studioState.selectedScmEvidenceKey)
+          || candidates.find((entry) => evidenceEntryIsViolation(entry))
+          || candidates[candidates.length - 1]
+          || idleScmEvidenceEntry(filter);
+      }
+
+      function jsonSafeClone(value) {
+        try {
+          return JSON.parse(JSON.stringify(value, (_key, item) => {
+            if (typeof item === "function" || typeof item === "symbol" || typeof item === "undefined") {
+              return undefined;
+            }
+            if (item instanceof Error) {
+              return {
+                name: item.name,
+                message: item.message,
+                stack: item.stack || ""
+              };
+            }
+            if (item && typeof Node !== "undefined" && item instanceof Node) {
+              return {
+                nodeType: item.nodeType,
+                nodeName: item.nodeName || "",
+                id: item.id || "",
+                className: item.className || ""
+              };
+            }
+            return item;
+          }));
+        } catch (error) {
+          return {
+            kind: "mcel-json-safe-clone-error",
+            message: error?.message || String(error)
+          };
+        }
+      }
+
+      function gateStatusFrom(value, fallbackLabel = "") {
+        const gate = value || {};
+        return jsonSafeClone({
+          label: gate.label || fallbackLabel,
+          ok: gate.ok !== false,
+          skipped: Boolean(gate.skipped),
+          code: gate.code || gate.result?.code || "",
+          message: gate.message || gate.result?.message || "",
+          violations: gate.violations || gate.result?.violations || (gate.violation ? [gate.violation] : []),
+          resultKind: gate.result?.kind || gate.kind || "",
+          result: gate.result || null
+        });
+      }
+
+      function collectDirtyStateSummary(fields = workspaceFields()) {
+        const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
+        const activePane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "";
+        const bottomDock = root.querySelector("#code-studio-bottom-panel");
+        return {
+          mounted: studioState.mounted,
+          dirty: studioState.dirty,
+          damaged: studioState.damaged,
+          selectedPath: studioState.selectedPath,
+          selectedFileId: selectedScmFileId(fields),
+          sourceLength: sourceEditor.value.length,
+          runtimeHtmlLength: runtimePreview.innerHTML.length,
+          runtimeDraftMounted: Boolean(draft),
+          runtimeDraftLength: draft?.value?.length || 0,
+          activePane,
+          bottomDockExpanded: bottomDock?.dataset.expanded === "true"
+        };
+      }
+
+      function collectGateStatus(gates = studioState.lastScmGates || null) {
+        return {
+          available: Boolean(gates?.available),
+          ok: gates?.ok !== false,
+          layout: gateStatusFrom(gates?.layout, "layout"),
+          style: gateStatusFrom(gates?.style, "style"),
+          effect: {
+            runValidation: gateStatusFrom(gates?.validation, "effect:runValidation"),
+            loadWorkspace: gateStatusFrom({ok: Boolean(gates?.route?.effectLoadWorkspaceOk)}, "effect:loadWorkspace"),
+            loadFile: gateStatusFrom({ok: Boolean(gates?.route?.effectLoadFileOk)}, "effect:loadFile"),
+            saveFile: gateStatusFrom(studioState.lastSaveFileEffectGate, "effect:saveFile")
+          },
+          route: gateStatusFrom(gates?.route, "route"),
+          serialization: gateStatusFrom(studioState.lastSerializationGate, "serialize"),
+          repair: gateStatusFrom(studioState.lastRepairGate, "repair:rebuildWorkbenchShell")
+        };
+      }
+
+      function buildScmEvidenceDebugPacket(options = {}) {
+        const report = options.report || studioState.lastReport || null;
+        const summary = collectScmEvidenceSummary(report);
+        const filter = studioState.scmEvidenceFilter || "all";
+        const visibleEntries = visibleScmEvidenceEntries(summary, filter);
+        const selectedEntry = resolveSelectedScmEvidence(summary, filter, visibleEntries);
+        const fields = workspaceFields();
+        const selected = selectedFile(fields);
+        const routeParams = routeParamsForScm(fields) || {};
+        const routeQuery = routeQueryForScm();
+        const studio = window.McelCodeStudioScm || {};
+        const gates = summary.gates || studioState.lastScmGates || null;
+
+        return jsonSafeClone({
+          kind: "mcel-code-studio-scm-debug-packet",
+          packetVersion: SCM_EVIDENCE_PACKET_VERSION,
+          exportedAt: new Date().toISOString(),
+          versions: {
+            codeStudio: studio.version || "2.9.0",
+            component: studio.version || "2.9.0",
+            componentContract: studio.contract || "mcel.scm.code-studio.v1",
+            route: studio.routeVersion || "1.1.0",
+            routeContract: studio.routeContract || "mcel.scm.route.workspace-file.v1",
+            runtimePackage: MCEL_RUNTIME_PACKAGE_VERSION
+          },
+          workspace: {
+            title: fields.title,
+            summary: fields.summary,
+            selectedPath: studioState.selectedPath,
+            selectedFile: selected ? {
+              path: selected.path,
+              language: selected.language,
+              required: selected.required,
+              field: selected.field,
+              length: selected.value.length
+            } : null,
+            files: fields.files.map((file) => ({
+              path: file.path,
+              language: file.language,
+              required: file.required,
+              field: file.field,
+              length: file.value.length
+            })),
+            route: {
+              name: studio.routeName || "workspace.file",
+              params: routeParams,
+              query: routeQuery,
+              key: currentScmRouteKey(routeParams, routeQuery)
+            }
+          },
+          filters: {
+            active: filter,
+            available: [...SCM_EVIDENCE_FILTERS],
+            visibleEvidenceCount: visibleEntries.length
+          },
+          dirtyState: collectDirtyStateSummary(fields),
+          gates: collectGateStatus(gates),
+          evidence: {
+            component: summary.componentPacket,
+            route: summary.routePacket,
+            summary: {
+              available: summary.available,
+              component: summary.component,
+              route: summary.route,
+              combined: summary.combined
+            },
+            recent: summary.recentEvidence,
+            visible: visibleEntries
+          },
+          selectedEvidence: formatEvidenceDetail(selectedEntry),
+          lastReplayResult: studioState.lastScmReplayResult,
+          lastReport: report ? {
+            ok: report.ok,
+            selectedPath: report.selectedPath,
+            failed: report.failed || [],
+            checks: (report.checks || []).map((check) => ({
+              id: check.id,
+              ok: check.ok,
+              text: check.text
+            }))
+          } : null
+        });
+      }
+
+      function exportScmEvidenceDebugPacket(options = {}) {
+        if (options.refresh !== false) {
+          runScmRuntimeChecks();
+        }
+        const packet = buildScmEvidenceDebugPacket({report: studioState.lastReport});
+        const json = JSON.stringify(packet, null, 2);
+        studioState.lastScmDebugPacket = packet;
+        studioState.lastScmDebugPacketJson = json;
+        studioState.lastScmDebugPacketExport = {
+          exportedAt: packet.exportedAt,
+          byteLength: json.length,
+          evidenceCount: packet.evidence.summary.combined.total,
+          violations: packet.evidence.summary.combined.violations
+        };
+        return packet;
+      }
+
+      async function copyScmEvidenceDebugPacket(packet) {
+        const json = JSON.stringify(packet, null, 2);
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(json);
+          return {ok: true, mode: "clipboard", byteLength: json.length};
+        }
+
+        const textarea = document.createElement("textarea");
+        textarea.value = json;
+        textarea.setAttribute("readonly", "readonly");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand?.("copy") === true;
+        textarea.remove();
+        return {ok: copied, mode: "execCommand", byteLength: json.length};
+      }
+
+      function downloadScmEvidenceDebugPacket(packet) {
+        const json = JSON.stringify(packet, null, 2);
+        const blob = new Blob([json], {type: "application/json"});
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        const stamp = (packet.exportedAt || new Date().toISOString()).replace(/[:.]/g, "-");
+        anchor.href = url;
+        anchor.download = `mcel-code-studio-scm-debug-packet-${stamp}.json`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+        return {ok: true, mode: "download", byteLength: json.length, filename: anchor.download};
+      }
+
+      async function copyCurrentScmEvidenceDebugPacket() {
+        const packet = exportScmEvidenceDebugPacket({refresh: true});
+        try {
+          const result = await copyScmEvidenceDebugPacket(packet);
+          setStatus(result.ok
+            ? `SCM evidence debug packet exported to clipboard (${result.byteLength} bytes).`
+            : "SCM evidence debug packet was prepared, but this browser blocked clipboard copy.");
+          return {packet, result};
+        } catch (error) {
+          setStatus(`SCM evidence debug packet was prepared, but clipboard export failed: ${error?.message || String(error)}.`);
+          return {packet, result: {ok: false, mode: "clipboard", message: error?.message || String(error)}};
+        }
+      }
+
+      function downloadCurrentScmEvidenceDebugPacket() {
+        const packet = studioState.lastScmDebugPacket || exportScmEvidenceDebugPacket({refresh: true});
+        const result = downloadScmEvidenceDebugPacket(packet);
+        setStatus(`SCM evidence debug packet downloaded as ${result.filename}.`);
+        return {packet, result};
       }
 
       function formatEvidenceDetail(entry) {
@@ -681,6 +967,14 @@
           replayedAt: new Date().toISOString(),
           replayResult: result
         };
+        studioState.lastScmReplayResult = jsonSafeClone({
+          evidenceKey: entry?.evidenceKey || "",
+          label: evidenceEntryLabel(entry),
+          scope,
+          ok: result?.ok !== false,
+          replayedAt: studioState.selectedScmEvidenceSnapshot.replayedAt,
+          result
+        });
         setStatus(`SCM evidence replay ${result?.ok === false ? "blocked" : "completed"} for ${evidenceEntryLabel(entry)}.`);
         return result;
       }
@@ -690,39 +984,16 @@
         const summary = collectScmEvidenceSummary(report);
         const gates = summary.gates || {};
         const filter = studioState.scmEvidenceFilter || "all";
-        const filteredEntries = summary.recentEvidence.filter((entry) => evidenceFilterMatches(entry, filter));
-        const entries = filteredEntries.length ? filteredEntries : [{
-          kind: "mcel-scm-evidence",
-          phase: "idle",
-          ok: true,
-          scope: filter === "all" ? "component" : filter,
-          evidenceKey: `idle|${filter}`,
-          message: filter === "all"
-            ? "No SCM evidence has been recorded yet. Validate, mount, edit, serialize, repair, or switch files."
-            : `No recent SCM evidence entries match the ${filter} filter.`
-        }];
-
-        const selectedEntry = entries.find((entry) => entry.evidenceKey === studioState.selectedScmEvidenceKey)
-          || entries.find((entry) => evidenceEntryIsViolation(entry))
-          || entries[entries.length - 1];
+        const entries = visibleScmEvidenceEntries(summary, filter);
+        const selectedEntry = resolveSelectedScmEvidence(summary, filter, entries);
         studioState.selectedScmEvidenceKey = selectedEntry.evidenceKey || "";
         const selectedSnapshot = studioState.selectedScmEvidenceSnapshot?.evidenceKey === studioState.selectedScmEvidenceKey
           ? studioState.selectedScmEvidenceSnapshot
           : selectedEntry;
         const selectedDetail = formatEvidenceDetail(selectedSnapshot);
 
-        const filterOptions = [
-          ["all", "all"],
-          ["violations", "violations"],
-          ["component", "component"],
-          ["route", "route"],
-          ["effect", "effect"],
-          ["layout", "layout"],
-          ["style", "style"],
-          ["serialization", "serialization"],
-          ["repair", "repair"]
-        ].map(([value, label]) => `
-          <option value="${value}"${filter === value ? " selected" : ""}>${label}</option>
+        const filterOptions = SCM_EVIDENCE_FILTERS.map((value) => `
+          <option value="${value}"${filter === value ? " selected" : ""}>${value}</option>
         `).join("");
 
         const rows = entries.map((entry) => `
@@ -755,6 +1026,8 @@
                 </select>
               </label>
               <button type="button" id="code-studio-replay-scm-evidence">Replay selected gate</button>
+              <button type="button" id="code-studio-export-scm-evidence-packet">Export SCM Evidence Packet</button>
+              <button type="button" id="code-studio-download-scm-evidence-packet">Download packet</button>
               <button type="button" id="code-studio-refresh-scm-evidence">Refresh SCM evidence</button>
             </div>
           </div>
@@ -796,6 +1069,14 @@
           const entry = entries.find((candidate) => candidate.evidenceKey === studioState.selectedScmEvidenceKey) || selectedEntry;
           replayScmEvidenceEntry(entry);
           renderScmEvidencePanel(studioState.lastReport);
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-export-scm-evidence-packet")?.addEventListener("click", () => {
+          copyCurrentScmEvidenceDebugPacket();
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-download-scm-evidence-packet")?.addEventListener("click", () => {
+          downloadCurrentScmEvidenceDebugPacket();
         });
 
         scmEvidencePanel.querySelector("#code-studio-refresh-scm-evidence")?.addEventListener("click", () => {
@@ -1044,6 +1325,7 @@
         }
 
         const scmGate = runScmGate("serialize", (mcel, instance) => mcel.serializeComponent(instance));
+        studioState.lastSerializationGate = scmGate;
         if (!scmGate.ok) {
           serializedOutput.textContent = `SCM serialization blocked: ${scmGate.code || scmGate.message || "contract violation"}`;
           showPane("serialized");
@@ -1077,6 +1359,7 @@
         }
 
         const scmGate = runScmGate("repair:rebuildWorkbenchShell", (mcel, instance) => mcel.repairComponent(instance, "rebuildWorkbenchShell"));
+        studioState.lastRepairGate = scmGate;
         if (!scmGate.ok) {
           showPane("contract");
           setStatus(`SCM repair gate blocked runtime repair: ${scmGate.code || scmGate.message || "contract violation"}.`);
@@ -1123,7 +1406,7 @@
         studioState.dirty = false;
         syncLineGutter();
         syncScmInstance();
-        runScmGate("effect:saveFile", (mcel, instance) => mcel.runEffect(instance, "saveFile", {
+        studioState.lastSaveFileEffectGate = runScmGate("effect:saveFile", (mcel, instance) => mcel.runEffect(instance, "saveFile", {
           fileId: selectedScmFileId(),
           selectedPath: studioState.selectedPath
         }));
@@ -1238,6 +1521,10 @@
         exportScmEvidence,
         exportScmRouteEvidence,
         collectScmEvidenceSummary,
+        buildScmEvidenceDebugPacket,
+        exportScmEvidenceDebugPacket,
+        copyCurrentScmEvidenceDebugPacket,
+        downloadCurrentScmEvidenceDebugPacket,
         renderScmEvidencePanel,
         ensureCodeStudioScmSurfaceStyles,
         getScmInstance() {
