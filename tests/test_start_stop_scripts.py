@@ -74,7 +74,7 @@ def test_v2_batch_files_are_location_aware_and_do_not_require_env_files() -> Non
     assert ".env" not in start_script
     assert ".env" not in stop_script
 
-    assert 'ValidateSet("start", "stop", "status")' in helper
+    assert 'ValidateSet("start", "stop", "status", "dev-hub-start")' in helper
     assert "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone" in helper
     assert "Stop-MainComputer $RootPath $true" in helper
     assert "Docker stacks are left alone for app-only stop" in helper
@@ -171,9 +171,10 @@ def test_start_path_dev_hub_failure_warns_and_allows_startup_to_continue() -> No
 
     assert "function Write-MainComputerDevHubWarning" in helper
     assert 'Write-Warning ("Dev Hub startup failed ({0}). Continuing Main Computer startup; Hub-dependent features may be unavailable."' in helper
-    assert 'try {\n    $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand' in helper
+    assert "if (-not $NoDevHubRequested) {" in helper
+    assert 'try {\n      $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand' in helper
     assert 'message = "Start-MainComputerDevHubFresh returned no status."' in helper
-    assert 'if (-not $devHubStart.ok) {\n    Write-MainComputerDevHubWarning $devHubStart\n  }' in helper
+    assert 'if (-not $devHubStart.ok) {\n      Write-MainComputerDevHubWarning $devHubStart\n    }' in helper
     assert 'throw ("Dev Hub startup failed: {0}" -f $message)' not in helper
     assert 'throw "Dev Hub startup returned no status."' not in helper
     assert "New-StartSession $RootPath $launchContext $process.Id" in helper
@@ -209,7 +210,7 @@ def test_start_session_records_dev_chain_and_dev_hub_startup_status() -> None:
     assert "$StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart" in helper
 
 
-def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
+def test_start_path_starts_dev_hub_by_default_and_can_opt_out() -> None:
     helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 
     assert "function Resolve-MainComputerDevHubEndpoint" in helper
@@ -217,6 +218,10 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert "function Wait-MainComputerDevHubStatus" in helper
     assert "function Stop-MainComputerDevHubForRestart" in helper
     assert "function Start-MainComputerDevHubFresh" in helper
+    assert 'state = "skipped-disabled"' in helper
+    assert "Run start.bat --no-dev-hub to skip it." in helper
+    assert "Start-MainComputer $resolvedRoot $StartedBy ([bool]$NoDevHub)" in helper
+    assert "if (-not $NoDevHubRequested) {" in helper
 
 
     assert "$hubBindHost" in helper
@@ -229,6 +234,13 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert '"/api/hub/status"' in helper
     assert 'MAIN_COMPUTER_DEV_HUB_KIND" "exp-fdb"' in helper
     assert '"exp-fdb-hub.py"' in helper
+    assert '"--runtime-env-file", [string]$runtimeEnvFile' in helper
+    assert '"MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE"' in helper
+    assert 'function Read-MainComputerRuntimeEnvFile' in helper
+    assert 'function Merge-MainComputerRuntimeEnvFile' in helper
+    assert 'function Ensure-MainComputerRuntimeEnvFile' in helper
+    assert 'Created default dev Hub runtime env file at {0}.' in helper
+    assert '$runtimeEnvStatus["created"] = [bool]$runtimeEnvEnsure.created' in helper
     assert '"--network-key", [string]$endpoint.network' in helper
     assert '"--topology", [string]$topologyPath' in helper
     assert '"-ports", [string]$hubPortsText' in helper
@@ -236,6 +248,9 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert '"--require-multisession-auth"' in helper
     assert "function Resolve-MainComputerDevHubEndpoints" in helper
     assert "Wait-MainComputerDevHubEndpointsStatus $endpoints" in helper
+    assert "Previous dev Hub stop check completed." in helper
+    assert "Scanning for existing dev Hub listeners on ports" in helper
+    assert "Waiting for dev Hub topology health on ports" in helper
     assert '"MAIN_COMPUTER_HUB_ENTRY_URLS"' in helper
     assert '"-m", "main_computer.cli"' in helper
     assert '"hub",' in helper
@@ -270,6 +285,35 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert 'dev-hub' in helper
 
 
+
+def test_dev_hub_start_bat_starts_only_the_dev_hub() -> None:
+    dev_hub_start = (ROOT / "dev-hub-start.bat").read_text(encoding="utf-8")
+    start_v2 = (ROOT / "start_v2.bat").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert 'cd /d "%~dp0"' in dev_hub_start
+    assert "-Action dev-hub-start -Root" in dev_hub_start
+    assert '-StartedBy "dev-hub-start.bat"' in dev_hub_start
+    assert 'if not defined MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS set "MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS=20"' in dev_hub_start
+    assert "Start-MainComputerDevHubOnly" in helper
+    assert "Starting only the Main Computer dev Hub; app/supervisor startup is not requested." in helper
+    assert 'action = "dev-hub-start"' in helper
+    assert '"dev-hub-start.json"' in helper
+    assert "Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand" in helper
+    assert "Dev-Hub-only startup uses MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS=20 by default" in helper
+    assert "MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS" in helper
+    assert "Start-MainComputerDevChainIfNeeded" in helper
+    only_function = helper[
+        helper.index("function Start-MainComputerDevHubOnly"):
+        helper.index("function Show-MainComputerStatus")
+    ]
+    assert "Start-MainComputerDevChainIfNeeded" not in only_function
+    assert '"main_computer.app_control"' not in only_function
+    assert "Start-MainComputerGiteaIfMissing" not in only_function
+    assert "Start-MainComputerLocalPlatform" not in only_function
+    assert 'if /I "%~1"=="--no-dev-hub" goto mc_disable_dev_hub' in start_v2
+    assert '-NoDevHub' in start_v2
+
 def test_exp_fdb_dev_hub_waits_for_executor_prepared_fdb_before_starting() -> None:
     helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 
@@ -287,11 +331,21 @@ def test_exp_fdb_dev_hub_waits_for_executor_prepared_fdb_before_starting() -> No
     assert "function Test-MainComputerExpFdbHubPrerequisites" in helper
     assert "function Test-MainComputerFdbClusterReady" in helper
     assert "function Wait-MainComputerFdbClusterReady" in helper
+    assert "Checking dev Hub prerequisite: FoundationDB cluster file" in helper
     assert "Wait-MainComputerFdbClusterReady $ClusterFile $TimeoutSeconds" in helper
     assert "function Wait-MainComputerDevChainRpc" in helper
+    assert "Checking dev Hub prerequisite: dev-chain RPC" in helper
     assert '"--no-fdb-autostart"' in helper
     assert '"--cluster-file", [string]$clusterFile' in helper
     assert "resident executor service should start or reuse the default Docker/FDB container after Docker is ready" in helper
-    assert "FoundationDB is not ready; waiting for the resident executor service to bootstrap Docker/FDB after Docker becomes ready." in helper
-    assert "The dev-chain RPC is not healthy yet; the exp/FDB Hub starts only after its chain dependency is ready." in helper
+    assert "FoundationDB is not ready; run start.bat first or wait for the resident executor service to bootstrap Docker/FDB" in helper
+    assert "The dev-chain RPC is not healthy yet; run start.bat first or wait for the resident blockchain service to prepare it" in helper
 
+
+
+def test_dev_hub_start_bat_launches_dev_hub_only() -> None:
+    dev_hub_start = (ROOT / "dev-hub-start.bat").read_text(encoding="utf-8")
+    assert 'scripts\\main-computer-start-stop.ps1' in dev_hub_start
+    assert '-Action dev-hub-start -Root' in dev_hub_start
+    assert 'MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS=20' in dev_hub_start
+    assert 'start_v2.bat' not in dev_hub_start

@@ -50,6 +50,7 @@ from main_computer.hub import (
 from main_computer.stable_hub import LiveWorkerSession, stable_hub_contract
 from main_computer.hub_plex_models import HubAIRequest, HubRequestStatus, chat_response_from_payload
 from main_computer.hub_plex_service import idempotent_request_id, stable_request_id
+from main_computer.runtime_env_file import apply_runtime_env_file
 from main_computer.stable_hub_topology import (
     StableHubNode,
     StableHubTopology,
@@ -78,6 +79,7 @@ from main_computer.hub_credit_indexer import HubCreditIndexer
 
 
 DEFAULT_EXP_FDB_HUB_PORT = DEFAULT_HUB_PORT + 100
+DEFAULT_EXP_LIVE_SESSION_LOCAL_AI_TIMEOUT_SECONDS = 300.0
 DEFAULT_EXP_FDB_NAMESPACE = "main-computer-exp-fdb"
 DEFAULT_EXP_FDB_CLUSTER_FILE = Path(".foundationdb") / "docker.cluster"
 DEFAULT_EXP_FDB_HUB_ROOT = Path("runtime") / "exp-fdb-hub"
@@ -673,14 +675,34 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         return max(1, (credit_wei + CREDIT_WEI_PER_CREDIT - 1) // CREDIT_WEI_PER_CREDIT)
 
     def _exp_live_session_local_ai_timeout_seconds(self, *, body: dict[str, Any], metadata: dict[str, Any]) -> float:
+        input_payload = dict(body.get("input") or {}) if isinstance(body.get("input"), dict) else {}
+        execution_limits = dict(body.get("execution_limits") or {}) if isinstance(body.get("execution_limits"), dict) else {}
         candidates = [
             body.get("local_ai_timeout_seconds"),
+            body.get("worker_local_ai_timeout_seconds"),
             body.get("worker_timeout_seconds"),
+            body.get("work_timeout_seconds"),
             body.get("timeout_seconds"),
             body.get("timeout"),
             body.get("max_runtime_seconds"),
+            input_payload.get("local_ai_timeout_seconds"),
+            input_payload.get("worker_local_ai_timeout_seconds"),
+            input_payload.get("worker_timeout_seconds"),
+            input_payload.get("work_timeout_seconds"),
+            input_payload.get("timeout_seconds"),
+            input_payload.get("timeout"),
+            input_payload.get("max_runtime_seconds"),
+            execution_limits.get("local_ai_timeout_seconds"),
+            execution_limits.get("worker_local_ai_timeout_seconds"),
+            execution_limits.get("worker_timeout_seconds"),
+            execution_limits.get("work_timeout_seconds"),
+            execution_limits.get("timeout_seconds"),
+            execution_limits.get("timeout"),
+            execution_limits.get("max_runtime_seconds"),
             metadata.get("local_ai_timeout_seconds"),
+            metadata.get("worker_local_ai_timeout_seconds"),
             metadata.get("worker_timeout_seconds"),
+            metadata.get("work_timeout_seconds"),
             metadata.get("timeout_seconds"),
             metadata.get("timeout"),
             metadata.get("max_runtime_seconds"),
@@ -696,7 +718,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 continue
             if parsed > 0:
                 return max(1.0, min(parsed, 3600.0))
-        return 180.0
+        return DEFAULT_EXP_LIVE_SESSION_LOCAL_AI_TIMEOUT_SECONDS
 
     def _exp_create_live_session_request_record(
         self,
@@ -1394,6 +1416,122 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         selected_credit_wei = self._exp_live_session_selected_credit_wei(selected_worker)
         selected_credit_units = self._exp_live_session_selected_credit_units(selected_worker)
         local_ai_timeout_seconds = self._exp_live_session_local_ai_timeout_seconds(body=body, metadata=metadata)
+        input_payload = body.get("input") if isinstance(body.get("input"), dict) else {}
+        execution_limits = body.get("execution_limits") if isinstance(body.get("execution_limits"), dict) else {}
+
+        def positive_int(value: Any) -> int | None:
+            try:
+                parsed = int(float(str(value).strip()))
+            except (TypeError, ValueError):
+                return None
+            return max(1, min(parsed, 128_000)) if parsed > 0 else None
+
+        target_tokens: int | None = None
+        for value in (
+            body.get("target_tokens"),
+            body.get("max_output_tokens"),
+            input_payload.get("target_tokens"),
+            input_payload.get("max_output_tokens"),
+            execution_limits.get("target_tokens"),
+            execution_limits.get("max_output_tokens"),
+            metadata.get("target_tokens"),
+            metadata.get("max_output_tokens"),
+            metadata.get("worker_target_tokens"),
+        ):
+            target_tokens = positive_int(value)
+            if target_tokens is not None:
+                break
+
+        def first_present(*values: Any) -> Any:
+            for value in values:
+                if value is not None and str(value).strip() != "":
+                    return value
+            return None
+
+        think_value = first_present(
+            body.get("ollama_think"),
+            body.get("think"),
+            input_payload.get("ollama_think"),
+            input_payload.get("think"),
+            execution_limits.get("ollama_think"),
+            execution_limits.get("think"),
+            metadata.get("ollama_think"),
+            metadata.get("think"),
+        )
+
+        completion_sentinel = first_present(
+            body.get("stream_result_sentinel"),
+            body.get("early_result_sentinel"),
+            body.get("completion_sentinel"),
+            input_payload.get("stream_result_sentinel"),
+            input_payload.get("early_result_sentinel"),
+            input_payload.get("completion_sentinel"),
+            execution_limits.get("stream_result_sentinel"),
+            execution_limits.get("early_result_sentinel"),
+            execution_limits.get("completion_sentinel"),
+            metadata.get("stream_result_sentinel"),
+            metadata.get("early_result_sentinel"),
+            metadata.get("completion_sentinel"),
+        )
+
+        def merge_options(*values: Any) -> dict[str, Any]:
+            merged: dict[str, Any] = {}
+            for value in values:
+                if isinstance(value, dict):
+                    merged.update(value)
+            if target_tokens is not None:
+                existing = positive_int(merged.get("num_predict"))
+                merged["num_predict"] = min(existing, target_tokens) if existing is not None else target_tokens
+            return merged
+
+        provider_options = merge_options(
+            body.get("provider_options"),
+            body.get("ollama_options"),
+            input_payload.get("provider_options"),
+            input_payload.get("ollama_options"),
+            execution_limits.get("provider_options"),
+            execution_limits.get("ollama_options"),
+            metadata.get("provider_options"),
+            metadata.get("ollama_options"),
+        )
+
+        work_execution_limits: dict[str, Any] = {
+            "timeout_seconds": local_ai_timeout_seconds,
+            "worker_timeout_seconds": local_ai_timeout_seconds,
+            "work_timeout_seconds": local_ai_timeout_seconds,
+            "max_runtime_seconds": local_ai_timeout_seconds,
+            "local_ai_timeout_seconds": local_ai_timeout_seconds,
+            "worker_local_ai_timeout_seconds": local_ai_timeout_seconds,
+        }
+        if target_tokens is not None:
+            work_execution_limits["target_tokens"] = target_tokens
+            work_execution_limits["max_output_tokens"] = target_tokens
+        if think_value is not None:
+            work_execution_limits["think"] = think_value
+            work_execution_limits["ollama_think"] = think_value
+        if completion_sentinel is not None:
+            work_execution_limits["completion_sentinel"] = str(completion_sentinel)
+            work_execution_limits["early_result_sentinel"] = str(completion_sentinel)
+            work_execution_limits["stream_result_sentinel"] = str(completion_sentinel)
+        if provider_options:
+            work_execution_limits["provider_options"] = dict(provider_options)
+            work_execution_limits["ollama_options"] = dict(provider_options)
+
+        work_input = dict(body.get("input", {})) if isinstance(body.get("input"), dict) else {}
+        if target_tokens is not None:
+            work_input.setdefault("target_tokens", target_tokens)
+            work_input.setdefault("max_output_tokens", target_tokens)
+        if think_value is not None:
+            work_input.setdefault("think", think_value)
+            work_input.setdefault("ollama_think", think_value)
+        if completion_sentinel is not None:
+            work_input.setdefault("completion_sentinel", str(completion_sentinel))
+            work_input.setdefault("early_result_sentinel", str(completion_sentinel))
+            work_input.setdefault("stream_result_sentinel", str(completion_sentinel))
+        if provider_options:
+            work_input.setdefault("provider_options", dict(provider_options))
+            work_input.setdefault("ollama_options", dict(provider_options))
+
         offer = {
             "type": "hub.work.offer",
             "service": "main_computer.exp_fdb_hub",
@@ -1402,12 +1540,17 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             "request_id": request_id,
             "work": {
                 "messages": request.messages,
-                "input": body.get("input", {}),
+                "input": work_input,
                 "model": str(metadata.get("requested_model") or request.model or "live-session-worker"),
                 "ring": body.get("ring", body.get("partition", partition)),
                 "capabilities": body.get("capabilities", body.get("required_capabilities", [])),
                 "timeout_seconds": local_ai_timeout_seconds,
+                "worker_timeout_seconds": local_ai_timeout_seconds,
+                "work_timeout_seconds": local_ai_timeout_seconds,
+                "max_runtime_seconds": local_ai_timeout_seconds,
                 "local_ai_timeout_seconds": local_ai_timeout_seconds,
+                "worker_local_ai_timeout_seconds": local_ai_timeout_seconds,
+                "execution_limits": work_execution_limits,
             },
             "pricing": {
                 "quoted_credits": selected_credit_units,
@@ -1429,6 +1572,20 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 "handoff": False,
             },
         }
+        if target_tokens is not None:
+            offer["work"]["target_tokens"] = target_tokens
+            offer["work"]["max_output_tokens"] = target_tokens
+        if think_value is not None:
+            offer["work"]["think"] = think_value
+            offer["work"]["ollama_think"] = think_value
+        if completion_sentinel is not None:
+            offer["work"]["completion_sentinel"] = str(completion_sentinel)
+            offer["work"]["early_result_sentinel"] = str(completion_sentinel)
+            offer["work"]["stream_result_sentinel"] = str(completion_sentinel)
+        if provider_options:
+            offer["work"]["provider_options"] = dict(provider_options)
+            offer["work"]["ollama_options"] = dict(provider_options)
+
         payout = {
             "backend": "exp_fdb_credit_ledger",
             "charge_id": "",
@@ -3059,6 +3216,14 @@ def build_parser() -> argparse.ArgumentParser:
             "FoundationDB Docker cluster for the compute-credit ledger, worker registry, request queue, quote store, sessions, and payout state."
         ),
     )
+    parser.add_argument(
+        "--runtime-env-file",
+        default="",
+        help=(
+            "Optional strict KEY=VALUE runtime env file. Loaded before runtime config is built; "
+            "explicit CLI flags still override env-derived defaults."
+        ),
+    )
     parser.add_argument("--host", default="127.0.0.1", help="Host/interface to bind.")
     parser.add_argument("-ports", "--ports", default=None, help="Comma-separated experimental hub ports to bind, for example 8870,8871,8872. Defaults to 8870.")
     parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
@@ -3218,6 +3383,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    runtime_env_file = str(
+        getattr(args, "runtime_env_file", "")
+        or os.environ.get("MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE")
+        or os.environ.get("MAIN_COMPUTER_RUNTIME_ENV_FILE")
+        or ""
+    ).strip()
+    if runtime_env_file:
+        apply_runtime_env_file(runtime_env_file)
     if args.funded < 0:
         raise SystemExit("--funded must be >= 0")
     if args.funded <= 1:

@@ -63,6 +63,9 @@ DEFAULT_FUNDED_ACCOUNTS = [
     "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
     "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
 ]
+DEFAULT_ANVIL_ACCOUNT_SET = {address.lower() for address in DEFAULT_FUNDED_ACCOUNTS}
+DEPLOYMENT_ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+DEPLOYMENT_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 LOCAL_COOLIFY_SEEDS = {"test"}
 DEFAULT_GENERATED_OFFICE_ENVIRONMENTS = {"test", "testnet"}
@@ -2487,6 +2490,60 @@ def should_generate_offices_for_deployment(plan: NetworkPlan, args: argparse.Nam
     return plan.environment in DEFAULT_GENERATED_OFFICE_ENVIRONMENTS
 
 
+def clean_deployment_private_key_env(args: argparse.Namespace) -> str:
+    env_name = str(getattr(args, "deployment_private_key_env", "") or "").strip()
+    if not env_name:
+        return ""
+    if not DEPLOYMENT_ENV_VAR_RE.fullmatch(env_name):
+        raise PlanError("--deployment-private-key-env must be a valid environment variable name")
+    return env_name
+
+
+def clean_deployment_offices(args: argparse.Namespace) -> str:
+    raw = str(getattr(args, "deployment_offices", "") or "").strip()
+    if not raw:
+        return ""
+    offices = [part.strip() for part in raw.split(",") if part.strip()]
+    if len(offices) != 4:
+        raise PlanError("--deployment-offices must contain exactly four comma-separated addresses")
+    invalid = [office for office in offices if DEPLOYMENT_ADDRESS_RE.fullmatch(office) is None]
+    if invalid:
+        raise PlanError(f"--deployment-offices contains invalid address(es): {', '.join(invalid)}")
+    default_anvil = [office for office in offices if office.lower() in DEFAULT_ANVIL_ACCOUNT_SET]
+    if default_anvil:
+        raise PlanError("--deployment-offices must not contain default Anvil addresses for a hosted deployment")
+    return ",".join(offices)
+
+
+def is_mainnet_deployment(plan: NetworkPlan, environment: str) -> bool:
+    return plan.environment == "mainnet" or environment == "mainnet" or plan.chain_id == 42424240
+
+
+def validate_hosted_contract_deployment_authority(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    *,
+    environment: str,
+    generate_offices: bool,
+    private_key_env: str,
+    offices: str,
+) -> None:
+    if not is_mainnet_deployment(plan, environment):
+        return
+    if bool(getattr(args, "dry_run", False)):
+        return
+    if not private_key_env:
+        raise PlanError(
+            "mainnet deploy-contracts requires --deployment-private-key-env so the deployer key "
+            "is read from an environment variable instead of the dev-chain default"
+        )
+    if not generate_offices and not offices:
+        raise PlanError(
+            "mainnet deploy-contracts requires --deployment-offices with four explicit non-Anvil "
+            "office addresses, unless --generate-offices is intentionally set"
+        )
+
+
 def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
     configure_local_coolify_defaults(plan, args)
     rpc_url = infer_external_rpc_url(plan, args)
@@ -2497,6 +2554,17 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
     project_name = str(getattr(args, "deployment_project_name", "") or plan.compose_project)
     environment = str(getattr(args, "deployment_environment", "") or plan.environment)
     source_kind = deployment_source_kind(plan, args)
+    private_key_env = clean_deployment_private_key_env(args)
+    offices = clean_deployment_offices(args)
+    generate_offices = should_generate_offices_for_deployment(plan, args)
+    validate_hosted_contract_deployment_authority(
+        plan,
+        args,
+        environment=environment,
+        generate_offices=generate_offices,
+        private_key_env=private_key_env,
+        offices=offices,
+    )
     command = [
         sys.executable,
         str(repo_root() / "tools" / "dev-chain-reset.py"),
@@ -2529,7 +2597,11 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
         "--foundry-image",
         str(getattr(args, "foundry_image", "") or DEFAULT_FOUNDRY_IMAGE),
     ]
-    if should_generate_offices_for_deployment(plan, args):
+    if private_key_env:
+        command.extend(["--private-key-env", private_key_env])
+    if offices:
+        command.extend(["--offices", offices])
+    if generate_offices:
         command.append("--generate-offices")
     operator_log(args, "deploy-contracts command", command=" ".join(command))
     result = safe_subprocess_run(
@@ -2961,6 +3033,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Do not generate Ring 0 office wallets; use explicit --offices or dev-chain-reset defaults instead.",
     )
     parser.add_argument("--deployment-output-dir", default="", help="Override runtime deployment output directory.")
+    parser.add_argument(
+        "--deployment-private-key-env",
+        default="",
+        help="Environment variable containing the contract deployer private key; required for non-dry-run mainnet deploy-contracts.",
+    )
+    parser.add_argument(
+        "--deployment-offices",
+        default="",
+        help="Four comma-separated Ring 0 office addresses for contract constructors; mainnet rejects default Anvil addresses.",
+    )
     parser.add_argument("--foundry-image", default=DEFAULT_FOUNDRY_IMAGE)
     parser.add_argument("--docker-subnet", default="", help="Override the local test QBFT Docker subnet before rendering Coolify compose.")
     parser.add_argument("--foundry-docker-network", default="bridge", help="Docker network for local Foundry container; bridge works for public RPC URLs.")

@@ -543,6 +543,10 @@ def test_exp_hub_live_session_selection_repairs_missing_market_row_without_worke
         submit_thread.start()
         offer = _ws_recv_json(worker_sock)
         assert offer["type"] == "hub.work.offer"
+        assert offer["work"]["timeout_seconds"] == 300.0
+        assert offer["work"]["worker_timeout_seconds"] == 300.0
+        assert offer["work"]["max_runtime_seconds"] == 300.0
+        assert offer["work"]["local_ai_timeout_seconds"] == 300.0
         _ws_send_json(
             worker_sock,
             {
@@ -775,9 +779,16 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
                     "max_credits": 3,
                     "ring": "ring-3",
                     "capabilities": ["text"],
-                    "input": {"prompt": "hello over exp live session"},
+                    "input": {
+                        "prompt": "hello over exp live session",
+                        "ollama_options": {"temperature": 0.1},
+                        "completion_sentinel": "UNIT_DONE",
+                    },
                     "messages": [{"role": "user", "content": "hello over exp live session"}],
                     "model": "micro-agent-local",
+                    "max_output_tokens": 77,
+                    "provider_options": {"num_predict": 999, "temperature": 0.2},
+                    "think": False,
                 },
                 timeout=10,
             )
@@ -795,6 +806,21 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
         assert offer["execution_hub"]["local_owner"] is True
         assert offer["execution_hub"]["handoff"] is False
         assert offer["work"]["model"] == "micro-agent-local"
+        assert offer["work"]["max_output_tokens"] == 77
+        assert offer["work"]["target_tokens"] == 77
+        assert offer["work"]["provider_options"]["num_predict"] == 77
+        assert offer["work"]["provider_options"]["temperature"] == 0.1
+        assert offer["work"]["ollama_options"]["num_predict"] == 77
+        assert offer["work"]["think"] is False
+        assert offer["work"]["ollama_think"] is False
+        assert offer["work"]["completion_sentinel"] == "UNIT_DONE"
+        assert offer["work"]["early_result_sentinel"] == "UNIT_DONE"
+        assert offer["work"]["execution_limits"]["max_output_tokens"] == 77
+        assert offer["work"]["execution_limits"]["completion_sentinel"] == "UNIT_DONE"
+        assert offer["work"]["execution_limits"]["provider_options"]["num_predict"] == 77
+        assert offer["work"]["input"]["max_output_tokens"] == 77
+        assert offer["work"]["input"]["provider_options"]["num_predict"] == 77
+        assert offer["work"]["input"]["completion_sentinel"] == "UNIT_DONE"
         assert "lease_id" not in offer
         assert offer["pricing"]["legacy_worker_pull_lease"] is False
         assert offer["selected_offer"]["legacy_worker_pull_lease"] is False

@@ -1082,7 +1082,11 @@ def local_worker_app_url_candidates(args: Any, *, root: Path | None = None) -> l
 def resolve_local_worker_app_url(args: Any, *, root: Path | None = None, timeout: float = 2.0) -> str:
     tried: list[str] = []
     for base in local_worker_app_url_candidates(args, root=root):
-        status, payload = http_json("GET", f"{base}/api/applications/worker/runtime-status", timeout=timeout)
+        try:
+            status, payload = http_json("GET", f"{base}/api/applications/worker/runtime-status", timeout=timeout)
+        except Exception as exc:
+            tried.append(f"{base} ({exc})")
+            continue
         if status < 400 and payload.get("ok") is not False:
             return base
         detail = str(payload.get("error") or payload.get("message") or f"HTTP {status}")
@@ -1248,7 +1252,11 @@ def ensure_local_worker_available(
         return False
 
     base = resolve_local_worker_app_url(args, root=Path.cwd()).rstrip("/")
-    status, runtime = http_json("GET", f"{base}/api/applications/worker/runtime-status", timeout=10.0)
+    try:
+        status, runtime = http_json("GET", f"{base}/api/applications/worker/runtime-status", timeout=3.0)
+    except Exception as exc:
+        status, runtime = 0, {}
+        print(f"[worker] runtime-status preflight failed through {base}; continuing with Work-now setup: {exc}")
     if status < 400 and _runtime_indicates_live_worker(runtime):
         print("[worker] local app already reports an accepting live worker.")
         return True
@@ -1268,7 +1276,11 @@ def ensure_local_worker_available(
         raise RuntimeError(f"local worker network selection failed HTTP {status}: {selected}")
 
     settings: dict[str, Any] = {}
-    status, loaded_settings = http_json("GET", f"{base}/api/applications/worker/settings", timeout=10.0)
+    try:
+        status, loaded_settings = http_json("GET", f"{base}/api/applications/worker/settings", timeout=5.0)
+    except Exception as exc:
+        status, loaded_settings = 0, {}
+        print(f"[worker] settings load failed through {base}; using generated worker settings: {exc}")
     if status < 400 and isinstance(loaded_settings.get("settings"), dict):
         settings = dict(loaded_settings["settings"])
     settings = build_local_worker_settings(
@@ -1314,14 +1326,22 @@ def ensure_local_worker_available(
 
     deadline = time.monotonic() + float(getattr(args, "auto_worker_timeout", 10.0) or 10.0)
     last_runtime: dict[str, Any] = {}
+    last_runtime_error = ""
     while time.monotonic() < deadline:
-        status, last_runtime = http_json("GET", f"{base}/api/applications/worker/runtime-status", timeout=10.0)
+        try:
+            status, last_runtime = http_json("GET", f"{base}/api/applications/worker/runtime-status", timeout=3.0)
+        except Exception as exc:
+            status, last_runtime = 0, {}
+            last_runtime_error = str(exc)
         if status < 400 and _runtime_indicates_live_worker(last_runtime):
             print("[worker] local dev worker is accepting live-session work.")
             return True
         time.sleep(0.5)
 
-    print("[worker] local worker setup completed, but runtime did not report accepting before retry; retrying request anyway.")
+    if last_runtime_error:
+        print(f"[worker] local worker setup completed, but runtime-status remained unavailable: {last_runtime_error}")
+    else:
+        print("[worker] local worker setup completed, but runtime did not report accepting before retry; retrying request anyway.")
     return True
 
 

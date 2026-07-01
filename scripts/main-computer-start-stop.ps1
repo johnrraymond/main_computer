@@ -1,14 +1,16 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("start", "stop", "status")]
+  [ValidateSet("start", "stop", "status", "dev-hub-start")]
   [string]$Action,
 
   [string]$Root = (Get-Location).Path,
 
   [string]$StartedBy = "",
 
-  [switch]$NoDocker
+  [switch]$NoDocker,
+
+  [switch]$NoDevHub
 )
 
 $ErrorActionPreference = "Stop"
@@ -254,6 +256,85 @@ function Merge-Environment([System.Collections.Specialized.OrderedDictionary]$Ba
   }
   return $Base
 }
+
+function Read-MainComputerRuntimeEnvFile([string]$Path) {
+  $values = [ordered]@{}
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return $values
+  }
+
+  $lineNumber = 0
+  foreach ($line in Get-Content -LiteralPath $Path) {
+    $lineNumber += 1
+    $trimmed = ([string]$line).Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) {
+      continue
+    }
+    if ($trimmed.StartsWith("export ")) {
+      $trimmed = $trimmed.Substring(7).Trim()
+    }
+    $equals = $trimmed.IndexOf("=")
+    if ($equals -le 0) {
+      throw "Invalid Hub runtime env line ${Path}:${lineNumber}; expected KEY=VALUE."
+    }
+    $name = $trimmed.Substring(0, $equals).Trim()
+    if ($name -notmatch "^[A-Za-z_][A-Za-z0-9_]*$") {
+      throw "Invalid Hub runtime env key ${name} at ${Path}:${lineNumber}."
+    }
+    $value = $trimmed.Substring($equals + 1).Trim()
+    if ($value.Length -ge 2) {
+      $first = $value.Substring(0, 1)
+      $last = $value.Substring($value.Length - 1, 1)
+      if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+        $value = $value.Substring(1, $value.Length - 2)
+      }
+    }
+    $values[$name] = $value
+  }
+  return $values
+}
+
+function Ensure-MainComputerRuntimeEnvFile([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return [ordered]@{ path = $Path; created = $false; exists = $false; skipped = $true }
+  }
+  if (Test-Path -LiteralPath $Path -PathType Leaf) {
+    return [ordered]@{ path = $Path; created = $false; exists = $true; skipped = $false }
+  }
+
+  $parent = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($parent)) {
+    Ensure-Directory $parent
+  }
+
+  $defaultText = @(
+    "# Main Computer dev Hub runtime overrides.",
+    "# Add KEY=VALUE lines here to override the generated dev Hub environment.",
+    "# This file is intentionally host-local and may be empty.",
+    ""
+  ) -join [Environment]::NewLine
+
+  Set-Content -LiteralPath $Path -Value $defaultText -Encoding UTF8
+  return [ordered]@{ path = $Path; created = $true; exists = $true; skipped = $false }
+}
+
+function Merge-MainComputerRuntimeEnvFile([object]$LaunchContext, [string]$Path) {
+  $environment = Get-ObjectPropertyValue $LaunchContext "environment" $null
+  if ($null -eq $environment) {
+    return [ordered]@{ path = $Path; loaded = $false; count = 0 }
+  }
+
+  $values = Read-MainComputerRuntimeEnvFile $Path
+  if ($values.Count -gt 0) {
+    Merge-Environment $environment $values | Out-Null
+  }
+  return [ordered]@{
+    path = $Path
+    loaded = ($values.Count -gt 0)
+    count = $values.Count
+  }
+}
+
 
 function New-LaunchContextFromManifest([string]$RootPath, [object]$Manifest, [string]$ManifestPath) {
   $mode = ConvertTo-StringValue (Get-ObjectPropertyValue $Manifest "mode" "unleashed") "unleashed"
@@ -948,27 +1029,30 @@ function Test-MainComputerExpFdbHubPrerequisites(
     }
   }
 
+  Write-Host ("Checking dev Hub prerequisite: FoundationDB cluster file {0}; waiting up to {1}s." -f $ClusterFile, $TimeoutSeconds)
   $fdb = Wait-MainComputerFdbClusterReady $ClusterFile $TimeoutSeconds
   if (-not $fdb.ok) {
     return [ordered]@{
       ok = $false
       state = "foundationdb-not-ready"
       fdb = $fdb
-      message = "FoundationDB is not ready; waiting for the resident executor service to bootstrap Docker/FDB after Docker becomes ready."
+      message = "FoundationDB is not ready; run start.bat first or wait for the resident executor service to bootstrap Docker/FDB, then run dev-hub-start.bat again."
     }
   }
 
   $backend = ([string]$BridgeBackend).Trim().ToLowerInvariant()
   if ($backend -in @("dev-chain", "credit-bridge-contract")) {
+    Write-Host ("Checking dev Hub prerequisite: dev-chain deployment manifest {0}." -f $DevChainDeploymentPath)
     if (-not (Test-Path -LiteralPath $DevChainDeploymentPath -PathType Leaf)) {
       return [ordered]@{
         ok = $false
         state = "missing-dev-chain-deployment"
         dev_chain_deployment_path = $DevChainDeploymentPath
-        message = "The dev-chain deployment manifest must exist before the exp/FDB Hub starts."
+        message = "The dev-chain deployment manifest must exist before the exp/FDB Hub starts; run start.bat first so the resident blockchain service can prepare it."
       }
     }
 
+    Write-Host ("Checking dev Hub prerequisite: dev-chain RPC {0} chainId={1}; waiting up to {2}s." -f ([string]$Endpoint.chain_rpc_url), ([string]$Endpoint.chain_id), $TimeoutSeconds)
     $chain = Wait-MainComputerDevChainRpc ([string]$Endpoint.chain_rpc_url) ([string]$Endpoint.chain_id) $TimeoutSeconds
     if (-not $chain.ok) {
       return [ordered]@{
@@ -977,7 +1061,7 @@ function Test-MainComputerExpFdbHubPrerequisites(
         rpc_url = [string]$Endpoint.chain_rpc_url
         expected_chain_id = [string]$Endpoint.chain_id
         health_check = $chain
-        message = "The dev-chain RPC is not healthy yet; the exp/FDB Hub starts only after its chain dependency is ready."
+        message = "The dev-chain RPC is not healthy yet; run start.bat first or wait for the resident blockchain service to prepare it, then run dev-hub-start.bat again."
       }
     }
   }
@@ -1310,6 +1394,8 @@ function Stop-MainComputerDevHubForRestart([string]$RootPath, [object]$LaunchCon
     } catch {}
   }
 
+  $portText = ($ports | ForEach-Object { [string]$_ }) -join ","
+  Write-Host ("Scanning for existing dev Hub listeners on ports {0}." -f $portText)
   foreach ($row in @(Get-NetstatListenRows -Ports $ports)) {
     $processId = [int]$row.OwningProcess
     if ($processId -le 0 -or $processId -eq $PID) {
@@ -1329,7 +1415,14 @@ function Stop-MainComputerDevHubForRestart([string]$RootPath, [object]$LaunchCon
   }
 
   $results = @()
-  foreach ($candidate in ($candidates.Values | Sort-Object -Property @{ Expression = { [int]$_['order'] } }, @{ Expression = { [int]$_['pid'] } })) {
+  $candidateList = @($candidates.Values | Sort-Object -Property @{ Expression = { [int]$_['order'] } }, @{ Expression = { [int]$_['pid'] } })
+  if ($candidateList.Count -eq 0) {
+    Write-Host "No existing dev Hub process was found."
+  } else {
+    Write-Host ("Stopping {0} existing dev Hub process candidate(s)." -f $candidateList.Count)
+  }
+  foreach ($candidate in $candidateList) {
+    Write-Host ("Stopping dev Hub candidate PID {0} ({1})." -f ([int]$candidate.pid), ([string]$candidate.role))
     $results += Stop-OnePid $candidate $RootPath
   }
 
@@ -1390,9 +1483,21 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   }
   $hubPortsText = ($hubPorts | ForEach-Object { [string]$_ }) -join ","
 
+  $hubRuntime = Join-Path $RootPath ("runtime\hub\" + [string]$endpoint.network)
+  $runtimeEnvFile = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE" (Join-Path $hubRuntime "hub-runtime.env")
+  $runtimeEnvEnsure = Ensure-MainComputerRuntimeEnvFile $runtimeEnvFile
+  if ($runtimeEnvEnsure.created) {
+    Write-Host ("Created default dev Hub runtime env file at {0}." -f ([string]$runtimeEnvFile))
+  }
+  $runtimeEnvStatus = Merge-MainComputerRuntimeEnvFile $LaunchContext $runtimeEnvFile
+  $runtimeEnvStatus["created"] = [bool]$runtimeEnvEnsure.created
+  $runtimeEnvStatus["exists"] = [bool]$runtimeEnvEnsure.exists
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE", [string]$runtimeEnvFile, "Process")
+
   $pidPath = Get-DevHubPidPath $RootPath
   Write-Host ("Resetting dev Hub topology on start path at {0}; any previous dev Hub process on ports {1} will be stopped first." -f $endpoint.hub_url, $hubPortsText)
   $stopResult = Stop-MainComputerDevHubForRestart $RootPath $LaunchContext
+  Write-Host "Previous dev Hub stop check completed."
 
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK", "1", "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_NETWORK", [string]$endpoint.network, "Process")
@@ -1490,6 +1595,7 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   } else {
     $arguments = @(
       "exp-fdb-hub.py",
+      "--runtime-env-file", [string]$runtimeEnvFile,
       "--host", [string]$endpoint.host,
       "-ports", [string]$hubPortsText,
       "--hub-url", [string]$endpoint.hub_url,
@@ -1531,8 +1637,10 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII
 
   if ($hubKind -eq "legacy") {
+    Write-Host ("Waiting for dev Hub health at {0}; timeout {1}s." -f ([string]$endpoint.status_url), ([int]$hubStartTimeoutSeconds))
     $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) ([int]$hubStartTimeoutSeconds)
   } else {
+    Write-Host ("Waiting for dev Hub topology health on ports {0}; timeout {1}s." -f $hubPortsText, ([int]$hubStartTimeoutSeconds))
     $health = Wait-MainComputerDevHubEndpointsStatus $endpoints ([int]$hubStartTimeoutSeconds)
   }
   if (-not $health.ok) {
@@ -1549,6 +1657,7 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
       command = @($PythonCommand) + $arguments
       stop_before_start = $stopResult
       health_check = $health
+      runtime_env_file = $runtimeEnvStatus
     }
   }
 
@@ -1565,6 +1674,7 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     stderr = $stderr
     command = @($PythonCommand) + $arguments
     stop_before_start = $stopResult
+    runtime_env_file = $runtimeEnvStatus
     health_check = $health
   }
 }
@@ -1794,7 +1904,7 @@ function Invoke-MainComputerOnlyOfficeControl {
   }
 }
 
-function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
+function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested) {
   Write-Host "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone..."
   Stop-MainComputer $RootPath $true | Out-Null
 
@@ -1814,8 +1924,17 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
 
   $devHubStart = [ordered]@{
     ok = $true
-    state = "pending-final-start"
-    message = "Dev Hub starts after Docker/local platform prep and supervisor-managed dependencies are healthy."
+    state = "pending"
+    requested = $true
+    message = "Dev Hub startup is enabled by default. Run start.bat --no-dev-hub to skip it."
+  }
+  if ($NoDevHubRequested) {
+    $devHubStart = [ordered]@{
+      ok = $true
+      state = "skipped-disabled"
+      requested = $false
+      message = "Dev Hub startup disabled by --no-dev-hub."
+    }
   }
 
   $serviceRuntime = Join-Path $RootPath "runtime\service_supervisor"
@@ -1893,24 +2012,28 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
     -RedirectStandardError $stderr `
     -PassThru
 
-  try {
-    $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand
-  } catch {
-    $devHubStart = [ordered]@{
-      ok = $false
-      state = "exception"
-      message = $_.Exception.Message
+  if (-not $NoDevHubRequested) {
+    try {
+      $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand
+    } catch {
+      $devHubStart = [ordered]@{
+        ok = $false
+        state = "exception"
+        requested = $true
+        message = $_.Exception.Message
+      }
     }
-  }
-  if ($null -eq $devHubStart) {
-    $devHubStart = [ordered]@{
-      ok = $false
-      state = "unknown"
-      message = "Start-MainComputerDevHubFresh returned no status."
+    if ($null -eq $devHubStart) {
+      $devHubStart = [ordered]@{
+        ok = $false
+        state = "unknown"
+        requested = $true
+        message = "Start-MainComputerDevHubFresh returned no status."
+      }
     }
-  }
-  if (-not $devHubStart.ok) {
-    Write-MainComputerDevHubWarning $devHubStart
+    if (-not $devHubStart.ok) {
+      Write-MainComputerDevHubWarning $devHubStart
+    }
   }
 
   $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart
@@ -1939,6 +2062,69 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
   Write-Host ("stdout:           " + $stdout)
   Write-Host ("stderr:           " + $stderr)
 }
+
+
+function Start-MainComputerDevHubOnly([string]$RootPath, [string]$StartedByName) {
+  Write-Host "Starting only the Main Computer dev Hub; app/supervisor startup is not requested."
+
+  $launchContext = Resolve-MainComputerLaunchContext $RootPath
+  $environment = Get-ObjectPropertyValue $launchContext "environment" $null
+  $callerTimeout = [Environment]::GetEnvironmentVariable("MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS")
+  $configuredTimeout = Get-LaunchEnvironmentValue $launchContext "MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS" ""
+  if (-not [string]::IsNullOrWhiteSpace($callerTimeout)) {
+    Merge-Environment $environment ([ordered]@{ "MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS" = $callerTimeout }) | Out-Null
+  } elseif ([string]::IsNullOrWhiteSpace($configuredTimeout)) {
+    Merge-Environment $environment ([ordered]@{ "MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS" = "20" }) | Out-Null
+    Write-Host "Dev-Hub-only startup uses MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS=20 by default; set it before launch to wait longer."
+  }
+  Set-MainComputerLaunchEnvironment $launchContext
+  $pythonCommand = [string]$launchContext.python
+
+  try {
+    $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand
+  } catch {
+    $devHubStart = [ordered]@{
+      ok = $false
+      state = "exception"
+      requested = $true
+      message = $_.Exception.Message
+    }
+  }
+  if ($null -eq $devHubStart) {
+    $devHubStart = [ordered]@{
+      ok = $false
+      state = "unknown"
+      requested = $true
+      message = "Start-MainComputerDevHubFresh returned no status."
+    }
+  }
+
+  $runtime = Get-StartStopRuntime $RootPath
+  Ensure-Directory $runtime
+  $statusPath = Join-Path $runtime "dev-hub-start.json"
+  Write-JsonFile $statusPath ([ordered]@{
+      schema_version = 1
+      action = "dev-hub-start"
+      started_by = $(if ([string]::IsNullOrWhiteSpace($StartedByName)) { "dev-hub-start.bat" } else { $StartedByName })
+      started_at = Get-UtcNowText
+      root = $RootPath
+      tree_kind = [string]$launchContext.tree_kind
+      python = $pythonCommand
+      dev_hub = $devHubStart
+    })
+
+  if (-not $devHubStart.ok) {
+    Write-MainComputerDevHubWarning $devHubStart
+    $state = ConvertTo-StringValue (Get-ObjectPropertyValue $devHubStart "state" "unknown") "unknown"
+    throw ("Dev Hub startup failed: {0}" -f $state)
+  }
+
+  Write-Host ("Dev Hub startup requested by {0}." -f $(if ([string]::IsNullOrWhiteSpace($StartedByName)) { "dev-hub-start.bat" } else { $StartedByName }))
+  Write-Host ("Dev Hub PID:      " + (Get-DevHubPidPath $RootPath))
+  Write-Host ("Dev Hub runtime:  " + (Join-Path $RootPath "runtime\hub\dev"))
+  Write-Host ("Dev Hub status:   " + $statusPath)
+}
+
 
 function Show-MainComputerStatus([string]$RootPath) {
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
@@ -2810,7 +2996,10 @@ $resolvedRoot = Resolve-MainComputerRoot $Root
 
 switch ($Action) {
   "start" {
-    Start-MainComputer $resolvedRoot $StartedBy
+    Start-MainComputer $resolvedRoot $StartedBy ([bool]$NoDevHub)
+  }
+  "dev-hub-start" {
+    Start-MainComputerDevHubOnly $resolvedRoot $StartedBy
   }
   "status" {
     exit (Show-MainComputerStatus $resolvedRoot)

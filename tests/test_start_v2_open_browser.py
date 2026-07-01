@@ -17,7 +17,10 @@ def test_start_v2_accepts_open_browser_argument_and_calls_helper() -> None:
     assert 'if /I "%~1"=="--open-browser" goto mc_enable_open_browser' in text
     assert 'if /I "%~1"=="/OpenBrowser" goto mc_enable_open_browser' in text
     assert 'set "MC_OPEN_BROWSER=1"' in text
-    assert 'Usage: start_v2.bat [-OpenBrowser]' in text
+    assert 'Usage: start_v2.bat [-OpenBrowser] [--no-dev-hub]' in text
+    assert 'if /I "%~1"=="--no-dev-hub" goto mc_disable_dev_hub' in text
+    assert 'set "MC_NO_DEV_HUB=1"' in text
+    assert '-NoDevHub' in text
     assert 'scripts\\open-main-computer-browser.ps1' in text
     assert '-TimeoutSeconds 120' in text
 

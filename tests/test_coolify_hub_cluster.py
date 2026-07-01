@@ -116,6 +116,41 @@ class CoolifyHubClusterTests(unittest.TestCase):
         self.assertEqual(placement.namespace, "main-computer-testnet-exp-fdb-stable-live-sessions")
         self.assertEqual(placement.topology_container_path, "/app/deploy/hub-topology/testnet-topology.json")
 
+    def test_mainnet_placement_loads_single_mainnet_hub(self) -> None:
+        placement = coolify_hub_cluster.load_hub_cluster_placement(
+            REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json"
+        )
+
+        self.assertEqual(placement.network_key, "mainnet")
+        self.assertEqual(sorted(placement.servers), ["mainnet-a"])
+        self.assertEqual([hub.hub_id for hub in placement.hubs], ["mainnet-hub1"])
+        self.assertEqual(placement.cluster_file_path, "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster")
+        self.assertEqual(placement.namespace, "main-computer-mainnet-exp-fdb-stable-live-sessions")
+        self.assertEqual(placement.topology_container_path, "/app/deploy/hub-topology/mainnet-topology.json")
+        self.assertEqual(placement.public_entry_urls, ("https://mainnet-hub.greatlibrary.io",))
+
+    def test_mainnet_placement_plan_renders_mainnet_hub_service(self) -> None:
+        args = _args(
+            placement=REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json",
+            set_coolify_url=["mainnet-a:http://mainnet-coolify:8000"],
+            coolify_project_name="Main Computer",
+            coolify_environment_name="mainnet-hubs",
+        )
+        placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)
+        profile = coolify_hub_cluster.load_network_profile(placement, args)
+
+        plan = coolify_hub_cluster.plan_result(placement, profile, args)
+        compose = coolify_hub_cluster.render_server_hub_compose(placement, profile, args, "mainnet-a")
+
+        self.assertEqual(plan["network_key"], "mainnet")
+        self.assertEqual(plan["servers"][0]["service_name"], "main-computer-mainnet-hubs-mainnet-a")
+        self.assertIn("mainnet-hub1:", compose)
+        self.assertIn("https://mainnet-hub1.greatlibrary.io", compose)
+        self.assertIn("--chain-id", compose)
+        self.assertIn("42424240", compose)
+        self.assertIn("/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", compose)
+        self.assertIn("main-computer-mainnet-exp-fdb-stable-live-sessions", compose)
+
     def test_plan_renders_one_hub_compose_service_per_symbolic_host(self) -> None:
         args = _args()
         placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)

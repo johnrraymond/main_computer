@@ -6,7 +6,11 @@
       </div>
       <div class="code-studio-command-center" role="search" aria-label="Command center">
         <span class="code-studio-command-icon">⌘</span>
-        <span>MCEL Code Studio — source-safe editor example</span>
+        <span class="code-studio-command-label">MCEL Code Studio</span>
+        <span class="code-studio-command-meta" id="code-studio-top-route-status">workspace.file/src/app.js</span>
+        <span class="code-studio-command-pill" id="code-studio-top-gate-status" data-ok="pending">gates pending</span>
+        <span class="code-studio-command-pill" id="code-studio-top-persistence-status" data-ok="pending">persistence pending</span>
+        <span class="code-studio-command-pill" id="code-studio-top-runtime-version">mcel-runtime.v0.1.15</span>
       </div>
       <div class="code-studio-title-actions" aria-label="Editor actions">
         <button type="button" id="code-studio-validate" data-mc-component-id="code-editor.studio.validate" data-mc-component-kind="action" data-mc-component-label="Validate Code Studio Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Validate</button>
@@ -17,8 +21,8 @@
       </div>
     </div>
 
-    <div class="code-studio-body" data-mc-component-id="code-editor.studio.body" data-mc-component-kind="layout" data-mc-component-label="VS Code Style Workbench" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
-      <nav class="code-studio-activitybar" aria-label="Activity bar">
+    <div class="code-studio-body" data-code-studio-workbench-region="main-grid" data-mc-component-id="code-editor.studio.body" data-mc-component-kind="layout" data-mc-component-label="VS Code Style Workbench" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <nav class="code-studio-activitybar" aria-label="Activity bar" data-code-studio-workbench-region="mode-rail">
         <button type="button" class="active" data-code-studio-panel="explorer" title="Explorer">▱</button>
         <button type="button" data-code-studio-panel="source" title="Source">⌘</button>
         <button type="button" data-code-studio-panel="runtime" title="Runtime">◫</button>
@@ -26,7 +30,7 @@
         <button type="button" data-code-studio-panel="assistant" title="Assistant">✦</button>
       </nav>
 
-      <aside class="code-studio-sidebar" aria-label="Explorer and file map" data-mc-component-id="code-editor.studio.sidebar" data-mc-component-kind="panel" data-mc-component-label="VS Code Style Explorer" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <aside class="code-studio-sidebar" aria-label="Explorer and file map" data-code-studio-workbench-region="workspace-sidebar" data-mc-component-id="code-editor.studio.sidebar" data-mc-component-kind="panel" data-mc-component-label="VS Code Style Explorer" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
         <div class="code-studio-sidebar-title">Explorer</div>
         <div class="code-studio-open-editors">
           <strong>Open Editors</strong>
@@ -62,7 +66,7 @@
         </div>
       </aside>
 
-      <section class="code-studio-editor-group" aria-label="Code editor workbench" data-mc-component-id="code-editor.studio.editor-group" data-mc-component-kind="workspace" data-mc-component-label="Editor Group" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <section class="code-studio-editor-group" aria-label="Code editor workbench" data-code-studio-workbench-region="editor-workbench" data-mc-component-id="code-editor.studio.editor-group" data-mc-component-kind="workspace" data-mc-component-label="Editor Group" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
         <div class="code-studio-tabs" role="tablist" aria-label="Editor tabs">
           <button type="button" class="active" data-code-studio-tab="source">source.html</button>
           <button type="button" data-code-studio-tab="runtime">runtime preview</button>
@@ -74,6 +78,10 @@
           <div class="code-studio-pane-toolbar">
             <strong>Author-owned source</strong>
             <span>Write only the durable source. MCEL generates the workbench around it.</span>
+            <button type="button" id="code-studio-save-live-workspace">Save live workspace</button>
+            <button type="button" id="code-studio-restore-live-workspace">Restore saved workspace</button>
+            <button type="button" id="code-studio-clear-live-workspace">Clear saved workspace</button>
+            <small class="code-studio-live-workspace-persistence" id="code-studio-live-workspace-persistence">live workspace persistence: not saved</small>
           </div>
           <div class="code-studio-code-frame">
             <pre class="code-studio-line-gutter" id="code-studio-line-gutter" aria-hidden="true">1</pre>
@@ -167,6 +175,8 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
                 </label>
                 <button type="button" id="code-studio-replay-scm-evidence">Replay selected gate</button>
                 <button type="button" id="code-studio-export-scm-evidence-packet">Export SCM Evidence Packet</button>
+                <button type="button" id="code-studio-generate-scm-repair-prompt">Generate AI repair prompt</button>
+                <button type="button" id="code-studio-generate-scm-contract-helper">Generate contract helper</button>
                 <button type="button" id="code-studio-download-scm-evidence-packet">Download packet</button>
                 <button type="button" id="code-studio-refresh-scm-evidence">Refresh SCM evidence</button>
               </div>
@@ -175,22 +185,85 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
               <strong>Selected evidence detail</strong>
               <p>Validate, mount, edit, serialize, repair, or switch files to populate the component and route evidence stream.</p>
             </div>
+            <div class="code-studio-scm-replay-comparison" id="code-studio-scm-replay-comparison">
+              <strong>Replay snapshot comparison</strong>
+              <p>Replay a selected gate to compare before/after SCM evidence, gate status, dirty state, and violation deltas.</p>
+            </div>
+            <div class="code-studio-scm-contract-authoring-helper" id="code-studio-scm-contract-authoring-helper">
+              <strong>SCM contract authoring helper</strong>
+              <p>Generate a contract-first starter for AI-created MCEL apps from the current evidence packet.</p>
+            </div>
           </div>
         </section>
       </section>
 
-      <aside class="code-studio-inspector" aria-label="MCEL inspector" data-mc-component-id="code-editor.studio.inspector" data-mc-component-kind="panel" data-mc-component-label="MCEL Inspector" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
-        <div class="code-studio-panel-heading">
-          <strong>Why MCEL here?</strong>
-          <span>Not another React clone</span>
-        </div>
-        <ul class="code-studio-proof-list" id="code-studio-proof-list">
-          <li>Author source is the canonical artifact.</li>
-          <li>Editor chrome is generated and discardable.</li>
-          <li>Dirty runtime state does not serialize until committed.</li>
-          <li>Broken runtime chrome can be repaired from source intent.</li>
-          <li>Export is blocked when required source fields are missing.</li>
-        </ul>
+      <aside class="code-studio-inspector" aria-label="Tabbed SCM and AI inspector" data-code-studio-workbench-region="scm-ai-inspector" data-mc-component-id="code-editor.studio.inspector" data-mc-component-kind="panel" data-mc-component-label="Tabbed SCM / AI Inspector" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+        <section class="code-studio-scm-ai-inspector" id="code-studio-flagship-inspector" aria-label="SCM / AI Inspector">
+          <div class="code-studio-panel-heading code-studio-scm-ai-heading">
+            <strong>SCM / AI</strong>
+            <span>Contract · Evidence · Runtime · AI</span>
+          </div>
+          <div class="code-studio-scm-ai-tabs" role="tablist" aria-label="SCM and AI concerns">
+            <button type="button" class="active" role="tab" aria-selected="true" data-code-studio-scm-ai-tab="contract" id="code-studio-scm-ai-tab-contract">Contract</button>
+            <button type="button" role="tab" aria-selected="false" data-code-studio-scm-ai-tab="evidence" id="code-studio-scm-ai-tab-evidence">Evidence</button>
+            <button type="button" role="tab" aria-selected="false" data-code-studio-scm-ai-tab="runtime" id="code-studio-scm-ai-tab-runtime">Runtime</button>
+            <button type="button" role="tab" aria-selected="false" data-code-studio-scm-ai-tab="ai" id="code-studio-scm-ai-tab-ai">AI</button>
+          </div>
+
+          <div class="code-studio-scm-ai-panel active" role="tabpanel" data-code-studio-scm-ai-panel="contract" id="code-studio-scm-ai-panel-contract">
+            <div class="code-studio-scm-ai-card">
+              <strong>Contract</strong>
+              <p>What is supposed to be true before rendering: ownership, allowed reads/writes, composition, and failure behavior.</p>
+              <dl id="code-studio-flagship-contract-summary">
+                <dt>Component</dt><dd>CodeStudio 2.9.0</dd>
+                <dt>Owns</dt><dd>source.workspace.manifest, source.workspace.files</dd>
+                <dt>Runtime-only</dt><dd>workbench shell, editor chrome, evidence, assistant UI</dd>
+              </dl>
+            </div>
+          </div>
+
+          <div class="code-studio-scm-ai-panel" role="tabpanel" data-code-studio-scm-ai-panel="evidence" id="code-studio-scm-ai-panel-evidence" hidden>
+            <div class="code-studio-scm-ai-card">
+              <strong>Evidence</strong>
+              <p>What the live system has proven: gate state, visible evidence, violations, and the selected proof row.</p>
+              <dl id="code-studio-flagship-evidence-summary">
+                <dt>Gates</dt><dd>pending refresh</dd>
+                <dt>Violations</dt><dd>0</dd>
+                <dt>Selected evidence</dt><dd>none</dd>
+              </dl>
+            </div>
+          </div>
+
+          <div class="code-studio-scm-ai-panel" role="tabpanel" data-code-studio-scm-ai-panel="runtime" id="code-studio-scm-ai-panel-runtime" hidden>
+            <div class="code-studio-scm-ai-card">
+              <strong>Runtime</strong>
+              <p>What happened live: route params/query, effects, persistence, serialization, and replay comparison state.</p>
+              <dl id="code-studio-flagship-runtime-summary">
+                <dt>Route</dt><dd>workspace.file/src/app.js</dd>
+                <dt>Persistence</dt><dd>pending</dd>
+                <dt>Replay</dt><dd>not run</dd>
+              </dl>
+            </div>
+          </div>
+
+          <div class="code-studio-scm-ai-panel" role="tabpanel" data-code-studio-scm-ai-panel="ai" id="code-studio-scm-ai-panel-ai" hidden>
+            <div class="code-studio-scm-ai-card">
+              <strong>AI</strong>
+              <p>What an agent may use next: repair prompt, contract helper, exported packet, and explicit forbidden-change boundaries.</p>
+              <dl id="code-studio-flagship-ai-summary">
+                <dt>Repair prompt</dt><dd>ready after evidence export</dd>
+                <dt>Contract helper</dt><dd>not generated</dd>
+                <dt>Policy</dt><dd>smallest safe contract-first patch</dd>
+              </dl>
+              <div class="code-studio-scm-ai-actions">
+                <button type="button" data-code-studio-scm-ai-action="copy-prompt">Copy repair prompt</button>
+                <button type="button" data-code-studio-scm-ai-action="copy-helper">Copy contract helper</button>
+                <button type="button" data-code-studio-scm-ai-action="copy-packet">Copy packet</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <div class="code-studio-status-card">
           <strong>Status</strong>
           <p id="code-studio-status">MCEL Code Studio ready.</p>
@@ -206,10 +279,10 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
       </aside>
     </div>
 
-    <section class="code-studio-bottom-panel" id="code-studio-bottom-panel" data-expanded="false" aria-label="Terminal assistant and documentation viewport" data-mc-component-id="code-editor.studio.bottom-panel" data-mc-component-kind="panel" data-mc-component-label="Assistant and Documentation Panel" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+    <section class="code-studio-bottom-panel code-studio-proof-dock" id="code-studio-bottom-panel" data-expanded="false" data-code-studio-workbench-region="proof-dock" aria-label="Terminal assistant and documentation viewport" data-mc-component-id="code-editor.studio.bottom-panel" data-mc-component-kind="panel" data-mc-component-label="Assistant and Documentation Panel" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
       <div class="code-studio-bottom-tabs">
-        <strong>Assistant / terminal / docs</strong>
-        <span>The existing Aider backend, file archive, and documentation viewport stay wired in as a real completion path.</span>
+        <strong>Bottom Proof Dock</strong>
+        <span class="code-studio-proof-dock-tabs">Diagnostics · Evidence Detail · Replay · Serialization · Persistence · Logs</span>
         <button type="button" id="code-studio-toggle-assistant" aria-expanded="false" aria-controls="code-studio-bottom-panel">Open assistant dock</button>
       </div>
       <div class="aider-shell code-studio-aider-shell">

@@ -901,6 +901,32 @@
   tab-size: 2;
 }
 
+.code-studio-live-workspace-persistence {
+  margin-left: auto;
+  max-width: 260px;
+  padding: 4px 8px;
+  border: 1px solid #3c3c3c;
+  border-radius: 999px;
+  background: #252526;
+  color: #8f8f8f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-studio-live-workspace-persistence[data-status="saved"],
+.code-studio-live-workspace-persistence[data-status="hydrated"],
+.code-studio-live-workspace-persistence[data-status="restored"] {
+  border-color: #295f3a;
+  color: #b7f7c5;
+}
+
+.code-studio-live-workspace-persistence[data-ok="false"],
+.code-studio-live-workspace-persistence[data-status="blocked"] {
+  border-color: #7a3a3a;
+  color: #ffb3b3;
+}
+
 .code-studio-runtime-preview {
   min-height: 0;
   overflow: auto;
@@ -1109,7 +1135,9 @@
   outline-offset: 1px;
 }
 
-.code-studio-scm-evidence-detail {
+.code-studio-scm-evidence-detail,
+.code-studio-scm-replay-comparison,
+.code-studio-scm-contract-authoring-helper {
   display: grid;
   align-content: start;
   gap: 8px;
@@ -1120,7 +1148,14 @@
   background: #181818;
 }
 
-.code-studio-scm-evidence-detail code {
+.code-studio-scm-replay-comparison,
+.code-studio-scm-contract-authoring-helper {
+  grid-column: 1 / -1;
+}
+
+.code-studio-scm-evidence-detail code,
+.code-studio-scm-replay-comparison code,
+.code-studio-scm-contract-authoring-helper code {
   display: block;
   max-height: 360px;
   overflow: auto;
@@ -1129,7 +1164,9 @@
 
 .code-studio-scm-evidence-entry code,
 .code-studio-scm-evidence-summary code,
-.code-studio-scm-evidence-detail code {
+.code-studio-scm-evidence-detail code,
+.code-studio-scm-replay-comparison code,
+.code-studio-scm-contract-authoring-helper code {
   color: #9cdcfe;
 }
 
@@ -1764,5 +1801,631 @@
 
   .code-studio-bottom-panel {
     left: 42px;
+  }
+}
+
+
+/* Patch 17: flagship SCM / AI skeleton.
+   The right inspector now follows the MCEL mental model:
+   Contract = what should be true, Evidence = what is proven, Runtime = what happened, AI = what may change next. */
+.code-studio-command-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.code-studio-command-label {
+  font-weight: 700;
+  color: #f0f0f0;
+}
+
+.code-studio-command-meta,
+.code-studio-command-pill {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.code-studio-command-meta {
+  color: #9cdcfe;
+}
+
+.code-studio-command-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid #3c3c3c;
+  border-radius: 999px;
+  background: #1f1f1f;
+  color: #dcdcdc;
+}
+
+.code-studio-command-pill[data-ok="true"] {
+  border-color: rgba(70, 190, 130, 0.65);
+  color: #b5f5cb;
+}
+
+.code-studio-command-pill[data-ok="false"] {
+  border-color: rgba(255, 95, 87, 0.75);
+  color: #ffb3ad;
+}
+
+.code-studio-scm-ai-inspector {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+}
+
+.code-studio-scm-ai-heading {
+  margin: 0;
+}
+
+.code-studio-scm-ai-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.code-studio-scm-ai-tabs button {
+  min-width: 0;
+  padding: 6px 4px;
+  border-color: #3c3c3c;
+  background: #1f1f1f;
+  color: #bbbbbb;
+}
+
+.code-studio-scm-ai-tabs button.active,
+.code-studio-scm-ai-tabs button[aria-selected="true"] {
+  border-color: #007acc;
+  background: #094771;
+  color: #ffffff;
+}
+
+.code-studio-scm-ai-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.code-studio-scm-ai-panel[hidden] {
+  display: none;
+}
+
+.code-studio-scm-ai-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  background: #1b1b1b;
+}
+
+.code-studio-scm-ai-card strong {
+  color: #ffffff;
+}
+
+.code-studio-scm-ai-card p {
+  margin: 0;
+  color: #b8b8b8;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.code-studio-scm-ai-card dl {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.45fr) minmax(0, 1fr);
+  gap: 7px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.code-studio-scm-ai-card dt {
+  color: #9cdcfe;
+  font-weight: 700;
+}
+
+.code-studio-scm-ai-card dd {
+  min-width: 0;
+  margin: 0;
+  color: #d4d4d4;
+  overflow-wrap: anywhere;
+}
+
+.code-studio-scm-ai-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.code-studio-proof-dock-tabs {
+  color: #c7c7c7;
+}
+
+/* Patch 17B: flagship workbench containment.
+   The skeleton must behave like a bounded application shell, not a page-length debug document.
+   Each region owns its own scrollport: left workspace, center editor, right SCM / AI inspector,
+   and the bottom proof dock. */
+.code-editor-app,
+#code-editor-app {
+  height: min(900px, calc(100dvh - 32px));
+  min-height: min(680px, calc(100dvh - 32px));
+  max-height: min(900px, calc(100dvh - 32px));
+  overflow: hidden;
+}
+
+@supports not (height: 100dvh) {
+  .code-editor-app,
+  #code-editor-app {
+    height: min(900px, calc(100vh - 32px));
+    min-height: min(680px, calc(100vh - 32px));
+    max-height: min(900px, calc(100vh - 32px));
+  }
+}
+
+.code-editor-app .code-studio-shell,
+#code-editor-app .code-studio-shell {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  grid-template-rows: 36px minmax(0, 1fr) 24px;
+  overflow: hidden;
+  contain: layout paint;
+}
+
+.code-editor-app .code-studio-body,
+#code-editor-app .code-studio-body {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: 48px clamp(220px, 17vw, 280px) minmax(0, 1fr) clamp(320px, 24vw, 400px);
+  overflow: hidden;
+}
+
+.code-editor-app .code-studio-sidebar,
+.code-editor-app .code-studio-editor-group,
+.code-editor-app .code-studio-inspector,
+#code-editor-app .code-studio-sidebar,
+#code-editor-app .code-studio-editor-group,
+#code-editor-app .code-studio-inspector {
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.code-editor-app .code-studio-editor-pane,
+#code-editor-app .code-studio-editor-pane {
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.code-editor-app .code-studio-editor-pane:not(.active),
+#code-editor-app .code-studio-editor-pane:not(.active) {
+  display: none !important;
+}
+
+.code-editor-app .code-studio-editor-pane.active,
+#code-editor-app .code-studio-editor-pane.active {
+  display: grid !important;
+  grid-template-rows: 42px minmax(0, 1fr);
+}
+
+.code-editor-app .code-studio-editor-pane[data-code-studio-pane="contract"].active,
+#code-editor-app .code-studio-editor-pane[data-code-studio-pane="contract"].active {
+  grid-template-rows: 42px minmax(0, 0.38fr) minmax(0, 0.62fr);
+}
+
+.code-editor-app .code-studio-code-frame,
+.code-editor-app .code-studio-runtime-preview,
+.code-editor-app .code-studio-output,
+.code-editor-app .code-studio-contract-report,
+.code-editor-app .code-studio-scm-evidence,
+#code-editor-app .code-studio-code-frame,
+#code-editor-app .code-studio-runtime-preview,
+#code-editor-app .code-studio-output,
+#code-editor-app .code-studio-contract-report,
+#code-editor-app .code-studio-scm-evidence {
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.code-editor-app .code-studio-scm-evidence,
+#code-editor-app .code-studio-scm-evidence {
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.code-editor-app .code-studio-scm-evidence-drilldown,
+#code-editor-app .code-studio-scm-evidence-drilldown {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.code-editor-app .code-studio-scm-evidence-list,
+.code-editor-app .code-studio-scm-evidence-detail,
+.code-editor-app .code-studio-scm-replay-comparison,
+.code-editor-app .code-studio-scm-contract-authoring-helper,
+#code-editor-app .code-studio-scm-evidence-list,
+#code-editor-app .code-studio-scm-evidence-detail,
+#code-editor-app .code-studio-scm-replay-comparison,
+#code-editor-app .code-studio-scm-contract-authoring-helper {
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
+}
+
+.code-editor-app .code-studio-inspector,
+#code-editor-app .code-studio-inspector {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto minmax(0, 0.42fr);
+}
+
+.code-editor-app .code-studio-scm-ai-inspector,
+#code-editor-app .code-studio-scm-ai-inspector {
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.code-editor-app .code-studio-scm-ai-panel,
+#code-editor-app .code-studio-scm-ai-panel {
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
+}
+
+.code-editor-app .code-studio-status-card,
+#code-editor-app .code-studio-status-card {
+  max-height: 96px;
+  overflow: auto;
+}
+
+.code-editor-app .code-studio-contract-envelope,
+#code-editor-app .code-studio-contract-envelope {
+  max-height: 180px;
+}
+
+.code-editor-app .code-studio-bottom-panel,
+#code-editor-app .code-studio-bottom-panel {
+  height: 38px;
+  max-height: 80px;
+  overflow: hidden;
+}
+
+.code-editor-app .code-studio-bottom-panel[data-expanded="true"],
+#code-editor-app .code-studio-bottom-panel[data-expanded="true"] {
+  height: min(320px, 40%);
+  max-height: min(320px, 40%);
+}
+
+.code-editor-app .code-studio-aider-shell,
+#code-editor-app .code-studio-aider-shell {
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+@media (max-width: 1250px) {
+  .code-editor-app .code-studio-body,
+  #code-editor-app .code-studio-body {
+    grid-template-columns: 46px clamp(200px, 22vw, 250px) minmax(0, 1fr) clamp(280px, 28vw, 330px);
+  }
+
+  .code-editor-app .code-studio-inspector,
+  #code-editor-app .code-studio-inspector {
+    display: grid;
+    grid-column: auto;
+    border-top: 0;
+  }
+}
+
+@media (max-width: 980px) {
+  .code-editor-app .code-studio-body,
+  #code-editor-app .code-studio-body {
+    grid-template-columns: 44px minmax(0, 1fr) minmax(260px, 320px);
+  }
+
+  .code-editor-app .code-studio-sidebar,
+  #code-editor-app .code-studio-sidebar {
+    display: none;
+  }
+
+  .code-editor-app .code-studio-editor-group,
+  #code-editor-app .code-studio-editor-group {
+    grid-column: auto;
+  }
+
+  .code-editor-app .code-studio-bottom-panel,
+  #code-editor-app .code-studio-bottom-panel {
+    left: 44px;
+  }
+}
+
+
+
+/* Patch 17C: hard workbench region split.
+   This is intentionally stronger than the previous containment reset: the Code Studio root becomes
+   a fixed application viewport and every workbench concern receives its own scrollport. */
+html:has(#code-editor-app),
+body:has(#code-editor-app) {
+  min-height: 100%;
+}
+
+body:has(#code-editor-app) {
+  overflow: hidden;
+}
+
+main:has(#code-editor-app),
+.mc-app-host:has(#code-editor-app),
+.applications-workspace:has(#code-editor-app) {
+  min-height: 0;
+  overflow: hidden;
+}
+
+#code-editor-app.code-editor-app {
+  display: block !important;
+  width: 100% !important;
+  height: calc(100dvh - 24px) !important;
+  min-height: 680px !important;
+  max-height: calc(100dvh - 24px) !important;
+  overflow: hidden !important;
+  overscroll-behavior: contain;
+}
+
+@supports not (height: 100dvh) {
+  #code-editor-app.code-editor-app {
+    height: calc(100vh - 24px) !important;
+    max-height: calc(100vh - 24px) !important;
+  }
+}
+
+#code-editor-app .code-studio-shell {
+  position: relative !important;
+  display: grid !important;
+  grid-template-areas:
+    "titlebar"
+    "workbench"
+    "statusbar" !important;
+  grid-template-rows: 40px minmax(0, 1fr) 24px !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  contain: layout paint size;
+}
+
+#code-editor-app .code-studio-titlebar {
+  grid-area: titlebar;
+  min-height: 0;
+  max-height: 40px;
+  overflow: hidden;
+}
+
+#code-editor-app .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  grid-area: workbench;
+  display: grid !important;
+  grid-template-columns: 44px clamp(220px, 18vw, 280px) minmax(0, 1fr) clamp(340px, 24vw, 420px) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app [data-code-studio-workbench-region="mode-rail"],
+#code-editor-app [data-code-studio-workbench-region="workspace-sidebar"],
+#code-editor-app [data-code-studio-workbench-region="editor-workbench"],
+#code-editor-app [data-code-studio-workbench-region="scm-ai-inspector"] {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+}
+
+#code-editor-app [data-code-studio-workbench-region="mode-rail"] {
+  overflow: hidden !important;
+}
+
+#code-editor-app [data-code-studio-workbench-region="workspace-sidebar"] {
+  overflow: auto !important;
+  scrollbar-gutter: stable;
+}
+
+#code-editor-app [data-code-studio-workbench-region="editor-workbench"] {
+  display: grid !important;
+  grid-template-rows: 34px minmax(0, 1fr) !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app [data-code-studio-workbench-region="scm-ai-inspector"] {
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 78px) minmax(0, 116px) !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-editor-pane.active {
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-editor-pane[data-code-studio-pane="source"].active {
+  grid-template-rows: minmax(38px, auto) minmax(0, 1fr) !important;
+}
+
+#code-editor-app .code-studio-editor-pane[data-code-studio-pane="contract"].active {
+  grid-template-rows: minmax(38px, auto) minmax(0, 0.32fr) minmax(0, 0.68fr) !important;
+}
+
+#code-editor-app .code-studio-pane-toolbar {
+  min-height: 0;
+  max-height: 58px;
+  overflow: hidden;
+}
+
+#code-editor-app .code-studio-code-frame,
+#code-editor-app #code-studio-source-editor,
+#code-editor-app .code-studio-runtime-preview,
+#code-editor-app .code-studio-output,
+#code-editor-app .code-studio-contract-report,
+#code-editor-app .code-studio-scm-evidence {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: auto !important;
+  scrollbar-gutter: stable;
+}
+
+#code-editor-app #code-studio-source-editor {
+  display: block;
+  height: 100% !important;
+}
+
+#code-editor-app .code-studio-scm-evidence {
+  display: grid !important;
+  grid-template-rows: auto auto minmax(0, 1fr) !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-scm-evidence-drilldown {
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-scm-evidence-list,
+#code-editor-app .code-studio-scm-evidence-detail,
+#code-editor-app .code-studio-scm-replay-comparison,
+#code-editor-app .code-studio-scm-contract-authoring-helper {
+  max-height: 100% !important;
+  overflow: auto !important;
+}
+
+#code-editor-app .code-studio-scm-ai-inspector {
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-scm-ai-panel {
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: auto !important;
+  scrollbar-gutter: stable;
+}
+
+#code-editor-app .code-studio-status-card,
+#code-editor-app .code-studio-contract-envelope {
+  min-height: 0 !important;
+  margin-top: 8px !important;
+  overflow: auto !important;
+}
+
+#code-editor-app .code-studio-contract-envelope pre {
+  max-height: 88px;
+  overflow: auto;
+}
+
+#code-editor-app .code-studio-statusbar {
+  grid-area: statusbar;
+  min-height: 0;
+  max-height: 24px;
+  overflow: hidden;
+}
+
+#code-editor-app .code-studio-proof-dock[data-code-studio-workbench-region="proof-dock"],
+#code-editor-app .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"] {
+  position: absolute !important;
+  left: 44px !important;
+  right: 0 !important;
+  bottom: 24px !important;
+  z-index: 60 !important;
+  display: grid !important;
+  grid-template-rows: 36px minmax(0, 1fr) !important;
+  height: 36px !important;
+  max-height: 78px !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  border-top: 1px solid #2d2d30;
+  box-shadow: 0 -16px 44px rgba(0, 0, 0, 0.42);
+}
+
+#code-editor-app .code-studio-proof-dock[data-expanded="true"],
+#code-editor-app .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"][data-expanded="true"] {
+  height: min(320px, 42dvh) !important;
+  max-height: min(320px, 42dvh) !important;
+}
+
+@supports not (height: 100dvh) {
+  #code-editor-app .code-studio-proof-dock[data-expanded="true"],
+  #code-editor-app .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"][data-expanded="true"] {
+    height: min(320px, 42vh) !important;
+    max-height: min(320px, 42vh) !important;
+  }
+}
+
+#code-editor-app .code-studio-proof-dock:not([data-expanded="true"]) .code-studio-aider-shell,
+#code-editor-app .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"]:not([data-expanded="true"]) .code-studio-aider-shell {
+  display: none !important;
+}
+
+#code-editor-app .code-studio-aider-shell {
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  padding: 8px 12px !important;
+}
+
+#code-editor-app .code-studio-aider-shell .aider-workspace,
+#code-editor-app .code-studio-aider-shell .aider-output,
+#code-editor-app .code-studio-aider-shell .aider-digest {
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: auto !important;
+}
+
+@media (max-width: 980px) {
+  #code-editor-app .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+    grid-template-columns: 44px minmax(0, 1fr) minmax(290px, 35vw) !important;
+  }
+
+  #code-editor-app [data-code-studio-workbench-region="workspace-sidebar"] {
+    display: none !important;
+  }
+}
+
+@media (max-width: 720px) {
+  #code-editor-app.code-editor-app {
+    min-height: 640px !important;
+  }
+
+  #code-editor-app .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+    grid-template-columns: 40px minmax(0, 1fr) !important;
+  }
+
+  #code-editor-app [data-code-studio-workbench-region="scm-ai-inspector"] {
+    display: none !important;
+  }
+
+  #code-editor-app .code-studio-proof-dock[data-code-studio-workbench-region="proof-dock"],
+  #code-editor-app .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"] {
+    left: 40px !important;
   }
 }

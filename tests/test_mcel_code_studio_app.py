@@ -27,6 +27,10 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "code-studio-inspector",
             "code-studio-statusbar",
             'id="code-studio-source-editor"',
+            'id="code-studio-save-live-workspace"',
+            'id="code-studio-restore-live-workspace"',
+            'id="code-studio-clear-live-workspace"',
+            'id="code-studio-live-workspace-persistence"',
             'id="code-studio-runtime-preview"',
             'id="code-studio-serialized-output"',
             'id="code-studio-contract-report"',
@@ -70,6 +74,34 @@ class McelCodeStudioAppTests(unittest.TestCase):
         for text in expected:
             with self.subTest(text=text):
                 self.assertIn(text, style)
+
+
+    def test_code_studio_flagship_workbench_regions_are_scroll_contained(self) -> None:
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        expected = [
+            "Patch 17B: flagship workbench containment",
+            "#code-editor-app {",
+            "height: min(900px, calc(100dvh - 32px));",
+            "contain: layout paint;",
+            "grid-template-columns: 48px clamp(220px, 17vw, 280px) minmax(0, 1fr) clamp(320px, 24vw, 400px);",
+            ".code-editor-app .code-studio-editor-pane:not(.active)",
+            "display: none !important;",
+            '.code-editor-app .code-studio-editor-pane[data-code-studio-pane="contract"].active',
+            "grid-template-rows: 42px minmax(0, 0.38fr) minmax(0, 0.62fr);",
+            ".code-editor-app .code-studio-scm-evidence,",
+            "grid-template-rows: auto auto minmax(0, 1fr);",
+            ".code-editor-app .code-studio-inspector,",
+            "grid-template-rows: minmax(0, 1fr) auto minmax(0, 0.42fr);",
+            '.code-editor-app .code-studio-bottom-panel[data-expanded="true"]',
+            "height: min(320px, 40%);",
+            "@media (max-width: 1250px)",
+            ".code-editor-app .code-studio-inspector",
+            "display: grid;",
+        ]
+        for text in expected:
+            with self.subTest(text=text):
+                self.assertIn(text, style)
+
 
     def test_existing_aider_file_map_docs_and_gridstack_hooks_remain_available(self) -> None:
         expected = [
@@ -155,6 +187,20 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "exportScmEvidenceDebugPacket",
             "copyCurrentScmEvidenceDebugPacket",
             "downloadCurrentScmEvidenceDebugPacket",
+            "buildScmAiRepairPrompt",
+            "exportScmAiRepairPrompt",
+            "copyCurrentScmAiRepairPrompt",
+            "buildScmReplaySnapshot",
+            "compareScmReplaySnapshots",
+            "formatScmReplayComparisonDetail",
+            "persistLiveWorkspaceFromSource",
+            "hydratePersistedLiveWorkspace",
+            "clearPersistedLiveWorkspace",
+            "collectLiveWorkspacePersistenceSummary",
+            "LIVE_WORKSPACE_PERSISTENCE_KEY",
+            "mcel-code-studio-live-workspace-persistence-record",
+            "mcel-code-studio-live-workspace-persistence-summary",
+            "Live workspace persisted through SCM saveFile effect and route loaders.",
             "replayScmEvidenceEntry",
             "code-studio-scm-evidence-entry",
             "code-studio-scm-evidence-detail",
@@ -216,10 +262,14 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'id="code-studio-scm-evidence-filter"',
             'id="code-studio-replay-scm-evidence"',
             'id="code-studio-export-scm-evidence-packet"',
+            'id="code-studio-generate-scm-repair-prompt"',
             'id="code-studio-download-scm-evidence-packet"',
             'id="code-studio-scm-evidence-detail"',
+            'id="code-studio-scm-replay-comparison"',
             "Replay selected gate",
+            "Replay snapshot comparison",
             "Export SCM Evidence Packet",
+            "Generate AI repair prompt",
             "Download packet",
             'data-mc-component-id="code-editor.studio.scm-evidence"',
         ]
@@ -236,6 +286,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             ".code-studio-scm-evidence-entry[data-ok=\"false\"]",
             ".code-studio-scm-evidence-entry[data-selected=\"true\"]",
             ".code-studio-scm-evidence-detail",
+            ".code-studio-scm-replay-comparison",
         ]
         for text in expected_style:
             with self.subTest(style=text):
@@ -257,11 +308,17 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "code-studio-scm-evidence-filter",
             "code-studio-replay-scm-evidence",
             "code-studio-export-scm-evidence-packet",
+            "code-studio-generate-scm-repair-prompt",
             "code-studio-download-scm-evidence-packet",
             "code-studio-scm-evidence-detail",
+            "code-studio-scm-replay-comparison",
             "mcel-code-studio-scm-debug-packet",
+            "mcel-code-studio-scm-replay-snapshot",
+            "mcel-code-studio-scm-replay-comparison",
             "SCM evidence replay",
+            "before/after snapshot comparison",
             "SCM evidence debug packet exported",
+            "SCM AI repair prompt copied from evidence packet",
             "SCM evidence refreshed",
         ]
         for text in expected_script:
@@ -275,8 +332,10 @@ class McelCodeStudioAppTests(unittest.TestCase):
 
         expected_markup = [
             'id="code-studio-export-scm-evidence-packet"',
+            'id="code-studio-generate-scm-repair-prompt"',
             'id="code-studio-download-scm-evidence-packet"',
             "Export SCM Evidence Packet",
+            "Generate AI repair prompt",
             "Download packet",
         ]
         for text in expected_markup:
@@ -299,6 +358,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "route: summary.routePacket",
             "selectedEvidence: formatEvidenceDetail(selectedEntry)",
             "lastReplayResult: studioState.lastScmReplayResult",
+            "lastReplaySnapshotComparison: studioState.lastScmReplaySnapshotComparison",
             "lastReport: report ? {",
             "copyScmEvidenceDebugPacket",
             "downloadScmEvidenceDebugPacket",
@@ -317,9 +377,362 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "evidence: {",
             "selectedEvidence:",
             "lastReplayResult:",
+            "lastReplaySnapshotComparison:",
         ]:
             with self.subTest(order=later):
                 self.assertGreater(script.index(later, packet_start), packet_start)
+
+
+    def test_code_studio_scm_replay_snapshot_comparison_is_exported(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'id="code-studio-scm-replay-comparison"',
+            "Replay snapshot comparison",
+            "Replay a selected gate to compare before/after SCM evidence",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_script = [
+            "SCM_REPLAY_SNAPSHOT_VERSION",
+            "function buildScmReplaySnapshot",
+            "function compareScmReplaySnapshots",
+            "function formatScmReplayComparisonDetail",
+            'kind: "mcel-code-studio-scm-replay-snapshot"',
+            'kind: "mcel-code-studio-scm-replay-comparison"',
+            "beforeSnapshot = buildScmReplaySnapshot",
+            "afterSnapshot = buildScmReplaySnapshot",
+            "lastReplaySnapshotComparison: studioState.lastScmReplaySnapshotComparison",
+            "lastReplaySnapshotComparison: packet.lastReplaySnapshotComparison",
+            "Replay selected gate to capture before/after SCM evidence snapshots.",
+            "before/after snapshot comparison",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        expected_style = [
+            ".code-studio-scm-replay-comparison",
+            ".code-studio-scm-replay-comparison code",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        replay_start = script.index("function replayScmEvidenceEntry")
+        before = script.index('buildScmReplaySnapshot("before"', replay_start)
+        after = script.index('buildScmReplaySnapshot("after"', replay_start)
+        compare = script.index("compareScmReplaySnapshots(beforeSnapshot, afterSnapshot", replay_start)
+        self.assertLess(before, after)
+        self.assertLess(after, compare)
+
+
+    def test_code_studio_scm_ai_repair_prompt_is_contract_first(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'id="code-studio-generate-scm-repair-prompt"',
+            "Generate AI repair prompt",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_prompt_contract = [
+            "SCM_AI_REPAIR_PROMPT_VERSION",
+            "function buildScmAiRepairPrompt",
+            "function exportScmAiRepairPrompt",
+            "function copyCurrentScmAiRepairPrompt",
+            "mcel-code-studio-scm-ai-repair-prompt-input",
+            "MCEL STRICT COMPOSITION MODEL AI REPAIR PROMPT",
+            "contract-first UI system for AI-written software",
+            "Do not treat MCEL as a React, Vue, Angular, or Svelte clone.",
+            "Allowed repair surface:",
+            "Forbidden changes:",
+            "Do not introduce undeclared DOM, source, route, state, or runtime reads/writes.",
+            "Do not serialize runtime-only editor chrome or assistant/debug UI into author-owned source.",
+            "Do not auto-run mutating transitions or repair strategies without explicit user action.",
+            "SCM evidence packet JSON:",
+            "copyScmText(output.prompt)",
+            "SCM AI repair prompt copied from evidence packet",
+        ]
+        for text in expected_prompt_contract:
+            with self.subTest(prompt=text):
+                self.assertIn(text, script)
+
+        prompt_start = script.index("function buildScmAiRepairPrompt")
+        for later in [
+            "Allowed repair surface:",
+            "Forbidden changes:",
+            "SCM evidence packet JSON:",
+            "function exportScmAiRepairPrompt",
+            "function copyCurrentScmAiRepairPrompt",
+        ]:
+            with self.subTest(order=later):
+                self.assertGreater(script.index(later, prompt_start), prompt_start)
+
+
+    def test_code_studio_live_workspace_persistence_uses_route_and_effect_evidence(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'id="code-studio-save-live-workspace"',
+            'id="code-studio-restore-live-workspace"',
+            'id="code-studio-clear-live-workspace"',
+            'id="code-studio-live-workspace-persistence"',
+            "Save live workspace",
+            "Restore saved workspace",
+            "Clear saved workspace",
+            "live workspace persistence: not saved",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_style = [
+            ".code-studio-live-workspace-persistence",
+            "data-status",
+            "text-overflow: ellipsis;",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        expected_script = [
+            "LIVE_WORKSPACE_PERSISTENCE_VERSION",
+            "LIVE_WORKSPACE_PERSISTENCE_KEY",
+            "main-computer-code-studio-live-workspace-v1",
+            "function liveWorkspaceStorage",
+            "function persistLiveWorkspaceFromSource",
+            "function hydratePersistedLiveWorkspace",
+            "function clearPersistedLiveWorkspace",
+            "function collectLiveWorkspacePersistenceSummary",
+            "function renderLiveWorkspacePersistenceStatus",
+            'runScmGate("effect:saveFile"',
+            "enterScmRouteAndRunLoaders({forceEnter: true})",
+            "mcel-code-studio-live-workspace-persistence-record",
+            "mcel-code-studio-live-workspace-persistence-summary",
+            "persistence: collectLiveWorkspacePersistenceSummary()",
+            "persistence: packet.persistence",
+            "persistenceStatus=",
+            "live workspace persistence boundaries",
+            'persistLiveWorkspaceFromSource("commitDraft"',
+            "hydratePersistedLiveWorkspace();",
+            "code-studio-save-live-workspace",
+            "code-studio-restore-live-workspace",
+            "code-studio-clear-live-workspace",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        commit_start = script.index("function commitRuntimeDraft")
+        save_effect = script.index('runScmGate("effect:saveFile"', commit_start)
+        route_loader = script.index("enterScmRouteAndRunLoaders({forceEnter: true})", save_effect)
+        persist = script.index('persistLiveWorkspaceFromSource("commitDraft"', route_loader)
+        self.assertLess(save_effect, route_loader)
+        self.assertLess(route_loader, persist)
+
+        packet_start = script.index('kind: "mcel-code-studio-scm-debug-packet"')
+        persistence = script.index("persistence: collectLiveWorkspacePersistenceSummary()", packet_start)
+        gates = script.index("gates: collectGateStatus(gates)", packet_start)
+        self.assertLess(persistence, gates)
+
+
+    def test_code_studio_scm_contract_authoring_helper_guides_generated_apps(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'id="code-studio-generate-scm-contract-helper"',
+            'id="code-studio-scm-contract-authoring-helper"',
+            "Generate contract helper",
+            "SCM contract authoring helper",
+            "contract-first starter for AI-created MCEL apps",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_script = [
+            "SCM_CONTRACT_AUTHORING_HELPER_VERSION",
+            "function buildScmContractAuthoringHelper",
+            "function formatScmContractAuthoringHelper",
+            "function exportScmContractAuthoringHelper",
+            "function copyCurrentScmContractAuthoringHelper",
+            "mcel-code-studio-scm-contract-authoring-helper",
+            "mcel-code-studio-scm-contract-authoring-helper-export",
+            "MCEL SCM CONTRACT AUTHORING HELPER",
+            "strict SCM contract starter for generated MCEL apps",
+            "Declare ownership before rendering UI.",
+            "Declare reads and writes before loading data or mutating state.",
+            "component ownership",
+            "child composition",
+            "route params/query/loaders",
+            "effect triggers/reads/writes/cancellation/race policy",
+            "layout/style computed gates",
+            "serialization boundaries",
+            "repair guards and replay safety",
+            "contractAuthoring: studioState.lastScmContractAuthoringExport",
+            "contractAuthoring: packet.contractAuthoring",
+            "SCM contract authoring helper copied for generated apps",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        expected_style = [
+            ".code-studio-scm-contract-authoring-helper",
+            ".code-studio-scm-contract-authoring-helper code",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        helper_start = script.index("function buildScmContractAuthoringHelper")
+        for later in [
+            "authoringPrinciples:",
+            "contractSkeleton:",
+            "authoringChecklist:",
+            "function formatScmContractAuthoringHelper",
+            "function exportScmContractAuthoringHelper",
+            "function copyCurrentScmContractAuthoringHelper",
+        ]:
+            with self.subTest(order=later):
+                self.assertGreater(script.index(later, helper_start), helper_start)
+
+
+    def test_code_studio_flagship_skeleton_has_tabbed_scm_ai_inspector(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'id="code-studio-flagship-inspector"',
+            "Tabbed SCM / AI Inspector",
+            "Contract · Evidence · Runtime · AI",
+            'id="code-studio-scm-ai-tab-contract"',
+            'id="code-studio-scm-ai-tab-evidence"',
+            'id="code-studio-scm-ai-tab-runtime"',
+            'id="code-studio-scm-ai-tab-ai"',
+            'id="code-studio-scm-ai-panel-contract"',
+            'id="code-studio-scm-ai-panel-evidence"',
+            'id="code-studio-scm-ai-panel-runtime"',
+            'id="code-studio-scm-ai-panel-ai"',
+            'id="code-studio-flagship-contract-summary"',
+            'id="code-studio-flagship-evidence-summary"',
+            'id="code-studio-flagship-runtime-summary"',
+            'id="code-studio-flagship-ai-summary"',
+            'data-code-studio-scm-ai-action="copy-prompt"',
+            'data-code-studio-scm-ai-action="copy-helper"',
+            'data-code-studio-scm-ai-action="copy-packet"',
+            "Bottom Proof Dock",
+            "Diagnostics · Evidence Detail · Replay · Serialization · Persistence · Logs",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_style = [
+            ".code-studio-scm-ai-inspector",
+            ".code-studio-scm-ai-tabs",
+            ".code-studio-scm-ai-tabs button.active",
+            ".code-studio-scm-ai-panel",
+            ".code-studio-scm-ai-card",
+            ".code-studio-scm-ai-actions",
+            ".code-studio-command-pill[data-ok=\"true\"]",
+            ".code-studio-command-pill[data-ok=\"false\"]",
+            ".code-studio-proof-dock-tabs",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        expected_script = [
+            'const flagshipInspector = root.querySelector("#code-studio-flagship-inspector");',
+            'const topRouteStatus = root.querySelector("#code-studio-top-route-status");',
+            'activeScmInspectorTab: "contract"',
+            "function setInspectorPanel",
+            "function buildFlagshipInspectorModel",
+            "function renderFlagshipInspector",
+            "updateTopCommandStatus",
+            "currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())",
+            "codeStudioScmAiTab",
+            "codeStudioScmAiAction",
+            "copyCurrentScmAiRepairPrompt",
+            "copyCurrentScmContractAuthoringHelper",
+            "copyCurrentScmEvidenceDebugPacket",
+            "Contract = what should be true, Evidence = what is proven, Runtime = what happened, AI = what may change next.",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        self.assertNotIn("routeKeyForScm", script)
+
+        inspector = app.index('id="code-studio-flagship-inspector"')
+        contract = app.index('id="code-studio-scm-ai-tab-contract"', inspector)
+        evidence = app.index('id="code-studio-scm-ai-tab-evidence"', inspector)
+        runtime = app.index('id="code-studio-scm-ai-tab-runtime"', inspector)
+        ai = app.index('id="code-studio-scm-ai-tab-ai"', inspector)
+        self.assertLess(contract, evidence)
+        self.assertLess(evidence, runtime)
+        self.assertLess(runtime, ai)
+
+
+
+    def test_code_studio_flagship_workbench_regions_are_hard_split(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'data-code-studio-workbench-region="main-grid"',
+            'data-code-studio-workbench-region="mode-rail"',
+            'data-code-studio-workbench-region="workspace-sidebar"',
+            'data-code-studio-workbench-region="editor-workbench"',
+            'data-code-studio-workbench-region="scm-ai-inspector"',
+            'data-code-studio-workbench-region="proof-dock"',
+            'class="code-studio-bottom-panel code-studio-proof-dock"',
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_style = [
+            "Patch 17C: hard workbench region split",
+            'body:has(#code-editor-app)',
+            'grid-template-areas:',
+            'data-code-studio-workbench-region="main-grid"',
+            'data-code-studio-workbench-region="scm-ai-inspector"',
+            'data-code-studio-workbench-region="proof-dock"',
+            '.code-studio-proof-dock:not([data-expanded="true"]) .code-studio-aider-shell',
+            'overflow: hidden !important',
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        expected_script = [
+            'function prepareFlagshipWorkbenchRegions',
+            'root.dataset.workbenchSplit = "flagship-region-split"',
+            'body.dataset.codeStudioWorkbenchRegion = "main-grid"',
+            'inspector.dataset.codeStudioWorkbenchRegion = "scm-ai-inspector"',
+            'dock.dataset.codeStudioWorkbenchRegion = "proof-dock"',
+            'if (dock.dataset.expanded !== "true") dock.dataset.expanded = "false"',
+            'prepareFlagshipWorkbenchRegions();',
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
 
 
     def test_pretty_doc_explains_better_than_react_lane(self) -> None:

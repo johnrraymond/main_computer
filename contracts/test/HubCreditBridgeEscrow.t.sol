@@ -41,6 +41,19 @@ contract EscrowActor {
     function setBridgeController(HubCreditBridgeEscrow escrow, address newBridgeController) external {
         escrow.setBridgeController(newBridgeController);
     }
+
+    function setPaused(HubCreditBridgeEscrow escrow, bool nextPaused) external {
+        escrow.setPaused(nextPaused);
+    }
+
+    function transferOwnership(HubCreditBridgeEscrow escrow, address newOwner) external {
+        escrow.transferOwnership(newOwner);
+    }
+
+    function sendRawEth(HubCreditBridgeEscrow escrow) external payable {
+        (bool sent, ) = address(escrow).call{value: msg.value}("");
+        require(sent, "raw send failed");
+    }
 }
 
 contract HubCreditBridgeEscrowTest {
@@ -318,6 +331,256 @@ contract HubCreditBridgeEscrowTest {
 
         escrow.setBridgeController(address(outsider));
         assertEq(escrow.bridgeController(), address(outsider));
+    }
+
+    function testPauseBlocksWritesAndUnpauseResumesOperations() public {
+        HubCreditBridgeEscrow escrow = fundedEscrow();
+
+        bytes32 depositWhilePausedId = keccak256("deposit-while-paused");
+        bytes32 completeWhilePausedId = keccak256("complete-while-paused");
+        requester.depositFor{value: 2 * CREDIT}(
+            escrow,
+            address(requester),
+            2 * CREDIT,
+            completeWhilePausedId,
+            "deposit before pause"
+        );
+
+        escrow.setPaused(true);
+        assertTrue(escrow.paused());
+
+        try requester.depositFor{value: 1 * CREDIT}(
+            escrow,
+            address(requester),
+            1 * CREDIT,
+            depositWhilePausedId,
+            "paused deposit"
+        ) {
+            revert("expected paused deposit rejection");
+        } catch {}
+
+        try bridge.completeDeposit(escrow, completeWhilePausedId) {
+            revert("expected paused complete rejection");
+        } catch {}
+
+        try bridge.rectifySpend(escrow, address(requester), 1 * CREDIT, keccak256("paused-rectify"), "paused rectify") {
+            revert("expected paused rectify rejection");
+        } catch {}
+
+        try bridge.releaseWithdrawal(
+            escrow,
+            address(requester),
+            payable(address(requester)),
+            1 * CREDIT,
+            keccak256("paused-withdraw"),
+            "paused withdraw"
+        ) {
+            revert("expected paused withdrawal rejection");
+        } catch {}
+
+        assertEq(escrow.depositedUnits(address(requester)), 102 * CREDIT);
+        assertEq(escrow.completedDepositUnits(address(requester)), 0);
+        assertEq(escrow.rectifiedSpentUnits(address(requester)), 0);
+        assertEq(escrow.withdrawnUnits(address(requester)), 0);
+
+        escrow.setPaused(false);
+        assertFalse(escrow.paused());
+
+        bytes32 resumedDepositId = keccak256("resumed-deposit");
+        bool resumedDeposit = requester.depositFor{value: 3 * CREDIT}(
+            escrow,
+            address(requester),
+            3 * CREDIT,
+            resumedDepositId,
+            "resumed deposit"
+        );
+        bool completed = bridge.completeDeposit(escrow, completeWhilePausedId);
+        bool rectified = bridge.rectifySpend(
+            escrow,
+            address(requester),
+            1 * CREDIT,
+            keccak256("resumed-rectify"),
+            "resumed rectify"
+        );
+        bool released = bridge.releaseWithdrawal(
+            escrow,
+            address(requester),
+            payable(address(requester)),
+            1 * CREDIT,
+            keccak256("resumed-withdraw"),
+            "resumed withdraw"
+        );
+
+        assertTrue(resumedDeposit);
+        assertTrue(completed);
+        assertTrue(rectified);
+        assertTrue(released);
+        assertEq(escrow.completedDepositUnits(address(requester)), 2 * CREDIT);
+        assertEq(escrow.rectifiedSpentUnits(address(requester)), 1 * CREDIT);
+        assertEq(escrow.withdrawnUnits(address(requester)), 1 * CREDIT);
+    }
+
+    function testOnlyOwnerCanTransferOwnershipAndNewOwnerReceivesOwnerPowers() public {
+        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+
+        assertEq(escrow.owner(), address(this));
+
+        try outsider.transferOwnership(escrow, address(outsider)) {
+            revert("expected owner-only transfer rejection");
+        } catch {}
+        assertEq(escrow.owner(), address(this));
+
+        try escrow.transferOwnership(address(0)) {
+            revert("expected zero-owner rejection");
+        } catch {}
+        assertEq(escrow.owner(), address(this));
+
+        escrow.transferOwnership(address(outsider));
+        assertEq(escrow.owner(), address(outsider));
+
+        try escrow.setPaused(true) {
+            revert("expected old owner pause rejection");
+        } catch {}
+
+        try escrow.setBridgeController(address(outsider)) {
+            revert("expected old owner bridge-controller rejection");
+        } catch {}
+
+        try escrow.transferOwnership(address(this)) {
+            revert("expected old owner transfer rejection");
+        } catch {}
+
+        outsider.setPaused(escrow, true);
+        assertTrue(escrow.paused());
+
+        outsider.setPaused(escrow, false);
+        assertFalse(escrow.paused());
+
+        outsider.setBridgeController(escrow, address(outsider));
+        assertEq(escrow.bridgeController(), address(outsider));
+
+        outsider.transferOwnership(escrow, address(this));
+        assertEq(escrow.owner(), address(this));
+    }
+
+    function testBridgeControllerRotationRevokesOldBridgeAndAuthorizesNewBridge() public {
+        HubCreditBridgeEscrow escrow = fundedEscrow();
+
+        try escrow.setBridgeController(address(0)) {
+            revert("expected zero bridge rejection");
+        } catch {}
+        assertEq(escrow.bridgeController(), address(bridge));
+
+        escrow.setBridgeController(address(outsider));
+        assertEq(escrow.bridgeController(), address(outsider));
+
+        bytes32 depositId = keccak256("rotated-controller-deposit");
+        requester.depositFor{value: 4 * CREDIT}(
+            escrow,
+            address(requester),
+            4 * CREDIT,
+            depositId,
+            "rotation deposit"
+        );
+
+        try bridge.completeDeposit(escrow, depositId) {
+            revert("expected old bridge complete rejection");
+        } catch {}
+
+        try bridge.rectifySpend(escrow, address(requester), 1 * CREDIT, keccak256("old-bridge-rectify"), "old bridge") {
+            revert("expected old bridge rectify rejection");
+        } catch {}
+
+        try bridge.releaseWithdrawal(
+            escrow,
+            address(requester),
+            payable(address(requester)),
+            1 * CREDIT,
+            keccak256("old-bridge-withdraw"),
+            "old bridge"
+        ) {
+            revert("expected old bridge withdrawal rejection");
+        } catch {}
+
+        bool completed = outsider.completeDeposit(escrow, depositId);
+        bool rectified = outsider.rectifySpend(
+            escrow,
+            address(requester),
+            1 * CREDIT,
+            keccak256("new-bridge-rectify"),
+            "new bridge"
+        );
+        bool released = outsider.releaseWithdrawal(
+            escrow,
+            address(requester),
+            payable(address(requester)),
+            1 * CREDIT,
+            keccak256("new-bridge-withdraw"),
+            "new bridge"
+        );
+
+        assertTrue(completed);
+        assertTrue(rectified);
+        assertTrue(released);
+        assertEq(escrow.completedDepositUnits(address(requester)), 4 * CREDIT);
+        assertEq(escrow.rectifiedSpentUnits(address(requester)), 1 * CREDIT);
+        assertEq(escrow.withdrawnUnits(address(requester)), 1 * CREDIT);
+    }
+
+    function testHubAdminCannotUseOwnerOnlyControls() public {
+        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+
+        try bridge.setBridgeController(escrow, address(outsider)) {
+            revert("expected hub admin bridge-controller rejection");
+        } catch {}
+
+        try bridge.setPaused(escrow, true) {
+            revert("expected hub admin pause rejection");
+        } catch {}
+
+        try bridge.transferOwnership(escrow, address(bridge)) {
+            revert("expected hub admin ownership-transfer rejection");
+        } catch {}
+
+        assertEq(escrow.owner(), address(this));
+        assertEq(escrow.bridgeController(), address(bridge));
+        assertFalse(escrow.paused());
+    }
+
+    function testConstructorRejectsZeroBridgeAndInitializesAuthorities() public {
+        try new HubCreditBridgeEscrow(address(0)) returns (HubCreditBridgeEscrow rejected) {
+            assertTrue(address(rejected) != address(0));
+            revert("expected zero bridge constructor rejection");
+        } catch {}
+
+        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+
+        assertEq(escrow.owner(), address(this));
+        assertEq(escrow.bridgeController(), address(bridge));
+        assertFalse(escrow.paused());
+    }
+
+    function testRawEthReceiveRevertsAndDepositForIsRequired() public {
+        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+
+        try requester.sendRawEth{value: 1 * CREDIT}(escrow) {
+            revert("expected raw eth rejection");
+        } catch {}
+
+        assertEq(address(escrow).balance, 0);
+
+        bytes32 depositId = keccak256("receive-requires-deposit-for");
+        bool deposited = requester.depositFor{value: 1 * CREDIT}(
+            escrow,
+            address(requester),
+            1 * CREDIT,
+            depositId,
+            "deposit via depositFor"
+        );
+
+        assertTrue(deposited);
+        assertEq(address(escrow).balance, 1 * CREDIT);
+        assertEq(escrow.depositedUnits(address(requester)), 1 * CREDIT);
     }
 
     function fundedEscrow() private returns (HubCreditBridgeEscrow) {

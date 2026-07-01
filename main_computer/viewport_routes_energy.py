@@ -21,6 +21,132 @@ from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 
 
+DEFAULT_WORKER_LIVE_SESSION_LOCAL_AI_TIMEOUT_SECONDS = 300.0
+
+
+def _worker_live_offer_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(parsed, 128_000)) if parsed > 0 else None
+
+
+def _worker_live_offer_parts(offer: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+    input_payload = dict(work.get("input") or {}) if isinstance(work.get("input"), dict) else {}
+    work_metadata = dict(work.get("metadata") or {}) if isinstance(work.get("metadata"), dict) else {}
+    offer_metadata = dict(offer.get("metadata") or {}) if isinstance(offer.get("metadata"), dict) else {}
+    execution_limits = (
+        dict(work.get("execution_limits") or {})
+        if isinstance(work.get("execution_limits"), dict)
+        else dict(offer.get("execution_limits") or {})
+        if isinstance(offer.get("execution_limits"), dict)
+        else {}
+    )
+    return work, input_payload, work_metadata, offer_metadata, execution_limits
+
+
+def _worker_live_offer_target_tokens(offer: dict[str, Any]) -> int:
+    work, input_payload, work_metadata, offer_metadata, execution_limits = _worker_live_offer_parts(offer)
+    for value in (
+        work.get("target_tokens"),
+        work.get("max_output_tokens"),
+        input_payload.get("target_tokens"),
+        input_payload.get("max_output_tokens"),
+        work_metadata.get("target_tokens"),
+        work_metadata.get("max_output_tokens"),
+        work_metadata.get("worker_target_tokens"),
+        execution_limits.get("target_tokens"),
+        execution_limits.get("max_output_tokens"),
+        offer.get("target_tokens"),
+        offer.get("max_output_tokens"),
+        offer_metadata.get("target_tokens"),
+        offer_metadata.get("max_output_tokens"),
+        offer_metadata.get("worker_target_tokens"),
+        os.environ.get("MAIN_COMPUTER_WORKER_LIVE_SESSION_MAX_OUTPUT_TOKENS"),
+    ):
+        parsed = _worker_live_offer_positive_int(value)
+        if parsed is not None:
+            return parsed
+    return 0
+
+
+def _worker_live_offer_first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None and str(value).strip() != "":
+            return value
+    return None
+
+
+def _worker_live_offer_think_value(offer: dict[str, Any]) -> Any:
+    work, input_payload, work_metadata, offer_metadata, execution_limits = _worker_live_offer_parts(offer)
+    return _worker_live_offer_first_present(
+        work.get("ollama_think"),
+        work.get("think"),
+        input_payload.get("ollama_think"),
+        input_payload.get("think"),
+        work_metadata.get("ollama_think"),
+        work_metadata.get("think"),
+        execution_limits.get("ollama_think"),
+        execution_limits.get("think"),
+        offer.get("ollama_think"),
+        offer.get("think"),
+        offer_metadata.get("ollama_think"),
+        offer_metadata.get("think"),
+    )
+
+
+def _worker_live_offer_completion_sentinel(offer: dict[str, Any]) -> str:
+    work, input_payload, work_metadata, offer_metadata, execution_limits = _worker_live_offer_parts(offer)
+    value = _worker_live_offer_first_present(
+        work.get("stream_result_sentinel"),
+        work.get("early_result_sentinel"),
+        work.get("completion_sentinel"),
+        input_payload.get("stream_result_sentinel"),
+        input_payload.get("early_result_sentinel"),
+        input_payload.get("completion_sentinel"),
+        work_metadata.get("stream_result_sentinel"),
+        work_metadata.get("early_result_sentinel"),
+        work_metadata.get("completion_sentinel"),
+        execution_limits.get("stream_result_sentinel"),
+        execution_limits.get("early_result_sentinel"),
+        execution_limits.get("completion_sentinel"),
+        offer.get("stream_result_sentinel"),
+        offer.get("early_result_sentinel"),
+        offer.get("completion_sentinel"),
+        offer_metadata.get("stream_result_sentinel"),
+        offer_metadata.get("early_result_sentinel"),
+        offer_metadata.get("completion_sentinel"),
+    )
+    return str(value or "").strip()
+
+
+def _worker_live_offer_provider_options(offer: dict[str, Any], *, target_tokens: int = 0) -> dict[str, Any]:
+    work, input_payload, work_metadata, offer_metadata, execution_limits = _worker_live_offer_parts(offer)
+    merged: dict[str, Any] = {}
+    for value in (
+        work.get("provider_options"),
+        work.get("ollama_options"),
+        input_payload.get("provider_options"),
+        input_payload.get("ollama_options"),
+        work_metadata.get("provider_options"),
+        work_metadata.get("ollama_options"),
+        execution_limits.get("provider_options"),
+        execution_limits.get("ollama_options"),
+        offer.get("provider_options"),
+        offer.get("ollama_options"),
+        offer_metadata.get("provider_options"),
+        offer_metadata.get("ollama_options"),
+    ):
+        if isinstance(value, dict):
+            merged.update(value)
+    if target_tokens > 0:
+        existing = _worker_live_offer_positive_int(merged.get("num_predict"))
+        merged["num_predict"] = min(existing, target_tokens) if existing is not None else target_tokens
+    return merged
+
+
 def _worker_runtime_public_redacted(value: Any) -> Any:
     private_keys = {
         "worker_id",
@@ -532,17 +658,60 @@ class _WorkerHubLiveSessionClient:
             "session_id": session_id,
             "request_id": request_id,
             "run_id": run_id,
+            "local_ai_timeout_seconds": self._work_offer_timeout_seconds(offer),
             "model": str(work.get("model") or ""),
             "capabilities": [str(item) for item in work.get("capabilities", [])] if isinstance(work.get("capabilities"), list) else [],
         }
 
     def _work_offer_timeout_seconds(self, offer: dict[str, Any]) -> float:
         work = dict(offer.get("work") or {}) if isinstance(offer.get("work"), dict) else {}
+        input_payload = dict(work.get("input") or {}) if isinstance(work.get("input"), dict) else {}
+        work_metadata = dict(work.get("metadata") or {}) if isinstance(work.get("metadata"), dict) else {}
+        offer_metadata = dict(offer.get("metadata") or {}) if isinstance(offer.get("metadata"), dict) else {}
+        execution_limits = (
+            dict(work.get("execution_limits") or {})
+            if isinstance(work.get("execution_limits"), dict)
+            else dict(offer.get("execution_limits") or {})
+            if isinstance(offer.get("execution_limits"), dict)
+            else {}
+        )
         candidates = [
             work.get("timeout_seconds"),
+            work.get("worker_timeout_seconds"),
+            work.get("work_timeout_seconds"),
             work.get("max_runtime_seconds"),
             work.get("local_ai_timeout_seconds"),
+            work.get("worker_local_ai_timeout_seconds"),
+            input_payload.get("timeout_seconds"),
+            input_payload.get("worker_timeout_seconds"),
+            input_payload.get("work_timeout_seconds"),
+            input_payload.get("max_runtime_seconds"),
+            input_payload.get("local_ai_timeout_seconds"),
+            input_payload.get("worker_local_ai_timeout_seconds"),
+            work_metadata.get("timeout_seconds"),
+            work_metadata.get("worker_timeout_seconds"),
+            work_metadata.get("work_timeout_seconds"),
+            work_metadata.get("max_runtime_seconds"),
+            work_metadata.get("local_ai_timeout_seconds"),
+            work_metadata.get("worker_local_ai_timeout_seconds"),
+            execution_limits.get("timeout_seconds"),
+            execution_limits.get("worker_timeout_seconds"),
+            execution_limits.get("work_timeout_seconds"),
+            execution_limits.get("max_runtime_seconds"),
+            execution_limits.get("local_ai_timeout_seconds"),
+            execution_limits.get("worker_local_ai_timeout_seconds"),
             offer.get("timeout_seconds"),
+            offer.get("worker_timeout_seconds"),
+            offer.get("work_timeout_seconds"),
+            offer.get("max_runtime_seconds"),
+            offer.get("local_ai_timeout_seconds"),
+            offer.get("worker_local_ai_timeout_seconds"),
+            offer_metadata.get("timeout_seconds"),
+            offer_metadata.get("worker_timeout_seconds"),
+            offer_metadata.get("work_timeout_seconds"),
+            offer_metadata.get("max_runtime_seconds"),
+            offer_metadata.get("local_ai_timeout_seconds"),
+            offer_metadata.get("worker_local_ai_timeout_seconds"),
             os.environ.get("MAIN_COMPUTER_WORKER_LIVE_SESSION_LOCAL_AI_TIMEOUT_SECONDS"),
         ]
         for value in candidates:
@@ -551,14 +720,14 @@ class _WorkerHubLiveSessionClient:
                 continue
             try:
                 parsed = float(raw)
-            except ValueError:
+            except (TypeError, ValueError):
                 continue
             if parsed > 0:
                 return max(1.0, min(parsed, 3600.0))
         # Local LLMs can cold-start or prefill slowly.  The worker result
         # handoff is already terminal-safe, so keep this as a generous outer
         # executor deadline rather than a short request/accept timer.
-        return 180.0
+        return DEFAULT_WORKER_LIVE_SESSION_LOCAL_AI_TIMEOUT_SECONDS
 
     def _cancel_work_executor_after_timeout(self, executor: Any, offer: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
         """Best-effort cancellation for worker local-AI work after the outer offer timeout.
@@ -2688,6 +2857,10 @@ class ViewportEnergyRoutesMixin:
         request_id = str(offer.get("request_id") or "").strip()
         thread_id = self._worker_live_session_thread_id_for_offer(offer, run_id=run_id)
         log_path = self._worker_live_session_log_path(run_id=run_id, session_id=session_id, request_id=request_id)
+        target_tokens = _worker_live_offer_target_tokens(offer)
+        provider_options = _worker_live_offer_provider_options(offer, target_tokens=target_tokens)
+        think_value = _worker_live_offer_think_value(offer)
+        completion_sentinel = _worker_live_offer_completion_sentinel(offer)
 
         append_text_log(
             log_path,
@@ -2699,6 +2872,10 @@ class ViewportEnergyRoutesMixin:
             capabilities=capabilities,
             source_chars=len(source),
             source_preview=source[:1000],
+            target_tokens=target_tokens,
+            provider_options=provider_options,
+            think=think_value,
+            completion_sentinel=completion_sentinel,
         )
 
         if self._worker_live_session_should_inline_provider():
@@ -2725,6 +2902,24 @@ class ViewportEnergyRoutesMixin:
                     "messages": messages,
                     "attachments": attachments,
                     "config": config_to_payload(self.server.config),
+                    "target_tokens": target_tokens,
+                    "max_output_tokens": target_tokens,
+                    "provider_options": provider_options,
+                    "ollama_options": provider_options,
+                    "think": think_value,
+                    "ollama_think": think_value,
+                    "completion_sentinel": completion_sentinel,
+                    "early_result_sentinel": completion_sentinel,
+                    "stream_result_sentinel": completion_sentinel,
+                    "required_headings": [
+                        "# Codebase Digest",
+                        "## Summary",
+                        "## Relevant files",
+                        "## State machine",
+                        "## Risks",
+                        "## Verification steps",
+                        "## Follow-up tasks",
+                    ],
                 },
                 thread_id=thread_id,
                 log_file=log_path,

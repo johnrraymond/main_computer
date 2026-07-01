@@ -10,7 +10,16 @@
       const contractEnvelope = root.querySelector("#code-studio-contract-envelope");
       const scmEvidencePanel = root.querySelector("#code-studio-scm-evidence-panel");
       const refreshScmEvidenceButton = root.querySelector("#code-studio-refresh-scm-evidence");
+      const saveLiveWorkspaceButton = root.querySelector("#code-studio-save-live-workspace");
+      const restoreLiveWorkspaceButton = root.querySelector("#code-studio-restore-live-workspace");
+      const clearLiveWorkspaceButton = root.querySelector("#code-studio-clear-live-workspace");
+      const liveWorkspacePersistenceStatus = root.querySelector("#code-studio-live-workspace-persistence");
       const status = root.querySelector("#code-studio-status");
+      const flagshipInspector = root.querySelector("#code-studio-flagship-inspector");
+      const topRouteStatus = root.querySelector("#code-studio-top-route-status");
+      const topGateStatus = root.querySelector("#code-studio-top-gate-status");
+      const topPersistenceStatus = root.querySelector("#code-studio-top-persistence-status");
+      const topRuntimeVersion = root.querySelector("#code-studio-top-runtime-version");
       const runtimeState = root.querySelector("#code-studio-runtime-state");
       const validateButton = root.querySelector("#code-studio-validate");
       const serializeButton = root.querySelector("#code-studio-serialize");
@@ -32,6 +41,11 @@
         "repair"
       ];
       const SCM_EVIDENCE_PACKET_VERSION = "1.0.0";
+      const SCM_AI_REPAIR_PROMPT_VERSION = "1.0.0";
+      const SCM_REPLAY_SNAPSHOT_VERSION = "1.0.0";
+      const SCM_CONTRACT_AUTHORING_HELPER_VERSION = "1.0.0";
+      const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
+      const LIVE_WORKSPACE_PERSISTENCE_KEY = "main-computer-code-studio-live-workspace-v1";
       const MCEL_RUNTIME_PACKAGE_VERSION = "mcel-runtime.v0.1.15";
 
       if (!sourceEditor || !runtimePreview) return;
@@ -50,14 +64,62 @@
         lastScmDebugPacket: null,
         lastScmDebugPacketJson: "",
         lastScmDebugPacketExport: null,
+        lastScmRepairPrompt: "",
+        lastScmRepairPromptExport: null,
+        lastScmReplaySnapshotComparison: null,
+        lastLiveWorkspacePersistence: null,
+        lastRouteLoaderPersistenceGate: null,
+        lastScmContractAuthoringHelper: null,
+        lastScmContractAuthoringHelperText: "",
+        lastScmContractAuthoringExport: null,
+        persistenceHydrated: false,
         lastSerializationGate: null,
         lastRepairGate: null,
         lastSaveFileEffectGate: null,
+        activeScmInspectorTab: "contract",
       };
 
       let scmInstance = null;
       let scmRouteInstance = null;
       let scmRouteKey = "";
+
+      function prepareFlagshipWorkbenchRegions() {
+        root.dataset.workbenchSplit = "flagship-region-split";
+        const regionSelectors = {
+          shell: ".code-studio-shell",
+          body: ".code-studio-body",
+          rail: ".code-studio-activitybar",
+          sidebar: ".code-studio-sidebar",
+          editor: ".code-studio-editor-group",
+          inspector: ".code-studio-inspector",
+          dock: "#code-studio-bottom-panel",
+          statusbar: ".code-studio-statusbar"
+        };
+        const shell = root.querySelector(regionSelectors.shell);
+        const body = root.querySelector(regionSelectors.body);
+        const rail = root.querySelector(regionSelectors.rail);
+        const sidebar = root.querySelector(regionSelectors.sidebar);
+        const editor = root.querySelector(regionSelectors.editor);
+        const inspector = root.querySelector(regionSelectors.inspector);
+        const dock = root.querySelector(regionSelectors.dock);
+        const statusbar = root.querySelector(regionSelectors.statusbar);
+
+        if (body) body.dataset.codeStudioWorkbenchRegion = "main-grid";
+        if (rail) rail.dataset.codeStudioWorkbenchRegion = "mode-rail";
+        if (sidebar) sidebar.dataset.codeStudioWorkbenchRegion = "workspace-sidebar";
+        if (editor) editor.dataset.codeStudioWorkbenchRegion = "editor-workbench";
+        if (inspector) inspector.dataset.codeStudioWorkbenchRegion = "scm-ai-inspector";
+        if (dock) {
+          dock.dataset.codeStudioWorkbenchRegion = "proof-dock";
+          if (dock.dataset.expanded !== "true") dock.dataset.expanded = "false";
+        }
+        if (statusbar) statusbar.dataset.codeStudioWorkbenchRegion = "statusbar";
+        if (shell && body && body.parentElement !== shell) shell.append(body);
+        if (shell && dock && dock.parentElement !== shell) shell.append(dock);
+        if (shell && statusbar && statusbar.parentElement !== shell) shell.append(statusbar);
+        return {shell, body, rail, sidebar, editor, inspector, dock, statusbar};
+      }
+
 
       function resolveScmBridge() {
         const mcel = window.MCEL || null;
@@ -321,6 +383,333 @@
           return false;
         }
         return true;
+      }
+
+      function liveWorkspaceStorage() {
+        try {
+          return window.localStorage || null;
+        } catch {
+          return null;
+        }
+      }
+
+      function summarizeScmGateForPersistence(gate) {
+        if (!gate) return null;
+        return {
+          label: gate.label || "",
+          ok: gate.ok !== false,
+          skipped: Boolean(gate.skipped),
+          code: gate.code || gate.violation?.code || "",
+          message: gate.message || gate.violation?.message || "",
+          resultKind: gate.result?.kind || gate.kind || ""
+        };
+      }
+
+      function summarizeRouteLoaderPersistenceGate(loaderGate) {
+        if (!loaderGate) return null;
+        return {
+          label: loaderGate.label || "route-and-loaders",
+          ok: loaderGate.ok !== false,
+          route: summarizeScmGateForPersistence(loaderGate.route),
+          effects: {
+            loadWorkspace: summarizeScmGateForPersistence(loaderGate.effects?.loadWorkspace),
+            loadFile: summarizeScmGateForPersistence(loaderGate.effects?.loadFile)
+          }
+        };
+      }
+
+      function collectLiveWorkspacePersistenceSummary() {
+        const summary = studioState.lastLiveWorkspacePersistence || {
+          kind: "mcel-code-studio-live-workspace-persistence-summary",
+          persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+          storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+          status: "not-loaded",
+          ok: true,
+          savedAt: "",
+          restoredAt: "",
+          clearedAt: "",
+          selectedPath: studioState.selectedPath,
+          sourceLength: sourceEditor.value.length,
+          fileCount: workspaceFields().files.length,
+          route: {
+            params: routeParamsForScm() || {},
+            query: routeQueryForScm()
+          },
+          saveFileEffect: summarizeScmGateForPersistence(studioState.lastSaveFileEffectGate),
+          routeLoaderSync: summarizeRouteLoaderPersistenceGate(studioState.lastRouteLoaderPersistenceGate)
+        };
+        return jsonSafeClone(summary);
+      }
+
+      function renderLiveWorkspacePersistenceStatus(summary = collectLiveWorkspacePersistenceSummary()) {
+        if (!liveWorkspacePersistenceStatus) return summary;
+        const statusText = summary.status || "unknown";
+        const path = summary.selectedPath || studioState.selectedPath || "";
+        const savedAt = summary.savedAt ? ` saved ${summary.savedAt}` : "";
+        liveWorkspacePersistenceStatus.textContent = `live workspace persistence: ${statusText}${path ? ` · ${path}` : ""}${savedAt}`;
+        liveWorkspacePersistenceStatus.dataset.status = statusText;
+        liveWorkspacePersistenceStatus.dataset.ok = summary.ok === false ? "false" : "true";
+        return summary;
+      }
+
+      function buildLiveWorkspacePersistenceRecord(reason = "manual-save") {
+        const fields = workspaceFields();
+        const selected = selectedFile(fields);
+        const routeParams = routeParamsForScm(fields) || {};
+        const routeQuery = routeQueryForScm();
+        return jsonSafeClone({
+          kind: "mcel-code-studio-live-workspace-persistence-record",
+          persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+          savedAt: new Date().toISOString(),
+          reason,
+          source: sourceEditor.value,
+          selectedPath: studioState.selectedPath,
+          selectedFile: selected ? {
+            path: selected.path,
+            language: selected.language,
+            required: selected.required,
+            field: selected.field,
+            length: selected.value.length
+          } : null,
+          fileCount: fields.files.length,
+          sourceLength: sourceEditor.value.length,
+          route: {
+            name: window.McelCodeStudioScm?.routeName || "workspace.file",
+            params: routeParams,
+            query: routeQuery,
+            key: currentScmRouteKey(routeParams, routeQuery)
+          },
+          dirtyState: collectDirtyStateSummary(fields)
+        });
+      }
+
+      function persistLiveWorkspaceFromSource(reason = "manual-save", options = {}) {
+        const storage = liveWorkspaceStorage();
+        if (!storage) {
+          const summary = {
+            kind: "mcel-code-studio-live-workspace-persistence-summary",
+            persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+            storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+            status: "unavailable",
+            ok: false,
+            message: "localStorage is unavailable.",
+            selectedPath: studioState.selectedPath,
+            sourceLength: sourceEditor.value.length,
+            fileCount: workspaceFields().files.length
+          };
+          studioState.lastLiveWorkspacePersistence = summary;
+          renderLiveWorkspacePersistenceStatus(summary);
+          setStatus("Live workspace persistence is unavailable in this browser context.");
+          return summary;
+        }
+
+        const {parseError, workspace} = parseSource();
+        if (!workspace || parseError) {
+          const summary = {
+            kind: "mcel-code-studio-live-workspace-persistence-summary",
+            persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+            storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+            status: "blocked",
+            ok: false,
+            message: "Source workspace must parse before it can be persisted.",
+            selectedPath: studioState.selectedPath,
+            sourceLength: sourceEditor.value.length,
+            fileCount: workspaceFields().files.length
+          };
+          studioState.lastLiveWorkspacePersistence = summary;
+          renderLiveWorkspacePersistenceStatus(summary);
+          setStatus("Live workspace persistence blocked: source workspace does not parse.");
+          return summary;
+        }
+
+        syncScmInstance();
+        const saveGate = options.saveGate || runScmGate("effect:saveFile", (mcel, instance) => mcel.runEffect(instance, "saveFile", {
+          fileId: selectedScmFileId(),
+          selectedPath: studioState.selectedPath,
+          reason
+        }));
+        studioState.lastSaveFileEffectGate = saveGate;
+
+        const loaderGate = options.loaderGate || enterScmRouteAndRunLoaders({forceEnter: true});
+        studioState.lastRouteLoaderPersistenceGate = loaderGate;
+
+        const record = buildLiveWorkspacePersistenceRecord(reason);
+        const ok = saveGate.ok !== false && loaderGate.ok !== false;
+        const summary = {
+          kind: "mcel-code-studio-live-workspace-persistence-summary",
+          persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+          storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+          status: ok ? "saved" : "blocked",
+          ok,
+          savedAt: ok ? record.savedAt : "",
+          reason,
+          selectedPath: record.selectedPath,
+          selectedFile: record.selectedFile,
+          sourceLength: record.sourceLength,
+          fileCount: record.fileCount,
+          route: record.route,
+          dirtyState: record.dirtyState,
+          saveFileEffect: summarizeScmGateForPersistence(saveGate),
+          routeLoaderSync: summarizeRouteLoaderPersistenceGate(loaderGate)
+        };
+
+        if (ok) {
+          try {
+            storage.setItem(LIVE_WORKSPACE_PERSISTENCE_KEY, JSON.stringify(record));
+          } catch (error) {
+            summary.status = "blocked";
+            summary.ok = false;
+            summary.message = error?.message || "localStorage write failed.";
+          }
+        }
+
+        studioState.lastLiveWorkspacePersistence = jsonSafeClone(summary);
+        renderLiveWorkspacePersistenceStatus(studioState.lastLiveWorkspacePersistence);
+        setStatus(summary.ok ? "Live workspace persisted through SCM saveFile effect and route loaders." : `Live workspace persistence blocked: ${summary.message || saveGate.code || loaderGate.route?.code || "SCM gate failed"}.`);
+        return studioState.lastLiveWorkspacePersistence;
+      }
+
+      function hydratePersistedLiveWorkspace(options = {}) {
+        const storage = liveWorkspaceStorage();
+        if (!storage) {
+          const summary = {
+            kind: "mcel-code-studio-live-workspace-persistence-summary",
+            persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+            storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+            status: "unavailable",
+            ok: false,
+            message: "localStorage is unavailable.",
+            selectedPath: studioState.selectedPath,
+            sourceLength: sourceEditor.value.length,
+            fileCount: workspaceFields().files.length
+          };
+          studioState.lastLiveWorkspacePersistence = summary;
+          renderLiveWorkspacePersistenceStatus(summary);
+          return summary;
+        }
+
+        const raw = storage.getItem(LIVE_WORKSPACE_PERSISTENCE_KEY);
+        if (!raw) {
+          const summary = collectLiveWorkspacePersistenceSummary();
+          summary.status = "not-saved";
+          summary.ok = true;
+          studioState.lastLiveWorkspacePersistence = summary;
+          renderLiveWorkspacePersistenceStatus(summary);
+          return summary;
+        }
+
+        let record = null;
+        try {
+          record = JSON.parse(raw);
+        } catch {
+          const summary = {
+            kind: "mcel-code-studio-live-workspace-persistence-summary",
+            persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+            storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+            status: "blocked",
+            ok: false,
+            message: "Persisted workspace record is not valid JSON.",
+            selectedPath: studioState.selectedPath,
+            sourceLength: sourceEditor.value.length,
+            fileCount: workspaceFields().files.length
+          };
+          studioState.lastLiveWorkspacePersistence = summary;
+          renderLiveWorkspacePersistenceStatus(summary);
+          return summary;
+        }
+
+        if (record?.kind !== "mcel-code-studio-live-workspace-persistence-record" || typeof record.source !== "string") {
+          const summary = {
+            kind: "mcel-code-studio-live-workspace-persistence-summary",
+            persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+            storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+            status: "blocked",
+            ok: false,
+            message: "Persisted workspace record shape is not recognized.",
+            selectedPath: studioState.selectedPath,
+            sourceLength: sourceEditor.value.length,
+            fileCount: workspaceFields().files.length
+          };
+          studioState.lastLiveWorkspacePersistence = summary;
+          renderLiveWorkspacePersistenceStatus(summary);
+          return summary;
+        }
+
+        sourceEditor.value = record.source;
+        studioState.selectedPath = record.selectedPath || studioState.selectedPath;
+        studioState.dirty = false;
+        studioState.damaged = false;
+        studioState.mounted = false;
+        studioState.persistenceHydrated = true;
+        syncLineGutter();
+        syncScmInstance();
+        const loaderGate = enterScmRouteAndRunLoaders({forceEnter: true});
+        studioState.lastRouteLoaderPersistenceGate = loaderGate;
+
+        const fields = workspaceFields();
+        const summary = {
+          kind: "mcel-code-studio-live-workspace-persistence-summary",
+          persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+          storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+          status: options.manual ? "restored" : "hydrated",
+          ok: loaderGate.ok !== false,
+          savedAt: record.savedAt || "",
+          restoredAt: new Date().toISOString(),
+          reason: record.reason || "",
+          selectedPath: studioState.selectedPath,
+          selectedFile: selectedFile(fields) ? {
+            path: selectedFile(fields).path,
+            language: selectedFile(fields).language,
+            required: selectedFile(fields).required,
+            field: selectedFile(fields).field,
+            length: selectedFile(fields).value.length
+          } : null,
+          sourceLength: sourceEditor.value.length,
+          fileCount: fields.files.length,
+          route: record.route || {
+            params: routeParamsForScm(fields) || {},
+            query: routeQueryForScm()
+          },
+          dirtyState: collectDirtyStateSummary(fields),
+          routeLoaderSync: summarizeRouteLoaderPersistenceGate(loaderGate)
+        };
+        studioState.lastLiveWorkspacePersistence = jsonSafeClone(summary);
+        renderLiveWorkspacePersistenceStatus(studioState.lastLiveWorkspacePersistence);
+        if (options.manual) {
+          renderRuntime();
+          validateSource();
+          showPane("source");
+          setStatus("Persisted live workspace restored and route/effect loaders refreshed.");
+        }
+        return studioState.lastLiveWorkspacePersistence;
+      }
+
+      function clearPersistedLiveWorkspace() {
+        const storage = liveWorkspaceStorage();
+        if (storage) {
+          try {
+            storage.removeItem(LIVE_WORKSPACE_PERSISTENCE_KEY);
+          } catch {}
+        }
+        const summary = {
+          kind: "mcel-code-studio-live-workspace-persistence-summary",
+          persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
+          storageKey: LIVE_WORKSPACE_PERSISTENCE_KEY,
+          status: "cleared",
+          ok: true,
+          clearedAt: new Date().toISOString(),
+          selectedPath: studioState.selectedPath,
+          sourceLength: sourceEditor.value.length,
+          fileCount: workspaceFields().files.length,
+          route: {
+            params: routeParamsForScm() || {},
+            query: routeQueryForScm()
+          }
+        };
+        studioState.lastLiveWorkspacePersistence = summary;
+        renderLiveWorkspacePersistenceStatus(summary);
+        setStatus("Persisted live workspace cleared. Current author source remains loaded.");
+        return summary;
       }
 
       function exportScmEvidence() {
@@ -740,6 +1129,428 @@
         };
       }
 
+      function flattenScmGateFlags(gates = {}) {
+        const flags = {};
+        const visit = (prefix, value) => {
+          if (!value || typeof value !== "object") return;
+          if ("ok" in value || "skipped" in value || "code" in value) {
+            flags[prefix] = {
+              ok: value.ok !== false,
+              skipped: Boolean(value.skipped),
+              code: value.code || ""
+            };
+            return;
+          }
+          Object.entries(value).forEach(([key, child]) => {
+            visit(prefix ? `${prefix}.${key}` : key, child);
+          });
+        };
+        visit("gates", gates);
+        return flags;
+      }
+
+      function compareScmGateFlags(before = {}, after = {}) {
+        const changes = [];
+        const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+        keys.forEach((key) => {
+          const beforeGate = before[key] || {};
+          const afterGate = after[key] || {};
+          if (beforeGate.ok !== afterGate.ok || beforeGate.skipped !== afterGate.skipped || beforeGate.code !== afterGate.code) {
+            changes.push({
+              gate: key.replace(/^gates\.?/, ""),
+              before: beforeGate,
+              after: afterGate
+            });
+          }
+        });
+        return changes;
+      }
+
+      function buildScmReplaySnapshot(stage, entry, report = studioState.lastReport) {
+        const summary = collectScmEvidenceSummary(report);
+        const fields = workspaceFields();
+        const routeParams = routeParamsForScm(fields) || {};
+        const routeQuery = routeQueryForScm();
+        const gates = collectGateStatus(summary.gates || studioState.lastScmGates || null);
+
+        return jsonSafeClone({
+          kind: "mcel-code-studio-scm-replay-snapshot",
+          snapshotVersion: SCM_REPLAY_SNAPSHOT_VERSION,
+          capturedAt: new Date().toISOString(),
+          stage,
+          evidenceKey: entry?.evidenceKey || "",
+          evidenceLabel: evidenceEntryLabel(entry || {}),
+          selectedEvidence: formatEvidenceDetail(entry || {}),
+          workspace: {
+            selectedPath: studioState.selectedPath,
+            route: {
+              name: window.McelCodeStudioScm?.routeName || "workspace.file",
+              params: routeParams,
+              query: routeQuery,
+              key: currentScmRouteKey(routeParams, routeQuery)
+            }
+          },
+          dirtyState: collectDirtyStateSummary(fields),
+          gates,
+          evidenceSummary: {
+            component: summary.component,
+            route: summary.route,
+            combined: summary.combined
+          },
+          recentEvidenceKeys: (summary.recentEvidence || []).map((item) => item.evidenceKey || evidenceEntryLabel(item))
+        });
+      }
+
+      function compareScmReplaySnapshots(beforeSnapshot, afterSnapshot, replayResult = null) {
+        const beforeCombined = beforeSnapshot?.evidenceSummary?.combined || {};
+        const afterCombined = afterSnapshot?.evidenceSummary?.combined || {};
+        const gateChanges = compareScmGateFlags(
+          flattenScmGateFlags(beforeSnapshot?.gates || {}),
+          flattenScmGateFlags(afterSnapshot?.gates || {})
+        );
+        const deltas = {
+          total: (afterCombined.total || 0) - (beforeCombined.total || 0),
+          ok: (afterCombined.ok || 0) - (beforeCombined.ok || 0),
+          violations: (afterCombined.violations || 0) - (beforeCombined.violations || 0),
+          blocking: (afterCombined.blocking || 0) - (beforeCombined.blocking || 0),
+          gateChanges
+        };
+        const replayOk = replayResult?.ok !== false;
+        const gatesOk = afterSnapshot?.gates?.ok !== false;
+        const stable = replayOk && gatesOk && deltas.violations <= 0 && deltas.blocking <= 0 && gateChanges.length === 0;
+
+        return jsonSafeClone({
+          kind: "mcel-code-studio-scm-replay-comparison",
+          comparisonVersion: SCM_REPLAY_SNAPSHOT_VERSION,
+          comparedAt: new Date().toISOString(),
+          ok: replayOk && gatesOk,
+          stable,
+          selectedEvidence: afterSnapshot?.selectedEvidence || beforeSnapshot?.selectedEvidence || null,
+          before: beforeSnapshot,
+          after: afterSnapshot,
+          replayResult,
+          deltas
+        });
+      }
+
+      function formatScmReplayComparisonDetail(comparison = studioState.lastScmReplaySnapshotComparison) {
+        if (!comparison) {
+          return {
+            kind: "mcel-code-studio-scm-replay-comparison",
+            comparisonVersion: SCM_REPLAY_SNAPSHOT_VERSION,
+            status: "Replay selected gate to capture before/after SCM evidence snapshots."
+          };
+        }
+
+        return {
+          kind: comparison.kind,
+          comparisonVersion: comparison.comparisonVersion,
+          comparedAt: comparison.comparedAt,
+          ok: comparison.ok,
+          stable: comparison.stable,
+          selectedEvidence: comparison.selectedEvidence,
+          deltas: comparison.deltas,
+          replayResult: comparison.replayResult,
+          before: {
+            capturedAt: comparison.before?.capturedAt || "",
+            gatesOk: comparison.before?.gates?.ok !== false,
+            combined: comparison.before?.evidenceSummary?.combined || null,
+            dirtyState: comparison.before?.dirtyState || null
+          },
+          after: {
+            capturedAt: comparison.after?.capturedAt || "",
+            gatesOk: comparison.after?.gates?.ok !== false,
+            combined: comparison.after?.evidenceSummary?.combined || null,
+            dirtyState: comparison.after?.dirtyState || null
+          }
+        };
+      }
+
+      function toContractIdentifier(value, fallback = "GeneratedMcelApp") {
+        const words = String(value || fallback)
+          .replace(/[^A-Za-z0-9]+/g, " ")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        const name = words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join("");
+        return name || fallback;
+      }
+
+      function scmEffectAuthoringTemplate(name) {
+        const templates = {
+          runValidation: {
+            triggers: ["source.workspace.files", "state.dirty"],
+            reads: ["source.workspace.files", "state.dirty"],
+            writes: ["runtime.validationReport"],
+            cancellation: "cancel-previous",
+            racePolicy: "latest-inputs-win"
+          },
+          loadWorkspace: {
+            triggers: ["source.workspace.manifest"],
+            reads: ["source.workspace.manifest"],
+            writes: ["runtime.validationReport"],
+            cancellation: "cancel-previous",
+            racePolicy: "latest-inputs-win"
+          },
+          loadFile: {
+            triggers: ["state.activeFileId"],
+            reads: ["source.workspace.files", "state.activeFileId"],
+            writes: ["runtime.loadedFile"],
+            cancellation: "cancel-previous",
+            racePolicy: "latest-inputs-win"
+          },
+          saveFile: {
+            triggers: ["state.drafts", "state.activeFileId"],
+            reads: ["source.workspace.files", "state.drafts", "state.activeFileId"],
+            writes: ["source.workspace.files", "state.dirty", "runtime.validationReport"],
+            cancellation: "explicit-user-action-only",
+            racePolicy: "single-writer"
+          }
+        };
+        return templates[name] || {
+          triggers: [],
+          reads: [],
+          writes: [],
+          cancellation: "declare-before-use",
+          racePolicy: "declare-before-use"
+        };
+      }
+
+      function buildScmContractAuthoringHelper(options = {}) {
+        const packet = options.packet || exportScmEvidenceDebugPacket({refresh: options.refresh !== false});
+        const workspace = packet.workspace || {};
+        const versions = packet.versions || {};
+        const selected = packet.selectedEvidence || {};
+        const gates = packet.gates || {};
+        const sourceFiles = Array.isArray(workspace.files) ? workspace.files : [];
+        const componentName = toContractIdentifier(workspace.title || "Generated MCEL App");
+        const effectNames = Object.keys(gates.effect || {});
+        const routeName = workspace.route?.name || "workspace.file";
+        const selectedReads = Array.isArray(selected.reads) ? selected.reads : [];
+        const selectedWrites = Array.isArray(selected.writes) ? selected.writes : [];
+
+        return jsonSafeClone({
+          kind: "mcel-code-studio-scm-contract-authoring-helper",
+          helperVersion: SCM_CONTRACT_AUTHORING_HELPER_VERSION,
+          generatedAt: new Date().toISOString(),
+          purpose: "Create strict SCM contracts for generated MCEL apps without copying a React/Vue-style render loop.",
+          sourceOfTruth: "current Code Studio SCM evidence packet",
+          generatedApp: {
+            componentName,
+            componentContract: "mcel.scm.generated-app.v1",
+            routeName: `${routeName}.generated`,
+            routeContract: "mcel.scm.route.generated-app.v1",
+            selectedPath: workspace.selectedPath || "",
+            fileCount: sourceFiles.length,
+            files: sourceFiles.map((file) => ({
+              path: file.path,
+              language: file.language,
+              required: file.required === true,
+              field: file.field || "",
+              length: file.length || 0
+            }))
+          },
+          authoringPrinciples: [
+            "Declare ownership before rendering UI.",
+            "Declare reads and writes before loading data or mutating state.",
+            "Route params, query, loader reads, and loader writes must be explicit.",
+            "Effects need triggers, declared reads/writes, cancellation, and race policy.",
+            "Layout and style checks must describe computed behavior, not visual intent only.",
+            "Serialization must keep runtime/editor chrome out of author-owned source.",
+            "Repair strategies must be guarded and must not mutate source unless explicitly declared."
+          ],
+          contractSkeleton: {
+            component: {
+              name: componentName,
+              version: "1.0.0",
+              contract: "mcel.scm.generated-app.v1",
+              owns: {
+                source: ["workspace.manifest", "workspace.files"],
+                runtime: ["workbench.shell", "loadedFile", "serializedOutput", "validationReport"],
+                state: ["activeFileId", "dirty"],
+                layout: ["appShell", "content", "statusbar"],
+                style: ["generatedAppTheme"],
+                effects: effectNames.length ? effectNames : ["loadWorkspace", "loadFile", "saveFile", "runValidation"]
+              },
+              children: {
+                required: "Declare every generated child component, slot, inputs, outputs, mayMutate, and maySerialize."
+              },
+              outputs: ["fileOpened", "draftEdited", "draftCommitted", "workspaceSerialized"]
+            },
+            route: {
+              name: `${routeName}.generated`,
+              version: "1.0.0",
+              contract: "mcel.scm.route.generated-app.v1",
+              params: Object.keys(workspace.route?.params || {}),
+              query: Object.keys(workspace.route?.query || {}),
+              loaders: {
+                loadWorkspace: {
+                  reads: ["route.params.workspaceId"],
+                  writes: ["route.data.workspace"],
+                  cancellation: "cancel-previous",
+                  racePolicy: "latest-route-wins"
+                },
+                loadFile: {
+                  reads: ["route.params.workspaceId", "route.params.fileId"],
+                  writes: ["route.data.activeFile"],
+                  cancellation: "cancel-previous",
+                  racePolicy: "latest-route-wins"
+                }
+              }
+            },
+            effects: Object.fromEntries((effectNames.length ? effectNames : ["loadWorkspace", "loadFile", "saveFile", "runValidation"])
+              .map((name) => [name, scmEffectAuthoringTemplate(name)])),
+            layout: {
+              gate: gates.layout?.ok === false ? "must-fix-before-export" : "declare-computed-layout-before-ship",
+              examples: ["root overflow", "body display", "dock collapsed height"]
+            },
+            style: {
+              gate: gates.style?.ok === false ? "must-fix-before-export" : "declare-computed-style-before-ship",
+              forbiddenGlobalLeakage: ["undeclared button theme", "runtime debug chrome serialized as source"]
+            },
+            serialization: {
+              sourceOwns: ["source.workspace.manifest", "source.workspace.files"],
+              runtimeOnly: [
+                "runtime.workbench.shell",
+                "runtime.editor.chrome",
+                "runtime.loadedFile",
+                "runtime.serializedOutput",
+                "runtime.validationReport",
+                "runtime.assistantSession"
+              ],
+              failIfRuntimeLeaks: true
+            },
+            repair: {
+              allowed: ["runtime.workbench.shell", "runtime.validationReport"],
+              forbidden: ["source.workspace.manifest", "source.workspace.files", "state.activeFileId", "state.dirty"],
+              replaySafety: "mutating transitions and repair strategies require explicit user action"
+            },
+            failureBehavior: {
+              blocking: ["undeclared writes", "runtime leaks", "layout/style contract violations"],
+              warning: ["missing optional generated-app helper metadata"],
+              evidenceRequired: true
+            }
+          },
+          selectedEvidenceFocus: {
+            scope: selected.scope || "",
+            phase: selected.phase || "",
+            code: selected.code || "",
+            reads: selectedReads,
+            writes: selectedWrites
+          },
+          evidenceContext: {
+            gatesOk: gates.ok !== false,
+            layoutOk: gates.layout?.ok !== false,
+            styleOk: gates.style?.ok !== false,
+            routeOk: gates.route?.ok !== false,
+            serializationOk: gates.serialization?.ok !== false,
+            repairOk: gates.repair?.ok !== false,
+            violationCount: packet.evidence?.summary?.combined?.violations || 0,
+            blockingCount: packet.evidence?.summary?.combined?.blocking || 0,
+            persistenceStatus: packet.persistence?.status || "",
+            replaySnapshotStable: packet.lastReplaySnapshotComparison?.stable ?? null
+          },
+          authoringChecklist: [
+            "Name the generated component and route contracts.",
+            "Declare source/runtime/state/layout/style/effect ownership.",
+            "Declare child slots, inputs, outputs, mayMutate, and maySerialize.",
+            "Declare route params/query/loaders and route transition guards.",
+            "Declare every effect trigger/read/write/cancellation/race policy.",
+            "Declare computed layout and forbidden global style leakage.",
+            "Declare clean serialization boundaries and runtime-only fields.",
+            "Declare repair strategies, forbidden mutations, and replay safety.",
+            "Add tests that assert the contract skeleton and evidence packet shape."
+          ],
+          versions: {
+            codeStudio: versions.codeStudio || "2.9.0",
+            component: versions.component || "2.9.0",
+            route: versions.route || "1.1.0",
+            runtimePackage: versions.runtimePackage || MCEL_RUNTIME_PACKAGE_VERSION
+          }
+        });
+      }
+
+      function formatScmContractAuthoringHelperDetail(helper) {
+        if (!helper) {
+          return {
+            kind: "mcel-code-studio-scm-contract-authoring-helper-detail",
+            status: "not-generated",
+            message: "Generate a contract helper to create a strict SCM starter for AI-generated apps."
+          };
+        }
+        return {
+          kind: "mcel-code-studio-scm-contract-authoring-helper-detail",
+          helperVersion: helper.helperVersion,
+          componentName: helper.generatedApp?.componentName || "",
+          routeName: helper.generatedApp?.routeName || "",
+          gatesOk: helper.evidenceContext?.gatesOk !== false,
+          violationCount: helper.evidenceContext?.violationCount || 0,
+          checklistCount: Array.isArray(helper.authoringChecklist) ? helper.authoringChecklist.length : 0
+        };
+      }
+
+      function formatScmContractAuthoringHelper(helper) {
+        const detail = formatScmContractAuthoringHelperDetail(helper);
+        return [
+          "MCEL SCM CONTRACT AUTHORING HELPER",
+          `helperVersion: ${helper?.helperVersion || SCM_CONTRACT_AUTHORING_HELPER_VERSION}`,
+          "",
+          "Purpose:",
+          "Create a strict SCM contract starter for generated MCEL apps. Do not translate the app into a React/Vue-style render loop.",
+          "",
+          "Generated target:",
+          `component=${detail.componentName || ""}`,
+          `route=${detail.routeName || ""}`,
+          `gatesOk=${detail.gatesOk} violations=${detail.violationCount}`,
+          "",
+          "Required contract surfaces:",
+          "- component ownership",
+          "- child composition",
+          "- route params/query/loaders",
+          "- effect triggers/reads/writes/cancellation/race policy",
+          "- layout/style computed gates",
+          "- serialization boundaries",
+          "- repair guards and replay safety",
+          "",
+          "Authoring helper JSON:",
+          "```json",
+          JSON.stringify(helper, null, 2),
+          "```"
+        ].join("\n");
+      }
+
+      function exportScmContractAuthoringHelper(options = {}) {
+        const packet = options.packet || exportScmEvidenceDebugPacket({refresh: options.refresh !== false});
+        const helper = buildScmContractAuthoringHelper({packet, refresh: false});
+        const text = formatScmContractAuthoringHelper(helper);
+        studioState.lastScmContractAuthoringHelper = helper;
+        studioState.lastScmContractAuthoringHelperText = text;
+        studioState.lastScmContractAuthoringExport = {
+          kind: "mcel-code-studio-scm-contract-authoring-helper-export",
+          helperVersion: SCM_CONTRACT_AUTHORING_HELPER_VERSION,
+          generatedAt: helper.generatedAt,
+          byteLength: text.length,
+          componentName: helper.generatedApp?.componentName || "",
+          routeName: helper.generatedApp?.routeName || "",
+          violationCount: helper.evidenceContext?.violationCount || 0
+        };
+        return {helper, text, packet, export: studioState.lastScmContractAuthoringExport};
+      }
+
+      async function copyCurrentScmContractAuthoringHelper() {
+        const output = exportScmContractAuthoringHelper({refresh: true});
+        try {
+          const result = await copyScmText(output.text);
+          setStatus(result.ok
+            ? `SCM contract authoring helper copied for generated apps (${result.byteLength} bytes).`
+            : "SCM contract authoring helper was prepared, but this browser blocked clipboard copy.");
+          return {...output, result};
+        } catch (error) {
+          setStatus(`SCM contract authoring helper was prepared, but clipboard copy failed: ${error?.message || String(error)}.`);
+          return {...output, result: {ok: false, mode: "clipboard", message: error?.message || String(error)}};
+        }
+      }
+
       function buildScmEvidenceDebugPacket(options = {}) {
         const report = options.report || studioState.lastReport || null;
         const summary = collectScmEvidenceSummary(report);
@@ -796,6 +1607,8 @@
             visibleEvidenceCount: visibleEntries.length
           },
           dirtyState: collectDirtyStateSummary(fields),
+          persistence: collectLiveWorkspacePersistenceSummary(),
+          contractAuthoring: studioState.lastScmContractAuthoringExport,
           gates: collectGateStatus(gates),
           evidence: {
             component: summary.componentPacket,
@@ -811,6 +1624,7 @@
           },
           selectedEvidence: formatEvidenceDetail(selectedEntry),
           lastReplayResult: studioState.lastScmReplayResult,
+          lastReplaySnapshotComparison: studioState.lastScmReplaySnapshotComparison,
           lastReport: report ? {
             ok: report.ok,
             selectedPath: report.selectedPath,
@@ -841,15 +1655,15 @@
         return packet;
       }
 
-      async function copyScmEvidenceDebugPacket(packet) {
-        const json = JSON.stringify(packet, null, 2);
+      async function copyScmText(text) {
+        const value = String(text || "");
         if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(json);
-          return {ok: true, mode: "clipboard", byteLength: json.length};
+          await navigator.clipboard.writeText(value);
+          return {ok: true, mode: "clipboard", byteLength: value.length};
         }
 
         const textarea = document.createElement("textarea");
-        textarea.value = json;
+        textarea.value = value;
         textarea.setAttribute("readonly", "readonly");
         textarea.style.position = "fixed";
         textarea.style.left = "-9999px";
@@ -857,7 +1671,11 @@
         textarea.select();
         const copied = document.execCommand?.("copy") === true;
         textarea.remove();
-        return {ok: copied, mode: "execCommand", byteLength: json.length};
+        return {ok: copied, mode: "execCommand", byteLength: value.length};
+      }
+
+      async function copyScmEvidenceDebugPacket(packet) {
+        return copyScmText(JSON.stringify(packet, null, 2));
       }
 
       function downloadScmEvidenceDebugPacket(packet) {
@@ -896,6 +1714,113 @@
         return {packet, result};
       }
 
+      function buildScmAiRepairPrompt(options = {}) {
+        const packet = options.packet || exportScmEvidenceDebugPacket({refresh: options.refresh !== false});
+        const visibleEvidence = Array.isArray(packet?.evidence?.visible) ? packet.evidence.visible : [];
+        const violations = visibleEvidence
+          .filter((entry) => evidenceEntryIsViolation(entry))
+          .map((entry) => formatEvidenceDetail(entry));
+        const promptInput = jsonSafeClone({
+          kind: "mcel-code-studio-scm-ai-repair-prompt-input",
+          promptVersion: SCM_AI_REPAIR_PROMPT_VERSION,
+          generatedAt: new Date().toISOString(),
+          versions: packet.versions,
+          workspace: packet.workspace,
+          filters: packet.filters,
+          dirtyState: packet.dirtyState,
+          persistence: packet.persistence,
+          contractAuthoring: packet.contractAuthoring,
+          gates: packet.gates,
+          selectedEvidence: packet.selectedEvidence,
+          lastReplayResult: packet.lastReplayResult,
+          lastReplaySnapshotComparison: packet.lastReplaySnapshotComparison,
+          violationCount: violations.length,
+          violations,
+          evidencePacket: packet
+        });
+        const summary = packet?.evidence?.summary?.combined || {};
+        const versions = packet?.versions || {};
+        const workspace = packet?.workspace || {};
+        const selected = packet?.selectedEvidence || {};
+
+        return [
+          "MCEL STRICT COMPOSITION MODEL AI REPAIR PROMPT",
+          `promptVersion: ${SCM_AI_REPAIR_PROMPT_VERSION}`,
+          "",
+          "Role:",
+          "You are repairing an MCEL Code Studio app as a contract-first UI system for AI-written software.",
+          "Do not treat MCEL as a React, Vue, Angular, or Svelte clone. Rendering is secondary to enforceable ownership, reads, writes, routes, effects, layout, style, serialization, repair, and failure behavior.",
+          "",
+          "Repair objective:",
+          "Use the SCM evidence packet to make the smallest safe code change that restores the declared contracts.",
+          "Prefer narrow full-file replacement patches and preserve the current component, route, and runtime package versions unless the evidence proves a contract version must change.",
+          "",
+          "Allowed repair surface:",
+          "- Fix only files directly needed to satisfy the reported SCM evidence.",
+          "- Preserve declared component ownership, child composition boundaries, route params/query, effect reads/writes, layout/style gates, serialization boundaries, repair guards, replay safety, and live workspace persistence boundaries.",
+          "- Use selectedEvidence, violations, gates, dirtyState, persistence, route context, and lastReplayResult as the source of truth.",
+          "- Add or update tests that prove the repaired contract shape remains stable.",
+          "",
+          "Forbidden changes:",
+          "- Do not broadly rewrite Code Studio.",
+          "- Do not broaden the SCM kernel, route semantics, or runtime package unless the packet evidence explicitly requires it.",
+          "- Do not introduce undeclared DOM, source, route, state, or runtime reads/writes.",
+          "- Do not serialize runtime-only editor chrome or assistant/debug UI into author-owned source.",
+          "- Do not auto-run mutating transitions or repair strategies without explicit user action.",
+          "- Do not convert the app to a React/Vue-style state rendering architecture.",
+          "",
+          "Current target:",
+          `component=${versions.component || ""} componentContract=${versions.componentContract || ""}`,
+          `route=${workspace.route?.name || ""} routeVersion=${versions.route || ""} routeContract=${versions.routeContract || ""}`,
+          `runtimePackage=${versions.runtimePackage || ""}`,
+          `selectedPath=${workspace.selectedPath || ""}`,
+          `persistenceStatus=${packet.persistence?.status || ""} persistenceSavedAt=${packet.persistence?.savedAt || ""}`,
+          `contractAuthoringHelper=${packet.contractAuthoring?.kind || ""} contractAuthoringComponent=${packet.contractAuthoring?.componentName || ""}`,
+          `selectedEvidenceScope=${selected.scope || ""} selectedEvidencePhase=${selected.phase || ""} selectedEvidenceCode=${selected.code || ""}`,
+          `combinedEvidenceTotal=${summary.total || 0} combinedViolations=${summary.violations || 0} blocking=${summary.blocking || 0}`,
+          `replaySnapshotStable=${packet.lastReplaySnapshotComparison?.stable ?? ""} replaySnapshotViolationsDelta=${packet.lastReplaySnapshotComparison?.deltas?.violations ?? ""}`,
+          "",
+          "SCM evidence packet JSON:",
+          "```json",
+          JSON.stringify(promptInput, null, 2),
+          "```"
+        ].join("\n");
+      }
+
+      function exportScmAiRepairPrompt(options = {}) {
+        const packet = options.packet || exportScmEvidenceDebugPacket({refresh: options.refresh !== false});
+        const prompt = buildScmAiRepairPrompt({packet, refresh: false});
+        studioState.lastScmRepairPrompt = prompt;
+        studioState.lastScmRepairPromptExport = {
+          kind: "mcel-code-studio-scm-ai-repair-prompt",
+          promptVersion: SCM_AI_REPAIR_PROMPT_VERSION,
+          generatedAt: new Date().toISOString(),
+          byteLength: prompt.length,
+          evidenceCount: packet?.evidence?.summary?.combined?.total || 0,
+          violations: packet?.evidence?.summary?.combined?.violations || 0,
+          selectedEvidence: packet?.selectedEvidence || null
+        };
+        return {
+          prompt,
+          packet,
+          export: studioState.lastScmRepairPromptExport
+        };
+      }
+
+      async function copyCurrentScmAiRepairPrompt() {
+        const output = exportScmAiRepairPrompt({refresh: true});
+        try {
+          const result = await copyScmText(output.prompt);
+          setStatus(result.ok
+            ? `SCM AI repair prompt copied from evidence packet (${result.byteLength} bytes).`
+            : "SCM AI repair prompt was prepared, but this browser blocked clipboard copy.");
+          return {...output, result};
+        } catch (error) {
+          setStatus(`SCM AI repair prompt was prepared, but clipboard copy failed: ${error?.message || String(error)}.`);
+          return {...output, result: {ok: false, mode: "clipboard", message: error?.message || String(error)}};
+        }
+      }
+
       function formatEvidenceDetail(entry) {
         const safeEntry = entry || {};
         return {
@@ -922,6 +1847,7 @@
 
       function replayScmEvidenceEntry(entry) {
         const scope = evidenceEntryScope(entry);
+        const beforeSnapshot = buildScmReplaySnapshot("before", entry, studioState.lastReport);
         let result = null;
 
         if (scope === "layout") {
@@ -975,9 +1901,152 @@
           replayedAt: studioState.selectedScmEvidenceSnapshot.replayedAt,
           result
         });
-        setStatus(`SCM evidence replay ${result?.ok === false ? "blocked" : "completed"} for ${evidenceEntryLabel(entry)}.`);
+        const afterSnapshot = buildScmReplaySnapshot("after", studioState.selectedScmEvidenceSnapshot, studioState.lastReport);
+        studioState.lastScmReplaySnapshotComparison = compareScmReplaySnapshots(beforeSnapshot, afterSnapshot, result);
+        setStatus(`SCM evidence replay ${result?.ok === false ? "blocked" : "completed"} for ${evidenceEntryLabel(entry)}; before/after snapshot comparison ${studioState.lastScmReplaySnapshotComparison.stable ? "stable" : "changed"}.`);
         return result;
       }
+
+      // Flagship inspector mental model: Contract = what should be true, Evidence = what is proven, Runtime = what happened, AI = what may change next.
+      function gateLabel(value) {
+        return value === false ? "fail" : "ok";
+      }
+
+      function setInspectorPanel(tab = "contract") {
+        if (!flagshipInspector) return;
+        const selected = ["contract", "evidence", "runtime", "ai"].includes(tab) ? tab : "contract";
+        studioState.activeScmInspectorTab = selected;
+        flagshipInspector.querySelectorAll("[data-code-studio-scm-ai-tab]").forEach((button) => {
+          const active = button.dataset.codeStudioScmAiTab === selected;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        flagshipInspector.querySelectorAll("[data-code-studio-scm-ai-panel]").forEach((panel) => {
+          const active = panel.dataset.codeStudioScmAiPanel === selected;
+          panel.classList.toggle("active", active);
+          panel.hidden = !active;
+        });
+      }
+
+      function renderDefinitionList(node, entries) {
+        if (!node) return;
+        node.innerHTML = entries.map(([label, value]) => `
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${escapeHtml(value)}</dd>
+        `).join("");
+      }
+
+      function updateTopCommandStatus(summary, gates, persistence, fields) {
+        if (topRouteStatus) {
+          topRouteStatus.textContent = `${window.McelCodeStudioScm?.routeName || "workspace.file"}/${studioState.selectedPath || fields?.files?.[0]?.path || "no-file"}`;
+        }
+        if (topGateStatus) {
+          const ok = gates.ok !== false && summary.combined.violations === 0;
+          topGateStatus.textContent = ok ? "gates ok" : `gates fail · ${summary.combined.violations} violation(s)`;
+          topGateStatus.dataset.ok = ok ? "true" : "false";
+        }
+        if (topPersistenceStatus) {
+          const statusText = persistence.status || "not saved";
+          topPersistenceStatus.textContent = `persistence ${statusText}`;
+          topPersistenceStatus.dataset.ok = persistence.ok === false ? "false" : "true";
+        }
+        if (topRuntimeVersion) {
+          topRuntimeVersion.textContent = MCEL_RUNTIME_PACKAGE_VERSION;
+        }
+      }
+
+      function buildFlagshipInspectorModel(report = studioState.lastReport) {
+        const fields = workspaceFields();
+        const selected = selectedFile(fields);
+        const summary = collectScmEvidenceSummary(report);
+        const gates = collectGateStatus(report?.scm || studioState.lastScmGates);
+        const persistence = collectLiveWorkspacePersistenceSummary();
+        const filter = studioState.scmEvidenceFilter || "all";
+        const entries = visibleScmEvidenceEntries(summary, filter);
+        const selectedEvidence = resolveSelectedScmEvidence(summary, filter, entries);
+        const contractAuthoring = studioState.lastScmContractAuthoringExport || studioState.lastScmContractAuthoringHelper || null;
+        const replayComparison = studioState.lastScmReplaySnapshotComparison;
+
+        return {
+          fields,
+          selected,
+          summary,
+          gates,
+          persistence,
+          selectedEvidence,
+          contractAuthoring,
+          replayComparison,
+          contractRows: [
+            ["Component", `CodeStudio ${window.McelCodeStudioScm?.componentVersion || "2.9.0"}`],
+            ["Route", `${window.McelCodeStudioScm?.routeName || "workspace.file"} · ${window.McelCodeStudioScm?.routeVersion || "1.1.0"}`],
+            ["Owns", "source.workspace.manifest, source.workspace.files"],
+            ["May read", "route params/query, selected source file, dirty runtime state, SCM evidence"],
+            ["May write", "runtime.loadedFile, runtime.validationReport, runtime.serializedOutput, guarded evidence UI state"],
+            ["Serialization", "clean source only; runtime/editor/assistant chrome omitted"],
+            ["Failure behavior", "violations block unsafe repair/serialization and stay replayable"]
+          ],
+          evidenceRows: [
+            ["Gate status", gates.ok === false ? "fail" : "ok"],
+            ["Layout", gateLabel(gates.layout?.ok)],
+            ["Style", gateLabel(gates.style?.ok)],
+            ["Route", gateLabel(gates.route?.ok)],
+            ["Component evidence", `${summary.component.total} total`],
+            ["Route evidence", `${summary.route.total} total`],
+            ["Violations", `${summary.combined.violations}`],
+            ["Selected", `${evidenceEntryScope(selectedEvidence)} · ${selectedEvidence.phase || "idle"}`]
+          ],
+          runtimeRows: [
+            ["Selected path", selected?.path || studioState.selectedPath || "none"],
+            ["Files", `${fields.files.length}`],
+            ["Dirty state", studioState.dirty ? "dirty" : "clean"],
+            ["Mounted", studioState.mounted ? "mounted" : "not mounted"],
+            ["Persistence", `${persistence.status || "not saved"}${persistence.savedAt ? ` · ${persistence.savedAt}` : ""}`],
+            ["Route key", currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())],
+            ["Replay", replayComparison ? (replayComparison.stable ? "stable" : "changed") : "not run"]
+          ],
+          aiRows: [
+            ["Repair prompt", studioState.lastScmRepairPrompt ? "generated" : "ready from evidence"],
+            ["Contract helper", contractAuthoring ? `${contractAuthoring.componentName || "generated helper"} · ${contractAuthoring.routeName || "route pending"}` : "not generated"],
+            ["Evidence packet", studioState.lastScmDebugPacket ? "exported" : "ready"],
+            ["Allowed repair", "smallest safe contract-first patch only"],
+            ["Forbidden", "no undeclared DOM/source/route/state/runtime reads or writes"]
+          ]
+        };
+      }
+
+      function renderFlagshipInspector(report = studioState.lastReport) {
+        if (!flagshipInspector) return null;
+        const model = buildFlagshipInspectorModel(report);
+        updateTopCommandStatus(model.summary, model.gates, model.persistence, model.fields);
+        renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-contract-summary"), model.contractRows);
+        renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-evidence-summary"), model.evidenceRows);
+        renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-runtime-summary"), model.runtimeRows);
+        renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-ai-summary"), model.aiRows);
+
+        flagshipInspector.querySelectorAll("[data-code-studio-scm-ai-tab]").forEach((button) => {
+          button.onclick = () => setInspectorPanel(button.dataset.codeStudioScmAiTab || "contract");
+        });
+        flagshipInspector.querySelectorAll("[data-code-studio-scm-ai-action]").forEach((button) => {
+          button.onclick = async () => {
+            const action = button.dataset.codeStudioScmAiAction || "";
+            if (action === "copy-prompt") {
+              await copyCurrentScmAiRepairPrompt();
+              studioState.activeScmInspectorTab = "ai";
+            } else if (action === "copy-helper") {
+              await copyCurrentScmContractAuthoringHelper();
+              studioState.activeScmInspectorTab = "ai";
+            } else if (action === "copy-packet") {
+              await copyCurrentScmEvidenceDebugPacket();
+              studioState.activeScmInspectorTab = "evidence";
+            }
+            renderFlagshipInspector(studioState.lastReport);
+            renderScmEvidencePanel(studioState.lastReport);
+          };
+        });
+        setInspectorPanel(studioState.activeScmInspectorTab || "contract");
+        return model;
+      }
+
 
       function renderScmEvidencePanel(report = studioState.lastReport) {
         if (!scmEvidencePanel) return null;
@@ -991,6 +2060,8 @@
           ? studioState.selectedScmEvidenceSnapshot
           : selectedEntry;
         const selectedDetail = formatEvidenceDetail(selectedSnapshot);
+        const replayComparisonDetail = formatScmReplayComparisonDetail(studioState.lastScmReplaySnapshotComparison);
+        const contractAuthoringDetail = formatScmContractAuthoringHelperDetail(studioState.lastScmContractAuthoringHelper);
 
         const filterOptions = SCM_EVIDENCE_FILTERS.map((value) => `
           <option value="${value}"${filter === value ? " selected" : ""}>${value}</option>
@@ -1027,6 +2098,8 @@
               </label>
               <button type="button" id="code-studio-replay-scm-evidence">Replay selected gate</button>
               <button type="button" id="code-studio-export-scm-evidence-packet">Export SCM Evidence Packet</button>
+              <button type="button" id="code-studio-generate-scm-repair-prompt">Generate AI repair prompt</button>
+              <button type="button" id="code-studio-generate-scm-contract-helper">Generate contract helper</button>
               <button type="button" id="code-studio-download-scm-evidence-packet">Download packet</button>
               <button type="button" id="code-studio-refresh-scm-evidence">Refresh SCM evidence</button>
             </div>
@@ -1046,6 +2119,14 @@
             <div class="code-studio-scm-evidence-detail" id="code-studio-scm-evidence-detail">
               <strong>Selected evidence detail</strong>
               <code>${escapeHtml(JSON.stringify(selectedDetail, null, 2))}</code>
+            </div>
+            <div class="code-studio-scm-replay-comparison" id="code-studio-scm-replay-comparison">
+              <strong>Replay snapshot comparison</strong>
+              <code>${escapeHtml(JSON.stringify(replayComparisonDetail, null, 2))}</code>
+            </div>
+            <div class="code-studio-scm-contract-authoring-helper" id="code-studio-scm-contract-authoring-helper">
+              <strong>SCM contract authoring helper</strong>
+              <code>${escapeHtml(JSON.stringify(contractAuthoringDetail, null, 2))}</code>
             </div>
           </div>
         `;
@@ -1075,6 +2156,15 @@
           copyCurrentScmEvidenceDebugPacket();
         });
 
+        scmEvidencePanel.querySelector("#code-studio-generate-scm-repair-prompt")?.addEventListener("click", () => {
+          copyCurrentScmAiRepairPrompt();
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-generate-scm-contract-helper")?.addEventListener("click", async () => {
+          await copyCurrentScmContractAuthoringHelper();
+          renderScmEvidencePanel(studioState.lastReport);
+        });
+
         scmEvidencePanel.querySelector("#code-studio-download-scm-evidence-packet")?.addEventListener("click", () => {
           downloadCurrentScmEvidenceDebugPacket();
         });
@@ -1085,6 +2175,7 @@
           setStatus("SCM evidence refreshed from component, route, effect, layout, style, serialization, and repair gates.");
         });
 
+        renderFlagshipInspector(studioState.lastReport || report);
         return summary;
       }
 
@@ -1410,9 +2501,13 @@
           fileId: selectedScmFileId(),
           selectedPath: studioState.selectedPath
         }));
-        enterScmRouteAndRunLoaders({forceEnter: true});
+        studioState.lastRouteLoaderPersistenceGate = enterScmRouteAndRunLoaders({forceEnter: true});
+        persistLiveWorkspaceFromSource("commitDraft", {
+          saveGate: studioState.lastSaveFileEffectGate,
+          loaderGate: studioState.lastRouteLoaderPersistenceGate
+        });
         renderRuntime();
-        setStatus("Runtime draft committed into author-owned source through SCM editDraft/commitDraft transitions and saveFile effect.");
+        setStatus("Runtime draft committed into author-owned source, persisted through SCM saveFile, and route/effect loaders refreshed.");
       }
 
       tabButtons.forEach((button) => {
@@ -1472,6 +2567,7 @@
         const expanded = assistantDock?.dataset.expanded === "true";
         runScmTransition("toggleBottomDock");
         if (assistantDock) assistantDock.dataset.expanded = expanded ? "false" : "true";
+        prepareFlagshipWorkbenchRegions();
         assistantToggle.setAttribute("aria-expanded", expanded ? "false" : "true");
         assistantToggle.textContent = expanded ? "Open assistant dock" : "Close assistant dock";
         ensureCodeStudioScmSurfaceStyles();
@@ -1484,10 +2580,30 @@
         syncScmInstance();
         scmRouteKey = "";
         setRuntimeLabel();
-        setStatus("Source changed. Remount or validate to refresh the MCEL runtime, route loaders, and SCM evidence.");
+        renderLiveWorkspacePersistenceStatus({
+          ...collectLiveWorkspacePersistenceSummary(),
+          status: "source-dirty",
+          ok: true,
+          selectedPath: studioState.selectedPath,
+          sourceLength: sourceEditor.value.length,
+          fileCount: workspaceFields().files.length
+        });
+        setStatus("Source changed. Save live workspace, remount, or validate to refresh the MCEL runtime, route loaders, and SCM evidence.");
       });
       sourceEditor.addEventListener("scroll", () => {
         if (gutter) gutter.scrollTop = sourceEditor.scrollTop;
+      });
+
+      saveLiveWorkspaceButton?.addEventListener("click", () => {
+        persistLiveWorkspaceFromSource("manual-save");
+        renderScmEvidencePanel(studioState.lastReport);
+      });
+      restoreLiveWorkspaceButton?.addEventListener("click", () => {
+        hydratePersistedLiveWorkspace({manual: true});
+      });
+      clearLiveWorkspaceButton?.addEventListener("click", () => {
+        clearPersistedLiveWorkspace();
+        renderScmEvidencePanel(studioState.lastReport);
       });
 
       validateButton?.addEventListener("click", validateSource);
@@ -1525,8 +2641,27 @@
         exportScmEvidenceDebugPacket,
         copyCurrentScmEvidenceDebugPacket,
         downloadCurrentScmEvidenceDebugPacket,
+        buildScmAiRepairPrompt,
+        exportScmAiRepairPrompt,
+        copyCurrentScmAiRepairPrompt,
+        buildScmReplaySnapshot,
+        compareScmReplaySnapshots,
+        formatScmReplayComparisonDetail,
+        persistLiveWorkspaceFromSource,
+        hydratePersistedLiveWorkspace,
+        clearPersistedLiveWorkspace,
+        collectLiveWorkspacePersistenceSummary,
+        renderLiveWorkspacePersistenceStatus,
+        buildScmContractAuthoringHelper,
+        formatScmContractAuthoringHelper,
+        exportScmContractAuthoringHelper,
+        copyCurrentScmContractAuthoringHelper,
+        buildFlagshipInspectorModel,
+        renderFlagshipInspector,
+        setInspectorPanel,
         renderScmEvidencePanel,
         ensureCodeStudioScmSurfaceStyles,
+        prepareFlagshipWorkbenchRegions,
         getScmInstance() {
           return syncScmInstance();
         },
@@ -1535,13 +2670,16 @@
         },
       };
 
+      prepareFlagshipWorkbenchRegions();
       ensureCodeStudioScmSurfaceStyles();
+      hydratePersistedLiveWorkspace();
       syncLineGutter();
       validateSource();
       renderRuntime();
       serializeCleanSource();
       showPane("source");
       setRuntimeLabel();
+      renderFlagshipInspector(studioState.lastReport);
     })();
 
     (() => {

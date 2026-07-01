@@ -654,3 +654,107 @@ def test_worker_offer_endpoint_is_separate_from_discovered_app_control_url():
     )
 
     assert payload["endpoint"] == "http://127.0.0.1:8771"
+
+
+def test_resolve_local_worker_app_url_skips_timed_out_candidate(monkeypatch, tmp_path: Path):
+    canvas = _load_canvas_module()
+    calls = []
+
+    def fake_http_json(method, url, payload=None, timeout=15.0):
+        calls.append(url)
+        if url == "http://127.0.0.1:8765/api/applications/worker/runtime-status":
+            raise ConnectionError("could not reach http://127.0.0.1:8765/api/applications/worker/runtime-status: timed out")
+        if url == "http://127.0.0.1:8766/api/applications/worker/runtime-status":
+            return 200, {"ok": True, "runtime": {"phase": "not_accepting"}}
+        return 599, {"ok": False, "error": "connection refused"}
+
+    monkeypatch.setenv("MAIN_COMPUTER_APP_URL", "http://127.0.0.1:8765")
+    monkeypatch.setenv("MAIN_COMPUTER_CONTROL_URL", "http://127.0.0.1:8766")
+    monkeypatch.delenv("MAIN_COMPUTER_VIEWPORT_URL", raising=False)
+    monkeypatch.setattr(canvas, "http_json", fake_http_json)
+
+    assert canvas.resolve_local_worker_app_url(SimpleNamespace(app=""), root=tmp_path) == "http://127.0.0.1:8766"
+    assert calls[:2] == [
+        "http://127.0.0.1:8765/api/applications/worker/runtime-status",
+        "http://127.0.0.1:8766/api/applications/worker/runtime-status",
+    ]
+
+
+def test_ensure_local_worker_available_continues_when_runtime_status_preflight_times_out(monkeypatch):
+    canvas = _load_canvas_module()
+    from main_computer.multisession_key_signing import private_key_to_address
+
+    private_key = "0x1"
+    wallet = private_key_to_address(private_key)
+    calls = []
+
+    def fake_http_json(method, url, payload=None, timeout=15.0):
+        calls.append((method, url, payload))
+        if url.endswith("/api/applications/worker/runtime-status"):
+            seen_runtime = sum(1 for _method, prior_url, _payload in calls if prior_url.endswith("/api/applications/worker/runtime-status"))
+            if seen_runtime == 1:
+                return 200, {"ok": True, "runtime": {"phase": "not_accepting", "allowed_to_accept": False}}
+            raise ConnectionError("could not reach runtime-status: timed out")
+        if url.endswith("/api/applications/worker/network-session"):
+            return 200, {"ok": True, "session": {"connection_status": "connected"}}
+        if url.endswith("/api/applications/worker/settings") and method == "GET":
+            return 200, {"ok": True, "settings": {}}
+        if url.endswith("/api/applications/worker/settings") and method == "POST":
+            return 200, {"ok": True, "settings": payload["settings"]}
+        if url.endswith("/api/applications/worker/multisession-keys/load"):
+            return 200, {
+                "ok": True,
+                "active_key": {
+                    "status": "active",
+                    "wallet_address": wallet,
+                    "hub_url": "http://127.0.0.1:8871",
+                    "server_side_key": True,
+                    "key_redacted": True,
+                },
+            }
+        if url.endswith("/api/applications/worker/work-now"):
+            assert "active_multisession_key_id" not in payload
+            return 200, {"ok": True, "runtime": {"phase": "accepting", "allowed_to_accept": True}}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(canvas, "http_json", fake_http_json)
+    monkeypatch.setattr(canvas.time, "sleep", lambda _seconds: None)
+
+    args = SimpleNamespace(
+        app="http://127.0.0.1:8765",
+        no_auto_worker=False,
+        private_key=private_key,
+        private_key_file="",
+        wallet="",
+        ring="3",
+        capability="chat.completions",
+        worker_model="gemma4:26b",
+        worker_credits_per_token="0.001",
+        worker_target_tokens=1024,
+        worker_availability_mode="ai_idle",
+        auto_worker_seconds=3600,
+        auto_worker_timeout=0.1,
+        msk_lifetime_minutes=10,
+    )
+
+    ok = canvas.ensure_local_worker_available(
+        args=args,
+        hub_url="http://127.0.0.1:8871",
+        hub_status={
+            "ok": True,
+            "network": {"network_key": "dev", "chain_id": 42424242},
+            "serving_hub": {"hub_id": "dev-hub1"},
+        },
+    )
+
+    assert ok is True
+    assert [url.rsplit("/", 1)[-1] for _method, url, _payload in calls][:8] == [
+        "runtime-status",
+        "runtime-status",
+        "network-session",
+        "settings",
+        "settings",
+        "load",
+        "work-now",
+        "runtime-status",
+    ]

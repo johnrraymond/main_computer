@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from main_computer.hub_networks import HubNetworkProfile, HubNetworkRegistry, load_hub_network_registry  # noqa: E402
+from main_computer.runtime_env_file import load_runtime_env_file, merged_runtime_env  # noqa: E402
 
 
 DEFAULT_BRIDGE_BACKEND = "dev-chain"
@@ -35,6 +36,21 @@ def first_env(environ: Mapping[str, str], *names: str) -> str:
         if value:
             return value
     return ""
+
+
+def runtime_env_file_path(args: argparse.Namespace, environ: Mapping[str, str]) -> str:
+    return str(
+        getattr(args, "runtime_env_file", "")
+        or first_env(environ, "MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE", "MAIN_COMPUTER_RUNTIME_ENV_FILE")
+        or ""
+    ).strip()
+
+
+def environ_with_runtime_env_file(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, str]:
+    path = runtime_env_file_path(args, environ)
+    if not path:
+        return {str(key): str(value) for key, value in environ.items()}
+    return merged_runtime_env(environ, load_runtime_env_file(path))
 
 
 def env_flag(environ: Mapping[str, str], *names: str) -> bool:
@@ -156,7 +172,8 @@ def build_exp_fdb_hub_command(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> list[str]:
-    env = os.environ if environ is None else environ
+    base_env = os.environ if environ is None else environ
+    env = environ_with_runtime_env_file(args, base_env)
     registry = load_hub_network_registry(args.network_config)
     network = resolve_network(args, registry, env)
     profile = registry.get(network)
@@ -277,6 +294,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch the experimental FoundationDB Hub from runtime defaults.")
     parser.add_argument("--network", default="", help="Hub network key. Defaults to env, PORT inference, then registry default.")
     parser.add_argument("--network-config", default=None, help="Optional hub_networks.json path.")
+    parser.add_argument(
+        "--runtime-env-file",
+        default="",
+        help=(
+            "Optional strict KEY=VALUE runtime env file. Values override the process environment "
+            "for launcher defaults, while explicit CLI flags still win."
+        ),
+    )
     parser.add_argument("--host", default="", help="Bind host override.")
     parser.add_argument("--port", default="", help="Bind port override.")
     parser.add_argument("--hub-url", default="", help="Public Hub URL override.")

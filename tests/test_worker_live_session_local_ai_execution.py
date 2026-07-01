@@ -252,9 +252,18 @@ def test_worker_live_session_route_executor_uses_direct_chat_completion_subproce
             "worker_id": "worker-local-ai",
             "work": {
                 "capabilities": ["chat.completions"],
-                "input": {"prompt": "Reply with exactly five words."},
+                "input": {
+                    "prompt": "Reply with exactly five words.",
+                    "max_output_tokens": 123,
+                    "ollama_options": {"temperature": 0.1},
+                    "completion_sentinel": "UNIT_DONE",
+                },
                 "messages": [{"role": "user", "content": "Reply with exactly five words."}],
                 "model": "micro-agent-local",
+                "target_tokens": 123,
+                "max_output_tokens": 123,
+                "provider_options": {"num_predict": 999},
+                "think": False,
             },
         }
     )
@@ -264,6 +273,17 @@ def test_worker_live_session_route_executor_uses_direct_chat_completion_subproce
     assert command["mode"] != "chat_console_ai"  # type: ignore[index]
     assert command["source"] == "Reply with exactly five words."  # type: ignore[index]
     assert command["messages"] == [{"role": "user", "content": "Reply with exactly five words."}]  # type: ignore[index]
+    assert command["target_tokens"] == 123  # type: ignore[index]
+    assert command["max_output_tokens"] == 123  # type: ignore[index]
+    assert command["provider_options"]["num_predict"] == 123  # type: ignore[index]
+    assert command["provider_options"]["temperature"] == 0.1  # type: ignore[index]
+    assert command["ollama_options"]["num_predict"] == 123  # type: ignore[index]
+    assert command["think"] is False  # type: ignore[index]
+    assert command["ollama_think"] is False  # type: ignore[index]
+    assert command["completion_sentinel"] == "UNIT_DONE"  # type: ignore[index]
+    assert command["early_result_sentinel"] == "UNIT_DONE"  # type: ignore[index]
+    assert command["stream_result_sentinel"] == "UNIT_DONE"  # type: ignore[index]
+    assert "# Codebase Digest" in command["required_headings"]  # type: ignore[index]
     assert captured["thread_id"] == "worker-live-session:sess-route-direct"
     assert captured["max_local_concurrency"] == 1
 
@@ -323,6 +343,127 @@ def test_worker_live_session_child_emits_terminal_result_before_completion_activ
     )
     assert result_index < completed_activity_index
     assert emitted[result_index]["payload"]["response"]["content"] == "terminal result first"  # type: ignore[index]
+
+
+
+def test_worker_live_session_child_applies_provider_output_limits(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import main_computer.chat_ai_subprocess as subprocess_module
+
+    class _CaptureStdout:
+        def emit(self, message: dict[str, object]) -> None:
+            return None
+
+    class _FakeProvider:
+        name = "ollama"
+        model = "unit-model"
+        options = {"num_predict": 999, "temperature": 0.8}
+        think = True
+        stream_callback = None
+
+        def chat(self, messages):
+            assert self.options["num_predict"] == 64
+            assert self.options["temperature"] == 0.1
+            assert self.think is False
+            return ChatResponse(
+                content="bounded worker result",
+                provider="ollama",
+                model="unit-model",
+                metadata={"message_count": len(messages), "options": dict(self.options), "think": self.think},
+            )
+
+    class _FakeComputer:
+        provider = _FakeProvider()
+
+    monkeypatch.setattr(subprocess_module.MainComputer, "build", lambda config: _FakeComputer())
+
+    payload = subprocess_module._run_worker_live_session_chat_completion_child(
+        {
+            "run_id": "run-child-output-limit",
+            "source": "hello",
+            "messages": [{"role": "user", "content": "hello"}],
+            "config": {"workspace": str(tmp_path)},
+            "max_output_tokens": 64,
+            "provider_options": {"num_predict": 512, "temperature": 0.1},
+            "think": False,
+        },
+        _CaptureStdout(),
+        log_file=str(tmp_path / "child-output-limit.log"),
+    )
+
+    assert payload["response"]["content"] == "bounded worker result"
+    assert payload["response"]["metadata"]["options"]["num_predict"] == 64
+    assert payload["response"]["metadata"]["think"] is False
+
+
+
+def test_worker_live_session_child_returns_early_stream_result_on_completion_sentinel(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import main_computer.chat_ai_subprocess as subprocess_module
+
+    emitted: list[dict[str, object]] = []
+
+    class _CaptureStdout:
+        def emit(self, message: dict[str, object]) -> None:
+            emitted.append(message)
+
+    class _FakeProvider:
+        name = "ollama"
+        model = "unit-model"
+        stream_callback = None
+
+        def chat(self, messages):
+            for delta in (
+                "# Codebase Digest\n",
+                "## Summary\n- Small digest.\n",
+                "## Relevant files\n- main_computer/worker.py.\n",
+                "## State machine\n- idle -> busy -> idle.\n",
+                "## Risks\n- stale worker state.\n",
+                "## Verification steps\n- rerun smoke.\n",
+                "## Follow-up tasks\n- add UI control.\n",
+                "AGENT_SHAPE_DIGEST_DONE trailing text that should be trimmed",
+            ):
+                self.stream_callback({"type": "content_delta", "delta": delta, "provider": self.name, "model": self.model})
+            return ChatResponse(
+                content="late provider answer should not replace early stream result",
+                provider="ollama",
+                model="unit-model",
+                metadata={},
+            )
+
+    class _FakeComputer:
+        provider = _FakeProvider()
+
+    monkeypatch.setattr(subprocess_module.MainComputer, "build", lambda config: _FakeComputer())
+
+    payload = subprocess_module._run_worker_live_session_chat_completion_child(
+        {
+            "run_id": "run-child-early-stream",
+            "source": "hello",
+            "messages": [{"role": "user", "content": "hello"}],
+            "config": {"workspace": str(tmp_path)},
+            "completion_sentinel": "AGENT_SHAPE_DIGEST_DONE",
+            "required_headings": [
+                "# Codebase Digest",
+                "## Summary",
+                "## Relevant files",
+                "## State machine",
+                "## Risks",
+                "## Verification steps",
+                "## Follow-up tasks",
+            ],
+        },
+        _CaptureStdout(),
+        log_file=str(tmp_path / "child-early-stream.log"),
+    )
+
+    result_messages = [message for message in emitted if message.get("type") == "result"]
+    assert len(result_messages) == 1
+    assert payload["response"]["content"].startswith("# Codebase Digest")
+    assert "AGENT_SHAPE_DIGEST_DONE" not in payload["response"]["content"]
+    assert "late provider answer" not in payload["response"]["content"]
+    assert payload["response"]["metadata"]["early_stream_result"] is True
+    assert payload["response"]["metadata"]["early_stream_result_reason"] == "completion_sentinel"
 
 
 
@@ -489,13 +630,50 @@ def test_worker_live_session_default_local_ai_timeout_is_generous(monkeypatch: p
         work_executor=lambda offer: {"status": "success"},
     )
 
-    assert client._work_offer_timeout_seconds({"type": "hub.work.offer", "work": {}}) == 180.0
+    assert client._work_offer_timeout_seconds({"type": "hub.work.offer", "work": {}}) == 300.0
     assert client._work_offer_timeout_seconds(
         {
             "type": "hub.work.offer",
             "work": {"local_ai_timeout_seconds": 12},
         }
     ) == 12.0
+    assert client._work_offer_timeout_seconds(
+        {
+            "type": "hub.work.offer",
+            "work": {"worker_timeout_seconds": 24},
+        }
+    ) == 24.0
+    assert client._work_offer_timeout_seconds(
+        {
+            "type": "hub.work.offer",
+            "work": {"execution_limits": {"worker_local_ai_timeout_seconds": 36}},
+        }
+    ) == 36.0
+
+
+def test_worker_live_session_offer_output_limit_helpers_merge_payload_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from main_computer.viewport_routes_energy import _worker_live_offer_provider_options, _worker_live_offer_target_tokens, _worker_live_offer_think_value
+
+    monkeypatch.delenv("MAIN_COMPUTER_WORKER_LIVE_SESSION_MAX_OUTPUT_TOKENS", raising=False)
+    offer = {
+        "type": "hub.work.offer",
+        "work": {
+            "target_tokens": 128,
+            "provider_options": {"num_predict": 999, "temperature": 0.2},
+            "input": {
+                "max_output_tokens": 64,
+                "ollama_options": {"temperature": 0.1},
+                "think": False,
+            },
+        },
+    }
+
+    assert _worker_live_offer_target_tokens(offer) == 128
+    options = _worker_live_offer_provider_options(offer, target_tokens=128)
+    assert options["num_predict"] == 128
+    assert options["temperature"] == 0.1
+    assert _worker_live_offer_think_value(offer) is False
+
 
 
 def test_worker_live_session_client_keepalive_uses_worker_pong_contract() -> None:
@@ -556,6 +734,7 @@ def test_worker_live_session_client_times_out_stuck_local_executor(monkeypatch: 
     failure = sent_messages[1]
     assert failure["type"] == "worker.work.failed"
     assert failure["error"]["error_type"] == "TimeoutError"  # type: ignore[index]
+    assert failure["error"]["local_ai_timeout_seconds"] == 1.0  # type: ignore[index]
     assert "timed out" in failure["error"]["error"]  # type: ignore[index]
     assert client.snapshot()["active_work_count"] == 0
 

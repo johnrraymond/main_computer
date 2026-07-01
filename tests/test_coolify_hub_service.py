@@ -44,6 +44,7 @@ def _args(**overrides):
         "github_app_uuid": "",
         "deploy_key_uuid": "",
         "hub_runtime_dir": "",
+        "runtime_env_file": "",
         "hub_implementation": coolify_hub_service.HUB_IMPLEMENTATION_EXP_FDB,
         "replace_regular_hub": False,
         "fdb_cluster_file": "",
@@ -323,7 +324,10 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertNotIn("git_repository", payload)
         self.assertEqual(payload["ports_exposes"], "8780")
         self.assertEqual(payload["domains"], "http://127.0.0.1:8780")
-        self.assertEqual(payload["start_command"], "python /app/run-exp-fdb-hub.py --network test --port 8780")
+        self.assertEqual(
+            payload["start_command"],
+            "python /app/run-exp-fdb-hub.py --network test --port 8780 --runtime-env-file /srv/main-computer/hub/test-exp-fdb/hub-runtime.env",
+        )
         self.assertLessEqual(len(payload["start_command"]), 255)
         self.assertEqual(plan["coolify_resource_kind"], "service")
         self.assertEqual(plan["service_payload"]["name"], "main-computer-test-hub")
@@ -347,17 +351,21 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("FDB_CLUSTER_FILE_CONTENTS: \"docker:docker@main-computer-test-hub-fdb:4550\"", compose)
         self.assertIn("fdbcli -C", compose)
         self.assertIn("configure new single memory", compose)
+        self.assertEqual(plan["runtime_env_file"], "/srv/main-computer/hub/test-exp-fdb/hub-runtime.env")
+        self.assertIn("MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE: \"/srv/main-computer/hub/test-exp-fdb/hub-runtime.env\"", compose)
+        self.assertIn("MAIN_COMPUTER_HUB_ROOT: \"/srv/main-computer/hub/test-exp-fdb\"", compose)
+        self.assertIn("MAIN_COMPUTER_HUB_CHAIN_RPC_URL: \"http://host.docker.internal:30010\"", compose)
+        self.assertIn("touch /srv/main-computer/hub/test-exp-fdb/hub-runtime.env", compose)
+        self.assertIn("run-exp-fdb-hub.py --network test --port 8780 --runtime-env-file /srv/main-computer/hub/test-exp-fdb/hub-runtime.env", compose)
         self.assertIn("local_fdb", plan)
         self.assertEqual(plan["local_fdb"]["cluster_contents"], "docker:docker@main-computer-test-hub-fdb:4550")
         self.assertIn("No manual fdb.cluster seed file", plan["operator_note"])
 
         self.assertEqual(plan["bridge_backend"], "dev-chain")
         self.assertEqual(plan["dev_chain_deployment_path"], "/app/runtime/deployments/test/latest.json")
-        self.assertIn("--bridge-backend", compose)
-        self.assertIn("dev-chain", compose)
-        self.assertIn("--require-multisession-auth", compose)
-        self.assertIn("--dev-chain-deployment-path", compose)
-        self.assertIn("/app/runtime/deployments/test/latest.json", compose)
+        self.assertIn("MAIN_COMPUTER_HUB_BRIDGE_BACKEND: \"dev-chain\"", compose)
+        self.assertIn("run-exp-fdb-hub.py --network test --port 8780 --runtime-env-file", compose)
+        self.assertIn("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH: \"/app/runtime/deployments/test/latest.json\"", compose)
         self.assertIn(":ro", compose)
         self.assertIn("/app/runtime/deployments", compose)
 
@@ -368,11 +376,13 @@ class CoolifyHubServiceTests(unittest.TestCase):
         command = plan["hub_start_command"]
 
         self.assertEqual(plan["bridge_backend"], "mock-chain")
-        self.assertEqual(plan["application_payload"]["start_command"], "python /app/run-exp-fdb-hub.py --network test --port 8780")
-        self.assertIn("--bridge-backend mock-chain", command)
-        self.assertNotIn("--dev-chain-deployment-path", command)
-        self.assertIn("--bridge-backend", plan["docker_compose"])
-        self.assertIn("mock-chain", plan["docker_compose"])
+        self.assertEqual(
+            plan["application_payload"]["start_command"],
+            "python /app/run-exp-fdb-hub.py --network test --port 8780 --runtime-env-file /srv/main-computer/hub/test-exp-fdb/hub-runtime.env",
+        )
+        self.assertIn("--runtime-env-file /srv/main-computer/hub/test-exp-fdb/hub-runtime.env", command)
+        self.assertIn("MAIN_COMPUTER_HUB_BRIDGE_BACKEND: \"mock-chain\"", plan["docker_compose"])
+        self.assertNotIn("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", plan["docker_compose"])
 
     def test_local_build_context_can_stage_custom_uncommitted_source_dir(self) -> None:
         import tempfile
@@ -1091,6 +1101,57 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(any(method == "PATCH" and path == "/api/v1/services/service-uuid/envs" for method, path, _ in client.requests))
         self.assertNotIn(secret_value, json.dumps(tried))
         self.assertIn("<redacted>", json.dumps(tried))
+
+    def test_runtime_launcher_loads_dev_runtime_env_file_before_building_command(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / "hub-runtime.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "MAIN_COMPUTER_HUB_NETWORK=dev",
+                        "MAIN_COMPUTER_HUB_PORT=8879",
+                        "MAIN_COMPUTER_HUB_ROOT=runtime/hub/dev-runtime-file",
+                        "MAIN_COMPUTER_HUB_FDB_CLUSTER_FILE=.foundationdb/dev-runtime.cluster",
+                        "MAIN_COMPUTER_HUB_FDB_NAMESPACE=main-computer-dev-runtime-file",
+                        "MAIN_COMPUTER_HUB_CHAIN_RPC_URL=http://127.0.0.1:18555",
+                        "MAIN_COMPUTER_HUB_CHAIN_ID=42424242",
+                        "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER=true",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            args = run_exp_fdb_hub.parse_args(["--runtime-env-file", str(env_path)])
+            command = run_exp_fdb_hub.build_exp_fdb_hub_command(
+                args,
+                environ={"PORT": "8785", "MAIN_COMPUTER_HUB_NETWORK": "testnet"},
+            )
+
+        self.assertEqual(command[command.index("--network-key") + 1], "dev")
+        self.assertEqual(command[command.index("--port") + 1], "8879")
+        self.assertEqual(command[command.index("--hub-root") + 1], "runtime/hub/dev-runtime-file")
+        self.assertEqual(command[command.index("--cluster-file") + 1], ".foundationdb/dev-runtime.cluster")
+        self.assertEqual(command[command.index("--namespace") + 1], "main-computer-dev-runtime-file")
+        self.assertEqual(command[command.index("--chain-rpc-url") + 1], "http://127.0.0.1:18555")
+        self.assertIn("--allow-missing-bridge-signer", command)
+
+    def test_test_runtime_env_file_drives_local_hub_launcher_but_not_hosted_defaults(self) -> None:
+        local_profile = coolify_hub_service.load_hub_network_registry().get("test")
+        local_args = _args(network="test", git_repo="")
+        local_plan = coolify_hub_service.plan_result(local_profile, local_args)
+
+        self.assertEqual(local_plan["runtime_env_file"], "/srv/main-computer/hub/test-exp-fdb/hub-runtime.env")
+        self.assertIn("--runtime-env-file /srv/main-computer/hub/test-exp-fdb/hub-runtime.env", local_plan["hub_start_command"])
+        self.assertIn("MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE", local_plan["docker_compose"])
+
+        hosted_profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        hosted_args = _args(network="testnet")
+        hosted_plan = coolify_hub_service.plan_result(hosted_profile, hosted_args)
+
+        self.assertEqual(hosted_plan["runtime_env_file"], "")
+        self.assertNotIn("MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE", hosted_plan["docker_compose"])
 
     def test_runtime_launcher_cli_network_overrides_port_inference(self) -> None:
         args = run_exp_fdb_hub.parse_args(["--network", "mainnet"])

@@ -14,6 +14,7 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "main_computer.exp_fdb_hub" in entrypoint
     assert "Manual-only" in module
     assert "--cluster-file" in module
+    assert "--runtime-env-file" in module
     assert "--namespace" in module
     assert "--no-fdb-autostart" in module
     assert "main-computer-foundationdb-smoke" in module
@@ -54,6 +55,45 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "FoundationDB Docker cluster" in module
 
 
+
+
+def test_exp_fdb_hub_dev_runtime_env_file_values_feed_runtime_config(tmp_path, monkeypatch) -> None:
+    from main_computer.exp_fdb_hub import build_experimental_config, build_parser
+    from main_computer.runtime_env_file import load_runtime_env_file
+
+    env_file = tmp_path / "runtime" / "hub" / "dev" / "hub-runtime.env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text(
+        "\n".join(
+            [
+                "MAIN_COMPUTER_HUB_BRIDGE_BACKEND=dev-chain",
+                f"MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH={tmp_path / 'runtime' / 'deployments' / 'dev' / 'latest.json'}",
+                f"MAIN_COMPUTER_HUB_CONTRACTS_PATH={tmp_path / 'main_computer' / 'config' / 'dev_contracts.json'}",
+                "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER=true",
+                "MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE=false",
+                "MAIN_COMPUTER_CHAIN_ID=42424242",
+                "MAIN_COMPUTER_CHAIN_RPC_URL=http://127.0.0.1:18545",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_BRIDGE_BACKEND", raising=False)
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", raising=False)
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_CONTRACTS_PATH", raising=False)
+    for key, value in load_runtime_env_file(env_file).items():
+        monkeypatch.setenv(key, value)
+
+    args = build_parser().parse_args(["--runtime-env-file", str(env_file), "--network-key", "dev", "--repo-root", str(tmp_path)])
+    config, _fdb_config = build_experimental_config(args, port=8871)
+
+    assert config.hub_network == "dev"
+    assert config.hub_bridge_backend == "dev-chain"
+    assert config.hub_allow_missing_bridge_signer is True
+    assert config.chain_id == 42424242
+    assert config.chain_rpc_url == "http://127.0.0.1:18545"
+    assert config.hub_dev_chain_deployment_path == tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
+    assert config.hub_contracts_path == tmp_path / "main_computer" / "config" / "dev_contracts.json"
 
 
 def test_exp_fdb_hub_unsigned_contract_startup_does_not_default_private_deployment_path(tmp_path, monkeypatch) -> None:

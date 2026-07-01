@@ -20,6 +20,7 @@ set "COOLIFY_COMPOSE_PROJECT="
 set "COMPOSE_PROJECT_NAME="
 
 set "MC_OPEN_BROWSER=0"
+set "MC_NO_DEV_HUB=0"
 set "MC_UNKNOWN_ARG="
 
 :mc_parse_args
@@ -27,6 +28,9 @@ if "%~1"=="" goto mc_args_done
 if /I "%~1"=="-OpenBrowser" goto mc_enable_open_browser
 if /I "%~1"=="--open-browser" goto mc_enable_open_browser
 if /I "%~1"=="/OpenBrowser" goto mc_enable_open_browser
+if /I "%~1"=="--no-dev-hub" goto mc_disable_dev_hub
+if /I "%~1"=="-NoDevHub" goto mc_disable_dev_hub
+if /I "%~1"=="/NoDevHub" goto mc_disable_dev_hub
 set "MC_UNKNOWN_ARG=%~1"
 goto mc_args_done
 
@@ -35,10 +39,15 @@ set "MC_OPEN_BROWSER=1"
 shift
 goto mc_parse_args
 
+:mc_disable_dev_hub
+set "MC_NO_DEV_HUB=1"
+shift
+goto mc_parse_args
+
 :mc_args_done
 if defined MC_UNKNOWN_ARG (
   echo Unknown argument: %MC_UNKNOWN_ARG%
-  echo Usage: start_v2.bat [-OpenBrowser]
+  echo Usage: start_v2.bat [-OpenBrowser] [--no-dev-hub]
   exit /b 2
 )
 
@@ -49,7 +58,11 @@ if not exist "%MC_START_STOP%" (
 )
 
 echo Force-stopping current Main Computer app processes before launch; Docker stacks are left alone...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat"
+if "%MC_NO_DEV_HUB%"=="1" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat" -NoDevHub
+) else (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat"
+)
 if errorlevel 1 (
   echo Failed to launch Main Computer app control/supervisor.
   exit /b %ERRORLEVEL%

@@ -1,0 +1,46 @@
+{
+  "kind": "main_computer.stable_hub_topology.v1",
+  "cluster_id": "main-computer-mainnet-hub",
+  "network": {
+    "network_key": "mainnet",
+    "network_display_name": "Main Computer Mainnet",
+    "network_kind": "mainnet",
+    "chain_id": "42424240",
+    "chain_rpc_url": "https://mainnet-rpc.greatlibrary.io"
+  },
+  "storage": {
+    "backend": "foundationdb",
+    "cluster_file": "runtime/hub/mainnet/fdb.cluster",
+    "namespace": "main-computer-mainnet-exp-fdb-stable-live-sessions",
+    "api_version": 740
+  },
+  "entry_urls": [
+    "https://mainnet-hub.greatlibrary.io"
+  ],
+  "selection": {
+    "default_mode": "random",
+    "lab_mode": "fixed"
+  },
+  "hubs": [
+    {
+      "hub_id": "mainnet-hub1",
+      "hub_url": "https://mainnet-hub1.greatlibrary.io",
+      "public_url": "https://mainnet-hub1.greatlibrary.io",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    }
+  ],
+  "contract": {
+    "auth": "multisession-wallet",
+    "worker_connection": "long-lived-msk-session",
+    "heartbeat": "connection-ping-pong",
+    "availability_source": "live-worker-session-owner",
+    "routing": "entry-hub-reserves-with-worker-home-hub-then-returns-concrete-execution-hub-url",
+    "worker_live_session_transport": "websocket",
+    "worker_heartbeat": "live-connection-ping-pong",
+    "rest_worker_heartbeat": "forbidden",
+    "topology_scope": "public-mainnet-coolify"
+  }
+}

@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -277,15 +278,65 @@ def _worker_stream_callback(
     source: str = "chat-console",
     tags: list[str] | None = None,
     rag_type: str = "model_stream",
+    completion_sentinel: str = "",
+    required_headings: list[str] | None = None,
+    early_result_state: dict[str, Any] | None = None,
 ):
     base_tags = list(tags or ["ai", "local-ai", "chat-console", "model-call", "stream", "thinking"])
+    stream_result_buffer: list[str] = []
+    required_heading_values = list(required_headings or [])
+    early_state = early_result_state if early_result_state is not None else {}
+
+    def emit_early_result_if_complete(*, provider_name: str, model: str) -> None:
+        if early_state.get("emitted"):
+            return
+        text = "".join(stream_result_buffer)
+        if not text.strip():
+            return
+        completion_reason = ""
+        content = text
+        if completion_sentinel and completion_sentinel in text:
+            completion_reason = "completion_sentinel"
+            content = _worker_live_session_strip_completion_sentinel(text, completion_sentinel)
+        elif _worker_live_session_sections_have_content(text, required_heading_values):
+            completion_reason = "required_headings_satisfied"
+            content = text.rstrip() + "\n"
+        if not completion_reason:
+            return
+        response_payload = {
+            "content": content,
+            "provider": provider_name,
+            "model": model,
+            "metadata": {
+                "early_stream_result": True,
+                "early_stream_result_reason": completion_reason,
+                "completion_sentinel": completion_sentinel,
+                "required_headings": required_heading_values,
+                "response_chars": len(content),
+            },
+        }
+        terminal_payload = {"response": response_payload}
+        early_state["emitted"] = True
+        early_state["payload"] = terminal_payload
+        append_text_log(
+            log_file,
+            "worker live-session early stream result emitted",
+            run_id=run_id,
+            reason=completion_reason,
+            response_chars=len(content),
+            response_preview=content[:1000],
+        )
+        stdout.emit({"type": "result", "ok": True, "run_id": run_id, "payload": terminal_payload, "ts": utc_now()})
 
     def on_stream(event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
         provider_name = str(event.get("provider") or getattr(provider, "name", ""))
         model = str(event.get("model") or getattr(provider, "model", ""))
         if event_type == "content_delta":
-            latest_text = " ".join(str(event.get("content_preview") or event.get("delta") or "").split())
+            delta_text = str(event.get("delta") or "")
+            if delta_text:
+                stream_result_buffer.append(delta_text)
+            latest_text = " ".join(str(event.get("content_preview") or delta_text).split())
             title = "Model text transmitted"
             message = latest_text[:500]
         elif event_type == "thinking_delta":
@@ -366,6 +417,8 @@ def _worker_stream_callback(
         }
         append_text_log(log_file, "model stream callback", raw_stream_event=event, activity=activity)
         stdout.emit({"type": "activity", "event": activity})
+        if event_type == "content_delta":
+            emit_early_result_if_complete(provider_name=provider_name, model=model)
 
     setattr(on_stream, STREAM_ACTIVITY_BRIDGE_ATTR, True)
     return on_stream
@@ -511,6 +564,123 @@ def _worker_live_session_content_text(value: Any) -> str:
     return str(value)
 
 
+def _worker_live_session_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(parsed, 128_000)) if parsed > 0 else None
+
+
+def _worker_live_session_first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None and str(value).strip() != "":
+            return value
+    return None
+
+
+def _worker_live_session_think_value_from_command(command: dict[str, Any]) -> Any:
+    return _worker_live_session_first_present(command.get("ollama_think"), command.get("think"))
+
+
+def _worker_live_session_provider_options_from_command(command: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for value in (command.get("provider_options"), command.get("ollama_options")):
+        if isinstance(value, dict):
+            merged.update(value)
+    target_tokens = _worker_live_session_positive_int(command.get("max_output_tokens")) or _worker_live_session_positive_int(command.get("target_tokens"))
+    if target_tokens is not None:
+        existing = _worker_live_session_positive_int(merged.get("num_predict"))
+        merged["num_predict"] = min(existing, target_tokens) if existing is not None else target_tokens
+    return merged
+
+
+def _worker_live_session_completion_sentinel_from_command(command: dict[str, Any]) -> str:
+    return str(
+        _worker_live_session_first_present(
+            command.get("stream_result_sentinel"),
+            command.get("early_result_sentinel"),
+            command.get("completion_sentinel"),
+        )
+        or ""
+    ).strip()
+
+
+def _worker_live_session_required_headings_from_command(command: dict[str, Any]) -> list[str]:
+    raw = command.get("required_headings")
+    if not isinstance(raw, list):
+        return []
+    headings: list[str] = []
+    for value in raw:
+        heading = str(value or "").strip()
+        if heading:
+            headings.append(heading)
+    return headings
+
+
+def _worker_live_session_strip_completion_sentinel(text: str, sentinel: str) -> str:
+    if sentinel and sentinel in text:
+        text = text.split(sentinel, 1)[0]
+    return text.rstrip() + "\n" if text.strip() else ""
+
+
+def _worker_live_session_sections_have_content(text: str, required_headings: list[str]) -> bool:
+    if not required_headings:
+        return False
+    lower_text = text.lower()
+    positions: list[tuple[str, int]] = []
+    for heading in required_headings:
+        pos = lower_text.find(heading.lower())
+        if pos < 0:
+            return False
+        positions.append((heading, pos))
+    positions.sort(key=lambda item: item[1])
+    for index, (heading, pos) in enumerate(positions):
+        if heading.lstrip().startswith("# ") and not heading.lstrip().startswith("## "):
+            continue
+        start = pos + len(heading)
+        end = positions[index + 1][1] if index + 1 < len(positions) else len(text)
+        body = re.sub(r"[#*`_>\-\s:.;,]+", " ", text[start:end]).strip()
+        if len(body.split()) < 3:
+            return False
+    return True
+
+
+def _apply_worker_live_session_provider_overrides(provider: Any, command: dict[str, Any], *, log_file: str, run_id: str) -> None:
+    """Apply per-offer provider controls before the worker subprocess calls the model."""
+
+    provider_options = _worker_live_session_provider_options_from_command(command)
+    think_value = _worker_live_session_think_value_from_command(command)
+    if provider_options and hasattr(provider, "options"):
+        existing = getattr(provider, "options", None)
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged.update(provider_options)
+        setattr(provider, "options", merged)
+    if think_value is not None and hasattr(provider, "think"):
+        lowered = str(think_value).strip().lower()
+        if isinstance(think_value, bool):
+            resolved_think: Any = think_value
+        elif lowered in {"false", "0", "no", "off"}:
+            resolved_think = False
+        elif lowered in {"true", "1", "yes", "on"}:
+            resolved_think = True
+        else:
+            resolved_think = think_value
+        setattr(provider, "think", resolved_think)
+    if provider_options or think_value is not None:
+        append_text_log(
+            log_file,
+            "worker live-session provider overrides applied",
+            run_id=run_id,
+            provider=str(getattr(provider, "name", provider.__class__.__name__)),
+            model=str(getattr(provider, "model", "")),
+            provider_options=getattr(provider, "options", provider_options),
+            think=getattr(provider, "think", think_value),
+        )
+
+
+
+
 def _worker_live_session_chat_messages_from_command(command: dict[str, Any]) -> list[ChatMessage]:
     """Build direct provider messages for worker chat.completions work.
 
@@ -577,6 +747,7 @@ def _run_worker_live_session_chat_completion_child(command: dict[str, Any], stdo
     provider = getattr(computer, "provider", None)
     if provider is None or not hasattr(provider, "chat"):
         raise ChatAISubprocessError("Local provider is not available for worker live-session chat.completions.")
+    _apply_worker_live_session_provider_overrides(provider, command, log_file=log_file, run_id=run_id)
     provider = ModelIOLoggingProvider(provider, log_file=log_file, run_id=run_id, label="worker_live_session_chat_completion")
     provider_name = getattr(provider, "name", "")
     model_name = getattr(provider, "model", "")
@@ -608,11 +779,36 @@ def _run_worker_live_session_chat_completion_child(command: dict[str, Any], stdo
         }
     )
 
+    completion_sentinel = _worker_live_session_completion_sentinel_from_command(command)
+    required_headings = _worker_live_session_required_headings_from_command(command)
+    early_result_state: dict[str, Any] = {}
+
     previous_callback = getattr(provider, "stream_callback", None)
     if hasattr(provider, "stream_callback"):
         try:
-            setattr(provider, "stream_callback", _worker_stream_callback(stdout, log_file=log_file, run_id=run_id, provider=provider))
-            append_text_log(log_file, "installed worker stream callback", run_id=run_id)
+            setattr(
+                provider,
+                "stream_callback",
+                _worker_stream_callback(
+                    stdout,
+                    log_file=log_file,
+                    run_id=run_id,
+                    provider=provider,
+                    source="worker-live-session",
+                    tags=["ai", "local-ai", "worker", "chat.completions", "model-call", "stream"],
+                    rag_type="worker_live_session_chat_completion_stream",
+                    completion_sentinel=completion_sentinel,
+                    required_headings=required_headings,
+                    early_result_state=early_result_state,
+                ),
+            )
+            append_text_log(
+                log_file,
+                "installed worker stream callback",
+                run_id=run_id,
+                completion_sentinel=completion_sentinel,
+                required_headings=required_headings,
+            )
         except Exception as exc:
             append_text_log(log_file, "failed to install worker stream callback", run_id=run_id, error=repr(exc))
 
@@ -626,7 +822,21 @@ def _run_worker_live_session_chat_completion_child(command: dict[str, Any], stdo
             except Exception as exc:
                 append_text_log(log_file, "failed to restore worker stream callback", run_id=run_id, error=repr(exc))
 
+    if isinstance(early_result_state.get("payload"), dict):
+        append_text_log(
+            log_file,
+            "worker live-session chat completion returning early stream result",
+            run_id=run_id,
+            payload=early_result_state.get("payload"),
+        )
+        return early_result_state["payload"]
+
     response_payload = _jsonable_response(response)
+    if completion_sentinel and isinstance(response_payload.get("content"), str):
+        response_payload["content"] = _worker_live_session_strip_completion_sentinel(
+            str(response_payload.get("content") or ""),
+            completion_sentinel,
+        )
     append_text_log(
         log_file,
         "worker live-session chat completion response completed",
@@ -803,7 +1013,21 @@ def _run_chat_console_ai_child(command: dict[str, Any], stdout: WorkerStdout, *,
             except Exception as exc:
                 append_text_log(log_file, "failed to restore stream callback", run_id=run_id, error=repr(exc))
 
+    if isinstance(early_result_state.get("payload"), dict):
+        append_text_log(
+            log_file,
+            "worker live-session chat completion returning early stream result",
+            run_id=run_id,
+            payload=early_result_state.get("payload"),
+        )
+        return early_result_state["payload"]
+
     response_payload = _jsonable_response(response)
+    if completion_sentinel and isinstance(response_payload.get("content"), str):
+        response_payload["content"] = _worker_live_session_strip_completion_sentinel(
+            str(response_payload.get("content") or ""),
+            completion_sentinel,
+        )
     append_text_log(
         log_file,
         "chat console AI response completed",

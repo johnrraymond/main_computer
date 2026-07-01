@@ -59,6 +59,7 @@ DEFAULT_LOCAL_TEST_CONTAINER_RPC_URL = "http://host.docker.internal:30010"
 DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME = "hub-src"
 DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY = "main-computer-test-hub-fdb"
 DEFAULT_LOCAL_TEST_FDB_IMAGE = "foundationdb/foundationdb:7.4.6"
+DEFAULT_HUB_RUNTIME_ENV_FILENAME = "hub-runtime.env"
 DEFAULT_LOCAL_TEST_FDB_PORT = 4550
 DEFAULT_LOCAL_TEST_FDB_CLUSTER_CONTENTS = f"docker:docker@{DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY}:{DEFAULT_LOCAL_TEST_FDB_PORT}"
 DEFAULT_REMOTE_SIDECAR_FDB_NETWORKS = {"testnet"}
@@ -898,6 +899,11 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
     parts = [
         "python",
         "/app/exp-fdb-hub.py",
+    ]
+    runtime_env_file = hub_runtime_env_file_path(profile, args, runtime_dir=runtime_dir)
+    if runtime_env_file:
+        parts.extend(["--runtime-env-file", runtime_env_file])
+    parts.extend([
         "--host",
         profile.hub_bind_host,
         "--port",
@@ -921,7 +927,7 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
         "--require-multisession-auth",
         "--bridge-backend",
         hub_bridge_backend(args),
-    ]
+    ])
     if hub_bridge_backend(args) not in {"mock", "mock-chain", "mock-chain-lite"}:
         allow_missing_bridge_signer = hub_allow_missing_bridge_signer(profile, args)
         explicit_deployment_path = str(getattr(args, "dev_chain_deployment_path", "") or "").strip()
@@ -946,7 +952,27 @@ def hub_start_command(profile: HubNetworkProfile, runtime_dir: str, args: argpar
     """Return the full exp-FDB Hub command for diagnostics/local compose bootstrap."""
 
     assert args is not None
-    return " ".join(command_token(part) for part in hub_command_parts(profile, runtime_dir, args))
+    parts = (
+        hub_launcher_command_parts(profile, runtime_dir, args)
+        if is_local_test_profile(profile)
+        else hub_command_parts(profile, runtime_dir, args)
+    )
+    return " ".join(command_token(part) for part in parts)
+
+
+def hub_launcher_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argparse.Namespace) -> list[str]:
+    parts = [
+        "python",
+        "/app/run-exp-fdb-hub.py",
+        "--network",
+        profile.network_key,
+        "--port",
+        str(profile.hub_bind_port),
+    ]
+    runtime_env_file = hub_runtime_env_file_path(profile, args, runtime_dir=runtime_dir)
+    if runtime_env_file:
+        parts.extend(["--runtime-env-file", runtime_env_file])
+    return parts
 
 
 def hub_launcher_start_command(profile: HubNetworkProfile, runtime_dir: str, args: argparse.Namespace | None = None) -> str:
@@ -958,19 +984,19 @@ def hub_launcher_start_command(profile: HubNetworkProfile, runtime_dir: str, arg
     from the selected network and runtime environment.
     """
 
-    del runtime_dir
     assert args is not None
-    return " ".join(
-        command_token(part)
-        for part in [
-            "python",
-            "/app/run-exp-fdb-hub.py",
-            "--network",
-            profile.network_key,
-            "--port",
-            str(profile.hub_bind_port),
-        ]
-    )
+    parts = [
+        "python",
+        "/app/run-exp-fdb-hub.py",
+        "--network",
+        profile.network_key,
+        "--port",
+        str(profile.hub_bind_port),
+    ]
+    runtime_env_file = hub_runtime_env_file_path(profile, args, runtime_dir=runtime_dir)
+    if runtime_env_file:
+        parts.extend(["--runtime-env-file", runtime_env_file])
+    return " ".join(command_token(part) for part in parts)
 
 
 def default_dockerfile_location(profile: HubNetworkProfile, args: argparse.Namespace | None = None) -> str:
@@ -1164,6 +1190,63 @@ def remote_runtime_bind_source(runtime_dir: str) -> str:
     return container_posix_path(runtime_dir).rstrip("/")
 
 
+def hub_runtime_env_file_path(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
+    """Return the container-visible Hub runtime env file path.
+
+    The local `test` profile gets a default host-editable file under the Hub
+    runtime mount so dev/test can prove the operational model before hosted
+    networks opt in.  Hosted testnet/mainnet remain unchanged unless an
+    operator supplies --runtime-env-file explicitly.
+    """
+
+    explicit = str(getattr(args, "runtime_env_file", "") or "").strip()
+    if explicit:
+        return container_posix_path(explicit)
+    if is_local_test_profile(profile):
+        return container_posix_path(f"{runtime_dir.rstrip('/')}/{DEFAULT_HUB_RUNTIME_ENV_FILENAME}")
+    return ""
+
+
+def hub_runtime_env_defaults(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> dict[str, str]:
+    """Environment defaults passed to the Hub launcher before hub-runtime.env overrides."""
+
+    values: dict[str, str] = {
+        "MAIN_COMPUTER_HUB_NETWORK": profile.network_key,
+        "MAIN_COMPUTER_HUB_PORT": str(profile.hub_bind_port),
+        "MAIN_COMPUTER_HUB_URL": profile.hub_url,
+        "MAIN_COMPUTER_HUB_ROOT": container_posix_path(runtime_dir),
+        "MAIN_COMPUTER_HUB_FDB_CLUSTER_FILE": exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir),
+        "MAIN_COMPUTER_HUB_FDB_NAMESPACE": exp_fdb_namespace(profile, args),
+        "MAIN_COMPUTER_HUB_BRIDGE_BACKEND": hub_bridge_backend(args),
+        "MAIN_COMPUTER_HUB_CHAIN_ID": str(profile.chain_id or ""),
+        "MAIN_COMPUTER_HUB_CONTRACTS_PATH": contracts_path(profile, args),
+    }
+    chain_rpc = hub_chain_rpc_url(profile, args)
+    if chain_rpc:
+        values["MAIN_COMPUTER_HUB_CHAIN_RPC_URL"] = chain_rpc
+    if hub_bridge_backend(args) not in {"mock", "mock-chain", "mock-chain-lite"}:
+        if hub_enable_bridge_writes(args):
+            values["MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH"] = bridge_signer_remote_path(
+                profile,
+                args,
+                runtime_dir=runtime_dir,
+            )
+        else:
+            explicit_deployment_path = str(getattr(args, "dev_chain_deployment_path", "") or "").strip()
+            if explicit_deployment_path or not hub_allow_missing_bridge_signer(profile, args):
+                values["MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH"] = dev_chain_deployment_path(profile, args)
+        if hub_allow_missing_bridge_signer(profile, args):
+            values["MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER"] = "true"
+        if hub_enable_smoke_bridge(args):
+            values["MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE"] = "true"
+    if hub_enable_bridge_writes(args):
+        values["MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES"] = "true"
+    runtime_env_file = hub_runtime_env_file_path(profile, args, runtime_dir=runtime_dir)
+    if runtime_env_file:
+        values["MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE"] = runtime_env_file
+    return {key: value for key, value in values.items() if str(value).strip()}
+
+
 def fdb_sidecar_service_key(profile: HubNetworkProfile, *, service_name: str) -> str:
     if is_local_test_profile(profile):
         return DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY
@@ -1194,8 +1277,24 @@ def hub_fdb_bootstrap_script(
 
     cluster_file = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
     cluster_contents = fdb_sidecar_cluster_contents(profile, service_name=service_name)
-    command = " ".join(command_token(part) for part in hub_command_parts(profile, runtime_dir, args))
+    command_parts = (
+        hub_launcher_command_parts(profile, runtime_dir, args)
+        if is_local_test_profile(profile)
+        else hub_command_parts(profile, runtime_dir, args)
+    )
+    command = " ".join(command_token(part) for part in command_parts)
     pre_start_lines: list[str] = []
+    runtime_env_file = hub_runtime_env_file_path(profile, args, runtime_dir=runtime_dir)
+    if runtime_env_file:
+        runtime_env_dir = container_posix_dirname(runtime_env_file)
+        pre_start_lines.extend(
+            [
+                f"mkdir -p {sh_quote(runtime_env_dir)}",
+                f"touch {sh_quote(runtime_env_file)}",
+            ]
+            if is_local_test_profile(profile)
+            else [f"mkdir -p {sh_quote(runtime_env_dir)}"]
+        )
     if hub_enable_bridge_writes(args):
         signer_path = bridge_signer_remote_path(profile, args, runtime_dir=runtime_dir)
         signer_dir = container_posix_dirname(signer_path)
@@ -1290,6 +1389,10 @@ def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Nam
         f"      - {yaml_quote(f'127.0.0.1:{profile.hub_bind_port}:{profile.hub_bind_port}')}",
         "    environment:",
         f"      HUB_HEALTH_PORT: {yaml_quote(str(profile.hub_bind_port))}",
+        *[
+            f"      {key}: {yaml_quote(value)}"
+            for key, value in hub_runtime_env_defaults(profile, args, runtime_dir=runtime_dir).items()
+        ],
         f"      FDB_CLUSTER_FILE_CONTENTS: {yaml_quote(local_test_fdb_cluster_contents())}",
         "    extra_hosts:",
         "      - host.docker.internal:host-gateway",
@@ -2444,6 +2547,7 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
         "hub_implementation": implementation,
         "service_name": service_name,
         "runtime_dir": runtime_dir,
+        "runtime_env_file": hub_runtime_env_file_path(profile, args, runtime_dir=runtime_dir),
         "volume_name": hub_volume_name(profile.network_key, implementation=implementation),
         "public_url": profile.hub_url,
         "chain_rpc_url": profile.chain_rpc_url,
@@ -2714,6 +2818,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--network-config", type=Path, default=None, help="Path to hub_networks.json.")
     parser.add_argument("--hub-runtime-dir", default="", help="Container path for persistent Hub runtime state.")
+    parser.add_argument(
+        "--runtime-env-file",
+        default="",
+        help=(
+            "Container-visible strict KEY=VALUE Hub runtime env file. For local `test`, "
+            "defaults to <hub-runtime-dir>/hub-runtime.env and is bind-mounted from the local runtime host dir."
+        ),
+    )
     parser.add_argument(
         "--hub-implementation",
         choices=HUB_IMPLEMENTATION_CHOICES,

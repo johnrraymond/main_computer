@@ -317,6 +317,99 @@ def test_mainnet_does_not_generate_offices_by_default_but_can_opt_in() -> None:
     assert "--generate-offices" in opt_in_result["command"]
 
 
+def test_mainnet_execute_deploy_contracts_requires_explicit_authority_inputs() -> None:
+    module = _load_module()
+
+    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@203.0.113.10")
+    args = module.parse_args([
+        "deploy-contracts",
+        "mainnet",
+        "--allow-mainnet",
+        "--single-host",
+        "root@203.0.113.10",
+        "--public-rpc",
+    ])
+
+    try:
+        module.deploy_contracts(plan, args)
+    except module.PlanError as exc:
+        message = str(exc)
+        assert "--deployment-private-key-env" in message
+        assert "dev-chain default" in message
+    else:
+        raise AssertionError("mainnet deploy-contracts should reject missing deployer authority")
+
+
+def test_mainnet_execute_deploy_contracts_passes_private_key_env_and_offices(monkeypatch) -> None:
+    module = _load_module()
+    captured: dict[str, object] = {}
+
+    def fake_subprocess_run(command, *, dry_run=False, timeout_s=None):  # noqa: ANN001
+        captured["command"] = command
+        captured["dry_run"] = dry_run
+        captured["timeout_s"] = timeout_s
+        return {"ok": True, "command": command, "dry_run": dry_run, "timeout_s": timeout_s}
+
+    monkeypatch.setattr(module, "safe_subprocess_run", fake_subprocess_run)
+
+    offices = ",".join(
+        [
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "0x3333333333333333333333333333333333333333",
+            "0x4444444444444444444444444444444444444444",
+        ]
+    )
+    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@203.0.113.10")
+    args = module.parse_args([
+        "deploy-contracts",
+        "mainnet",
+        "--allow-mainnet",
+        "--single-host",
+        "root@203.0.113.10",
+        "--public-rpc",
+        "--deployment-private-key-env",
+        "MAIN_COMPUTER_MAINNET_DEPLOYER_PRIVATE_KEY",
+        "--deployment-offices",
+        offices,
+    ])
+
+    result = module.deploy_contracts(plan, args)
+
+    assert result["ok"] is True
+    command = captured["command"]
+    assert command[command.index("--environment") + 1] == "mainnet"
+    assert command[command.index("--chain-id") + 1] == "42424240"
+    assert command[command.index("--private-key-env") + 1] == "MAIN_COMPUTER_MAINNET_DEPLOYER_PRIVATE_KEY"
+    assert command[command.index("--offices") + 1] == offices
+
+
+def test_mainnet_deploy_contracts_rejects_default_anvil_offices() -> None:
+    module = _load_module()
+
+    offices = ",".join(module.DEFAULT_FUNDED_ACCOUNTS)
+    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@203.0.113.10")
+    args = module.parse_args([
+        "deploy-contracts",
+        "mainnet",
+        "--allow-mainnet",
+        "--single-host",
+        "root@203.0.113.10",
+        "--public-rpc",
+        "--deployment-private-key-env",
+        "MAIN_COMPUTER_MAINNET_DEPLOYER_PRIVATE_KEY",
+        "--deployment-offices",
+        offices,
+    ])
+
+    try:
+        module.deploy_contracts(plan, args)
+    except module.PlanError as exc:
+        assert "default Anvil addresses" in str(exc)
+    else:
+        raise AssertionError("mainnet deploy-contracts should reject default Anvil offices")
+
+
 def test_generate_offices_flags_conflict() -> None:
     module = _load_module()
 
