@@ -2253,3 +2253,128 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert "[data-resource-icon-size=\"72\"]" in css
     assert ".mcel-element-showcase-details-pane" in css
     assert ".mcel-resource-tree-proof-card" in css
+
+def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+
+    assert "Medium SCM-proven MCEL app" in app
+    assert "MetaMask/dev-network state" in app
+    assert "Run SCM + wallet proof" in app
+    assert "Connect/check MetaMask devnet" in app
+    assert "Draft release transaction" in app
+    assert 'id="mcel-tiny-contract-language-template"' in app
+    assert 'id="mcel-tiny-contract-runtime-mount"' in app
+    assert 'id="mcel-tiny-contract-source-template"' in app
+    assert 'id="mcel-tiny-contract-map"' in app
+    assert 'id="mcel-tiny-contract-evidence"' in app
+    assert 'id="mcel-tiny-contract-wallet"' in app
+    assert 'id="mcel-tiny-contract-tx-draft"' in app
+    assert 'id="mcel-tiny-contract-repair"' in app
+    assert 'id="mcel-tiny-contract-block-write"' in app
+    assert '"kind": "mcel.scm.app"' in app
+    assert '"name": "DevNetworkReleaseConsole"' in app
+    assert '"wallet.connect"' in app
+    assert '"network.verify"' in app
+    assert '"release.draftTx"' in app
+    assert '"release.approve"' in app
+    assert '"ai.repairWalletHint"' in app
+    assert 'data-mc-component="dev-network-release-console"' in app
+    assert 'data-mc-source-id="dev-release-console.source.html"' in app
+    assert 'data-mc-route="workspace.dev-network-release"' in app
+    assert 'data-mc-field="devRelease.title"' in app
+    assert 'data-mc-field="devRelease.contractAddress"' in app
+    assert 'data-mc-field="devRelease.devNetwork"' in app
+    assert 'data-mc-field="devRelease.requests"' in app
+    assert 'data-mc-effect="wallet.connect"' in app
+    assert 'data-mc-effect="network.verify"' in app
+    assert 'data-mc-effect="release.select"' in app
+    assert 'data-mc-effect="release.draftTx"' in app
+    assert 'data-mc-effect="release.approve"' in app
+    assert 'data-mc-reads="source.devRelease.contractAddress source.devRelease.requests state.selectedRequestId runtime.wallet runtime.network"' in app
+    assert 'data-mc-writes="runtime.txDraft runtime.evidenceStrip"' in app
+    assert 'data-mc-layout="wallet-queue-tx-evidence"' in app
+    assert 'data-mc-style-token="mcel.scm.dev-wallet-console"' in app
+    assert 'data-mc-repair-policy="runtime-only"' in app
+    assert 'data-mc-failure-behavior="block-undeclared-source-write"' in app
+    assert 'data-mc-slot="runtime.wallet"' in app
+    assert 'data-mc-slot="runtime.txDraft"' in app
+    assert 'data-mc-slot="runtime.evidenceStrip"' in app
+    assert 'data-mc-owner="runtime"' in app
+    assert "Load source.html into Editor" in app
+
+    assert "tinyContract" in bindings
+    assert "scmInstance" in bindings
+    assert "scmRouteInstance" in bindings
+    assert "blockedWrites" in bindings
+    assert "repairCount" in bindings
+    assert "reviewedCount" in bindings
+    assert "walletConnectCount" in bindings
+    assert "txDraftCount" in bindings
+    assert "mcelTinyContractLanguageTemplate" in bindings
+    assert "mcelTinyContractRuntimeMount" in bindings
+    assert "mcelTinyContractMap" in bindings
+    assert "mcelTinyContractSerialized" in bindings
+    assert "mcelTinyContractProof" in bindings
+    assert "mcelTinyContractEvidence" in bindings
+    assert "mcelTinyContractWallet" in bindings
+    assert "mcelTinyContractDraftTx" in bindings
+    assert "mcelTinyContractRepair" in bindings
+    assert "mcelTinyContractBlockWrite" in bindings
+
+    assert "renderMcelTinyContractTest" in ui
+    assert "mcelTinyContractScmManifest" in ui
+    assert "mcelTinyContractRouteManifest" in ui
+    assert "defineMcelTinyContractScm" in ui
+    assert "createMcelTinyContractScmRuntime" in ui
+    assert "DevNetworkReleaseConsole" in ui
+    assert "workspace.dev-network-release" in ui
+    assert "devnet.load" in ui
+    assert "wallet.connect" in ui
+    assert "network.verify" in ui
+    assert "release.draftTx" in ui
+    assert "release.approve" in ui
+    assert "ai.repairWalletHint" in ui
+    assert "readMcelTinyContractWalletProvider" in ui
+    assert "connectMcelTinyContractWallet" in ui
+    assert "draftMcelTinyContractTransaction" in ui
+    assert "McelLabScm.defineComponent" in ui or "defineComponent" in ui
+    assert "McelLabScm.defineRoute" in ui or "defineRoute" in ui
+    assert "McelLabScm.runEffect" in ui or "runEffect" in ui
+    assert "McelLabScm.runRouteLoader" in ui or "runRouteLoader" in ui
+    assert "McelLabScm.serializeComponent" in ui or "serializeComponent" in ui
+    assert "McelLabScm.repairComponent" in ui or "repairComponent" in ui
+    assert "McelLabScm.exportEvidence" in ui or "exportEvidence" in ui
+    assert "serializeMcelTinyContractRuntime" in ui
+    assert "recordMcelTinyContractEvidence" in ui
+    assert "repairMcelTinyContractRuntimeChrome" in ui
+    assert "attemptMcelTinyContractForbiddenWrite" in ui
+    assert 'data-mc-generated = "true"' not in ui
+    assert "dataset.mcGenerated = \"true\"" in ui
+    assert "SCM_EFFECT_UNDECLARED_WRITE" in ui
+    assert "routeLoaderCommitted" in ui
+    assert "walletEffectRan" in ui
+    assert "networkVerified" in ui
+    assert "txDraftRuntimeOnly" in ui
+    assert "declaredRuntimeEffectRan" in ui
+    assert "declaredSourceEffectRan" in ui
+    assert "unsafeSourceWriteBlocked" in ui
+    assert "runtimeRepairScoped" in ui
+    assert "serializationClean" in ui
+    assert "layoutContractChecked" in ui
+    assert "styleContractChecked" in ui
+    assert "loadMcelTinyContractIntoSourceEditor" in ui
+    assert "renderMcelTinyContractTest(\"boot\")" in ui
+
+    assert ".mcel-tiny-contract-test" in style
+    assert ".mcel-tiny-contract-runtime [data-mc-component=\"dev-network-release-console\"]" in style
+    assert ".mcel-tiny-contract-runtime [data-mc-generated=\"true\"]" in style
+    assert ".mcel-dev-release-console__wallet" in style
+    assert ".mcel-dev-release-console__tx" in style
+    assert ".mcel-dev-release-console__evidence-strip" in style
+    assert "#mcel-tiny-contract-map" in style
+    assert "#mcel-tiny-contract-evidence" in style
+
+

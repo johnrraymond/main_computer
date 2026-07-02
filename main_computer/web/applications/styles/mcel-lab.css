@@ -6283,3 +6283,330 @@ body.mcel-modal-open {
     border-bottom: 1px solid rgba(148, 163, 184, 0.16);
   }
 }
+
+
+.mcel-tiny-contract-test {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(115, 214, 255, 0.28);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top left, rgba(115, 214, 255, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(142, 255, 195, 0.08), transparent 42%),
+    #050806;
+}
+
+.mcel-tiny-contract-copy {
+  display: grid;
+  gap: 7px;
+}
+
+.mcel-tiny-contract-copy h4 {
+  max-width: 1080px;
+  color: var(--sky);
+  font-size: 19px;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.mcel-tiny-contract-copy p:not(.eyebrow) {
+  max-width: 1120px;
+  color: var(--muted);
+  font-weight: 800;
+  line-height: 1.48;
+}
+
+.mcel-tiny-contract-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.mcel-tiny-contract-actions button {
+  min-height: 34px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.mcel-tiny-contract-grid {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.98fr) minmax(360px, 1.22fr) minmax(250px, 0.98fr) minmax(280px, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.mcel-tiny-contract-card {
+  min-width: 0;
+  border: 1px solid rgba(246, 199, 91, 0.22);
+  border-radius: 12px;
+  background: #080907;
+  overflow: hidden;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.26);
+}
+
+.mcel-tiny-contract-card h5 {
+  margin: 0;
+  padding: 10px 11px;
+  border-bottom: 1px solid rgba(246, 199, 91, 0.16);
+  color: var(--gold);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#mcel-tiny-contract-source,
+#mcel-tiny-contract-map,
+#mcel-tiny-contract-serialized,
+#mcel-tiny-contract-evidence {
+  max-height: 300px;
+  margin: 0;
+  padding: 11px;
+  background: #030403;
+  color: #f7f3e8;
+  font: 12px/1.45 Consolas, "SFMono-Regular", Menlo, monospace;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.mcel-tiny-contract-runtime {
+  display: grid;
+  gap: 10px;
+  min-height: 520px;
+  max-height: 760px;
+  padding: 12px;
+  background:
+    linear-gradient(180deg, rgba(115, 214, 255, 0.07), transparent 28%),
+    #030403;
+  color: var(--ink);
+  overflow: auto;
+}
+
+.mcel-tiny-contract-runtime [data-mc-component="dev-network-release-console"] {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(240px, 1fr);
+  grid-template-areas:
+    "header header"
+    "wallet queue"
+    "commands queue"
+    "tx evidence"
+    "proof evidence";
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(115, 214, 255, 0.3);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at top right, rgba(246, 199, 91, 0.12), transparent 32%),
+    rgba(115, 214, 255, 0.08);
+  overflow: hidden;
+}
+
+.mcel-tiny-contract-runtime [data-mc-component="dev-release.header"] {
+  grid-area: header;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid rgba(115, 214, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.26);
+}
+
+.mcel-tiny-contract-runtime [data-mc-component="dev-release.header"] code {
+  width: max-content;
+  max-width: 100%;
+  padding: 4px 7px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.38);
+  color: var(--mint);
+  white-space: normal;
+  word-break: break-all;
+}
+
+.mcel-tiny-contract-runtime h1 {
+  color: var(--sky);
+  font-size: 20px;
+}
+
+.mcel-tiny-contract-runtime h2 {
+  color: var(--gold);
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.mcel-tiny-contract-runtime button {
+  justify-self: start;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.mcel-tiny-contract-runtime [data-mc-component="dev-release.wallet"] {
+  grid-area: wallet;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 10px;
+  border: 1px solid rgba(142, 255, 195, 0.18);
+  border-radius: 12px;
+  background: rgba(142, 255, 195, 0.06);
+}
+
+.mcel-tiny-contract-runtime [data-mc-component="dev-release.commands"] {
+  grid-area: commands;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-content: start;
+}
+
+.mcel-tiny-contract-runtime [data-mc-field="devRelease.requests"] {
+  grid-area: queue;
+  display: grid;
+  gap: 7px;
+  align-content: start;
+  margin: 0;
+  padding: 10px 10px 10px 28px;
+  border: 1px solid rgba(246, 199, 91, 0.18);
+  border-radius: 12px;
+  background: rgba(246, 199, 91, 0.05);
+}
+
+.mcel-tiny-contract-runtime [data-mc-item-id] {
+  padding: 8px 9px;
+  border: 1px solid rgba(246, 199, 91, 0.18);
+  border-radius: 9px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.mcel-tiny-contract-runtime [data-mc-status="approved"] {
+  border-color: rgba(142, 255, 195, 0.38);
+  color: var(--mint);
+}
+
+.mcel-tiny-contract-runtime [data-mc-status="needs-wallet"] {
+  border-color: rgba(115, 214, 255, 0.3);
+}
+
+.mcel-tiny-contract-runtime [data-mc-status="needs-repair"] {
+  border-color: rgba(255, 176, 96, 0.38);
+}
+
+.mcel-tiny-contract-runtime [data-mc-generated="true"] {
+  display: block;
+  width: auto;
+  padding: 8px 9px;
+  border-radius: 10px;
+  background: rgba(115, 214, 255, 0.1);
+  color: var(--sky);
+  font-size: 12px;
+}
+
+.mcel-tiny-contract-runtime [data-mc-slot="runtime.wallet"] {
+  display: block;
+}
+
+.mcel-tiny-contract-runtime [data-mc-slot="runtime.txDraft"] {
+  grid-area: tx;
+}
+
+.mcel-tiny-contract-runtime [data-mc-slot="runtime.proofChip"] {
+  grid-area: proof;
+}
+
+.mcel-tiny-contract-runtime [data-mc-slot="runtime.evidenceStrip"] {
+  grid-area: evidence;
+}
+
+.mcel-tiny-contract-runtime .mcel-dev-release-console__wallet,
+.mcel-tiny-contract-runtime .mcel-dev-release-console__tx {
+  display: grid;
+  gap: 7px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid rgba(115, 214, 255, 0.18);
+}
+
+.mcel-tiny-contract-runtime .mcel-dev-release-console__wallet dl,
+.mcel-tiny-contract-runtime .mcel-dev-release-console__tx dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 8px;
+  margin: 0;
+}
+
+.mcel-tiny-contract-runtime .mcel-dev-release-console__wallet dt,
+.mcel-tiny-contract-runtime .mcel-dev-release-console__tx dt {
+  color: var(--gold);
+}
+
+.mcel-tiny-contract-runtime .mcel-dev-release-console__wallet dd,
+.mcel-tiny-contract-runtime .mcel-dev-release-console__tx dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mcel-tiny-contract-runtime .mcel-dev-release-console__evidence-strip {
+  display: grid;
+  gap: 6px;
+  max-height: 230px;
+  margin: 0;
+  padding: 10px 10px 10px 26px;
+  border: 1px solid rgba(142, 255, 195, 0.2);
+  border-radius: 10px;
+  background: rgba(142, 255, 195, 0.06);
+  color: var(--mint);
+  overflow: auto;
+}
+
+#mcel-tiny-contract-map {
+  color: var(--sky);
+}
+
+#mcel-tiny-contract-evidence {
+  max-height: 220px;
+  border-top: 1px solid rgba(246, 199, 91, 0.12);
+  color: var(--muted);
+}
+
+.mcel-tiny-contract-proof {
+  display: block;
+  margin: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(142, 255, 195, 0.08);
+  color: var(--ink);
+  font: 12px/1.45 Consolas, "SFMono-Regular", Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+.mcel-tiny-contract-proof[data-status="fail"] {
+  background: rgba(255, 96, 96, 0.12);
+  color: #ffd4d4;
+}
+
+@media (max-width: 1180px) {
+  .mcel-tiny-contract-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mcel-tiny-contract-runtime [data-mc-component="dev-network-release-console"] {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "header"
+      "wallet"
+      "queue"
+      "commands"
+      "tx"
+      "proof"
+      "evidence";
+  }
+}
+
+@media (max-width: 720px) {
+  .mcel-tiny-contract-grid {
+    grid-template-columns: 1fr;
+  }
+}

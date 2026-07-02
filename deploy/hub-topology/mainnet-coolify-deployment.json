@@ -5,42 +5,75 @@
   "coolify": {
     "server_url_source": "command-line",
     "server_url_argument": "--set-coolify-url",
-    "server_url_argument_format": "<server-name>:<coolify-base-url>",
     "server_token_source": "environment-or-command-line"
   },
   "servers": [
     {
-      "name": "mainnet-a",
-      "vpn_ip": "10.0.0.10"
+      "name": "coolify-a",
+      "vpn_ip": "10.116.0.3"
+    },
+    {
+      "name": "coolify-b",
+      "vpn_ip": "10.124.0.3"
     }
   ],
   "foundationdb": {
     "image": "foundationdb/foundationdb:7.4.6",
     "cluster_description": "main_computer_mainnet",
-    "cluster_id": "replace-with-mainnet-fdb-cluster-id",
+    "cluster_id": "ac826580a04d022d",
     "cluster_file_path": "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster",
     "namespace": "main-computer-mainnet-exp-fdb-stable-live-sessions",
-    "configure": "single ssd",
+    "configure": "double ssd",
     "network": {
-      "transport": "private-vpn-or-host-local",
+      "transport": "droplet-vpn-10-network",
       "bind_address_source": "servers[].vpn_ip",
       "publish_public_ports": false
     },
     "instances": [
       {
         "id": "mainnet-fdb1",
-        "coolify_server": "mainnet-a",
+        "coolify_server": "coolify-a",
         "port": 4550,
-        "machine_id": "mainnet-a",
-        "zone_id": "mainnet-a"
+        "machine_id": "coolify-a",
+        "zone_id": "coolify-a"
+      },
+      {
+        "id": "mainnet-fdb2",
+        "coolify_server": "coolify-a",
+        "port": 4551,
+        "machine_id": "coolify-a",
+        "zone_id": "coolify-a"
+      },
+      {
+        "id": "mainnet-fdb3",
+        "coolify_server": "coolify-b",
+        "port": 4550,
+        "machine_id": "coolify-b",
+        "zone_id": "coolify-b"
       }
     ]
   },
   "hubs": [
     {
       "hub_id": "mainnet-hub1",
-      "coolify_server": "mainnet-a",
+      "coolify_server": "coolify-a",
       "public_url": "https://mainnet-hub1.greatlibrary.io",
+      "runtime_dir": "/data/main-computer/hub/mainnet-exp-fdb",
+      "cluster_file_path": "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster",
+      "namespace": "main-computer-mainnet-exp-fdb-stable-live-sessions"
+    },
+    {
+      "hub_id": "mainnet-hub2",
+      "coolify_server": "coolify-a",
+      "public_url": "https://mainnet-hub2.greatlibrary.io",
+      "runtime_dir": "/data/main-computer/hub/mainnet-exp-fdb",
+      "cluster_file_path": "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster",
+      "namespace": "main-computer-mainnet-exp-fdb-stable-live-sessions"
+    },
+    {
+      "hub_id": "mainnet-hub3",
+      "coolify_server": "coolify-b",
+      "public_url": "https://mainnet-hub3.greatlibrary.io",
       "runtime_dir": "/data/main-computer/hub/mainnet-exp-fdb",
       "cluster_file_path": "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster",
       "namespace": "main-computer-mainnet-exp-fdb-stable-live-sessions"
@@ -50,9 +83,10 @@
     "https://mainnet-hub.greatlibrary.io"
   ],
   "operator_notes": [
-    "Mainnet deployment requires explicit operator binding for the Coolify API URL and token; never commit tokens or live private IPs here.",
-    "Replace servers[].vpn_ip with the mainnet host's private VPN address before using this placement file.",
-    "The FoundationDB port must stay private. Do not publish FDB through Traefik or public DNS.",
+    "Do not commit Coolify API URLs or tokens in this file; bind symbolic server names with --set-coolify-url at deploy time.",
+    "The servers[].vpn_ip values are the manual operator-known private VPN addresses for coolify-a and coolify-b.",
+    "The FoundationDB ports must be reachable only over the VPN/private network, not from the public internet.",
+    "The deployer should generate the same fdb.cluster file for all FoundationDB instances and all three Hub services.",
     "Apply the chain plan first, deploy contracts to runtime/deployments/mainnet/latest.json, then deploy the Hub with the same mainnet chain profile."
   ]
 }

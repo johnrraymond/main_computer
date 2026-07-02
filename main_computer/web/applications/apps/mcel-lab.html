@@ -103,6 +103,234 @@
     </div>
   </section>
 
+
+  <section
+    class="mcel-tiny-contract-test"
+    aria-label="Medium SCM-proven MCEL dev-network app specimen"
+    data-mc-component-id="mcel-lab.scm-proven-dev-network-release-console"
+    data-mc-component-kind="proof"
+    data-mc-component-label="Medium SCM-Proven Dev Network App"
+  >
+    <div class="mcel-tiny-contract-copy">
+      <p class="eyebrow">Medium SCM-proven MCEL app</p>
+      <h4>A dev-network release console with wallet state, route data, source approvals, runtime transaction drafts, AI repair hints, serialization, and an SCM receipt.</h4>
+      <p>
+        This specimen is intentionally larger than a toy counter: MetaMask/dev-network state,
+        route loaders, source-owned release requests, runtime-only transaction previews, declared
+        approval effects, blocked unsafe writes, and visual complexity all have to cooperate without
+        leaking wallet/runtime data into durable HTML.
+      </p>
+    </div>
+    <div class="mcel-tiny-contract-actions" role="group" aria-label="SCM-proven dev-network actions">
+      <button type="button" id="mcel-tiny-contract-run">Run SCM + wallet proof</button>
+      <button type="button" id="mcel-tiny-contract-wallet">Connect/check MetaMask devnet</button>
+      <button type="button" id="mcel-tiny-contract-increment">Select next release</button>
+      <button type="button" id="mcel-tiny-contract-tx-draft">Draft release transaction</button>
+      <button type="button" id="mcel-tiny-contract-repair">Repair runtime wallet hint</button>
+      <button type="button" id="mcel-tiny-contract-block-write">Attempt unsafe source write</button>
+      <button type="button" id="mcel-tiny-contract-load-source">Load source.html into Editor</button>
+    </div>
+    <div class="mcel-tiny-contract-grid">
+      <article class="mcel-tiny-contract-card">
+        <h5>1 · MCEL contract language</h5>
+        <pre id="mcel-tiny-contract-source">Contract language is waiting for SCM.</pre>
+      </article>
+      <article class="mcel-tiny-contract-card">
+        <h5>2 · live dev-network app</h5>
+        <div id="mcel-tiny-contract-runtime-mount" class="mcel-tiny-contract-runtime" aria-live="polite">
+          Runtime mount is waiting.
+        </div>
+      </article>
+      <article class="mcel-tiny-contract-card">
+        <h5>3 · HTML source projection</h5>
+        <pre id="mcel-tiny-contract-map">HTML projection is waiting.</pre>
+      </article>
+      <article class="mcel-tiny-contract-card">
+        <h5>4 · SCM evidence receipt</h5>
+        <pre id="mcel-tiny-contract-serialized">Serialized source is waiting.</pre>
+        <output id="mcel-tiny-contract-proof" class="mcel-tiny-contract-proof" data-status="pending" aria-live="polite">
+          SCM proof has not run yet.
+        </output>
+        <pre id="mcel-tiny-contract-evidence" class="mcel-tiny-contract-evidence">Evidence packet is waiting.</pre>
+      </article>
+    </div>
+    <template id="mcel-tiny-contract-language-template">
+{
+  "kind": "mcel.scm.app",
+  "name": "DevNetworkReleaseConsole",
+  "version": "0.2.0",
+  "whyScmMatters": "Wallet/provider state, dev-network chain checks, route-loaded contract data, source-owned approvals, runtime-only transaction drafts, and AI repair hints overlap. Without SCM it is easy for account, chain, tx preview, or assistant output to leak into durable source.",
+  "route": {
+    "name": "workspace.dev-network-release",
+    "segments": ["workspace", "dev-network", "{contractId}", "release-console"],
+    "loader": "devnet.load"
+  },
+  "owns": {
+    "source": [
+      "devRelease.title",
+      "devRelease.summary",
+      "devRelease.contractAddress",
+      "devRelease.devNetwork",
+      "devRelease.requests",
+      "html.sourceId"
+    ],
+    "state": ["selectedRequestId", "walletGate"],
+    "runtime": [
+      "wallet",
+      "network",
+      "txDraft",
+      "proofChip",
+      "assistantRepairPrompt",
+      "serializedSource",
+      "evidenceStrip"
+    ]
+  },
+  "effects": {
+    "wallet.connect": {
+      "reads": ["source.devRelease.devNetwork"],
+      "writes": ["runtime.wallet", "runtime.network", "runtime.evidenceStrip"]
+    },
+    "network.verify": {
+      "reads": ["source.devRelease.devNetwork", "runtime.network"],
+      "writes": ["runtime.network", "runtime.evidenceStrip"]
+    },
+    "release.select": {
+      "reads": ["source.devRelease.requests", "state.selectedRequestId"],
+      "writes": ["state.selectedRequestId", "runtime.txDraft", "runtime.evidenceStrip"]
+    },
+    "release.draftTx": {
+      "reads": [
+        "source.devRelease.contractAddress",
+        "source.devRelease.requests",
+        "state.selectedRequestId",
+        "runtime.wallet",
+        "runtime.network"
+      ],
+      "writes": ["runtime.txDraft", "runtime.evidenceStrip"]
+    },
+    "release.approve": {
+      "reads": ["source.devRelease.requests", "state.selectedRequestId"],
+      "writes": ["source.devRelease.requests", "runtime.evidenceStrip"]
+    },
+    "ai.repairWalletHint": {
+      "reads": ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+      "writes": ["runtime.proofChip", "runtime.assistantRepairPrompt"]
+    }
+  },
+  "forbiddenTrial": {
+    "attempt": "release.select writes source.devRelease.devNetwork.rpcUrl",
+    "expected": "SCM_EFFECT_UNDECLARED_WRITE"
+  },
+  "serialization": {
+    "sourceOwns": [
+      "source.devRelease.title",
+      "source.devRelease.summary",
+      "source.devRelease.contractAddress",
+      "source.devRelease.devNetwork",
+      "source.devRelease.requests",
+      "source.html.sourceId"
+    ],
+    "runtimeOnly": [
+      "runtime.wallet",
+      "runtime.network",
+      "runtime.txDraft",
+      "runtime.proofChip",
+      "runtime.assistantRepairPrompt",
+      "runtime.serializedSource",
+      "runtime.evidenceStrip"
+    ],
+    "failIfRuntimeLeaks": true
+  }
+}
+    </template>
+    <template id="mcel-tiny-contract-source-template">
+<section
+  data-mc="smart-region"
+  data-mc-kind="wallet-workbench"
+  data-mc-component="dev-network-release-console"
+  data-mc-use-case="scm-proven-dev-wallet-release-workflow"
+  data-mc-source-id="dev-release-console.source.html"
+  data-mc-route="workspace.dev-network-release"
+  data-mc-layout="wallet-queue-tx-evidence"
+  data-mc-layout-policy="bounded-workbench"
+  data-mc-style-token="mcel.scm.dev-wallet-console"
+  data-mc-persist="source.html"
+  data-mc-repair-policy="runtime-only"
+  data-mc-failure-behavior="block-undeclared-source-write"
+>
+  <header data-mc-component="dev-release.header" data-mc-owner="source">
+    <p data-mc-field="devRelease.devNetwork" data-mc-network="hardhat" data-mc-chain-id="0x7a69">
+      Dev network: Hardhat local chain 31337
+    </p>
+    <h1 data-mc-field="devRelease.title" data-mc-required>Dev Network Release Console</h1>
+    <p data-mc-field="devRelease.summary">
+      Approve a local contract release only when the wallet, route-loaded contract, source-owned request, runtime transaction draft, and SCM evidence agree.
+    </p>
+    <code data-mc-field="devRelease.contractAddress" data-mc-required>0x000000000000000000000000000000000000dEaD</code>
+  </header>
+
+  <section data-mc-component="dev-release.wallet" data-mc-owner="runtime">
+    <h2>Wallet + network gate</h2>
+    <button
+      type="button"
+      data-mc-effect="wallet.connect"
+      data-mc-reads="source.devRelease.devNetwork"
+      data-mc-writes="runtime.wallet runtime.network runtime.evidenceStrip"
+      data-mc-trigger="explicit-wallet-connect"
+    >Connect dev wallet</button>
+    <button
+      type="button"
+      data-mc-effect="network.verify"
+      data-mc-reads="source.devRelease.devNetwork runtime.network"
+      data-mc-writes="runtime.network runtime.evidenceStrip"
+      data-mc-trigger="explicit-network-check"
+    >Verify dev network</button>
+    <aside data-mc-slot="runtime.wallet" data-mc-owner="runtime"></aside>
+  </section>
+
+  <ol data-mc-component="dev-release.requests" data-mc-field="devRelease.requests" data-mc-owner="source">
+    <li data-mc-item-id="rel-allowance-view" data-mc-status="needs-wallet" data-mc-risk="medium">
+      Inspect allowance-reader deployment before approving UI release.
+    </li>
+    <li data-mc-item-id="rel-settlement-mock" data-mc-status="needs-review" data-mc-risk="high">
+      Gate settlement mock release behind dev-network chain proof.
+    </li>
+    <li data-mc-item-id="rel-ai-hint" data-mc-status="needs-repair" data-mc-risk="medium">
+      Repair runtime wallet hint without changing release source.
+    </li>
+  </ol>
+
+  <section data-mc-component="dev-release.commands" data-mc-owner="runtime">
+    <button
+      type="button"
+      data-mc-effect="release.select"
+      data-mc-reads="source.devRelease.requests state.selectedRequestId"
+      data-mc-writes="state.selectedRequestId runtime.txDraft runtime.evidenceStrip"
+      data-mc-trigger="click"
+    >Select release</button>
+    <button
+      type="button"
+      data-mc-effect="release.draftTx"
+      data-mc-reads="source.devRelease.contractAddress source.devRelease.requests state.selectedRequestId runtime.wallet runtime.network"
+      data-mc-writes="runtime.txDraft runtime.evidenceStrip"
+      data-mc-trigger="explicit-draft"
+    >Draft transaction</button>
+    <button
+      type="button"
+      data-mc-effect="release.approve"
+      data-mc-reads="source.devRelease.requests state.selectedRequestId"
+      data-mc-writes="source.devRelease.requests runtime.evidenceStrip"
+      data-mc-trigger="human-approval"
+    >Approve release source</button>
+  </section>
+
+  <aside data-mc-slot="runtime.txDraft" data-mc-owner="runtime"></aside>
+  <aside data-mc-slot="runtime.proofChip" data-mc-owner="runtime"></aside>
+  <aside data-mc-slot="runtime.evidenceStrip" data-mc-owner="runtime"></aside>
+</section>
+    </template>
+  </section>
+
   <section
     class="mcel-element-acid"
     aria-label="MCEL element library acid test"

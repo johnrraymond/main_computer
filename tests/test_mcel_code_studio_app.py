@@ -203,7 +203,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "Live workspace persisted through SCM saveFile effect and route loaders.",
             "replayScmEvidenceEntry",
             "code-studio-scm-evidence-entry",
-            "code-studio-scm-evidence-detail",
+            "code-studio-open-scm-evidence-detail",
+            "renderSelectedEvidenceInProofDock",
             "code-studio-replay-scm-evidence",
             "Replay selected gate",
             "SCM evidence refreshed",
@@ -264,10 +265,9 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'id="code-studio-export-scm-evidence-packet"',
             'id="code-studio-generate-scm-repair-prompt"',
             'id="code-studio-download-scm-evidence-packet"',
-            'id="code-studio-scm-evidence-detail"',
-            'id="code-studio-scm-replay-comparison"',
+            'id="code-studio-proof-detail-panel"',
             "Replay selected gate",
-            "Replay snapshot comparison",
+            "Open proof dock",
             "Export SCM Evidence Packet",
             "Generate AI repair prompt",
             "Download packet",
@@ -285,8 +285,9 @@ class McelCodeStudioAppTests(unittest.TestCase):
             ".code-studio-scm-evidence-entry",
             ".code-studio-scm-evidence-entry[data-ok=\"false\"]",
             ".code-studio-scm-evidence-entry[data-selected=\"true\"]",
-            ".code-studio-scm-evidence-detail",
-            ".code-studio-scm-replay-comparison",
+            ".code-studio-scm-proof-summary-card",
+            ".code-studio-scm-evidence-preview",
+            ".code-studio-proof-detail-panel",
         ]
         for text in expected_style:
             with self.subTest(style=text):
@@ -310,8 +311,10 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "code-studio-export-scm-evidence-packet",
             "code-studio-generate-scm-repair-prompt",
             "code-studio-download-scm-evidence-packet",
-            "code-studio-scm-evidence-detail",
-            "code-studio-scm-replay-comparison",
+            "code-studio-open-scm-evidence-detail",
+            "code-studio-open-scm-replay-detail",
+            "renderSelectedEvidenceInProofDock",
+            "renderReplayComparisonInProofDock",
             "mcel-code-studio-scm-debug-packet",
             "mcel-code-studio-scm-replay-snapshot",
             "mcel-code-studio-scm-replay-comparison",
@@ -735,40 +738,143 @@ class McelCodeStudioAppTests(unittest.TestCase):
                 self.assertIn(text, script)
 
 
+    def test_code_studio_compact_viewport_keeps_inspector_visible(self) -> None:
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        expected = [
+            "Patch 17E: inspector visibility and bounded-workbench containment",
+            "@media (max-width: 720px)",
+            'grid-template-rows: minmax(0, 1fr) minmax(210px, 34dvh) !important;',
+            'data-code-studio-workbench-region="scm-ai-inspector"]',
+            "display: grid !important;",
+            "grid-row: 2 !important;",
+            "border-top: 1px solid #2d2d30 !important;",
+            "collapsed proof dock cannot leak long proof/detail payloads",
+            ".code-studio-proof-detail-panel",
+        ]
+        for text in expected:
+            with self.subTest(text=text):
+                self.assertIn(text, style)
 
-    def test_code_studio_workbench_content_routing_twiddle_keeps_center_authoring_first(self) -> None:
+        self.assertNotIn(
+            '#code-editor-app [data-code-studio-workbench-region="scm-ai-inspector"] {\n'
+            '    display: none !important;',
+            style,
+        )
+
+
+
+
+    def test_code_studio_inactive_app_guard_prevents_global_overlay(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('id="code-editor-app" style="display: none;"', app)
+
+        expected = [
+            "Patch 17E4: inactive app guard",
+            'html:has(body:not([data-active-app="code-editor"]) #code-editor-app)',
+            'body:not([data-active-app="code-editor"]):has(#code-editor-app)',
+            'body:not([data-active-app="code-editor"]) #code-editor-app',
+            "display: none !important;",
+            "position: static !important;",
+            "height: auto !important;",
+            "overflow: auto !important;",
+            "The applications page keeps every app root in the DOM",
+            "fixed workbench active-app-only",
+        ]
+        for text in expected:
+            with self.subTest(text=text):
+                self.assertIn(text, style)
+
+        marker = "Patch 17E4: inactive app guard"
+        self.assertGreater(style.index(marker), style.index("Patch 17E2: force bounded shell"))
+
+
+    def test_code_studio_force_bounded_shell_matches_browser_twiddle(self) -> None:
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        expected = [
+            "Patch 17E2: force bounded shell / inspector containment",
+            "position: fixed !important;",
+            "inset: 0 !important;",
+            "height: 100dvh !important;",
+            "grid-template-columns: 44px 260px minmax(0, 1fr) 360px !important;",
+            "grid-template-rows: minmax(0, 1fr) minmax(220px, 34dvh) !important;",
+            'data-code-studio-workbench-region="scm-ai-inspector"]',
+            "visibility: visible !important;",
+            "height: 34px !important;",
+            "max-height: 34px !important;",
+            "z-index: 9999 !important;",
+            "border-top: 1px solid rgba(255, 213, 90, 0.35) !important;",
+        ]
+        for text in expected:
+            with self.subTest(text=text):
+                self.assertIn(text, style)
+
+    def test_code_studio_css_rules_are_not_trapped_in_unclosed_repeater_rule(self) -> None:
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        compact_option_rule = (
+            '[data-mc-widget-kind="repeater"][data-mc-item-display-preset="compact"] option {\n'
+            "      min-height: 18px;\n"
+            "    }"
+        )
+        self.assertIn(compact_option_rule, style)
+        self.assertEqual(style.count("{"), style.count("}"))
+
+        source_safe_marker = "/* MCEL Code Studio flagship example"
+        force_bounded_marker = "Patch 17E2: force bounded shell / inspector containment"
+        before_source_safe = style[: style.index(source_safe_marker)]
+        before_force_bounded = style[: style.index(force_bounded_marker)]
+        self.assertEqual(before_source_safe.count("{"), before_source_safe.count("}"))
+        self.assertEqual(before_force_bounded.count("{"), before_force_bounded.count("}"))
+
+
+    def test_code_studio_routes_long_proof_payloads_to_bottom_dock(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
         style = STYLE_PATH.read_text(encoding="utf-8")
         script = SCRIPT_PATH.read_text(encoding="utf-8")
 
+        expected_markup = [
+            'id="code-studio-proof-detail-panel"',
+            'Open proof dock',
+            'data-mc-component-id="code-editor.studio.proof-detail"',
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
         expected_style = [
             "Patch 17D: workbench content routing twiddle",
-            'data-workbench-content-route="proof-summary-only"',
-            "code-studio-scm-proof-routing",
-            "code-studio-proof-dock-content-route",
-            "grid-template-areas: \"rail sidebar editor inspector\"",
-            "grid-template-areas: \"rail editor inspector\"",
+            ".code-studio-scm-proof-summary-card",
+            ".code-studio-scm-evidence-preview",
+            ".code-studio-proof-detail-panel",
+            ".code-studio-proof-detail-output",
+            ".code-studio-scm-evidence-drilldown",
+            "Long proof/debug payloads are only allowed in the Bottom Proof Dock.",
         ]
         for text in expected_style:
             with self.subTest(style=text):
                 self.assertIn(text, style)
 
         expected_script = [
-            "function validateSource(options = {})",
-            "renderContractReport(studioState.lastReport, options)",
+            "function setProofDockExpanded",
             "function renderProofDockPayload",
-            "function compactEvidencePreview",
-            'scmEvidencePanel.dataset.workbenchContentRoute = "proof-summary-only"',
-            "Proof payloads are routed out of the authoring surface.",
+            "function renderSelectedEvidenceInProofDock",
+            "function renderReplayComparisonInProofDock",
+            "function renderContractHelperInProofDock",
             "Open evidence detail in proof dock",
-            "Long proof/debug payloads remain routed out of the center workbench.",
-            "validateSource({focusContract: true})",
+            "code-studio-scm-proof-summary-card",
+            "code-studio-scm-evidence-preview",
+            "Center workbench is authoring-first.",
+            "SCM evidence summary refreshed without leaving the active editor pane.",
+            "return scmEvidenceSummary;",
         ]
         for text in expected_script:
             with self.subTest(script=text):
                 self.assertIn(text, script)
 
-        self.assertNotIn("renderContractReport(studioState.lastReport);\n", script)
-        self.assertNotIn('showPane("contract");\n      }\n\n      function serializeCleanSource', script)
+        self.assertNotIn('              <code>${escapeHtml(JSON.stringify(selectedDetail, null, 2))}</code>', script)
+        self.assertNotIn('        showPane("contract");\n      }\n\n      function serializeCleanSource', script)
+        self.assertNotIn('renderScmEvidencePanel(studioState.lastReport);\n        showPane("contract");', script)
 
 
     def test_pretty_doc_explains_better_than_react_lane(self) -> None:

@@ -56,6 +56,7 @@
       selectMcelSourceIndex(0, "initial-selection");
       compileMcelLabSource("initial-load");
       renderMcelElementLibraryAcidTest("boot");
+      renderMcelTinyContractTest("boot");
       renderMcelAutopilotDeferred("boot");
     }
 
@@ -80,6 +81,1363 @@
         mcelElementAcidReport.dataset.status = report?.status || "unknown";
       }
       return report;
+    }
+
+
+    function mcelTinyContractLanguageSource() {
+      return (mcelTinyContractLanguageTemplate?.innerHTML || "").trim();
+    }
+
+    function mcelTinyContractSourceHtml() {
+      const templateSource = mcelTinyContractSourceTemplate?.innerHTML || "";
+      return templateSource.trim();
+    }
+
+    function normalizeMcelTinyContractHtml(html) {
+      return String(html || "")
+        .replace(/>\s+</g, ">\n<")
+        .replace(/[ \t]+\n/g, "\n")
+        .trim();
+    }
+
+    function mcelTinyContractHash(value) {
+      return Array.from(String(value || "")).reduce((hash, char) => {
+        return ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+      }, 0).toString(16);
+    }
+
+    function ensureMcelTinyContractState() {
+      if (!mcelLabState.tinyContract) {
+        mcelLabState.tinyContract = {
+          selectedIndex: 0,
+          runCount: 0,
+          blockedWrites: 0,
+          repairCount: 0,
+          reviewedCount: 0,
+          walletConnectCount: 0,
+          txDraftCount: 0,
+          lastProof: null,
+          evidence: [],
+          scmInstance: null,
+          scmRouteInstance: null
+        };
+      }
+      if (!Array.isArray(mcelLabState.tinyContract.evidence)) {
+        mcelLabState.tinyContract.evidence = [];
+      }
+      if (!Number.isFinite(Number(mcelLabState.tinyContract.selectedIndex))) {
+        mcelLabState.tinyContract.selectedIndex = 0;
+      }
+      return mcelLabState.tinyContract;
+    }
+
+    function recordMcelTinyContractEvidence(kind, message, status = "pass", detail = {}) {
+      const tinyState = ensureMcelTinyContractState();
+      const event = {
+        index: tinyState.evidence.length + 1,
+        kind,
+        status,
+        message,
+        detail
+      };
+      tinyState.evidence.push(event);
+      tinyState.evidence = tinyState.evidence.slice(-16);
+      return event;
+    }
+
+    function parseMcelTinyContractLanguage() {
+      const text = mcelTinyContractLanguageSource();
+      try {
+        return JSON.parse(text || "{}");
+      } catch (error) {
+        return {
+          kind: "mcel.scm.app",
+          name: "DevNetworkReleaseConsole",
+          parseError: error?.message || String(error)
+        };
+      }
+    }
+
+    function mcelTinyContractInitialSourceData() {
+      return {
+        devRelease: {
+          title: "Dev Network Release Console",
+          summary: "Approve a local contract release only when the wallet, route-loaded contract, source-owned request, runtime transaction draft, and SCM evidence agree.",
+          contractAddress: "0x000000000000000000000000000000000000dEaD",
+          devNetwork: {
+            name: "Hardhat local chain",
+            chainId: "0x7a69",
+            decimalChainId: 31337,
+            rpcUrl: "http://127.0.0.1:8545"
+          },
+          requests: [
+            {
+              id: "rel-allowance-view",
+              title: "Inspect allowance-reader deployment before approving UI release.",
+              status: "needs-wallet",
+              risk: "medium",
+              contractMethod: "allowance(address,address)",
+              evidenceRequired: true
+            },
+            {
+              id: "rel-settlement-mock",
+              title: "Gate settlement mock release behind dev-network chain proof.",
+              status: "needs-review",
+              risk: "high",
+              contractMethod: "releaseSettlementMock(bytes32)",
+              evidenceRequired: true
+            },
+            {
+              id: "rel-ai-hint",
+              title: "Repair runtime wallet hint without changing release source.",
+              status: "needs-repair",
+              risk: "medium",
+              contractMethod: "repairRuntimeHint()",
+              evidenceRequired: true
+            }
+          ]
+        },
+        html: {
+          sourceId: "dev-release-console.source.html"
+        }
+      };
+    }
+
+    function mcelTinyContractRuntimeDefaults() {
+      return {
+        wallet: {
+          mode: "disconnected",
+          provider: "none",
+          account: "",
+          connected: false
+        },
+        network: {
+          expectedChainId: "0x7a69",
+          chainId: "",
+          ok: false,
+          status: "waiting"
+        },
+        txDraft: {
+          status: "empty",
+          requestId: "",
+          to: "",
+          data: "",
+          summary: "No transaction draft has been built."
+        },
+        proofChip: {
+          text: "Runtime wallet proof chip waiting.",
+          status: "pending",
+          repaired: false
+        },
+        assistantRepairPrompt: "",
+        serializedSource: "",
+        evidenceStrip: []
+      };
+    }
+
+    function mcelTinyContractStateDefaults() {
+      return {
+        selectedRequestId: "rel-allowance-view",
+        walletGate: "waiting"
+      };
+    }
+
+    function mcelTinyContractObservation() {
+      return {
+        computed: {
+          ".mcel-dev-release-console": {
+            display: "grid",
+            overflow: "hidden"
+          },
+          ".mcel-dev-release-console__tx": {
+            overflow: "auto"
+          }
+        },
+        regions: {
+          walletPanel: true,
+          releaseQueue: true,
+          txPreview: true,
+          evidenceStrip: true
+        },
+        rects: {
+          ".mcel-dev-release-console": {
+            height: 520
+          }
+        },
+        documentHeightRatio: 1.05
+      };
+    }
+
+    function mcelTinyContractScmManifest() {
+      return {
+        version: "0.2.0",
+        contract: "mcel.scm.dev-network-release-console.v1",
+        owns: {
+          source: [
+            "devRelease.title",
+            "devRelease.summary",
+            "devRelease.contractAddress",
+            "devRelease.devNetwork",
+            "devRelease.requests",
+            "html.sourceId"
+          ],
+          state: [
+            "selectedRequestId",
+            "walletGate"
+          ],
+          runtime: [
+            "wallet",
+            "network",
+            "txDraft",
+            "proofChip",
+            "assistantRepairPrompt",
+            "serializedSource",
+            "evidenceStrip"
+          ],
+          layout: [
+            "walletPanel",
+            "releaseQueue",
+            "txPreview",
+            "evidenceStrip"
+          ],
+          style: [
+            "devWalletConsole"
+          ],
+          effects: [
+            "wallet.connect",
+            "network.verify",
+            "release.select",
+            "release.draftTx",
+            "release.approve",
+            "ai.repairWalletHint"
+          ]
+        },
+        source: mcelTinyContractInitialSourceData(),
+        runtime: mcelTinyContractRuntimeDefaults(),
+        state: mcelTinyContractStateDefaults(),
+        outputs: [
+          "walletConnected",
+          "networkVerified",
+          "releaseSelected",
+          "txDrafted",
+          "releaseApproved",
+          "runtimeHintRepaired",
+          "unsafeWriteBlocked",
+          "serialized"
+        ],
+        effects: {
+          "wallet.connect": {
+            kind: "external-wallet-effect",
+            triggers: ["explicit-wallet-connect"],
+            reads: ["source.devRelease.devNetwork"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.evidenceStrip"],
+            external: {
+              resource: "metamask",
+              operation: "eth_requestAccounts + eth_chainId",
+              devNetworkOnly: true
+            },
+            errorPolicy: {
+              onFailure: "record-runtime-wallet-error"
+            },
+            run(ctx, payload = {}) {
+              const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
+              const chainId = String(payload.chainId || devNetwork.chainId || "0x7a69");
+              const account = String(payload.account || "0xDeaD00000000000000000000000000000000BEEF");
+              const provider = String(payload.provider || "mock-dev-provider");
+              const ok = chainId.toLowerCase() === String(devNetwork.chainId || "").toLowerCase();
+              const wallet = {
+                mode: payload.mock ? "mock-dev-wallet" : "metamask",
+                provider,
+                account,
+                connected: Boolean(account),
+                interactive: payload.interactive === true
+              };
+              const network = {
+                expectedChainId: devNetwork.chainId || "0x7a69",
+                chainId,
+                ok,
+                status: ok ? "dev-network-ready" : "wrong-chain",
+                rpcUrl: devNetwork.rpcUrl || ""
+              };
+              ctx.set("runtime.wallet", wallet);
+              ctx.set("runtime.network", network);
+              ctx.set("runtime.evidenceStrip", [
+                `wallet.connect provider=${provider}`,
+                `account=${account ? account.slice(0, 10) + "…" : "missing"}`,
+                `chain=${chainId}`,
+                `expected=${network.expectedChainId}`
+              ]);
+              ctx.evidence({
+                ok,
+                message: ok
+                  ? "wallet.connect captured runtime wallet/dev-network state without touching source."
+                  : "wallet.connect captured wallet state but dev-network chain does not match the contract."
+              });
+              return {wallet, network};
+            },
+            commit(_ctx, result) {
+              return {
+                connected: result?.wallet?.connected === true,
+                chainId: result?.network?.chainId || "",
+                ok: result?.network?.ok === true
+              };
+            }
+          },
+          "network.verify": {
+            kind: "dev-network-gate",
+            triggers: ["runtime.network"],
+            reads: ["source.devRelease.devNetwork", "runtime.network"],
+            writes: ["runtime.network", "runtime.evidenceStrip"],
+            external: {
+              resource: "wallet-chain",
+              operation: "compare-chain-id"
+            },
+            errorPolicy: {
+              onFailure: "block-release-approval"
+            },
+            run(ctx) {
+              const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
+              const network = ctx.get("runtime.network") || {};
+              const expected = String(devNetwork.chainId || "0x7a69");
+              const actual = String(network.chainId || "");
+              const ok = actual.toLowerCase() === expected.toLowerCase();
+              const nextNetwork = {
+                ...network,
+                expectedChainId: expected,
+                ok,
+                status: ok ? "dev-network-ready" : "wrong-chain"
+              };
+              ctx.set("runtime.network", nextNetwork);
+              ctx.set("runtime.evidenceStrip", [
+                `network.verify expected=${expected}`,
+                `actual=${actual || "missing"}`,
+                `ok=${ok}`
+              ]);
+              ctx.evidence({
+                ok,
+                message: ok
+                  ? "network.verify matched the wallet chain to the source-owned dev network."
+                  : "network.verify found a wallet chain mismatch."
+              });
+              return nextNetwork;
+            },
+            commit(_ctx, result) {
+              return {ok: result?.ok === true, chainId: result?.chainId || ""};
+            }
+          },
+          "release.select": {
+            kind: "ui-effect",
+            triggers: ["state.selectedRequestId"],
+            reads: ["source.devRelease.requests", "state.selectedRequestId"],
+            writes: ["state.selectedRequestId", "runtime.txDraft", "runtime.evidenceStrip"],
+            external: {
+              resource: "dom",
+              operation: "select-release-request"
+            },
+            errorPolicy: {
+              onFailure: "block-and-record-evidence"
+            },
+            run(ctx, payload = {}) {
+              const requests = ctx.get("source.devRelease.requests") || [];
+              const requestedId = String(payload.id || "");
+              const fallbackId = ctx.get("state.selectedRequestId") || requests[0]?.id || "";
+              const selectedId = requestedId || fallbackId;
+              const request = requests.find((entry) => entry.id === selectedId) || requests[0] || null;
+              if (!request) {
+                ctx.set("runtime.txDraft", {
+                  status: "empty",
+                  requestId: "",
+                  summary: "No release request is available."
+                });
+                return {selectedRequestId: "", found: false};
+              }
+              ctx.set("state.selectedRequestId", request.id);
+              ctx.set("runtime.txDraft", {
+                status: "selected",
+                requestId: request.id,
+                to: "",
+                data: "",
+                summary: `Selected ${request.id}; transaction draft is not built yet.`,
+                risk: request.risk
+              });
+              ctx.set("runtime.evidenceStrip", [
+                `release.select id=${request.id}`,
+                "writes=state.selectedRequestId,runtime.txDraft"
+              ]);
+              ctx.evidence({
+                ok: true,
+                message: `release.select selected ${request.id} without mutating source.`
+              });
+              return {selectedRequestId: request.id, found: true};
+            },
+            commit(_ctx, result) {
+              return {selectedRequestId: result?.selectedRequestId || ""};
+            }
+          },
+          "release.draftTx": {
+            kind: "runtime-transaction-draft",
+            triggers: ["explicit-draft"],
+            reads: [
+              "source.devRelease.contractAddress",
+              "source.devRelease.requests",
+              "state.selectedRequestId",
+              "runtime.wallet",
+              "runtime.network"
+            ],
+            writes: ["runtime.txDraft", "runtime.evidenceStrip"],
+            external: {
+              resource: "ethereum-transaction",
+              operation: "draft-only-no-send"
+            },
+            errorPolicy: {
+              onFailure: "runtime-draft-only"
+            },
+            run(ctx) {
+              const contractAddress = ctx.get("source.devRelease.contractAddress");
+              const requests = ctx.get("source.devRelease.requests") || [];
+              const selectedId = ctx.get("state.selectedRequestId") || requests[0]?.id || "";
+              const request = requests.find((entry) => entry.id === selectedId) || requests[0] || null;
+              const wallet = ctx.get("runtime.wallet") || {};
+              const network = ctx.get("runtime.network") || {};
+              const ready = Boolean(wallet.connected && network.ok && request);
+              const txDraft = {
+                status: ready ? "ready" : "blocked",
+                requestId: request?.id || "",
+                to: contractAddress || "",
+                chainId: network.chainId || "",
+                from: wallet.account || "",
+                data: request ? `method:${request.contractMethod}` : "",
+                summary: ready
+                  ? `Drafted runtime-only tx for ${request.id} to ${contractAddress}.`
+                  : "Transaction draft blocked until wallet and dev-network gate are ready."
+              };
+              ctx.set("runtime.txDraft", txDraft);
+              ctx.set("runtime.evidenceStrip", [
+                `release.draftTx status=${txDraft.status}`,
+                `to=${txDraft.to || "missing"}`,
+                `request=${txDraft.requestId || "missing"}`
+              ]);
+              ctx.evidence({
+                ok: ready,
+                message: ready
+                  ? "release.draftTx produced a runtime-only transaction draft."
+                  : "release.draftTx stayed runtime-only and reported a blocked wallet/network gate."
+              });
+              return txDraft;
+            },
+            commit(_ctx, result) {
+              return {status: result?.status || "", requestId: result?.requestId || ""};
+            }
+          },
+          "release.approve": {
+            kind: "human-approval-effect",
+            triggers: ["human-approval"],
+            reads: ["source.devRelease.requests", "state.selectedRequestId"],
+            writes: ["source.devRelease.requests", "runtime.evidenceStrip"],
+            external: {
+              resource: "source",
+              operation: "mark-selected-release-approved"
+            },
+            errorPolicy: {
+              onFailure: "block-source-write-and-record-evidence"
+            },
+            run(ctx) {
+              const selectedId = ctx.get("state.selectedRequestId");
+              const requests = ctx.get("source.devRelease.requests") || [];
+              const nextRequests = requests.map((request) => {
+                if (request.id !== selectedId) return request;
+                return {
+                  ...request,
+                  status: "approved",
+                  approvalNote: "Approved through declared SCM effect release.approve."
+                };
+              });
+              const selected = nextRequests.find((request) => request.id === selectedId) || null;
+              ctx.set("source.devRelease.requests", nextRequests);
+              ctx.set("runtime.evidenceStrip", [
+                `release.approve id=${selectedId}`,
+                "declared source write: source.devRelease.requests"
+              ]);
+              ctx.evidence({
+                ok: true,
+                message: "release.approve updated source.devRelease.requests through a declared source write."
+              });
+              return {selectedRequestId: selectedId, status: selected?.status || "missing"};
+            },
+            commit(_ctx, result) {
+              return {approved: result?.selectedRequestId || "", status: result?.status || ""};
+            }
+          },
+          "ai.repairWalletHint": {
+            kind: "ai-repair-effect",
+            triggers: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+            reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+            writes: ["runtime.proofChip", "runtime.assistantRepairPrompt"],
+            external: {
+              resource: "ai-repair",
+              operation: "repair-runtime-wallet-hint"
+            },
+            errorPolicy: {
+              onFailure: "leave-source-untouched"
+            },
+            run(ctx, payload = {}) {
+              const wallet = ctx.get("runtime.wallet") || {};
+              const network = ctx.get("runtime.network") || {};
+              const txDraft = ctx.get("runtime.txDraft") || {};
+              const prompt = [
+                "Repair only runtime wallet/proof chrome for DevNetworkReleaseConsole.",
+                `Wallet: ${wallet.connected ? "connected" : "disconnected"}.`,
+                `Chain: ${network.chainId || "missing"} expected ${network.expectedChainId || "0x7a69"}.`,
+                `Tx draft: ${txDraft.status || "empty"} ${txDraft.requestId || ""}.`,
+                "Forbidden: source.devRelease.* and state.*.",
+                "Allowed: runtime.proofChip and runtime.assistantRepairPrompt."
+              ].join("\n");
+              ctx.set("runtime.assistantRepairPrompt", prompt);
+              ctx.set("runtime.proofChip", {
+                text: payload.text || `Runtime wallet hint repaired; source stayed untouched.`,
+                status: "repaired",
+                repaired: true
+              });
+              ctx.evidence({
+                ok: true,
+                message: "AI repair stayed inside runtime-owned wallet/proof boundary."
+              });
+              return {repaired: true, walletConnected: wallet.connected === true};
+            },
+            commit(_ctx, result) {
+              return {repaired: result?.repaired === true, walletConnected: result?.walletConnected === true};
+            }
+          }
+        },
+        layoutContract: {
+          root: ".mcel-dev-release-console",
+          maxDocumentHeightRatio: 1.35,
+          requiredComputed: {
+            ".mcel-dev-release-console": {
+              display: "grid",
+              overflow: "hidden"
+            }
+          },
+          regions: {
+            walletPanel: {
+              selector: "[data-mc-component='dev-release.wallet']",
+              slot: "walletPanel",
+              required: true
+            },
+            releaseQueue: {
+              selector: "[data-mc-field='devRelease.requests']",
+              slot: "releaseQueue",
+              required: true
+            },
+            txPreview: {
+              selector: "[data-mc-slot='runtime.txDraft']",
+              slot: "txPreview",
+              required: true
+            },
+            evidenceStrip: {
+              selector: "[data-mc-slot='runtime.evidenceStrip']",
+              slot: "evidenceStrip",
+              required: true
+            }
+          }
+        },
+        styleContract: {
+          scope: "sealed",
+          owns: ["devWalletConsole"],
+          forbidsGlobalLeakage: true,
+          expectedComputed: {
+            ".mcel-dev-release-console__tx": {
+              overflow: "auto"
+            }
+          }
+        },
+        serializationContract: {
+          sourceOwns: [
+            "source.devRelease.title",
+            "source.devRelease.summary",
+            "source.devRelease.contractAddress",
+            "source.devRelease.devNetwork",
+            "source.devRelease.requests",
+            "source.html.sourceId"
+          ],
+          runtimeOnly: [
+            "runtime.wallet",
+            "runtime.network",
+            "runtime.txDraft",
+            "runtime.proofChip",
+            "runtime.assistantRepairPrompt",
+            "runtime.serializedSource",
+            "runtime.evidenceStrip"
+          ],
+          failIfRuntimeLeaks: true,
+          runtimeLeakMarkers: [
+            "data-mc-generated",
+            "runtime.wallet",
+            "runtime.network",
+            "runtime.txDraft",
+            "MetaMask",
+            "0xDeaD0000"
+          ],
+          output: {
+            format: "clean-source-json",
+            writeTo: "runtime.serializedSource"
+          }
+        },
+        repairContract: {
+          allowed: [
+            "runtime.proofChip",
+            "runtime.assistantRepairPrompt"
+          ],
+          forbidden: [
+            "source.devRelease",
+            "state.selectedRequestId",
+            "runtime.wallet"
+          ],
+          strategies: {
+            repairRuntimeProofChip: {
+              reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+              writes: [
+                "runtime.proofChip",
+                "runtime.assistantRepairPrompt"
+              ],
+              apply(ctx, payload = {}) {
+                const wallet = ctx.get("runtime.wallet") || {};
+                const network = ctx.get("runtime.network") || {};
+                const txDraft = ctx.get("runtime.txDraft") || {};
+                ctx.set("runtime.assistantRepairPrompt", [
+                  "SCM repair context for DevNetworkReleaseConsole runtime wallet hint.",
+                  `Wallet connected: ${wallet.connected === true}.`,
+                  `Network status: ${network.status || "waiting"}.`,
+                  `Tx draft: ${txDraft.status || "empty"}.`,
+                  "Allowed writes: runtime.proofChip, runtime.assistantRepairPrompt.",
+                  "Forbidden writes: source.devRelease, state.selectedRequestId, runtime.wallet."
+                ].join("\n"));
+                ctx.set("runtime.proofChip", {
+                  text: payload.text || `Repair strategy rebuilt runtime wallet hint for ${network.status || "waiting"}.`,
+                  status: "repaired",
+                  repaired: true
+                });
+                ctx.evidence({
+                  ok: true,
+                  message: "repairRuntimeProofChip wrote only runtime-owned repair paths."
+                });
+                return {repaired: true};
+              },
+              post(ctx) {
+                return Boolean(ctx.get("runtime.proofChip")?.repaired);
+              }
+            }
+          }
+        }
+      };
+    }
+
+    function mcelTinyContractRouteManifest() {
+      return {
+        version: "0.2.0",
+        contract: "mcel.scm.route.dev-network-release-console.v1",
+        segments: [
+          {literal: "workspace"},
+          {literal: "dev-network"},
+          {param: "contractId", type: "id", required: true},
+          {literal: "release-console"}
+        ],
+        query: {
+          chain: {
+            type: "enum",
+            values: ["hardhat", "anvil", "local"],
+            required: false
+          }
+        },
+        mounts: {
+          component: "DevNetworkReleaseConsole",
+          inputs: {
+            contractId: "route.params.contractId",
+            networkSummary: "route.data.networkSummary"
+          }
+        },
+        data: {
+          "devnet.load": {
+            kind: "async-data",
+            triggers: ["route.params.contractId", "query.chain"],
+            reads: [
+              "route.params.contractId",
+              "component.source.devRelease.devNetwork",
+              "component.source.devRelease.requests"
+            ],
+            writes: ["route.data.networkSummary"],
+            cancellation: "cancel-previous",
+            racePolicy: "latest-route-wins",
+            external: {
+              resource: "dev-network",
+              operation: "summarize-wallet-release-console"
+            },
+            errorPolicy: {
+              onFailure: "keep-previous-route-data"
+            },
+            run(ctx) {
+              const contractId = ctx.get("route.params.contractId");
+              const devNetwork = ctx.get("component.source.devRelease.devNetwork") || {};
+              const requests = ctx.get("component.source.devRelease.requests") || [];
+              return {
+                contractId,
+                network: devNetwork.name || "dev network",
+                chainId: devNetwork.chainId || "0x7a69",
+                totalRequests: requests.length,
+                highRisk: requests.filter((request) => request.risk === "high").length
+              };
+            },
+            commit(ctx, result) {
+              ctx.set("route.data.networkSummary", result);
+              return result;
+            }
+          }
+        },
+        lifecycle: {
+          onEnter: ["validateParams", "mountComponent", "runLoader"],
+          onLeave: {
+            blockedBy: ["runtime.txDraft.status:ready"],
+            resolutions: ["cancelNavigation", "serializeAndLeave"]
+          }
+        }
+      };
+    }
+
+    function defineMcelTinyContractScm() {
+      const scm = window.McelLabScm;
+      if (!scm) {
+        recordMcelTinyContractEvidence("scm", "McelLabScm is unavailable; real SCM proof cannot run.", "fail");
+        return null;
+      }
+      const manifest = mcelTinyContractScmManifest();
+      const route = mcelTinyContractRouteManifest();
+      const componentValidation = scm.validateComponentManifest("DevNetworkReleaseConsole", manifest);
+      if (!componentValidation.ok) {
+        recordMcelTinyContractEvidence("scm", "DevNetworkReleaseConsole manifest failed SCM validation.", "fail", componentValidation);
+        return {scm, manifest, route, componentValidation, routeValidation: null};
+      }
+      scm.defineComponent("DevNetworkReleaseConsole", manifest, {replace: true});
+      const routeValidation = scm.validateRouteManifest("workspace.dev-network-release", route);
+      if (!routeValidation.ok) {
+        recordMcelTinyContractEvidence("scm", "workspace.dev-network-release route failed SCM validation.", "fail", routeValidation);
+        return {scm, manifest, route, componentValidation, routeValidation};
+      }
+      scm.defineRoute("workspace.dev-network-release", route, {replace: true});
+      recordMcelTinyContractEvidence("scm", "SCM component and dev-network route manifests resolved.", "pass", {
+        component: componentValidation.ok,
+        route: routeValidation.ok
+      });
+      return {scm, manifest, route, componentValidation, routeValidation};
+    }
+
+    function createMcelTinyContractScmRuntime(options = {}) {
+      const defined = defineMcelTinyContractScm();
+      if (!defined?.scm || defined.componentValidation?.ok === false || defined.routeValidation?.ok === false) {
+        return null;
+      }
+      const tinyState = ensureMcelTinyContractState();
+      const {scm} = defined;
+      const instance = scm.createComponentInstance("DevNetworkReleaseConsole", {
+        id: "dev-network-release-console-demo",
+        source: mcelTinyContractInitialSourceData(),
+        runtime: mcelTinyContractRuntimeDefaults(),
+        state: mcelTinyContractStateDefaults()
+      });
+      const routeInstance = scm.createRouteInstance("workspace.dev-network-release", {
+        id: "dev-network-release-route-demo",
+        componentInstance: instance
+      });
+
+      tinyState.scmInstance = instance;
+      tinyState.scmRouteInstance = routeInstance;
+      tinyState.reviewedCount = 0;
+      tinyState.walletConnectCount = 0;
+      tinyState.txDraftCount = 0;
+
+      const routeEnter = scm.enterRoute(routeInstance, {
+        params: {contractId: "dev-release-console"},
+        query: {chain: "hardhat"}
+      });
+      const routeLoader = scm.runRouteLoader(routeInstance, "devnet.load");
+      recordMcelTinyContractEvidence("route", "SCM route entered and devnet.load route loader committed.", "pass", {
+        routeEnter,
+        routeLoader
+      });
+
+      scm.runEffect(instance, "wallet.connect", {
+        mock: true,
+        provider: "mock-dev-provider",
+        account: "0xDeaD00000000000000000000000000000000BEEF",
+        chainId: "0x7a69"
+      });
+      tinyState.walletConnectCount += 1;
+      scm.runEffect(instance, "network.verify");
+      scm.runEffect(instance, "release.select", {id: "rel-allowance-view"});
+      if (options.exercise !== false) {
+        scm.runEffect(instance, "release.draftTx");
+        tinyState.txDraftCount += 1;
+        scm.runEffect(instance, "release.approve");
+        tinyState.reviewedCount += 1;
+      }
+      return {scm, instance, routeInstance, defined};
+    }
+
+    function mcelTinyContractItems(instance) {
+      return Array.isArray(instance?.source?.devRelease?.requests) ? instance.source.devRelease.requests : [];
+    }
+
+    function selectedMcelTinyContractItem(instance) {
+      const items = mcelTinyContractItems(instance);
+      const selectedId = instance?.state?.selectedRequestId || items[0]?.id || "";
+      return items.find((item) => item.id === selectedId) || items[0] || null;
+    }
+
+    function serializeMcelTinyContractRuntime(app) {
+      if (!app) return "";
+      const clone = app.cloneNode(true);
+      clone.querySelectorAll('[data-mc-generated="true"]').forEach((node) => node.remove());
+      clone.querySelectorAll('[data-mc-slot][data-mc-owner="runtime"]').forEach((slot) => {
+        slot.replaceChildren();
+      });
+      return normalizeMcelTinyContractHtml(clone.outerHTML);
+    }
+
+    function renderMcelTinyContractMap(app) {
+      if (!mcelTinyContractMap) return;
+      const sourceHtml = mcelTinyContractSourceHtml();
+      const instance = ensureMcelTinyContractState().scmInstance;
+      const selected = selectedMcelTinyContractItem(instance);
+      mcelTinyContractMap.textContent = [
+        normalizeMcelTinyContractHtml(sourceHtml),
+        "",
+        "SCM projection:",
+        JSON.stringify({
+          component: app?.getAttribute("data-mc-component") || "dev-network-release-console",
+          route: app?.getAttribute("data-mc-route") || "workspace.dev-network-release",
+          expectedChainId: instance?.source?.devRelease?.devNetwork?.chainId || "0x7a69",
+          walletConnected: instance?.runtime?.wallet?.connected === true,
+          networkOk: instance?.runtime?.network?.ok === true,
+          selectedRequestId: selected?.id || "",
+          sourceRequestCount: mcelTinyContractItems(instance).length,
+          sourceStatuses: mcelTinyContractItems(instance).map((item) => `${item.id}:${item.status}`),
+          runtimeSlots: [
+            "runtime.wallet",
+            "runtime.txDraft",
+            "runtime.proofChip",
+            "runtime.evidenceStrip"
+          ]
+        }, null, 2)
+      ].join("\n");
+    }
+
+    function renderMcelTinyRuntimeBadge(app, instance = ensureMcelTinyContractState().scmInstance) {
+      const slot = app?.querySelector('[data-mc-slot="runtime.proofChip"]');
+      if (!slot) return null;
+      const chip = document.createElement("strong");
+      const proofChip = instance?.runtime?.proofChip || {};
+      chip.dataset.mcGenerated = "true";
+      chip.dataset.mcOwner = "runtime";
+      chip.dataset.mcRuntimeState = "runtime.proofChip";
+      chip.dataset.mcRepairableBy = "repairRuntimeProofChip";
+      chip.textContent = proofChip.text || "Runtime wallet proof chip waiting.";
+      slot.replaceChildren(chip);
+      return chip;
+    }
+
+    function renderMcelTinyWalletPanel(app, instance = ensureMcelTinyContractState().scmInstance) {
+      const slot = app?.querySelector('[data-mc-slot="runtime.wallet"]');
+      if (!slot) return;
+      const wallet = instance?.runtime?.wallet || {};
+      const network = instance?.runtime?.network || {};
+      const panel = document.createElement("section");
+      panel.className = "mcel-dev-release-console__wallet";
+      panel.dataset.mcGenerated = "true";
+      panel.dataset.mcOwner = "runtime";
+      panel.dataset.mcRuntimeState = "runtime.wallet";
+      panel.innerHTML = `
+        <strong>Runtime wallet state</strong>
+        <dl>
+          <dt>provider</dt><dd>${wallet.provider || wallet.mode || "none"}</dd>
+          <dt>account</dt><dd>${wallet.account ? wallet.account.slice(0, 12) + "…" : "not connected"}</dd>
+          <dt>chain</dt><dd>${network.chainId || "missing"} / expected ${network.expectedChainId || "0x7a69"}</dd>
+          <dt>gate</dt><dd>${network.ok ? "dev network ready" : network.status || "waiting"}</dd>
+        </dl>
+      `;
+      slot.replaceChildren(panel);
+    }
+
+    function renderMcelTinyRuntimeSummary(app, summaryText, instance = ensureMcelTinyContractState().scmInstance) {
+      const slot = app?.querySelector('[data-mc-slot="runtime.txDraft"]');
+      if (!slot) return;
+      const txDraft = instance?.runtime?.txDraft || {};
+      const selected = selectedMcelTinyContractItem(instance);
+      const output = document.createElement("section");
+      output.className = "mcel-dev-release-console__tx";
+      output.dataset.mcGenerated = "true";
+      output.dataset.mcOwner = "runtime";
+      output.dataset.mcRuntimeState = "runtime.txDraft";
+      output.innerHTML = `
+        <strong>Runtime transaction draft</strong>
+        <p>${summaryText || txDraft.summary || "Transaction draft is waiting."}</p>
+        <dl>
+          <dt>request</dt><dd>${txDraft.requestId || selected?.id || "none"}</dd>
+          <dt>status</dt><dd>${txDraft.status || "empty"}</dd>
+          <dt>to</dt><dd>${txDraft.to || "not drafted"}</dd>
+          <dt>data</dt><dd>${txDraft.data || "not drafted"}</dd>
+        </dl>
+      `;
+      slot.replaceChildren(output);
+    }
+
+    function renderMcelTinyEvidenceStrip(app, instance = ensureMcelTinyContractState().scmInstance) {
+      const slot = app?.querySelector('[data-mc-slot="runtime.evidenceStrip"]');
+      if (!slot) return;
+      const strip = document.createElement("ul");
+      strip.className = "mcel-dev-release-console__evidence-strip";
+      strip.dataset.mcGenerated = "true";
+      strip.dataset.mcOwner = "runtime";
+      strip.dataset.mcRuntimeState = "runtime.evidenceStrip";
+      const evidence = instance?.runtime?.evidenceStrip || [];
+      (evidence.length ? evidence : ["runtime evidence waiting"]).forEach((entry) => {
+        const item = document.createElement("li");
+        item.textContent = entry;
+        strip.appendChild(item);
+      });
+      slot.replaceChildren(strip);
+    }
+
+    function syncMcelTinyContractDomFromScm(app, instance = ensureMcelTinyContractState().scmInstance, reason = "sync") {
+      if (!app || !instance) return;
+      app.classList.add("mcel-dev-release-console");
+      const title = app.querySelector('[data-mc-field="devRelease.title"]');
+      const summary = app.querySelector('[data-mc-field="devRelease.summary"]');
+      const contractAddress = app.querySelector('[data-mc-field="devRelease.contractAddress"]');
+      const network = app.querySelector('[data-mc-field="devRelease.devNetwork"]');
+      if (title) title.textContent = instance.source?.devRelease?.title || "Dev Network Release Console";
+      if (summary) summary.textContent = instance.source?.devRelease?.summary || "";
+      if (contractAddress) contractAddress.textContent = instance.source?.devRelease?.contractAddress || "";
+      if (network) {
+        const devNetwork = instance.source?.devRelease?.devNetwork || {};
+        network.textContent = `Dev network: ${devNetwork.name || "local"} ${devNetwork.decimalChainId || ""} (${devNetwork.chainId || ""})`;
+      }
+      const itemNodes = [...app.querySelectorAll("[data-mc-item-id]")];
+      const items = mcelTinyContractItems(instance);
+      itemNodes.forEach((node) => {
+        const item = items.find((entry) => entry.id === node.getAttribute("data-mc-item-id"));
+        if (!item) return;
+        node.dataset.mcStatus = item.status;
+        node.dataset.mcRisk = item.risk;
+        node.textContent = `${item.status.toUpperCase()} · ${item.title}`;
+      });
+      renderMcelTinyWalletPanel(app, instance);
+      renderMcelTinyRuntimeSummary(app, reason, instance);
+      renderMcelTinyRuntimeBadge(app, instance);
+      renderMcelTinyEvidenceStrip(app, instance);
+      renderMcelTinyContractMap(app);
+    }
+
+    function mountMcelTinyContractRuntime(source, reason = "manual", options = {}) {
+      if (!mcelTinyContractRuntimeMount) return null;
+      const tinyState = ensureMcelTinyContractState();
+      if (options.reset !== false) {
+        tinyState.selectedIndex = 0;
+        tinyState.blockedWrites = 0;
+        tinyState.repairCount = 0;
+        tinyState.reviewedCount = 0;
+        tinyState.walletConnectCount = 0;
+        tinyState.txDraftCount = 0;
+        tinyState.evidence = [];
+      }
+
+      const runtime = createMcelTinyContractScmRuntime({exercise: options.exercise !== false});
+      if (!runtime?.instance) {
+        mcelTinyContractRuntimeMount.textContent = "SCM runtime failed to initialize.";
+        renderMcelTinyContractProof(null, "scm-unavailable");
+        return null;
+      }
+
+      tinyState.runCount += 1;
+      mcelTinyContractRuntimeMount.innerHTML = source;
+      const app = mcelTinyContractRuntimeMount.querySelector('[data-mc-component="dev-network-release-console"]');
+      const walletButton = app?.querySelector('[data-mc-effect="wallet.connect"]');
+      const verifyButton = app?.querySelector('[data-mc-effect="network.verify"]');
+      const selectButton = app?.querySelector('[data-mc-effect="release.select"]');
+      const draftButton = app?.querySelector('[data-mc-effect="release.draftTx"]');
+      const approveButton = app?.querySelector('[data-mc-effect="release.approve"]');
+
+      walletButton?.addEventListener("click", () => connectMcelTinyContractWallet("runtime-button"));
+      verifyButton?.addEventListener("click", () => verifyMcelTinyContractNetwork("runtime-button"));
+      selectButton?.addEventListener("click", () => clickMcelTinyContractCounter());
+      draftButton?.addEventListener("click", () => draftMcelTinyContractTransaction("runtime-button"));
+      approveButton?.addEventListener("click", () => markMcelTinyContractReviewed("runtime-button"));
+
+      syncMcelTinyContractDomFromScm(app, runtime.instance, reason);
+      if (options.exercise !== false) {
+        repairMcelTinyContractRuntimeChrome("complete-dev-network-proof");
+        attemptMcelTinyContractForbiddenWrite("complete-dev-network-proof");
+      }
+      renderMcelTinyContractProof(app, reason);
+      return app;
+    }
+
+    async function readMcelTinyContractWalletProvider(interactive = false) {
+      const provider = window.ethereum;
+      if (!provider || typeof provider.request !== "function") {
+        return {
+          mock: true,
+          provider: "mock-dev-provider",
+          account: "0xDeaD00000000000000000000000000000000BEEF",
+          chainId: "0x7a69",
+          interactive
+        };
+      }
+      let chainId = "";
+      let accounts = [];
+      try {
+        chainId = await provider.request({method: "eth_chainId"});
+      } catch (_error) {
+        chainId = "";
+      }
+      try {
+        accounts = await provider.request({method: interactive ? "eth_requestAccounts" : "eth_accounts"});
+      } catch (_error) {
+        accounts = [];
+      }
+      return {
+        mock: false,
+        provider: provider.isMetaMask ? "metamask" : "ethereum-provider",
+        account: Array.isArray(accounts) ? accounts[0] || "" : "",
+        chainId: String(chainId || ""),
+        interactive
+      };
+    }
+
+    async function connectMcelTinyContractWallet(reason = "manual-wallet-connect") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
+        app = renderMcelTinyContractTest("wallet-before-mount", { exercise: false, reset: false });
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return;
+      const walletPayload = await readMcelTinyContractWalletProvider(true);
+      const result = window.McelLabScm.runEffect(instance, "wallet.connect", walletPayload);
+      window.McelLabScm.runEffect(instance, "network.verify");
+      tinyState.walletConnectCount += 1;
+      recordMcelTinyContractEvidence(
+        "wallet",
+        walletPayload.mock
+          ? "No MetaMask provider found; SCM used mock dev wallet state so the proof can still run locally."
+          : "SCM captured MetaMask wallet/dev-network state as runtime-only data.",
+        "pass",
+        {walletConnectCount: tinyState.walletConnectCount, result, walletPayload}
+      );
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, "Wallet/dev-network state captured through declared runtime effect.");
+      renderMcelTinyContractProof(app, reason);
+    }
+
+    function verifyMcelTinyContractNetwork(reason = "manual-network-check") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
+        app = renderMcelTinyContractTest("network-before-mount", { exercise: false, reset: false });
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return;
+      const result = window.McelLabScm.runEffect(instance, "network.verify");
+      recordMcelTinyContractEvidence(
+        "network",
+        "SCM compared runtime wallet chain with source-owned dev network contract.",
+        result?.ok ? "pass" : "fail",
+        {result}
+      );
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, "Dev-network gate verified.");
+      renderMcelTinyContractProof(app, reason);
+    }
+
+    function draftMcelTinyContractTransaction(reason = "manual-draft-tx") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
+        app = renderMcelTinyContractTest("draft-before-mount", { exercise: false, reset: false });
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return;
+      const result = window.McelLabScm.runEffect(instance, "release.draftTx");
+      tinyState.txDraftCount += 1;
+      recordMcelTinyContractEvidence(
+        "tx-draft",
+        "SCM release.draftTx built a runtime-only transaction draft; no transaction was sent.",
+        result?.status === "ready" ? "pass" : "warn",
+        {txDraftCount: tinyState.txDraftCount, result}
+      );
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, "Runtime-only transaction draft updated.");
+      renderMcelTinyContractProof(app, reason);
+    }
+
+    function repairMcelTinyContractRuntimeChrome(reason = "manual-repair") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.repairComponent) {
+        app = renderMcelTinyContractTest("repair-before-mount", { exercise: false, reset: false });
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return;
+      const result = window.McelLabScm.repairComponent(instance, "repairRuntimeProofChip", {
+        text: `Runtime wallet hint repaired at ${reason}.`
+      });
+      tinyState.repairCount += 1;
+      recordMcelTinyContractEvidence(
+        "repair",
+        "SCM repairComponent rebuilt runtime wallet/proof hint without touching source or wallet account state.",
+        "pass",
+        { repairCount: tinyState.repairCount, result }
+      );
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, "Runtime wallet hint repaired.");
+      renderMcelTinyContractProof(app, reason);
+    }
+
+    function markMcelTinyContractReviewed(reason = "manual-approved") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
+        app = renderMcelTinyContractTest("approval-before-mount", { exercise: false, reset: false });
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return;
+      const result = window.McelLabScm.runEffect(instance, "release.approve", {reason});
+      tinyState.reviewedCount += 1;
+      recordMcelTinyContractEvidence(
+        "source-write",
+        "Declared effect release.approve wrote source.devRelease.requests and produced SCM evidence.",
+        "pass",
+        { reviewedCount: tinyState.reviewedCount, result }
+      );
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, "Selected release approved through declared source write.");
+      renderMcelTinyContractProof(app, reason);
+    }
+
+    function attemptMcelTinyContractForbiddenWrite(reason = "manual-blocked-write") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.createEffectContext) {
+        app = renderMcelTinyContractTest("blocked-write-before-mount", { exercise: false, reset: false });
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return;
+      const beforeRpc = instance.source?.devRelease?.devNetwork?.rpcUrl || "";
+      try {
+        const ctx = window.McelLabScm.createEffectContext(instance, "release.select");
+        ctx.set("source.devRelease.devNetwork.rpcUrl", "https://evil.invalid");
+        recordMcelTinyContractEvidence(
+          "failure",
+          "Unexpected unsafe dev-network source write succeeded.",
+          "fail",
+          { attemptedField: "source.devRelease.devNetwork.rpcUrl", reason }
+        );
+      } catch (error) {
+        tinyState.blockedWrites += 1;
+        recordMcelTinyContractEvidence(
+          "failure",
+          "SCM blocked release.select from writing source.devRelease.devNetwork.rpcUrl.",
+          "pass",
+          {
+            attemptedField: "source.devRelease.devNetwork.rpcUrl",
+            preservedText: beforeRpc,
+            code: error?.violation?.code || error?.name || "Error",
+            reason
+          }
+        );
+      }
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, "Blocked undeclared dev-network source write; RPC URL preserved.");
+      renderMcelTinyContractProof(app, reason);
+    }
+
+    function clickMcelTinyContractCounter() {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
+        app = renderMcelTinyContractTest("select-before-mount", { reset: false, exercise: false });
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return;
+      const items = mcelTinyContractItems(instance);
+      if (!items.length) return;
+      tinyState.selectedIndex = (Number(tinyState.selectedIndex || 0) + 1) % items.length;
+      const next = items[tinyState.selectedIndex];
+      const result = window.McelLabScm.runEffect(instance, "release.select", {id: next.id});
+      recordMcelTinyContractEvidence(
+        "effect",
+        "SCM runEffect release.select changed state/runtime only.",
+        "pass",
+        { selectedRequestId: next.id, result }
+      );
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, `Selected ${next.id} through declared state/runtime write.`);
+      renderMcelTinyContractProof(app, "select-next-release");
+    }
+
+    function renderMcelTinyContractProof(app, reason = "manual") {
+      const tinyState = ensureMcelTinyContractState();
+      const instance = tinyState.scmInstance;
+      const routeInstance = tinyState.scmRouteInstance;
+      const language = parseMcelTinyContractLanguage();
+      const source = mcelTinyContractSourceHtml();
+      const liveSerializedHtml = serializeMcelTinyContractRuntime(app);
+      let scmSerialization = null;
+      let layoutCheck = null;
+      let styleCheck = null;
+      let registryPacket = null;
+
+      try {
+        registryPacket = window.McelElementRegistry?.evidencePacket?.() || null;
+      } catch (error) {
+        registryPacket = {error: error?.message || String(error)};
+      }
+
+      if (instance && window.McelLabScm) {
+        try {
+          layoutCheck = window.McelLabScm.checkLayoutContract(instance, mcelTinyContractObservation());
+          styleCheck = window.McelLabScm.checkStyleContract(instance, mcelTinyContractObservation());
+          scmSerialization = window.McelLabScm.serializeComponent(instance, {format: "clean-source-json"});
+        } catch (error) {
+          recordMcelTinyContractEvidence("serialize", "SCM serialization/layout/style check failed.", "fail", {
+            code: error?.violation?.code || error?.name || "Error",
+            message: error?.message || String(error)
+          });
+        }
+      }
+
+      const componentEvidence = window.McelLabScm?.exportEvidence && instance
+        ? window.McelLabScm.exportEvidence(instance)
+        : {evidence: []};
+      const routeEvidence = window.McelLabScm?.exportRouteEvidence && routeInstance
+        ? window.McelLabScm.exportRouteEvidence(routeInstance)
+        : {evidence: []};
+
+      const serializedSource = scmSerialization?.serialized || "";
+      const serializedHasRuntimeLeak = [
+        "runtime.wallet",
+        "runtime.network",
+        "runtime.txDraft",
+        "data-mc-generated",
+        "0xDeaD0000"
+      ].some((marker) => serializedSource.includes(marker));
+      const liveHtmlHasGenerated = liveSerializedHtml.includes("data-mc-generated");
+      const unsafeBlocked = tinyState.blockedWrites > 0 || (componentEvidence.evidence || []).some((entry) => entry.code === "SCM_EFFECT_UNDECLARED_WRITE");
+      const approvedSource = mcelTinyContractItems(instance).some((item) => item.status === "approved");
+      const checks = {
+        contractLanguageParsed: language.kind === "mcel.scm.app" && language.name === "DevNetworkReleaseConsole",
+        elementRegistryAvailable: Number(registryPacket?.elementCount || 0) > 0,
+        componentManifestResolved: Boolean(window.McelLabScm?.componentDefinition?.("DevNetworkReleaseConsole")),
+        routeManifestResolved: Boolean(window.McelLabScm?.routeDefinition?.("workspace.dev-network-release")),
+        routeLoaderCommitted: (routeEvidence.evidence || []).some((entry) => entry.phase === "route-loader-commit" && entry.ok === true),
+        walletEffectRan: (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.connect"),
+        networkVerified: (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "network.verify"),
+        declaredRuntimeEffectRan: (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.select"),
+        txDraftRuntimeOnly: (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.draftTx"),
+        declaredSourceEffectRan: approvedSource && (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.approve"),
+        unsafeSourceWriteBlocked: unsafeBlocked,
+        runtimeRepairScoped: tinyState.repairCount > 0 && (componentEvidence.evidence || []).some((entry) => entry.phase === "repair-commit" || entry.strategyName === "repairRuntimeProofChip"),
+        serializationClean: Boolean(scmSerialization?.ok) && !serializedHasRuntimeLeak && !liveHtmlHasGenerated,
+        layoutContractChecked: layoutCheck?.ok === true,
+        styleContractChecked: styleCheck?.ok === true
+      };
+      const proof = {
+        status: Object.values(checks).every(Boolean) ? "pass" : "fail",
+        reason,
+        sourceHash: mcelTinyContractHash(source),
+        liveSerializedHtmlHash: mcelTinyContractHash(liveSerializedHtml),
+        scmSerializedSourceHash: mcelTinyContractHash(serializedSource),
+        component: "DevNetworkReleaseConsole",
+        route: "workspace.dev-network-release",
+        expectedChainId: instance?.source?.devRelease?.devNetwork?.chainId || "0x7a69",
+        runtimeChainId: instance?.runtime?.network?.chainId || "",
+        walletConnected: instance?.runtime?.wallet?.connected === true,
+        registryElementCount: registryPacket?.elementCount || 0,
+        reviewedCount: tinyState.reviewedCount,
+        walletConnectCount: tinyState.walletConnectCount,
+        txDraftCount: tinyState.txDraftCount,
+        repairCount: tinyState.repairCount,
+        blockedSourceWrites: tinyState.blockedWrites,
+        checks
+      };
+      tinyState.lastProof = proof;
+      renderMcelTinyContractMap(app);
+      if (mcelTinyContractSerialized) {
+        mcelTinyContractSerialized.textContent = [
+          "SCM serializeComponent(instance):",
+          serializedSource || "SCM serialization has not run.",
+          "",
+          "Live DOM serialization with generated runtime nodes stripped:",
+          liveSerializedHtml || "Runtime has not mounted."
+        ].join("\n");
+      }
+      if (mcelTinyContractProof) {
+        mcelTinyContractProof.dataset.status = proof.status;
+        mcelTinyContractProof.textContent = [
+          proof.status === "pass" ? "PASS: SCM-proven dev-network app is clean" : "FAIL: SCM receipt has a gap",
+          `contract language: ${checks.contractLanguageParsed ? "resolved" : "missing"}`,
+          `route loader: ${checks.routeLoaderCommitted ? "committed" : "missing"}`,
+          `wallet effect: ${checks.walletEffectRan ? "pass" : "missing"}`,
+          `network gate: ${checks.networkVerified ? "pass" : "missing"}`,
+          `runtime select: ${checks.declaredRuntimeEffectRan ? "pass" : "missing"}`,
+          `runtime tx draft: ${checks.txDraftRuntimeOnly ? "pass" : "missing"}`,
+          `source approval: ${checks.declaredSourceEffectRan ? "pass" : "missing"}`,
+          `unsafe write blocked: ${checks.unsafeSourceWriteBlocked}`,
+          `repair scoped: ${checks.runtimeRepairScoped}`,
+          `serialization clean: ${checks.serializationClean}`,
+          `layout/style checked: ${checks.layoutContractChecked}/${checks.styleContractChecked}`
+        ].join("\n");
+      }
+      if (mcelTinyContractEvidence) {
+        mcelTinyContractEvidence.textContent = JSON.stringify({
+          kind: "mcel-lab-medium-scm-proven-dev-network-app-receipt",
+          status: proof.status,
+          reason,
+          proof,
+          routeEvidence,
+          componentEvidence,
+          localEvidence: tinyState.evidence,
+          registry: registryPacket
+        }, null, 2);
+      }
+      return proof;
+    }
+
+    function renderMcelTinyContractTest(reason = "manual", options = {}) {
+      const source = mcelTinyContractSourceHtml();
+      if (!source) return null;
+      if (mcelTinyContractSource) {
+        mcelTinyContractSource.textContent = mcelTinyContractLanguageSource() || "Contract language missing.";
+      }
+      return mountMcelTinyContractRuntime(source, reason, {
+        reset: options.reset !== false,
+        exercise: options.exercise !== false
+      });
+    }
+
+    function loadMcelTinyContractIntoSourceEditor() {
+      if (!mcelSourceHtml) return;
+      const source = mcelTinyContractSourceHtml();
+      mcelSourceHtml.value = source;
+      selectMcelSourceIndex(0, "medium-scm-proven-dev-network-html-contract");
+      setMcelLabMode("source");
+      compileMcelLabSource("medium-scm-proven-dev-network-html-contract");
+      syncMcelGrapesFromSource();
+      openMcelLabModal("editor");
+      recordMcelEvent(
+        "medium-scm-proven-dev-network-app",
+        "MCEL_SCM_PROVEN_DEV_NETWORK_CONSOLE_LOADED",
+        "SCM-proven DevNetworkReleaseConsole source.html loaded into the source editor as a first-class app surface.",
+        "success"
+      );
     }
 
     function bindMcelLabControls() {
@@ -111,6 +1469,13 @@
       mcelOpenSmartCssModal?.addEventListener("click", () => openMcelLabModal("smart-css"));
       mcelSmartCssRerun?.addEventListener("click", () => renderMcelSmartCssPrimitiveLab("manual-rerun"));
       mcelElementAcidRerun?.addEventListener("click", () => renderMcelElementLibraryAcidTest("manual-rerun"));
+      mcelTinyContractRun?.addEventListener("click", () => renderMcelTinyContractTest("manual-run", { exercise: true }));
+      mcelTinyContractWallet?.addEventListener("click", () => connectMcelTinyContractWallet("manual-wallet-connect"));
+      mcelTinyContractIncrement?.addEventListener("click", clickMcelTinyContractCounter);
+      mcelTinyContractDraftTx?.addEventListener("click", () => draftMcelTinyContractTransaction("manual-draft-tx"));
+      mcelTinyContractRepair?.addEventListener("click", () => repairMcelTinyContractRuntimeChrome("manual-repair"));
+      mcelTinyContractBlockWrite?.addEventListener("click", () => attemptMcelTinyContractForbiddenWrite("manual-blocked-write"));
+      mcelTinyContractLoadSource?.addEventListener("click", loadMcelTinyContractIntoSourceEditor);
       mcelSiteFrameResync?.addEventListener("click", () => syncMcelRenderedSiteFrame("twiddle-resync"));
       mcelSiteFrameRebuild?.addEventListener("click", () => rebuildMcelSiteFrameShell("twiddle-rebuild", {syncAfter: true}));
       mcelSiteFrameClear?.addEventListener("click", () => clearMcelSiteFrameSrcdoc("twiddle-clear"));

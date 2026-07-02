@@ -30,6 +30,24 @@
         "entry",
         "execution"
       ]
+    },
+    {
+      "hub_id": "mainnet-hub2",
+      "hub_url": "https://mainnet-hub2.greatlibrary.io",
+      "public_url": "https://mainnet-hub2.greatlibrary.io",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    },
+    {
+      "hub_id": "mainnet-hub3",
+      "hub_url": "https://mainnet-hub3.greatlibrary.io",
+      "public_url": "https://mainnet-hub3.greatlibrary.io",
+      "roles": [
+        "entry",
+        "execution"
+      ]
     }
   ],
   "contract": {

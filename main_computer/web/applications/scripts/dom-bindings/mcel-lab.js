@@ -29,6 +29,19 @@
         lastBrowserProof: null,
         lastSiteSkeleton: null,
         lastElementAcidReport: null,
+        tinyContract: {
+          selectedIndex: 0,
+          runCount: 0,
+          blockedWrites: 0,
+          repairCount: 0,
+          reviewedCount: 0,
+          walletConnectCount: 0,
+          txDraftCount: 0,
+          lastProof: null,
+          evidence: [],
+          scmInstance: null,
+          scmRouteInstance: null
+        },
         lastCommandPlan: null,
         lastChromeReport: null,
         lastChromeFitReport: null,
@@ -106,6 +119,21 @@
     const mcelElementAcidCanvas = document.querySelector("#mcel-element-acid-canvas");
     const mcelElementAcidReport = document.querySelector("#mcel-element-acid-report");
     const mcelElementAcidRerun = document.querySelector("#mcel-element-acid-rerun");
+    const mcelTinyContractLanguageTemplate = document.querySelector("#mcel-tiny-contract-language-template");
+    const mcelTinyContractSourceTemplate = document.querySelector("#mcel-tiny-contract-source-template");
+    const mcelTinyContractSource = document.querySelector("#mcel-tiny-contract-source");
+    const mcelTinyContractRuntimeMount = document.querySelector("#mcel-tiny-contract-runtime-mount");
+    const mcelTinyContractMap = document.querySelector("#mcel-tiny-contract-map");
+    const mcelTinyContractSerialized = document.querySelector("#mcel-tiny-contract-serialized");
+    const mcelTinyContractProof = document.querySelector("#mcel-tiny-contract-proof");
+    const mcelTinyContractEvidence = document.querySelector("#mcel-tiny-contract-evidence");
+    const mcelTinyContractRun = document.querySelector("#mcel-tiny-contract-run");
+    const mcelTinyContractIncrement = document.querySelector("#mcel-tiny-contract-increment");
+    const mcelTinyContractWallet = document.querySelector("#mcel-tiny-contract-wallet");
+    const mcelTinyContractDraftTx = document.querySelector("#mcel-tiny-contract-tx-draft");
+    const mcelTinyContractRepair = document.querySelector("#mcel-tiny-contract-repair");
+    const mcelTinyContractBlockWrite = document.querySelector("#mcel-tiny-contract-block-write");
+    const mcelTinyContractLoadSource = document.querySelector("#mcel-tiny-contract-load-source");
     const mcelEditorModal = document.querySelector("#mcel-editor-modal");
     const mcelSiteModal = document.querySelector("#mcel-site-modal");
     const mcelSmartCssModal = document.querySelector("#mcel-smart-css-modal");
