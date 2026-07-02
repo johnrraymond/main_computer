@@ -609,6 +609,8 @@ def _worker_live_session_completion_sentinel_from_command(command: dict[str, Any
 def _worker_live_session_required_headings_from_command(command: dict[str, Any]) -> list[str]:
     raw = command.get("required_headings")
     if not isinstance(raw, list):
+        raw = command.get("early_result_required_headings")
+    if not isinstance(raw, list):
         return []
     headings: list[str] = []
     for value in raw:

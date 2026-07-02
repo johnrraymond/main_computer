@@ -122,6 +122,35 @@ def _worker_live_offer_completion_sentinel(offer: dict[str, Any]) -> str:
     return str(value or "").strip()
 
 
+def _worker_live_offer_string_list(*values: Any) -> list[str]:
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        items = [str(item or "").strip() for item in value]
+        items = [item for item in items if item]
+        if items:
+            return items
+    return []
+
+
+def _worker_live_offer_required_headings(offer: dict[str, Any]) -> list[str]:
+    work, input_payload, work_metadata, offer_metadata, execution_limits = _worker_live_offer_parts(offer)
+    return _worker_live_offer_string_list(
+        work.get("required_headings"),
+        work.get("early_result_required_headings"),
+        input_payload.get("required_headings"),
+        input_payload.get("early_result_required_headings"),
+        work_metadata.get("required_headings"),
+        work_metadata.get("early_result_required_headings"),
+        execution_limits.get("required_headings"),
+        execution_limits.get("early_result_required_headings"),
+        offer.get("required_headings"),
+        offer.get("early_result_required_headings"),
+        offer_metadata.get("required_headings"),
+        offer_metadata.get("early_result_required_headings"),
+    )
+
+
 def _worker_live_offer_provider_options(offer: dict[str, Any], *, target_tokens: int = 0) -> dict[str, Any]:
     work, input_payload, work_metadata, offer_metadata, execution_limits = _worker_live_offer_parts(offer)
     merged: dict[str, Any] = {}
@@ -2861,6 +2890,7 @@ class ViewportEnergyRoutesMixin:
         provider_options = _worker_live_offer_provider_options(offer, target_tokens=target_tokens)
         think_value = _worker_live_offer_think_value(offer)
         completion_sentinel = _worker_live_offer_completion_sentinel(offer)
+        required_headings = _worker_live_offer_required_headings(offer)
 
         append_text_log(
             log_path,
@@ -2876,6 +2906,7 @@ class ViewportEnergyRoutesMixin:
             provider_options=provider_options,
             think=think_value,
             completion_sentinel=completion_sentinel,
+            required_headings=required_headings,
         )
 
         if self._worker_live_session_should_inline_provider():
@@ -2911,15 +2942,7 @@ class ViewportEnergyRoutesMixin:
                     "completion_sentinel": completion_sentinel,
                     "early_result_sentinel": completion_sentinel,
                     "stream_result_sentinel": completion_sentinel,
-                    "required_headings": [
-                        "# Codebase Digest",
-                        "## Summary",
-                        "## Relevant files",
-                        "## State machine",
-                        "## Risks",
-                        "## Verification steps",
-                        "## Follow-up tasks",
-                    ],
+                    "required_headings": required_headings,
                 },
                 thread_id=thread_id,
                 log_file=log_path,

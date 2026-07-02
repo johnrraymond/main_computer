@@ -257,6 +257,14 @@ def test_worker_live_session_route_executor_uses_direct_chat_completion_subproce
                     "max_output_tokens": 123,
                     "ollama_options": {"temperature": 0.1},
                     "completion_sentinel": "UNIT_DONE",
+                    "required_headings": [
+                        "# Codebase Digest",
+                        "## Summary",
+                        "## Relevant files",
+                        "## State machine",
+                        "## Risks",
+                        "## Verification steps",
+                    ],
                 },
                 "messages": [{"role": "user", "content": "Reply with exactly five words."}],
                 "model": "micro-agent-local",
@@ -283,7 +291,15 @@ def test_worker_live_session_route_executor_uses_direct_chat_completion_subproce
     assert command["completion_sentinel"] == "UNIT_DONE"  # type: ignore[index]
     assert command["early_result_sentinel"] == "UNIT_DONE"  # type: ignore[index]
     assert command["stream_result_sentinel"] == "UNIT_DONE"  # type: ignore[index]
-    assert "# Codebase Digest" in command["required_headings"]  # type: ignore[index]
+    assert command["required_headings"] == [  # type: ignore[index]
+        "# Codebase Digest",
+        "## Summary",
+        "## Relevant files",
+        "## State machine",
+        "## Risks",
+        "## Verification steps",
+    ]
+    assert "## Follow-up tasks" not in command["required_headings"]  # type: ignore[index]
     assert captured["thread_id"] == "worker-live-session:sess-route-direct"
     assert captured["max_local_concurrency"] == 1
 
@@ -415,7 +431,7 @@ def test_worker_live_session_child_returns_early_stream_result_on_completion_sen
         def chat(self, messages):
             for delta in (
                 "# Codebase Digest\n",
-                "## Summary\n- Small digest.\n",
+                "## Summary\n- Small worker digest.\n",
                 "## Relevant files\n- main_computer/worker.py.\n",
                 "## State machine\n- idle -> busy -> idle.\n",
                 "## Risks\n- stale worker state.\n",
@@ -464,6 +480,84 @@ def test_worker_live_session_child_returns_early_stream_result_on_completion_sen
     assert "late provider answer" not in payload["response"]["content"]
     assert payload["response"]["metadata"]["early_stream_result"] is True
     assert payload["response"]["metadata"]["early_stream_result_reason"] == "completion_sentinel"
+
+
+
+def test_worker_live_session_child_returns_early_stream_result_when_core_headings_complete(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import main_computer.chat_ai_subprocess as subprocess_module
+
+    emitted: list[dict[str, object]] = []
+
+    class _CaptureStdout:
+        def emit(self, message: dict[str, object]) -> None:
+            emitted.append(message)
+
+    class _FakeProvider:
+        name = "ollama"
+        model = "unit-model"
+        stream_callback = None
+
+        def chat(self, messages):
+            for delta in (
+                "# Codebase Digest\n",
+                "## Summary\n- Small worker digest.\n",
+                "## Relevant files\n- main_computer/worker.py.\n",
+                "## State machine\n- idle -> busy -> idle.\n",
+                "## Risks\n- stale worker state.\n",
+                "## Verification steps\n- rerun smoke after applying this patch.\n",
+            ):
+                self.stream_callback({"type": "content_delta", "delta": delta, "provider": self.name, "model": self.model})
+            assert [message for message in emitted if message.get("type") == "result"]
+            self.stream_callback(
+                {
+                    "type": "content_delta",
+                    "delta": "## Follow-up tasks\n- this late tail should not be needed.\n",
+                    "provider": self.name,
+                    "model": self.model,
+                }
+            )
+            return ChatResponse(
+                content="late provider answer should not replace core-heading early result",
+                provider="ollama",
+                model="unit-model",
+                metadata={},
+            )
+
+    class _FakeComputer:
+        provider = _FakeProvider()
+
+    monkeypatch.setattr(subprocess_module.MainComputer, "build", lambda config: _FakeComputer())
+
+    payload = subprocess_module._run_worker_live_session_chat_completion_child(
+        {
+            "run_id": "run-child-core-heading-early-stream",
+            "source": "hello",
+            "messages": [{"role": "user", "content": "hello"}],
+            "config": {"workspace": str(tmp_path)},
+            "required_headings": [
+                "# Codebase Digest",
+                "## Summary",
+                "## Relevant files",
+                "## State machine",
+                "## Risks",
+                "## Verification steps",
+            ],
+        },
+        _CaptureStdout(),
+        log_file=str(tmp_path / "child-core-heading-early-stream.log"),
+    )
+
+    result_messages = [message for message in emitted if message.get("type") == "result"]
+    assert len(result_messages) == 1
+    content = payload["response"]["content"]
+    assert content.startswith("# Codebase Digest")
+    assert "## Verification steps" in content
+    assert "## Follow-up tasks" not in content
+    assert "late provider answer" not in content
+    assert payload["response"]["metadata"]["early_stream_result"] is True
+    assert payload["response"]["metadata"]["early_stream_result_reason"] == "required_headings_satisfied"
 
 
 

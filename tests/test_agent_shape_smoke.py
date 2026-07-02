@@ -296,7 +296,7 @@ def test_agent_shape_smoke_uses_live_hub_transport_shape_and_writes_artifacts(tm
     assert job["execution_limits"]["session_timeout"] == 420.0
     assert job["execution_limits"]["worker_local_ai_timeout_seconds"] == 300.0
     assert job["execution_limits"]["worker_target_tokens"] == 192
-    assert "Hard limit: 160 words total." in job["prompt"]
+    assert "Hard limit: 120 words total." in job["prompt"]
 
     assert fake.payloads
     submitted_payload = fake.payloads[0]
@@ -314,6 +314,17 @@ def test_agent_shape_smoke_uses_live_hub_transport_shape_and_writes_artifacts(tm
     assert submitted_payload["metadata"]["ollama_think"] is False
     assert submitted_payload["metadata"]["completion_sentinel"] == "AGENT_SHAPE_DIGEST_DONE"
     assert submitted_payload["metadata"]["early_result_sentinel"] == "AGENT_SHAPE_DIGEST_DONE"
+    assert submitted_payload["required_headings"] == [
+        "# Codebase Digest",
+        "## Summary",
+        "## Relevant files",
+        "## State machine",
+        "## Risks",
+        "## Verification steps",
+    ]
+    assert "## Follow-up tasks" not in submitted_payload["required_headings"]
+    assert submitted_payload["metadata"]["required_headings"] == submitted_payload["required_headings"]
+    assert submitted_payload["execution_limits"]["required_headings"] == submitted_payload["required_headings"]
     assert submitted_payload["input"]["target_tokens"] == 192
     assert submitted_payload["input"]["max_output_tokens"] == 192
     assert submitted_payload["input"]["provider_options"]["num_predict"] == 192
@@ -322,6 +333,7 @@ def test_agent_shape_smoke_uses_live_hub_transport_shape_and_writes_artifacts(tm
     assert submitted_payload["input"]["ollama_think"] is False
     assert submitted_payload["input"]["completion_sentinel"] == "AGENT_SHAPE_DIGEST_DONE"
     assert submitted_payload["input"]["early_result_sentinel"] == "AGENT_SHAPE_DIGEST_DONE"
+    assert submitted_payload["input"]["required_headings"] == submitted_payload["required_headings"]
 
 
 def test_control_command_add_instruction_reaches_worker_prompt(tmp_path: Path) -> None:

@@ -1448,6 +1448,27 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                     return value
             return None
 
+        def first_string_list(*values: Any) -> list[str]:
+            for value in values:
+                if not isinstance(value, list):
+                    continue
+                items = [str(item or "").strip() for item in value]
+                items = [item for item in items if item]
+                if items:
+                    return items
+            return []
+
+        required_headings = first_string_list(
+            body.get("required_headings"),
+            body.get("early_result_required_headings"),
+            input_payload.get("required_headings"),
+            input_payload.get("early_result_required_headings"),
+            execution_limits.get("required_headings"),
+            execution_limits.get("early_result_required_headings"),
+            metadata.get("required_headings"),
+            metadata.get("early_result_required_headings"),
+        )
+
         think_value = first_present(
             body.get("ollama_think"),
             body.get("think"),
@@ -1513,6 +1534,9 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             work_execution_limits["completion_sentinel"] = str(completion_sentinel)
             work_execution_limits["early_result_sentinel"] = str(completion_sentinel)
             work_execution_limits["stream_result_sentinel"] = str(completion_sentinel)
+        if required_headings:
+            work_execution_limits["required_headings"] = list(required_headings)
+            work_execution_limits["early_result_required_headings"] = list(required_headings)
         if provider_options:
             work_execution_limits["provider_options"] = dict(provider_options)
             work_execution_limits["ollama_options"] = dict(provider_options)
@@ -1528,6 +1552,9 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             work_input.setdefault("completion_sentinel", str(completion_sentinel))
             work_input.setdefault("early_result_sentinel", str(completion_sentinel))
             work_input.setdefault("stream_result_sentinel", str(completion_sentinel))
+        if required_headings:
+            work_input.setdefault("required_headings", list(required_headings))
+            work_input.setdefault("early_result_required_headings", list(required_headings))
         if provider_options:
             work_input.setdefault("provider_options", dict(provider_options))
             work_input.setdefault("ollama_options", dict(provider_options))
@@ -1582,6 +1609,9 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             offer["work"]["completion_sentinel"] = str(completion_sentinel)
             offer["work"]["early_result_sentinel"] = str(completion_sentinel)
             offer["work"]["stream_result_sentinel"] = str(completion_sentinel)
+        if required_headings:
+            offer["work"]["required_headings"] = list(required_headings)
+            offer["work"]["early_result_required_headings"] = list(required_headings)
         if provider_options:
             offer["work"]["provider_options"] = dict(provider_options)
             offer["work"]["ollama_options"] = dict(provider_options)

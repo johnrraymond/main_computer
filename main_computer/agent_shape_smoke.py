@@ -26,6 +26,14 @@ DEFAULT_ACCEPT_TIMEOUT_SECONDS = 10.0
 DEFAULT_WORKER_LOCAL_AI_TIMEOUT_SECONDS = 300.0
 DEFAULT_WORKER_TARGET_TOKENS = 192
 AGENT_SHAPE_COMPLETION_SENTINEL = "AGENT_SHAPE_DIGEST_DONE"
+AGENT_SHAPE_EARLY_RESULT_REQUIRED_HEADINGS: tuple[str, ...] = (
+    "# Codebase Digest",
+    "## Summary",
+    "## Relevant files",
+    "## State machine",
+    "## Risks",
+    "## Verification steps",
+)
 
 
 try:  # pragma: no cover - optional dependency probe only.
@@ -401,9 +409,10 @@ class DigestJobContract:
                 "## Follow-up tasks",
                 "",
                 "Use exactly one short bullet under each ## heading.",
-                "Hard limit: 160 words total.",
+                "Hard limit: 120 words total.",
+                "If time is tight, complete through ## Verification steps first; follow-up tasks can be terse.",
                 "Mention exact file paths when you can, but prefer completion over detail.",
-                f"End the response with this exact final line: {AGENT_SHAPE_COMPLETION_SENTINEL}",
+                f"End the response with this exact final line when possible: {AGENT_SHAPE_COMPLETION_SENTINEL}",
                 "Do not add narrative, analysis, or extra sections after that final line.",
                 "Prioritize a complete bounded digest over exhaustive coverage.",
             ]
@@ -1060,6 +1069,7 @@ class AgentShapeSmokeRunner:
         payload["completion_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
         payload["early_result_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
         payload["stream_result_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
+        payload["required_headings"] = list(AGENT_SHAPE_EARLY_RESULT_REQUIRED_HEADINGS)
 
         execution_limits = payload.setdefault("execution_limits", {})
         if isinstance(execution_limits, dict):
@@ -1076,6 +1086,7 @@ class AgentShapeSmokeRunner:
             execution_limits["completion_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
             execution_limits["early_result_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
             execution_limits["stream_result_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
+            execution_limits["required_headings"] = list(AGENT_SHAPE_EARLY_RESULT_REQUIRED_HEADINGS)
 
         for options_key in ("provider_options", "ollama_options"):
             options = payload.setdefault(options_key, {})
@@ -1095,6 +1106,7 @@ class AgentShapeSmokeRunner:
             metadata["completion_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
             metadata["early_result_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
             metadata["stream_result_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
+            metadata["required_headings"] = list(AGENT_SHAPE_EARLY_RESULT_REQUIRED_HEADINGS)
             for options_key in ("provider_options", "ollama_options"):
                 options = metadata.setdefault(options_key, {})
                 if isinstance(options, dict):
@@ -1109,6 +1121,7 @@ class AgentShapeSmokeRunner:
             input_payload["completion_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
             input_payload["early_result_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
             input_payload["stream_result_sentinel"] = AGENT_SHAPE_COMPLETION_SENTINEL
+            input_payload["required_headings"] = list(AGENT_SHAPE_EARLY_RESULT_REQUIRED_HEADINGS)
             for options_key in ("provider_options", "ollama_options"):
                 options = input_payload.setdefault(options_key, {})
                 if isinstance(options, dict):

@@ -783,6 +783,7 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
                         "prompt": "hello over exp live session",
                         "ollama_options": {"temperature": 0.1},
                         "completion_sentinel": "UNIT_DONE",
+                        "required_headings": ["# Codebase Digest", "## Summary", "## Verification steps"],
                     },
                     "messages": [{"role": "user", "content": "hello over exp live session"}],
                     "model": "micro-agent-local",
@@ -815,12 +816,16 @@ def test_exp_hub_single_local_live_session_executes_work_and_requires_bounce(tmp
         assert offer["work"]["ollama_think"] is False
         assert offer["work"]["completion_sentinel"] == "UNIT_DONE"
         assert offer["work"]["early_result_sentinel"] == "UNIT_DONE"
+        assert offer["work"]["required_headings"] == ["# Codebase Digest", "## Summary", "## Verification steps"]
+        assert offer["work"]["early_result_required_headings"] == ["# Codebase Digest", "## Summary", "## Verification steps"]
         assert offer["work"]["execution_limits"]["max_output_tokens"] == 77
         assert offer["work"]["execution_limits"]["completion_sentinel"] == "UNIT_DONE"
+        assert offer["work"]["execution_limits"]["required_headings"] == ["# Codebase Digest", "## Summary", "## Verification steps"]
         assert offer["work"]["execution_limits"]["provider_options"]["num_predict"] == 77
         assert offer["work"]["input"]["max_output_tokens"] == 77
         assert offer["work"]["input"]["provider_options"]["num_predict"] == 77
         assert offer["work"]["input"]["completion_sentinel"] == "UNIT_DONE"
+        assert offer["work"]["input"]["required_headings"] == ["# Codebase Digest", "## Summary", "## Verification steps"]
         assert "lease_id" not in offer
         assert offer["pricing"]["legacy_worker_pull_lease"] is False
         assert offer["selected_offer"]["legacy_worker_pull_lease"] is False
