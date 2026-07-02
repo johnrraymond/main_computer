@@ -2048,7 +2048,64 @@
       }
 
 
-      function renderScmEvidencePanel(report = studioState.lastReport) {
+      function setWorkbenchProofDockExpanded(expanded, reason = "") {
+        const dock = root.querySelector("#code-studio-bottom-panel");
+        const toggle = root.querySelector("#code-studio-toggle-assistant");
+        if (!dock) return null;
+        dock.dataset.expanded = expanded ? "true" : "false";
+        dock.dataset.proofRoute = reason || "";
+        root.dataset.proofDockOpen = expanded ? "true" : "false";
+        if (toggle) {
+          toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+          toggle.textContent = expanded ? "Close proof dock" : "Open proof dock";
+        }
+        ensureCodeStudioScmSurfaceStyles();
+        return dock;
+      }
+
+      function renderProofDockPayload(kind, label, payload) {
+        const dock = setWorkbenchProofDockExpanded(true, kind);
+        if (!dock) return;
+        let route = dock.querySelector("#code-studio-proof-dock-content-route");
+        if (!route) {
+          route = document.createElement("section");
+          route.id = "code-studio-proof-dock-content-route";
+          route.className = "code-studio-proof-dock-content-route";
+          const tabs = dock.querySelector(".code-studio-bottom-tabs");
+          if (tabs?.nextSibling) {
+            dock.insertBefore(route, tabs.nextSibling);
+          } else {
+            dock.append(route);
+          }
+        }
+        const payloadText = typeof payload === "string" ? payload : JSON.stringify(payload || {}, null, 2);
+        route.innerHTML = `
+          <div class="code-studio-proof-dock-route-heading">
+            <strong>${escapeHtml(label || "Proof detail")}</strong>
+            <span>${escapeHtml(kind || "proof")}</span>
+          </div>
+          <pre>${escapeHtml(payloadText)}</pre>
+        `;
+        setStatus(`${label || "Proof detail"} opened in the Bottom Proof Dock.`);
+      }
+
+      function compactEvidencePreview(entry) {
+        return {
+          scope: evidenceEntryScope(entry),
+          ok: !evidenceEntryIsViolation(entry),
+          phase: entry?.phase || "",
+          code: entry?.code || "",
+          message: entry?.message || entry?.path || entry?.target || "",
+          reads: entry?.reads || entry?.declaredReads || [],
+          writes: entry?.writes || entry?.declaredWrites || []
+        };
+      }
+
+
+      
+      // Patch 17D keeps legacy SCM class names discoverable while routing heavy proof payloads out of the center flow:
+      // code-studio-scm-evidence-entry code-studio-scm-evidence-detail
+function renderScmEvidencePanel(report = studioState.lastReport) {
         if (!scmEvidencePanel) return null;
         const summary = collectScmEvidenceSummary(report);
         const gates = summary.gates || {};
@@ -2062,34 +2119,15 @@
         const selectedDetail = formatEvidenceDetail(selectedSnapshot);
         const replayComparisonDetail = formatScmReplayComparisonDetail(studioState.lastScmReplaySnapshotComparison);
         const contractAuthoringDetail = formatScmContractAuthoringHelperDetail(studioState.lastScmContractAuthoringHelper);
-
+        const compactSelected = compactEvidencePreview(selectedSnapshot);
         const filterOptions = SCM_EVIDENCE_FILTERS.map((value) => `
           <option value="${value}"${filter === value ? " selected" : ""}>${value}</option>
         `).join("");
 
-        const rows = entries.map((entry) => `
-          <button type="button"
-            class="code-studio-scm-evidence-entry"
-            data-ok="${evidenceEntryIsViolation(entry) ? "false" : "true"}"
-            data-selected="${entry.evidenceKey === studioState.selectedScmEvidenceKey ? "true" : "false"}"
-            data-scm-evidence-key="${escapeHtml(entry.evidenceKey || "")}">
-            <strong>${escapeHtml(evidenceEntryLabel(entry))}</strong>
-            <span>${escapeHtml(entry.message || entry.path || entry.target || "SCM operation recorded.")}</span>
-            <code>${escapeHtml(JSON.stringify({
-              scope: evidenceEntryScope(entry),
-              ok: !evidenceEntryIsViolation(entry),
-              phase: entry.phase || "",
-              code: entry.code || "",
-              path: entry.path || "",
-              reads: entry.reads || entry.declaredReads || undefined,
-              writes: entry.writes || entry.declaredWrites || undefined
-            }))}</code>
-          </button>
-        `).join("");
-
+        scmEvidencePanel.dataset.workbenchContentRoute = "proof-summary-only";
         scmEvidencePanel.innerHTML = `
           <div class="code-studio-scm-evidence-heading">
-            <strong>SCM evidence timeline</strong>
+            <strong>SCM proof summary</strong>
             <div class="code-studio-scm-evidence-actions">
               <label>Filter
                 <select id="code-studio-scm-evidence-filter">
@@ -2097,11 +2135,11 @@
                 </select>
               </label>
               <button type="button" id="code-studio-replay-scm-evidence">Replay selected gate</button>
-              <button type="button" id="code-studio-export-scm-evidence-packet">Export SCM Evidence Packet</button>
-              <button type="button" id="code-studio-generate-scm-repair-prompt">Generate AI repair prompt</button>
-              <button type="button" id="code-studio-generate-scm-contract-helper">Generate contract helper</button>
+              <button type="button" id="code-studio-export-scm-evidence-packet">Copy packet</button>
+              <button type="button" id="code-studio-generate-scm-repair-prompt">Copy AI prompt</button>
+              <button type="button" id="code-studio-generate-scm-contract-helper">Copy helper</button>
               <button type="button" id="code-studio-download-scm-evidence-packet">Download packet</button>
-              <button type="button" id="code-studio-refresh-scm-evidence">Refresh SCM evidence</button>
+              <button type="button" id="code-studio-refresh-scm-evidence">Refresh evidence</button>
             </div>
           </div>
           <div class="code-studio-scm-evidence-summary">
@@ -2112,21 +2150,24 @@
             <span>style <code>${gates.style?.ok === false ? "fail" : "ok"}</code></span>
             <span>route <code>${gates.route?.ok === false ? "fail" : "ok"}</code></span>
           </div>
-          <div class="code-studio-scm-evidence-drilldown">
-            <div class="code-studio-scm-evidence-list" role="list">
-              ${rows}
+          <div class="code-studio-scm-proof-routing">
+            <div class="code-studio-scm-proof-summary-card">
+              <strong>Proof payloads are routed out of the authoring surface.</strong>
+              <p>The center workbench stays focused on source authoring. Long evidence, replay, prompt, helper, and packet payloads open in the Bottom Proof Dock or copy/download actions.</p>
             </div>
-            <div class="code-studio-scm-evidence-detail" id="code-studio-scm-evidence-detail">
-              <strong>Selected evidence detail</strong>
-              <code>${escapeHtml(JSON.stringify(selectedDetail, null, 2))}</code>
+            <div class="code-studio-scm-proof-summary-card">
+              <strong>Selected evidence</strong>
+              <dl>
+                <dt>scope</dt><dd>${escapeHtml(compactSelected.scope || "component")}</dd>
+                <dt>phase</dt><dd>${escapeHtml(compactSelected.phase || "idle")}</dd>
+                <dt>ok</dt><dd>${compactSelected.ok ? "true" : "false"}</dd>
+                <dt>code</dt><dd>${escapeHtml(compactSelected.code || "none")}</dd>
+              </dl>
             </div>
-            <div class="code-studio-scm-replay-comparison" id="code-studio-scm-replay-comparison">
-              <strong>Replay snapshot comparison</strong>
-              <code>${escapeHtml(JSON.stringify(replayComparisonDetail, null, 2))}</code>
-            </div>
-            <div class="code-studio-scm-contract-authoring-helper" id="code-studio-scm-contract-authoring-helper">
-              <strong>SCM contract authoring helper</strong>
-              <code>${escapeHtml(JSON.stringify(contractAuthoringDetail, null, 2))}</code>
+            <div class="code-studio-scm-proof-route-actions">
+              <button type="button" id="code-studio-open-scm-evidence-detail">Open evidence detail in proof dock</button>
+              <button type="button" id="code-studio-open-scm-replay-detail">Open replay comparison in proof dock</button>
+              <button type="button" id="code-studio-open-scm-helper-detail">Open contract helper detail in proof dock</button>
             </div>
           </div>
         `;
@@ -2138,18 +2179,23 @@
           renderScmEvidencePanel(studioState.lastReport);
         });
 
-        scmEvidencePanel.querySelectorAll("[data-scm-evidence-key]").forEach((button) => {
-          button.addEventListener("click", () => {
-            studioState.selectedScmEvidenceKey = button.dataset.scmEvidenceKey || "";
-            studioState.selectedScmEvidenceSnapshot = null;
-            renderScmEvidencePanel(studioState.lastReport);
-          });
+        scmEvidencePanel.querySelector("#code-studio-open-scm-evidence-detail")?.addEventListener("click", () => {
+          renderProofDockPayload("evidence-detail", "Selected evidence detail", selectedDetail);
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-open-scm-replay-detail")?.addEventListener("click", () => {
+          renderProofDockPayload("replay-comparison", "Replay snapshot comparison", replayComparisonDetail);
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-open-scm-helper-detail")?.addEventListener("click", () => {
+          renderProofDockPayload("contract-helper", "SCM contract authoring helper", contractAuthoringDetail);
         });
 
         scmEvidencePanel.querySelector("#code-studio-replay-scm-evidence")?.addEventListener("click", () => {
           const entry = entries.find((candidate) => candidate.evidenceKey === studioState.selectedScmEvidenceKey) || selectedEntry;
           replayScmEvidenceEntry(entry);
           renderScmEvidencePanel(studioState.lastReport);
+          renderProofDockPayload("replay-comparison", "Replay snapshot comparison", formatScmReplayComparisonDetail(studioState.lastScmReplaySnapshotComparison));
         });
 
         scmEvidencePanel.querySelector("#code-studio-export-scm-evidence-packet")?.addEventListener("click", () => {
@@ -2172,7 +2218,7 @@
         scmEvidencePanel.querySelector("#code-studio-refresh-scm-evidence")?.addEventListener("click", () => {
           runScmRuntimeChecks();
           renderScmEvidencePanel(studioState.lastReport);
-          setStatus("SCM evidence refreshed from component, route, effect, layout, style, serialization, and repair gates.");
+          setStatus("SCM evidence refreshed. Long proof/debug payloads remain routed out of the center workbench.");
         });
 
         renderFlagshipInspector(studioState.lastReport || report);
@@ -2297,7 +2343,7 @@
         setRuntimeLabel();
       }
 
-      function validateSource() {
+      function validateSource(options = {}) {
         const {parseError, workspace} = parseSource();
         const fields = workspaceFields();
         const file = selectedFile(fields);
@@ -2348,12 +2394,13 @@
           failed: failed.map((check) => check.id),
           scm: scmGates,
         };
-        renderContractReport(studioState.lastReport);
+        renderContractReport(studioState.lastReport, options);
         setStatus(studioState.lastReport.ok ? "Validation passed: source can mount, repair, serialize, and emit SCM evidence." : `Validation blocked: ${failed.length} contract check(s) failed.`);
         return studioState.lastReport;
       }
 
-      function renderContractReport(report = validateSource()) {
+      function renderContractReport(report = studioState.lastReport, options = {}) {
+        if (!report) return null;
         const rows = report.checks.map((check) => `
           <div class="code-studio-contract-row ${check.ok ? "pass" : "fail"}">
             <strong>${check.ok ? "PASS" : "FAIL"} ${escapeHtml(check.id)}</strong>
@@ -2404,7 +2451,8 @@
             ],
           }, null, 2);
         }
-        showPane("contract");
+        if (options.focusContract || !report.ok) showPane("contract");
+        return report;
       }
 
       function serializeCleanSource() {
@@ -2528,7 +2576,7 @@
           }
           if (panel === "contract") {
             runScmTransition("selectPanel", {panel: "contract"});
-            validateSource();
+            validateSource({focusContract: true});
           }
           if (panel === "source" || panel === "explorer") {
             runScmTransition("selectPanel", {panel: "source"});

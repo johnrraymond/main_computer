@@ -2429,3 +2429,196 @@ main:has(#code-editor-app),
     left: 40px !important;
   }
 }
+
+
+/* Patch 17D: workbench content routing twiddle.
+   The authoring surface is not a proof transcript: center owns source/runtime authoring,
+   the right inspector owns compact summaries/actions, and the bottom proof dock owns long payloads. */
+#code-editor-app {
+  height: min(100vh, 100dvh);
+  min-height: 0;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-shell {
+  height: 100%;
+  min-height: 0 !important;
+  max-height: 100%;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  display: grid !important;
+  grid-template-columns: 48px minmax(180px, 240px) minmax(360px, 1fr) minmax(280px, 360px) !important;
+  grid-template-areas: "rail sidebar editor inspector" !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app [data-code-studio-workbench-region="mode-rail"] {
+  grid-area: rail !important;
+}
+
+#code-editor-app [data-code-studio-workbench-region="workspace-sidebar"] {
+  grid-area: sidebar !important;
+}
+
+#code-editor-app [data-code-studio-workbench-region="editor-workbench"] {
+  grid-area: editor !important;
+}
+
+#code-editor-app [data-code-studio-workbench-region="scm-ai-inspector"] {
+  grid-area: inspector !important;
+}
+
+#code-editor-app .code-studio-editor-group,
+#code-editor-app .code-studio-inspector,
+#code-editor-app .code-studio-sidebar,
+#code-editor-app .code-studio-scm-ai-inspector,
+#code-editor-app .code-studio-editor-pane.active {
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-code-frame,
+#code-editor-app .code-studio-runtime-preview,
+#code-editor-app .code-studio-output,
+#code-editor-app .code-studio-contract-report,
+#code-editor-app .code-studio-scm-evidence,
+#code-editor-app .code-studio-scm-ai-panel,
+#code-editor-app #code-studio-source-editor {
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto !important;
+}
+
+#code-editor-app .code-studio-editor-pane[data-code-studio-pane="contract"].active {
+  grid-template-rows: 42px minmax(120px, 0.36fr) minmax(180px, 0.64fr) !important;
+}
+
+#code-editor-app .code-studio-scm-evidence[data-workbench-content-route="proof-summary-only"] {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-scm-evidence[data-workbench-content-route="proof-summary-only"] .code-studio-scm-evidence-drilldown,
+#code-editor-app .code-studio-scm-evidence[data-workbench-content-route="proof-summary-only"] .code-studio-scm-evidence-list,
+#code-editor-app .code-studio-scm-evidence[data-workbench-content-route="proof-summary-only"] .code-studio-scm-evidence-detail,
+#code-editor-app .code-studio-scm-evidence[data-workbench-content-route="proof-summary-only"] .code-studio-scm-replay-comparison,
+#code-editor-app .code-studio-scm-evidence[data-workbench-content-route="proof-summary-only"] .code-studio-scm-contract-authoring-helper {
+  display: none !important;
+}
+
+#code-editor-app .code-studio-scm-proof-routing {
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+#code-editor-app .code-studio-scm-proof-summary-card {
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  padding: 10px;
+  background: #181818;
+}
+
+#code-editor-app .code-studio-scm-proof-summary-card p {
+  margin: 6px 0 0;
+  color: #bdbdbd;
+}
+
+#code-editor-app .code-studio-scm-proof-summary-card dl {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 8px 0 0;
+}
+
+#code-editor-app .code-studio-scm-proof-summary-card dt {
+  color: #999999;
+}
+
+#code-editor-app .code-studio-scm-proof-summary-card dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+#code-editor-app .code-studio-scm-proof-route-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#code-editor-app .code-studio-proof-dock-content-route {
+  min-height: 0;
+  max-height: min(260px, calc(100% - 38px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border-bottom: 1px solid #2d2d30;
+  background: #111111;
+}
+
+#code-editor-app .code-studio-proof-dock-route-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #2d2d30;
+  color: #dcdcdc;
+}
+
+#code-editor-app .code-studio-proof-dock-route-heading span {
+  color: #999999;
+}
+
+#code-editor-app .code-studio-proof-dock-content-route pre {
+  min-height: 0;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #d4d4d4;
+}
+
+#code-editor-app .code-studio-bottom-panel[data-expanded="false"] .code-studio-proof-dock-content-route {
+  display: none !important;
+}
+
+@media (max-width: 1100px) {
+  #code-editor-app .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+    grid-template-columns: 44px minmax(0, 1fr) minmax(260px, 340px) !important;
+    grid-template-areas: "rail editor inspector" !important;
+  }
+
+  #code-editor-app [data-code-studio-workbench-region="workspace-sidebar"] {
+    display: none !important;
+  }
+}
+
+@media (max-width: 740px) {
+  #code-editor-app .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+    grid-template-columns: 44px minmax(0, 1fr) !important;
+    grid-template-areas: "rail editor" !important;
+  }
+
+  #code-editor-app [data-code-studio-workbench-region="scm-ai-inspector"] {
+    position: absolute;
+    top: 36px;
+    right: 0;
+    bottom: 24px;
+    width: min(340px, calc(100% - 44px));
+    z-index: 35;
+    border-left: 1px solid #2d2d30;
+    background: #252526;
+  }
+}

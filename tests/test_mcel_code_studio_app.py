@@ -735,6 +735,42 @@ class McelCodeStudioAppTests(unittest.TestCase):
                 self.assertIn(text, script)
 
 
+
+    def test_code_studio_workbench_content_routing_twiddle_keeps_center_authoring_first(self) -> None:
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        expected_style = [
+            "Patch 17D: workbench content routing twiddle",
+            'data-workbench-content-route="proof-summary-only"',
+            "code-studio-scm-proof-routing",
+            "code-studio-proof-dock-content-route",
+            "grid-template-areas: \"rail sidebar editor inspector\"",
+            "grid-template-areas: \"rail editor inspector\"",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        expected_script = [
+            "function validateSource(options = {})",
+            "renderContractReport(studioState.lastReport, options)",
+            "function renderProofDockPayload",
+            "function compactEvidencePreview",
+            'scmEvidencePanel.dataset.workbenchContentRoute = "proof-summary-only"',
+            "Proof payloads are routed out of the authoring surface.",
+            "Open evidence detail in proof dock",
+            "Long proof/debug payloads remain routed out of the center workbench.",
+            "validateSource({focusContract: true})",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        self.assertNotIn("renderContractReport(studioState.lastReport);\n", script)
+        self.assertNotIn('showPane("contract");\n      }\n\n      function serializeCleanSource', script)
+
+
     def test_pretty_doc_explains_better_than_react_lane(self) -> None:
         doc = PRETTY_DOC.read_text(encoding="utf-8")
         expected = [
