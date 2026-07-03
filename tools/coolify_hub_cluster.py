@@ -64,6 +64,7 @@ DEFAULT_TOKEN_ENV = hub_tool.DEFAULT_TOKEN_ENV
 DEFAULT_ENVIRONMENT_SUFFIX = "hubs"
 TRAEFIK_DYNAMIC_CONFIG_DIR = "/data/coolify/proxy/dynamic"
 TRAEFIK_DYNAMIC_CONFIG_IMAGE = "alpine:3.20"
+TRAEFIK_DYNAMIC_CONFIG_REFRESH_S = 300
 
 
 @dataclass(frozen=True)
@@ -296,7 +297,7 @@ def render_server_traefik_dynamic_config(placement: HubClusterPlacement, profile
     return "\n".join(lines) + "\n"
 
 
-def render_traefik_dynamic_config_installer_script(
+def render_traefik_dynamic_config_writer_script(
     placement: HubClusterPlacement,
     profile: Any,
     args: argparse.Namespace,
@@ -304,15 +305,85 @@ def render_traefik_dynamic_config_installer_script(
 ) -> str:
     config_path = traefik_dynamic_config_path(placement, server_name)
     config = render_server_traefik_dynamic_config(placement, profile, args, server_name).rstrip("\n")
+    refresh_s = max(30, int(TRAEFIK_DYNAMIC_CONFIG_REFRESH_S))
     return "\n".join(
         [
             "set -eu",
-            f"mkdir -p {sh_quote(TRAEFIK_DYNAMIC_CONFIG_DIR)}",
-            f"cat > {sh_quote(config_path)} <<'TRAEFIKDYNAMICCONFIG'",
+            f"CONFIG_PATH={sh_quote(config_path)}",
+            f"CONFIG_DIR={sh_quote(TRAEFIK_DYNAMIC_CONFIG_DIR)}",
+            f"REFRESH_SECONDS={refresh_s}",
+            "write_config() {",
+            '  mkdir -p "$$CONFIG_DIR"',
+            '  tmp="$${CONFIG_PATH}.tmp"',
+            "  cat > \"$$tmp\" <<'TRAEFIKDYNAMICCONFIG'",
             config,
             "TRAEFIKDYNAMICCONFIG",
-            f"echo 'Installed Traefik dynamic config: {config_path}'",
-            "tail -f /dev/null",
+            '  mv "$$tmp" "$$CONFIG_PATH"',
+            '  echo "Installed Traefik dynamic config: $$CONFIG_PATH"',
+            "}",
+            "write_config",
+            'while true; do sleep "$$REFRESH_SECONDS"; write_config; done',
+        ]
+    )
+
+
+def render_traefik_dynamic_config_cleanup_script(placement: HubClusterPlacement, server_name: str) -> str:
+    config_path = traefik_dynamic_config_path(placement, server_name)
+    refresh_s = max(30, int(TRAEFIK_DYNAMIC_CONFIG_REFRESH_S))
+    return "\n".join(
+        [
+            "set -eu",
+            f"CONFIG_PATH={sh_quote(config_path)}",
+            f"REFRESH_SECONDS={refresh_s}",
+            'rm -f "$$CONFIG_PATH"',
+            'echo "Removed stale Traefik dynamic config: $$CONFIG_PATH"',
+            'while true; do sleep "$$REFRESH_SECONDS"; rm -f "$$CONFIG_PATH"; done',
+        ]
+    )
+
+
+def append_traefik_dynamic_config_service(
+    lines: list[str],
+    placement: HubClusterPlacement,
+    profile: Any,
+    args: argparse.Namespace,
+    server_name: str,
+    *,
+    local_hubs: list[HubPlacement],
+) -> None:
+    installer_key = traefik_dynamic_config_service_key(placement, server_name)
+    config_path = traefik_dynamic_config_path(placement, server_name)
+    if local_hubs:
+        installer_script = render_traefik_dynamic_config_writer_script(placement, profile, args, server_name)
+        healthcheck = (
+            f"test -s {shlex.quote(config_path)} "
+            f"&& grep -Fq -- {shlex.quote(shared_entry_hosts(placement)[0])} {shlex.quote(config_path)}"
+        )
+    else:
+        installer_script = render_traefik_dynamic_config_cleanup_script(placement, server_name)
+        healthcheck = f"test ! -e {shlex.quote(config_path)}"
+
+    lines.extend(
+        [
+            f"  {installer_key}:",
+            f"    image: {yaml_quote(TRAEFIK_DYNAMIC_CONFIG_IMAGE)}",
+            "    init: true",
+            "    restart: unless-stopped",
+            "    labels:",
+            "      - \"traefik.enable=false\"",
+            "    volumes:",
+            f"      - {yaml_quote(f'{TRAEFIK_DYNAMIC_CONFIG_DIR}:{TRAEFIK_DYNAMIC_CONFIG_DIR}')}",
+            "    command:",
+            "      - /bin/sh",
+            "      - -euc",
+            f"      - {yaml_quote(installer_script)}",
+            "    healthcheck:",
+            f'      test: ["CMD-SHELL", {yaml_quote(healthcheck)}]',
+            "      interval: 30s",
+            "      timeout: 5s",
+            "      start_period: 10s",
+            "      retries: 5",
+            "",
         ]
     )
 
@@ -643,27 +714,29 @@ def render_disabled_hub_compose(placement: HubClusterPlacement, profile: Any, ar
         )
     script_lines.append("tail -f /dev/null")
     script = "\n".join(script_lines)
-    return "\n".join(
-        [
-            f"name: {hub_service_name(placement, server_name)}",
-            "",
-            "services:",
-            f"  {marker_key}:",
-            "    image: alpine:3.20",
-            "    restart: unless-stopped",
-            "    command:",
-            "      - /bin/sh",
-            "      - -euc",
-            f"      - {yaml_quote(script)}",
-            "    healthcheck:",
-            "      test: [\"CMD-SHELL\", \"true\"]",
-            "      interval: 30s",
-            "      timeout: 5s",
-            "      start_period: 5s",
-            "      retries: 3",
-            "",
-        ]
-    )
+    lines = [
+        f"name: {hub_service_name(placement, server_name)}",
+        "",
+        "services:",
+        f"  {marker_key}:",
+        "    image: alpine:3.20",
+        "    restart: unless-stopped",
+        "    command:",
+        "      - /bin/sh",
+        "      - -euc",
+        f"      - {yaml_quote(script)}",
+        "    healthcheck:",
+        "      test: [\"CMD-SHELL\", \"true\"]",
+        "      interval: 30s",
+        "      timeout: 5s",
+        "      start_period: 5s",
+        "      retries: 3",
+        "",
+    ]
+    if getattr(args, "install_traefik_dynamic_config", False) and shared_entry_hosts(placement):
+        append_traefik_dynamic_config_service(lines, placement, profile, args, server_name, local_hubs=[])
+    return "\n".join(lines)
+
 
 
 def render_server_hub_compose(placement: HubClusterPlacement, profile: Any, args: argparse.Namespace, server_name: str) -> str:
@@ -725,28 +798,7 @@ def render_server_hub_compose(placement: HubClusterPlacement, profile: Any, args
         )
 
     if getattr(args, "install_traefik_dynamic_config", False):
-        installer_key = traefik_dynamic_config_service_key(placement, server_name)
-        installer_script = render_traefik_dynamic_config_installer_script(placement, profile, args, server_name)
-        lines.extend(
-            [
-                f"  {installer_key}:",
-                f"    image: {yaml_quote(TRAEFIK_DYNAMIC_CONFIG_IMAGE)}",
-                "    restart: unless-stopped",
-                "    volumes:",
-                f"      - {yaml_quote(f'{TRAEFIK_DYNAMIC_CONFIG_DIR}:{TRAEFIK_DYNAMIC_CONFIG_DIR}')}",
-                "    command:",
-                "      - /bin/sh",
-                "      - -euc",
-                f"      - {yaml_quote(installer_script)}",
-                "    healthcheck:",
-                f'      test: ["CMD-SHELL", "test -s {traefik_dynamic_config_path(placement, server_name)} && grep -q {shlex.quote(shared_entry_hosts(placement)[0])} {traefik_dynamic_config_path(placement, server_name)}"]',
-                "      interval: 30s",
-                "      timeout: 5s",
-                "      start_period: 5s",
-                "      retries: 3",
-                "",
-            ]
-        )
+        append_traefik_dynamic_config_service(lines, placement, profile, args, server_name, local_hubs=local_hubs)
     return "\n".join(lines)
 
 
@@ -865,12 +917,13 @@ def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
     payload = service_payload(placement, profile, args, server_name=server_name, context=context_preview)
     local_hubs = hubs_for_server(placement, server_name)
     traefik_dynamic_config = None
-    if shared_entry_hosts(placement) and local_hubs:
+    if shared_entry_hosts(placement):
         traefik_dynamic_config = {
             "installed": bool(getattr(args, "install_traefik_dynamic_config", False)),
             "container_service": traefik_dynamic_config_service_key(placement, server_name),
             "path": traefik_dynamic_config_path(placement, server_name),
-            "contents": render_server_traefik_dynamic_config(placement, profile, args, server_name),
+            "action": "write" if local_hubs else "remove",
+            "contents": render_server_traefik_dynamic_config(placement, profile, args, server_name) if local_hubs else "",
         }
     return {
         "server": server_name,

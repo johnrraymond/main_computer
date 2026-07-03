@@ -272,41 +272,89 @@ non-serving config for that network instead of being silently ignored.
 The packet currently covers only the Hub/FDB layers. Besu/QBFT validators and
 RPC nodes still use the separate chain deploy path.
 
-List the known deployable components:
+List the known deployable components through the cluster-level control surface:
 
 ```powershell
-python .\tools\coolify_hub_cluster.py list-components testnet `
-  --placement deploy\hub-topology\testnet-coolify-deployment.json
+python .\tools\coolify_cluster.py list-components testnet
 ```
 
-Generate a packet for the full current two-host testnet shape:
+The normal operator path is now the cluster orchestrator, not the lower-level FDB
+or Hub deployer. The orchestrator builds the candidate packet, sanity-checks the
+private/local inputs, writes the packet to the known local path, then runs the
+FDB and Hub stages from that same packet.
+
+Generate and inspect a candidate packet for the full current two-host testnet
+shape without touching Coolify:
 
 ```powershell
-python .\tools\coolify_hub_cluster.py prep-packet testnet `
-  --placement deploy\hub-topology\testnet-coolify-deployment.json `
+python .\tools\coolify_cluster.py preflight testnet `
   --hubs testnet-hub1,testnet-hub2,testnet-hub3 `
   --fdb testnet-fdb1,testnet-fdb2,testnet-fdb3 `
-  --generation testnet-0001 `
-  --intent "current full testnet Hub/FDB placement" `
-  --out deploy\packets\testnet-packet.json
+  --git-repo "https://github.com/johnrraymond/main_computer" `
+  --coolify-project-name "Main Computer"
 ```
 
-Generate a smaller packet that enables only `testnet-hub1`, `testnet-hub2`, and
-`testnet-fdb1`:
+The preflight action does **not** write `deploy/packets/testnet-packet.json`. It
+builds the packet in memory and checks the things the later plan/apply will need:
+
+```text
+selected Hub ids exist in the catalog
+selected FDB ids exist in the catalog
+the packet would enable at least one Hub and one FDB instance
+the default packet path is usable
+runtime/state/main_computer.private.yaml exists unless --no-private-state is used
+coolify.hosts contains entries matching coolify-a/coolify-b
+each host has a URL and usable api_token/api_token_env/api_token_file
+--git-repo is present for the Hub stage
+```
+
+If preflight fails, it prints structured problems plus remediation commands, for
+example commands to list components, sync/create the private state file, or rerun
+with explicit `--set-coolify-url` and token flags. Use `--no-private-state` only
+for deliberate override/debug runs where all URLs and tokens are supplied on the
+CLI.
+
+Plan the full cluster. This first passes the same preflight, then writes the
+candidate packet to `deploy/packets/testnet-packet.json`, then renders both the
+FDB and Hub plans from that packet:
 
 ```powershell
-python .\tools\coolify_hub_cluster.py prep-packet testnet `
-  --placement deploy\hub-topology\testnet-coolify-deployment.json `
-  --hubs testnet-hub1,testnet-hub2 `
-  --fdb testnet-fdb1 `
-  --generation testnet-0002 `
-  --intent "run testnet Hub/FDB only from selected A-side components" `
-  --out deploy\packets\testnet-packet.json
+python .\tools\coolify_cluster.py plan testnet `
+  --hubs testnet-hub1,testnet-hub2,testnet-hub3 `
+  --fdb testnet-fdb1,testnet-fdb2,testnet-fdb3 `
+  --install-traefik-dynamic-config `
+  --git-repo "https://github.com/johnrraymond/main_computer" `
+  --coolify-project-name "Main Computer"
 ```
 
-The prep step fails for unknown Hub/FDB ids or for a packet with zero enabled
-Hubs or zero enabled FDB instances. It may warn about small or single-host FDB
-shapes, but one selected FDB is enough to generate a packet.
+Apply the full cluster. This also performs the lookahead before writing the
+packet or making Coolify calls. If lookahead fails, no packet is written and no
+Coolify apply starts:
+
+```powershell
+python .\tools\coolify_cluster.py apply testnet `
+  --hubs testnet-hub1,testnet-hub2,testnet-hub3 `
+  --fdb testnet-fdb1,testnet-fdb2,testnet-fdb3 `
+  --install-traefik-dynamic-config `
+  --git-repo "https://github.com/johnrraymond/main_computer" `
+  --coolify-project-name "Main Computer" `
+  --force-deploy
+```
+
+Generate a smaller packet and plan/apply it by changing only the selected ids:
+
+```powershell
+python .\tools\coolify_cluster.py plan testnet `
+  --hubs testnet-hub1,testnet-hub2 `
+  --fdb testnet-fdb1 `
+  --install-traefik-dynamic-config `
+  --git-repo "https://github.com/johnrraymond/main_computer" `
+  --coolify-project-name "Main Computer"
+```
+
+`--hubs` and `--fdb` are comma-separated component ids. The `-hubs` and `-fdb`
+aliases are also accepted for operator convenience, but the double-dash spelling
+is preferred in docs and scripts.
 
 Prefer private state for Coolify host URL and token resolution. The expected
 local file is:
@@ -319,24 +367,40 @@ and it should contain manually maintained Coolify host slots such as:
 
 ```yaml
 coolify:
+  project_name: Main Computer
+  # project_uuid is also supported when you prefer UUIDs.
+  # fdb_environment_name and hub_environment_name are optional; the defaults are
+  # <network>-fdb and <network>-hubs.
   hosts:
     A:
       name: coolify-a
       url: http://<coolify-a-public-ip>:8000/
       api_token: "<stored locally; do not commit or print>"
+      # Optional lookahead/apply helpers:
+      # server_name: "<Coolify server name>"
+      # server_uuid: "<Coolify server uuid>"
+      # destination_uuid: "<Coolify destination uuid>"
     B:
       name: coolify-b
       url: http://<coolify-b-public-ip>:8000/
       api_token: "<stored locally; do not commit or print>"
+      # Optional per-host project_uuid is supported when hosts use different
+      # Coolify projects; a shared project_name is simpler when both use the
+      # same project.
 ```
 
-The deployers match packet/placement host names such as `coolify-a` and
-`coolify-b` to those private-state slots. CLI `--set-coolify-url` and token
-flags are still available as explicit overrides, but should not be the normal
-operator path.
+The orchestrator and lower-level deployers match packet/placement host names
+such as `coolify-a` and `coolify-b` to those private-state slots. CLI
+`--set-coolify-url`, project, server, destination, and token flags are still
+available as explicit overrides, but should not be the normal operator path.
+The orchestrator preflight checks that the private state has enough information
+for the later apply path before it writes the candidate packet or calls Coolify.
+For example, a missing `coolify.project_name`/`project_uuid` is reported as a
+preflight problem instead of surfacing later as a lower-level Coolify apply
+exception.
 
 For plan/apply, pass the network name instead of the packet filename. The
-deployer resolves the standard packet path automatically:
+standard packet path is resolved automatically:
 
 ```text
 testnet -> deploy/packets/testnet-packet.json
@@ -346,20 +410,13 @@ mainnet -> deploy/packets/mainnet-packet.json
 Use `--packet <path>` only when intentionally testing a non-standard packet
 location.
 
-Plan the FoundationDB layer from the packet:
+The lower-level layer scripts remain available for debugging a stage in
+isolation after a packet exists:
 
 ```powershell
-python .\tools\coolify_fdb_cluster.py plan testnet `
-  --coolify-project-name "Main Computer" `
-  --coolify-environment-name "testnet-fdb"
-```
-
-Apply the FoundationDB layer from the packet:
-
-```powershell
-python .\tools\coolify_fdb_cluster.py apply testnet `
-  --coolify-project-name "Main Computer" `
-  --coolify-environment-name "testnet-fdb"
+python .\tools\coolify_fdb_cluster.py plan testnet
+python .\tools\coolify_hub_cluster.py plan testnet `
+  --git-repo "https://github.com/johnrraymond/main_computer"
 ```
 
 The FDB deployer creates one Coolify Service per known symbolic host:
@@ -389,6 +446,7 @@ $GitRepo = "https://github.com/johnrraymond/main_computer"
 python .\tools\coolify_hub_cluster.py plan testnet `
   --coolify-project-name "Main Computer" `
   --coolify-environment-name "testnet-hubs" `
+  --install-traefik-dynamic-config `
   --git-repo $GitRepo
 ```
 
@@ -398,6 +456,7 @@ Apply the Hub layer from the packet:
 python .\tools\coolify_hub_cluster.py apply testnet `
   --coolify-project-name "Main Computer" `
   --coolify-environment-name "testnet-hubs" `
+  --install-traefik-dynamic-config `
   --git-repo $GitRepo `
   --force-deploy
 ```
@@ -431,9 +490,16 @@ packet-selected topology and FDB cluster file, then keeps a non-serving config
 container alive. The host is therefore configured to serve no Hubs for that
 network generation.
 
-The public entry alias, `https://testnet-hub.greatlibrary.io`, should be enabled
-only after the enabled concrete Hub hostnames are healthy. Verify the concrete
-Hubs from the packet directly first.
+The public entry alias, `https://testnet-hub.greatlibrary.io`, is installed by
+`--install-traefik-dynamic-config`. That adds a long-running non-routed config
+manager container to each Coolify Hub service. On hosts with enabled Hubs, the
+manager writes the packet-selected Traefik dynamic config under
+`/data/coolify/proxy/dynamic`. On known hosts with no enabled Hubs, it removes
+the stale per-host public-entry config and stays healthy so old packet routing
+does not survive a contraction.
+
+Enable or trust the shared public entry only after the enabled concrete Hub
+hostnames are healthy. Verify the concrete Hubs from the packet directly first.
 
 After apply and verification, promote the candidate packet to the local deployed
 record:

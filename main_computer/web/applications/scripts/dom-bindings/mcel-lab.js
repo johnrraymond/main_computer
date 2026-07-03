@@ -60,12 +60,18 @@
             mockFallback: false,
             ethersReady: false,
             walletSubsystemReady: false,
+            walletSubsystemUsed: false,
+            walletSubsystemPreferred: false,
+            directProviderFallback: false,
+            connectSource: "unknown",
+            disconnectSource: "unknown",
             eventsBound: false,
             calls: [],
             events: [],
             lastError: "",
             permissionRevoked: false
           },
+          walletSubsystemMode: "unobserved",
           scmInstance: null,
           scmRouteInstance: null
         },

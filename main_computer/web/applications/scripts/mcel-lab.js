@@ -135,6 +135,7 @@
           lastProof: null,
           evidence: [],
           walletAdapter: null,
+          walletSubsystemMode: "unobserved",
           scmInstance: null,
           scmRouteInstance: null
         };
@@ -149,6 +150,11 @@
           mockFallback: false,
           ethersReady: false,
           walletSubsystemReady: false,
+          walletSubsystemUsed: false,
+          walletSubsystemPreferred: false,
+          directProviderFallback: false,
+          connectSource: "unknown",
+          disconnectSource: "unknown",
           eventsBound: false,
           calls: [],
           events: [],
@@ -1569,6 +1575,176 @@
       return app;
     }
 
+    function mcelTinyContractWalletSubsystem() {
+      const app = window.MainComputerWalletApp;
+      if (!app || typeof app !== "object") return null;
+      const canConnect = typeof app.requestConnect === "function";
+      const canDisconnect = typeof app.requestDisconnect === "function";
+      const canSnapshot = typeof app.providerSnapshot === "function";
+      if (!canConnect && !canDisconnect && !canSnapshot) return null;
+      return app;
+    }
+
+    function mcelTinyContractWalletSubsystemEvent() {
+      return {
+        preventDefault() {},
+        stopPropagation() {},
+        stopImmediatePropagation() {}
+      };
+    }
+
+    function snapshotMcelTinyContractWalletSubsystemState(subsystem = mcelTinyContractWalletSubsystem()) {
+      if (!subsystem) return null;
+      const state = subsystem.state || {};
+      const wallet = state.wallet || {};
+      const events = Array.isArray(state.events) ? state.events.slice(0, 8) : [];
+      return {
+        hookState: state.hookState || "",
+        lastAction: state.lastAction || "",
+        providerState: state.providerState || "",
+        connected: Boolean(wallet.connected),
+        address: wallet.address || "",
+        chainId: wallet.chainId || "",
+        recentEvents: events.map((event) => ({
+          type: event?.type || "",
+          detail: event?.detail || {}
+        }))
+      };
+    }
+
+    async function mcelTinyContractWalletSubsystemProviderSnapshot(subsystem = mcelTinyContractWalletSubsystem()) {
+      if (!subsystem?.providerSnapshot) return null;
+      recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "start", {});
+      try {
+        const snapshot = await subsystem.providerSnapshot();
+        recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "pass", snapshot);
+        return snapshot;
+      } catch (error) {
+        recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "fail", mcelTinyContractWalletError(error));
+        throw error;
+      }
+    }
+
+    async function connectMcelTinyContractThroughWalletSubsystem(interactive = false) {
+      const subsystem = mcelTinyContractWalletSubsystem();
+      if (!subsystem) return null;
+      const adapter = mcelTinyContractWalletAdapterState();
+      adapter.walletSubsystemReady = true;
+      adapter.walletSubsystemPreferred = true;
+      adapter.walletSubsystemUsed = true;
+      adapter.directProviderFallback = false;
+      adapter.mockFallback = false;
+      adapter.liveProvider = true;
+      adapter.providerKind = "wallet-subsystem";
+      adapter.connectSource = "MainComputerWalletApp";
+      if (mcelTinyContractInjectedProvider()) {
+        bindMcelTinyContractWalletProviderEvents(mcelTinyContractInjectedProvider());
+      } else {
+        adapter.eventsBound = true;
+        recordMcelTinyContractWalletEvent("wallet-subsystem.events.managed", {
+          reason: "MainComputerWalletApp owns provider event binding"
+        });
+      }
+      ensureMcelTinyContractState().walletSubsystemMode = "used";
+
+      let connectResult = null;
+      if (interactive && typeof subsystem.requestConnect === "function") {
+        recordMcelTinyContractWalletCall("MainComputerWalletApp.requestConnect", "start", {});
+        try {
+          connectResult = await subsystem.requestConnect(mcelTinyContractWalletSubsystemEvent());
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.requestConnect", "pass", {
+            state: snapshotMcelTinyContractWalletSubsystemState(subsystem)
+          });
+        } catch (error) {
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.requestConnect", "fail", mcelTinyContractWalletError(error));
+          throw error;
+        }
+      }
+
+      if (typeof subsystem.ensureExpectedChain === "function") {
+        recordMcelTinyContractWalletCall("MainComputerWalletApp.ensureExpectedChain", "start", {});
+        try {
+          const ensuredChainId = await subsystem.ensureExpectedChain();
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.ensureExpectedChain", "pass", {chainId: ensuredChainId});
+        } catch (error) {
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.ensureExpectedChain", "fail", mcelTinyContractWalletError(error));
+        }
+      }
+
+      let snapshot = null;
+      try {
+        snapshot = await mcelTinyContractWalletSubsystemProviderSnapshot(subsystem);
+      } catch (_error) {
+        snapshot = null;
+      }
+      const stateSnapshot = snapshotMcelTinyContractWalletSubsystemState(subsystem);
+      const accounts = Array.isArray(snapshot?.accounts) ? snapshot.accounts : (stateSnapshot?.address ? [stateSnapshot.address] : []);
+      const account = accounts[0] || snapshot?.address || stateSnapshot?.address || "";
+      const chainId = snapshot?.chainId || stateSnapshot?.chainId || "";
+      return {
+        mock: false,
+        liveProvider: true,
+        provider: "wallet-subsystem",
+        account,
+        chainId,
+        interactive,
+        walletSubsystemSnapshot: snapshot,
+        walletSubsystemState: stateSnapshot,
+        walletSubsystemConnectResult: connectResult,
+        adapter: {
+          providerKind: adapter.providerKind,
+          liveProvider: adapter.liveProvider,
+          mockFallback: adapter.mockFallback,
+          walletSubsystemReady: adapter.walletSubsystemReady,
+          walletSubsystemUsed: adapter.walletSubsystemUsed,
+          walletSubsystemPreferred: adapter.walletSubsystemPreferred,
+          directProviderFallback: adapter.directProviderFallback,
+          connectSource: adapter.connectSource,
+          calls: adapter.calls,
+          events: adapter.events,
+          eventsBound: adapter.eventsBound,
+          ethersReady: adapter.ethersReady,
+          lastError: adapter.lastError
+        }
+      };
+    }
+
+    async function disconnectMcelTinyContractThroughWalletSubsystem() {
+      const subsystem = mcelTinyContractWalletSubsystem();
+      if (!subsystem?.requestDisconnect) return null;
+      const adapter = mcelTinyContractWalletAdapterState();
+      adapter.walletSubsystemReady = true;
+      adapter.walletSubsystemPreferred = true;
+      adapter.walletSubsystemUsed = true;
+      adapter.directProviderFallback = false;
+      adapter.liveProvider = true;
+      adapter.providerKind = "wallet-subsystem";
+      adapter.disconnectSource = "MainComputerWalletApp";
+      if (mcelTinyContractInjectedProvider()) {
+        bindMcelTinyContractWalletProviderEvents(mcelTinyContractInjectedProvider());
+      }
+      ensureMcelTinyContractState().walletSubsystemMode = "used";
+
+      recordMcelTinyContractWalletCall("MainComputerWalletApp.requestDisconnect", "start", {});
+      try {
+        const result = await subsystem.requestDisconnect(mcelTinyContractWalletSubsystemEvent());
+        const state = snapshotMcelTinyContractWalletSubsystemState(subsystem);
+        const doneEvent = (state?.recentEvents || []).find((event) => event.type === "disconnect.done");
+        recordMcelTinyContractWalletCall("MainComputerWalletApp.requestDisconnect", "pass", {state, result});
+        return {
+          attempted: true,
+          revoked: Boolean(doneEvent?.detail?.revoked),
+          mock: false,
+          source: "wallet-subsystem",
+          result,
+          state
+        };
+      } catch (error) {
+        recordMcelTinyContractWalletCall("MainComputerWalletApp.requestDisconnect", "fail", mcelTinyContractWalletError(error));
+        throw error;
+      }
+    }
+
     function resetMcelTinyContractWalletAdapterState(reason = "reset") {
       const tinyState = ensureMcelTinyContractState();
       tinyState.walletAdapter = {
@@ -1576,7 +1752,12 @@
         liveProvider: false,
         mockFallback: false,
         ethersReady: Boolean(window.ethers?.BrowserProvider),
-        walletSubsystemReady: Boolean(window.MainComputerWalletApp),
+        walletSubsystemReady: Boolean(mcelTinyContractWalletSubsystem()),
+        walletSubsystemUsed: false,
+        walletSubsystemPreferred: false,
+        directProviderFallback: false,
+        connectSource: "unknown",
+        disconnectSource: "unknown",
         eventsBound: false,
         calls: [],
         events: [],
@@ -1591,7 +1772,7 @@
       const tinyState = ensureMcelTinyContractState();
       const adapter = tinyState.walletAdapter || resetMcelTinyContractWalletAdapterState("initialize");
       adapter.ethersReady = Boolean(window.ethers?.BrowserProvider);
-      adapter.walletSubsystemReady = Boolean(window.MainComputerWalletApp);
+      adapter.walletSubsystemReady = Boolean(mcelTinyContractWalletSubsystem());
       if (!Array.isArray(adapter.calls)) adapter.calls = [];
       if (!Array.isArray(adapter.events)) adapter.events = [];
       return adapter;
@@ -1761,12 +1942,33 @@
 
     async function readMcelTinyContractWalletProvider(interactive = false) {
       const adapter = resetMcelTinyContractWalletAdapterState(interactive ? "interactive-connect" : "passive-connect");
-      const provider = mcelTinyContractInjectedProvider();
       adapter.ethersReady = Boolean(window.ethers?.BrowserProvider);
-      adapter.walletSubsystemReady = Boolean(window.MainComputerWalletApp);
+      adapter.walletSubsystemReady = Boolean(mcelTinyContractWalletSubsystem());
+
+      if (adapter.walletSubsystemReady) {
+        try {
+          const subsystemPayload = await connectMcelTinyContractThroughWalletSubsystem(interactive);
+          if (subsystemPayload?.account || subsystemPayload?.chainId || subsystemPayload?.walletSubsystemSnapshot || subsystemPayload?.walletSubsystemState) {
+            return subsystemPayload;
+          }
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.connect", "empty", {
+            reason: "wallet subsystem returned no account/chain snapshot; falling back to direct provider"
+          });
+        } catch (error) {
+          const detail = mcelTinyContractWalletError(error);
+          adapter.lastError = detail.message;
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.connect", "fallback-direct-provider", detail);
+        }
+      }
+
+      const provider = mcelTinyContractInjectedProvider();
       if (!provider) {
         adapter.providerKind = "mock-dev-provider";
         adapter.mockFallback = true;
+        adapter.liveProvider = false;
+        adapter.directProviderFallback = false;
+        adapter.connectSource = "mock-fallback";
+        ensureMcelTinyContractState().walletSubsystemMode = adapter.walletSubsystemReady ? "subsystem-empty-then-mock" : "missing";
         recordMcelTinyContractWalletCall("provider.detect", "mock", {
           reason: "window.ethereum missing",
           walletSubsystemReady: adapter.walletSubsystemReady,
@@ -1783,17 +1985,25 @@
             providerKind: adapter.providerKind,
             liveProvider: adapter.liveProvider,
             mockFallback: adapter.mockFallback,
+            walletSubsystemReady: adapter.walletSubsystemReady,
+            walletSubsystemUsed: adapter.walletSubsystemUsed,
+            walletSubsystemPreferred: adapter.walletSubsystemPreferred,
+            directProviderFallback: adapter.directProviderFallback,
+            connectSource: adapter.connectSource,
             calls: adapter.calls,
             events: adapter.events,
             eventsBound: adapter.eventsBound,
-            ethersReady: adapter.ethersReady,
-            walletSubsystemReady: adapter.walletSubsystemReady
+            ethersReady: adapter.ethersReady
           }
         };
       }
 
       adapter.liveProvider = true;
+      adapter.mockFallback = false;
+      adapter.directProviderFallback = adapter.walletSubsystemReady === true;
       adapter.providerKind = provider.isMetaMask ? "metamask" : "ethereum-provider";
+      adapter.connectSource = adapter.directProviderFallback ? "direct-provider-after-subsystem" : "direct-provider";
+      ensureMcelTinyContractState().walletSubsystemMode = adapter.directProviderFallback ? "fallback-direct-provider" : "direct-provider";
       bindMcelTinyContractWalletProviderEvents(provider);
 
       let chainId = "";
@@ -1830,13 +2040,12 @@
         });
       }
 
-      if (window.MainComputerWalletApp?.providerSnapshot) {
+      const subsystem = mcelTinyContractWalletSubsystem();
+      if (subsystem?.providerSnapshot) {
         try {
-          recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "start", {});
-          walletSubsystemSnapshot = await window.MainComputerWalletApp.providerSnapshot();
-          recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "pass", walletSubsystemSnapshot);
-        } catch (error) {
-          recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "fail", mcelTinyContractWalletError(error));
+          walletSubsystemSnapshot = await mcelTinyContractWalletSubsystemProviderSnapshot(subsystem);
+        } catch (_error) {
+          walletSubsystemSnapshot = null;
         }
       } else {
         recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "unavailable", {
@@ -1858,11 +2067,15 @@
           providerKind: adapter.providerKind,
           liveProvider: adapter.liveProvider,
           mockFallback: adapter.mockFallback,
+          walletSubsystemReady: adapter.walletSubsystemReady,
+          walletSubsystemUsed: adapter.walletSubsystemUsed,
+          walletSubsystemPreferred: adapter.walletSubsystemPreferred,
+          directProviderFallback: adapter.directProviderFallback,
+          connectSource: adapter.connectSource,
           calls: adapter.calls,
           events: adapter.events,
           eventsBound: adapter.eventsBound,
           ethersReady: adapter.ethersReady,
-          walletSubsystemReady: adapter.walletSubsystemReady,
           lastError: adapter.lastError
         }
       };
@@ -1871,30 +2084,50 @@
     async function revokeMcelTinyContractWalletPermission() {
       const tinyState = ensureMcelTinyContractState();
       const adapter = mcelTinyContractWalletAdapterState();
+      if (mcelTinyContractWalletSubsystem()?.requestDisconnect) {
+        try {
+          const subsystemRevoke = await disconnectMcelTinyContractThroughWalletSubsystem();
+          if (subsystemRevoke) {
+            if (subsystemRevoke.attempted) tinyState.walletRevokeAttemptCount += 1;
+            if (subsystemRevoke.revoked) {
+              tinyState.walletRevokeSuccessCount += 1;
+              adapter.permissionRevoked = true;
+            }
+            return subsystemRevoke;
+          }
+        } catch (error) {
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.requestDisconnect", "fallback-direct-provider", mcelTinyContractWalletError(error));
+        }
+      }
+
       const provider = mcelTinyContractInjectedProvider();
       if (!provider) {
         recordMcelTinyContractWalletCall("wallet_revokePermissions", "mock", {
           reason: "window.ethereum missing"
         });
         adapter.permissionRevoked = false;
+        adapter.disconnectSource = "mock-fallback";
         return {attempted: false, revoked: false, mock: true};
       }
       adapter.liveProvider = true;
       adapter.mockFallback = false;
+      adapter.directProviderFallback = adapter.walletSubsystemReady === true;
       adapter.providerKind = provider.isMetaMask ? "metamask" : "ethereum-provider";
+      adapter.disconnectSource = adapter.directProviderFallback ? "direct-provider-after-subsystem" : "direct-provider";
       bindMcelTinyContractWalletProviderEvents(provider);
       tinyState.walletRevokeAttemptCount += 1;
       try {
         await mcelTinyContractWalletRequest(provider, "wallet_revokePermissions", [{eth_accounts: {}}]);
         tinyState.walletRevokeSuccessCount += 1;
         adapter.permissionRevoked = true;
-        return {attempted: true, revoked: true, mock: false};
+        return {attempted: true, revoked: true, mock: false, source: adapter.disconnectSource};
       } catch (error) {
         adapter.permissionRevoked = false;
         return {
           attempted: true,
           revoked: false,
           mock: false,
+          source: adapter.disconnectSource,
           error: mcelTinyContractWalletError(error)
         };
       }
@@ -2214,8 +2447,14 @@
       const walletRpcMethods = (walletAdapter.calls || [])
         .filter((entry) => entry.status === "pass" || entry.status === "mock")
         .map((entry) => entry.method);
-      const walletConnectRpcObserved = walletRpcMethods.includes("eth_chainId") &&
-        (walletRpcMethods.includes("eth_requestAccounts") || walletRpcMethods.includes("eth_accounts") || walletRpcMethods.includes("provider.detect"));
+      const walletConnectRpcObserved = (
+        walletRpcMethods.includes("eth_chainId") &&
+        (walletRpcMethods.includes("eth_requestAccounts") || walletRpcMethods.includes("eth_accounts") || walletRpcMethods.includes("provider.detect"))
+      ) || (
+        walletAdapter.walletSubsystemUsed === true &&
+        walletRpcMethods.includes("MainComputerWalletApp.requestConnect") &&
+        walletRpcMethods.includes("MainComputerWalletApp.providerSnapshot")
+      );
       const componentEvents = componentEvidence.evidence || [];
       const routeEvents = routeEvidence.evidence || [];
       const disconnectEffectRan = componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.disconnect") ||
@@ -2242,7 +2481,10 @@
         walletProviderChainChangedEffectRan: tinyState.providerChainChangedCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.chainChanged"),
         walletProviderDisconnectEffectRan: tinyState.providerDisconnectCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.disconnect"),
         walletProviderErrorEffectRan: tinyState.providerErrorCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.error"),
-        walletSubsystemObserved: walletAdapter.walletSubsystemReady === true || walletAdapter.mockFallback === true,
+        walletSubsystemObserved: walletAdapter.walletSubsystemUsed === true || walletAdapter.directProviderFallback === true || walletAdapter.walletSubsystemReady === true || walletAdapter.mockFallback === true,
+        walletSubsystemUsed: walletAdapter.walletSubsystemUsed === true,
+        walletDirectProviderFallback: walletAdapter.directProviderFallback === true,
+        walletMockFallbackDegraded: walletAdapter.mockFallback === true,
         walletDisconnectReset: walletResetClean,
         walletPermissionRevokeAttempted: !providerRevokeRequired || revokeAttempted,
         networkVerified: tinyState.networkVerifyCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "network.verify"),
@@ -2348,6 +2590,12 @@
           mockFallback: walletAdapter.mockFallback,
           ethersReady: walletAdapter.ethersReady,
           walletSubsystemReady: walletAdapter.walletSubsystemReady,
+          walletSubsystemUsed: walletAdapter.walletSubsystemUsed,
+          walletSubsystemPreferred: walletAdapter.walletSubsystemPreferred,
+          directProviderFallback: walletAdapter.directProviderFallback,
+          connectSource: walletAdapter.connectSource,
+          disconnectSource: walletAdapter.disconnectSource,
+          walletSubsystemMode: tinyState.walletSubsystemMode || "unobserved",
           eventsBound: walletAdapter.eventsBound,
           permissionRevoked: walletAdapter.permissionRevoked,
           rpcMethods: walletRpcMethods,
@@ -2392,7 +2640,8 @@
           `wallet rpc: ${walletRpcMethods.length ? walletRpcMethods.join(", ") : "none"}`,
           `wallet events: ${checks.walletEventsSubscribed ? "subscribed" : (receiptMode === "wallet-reset" ? "not required before connect" : "missing")}`,
           `provider event effects: ${checks.walletProviderEventsGoverned ? "governed" : "not governed"} · accounts=${tinyState.providerAccountsChangedCount || 0} switches=${tinyState.providerAccountSwitchCount || 0} accountDisconnects=${tinyState.providerAccountDisconnectCount || 0} chain=${tinyState.providerChainChangedCount || 0} disconnect=${tinyState.providerDisconnectCount || 0} error=${tinyState.providerErrorCount || 0}`,
-          `wallet subsystem: ${checks.walletSubsystemObserved ? "observed" : "missing (optional)"}`,
+          `wallet subsystem: ${checks.walletSubsystemUsed ? "used" : (checks.walletDirectProviderFallback ? "fallback to direct provider" : (walletAdapter.walletSubsystemReady ? "available but not used" : "missing (optional)"))}`,
+          `wallet proof level: ${checks.walletMockFallbackDegraded ? "degraded mock" : (checks.walletSubsystemUsed ? "product subsystem" : "adapter only")}`,
           `wallet reset: ${disconnectEffectRan ? (checks.walletDisconnectReset ? "pass" : "failed") : "not run"}`,
           `wallet revoke: ${disconnectEffectRan ? (checks.walletPermissionRevokeAttempted ? "attempted" : "not attempted") : "not run"}`,
           `network gate: ${checks.networkVerified ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : "missing")}`,

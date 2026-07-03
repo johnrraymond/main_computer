@@ -278,14 +278,50 @@ coolify:
         self.assertIn("alpine:3.20", compose)
         self.assertIn("/data/coolify/proxy/dynamic:/data/coolify/proxy/dynamic", compose)
         self.assertIn("main-computer-testnet-hub-public-entry-coolify-b.yml", compose)
+        self.assertIn("traefik.enable=false", compose)
+        self.assertIn("REFRESH_SECONDS=300", compose)
+        self.assertIn("$$CONFIG_DIR", compose)
+        self.assertIn("$${CONFIG_PATH}.tmp", compose)
+        self.assertIn("$$tmp", compose)
+        self.assertIn("$$REFRESH_SECONDS", compose)
+        self.assertNotIn('mkdir -p "$CONFIG_DIR"', compose)
         self.assertIn("Host(`testnet-hub.greatlibrary.io`)", compose)
         self.assertIn("http://testnet-hub3:8785", compose)
         self.assertNotIn("healthCheck:", compose)
         self.assertIn("healthcheck:", compose)
         self.assertIn("test -s /data/coolify/proxy/dynamic/main-computer-testnet-hub-public-entry-coolify-b.yml", compose)
-        self.assertIn("grep -q testnet-hub.greatlibrary.io", compose)
-        self.assertIn("start_period: 5s", compose)
+        self.assertIn("grep -Fq -- testnet-hub.greatlibrary.io", compose)
+        self.assertIn("start_period: 10s", compose)
         self.assertNotIn("http://testnet-hub1:8785", compose)
+
+    def test_install_traefik_dynamic_config_removes_stale_file_on_unselected_host(self) -> None:
+        packet = coolify_hub_cluster.packet_tool.build_packet(
+            network="testnet",
+            placement_path=REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
+            topology_path=None,
+            selected_hubs=["testnet-hub1", "testnet-hub2"],
+            selected_fdb=["testnet-fdb1"],
+            generation="testnet-public-entry-cleanup",
+        )
+        packet_path = REPO_ROOT / "runtime" / "testnet-public-entry-cleanup-packet.json"
+        try:
+            packet_path.write_text(coolify_hub_cluster.packet_tool.canonical_packet_json(packet), encoding="utf-8")
+            args = _args(install_traefik_dynamic_config=True)
+            placement = coolify_hub_cluster.load_hub_cluster_placement_from_packet(packet_path)
+            profile = coolify_hub_cluster.load_network_profile(placement, args)
+
+            compose_b = coolify_hub_cluster.render_server_hub_compose(placement, profile, args, "coolify-b")
+
+            self.assertIn("testnet-hubs-disabled:", compose_b)
+            self.assertIn("testnet-hub-public-entry-config-coolify-b:", compose_b)
+            self.assertIn("Removed stale Traefik dynamic config", compose_b)
+            self.assertIn("$$CONFIG_PATH", compose_b)
+            self.assertIn("$$REFRESH_SECONDS", compose_b)
+            self.assertNotIn('sleep "$REFRESH_SECONDS"', compose_b)
+            self.assertIn("test ! -e /data/coolify/proxy/dynamic/main-computer-testnet-hub-public-entry-coolify-b.yml", compose_b)
+            self.assertNotIn("http://testnet-hub3:8785", compose_b)
+        finally:
+            packet_path.unlink(missing_ok=True)
 
     def test_plan_reports_traefik_dynamic_config_preview(self) -> None:
         args = _args(install_traefik_dynamic_config=True)

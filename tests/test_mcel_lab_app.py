@@ -2329,6 +2329,10 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "releaseSelectCount" in bindings
     assert "fullBatteryRunCount" in bindings
     assert "lastWalletResetClean" in bindings
+    assert "walletSubsystemMode" in bindings
+    assert "walletSubsystemUsed" in bindings
+    assert "walletSubsystemPreferred" in bindings
+    assert "directProviderFallback" in bindings
     assert "txDraftCount" in bindings
     assert "mcelTinyContractLanguageTemplate" in bindings
     assert "mcelTinyContractRuntimeMount" in bindings
@@ -2368,6 +2372,20 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "0x28757b2" in ui
     assert "ethers.BrowserProvider.getNetwork" in ui
     assert "MainComputerWalletApp.providerSnapshot" in ui
+    assert "MainComputerWalletApp.requestConnect" in ui
+    assert "MainComputerWalletApp.requestDisconnect" in ui
+    assert "MainComputerWalletApp.ensureExpectedChain" in ui
+    assert "connectMcelTinyContractThroughWalletSubsystem" in ui
+    assert "disconnectMcelTinyContractThroughWalletSubsystem" in ui
+    assert "mcelTinyContractWalletSubsystemMode" not in ui
+    assert "walletSubsystemMode" in ui
+    assert "walletSubsystemUsed" in ui
+    assert "walletSubsystemPreferred" in ui
+    assert "directProviderFallback" in ui
+    assert "wallet proof level:" in ui
+    assert "product subsystem" in ui
+    assert "adapter only" in ui
+    assert "degraded mock" in ui
     assert "runMcelTinyContractScmWalletProof" in ui
     assert "connectMcelTinyContractWallet" in ui
     assert "disconnectMcelTinyContractWallet" in ui
@@ -2414,6 +2432,9 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "walletProviderDisconnectEffectRan" in ui
     assert "walletProviderErrorEffectRan" in ui
     assert "walletSubsystemObserved" in ui
+    assert "walletSubsystemUsed" in ui
+    assert "walletDirectProviderFallback" in ui
+    assert "walletMockFallbackDegraded" in ui
     assert "walletPermissionRevokeAttempted" in ui
     assert "receiptMode" in ui
     assert "wallet-reset" in ui
