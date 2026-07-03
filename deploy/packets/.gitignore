@@ -1,0 +1,4 @@
+# Local Hub/FDB deploy packets are operator state.
+# Keep schemas/docs committed elsewhere; do not commit generated packets.
+*.json
+archive/

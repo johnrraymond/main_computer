@@ -454,6 +454,19 @@ def load_hub_cluster_placement(path: Path) -> HubClusterPlacement:
     )
 
 
+def packet_path_for_network_arg(network: str) -> Path:
+    return packet_tool.packet_path_for_network(packet_tool.clean_identifier(network, "network"))
+
+
+def load_hub_cluster_placement_from_args(args: argparse.Namespace) -> HubClusterPlacement:
+    if getattr(args, "packet", None):
+        return load_hub_cluster_placement_from_packet(repo_relative_path(args.packet))
+    network = str(getattr(args, "network", "") or "").strip()
+    if network:
+        return load_hub_cluster_placement_from_packet(packet_path_for_network_arg(network))
+    return load_hub_cluster_placement(repo_relative_path(args.placement))
+
+
 def load_hub_cluster_placement_from_packet(path: Path) -> HubClusterPlacement:
     packet = packet_tool.load_packet(path)
     source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
@@ -501,8 +514,7 @@ def context_args_for_server(args: argparse.Namespace, server_name: str) -> argpa
 
 
 def client_for_server(server_name: str, args: argparse.Namespace) -> tuple[Any, str]:
-    coolify_urls = fdb_tool.parse_binding_map(args.set_coolify_url or [], "--set-coolify-url")
-    url = coolify_urls[server_name]
+    url, _url_source = fdb_tool.coolify_url_for_server(server_name, args)
     token, token_source = fdb_tool.token_for_server(server_name, args)
     client = CoolifyClient(
         url,
@@ -862,7 +874,8 @@ def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
         }
     return {
         "server": server_name,
-        "coolify_url": fdb_tool.parse_binding_map(args.set_coolify_url or [], "--set-coolify-url")[server_name],
+        "coolify_url": fdb_tool.coolify_url_for_server(server_name, args)[0],
+        "coolify_url_source": fdb_tool.coolify_url_for_server(server_name, args)[1],
         "service_name": hub_service_name(placement, server_name),
         "hubs": [
             {
@@ -885,17 +898,7 @@ def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
 
 
 def plan_result(placement: HubClusterPlacement, profile: Any, args: argparse.Namespace) -> dict[str, Any]:
-    coolify_urls = fdb_tool.parse_binding_map(args.set_coolify_url or [], "--set-coolify-url")
-    missing_urls = sorted(set(placement.servers) - set(coolify_urls))
-    extra_urls = sorted(set(coolify_urls) - set(placement.servers))
-    if missing_urls:
-        raise CoolifyHubDeployError(
-            "Missing Coolify API URL mapping for: "
-            + ", ".join(missing_urls)
-            + ". Pass --set-coolify-url '<name>:<url>' for every placement server."
-        )
-    if extra_urls:
-        raise CoolifyHubDeployError(f"--set-coolify-url references unknown server(s): {', '.join(extra_urls)}.")
+    fdb_tool.validate_coolify_url_bindings(placement.servers, args)
 
     if not str(getattr(args, "git_repo", "") or "").strip():
         raise CoolifyHubDeployError("--git-repo is required so the remote Hub services can build the Hub image.")
@@ -957,7 +960,8 @@ def apply_result(placement: HubClusterPlacement, profile: Any, args: argparse.Na
         phases.append(
             {
                 "server": server_name,
-                "coolify_url": fdb_tool.parse_binding_map(args.set_coolify_url or [], "--set-coolify-url")[server_name],
+                "coolify_url": fdb_tool.coolify_url_for_server(server_name, args)[0],
+                "coolify_url_source": fdb_tool.coolify_url_for_server(server_name, args)[1],
                 "token_source": token_source,
                 "context": context,
                 "service_uuid": service_uuid,
@@ -979,9 +983,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["list-components", "prep-packet", "plan", "apply"],
         help="Use prep-packet to select a Hub/FDB generation; use plan/apply to deploy Hub services.",
     )
-    parser.add_argument("network", nargs="?", default="", help="Network key for list-components/prep-packet, e.g. testnet.")
-    parser.add_argument("--placement", type=Path, default=DEFAULT_PLACEMENT_PATH, help="Path to testnet-coolify-deployment.json.")
-    parser.add_argument("--packet", type=Path, default=None, help="Read enabled Hub/FDB generation from deploy/packets/<network>-packet.json.")
+    parser.add_argument("network", nargs="?", default="", help="Network key, e.g. testnet. For plan/apply this reads deploy/packets/<network>-packet.json.")
+    parser.add_argument("--placement", type=Path, default=DEFAULT_PLACEMENT_PATH, help="Path to <network>-coolify-deployment.json for list/prep, or legacy direct placement when no network/packet is supplied.")
+    parser.add_argument("--packet", type=Path, default=None, help="Override packet path. Defaults to deploy/packets/<network>-packet.json for plan/apply when network is supplied.")
+    parser.add_argument(
+        "--private-state",
+        type=Path,
+        default=None,
+        help="Private state YAML with coolify.hosts.<slot>.name/url/api_token. Defaults to runtime/state/main_computer.private.yaml when present.",
+    )
     parser.add_argument("--topology", type=Path, default=None, help="Optional topology path override for prep-packet/list-components.")
     parser.add_argument("--hubs", default="", help="Comma-separated Hub ids to enable for prep-packet.")
     parser.add_argument("--fdb", default="", help="Comma-separated FoundationDB instance ids to enable for prep-packet.")
@@ -1084,11 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
         else:
-            placement = (
-                load_hub_cluster_placement_from_packet(repo_relative_path(args.packet))
-                if args.packet
-                else load_hub_cluster_placement(repo_relative_path(args.placement))
-            )
+            placement = load_hub_cluster_placement_from_args(args)
             profile = load_network_profile(placement, args)
             if not str(args.coolify_environment_name or "").strip():
                 args.coolify_environment_name = f"{placement.network_key}-{DEFAULT_ENVIRONMENT_SUFFIX}"

@@ -180,6 +180,8 @@
       "wallet",
       "network",
       "txDraft",
+      "walletAdapter",
+      "walletEvents",
       "proofChip",
       "assistantRepairPrompt",
       "serializedSource",
@@ -189,11 +191,27 @@
   "effects": {
     "wallet.connect": {
       "reads": ["source.devRelease.devNetwork"],
-      "writes": ["runtime.wallet", "runtime.network", "runtime.evidenceStrip"]
+      "writes": ["runtime.wallet", "runtime.network", "runtime.walletAdapter", "runtime.evidenceStrip"]
     },
     "wallet.disconnect": {
       "reads": ["runtime.wallet", "runtime.network", "runtime.txDraft"],
-      "writes": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.evidenceStrip"]
+      "writes": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"]
+    },
+    "wallet.provider.accountsChanged": {
+      "reads": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
+      "writes": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"]
+    },
+    "wallet.provider.chainChanged": {
+      "reads": ["source.devRelease.devNetwork", "runtime.wallet", "runtime.network", "runtime.txDraft"],
+      "writes": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"]
+    },
+    "wallet.provider.disconnect": {
+      "reads": ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+      "writes": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"]
+    },
+    "wallet.provider.error": {
+      "reads": ["runtime.wallet", "runtime.network"],
+      "writes": ["runtime.wallet", "runtime.walletEvents", "runtime.evidenceStrip"]
     },
     "network.verify": {
       "reads": ["source.devRelease.devNetwork", "runtime.network"],
@@ -239,6 +257,8 @@
       "runtime.wallet",
       "runtime.network",
       "runtime.txDraft",
+      "runtime.walletAdapter",
+      "runtime.walletEvents",
       "runtime.proofChip",
       "runtime.assistantRepairPrompt",
       "runtime.serializedSource",

@@ -228,158 +228,223 @@ If `--fdb-cluster-file` is omitted, the remote deployer defaults to:
 /data/main-computer/hub/<network>-exp-fdb/fdb.cluster
 ```
 
-### Shared testnet FoundationDB cluster layer
+### Shared testnet Hub/FDB deploy packets
 
-For the two-Coolify-host testnet topology, deploy the FoundationDB layer before
-deploying the Hub processes. The placement file is committed at:
+For `testnet` and `mainnet`, treat the committed topology and placement files as
+the catalog of Hub/FDB components the operator knows how to deploy. They do not
+have to mean "everything in this file is serving right now." The active serving
+shape is selected by a local deploy packet.
+
+The deploy packet is a single local JSON file:
 
 ```text
-deploy/hub-topology/testnet-coolify-deployment.json
+deploy/packets/testnet-packet.json
+deploy/packets/mainnet-packet.json
 ```
 
-The placement file uses symbolic Coolify names (`coolify-a`, `coolify-b`) and
-private droplet VPN `10.*` addresses. Bind the symbols to actual Coolify API URLs
-at runtime:
+These files are local operator state and should not be committed. When an
+existing packet is replaced with different contents, the prep command archives
+the previous copy under:
 
-```powershell
-$env:MAIN_COMPUTER_COOLIFY_TOKEN = "<token-visible-to-both-coolify-servers>"
-
-python .\tools\coolify_fdb_cluster.py plan `
-  --placement deploy\hub-topology\testnet-coolify-deployment.json `
-  --set-coolify-url "coolify-a:https://ipaddress1:8000" `
-  --set-coolify-url "coolify-b:https://ipaddress2:8000" `
-  --coolify-project-name "Main Computer"
+```text
+deploy/packets/archive/<network>/
 ```
 
-Apply the FoundationDB layer:
+After a generation has been applied and verified, save the verified packet as:
+
+```text
+deploy/packets/testnet-deployed.json
+deploy/packets/mainnet-deployed.json
+```
+
+The packet model keeps the catalog and the active deploy separate:
+
+```text
+topology/placement files = every known Hub/FDB component
+packet file             = the Hub/FDB components enabled for this generation
+```
+
+Components known in the catalog but not selected in the packet remain present in
+the packet with `enabled: false`. The deployers still render config for every
+known Coolify host so a host with no enabled Hubs/FDB instances receives a
+non-serving config for that network instead of being silently ignored.
+
+The packet currently covers only the Hub/FDB layers. Besu/QBFT validators and
+RPC nodes still use the separate chain deploy path.
+
+List the known deployable components:
 
 ```powershell
-python .\tools\coolify_fdb_cluster.py apply `
+python .\tools\coolify_hub_cluster.py list-components testnet `
+  --placement deploy\hub-topology\testnet-coolify-deployment.json
+```
+
+Generate a packet for the full current two-host testnet shape:
+
+```powershell
+python .\tools\coolify_hub_cluster.py prep-packet testnet `
   --placement deploy\hub-topology\testnet-coolify-deployment.json `
-  --set-coolify-url "coolify-a:https://ipaddress1:8000" `
-  --set-coolify-url "coolify-b:https://ipaddress2:8000" `
+  --hubs testnet-hub1,testnet-hub2,testnet-hub3 `
+  --fdb testnet-fdb1,testnet-fdb2,testnet-fdb3 `
+  --generation testnet-0001 `
+  --intent "current full testnet Hub/FDB placement" `
+  --out deploy\packets\testnet-packet.json
+```
+
+Generate a smaller packet that enables only `testnet-hub1`, `testnet-hub2`, and
+`testnet-fdb1`:
+
+```powershell
+python .\tools\coolify_hub_cluster.py prep-packet testnet `
+  --placement deploy\hub-topology\testnet-coolify-deployment.json `
+  --hubs testnet-hub1,testnet-hub2 `
+  --fdb testnet-fdb1 `
+  --generation testnet-0002 `
+  --intent "run testnet Hub/FDB only from selected A-side components" `
+  --out deploy\packets\testnet-packet.json
+```
+
+The prep step fails for unknown Hub/FDB ids or for a packet with zero enabled
+Hubs or zero enabled FDB instances. It may warn about small or single-host FDB
+shapes, but one selected FDB is enough to generate a packet.
+
+Prefer private state for Coolify host URL and token resolution. The expected
+local file is:
+
+```text
+runtime/state/main_computer.private.yaml
+```
+
+and it should contain manually maintained Coolify host slots such as:
+
+```yaml
+coolify:
+  hosts:
+    A:
+      name: coolify-a
+      url: http://<coolify-a-public-ip>:8000/
+      api_token: "<stored locally; do not commit or print>"
+    B:
+      name: coolify-b
+      url: http://<coolify-b-public-ip>:8000/
+      api_token: "<stored locally; do not commit or print>"
+```
+
+The deployers match packet/placement host names such as `coolify-a` and
+`coolify-b` to those private-state slots. CLI `--set-coolify-url` and token
+flags are still available as explicit overrides, but should not be the normal
+operator path.
+
+For plan/apply, pass the network name instead of the packet filename. The
+deployer resolves the standard packet path automatically:
+
+```text
+testnet -> deploy/packets/testnet-packet.json
+mainnet -> deploy/packets/mainnet-packet.json
+```
+
+Use `--packet <path>` only when intentionally testing a non-standard packet
+location.
+
+Plan the FoundationDB layer from the packet:
+
+```powershell
+python .\tools\coolify_fdb_cluster.py plan testnet `
   --coolify-project-name "Main Computer" `
   --coolify-environment-name "testnet-fdb"
 ```
 
-The FDB deployer creates one Coolify Service per symbolic host:
+Apply the FoundationDB layer from the packet:
+
+```powershell
+python .\tools\coolify_fdb_cluster.py apply testnet `
+  --coolify-project-name "Main Computer" `
+  --coolify-environment-name "testnet-fdb"
+```
+
+The FDB deployer creates one Coolify Service per known symbolic host:
 
 ```text
 main-computer-testnet-fdb-coolify-a
 main-computer-testnet-fdb-coolify-b
 ```
 
-The rendered Compose publishes FDB only on the configured VPN/private IP and
-ports, for example:
-
-```text
-vpnip1:4550
-vpnip1:4551
-vpnip2:4550
-```
-
-It writes the same cluster file on each host:
+For hosts with enabled FDB instances, the rendered Compose starts those FDB
+processes and writes the packet-selected cluster file, for example:
 
 ```text
 /data/main-computer/hub/testnet-exp-fdb/fdb.cluster
 ```
 
-Hub services must mount/read that exact file and must use the namespace from the
-placement file:
+For known hosts with no enabled FDB instances, the rendered Compose writes the
+same packet-selected cluster file and keeps a non-serving config container alive.
+That host is therefore explicitly configured for "no enabled testnet FDB here"
+instead of being omitted.
 
-```text
-main-computer-testnet-exp-fdb-stable-live-sessions
-```
-
-Do not publish FDB through Traefik or public DNS. The FDB service ports should be
-reachable only over the private droplet VPN interface.
-
-### Shared testnet Hub cluster layer
-
-After the shared FDB layer is green, deploy the three concrete Hub containers
-with `tools/coolify_hub_cluster.py`. This tool uses the same committed placement
-file but manages only the Hub layer. It does **not** start an FDB sidecar and it
-does **not** rewrite `fdb.cluster`.
-
-Render the Hub cluster plan:
+Plan the Hub layer from the same packet:
 
 ```powershell
-$env:COOLIFY_A_TOKEN = "<coolify-a-api-token>"
-$env:COOLIFY_B_TOKEN = "<coolify-b-api-token>"
-$GitRepo = "https://github.com/<owner>/<repo>.git"
+$GitRepo = "https://github.com/johnrraymond/main_computer"
 
-python .\tools\coolify_hub_cluster.py plan `
-  --placement deploy\hub-topology\testnet-coolify-deployment.json `
-  --set-coolify-url "coolify-a:http://ipaddress1:8000" `
-  --set-coolify-url "coolify-b:http://ipaddress2:8000" `
-  --set-coolify-token-env "coolify-a:COOLIFY_A_TOKEN" `
-  --set-coolify-token-env "coolify-b:COOLIFY_B_TOKEN" `
+python .\tools\coolify_hub_cluster.py plan testnet `
   --coolify-project-name "Main Computer" `
   --coolify-environment-name "testnet-hubs" `
   --git-repo $GitRepo
 ```
 
-Apply the Hub cluster layer:
+Apply the Hub layer from the packet:
 
 ```powershell
-python .\tools\coolify_hub_cluster.py apply `
-  --placement deploy\hub-topology\testnet-coolify-deployment.json `
-  --set-coolify-url "coolify-a:http://ipaddress1:8000" `
-  --set-coolify-url "coolify-b:http://ipaddress2:8000" `
-  --set-coolify-token-env "coolify-a:COOLIFY_A_TOKEN" `
-  --set-coolify-token-env "coolify-b:COOLIFY_B_TOKEN" `
+python .\tools\coolify_hub_cluster.py apply testnet `
   --coolify-project-name "Main Computer" `
   --coolify-environment-name "testnet-hubs" `
   --git-repo $GitRepo `
   --force-deploy
 ```
 
-The Hub cluster deployer creates one Coolify Service resource per symbolic
-Coolify host:
+The Hub deployer also creates one Coolify Service per known symbolic host:
 
 ```text
 main-computer-testnet-hubs-coolify-a
 main-computer-testnet-hubs-coolify-b
 ```
 
-Those Service resources contain the concrete Hub containers from the placement
-file:
+For hosts with enabled Hubs, the generated Compose writes the packet-selected
+Hub topology to:
 
 ```text
-coolify-a:
-  testnet-hub1 -> https://testnet-hub1.greatlibrary.io
-  testnet-hub2 -> https://testnet-hub2.greatlibrary.io
-
-coolify-b:
-  testnet-hub3 -> https://testnet-hub3.greatlibrary.io
+/data/main-computer/hub/testnet-exp-fdb/deploy-packet-topology.json
 ```
 
-Every Hub container starts `exp-fdb-hub.py` with the same topology file and
-shared FDB settings, plus its own concrete Hub identity:
+and starts each enabled Hub with:
 
 ```text
---topology /app/deploy/hub-topology/testnet-topology.json
---hub-id testnet-hub1|testnet-hub2|testnet-hub3
+--topology /data/main-computer/hub/testnet-exp-fdb/deploy-packet-topology.json
 --cluster-file /data/main-computer/hub/testnet-exp-fdb/fdb.cluster
 --namespace main-computer-testnet-exp-fdb-stable-live-sessions
 --no-fdb-autostart
 --require-multisession-auth
 ```
 
-The public entry alias, `https://testnet-hub.greatlibrary.io`, should be enabled
-only after all three concrete Hub hostnames are healthy. Verify the concrete
-Hubs directly first:
+For known hosts with no enabled Hubs, the generated Compose writes the same
+packet-selected topology and FDB cluster file, then keeps a non-serving config
+container alive. The host is therefore configured to serve no Hubs for that
+network generation.
 
-```text
-https://testnet-hub1.greatlibrary.io/api/hub/status
-https://testnet-hub2.greatlibrary.io/api/hub/status
-https://testnet-hub3.greatlibrary.io/api/hub/status
+The public entry alias, `https://testnet-hub.greatlibrary.io`, should be enabled
+only after the enabled concrete Hub hostnames are healthy. Verify the concrete
+Hubs from the packet directly first.
+
+After apply and verification, promote the candidate packet to the local deployed
+record:
+
+```powershell
+Copy-Item deploy\packets\testnet-packet.json deploy\packets\testnet-deployed.json
 ```
 
-If a Hub container starts a local FDB sidecar or writes a cluster file containing
-a Docker service name such as `docker:docker@...`, it is using the wrong deploy
-surface. The shared testnet topology must use `coolify_fdb_cluster.py` for FDB
-and `coolify_hub_cluster.py` for the Hub containers.
+Do not promote a packet merely because the plan rendered successfully. Promote it
+only after the remote services are updated and the enabled Hubs/FDB layer match
+the intended generation.
 
 
 ## Render the plan

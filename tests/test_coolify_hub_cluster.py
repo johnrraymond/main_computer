@@ -4,6 +4,7 @@ import argparse
 import base64
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,8 @@ def _args(**overrides):
         "placement": REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
         "network_config": None,
         "packet": None,
+        "network": "",
+        "private_state": None,
         "set_coolify_url": [
             "coolify-a:http://ipaddress1:8000",
             "coolify-b:http://ipaddress2:8000",
@@ -116,6 +119,35 @@ class CoolifyHubClusterTests(unittest.TestCase):
         self.assertEqual(placement.cluster_file_path, "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster")
         self.assertEqual(placement.namespace, "main-computer-testnet-exp-fdb-stable-live-sessions")
         self.assertEqual(placement.topology_container_path, "/app/deploy/hub-topology/testnet-topology.json")
+
+    def test_plan_resolves_coolify_bindings_from_private_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "main_computer.private.yaml"
+            state_path.write_text(
+                """
+coolify:
+  hosts:
+    A:
+      name: coolify-a
+      url: http://198.51.100.10:8000
+      api_token: token-a
+    B:
+      name: coolify-b
+      coolify_url: http://198.51.100.11:8000
+      api_token: token-b
+""".lstrip(),
+                encoding="utf-8",
+            )
+            args = _args(set_coolify_url=[], private_state=state_path)
+            placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)
+            profile = coolify_hub_cluster.load_network_profile(placement, args)
+            plan = coolify_hub_cluster.plan_result(placement, profile, args)
+
+        self.assertEqual([server["coolify_url"] for server in plan["servers"]], [
+            "http://198.51.100.10:8000",
+            "http://198.51.100.11:8000",
+        ])
+        self.assertEqual(plan["servers"][0]["coolify_url_source"], "private-state:coolify.hosts.A.url")
 
     def test_mainnet_placement_loads_three_mainnet_hubs_across_a_b(self) -> None:
         placement = coolify_hub_cluster.load_hub_cluster_placement(
@@ -296,6 +328,25 @@ class CoolifyHubClusterTests(unittest.TestCase):
             self.assertIn("main_computer_testnet:7f0396a2939ca9c6@10.116.0.3:4550", compose_a)
             self.assertIn("testnet-hubs-disabled:", compose_b)
             self.assertIn("No Hub instances are enabled for testnet on coolify-b.", compose_b)
+        finally:
+            packet_path.unlink(missing_ok=True)
+
+    def test_network_argument_loads_default_packet_path(self) -> None:
+        packet = coolify_hub_cluster.packet_tool.build_packet(
+            network="testnet",
+            placement_path=REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
+            topology_path=None,
+            selected_hubs=["testnet-hub1", "testnet-hub2"],
+            selected_fdb=["testnet-fdb1"],
+            generation="testnet-default-path",
+        )
+        packet_path = REPO_ROOT / "deploy" / "packets" / "testnet-packet.json"
+        packet_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            packet_path.write_text(coolify_hub_cluster.packet_tool.canonical_packet_json(packet), encoding="utf-8")
+            placement = coolify_hub_cluster.load_hub_cluster_placement_from_args(_args(network="testnet"))
+
+            self.assertEqual([hub.hub_id for hub in placement.hubs], ["testnet-hub1", "testnet-hub2"])
         finally:
             packet_path.unlink(missing_ok=True)
 

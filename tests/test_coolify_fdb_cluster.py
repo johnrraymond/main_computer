@@ -5,6 +5,7 @@ import base64
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,8 @@ def _args(**overrides):
     defaults = {
         "placement": REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
         "packet": None,
+        "network": "",
+        "private_state": None,
         "set_coolify_url": [
             "coolify-a:https://ipaddress1:8000",
             "coolify-b:https://ipaddress2:8000",
@@ -121,6 +124,37 @@ class CoolifyFdbClusterTests(unittest.TestCase):
         self.assertEqual(plan["servers"][0]["service_name"], "main-computer-testnet-fdb-coolify-a")
         self.assertEqual(plan["servers"][1]["service_name"], "main-computer-testnet-fdb-coolify-b")
 
+    def test_plan_resolves_coolify_bindings_from_private_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "main_computer.private.yaml"
+            state_path.write_text(
+                """
+coolify:
+  hosts:
+    A:
+      name: coolify-a
+      url: http://198.51.100.10:8000
+      api_token: token-a
+    B:
+      name: coolify-b
+      coolify_url: http://198.51.100.11:8000
+      api_token: token-b
+""".lstrip(),
+                encoding="utf-8",
+            )
+            args = _args(set_coolify_url=[], private_state=state_path)
+            placement = coolify_fdb_cluster.load_fdb_placement(args.placement)
+            plan = coolify_fdb_cluster.plan_result(placement, args)
+
+        self.assertEqual([server["coolify_url"] for server in plan["servers"]], [
+            "http://198.51.100.10:8000",
+            "http://198.51.100.11:8000",
+        ])
+        self.assertEqual(plan["servers"][0]["coolify_url_source"], "private-state:coolify.hosts.A.url")
+        token, source = coolify_fdb_cluster.token_for_server("coolify-a", args)
+        self.assertEqual(token, "token-a")
+        self.assertEqual(source, "private-state:coolify.hosts.A.api_token")
+
     def test_coolify_a_compose_binds_only_vpn_ip_ports_for_local_instances(self) -> None:
         placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
         vpn_a = placement.servers["coolify-a"].vpn_ip
@@ -211,6 +245,25 @@ class CoolifyFdbClusterTests(unittest.TestCase):
             self.assertIn("No FoundationDB instances are enabled for testnet on coolify-b.", compose_b)
             self.assertIn("main_computer_testnet:7f0396a2939ca9c6@10.116.0.3:4550", compose_b)
             self.assertNotIn("testnet-fdb3:", compose_b)
+        finally:
+            packet_path.unlink(missing_ok=True)
+
+    def test_network_argument_loads_default_packet_path(self) -> None:
+        packet = coolify_fdb_cluster.packet_tool.build_packet(
+            network="testnet",
+            placement_path=REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
+            topology_path=None,
+            selected_hubs=["testnet-hub1"],
+            selected_fdb=["testnet-fdb1"],
+            generation="testnet-default-path",
+        )
+        packet_path = REPO_ROOT / "deploy" / "packets" / "testnet-packet.json"
+        packet_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            packet_path.write_text(coolify_fdb_cluster.packet_tool.canonical_packet_json(packet), encoding="utf-8")
+            placement = coolify_fdb_cluster.load_fdb_placement_from_args(_args(network="testnet"))
+
+            self.assertEqual([instance.id for instance in placement.instances], ["testnet-fdb1"])
         finally:
             packet_path.unlink(missing_ok=True)
 

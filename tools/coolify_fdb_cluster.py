@@ -23,6 +23,7 @@ import re
 import shlex
 import sys
 import urllib.parse
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -73,14 +74,37 @@ DEFAULT_RETRY_SLEEP_S = hub_tool.DEFAULT_RETRY_SLEEP_S
 DEFAULT_TOKEN_ENV = hub_tool.DEFAULT_TOKEN_ENV
 DEFAULT_FDB_IMAGE = hub_tool.DEFAULT_LOCAL_TEST_FDB_IMAGE
 DEFAULT_ENVIRONMENT_SUFFIX = "fdb"
+DEFAULT_PRIVATE_STATE_PATH = REPO_ROOT / "runtime" / "state" / "main_computer.private.yaml"
 FDB_CONFIGURE_ATTEMPTS = 120
 FDB_CONFIGURE_SLEEP_S = 2
+
+PRIVATE_STATE_PLACEHOLDER_RE = re.compile(r"^<[^>\n]+>$")
+PRIVATE_STATE_URL_KEYS = ("url", "coolify_url", "api_url", "base_url")
+PRIVATE_STATE_TOKEN_KEYS = ("api_token", "token", "coolify_token")
+PRIVATE_STATE_TOKEN_ENV_KEYS = ("api_token_env", "token_env", "coolify_token_env")
+PRIVATE_STATE_TOKEN_FILE_KEYS = ("api_token_file", "token_file", "coolify_token_file")
 
 
 @dataclass(frozen=True)
 class NamedCoolifyBinding:
     name: str
     value: str
+
+
+@dataclass(frozen=True)
+class ResolvedCoolifyBinding:
+    name: str
+    value: str
+    source: str
+
+
+@dataclass(frozen=True)
+class PrivateCoolifyHostBinding:
+    slot: str
+    name: str
+    url: str = ""
+    token: str = ""
+    token_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -221,6 +245,174 @@ def parse_binding_map(values: list[str] | None, flag_name: str) -> dict[str, str
     return result
 
 
+def private_state_path_for_args(args: argparse.Namespace) -> Path:
+    raw = getattr(args, "private_state", None)
+    if raw is None or not str(raw).strip():
+        return DEFAULT_PRIVATE_STATE_PATH
+    return repo_relative_path(raw)
+
+
+def private_state_value_is_known(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        text = value.strip()
+        return bool(text) and not PRIVATE_STATE_PLACEHOLDER_RE.match(text)
+    if isinstance(value, (list, tuple, dict)):
+        return bool(value)
+    return True
+
+
+def private_state_string(value: Any) -> str:
+    return str(value).strip() if private_state_value_is_known(value) else ""
+
+
+def load_private_state_for_args(args: argparse.Namespace) -> dict[str, Any]:
+    path = private_state_path_for_args(args)
+    cache = getattr(args, "_private_state_cache", None)
+    cache_key = str(path.resolve()) if path.exists() else str(path)
+    if isinstance(cache, dict) and cache.get("path") == cache_key:
+        return cache.get("state") if isinstance(cache.get("state"), dict) else {}
+
+    if not path.exists():
+        state: dict[str, Any] = {}
+    else:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise CoolifyHubDeployError("PyYAML is required to read --private-state YAML.") from exc
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise CoolifyHubDeployError(f"Could not read private state file {path}: {exc}") from exc
+        except Exception as exc:
+            raise CoolifyHubDeployError(f"Could not parse private state YAML {path}: {exc}") from exc
+        if loaded is None:
+            state = {}
+        elif isinstance(loaded, dict):
+            state = loaded
+        else:
+            raise CoolifyHubDeployError(f"Private state file must contain a YAML mapping: {path}")
+
+    setattr(args, "_private_state_cache", {"path": cache_key, "state": state})
+    return state
+
+
+def private_state_field(payload: Mapping[str, Any], keys: tuple[str, ...]) -> tuple[str, str]:
+    for key in keys:
+        value = private_state_string(payload.get(key))
+        if value:
+            return value, key
+    return "", ""
+
+
+def private_state_token_from_host(payload: Mapping[str, Any], source_prefix: str) -> tuple[str, str]:
+    token, key = private_state_field(payload, PRIVATE_STATE_TOKEN_KEYS)
+    if token:
+        return token, f"{source_prefix}.{key}"
+
+    env_name, key = private_state_field(payload, PRIVATE_STATE_TOKEN_ENV_KEYS)
+    if env_name:
+        token = str(os.environ.get(env_name) or "").strip()
+        if not token:
+            raise CoolifyHubDeployError(f"Private state field {source_prefix}.{key} points to empty/unset env var {env_name!r}.")
+        return token, f"{source_prefix}.{key}->env:{env_name}"
+
+    token_file, key = private_state_field(payload, PRIVATE_STATE_TOKEN_FILE_KEYS)
+    if token_file:
+        return token_from_text_file(token_file), f"{source_prefix}.{key}->file:{token_file}"
+
+    return "", ""
+
+
+def private_coolify_hosts_by_name(args: argparse.Namespace) -> dict[str, PrivateCoolifyHostBinding]:
+    state = load_private_state_for_args(args)
+    coolify = state.get("coolify") if isinstance(state, Mapping) else None
+    if not isinstance(coolify, Mapping):
+        return {}
+
+    by_name: dict[str, PrivateCoolifyHostBinding] = {}
+
+    hosts = coolify.get("hosts")
+    if isinstance(hosts, Mapping):
+        for slot, payload in hosts.items():
+            if not isinstance(payload, Mapping):
+                continue
+            name = private_state_string(payload.get("name"))
+            if not name:
+                continue
+            source_prefix = f"private-state:coolify.hosts.{slot}"
+            url, _url_key = private_state_field(payload, PRIVATE_STATE_URL_KEYS)
+            token, token_source = private_state_token_from_host(payload, source_prefix)
+            by_name[name] = PrivateCoolifyHostBinding(
+                slot=str(slot),
+                name=name,
+                url=url,
+                token=token,
+                token_source=token_source,
+            )
+
+    local_test = coolify.get("local_test")
+    if isinstance(local_test, Mapping):
+        name = private_state_string(local_test.get("name"))
+        if name:
+            source_prefix = "private-state:coolify.local_test"
+            url, _url_key = private_state_field(local_test, PRIVATE_STATE_URL_KEYS)
+            token, token_source = private_state_token_from_host(local_test, source_prefix)
+            by_name[name] = PrivateCoolifyHostBinding(
+                slot="local_test",
+                name=name,
+                url=url,
+                token=token,
+                token_source=token_source,
+            )
+
+    return by_name
+
+
+def private_coolify_host_for_server(server_name: str, args: argparse.Namespace) -> PrivateCoolifyHostBinding | None:
+    return private_coolify_hosts_by_name(args).get(server_name)
+
+
+def coolify_url_binding_for_server(server_name: str, args: argparse.Namespace) -> ResolvedCoolifyBinding | None:
+    explicit = parse_binding_map(getattr(args, "set_coolify_url", []) or [], "--set-coolify-url")
+    if server_name in explicit:
+        return ResolvedCoolifyBinding(server_name, explicit[server_name], f"--set-coolify-url:{server_name}")
+
+    private = private_coolify_host_for_server(server_name, args)
+    if private is not None and private.url:
+        return ResolvedCoolifyBinding(server_name, private.url, f"private-state:coolify.hosts.{private.slot}.url")
+
+    return None
+
+
+def coolify_url_for_server(server_name: str, args: argparse.Namespace) -> tuple[str, str]:
+    binding = coolify_url_binding_for_server(server_name, args)
+    if binding is None:
+        raise CoolifyHubDeployError(
+            f"No Coolify API URL available for {server_name!r}. Pass --set-coolify-url "
+            "or set coolify.hosts.<slot>.name/url in --private-state."
+        )
+    return binding.value, binding.source
+
+
+def validate_coolify_url_bindings(servers: Mapping[str, Any], args: argparse.Namespace) -> None:
+    explicit_urls = parse_binding_map(getattr(args, "set_coolify_url", []) or [], "--set-coolify-url")
+    extra_urls = sorted(set(explicit_urls) - set(servers))
+    if extra_urls:
+        raise CoolifyHubDeployError(f"--set-coolify-url references unknown server(s): {', '.join(extra_urls)}.")
+
+    missing = [server_name for server_name in sorted(servers) if coolify_url_binding_for_server(server_name, args) is None]
+    if missing:
+        state_path = private_state_path_for_args(args)
+        raise CoolifyHubDeployError(
+            "Missing Coolify API URL mapping for: "
+            + ", ".join(missing)
+            + ". Pass --set-coolify-url '<name>:<url>' or populate "
+            + f"{state_path} coolify.hosts entries with matching name/url fields."
+        )
+
+
 def token_from_text_file(path: str) -> str:
     clean = str(path or "").strip()
     if not clean:
@@ -250,14 +442,22 @@ def token_for_server(server_name: str, args: argparse.Namespace) -> tuple[str, s
         return str(args.coolify_token).strip(), "--coolify-token"
     if str(args.coolify_token_file or "").strip():
         return token_from_text_file(args.coolify_token_file), f"file:{args.coolify_token_file}"
-    token = str(os.environ.get(args.coolify_token_env) or "").strip()
-    if token:
-        return token, f"env:{args.coolify_token_env}"
+
+    env_name = str(args.coolify_token_env or "").strip()
+
+    private = private_coolify_host_for_server(server_name, args)
+    if private is not None and private.token:
+        return private.token, private.token_source or f"private-state:coolify.hosts.{private.slot}.api_token"
+
+    if env_name:
+        token = str(os.environ.get(env_name) or "").strip()
+        if token:
+            return token, f"env:{env_name}"
     raise CoolifyHubDeployError(
         f"No Coolify token available for {server_name!r}. Pass --set-coolify-token-env, "
-        "--set-coolify-token-file, --coolify-token-env, or --coolify-token-file."
+        "--set-coolify-token-file, --coolify-token-env, --coolify-token-file, or set "
+        "coolify.hosts.<slot>.api_token in --private-state."
     )
-
 
 def validate_ip(value: str, field: str) -> str:
     clean = clean_required_string(value, field)
@@ -391,6 +591,19 @@ def load_fdb_placement(path: Path) -> FoundationDBPlacement:
         topology_path=topology_path,
         public_entry_urls=public_entry_urls,
     )
+
+
+def packet_path_for_network_arg(network: str) -> Path:
+    return packet_tool.packet_path_for_network(packet_tool.clean_identifier(network, "network"))
+
+
+def load_fdb_placement_from_args(args: argparse.Namespace) -> FoundationDBPlacement:
+    if getattr(args, "packet", None):
+        return load_fdb_placement_from_packet(repo_relative_path(args.packet))
+    network = str(getattr(args, "network", "") or "").strip()
+    if network:
+        return load_fdb_placement_from_packet(packet_path_for_network_arg(network))
+    return load_fdb_placement(repo_relative_path(args.placement))
 
 
 def load_fdb_placement_from_packet(path: Path) -> FoundationDBPlacement:
@@ -613,7 +826,8 @@ def server_plan(placement: FoundationDBPlacement, args: argparse.Namespace, serv
     return {
         "server": server_name,
         "vpn_ip": server.vpn_ip,
-        "coolify_url": parse_binding_map(args.set_coolify_url or [], "--set-coolify-url").get(server_name, ""),
+        "coolify_url": coolify_url_for_server(server_name, args)[0],
+        "coolify_url_source": coolify_url_for_server(server_name, args)[1],
         "service_name": fdb_service_name(placement.network_key, server_name),
         "instances": [
             {
@@ -631,17 +845,7 @@ def server_plan(placement: FoundationDBPlacement, args: argparse.Namespace, serv
 
 
 def plan_result(placement: FoundationDBPlacement, args: argparse.Namespace) -> dict[str, Any]:
-    coolify_urls = parse_binding_map(args.set_coolify_url or [], "--set-coolify-url")
-    missing_urls = sorted(set(placement.servers) - set(coolify_urls))
-    extra_urls = sorted(set(coolify_urls) - set(placement.servers))
-    if missing_urls:
-        raise CoolifyHubDeployError(
-            "Missing Coolify API URL mapping for: "
-            + ", ".join(missing_urls)
-            + ". Pass --set-coolify-url '<name>:<url>' for every placement server."
-        )
-    if extra_urls:
-        raise CoolifyHubDeployError(f"--set-coolify-url references unknown server(s): {', '.join(extra_urls)}.")
+    validate_coolify_url_bindings(placement.servers, args)
 
     cluster_dir = posix_dirname(placement.cluster_file_path)
     return {
@@ -688,8 +892,7 @@ def context_args_for_server(args: argparse.Namespace, server_name: str) -> argpa
 
 
 def client_for_server(server_name: str, args: argparse.Namespace) -> tuple[Any, str]:
-    coolify_urls = parse_binding_map(args.set_coolify_url or [], "--set-coolify-url")
-    url = coolify_urls[server_name]
+    url, _url_source = coolify_url_for_server(server_name, args)
     token, token_source = token_for_server(server_name, args)
     client = CoolifyClient(
         url,
@@ -821,7 +1024,8 @@ def apply_result(placement: FoundationDBPlacement, args: argparse.Namespace) -> 
         phases.append(
             {
                 "server": server_name,
-                "coolify_url": parse_binding_map(args.set_coolify_url or [], "--set-coolify-url")[server_name],
+                "coolify_url": coolify_url_for_server(server_name, args)[0],
+                "coolify_url_source": coolify_url_for_server(server_name, args)[1],
                 "token_source": token_source,
                 "context": context,
                 "service_uuid": service_uuid,
@@ -839,8 +1043,15 @@ def apply_result(placement: FoundationDBPlacement, args: argparse.Namespace) -> 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy shared FoundationDB services for a Coolify hub topology.")
     parser.add_argument("action", choices=["plan", "apply"], help="Use plan to render payloads; use apply to call Coolify.")
-    parser.add_argument("--placement", type=Path, default=DEFAULT_PLACEMENT_PATH, help="Path to testnet-coolify-deployment.json.")
-    parser.add_argument("--packet", type=Path, default=None, help="Read enabled Hub/FDB generation from deploy/packets/<network>-packet.json.")
+    parser.add_argument("network", nargs="?", default="", help="Network key used to read deploy/packets/<network>-packet.json.")
+    parser.add_argument("--placement", type=Path, default=DEFAULT_PLACEMENT_PATH, help="Legacy direct placement path when no network/packet is supplied.")
+    parser.add_argument("--packet", type=Path, default=None, help="Override packet path. Defaults to deploy/packets/<network>-packet.json when network is supplied.")
+    parser.add_argument(
+        "--private-state",
+        type=Path,
+        default=None,
+        help="Private state YAML with coolify.hosts.<slot>.name/url/api_token. Defaults to runtime/state/main_computer.private.yaml when present.",
+    )
     parser.add_argument(
         "--set-coolify-url",
         action="append",
@@ -882,11 +1093,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        placement = (
-            load_fdb_placement_from_packet(repo_relative_path(args.packet))
-            if args.packet
-            else load_fdb_placement(repo_relative_path(args.placement))
-        )
+        placement = load_fdb_placement_from_args(args)
         if not str(args.coolify_environment_name or "").strip():
             # Apply the same default before planning so service payloads are stable
             # and the apply path resolves the same environment name.

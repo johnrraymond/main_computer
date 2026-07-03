@@ -2282,6 +2282,10 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert '"name": "DevNetworkReleaseConsole"' in app
     assert '"wallet.connect"' in app
     assert '"wallet.disconnect"' in app
+    assert '"wallet.provider.accountsChanged"' in app
+    assert '"wallet.provider.chainChanged"' in app
+    assert '"wallet.provider.disconnect"' in app
+    assert '"wallet.provider.error"' in app
     assert '"network.verify"' in app
     assert '"release.draftTx"' in app
     assert '"release.approve"' in app
@@ -2348,6 +2352,10 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "devnet.load" in ui
     assert "wallet.connect" in ui
     assert "wallet.disconnect" in ui
+    assert "wallet.provider.accountsChanged" in ui
+    assert "wallet.provider.chainChanged" in ui
+    assert "wallet.provider.disconnect" in ui
+    assert "wallet.provider.error" in ui
     assert "network.verify" in ui
     assert "release.draftTx" in ui
     assert "release.approve" in ui
@@ -2355,6 +2363,7 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "readMcelTinyContractWalletProvider" in ui
     assert "mcelTinyContractWalletRequest" in ui
     assert "bindMcelTinyContractWalletProviderEvents" in ui
+    assert "runMcelTinyContractProviderEventEffect" in ui
     assert "wallet_revokePermissions" in ui
     assert "0x28757b2" in ui
     assert "ethers.BrowserProvider.getNetwork" in ui
@@ -2385,6 +2394,12 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "walletDisconnectReset" in ui
     assert "walletDisconnectCommitCount" in ui
     assert "walletRevokeAttemptCount" in ui
+    assert "providerAccountsChangedCount" in ui
+    assert "providerAccountSwitchCount" in ui
+    assert "providerAccountDisconnectCount" in ui
+    assert "providerChainChangedCount" in ui
+    assert "providerDisconnectCount" in ui
+    assert "providerErrorCount" in ui
     assert "routeLoaderCount" in ui
     assert "networkVerifyCount" in ui
     assert "releaseSelectCount" in ui
@@ -2393,6 +2408,11 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "walletAdapterExercised" in ui
     assert "walletLiveProviderObserved" in ui
     assert "walletEventsSubscribed" in ui
+    assert "walletProviderEventsGoverned" in ui
+    assert "walletProviderAccountsChangedEffectRan" in ui
+    assert "walletProviderChainChangedEffectRan" in ui
+    assert "walletProviderDisconnectEffectRan" in ui
+    assert "walletProviderErrorEffectRan" in ui
     assert "walletSubsystemObserved" in ui
     assert "walletPermissionRevokeAttempted" in ui
     assert "receiptMode" in ui
@@ -2424,6 +2444,17 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "wallet adapter:" in ui
     assert "wallet rpc:" in ui
     assert "wallet events:" in ui
+    assert "provider event effects:" in ui
+    assert "switches=" in ui
+    assert "accountDisconnects=" in ui
+    assert "provider events" in ui
+    assert "committed through SCM provider-event effect" in ui
+    assert "previousNonEmptyAccount" in ui
+    assert "runtime.walletEvents" in ui
+    assert "instance.runtime.wallet.providerEvent" not in ui
+    assert "instance.runtime.network.providerEvent" not in ui
+    assert "instance.runtime.wallet.account =" not in ui
+    assert "instance.runtime.network.chainId =" not in ui
 
     assert "explicit-wallet-connect" not in ui
     assert "explicit-draft" not in ui

@@ -120,6 +120,12 @@
           walletDisconnectCommitCount: 0,
           walletRevokeAttemptCount: 0,
           walletRevokeSuccessCount: 0,
+          providerAccountsChangedCount: 0,
+          providerAccountSwitchCount: 0,
+          providerAccountDisconnectCount: 0,
+          providerChainChangedCount: 0,
+          providerDisconnectCount: 0,
+          providerErrorCount: 0,
           routeLoaderCount: 0,
           networkVerifyCount: 0,
           releaseSelectCount: 0,
@@ -165,6 +171,12 @@
         "walletDisconnectCommitCount",
         "walletRevokeAttemptCount",
         "walletRevokeSuccessCount",
+        "providerAccountsChangedCount",
+        "providerAccountSwitchCount",
+        "providerAccountDisconnectCount",
+        "providerChainChangedCount",
+        "providerDisconnectCount",
+        "providerErrorCount",
         "routeLoaderCount",
         "networkVerifyCount",
         "releaseSelectCount",
@@ -277,6 +289,13 @@
           data: "",
           summary: "No transaction draft has been built."
         },
+        walletAdapter: {
+          providerKind: "unknown",
+          liveProvider: false,
+          mockFallback: false,
+          eventsBound: false
+        },
+        walletEvents: [],
         proofChip: {
           text: "Runtime wallet proof chip waiting.",
           status: "pending",
@@ -342,6 +361,8 @@
             "wallet",
             "network",
             "txDraft",
+            "walletAdapter",
+            "walletEvents",
             "proofChip",
             "assistantRepairPrompt",
             "serializedSource",
@@ -359,6 +380,10 @@
           effects: [
             "wallet.connect",
             "wallet.disconnect",
+            "wallet.provider.accountsChanged",
+            "wallet.provider.chainChanged",
+            "wallet.provider.disconnect",
+            "wallet.provider.error",
             "network.verify",
             "release.select",
             "release.draftTx",
@@ -372,6 +397,10 @@
         outputs: [
           "walletConnected",
           "walletDisconnected",
+          "walletProviderAccountsChanged",
+          "walletProviderChainChanged",
+          "walletProviderDisconnected",
+          "walletProviderError",
           "networkVerified",
           "releaseSelected",
           "txDrafted",
@@ -385,7 +414,7 @@
             kind: "external-wallet-effect",
             triggers: ["state.walletGate"],
             reads: ["source.devRelease.devNetwork"],
-            writes: ["runtime.wallet", "runtime.network", "runtime.evidenceStrip"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.walletAdapter", "runtime.evidenceStrip"],
             external: {
               resource: "metamask",
               operation: "eth_requestAccounts + eth_chainId",
@@ -416,6 +445,12 @@
               };
               ctx.set("runtime.wallet", wallet);
               ctx.set("runtime.network", network);
+              ctx.set("runtime.walletAdapter", payload.adapter || {
+                providerKind: provider,
+                liveProvider: payload.liveProvider === true,
+                mockFallback: payload.mock === true,
+                eventsBound: Boolean(payload.adapter?.eventsBound)
+              });
               ctx.set("runtime.evidenceStrip", [
                 `wallet.connect provider=${provider}`,
                 `account=${account ? account.slice(0, 10) + "…" : "missing"}`,
@@ -442,7 +477,7 @@
             kind: "runtime-wallet-reset-effect",
             triggers: ["state.walletGate"],
             reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
-            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.evidenceStrip"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
             external: {
               resource: "wallet-runtime",
               operation: "reset-local-wallet-session"
@@ -494,6 +529,297 @@
               return {
                 disconnected: result?.disconnected === true,
                 previousProvider: result?.previousProvider || ""
+              };
+            }
+          },
+          "wallet.provider.accountsChanged": {
+            kind: "provider-event-effect",
+            triggers: ["runtime.walletAdapter"],
+            reads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+            external: {
+              resource: "metamask-provider-event",
+              operation: "accountsChanged"
+            },
+            errorPolicy: {
+              onFailure: "record-provider-event-error"
+            },
+            run(ctx, payload = {}) {
+              const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+              const nextAccount = String(accounts[0] || "");
+              const wallet = ctx.get("runtime.wallet") || {};
+              const network = ctx.get("runtime.network") || {};
+              const txDraft = ctx.get("runtime.txDraft") || {};
+              const walletEvents = Array.isArray(ctx.get("runtime.walletEvents")) ? ctx.get("runtime.walletEvents") : [];
+              const previousAccount = String(wallet.account || "");
+              const previousNonEmptyAccount = String(
+                previousAccount ||
+                [...walletEvents].reverse().find((event) => event?.account)?.account ||
+                ""
+              );
+              const accountChanged = Boolean(nextAccount && previousNonEmptyAccount && nextAccount.toLowerCase() !== previousNonEmptyAccount.toLowerCase());
+              const disconnected = !nextAccount;
+              const shouldClearDraft = disconnected || accountChanged;
+              const nextWallet = {
+                ...wallet,
+                account: nextAccount,
+                connected: Boolean(nextAccount),
+                providerEvent: "accountsChanged",
+                status: disconnected ? "disconnected" : (accountChanged ? "account-changed" : "connected")
+              };
+              const nextNetwork = disconnected
+                ? {
+                    ...network,
+                    ok: false,
+                    status: "wallet-disconnected"
+                  }
+                : network;
+              const nextTxDraft = shouldClearDraft
+                ? {
+                    status: "empty",
+                    requestId: "",
+                    to: "",
+                    data: "",
+                    summary: "Provider accountsChanged event cleared the runtime transaction draft."
+                  }
+                : txDraft;
+              ctx.set("runtime.wallet", nextWallet);
+              ctx.set("runtime.network", nextNetwork);
+              ctx.set("runtime.txDraft", nextTxDraft);
+              const nextWalletEvent = {
+                type: "accountsChanged",
+                accounts,
+                account: nextAccount,
+                previousAccount,
+                previousNonEmptyAccount,
+                accountChanged,
+                disconnected,
+                txDraftCleared: shouldClearDraft
+              };
+              ctx.set("runtime.walletEvents", [...walletEvents, nextWalletEvent].slice(-16));
+              ctx.set("runtime.evidenceStrip", [
+                `wallet.provider.accountsChanged account=${nextAccount ? nextAccount.slice(0, 10) + "…" : "none"}`,
+                `previous=${previousNonEmptyAccount ? previousNonEmptyAccount.slice(0, 10) + "…" : "none"}`,
+                `accountChanged=${accountChanged}`,
+                `txDraftCleared=${shouldClearDraft}`
+              ]);
+              ctx.evidence({
+                ok: true,
+                message: disconnected
+                  ? "Provider accountsChanged disconnected the wallet through a declared SCM effect."
+                  : "Provider accountsChanged updated runtime wallet state through a declared SCM effect."
+              });
+              return {
+                account: nextAccount,
+                connected: Boolean(nextAccount),
+                disconnected,
+                previousAccount,
+                previousNonEmptyAccount,
+                accountChanged,
+                txDraftCleared: shouldClearDraft
+              };
+            },
+            commit(_ctx, result) {
+              return {
+                account: result?.account || "",
+                connected: result?.connected === true,
+                disconnected: result?.disconnected === true,
+                previousAccount: result?.previousAccount || "",
+                previousNonEmptyAccount: result?.previousNonEmptyAccount || "",
+                accountChanged: result?.accountChanged === true,
+                txDraftCleared: result?.txDraftCleared === true
+              };
+            }
+          },
+          "wallet.provider.chainChanged": {
+            kind: "provider-event-effect",
+            triggers: ["runtime.walletAdapter"],
+            reads: ["source.devRelease.devNetwork", "runtime.wallet", "runtime.network", "runtime.txDraft"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+            external: {
+              resource: "metamask-provider-event",
+              operation: "chainChanged"
+            },
+            errorPolicy: {
+              onFailure: "record-provider-event-error"
+            },
+            run(ctx, payload = {}) {
+              const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
+              const wallet = ctx.get("runtime.wallet") || {};
+              const network = ctx.get("runtime.network") || {};
+              const txDraft = ctx.get("runtime.txDraft") || {};
+              const chainId = String(payload.chainId || "");
+              const expected = String(devNetwork.chainId || network.expectedChainId || "0x28757b2");
+              const ok = chainId.toLowerCase() === expected.toLowerCase();
+              const shouldClearDraft = !ok && txDraft?.status && txDraft.status !== "empty";
+              const nextWallet = {
+                ...wallet,
+                chainId,
+                providerEvent: "chainChanged"
+              };
+              const nextNetwork = {
+                ...network,
+                expectedChainId: expected,
+                chainId,
+                ok,
+                status: ok ? "dev-network-ready" : "wrong-chain",
+                providerEvent: "chainChanged"
+              };
+              const nextTxDraft = shouldClearDraft
+                ? {
+                    status: "empty",
+                    requestId: "",
+                    to: "",
+                    data: "",
+                    summary: "Provider chainChanged event cleared the runtime transaction draft because the chain no longer matched."
+                  }
+                : txDraft;
+              ctx.set("runtime.wallet", nextWallet);
+              ctx.set("runtime.network", nextNetwork);
+              ctx.set("runtime.txDraft", nextTxDraft);
+              ctx.set("runtime.walletEvents", [{
+                type: "chainChanged",
+                chainId,
+                expected,
+                ok,
+                txDraftCleared: shouldClearDraft
+              }]);
+              ctx.set("runtime.evidenceStrip", [
+                `wallet.provider.chainChanged chain=${chainId || "missing"}`,
+                `expected=${expected}`,
+                `ok=${ok}`,
+                `txDraftCleared=${shouldClearDraft}`
+              ]);
+              ctx.evidence({
+                ok,
+                message: ok
+                  ? "Provider chainChanged kept the wallet on the expected dev network through a declared SCM effect."
+                  : "Provider chainChanged moved the wallet off the expected dev network through a declared SCM effect."
+              });
+              return {chainId, expected, ok, txDraftCleared: shouldClearDraft};
+            },
+            commit(_ctx, result) {
+              return {
+                chainId: result?.chainId || "",
+                expected: result?.expected || "",
+                ok: result?.ok === true,
+                txDraftCleared: result?.txDraftCleared === true
+              };
+            }
+          },
+          "wallet.provider.disconnect": {
+            kind: "provider-event-effect",
+            triggers: ["runtime.walletAdapter"],
+            reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+            external: {
+              resource: "metamask-provider-event",
+              operation: "disconnect"
+            },
+            errorPolicy: {
+              onFailure: "record-provider-event-error"
+            },
+            run(ctx, payload = {}) {
+              const wallet = ctx.get("runtime.wallet") || {};
+              const network = ctx.get("runtime.network") || {};
+              const code = payload.code || payload.error?.code || "";
+              const message = payload.message || payload.error?.message || "provider disconnect";
+              const nextWallet = {
+                ...wallet,
+                account: "",
+                connected: false,
+                status: "disconnected",
+                providerEvent: "disconnect",
+                providerDisconnectCode: code,
+                providerDisconnectMessage: message
+              };
+              const nextNetwork = {
+                ...network,
+                ok: false,
+                status: "provider-disconnected",
+                providerEvent: "disconnect"
+              };
+              const nextTxDraft = {
+                status: "empty",
+                requestId: "",
+                to: "",
+                data: "",
+                summary: "Provider disconnect event cleared the runtime transaction draft."
+              };
+              ctx.set("runtime.wallet", nextWallet);
+              ctx.set("runtime.network", nextNetwork);
+              ctx.set("runtime.txDraft", nextTxDraft);
+              ctx.set("runtime.walletEvents", [{
+                type: "disconnect",
+                code,
+                message,
+                txDraftCleared: true
+              }]);
+              ctx.set("runtime.evidenceStrip", [
+                "wallet.provider.disconnect",
+                `code=${code || "none"}`,
+                `message=${message}`
+              ]);
+              ctx.evidence({
+                ok: true,
+                message: "Provider disconnect cleared runtime wallet state through a declared SCM effect."
+              });
+              return {disconnected: true, code, message, txDraftCleared: true};
+            },
+            commit(_ctx, result) {
+              return {
+                disconnected: result?.disconnected === true,
+                code: result?.code || "",
+                txDraftCleared: result?.txDraftCleared === true
+              };
+            }
+          },
+          "wallet.provider.error": {
+            kind: "provider-event-effect",
+            triggers: ["runtime.walletAdapter"],
+            reads: ["runtime.wallet", "runtime.network"],
+            writes: ["runtime.wallet", "runtime.walletEvents", "runtime.evidenceStrip"],
+            external: {
+              resource: "metamask-provider-event",
+              operation: "error"
+            },
+            errorPolicy: {
+              onFailure: "record-provider-event-error"
+            },
+            run(ctx, payload = {}) {
+              const wallet = ctx.get("runtime.wallet") || {};
+              const network = ctx.get("runtime.network") || {};
+              const error = payload.error || payload;
+              const message = error?.message || payload.message || "provider error";
+              const code = error?.code || payload.code || "";
+              ctx.set("runtime.wallet", {
+                ...wallet,
+                status: "provider-error",
+                providerEvent: "error",
+                providerErrorCode: code,
+                providerErrorMessage: message
+              });
+              ctx.set("runtime.walletEvents", [{
+                type: "error",
+                code,
+                message
+              }]);
+              ctx.set("runtime.evidenceStrip", [
+                "wallet.provider.error",
+                `code=${code || "none"}`,
+                `message=${message}`,
+                `network=${network.status || "unknown"}`
+              ]);
+              ctx.evidence({
+                ok: false,
+                message: "Provider error was captured by a declared SCM effect."
+              });
+              return {code, message};
+            },
+            commit(_ctx, result) {
+              return {
+                code: result?.code || "",
+                message: result?.message || ""
               };
             }
           },
@@ -778,6 +1104,8 @@
             "runtime.wallet",
             "runtime.network",
             "runtime.txDraft",
+            "runtime.walletAdapter",
+            "runtime.walletEvents",
             "runtime.proofChip",
             "runtime.assistantRepairPrompt",
             "runtime.serializedSource",
@@ -789,6 +1117,8 @@
             "runtime.wallet",
             "runtime.network",
             "runtime.txDraft",
+            "runtime.walletAdapter",
+            "runtime.walletEvents",
             "MetaMask",
             "0xDeaD0000"
           ],
@@ -970,6 +1300,12 @@
       tinyState.walletDisconnectCommitCount = 0;
       tinyState.walletRevokeAttemptCount = 0;
       tinyState.walletRevokeSuccessCount = 0;
+      tinyState.providerAccountsChangedCount = 0;
+      tinyState.providerAccountSwitchCount = 0;
+      tinyState.providerAccountDisconnectCount = 0;
+      tinyState.providerChainChangedCount = 0;
+      tinyState.providerDisconnectCount = 0;
+      tinyState.providerErrorCount = 0;
       tinyState.routeLoaderCount = 0;
       tinyState.networkVerifyCount = 0;
       tinyState.releaseSelectCount = 0;
@@ -1049,6 +1385,8 @@
           runtimeSlots: [
             "runtime.wallet",
             "runtime.txDraft",
+            "runtime.walletAdapter",
+            "runtime.walletEvents",
             "runtime.proofChip",
             "runtime.evidenceStrip"
           ]
@@ -1090,6 +1428,7 @@
           <dt>provider</dt><dd>${wallet.provider || wallet.mode || "none"}</dd>
           <dt>adapter</dt><dd>${liveLabel}</dd>
           <dt>rpc calls</dt><dd>${(adapter.calls || []).map((call) => call.method).slice(-4).join(", ") || "none"}</dd>
+          <dt>provider events</dt><dd>accounts=${ensureMcelTinyContractState().providerAccountsChangedCount || 0} switches=${ensureMcelTinyContractState().providerAccountSwitchCount || 0}</dd>
           <dt>account</dt><dd>${wallet.account ? wallet.account.slice(0, 12) + "…" : "not connected"}</dd>
           <dt>chain</dt><dd>${network.chainId || "missing"} / expected ${network.expectedChainId || "0x28757b2"}</dd>
           <dt>gate</dt><dd>${network.ok ? "dev network ready" : network.status || "waiting"}</dd>
@@ -1181,6 +1520,12 @@
         tinyState.walletDisconnectCommitCount = 0;
         tinyState.walletRevokeAttemptCount = 0;
         tinyState.walletRevokeSuccessCount = 0;
+        tinyState.providerAccountsChangedCount = 0;
+        tinyState.providerAccountSwitchCount = 0;
+        tinyState.providerAccountDisconnectCount = 0;
+        tinyState.providerChainChangedCount = 0;
+        tinyState.providerDisconnectCount = 0;
+        tinyState.providerErrorCount = 0;
         tinyState.routeLoaderCount = 0;
         tinyState.networkVerifyCount = 0;
         tinyState.releaseSelectCount = 0;
@@ -1306,6 +1651,54 @@
       }
     }
 
+    function runMcelTinyContractProviderEventEffect(effectName, payload = {}, reason = effectName) {
+      const tinyState = ensureMcelTinyContractState();
+      const instance = tinyState.scmInstance;
+      const app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!instance || !window.McelLabScm?.runEffect) {
+        recordMcelTinyContractEvidence(
+          "wallet-event",
+          `${effectName} observed, but SCM instance was unavailable; runtime was not mutated directly.`,
+          "warn",
+          {effectName, payload, reason}
+        );
+        renderMcelTinyContractProof(app, reason);
+        return null;
+      }
+      try {
+        const result = window.McelLabScm.runEffect(instance, effectName, payload);
+        if (effectName === "wallet.provider.accountsChanged") {
+          const eventResult = result?.result && typeof result.result === "object" ? result.result : result || {};
+          tinyState.providerAccountsChangedCount += 1;
+          if (eventResult.accountChanged === true) tinyState.providerAccountSwitchCount += 1;
+          if (eventResult.disconnected === true) tinyState.providerAccountDisconnectCount += 1;
+        }
+        if (effectName === "wallet.provider.chainChanged") tinyState.providerChainChangedCount += 1;
+        if (effectName === "wallet.provider.disconnect") tinyState.providerDisconnectCount += 1;
+        if (effectName === "wallet.provider.error") tinyState.providerErrorCount += 1;
+        recordMcelTinyContractEvidence(
+          "wallet-event",
+          `${effectName} committed through SCM provider-event effect.`,
+          result?.ok === false ? "fail" : "pass",
+          {effectName, payload, result}
+        );
+        syncMcelTinyContractDomFromScm(app, instance, reason);
+        renderMcelTinyContractProof(app, reason);
+        return result;
+      } catch (error) {
+        const detail = mcelTinyContractWalletError(error);
+        recordMcelTinyContractEvidence(
+          "wallet-event",
+          `${effectName} was blocked or failed through SCM provider-event effect.`,
+          "fail",
+          {effectName, payload, error: detail}
+        );
+        syncMcelTinyContractDomFromScm(app, instance, `${reason} failed`);
+        renderMcelTinyContractProof(app, `${reason}-failed`);
+        return {error: detail};
+      }
+    }
+
     function bindMcelTinyContractWalletProviderEvents(provider) {
       const adapter = mcelTinyContractWalletAdapterState();
       if (!provider || typeof provider.on !== "function") {
@@ -1318,49 +1711,50 @@
       if (adapter.eventsBound) return true;
       const accountsChanged = (accounts) => {
         recordMcelTinyContractWalletEvent("accountsChanged", {accounts});
-        recordMcelTinyContractEvidence(
-          "wallet-event",
-          "MetaMask accountsChanged event observed by the MCEL wallet adapter.",
-          "warn",
-          {accounts}
+        runMcelTinyContractProviderEventEffect(
+          "wallet.provider.accountsChanged",
+          {accounts: Array.isArray(accounts) ? accounts : []},
+          "wallet-accountsChanged"
         );
-        const instance = ensureMcelTinyContractState().scmInstance;
-        if (instance?.runtime?.wallet) {
-          instance.runtime.wallet.providerEvent = "accountsChanged";
-          instance.runtime.wallet.account = Array.isArray(accounts) ? accounts[0] || "" : "";
-          instance.runtime.wallet.connected = Boolean(instance.runtime.wallet.account);
-        }
-        const app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
-        syncMcelTinyContractDomFromScm(app, instance, "wallet accountsChanged event");
-        renderMcelTinyContractProof(app, "wallet-accountsChanged");
       };
       const chainChanged = (chainId) => {
         const normalized = String(chainId || "");
         recordMcelTinyContractWalletEvent("chainChanged", {chainId: normalized});
-        recordMcelTinyContractEvidence(
-          "wallet-event",
-          "MetaMask chainChanged event observed by the MCEL wallet adapter.",
-          "warn",
-          {chainId: normalized}
+        runMcelTinyContractProviderEventEffect(
+          "wallet.provider.chainChanged",
+          {chainId: normalized},
+          "wallet-chainChanged"
         );
-        const instance = ensureMcelTinyContractState().scmInstance;
-        if (instance?.runtime?.network) {
-          instance.runtime.network.providerEvent = "chainChanged";
-          instance.runtime.network.chainId = normalized;
-          instance.runtime.network.ok = normalized.toLowerCase() === String(instance.runtime.network.expectedChainId || "").toLowerCase();
-          instance.runtime.network.status = instance.runtime.network.ok ? "dev-network-ready" : "wrong-chain";
-        }
-        const app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
-        syncMcelTinyContractDomFromScm(app, instance, "wallet chainChanged event");
-        renderMcelTinyContractProof(app, "wallet-chainChanged");
+      };
+      const disconnect = (error) => {
+        const detail = mcelTinyContractWalletError(error || new Error("provider disconnect"));
+        recordMcelTinyContractWalletEvent("disconnect", detail);
+        runMcelTinyContractProviderEventEffect(
+          "wallet.provider.disconnect",
+          {error: detail, code: detail.code, message: detail.message},
+          "wallet-provider-disconnect"
+        );
+      };
+      const providerError = (error) => {
+        const detail = mcelTinyContractWalletError(error || new Error("provider error"));
+        recordMcelTinyContractWalletEvent("error", detail);
+        runMcelTinyContractProviderEventEffect(
+          "wallet.provider.error",
+          {error: detail, code: detail.code, message: detail.message},
+          "wallet-provider-error"
+        );
       };
       provider.on("accountsChanged", accountsChanged);
       provider.on("chainChanged", chainChanged);
+      provider.on("disconnect", disconnect);
+      provider.on("error", providerError);
       adapter.eventsBound = true;
       adapter.accountsChanged = accountsChanged;
       adapter.chainChanged = chainChanged;
+      adapter.disconnect = disconnect;
+      adapter.providerError = providerError;
       recordMcelTinyContractWalletEvent("provider.events.bound", {
-        events: ["accountsChanged", "chainChanged"]
+        events: ["accountsChanged", "chainChanged", "disconnect", "error"]
       });
       return true;
     }
@@ -1843,6 +2237,11 @@
         walletAdapterExercised: walletConnectRpcObserved || walletResetOnly,
         walletLiveProviderObserved: liveProviderSeen,
         walletEventsSubscribed: walletAdapter.eventsBound === true || walletAdapter.mockFallback === true || walletResetOnly,
+        walletProviderEventsGoverned: walletAdapter.mockFallback === true || walletResetOnly || walletAdapter.eventsBound === true,
+        walletProviderAccountsChangedEffectRan: tinyState.providerAccountsChangedCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.accountsChanged"),
+        walletProviderChainChangedEffectRan: tinyState.providerChainChangedCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.chainChanged"),
+        walletProviderDisconnectEffectRan: tinyState.providerDisconnectCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.disconnect"),
+        walletProviderErrorEffectRan: tinyState.providerErrorCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.error"),
         walletSubsystemObserved: walletAdapter.walletSubsystemReady === true || walletAdapter.mockFallback === true,
         walletDisconnectReset: walletResetClean,
         walletPermissionRevokeAttempted: !providerRevokeRequired || revokeAttempted,
@@ -1877,6 +2276,7 @@
         checks.walletEffectRan,
         checks.walletAdapterExercised,
         checks.walletEventsSubscribed,
+        checks.walletProviderEventsGoverned,
         checks.walletDisconnectReset,
         checks.walletPermissionRevokeAttempted,
         checks.networkVerified,
@@ -1893,6 +2293,7 @@
         checks.walletEffectRan,
         checks.walletAdapterExercised,
         checks.walletEventsSubscribed,
+        checks.walletProviderEventsGoverned,
         checks.walletDisconnectReset,
         checks.walletPermissionRevokeAttempted,
         checks.networkVerified,
@@ -1931,6 +2332,12 @@
         walletDisconnectCommitCount: tinyState.walletDisconnectCommitCount || 0,
         walletRevokeAttemptCount: tinyState.walletRevokeAttemptCount || 0,
         walletRevokeSuccessCount: tinyState.walletRevokeSuccessCount || 0,
+        providerAccountsChangedCount: tinyState.providerAccountsChangedCount || 0,
+        providerAccountSwitchCount: tinyState.providerAccountSwitchCount || 0,
+        providerAccountDisconnectCount: tinyState.providerAccountDisconnectCount || 0,
+        providerChainChangedCount: tinyState.providerChainChangedCount || 0,
+        providerDisconnectCount: tinyState.providerDisconnectCount || 0,
+        providerErrorCount: tinyState.providerErrorCount || 0,
         routeLoaderCount: tinyState.routeLoaderCount || 0,
         networkVerifyCount: tinyState.networkVerifyCount || 0,
         releaseSelectCount: tinyState.releaseSelectCount || 0,
@@ -1984,6 +2391,7 @@
           `wallet adapter: ${checks.walletLiveProviderObserved ? "live provider" : (walletAdapter.mockFallback ? "mock fallback" : "not observed")}`,
           `wallet rpc: ${walletRpcMethods.length ? walletRpcMethods.join(", ") : "none"}`,
           `wallet events: ${checks.walletEventsSubscribed ? "subscribed" : (receiptMode === "wallet-reset" ? "not required before connect" : "missing")}`,
+          `provider event effects: ${checks.walletProviderEventsGoverned ? "governed" : "not governed"} · accounts=${tinyState.providerAccountsChangedCount || 0} switches=${tinyState.providerAccountSwitchCount || 0} accountDisconnects=${tinyState.providerAccountDisconnectCount || 0} chain=${tinyState.providerChainChangedCount || 0} disconnect=${tinyState.providerDisconnectCount || 0} error=${tinyState.providerErrorCount || 0}`,
           `wallet subsystem: ${checks.walletSubsystemObserved ? "observed" : "missing (optional)"}`,
           `wallet reset: ${disconnectEffectRan ? (checks.walletDisconnectReset ? "pass" : "failed") : "not run"}`,
           `wallet revoke: ${disconnectEffectRan ? (checks.walletPermissionRevokeAttempted ? "attempted" : "not attempted") : "not run"}`,
