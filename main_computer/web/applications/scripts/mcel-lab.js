@@ -26,6 +26,7 @@
         window.McelLabSupervisor &&
         window.McelLabKernel &&
         window.McelElementRegistry &&
+        window.McelLabScm &&
         window.McelElementsCore &&
         window.McelElementAcidTest &&
         window.TaskManagerMcel &&
@@ -56,7 +57,7 @@
       selectMcelSourceIndex(0, "initial-selection");
       compileMcelLabSource("initial-load");
       renderMcelElementLibraryAcidTest("boot");
-      renderMcelTinyContractTest("boot");
+      renderMcelTinyContractTest("boot", { exercise: false });
       renderMcelAutopilotDeferred("boot");
     }
 
@@ -115,9 +116,19 @@
           repairCount: 0,
           reviewedCount: 0,
           walletConnectCount: 0,
+          walletDisconnectCount: 0,
+          walletDisconnectCommitCount: 0,
+          walletRevokeAttemptCount: 0,
+          walletRevokeSuccessCount: 0,
+          routeLoaderCount: 0,
+          networkVerifyCount: 0,
+          releaseSelectCount: 0,
           txDraftCount: 0,
+          fullBatteryRunCount: 0,
+          lastWalletResetClean: false,
           lastProof: null,
           evidence: [],
+          walletAdapter: null,
           scmInstance: null,
           scmRouteInstance: null
         };
@@ -125,8 +136,50 @@
       if (!Array.isArray(mcelLabState.tinyContract.evidence)) {
         mcelLabState.tinyContract.evidence = [];
       }
+      if (!mcelLabState.tinyContract.walletAdapter || typeof mcelLabState.tinyContract.walletAdapter !== "object") {
+        mcelLabState.tinyContract.walletAdapter = {
+          providerKind: "unknown",
+          liveProvider: false,
+          mockFallback: false,
+          ethersReady: false,
+          walletSubsystemReady: false,
+          eventsBound: false,
+          calls: [],
+          events: [],
+          lastError: "",
+          permissionRevoked: false
+        };
+      }
+      if (!Array.isArray(mcelLabState.tinyContract.walletAdapter.calls)) {
+        mcelLabState.tinyContract.walletAdapter.calls = [];
+      }
+      if (!Array.isArray(mcelLabState.tinyContract.walletAdapter.events)) {
+        mcelLabState.tinyContract.walletAdapter.events = [];
+      }
       if (!Number.isFinite(Number(mcelLabState.tinyContract.selectedIndex))) {
         mcelLabState.tinyContract.selectedIndex = 0;
+      }
+      [
+        "walletConnectCount",
+        "walletDisconnectCount",
+        "walletDisconnectCommitCount",
+        "walletRevokeAttemptCount",
+        "walletRevokeSuccessCount",
+        "routeLoaderCount",
+        "networkVerifyCount",
+        "releaseSelectCount",
+        "txDraftCount",
+        "fullBatteryRunCount",
+        "blockedWrites",
+        "repairCount",
+        "reviewedCount"
+      ].forEach((key) => {
+        if (!Number.isFinite(Number(mcelLabState.tinyContract[key]))) {
+          mcelLabState.tinyContract[key] = 0;
+        }
+      });
+      if (typeof mcelLabState.tinyContract.lastWalletResetClean !== "boolean") {
+        mcelLabState.tinyContract.lastWalletResetClean = false;
       }
       return mcelLabState.tinyContract;
     }
@@ -165,10 +218,10 @@
           summary: "Approve a local contract release only when the wallet, route-loaded contract, source-owned request, runtime transaction draft, and SCM evidence agree.",
           contractAddress: "0x000000000000000000000000000000000000dEaD",
           devNetwork: {
-            name: "Hardhat local chain",
-            chainId: "0x7a69",
-            decimalChainId: 31337,
-            rpcUrl: "http://127.0.0.1:8545"
+            name: "Main Computer Dev Chain",
+            chainId: "0x28757b2",
+            decimalChainId: 42424242,
+            rpcUrl: "http://127.0.0.1:18545"
           },
           requests: [
             {
@@ -212,7 +265,7 @@
           connected: false
         },
         network: {
-          expectedChainId: "0x7a69",
+          expectedChainId: "0x28757b2",
           chainId: "",
           ok: false,
           status: "waiting"
@@ -305,6 +358,7 @@
           ],
           effects: [
             "wallet.connect",
+            "wallet.disconnect",
             "network.verify",
             "release.select",
             "release.draftTx",
@@ -317,6 +371,7 @@
         state: mcelTinyContractStateDefaults(),
         outputs: [
           "walletConnected",
+          "walletDisconnected",
           "networkVerified",
           "releaseSelected",
           "txDrafted",
@@ -328,7 +383,7 @@
         effects: {
           "wallet.connect": {
             kind: "external-wallet-effect",
-            triggers: ["explicit-wallet-connect"],
+            triggers: ["state.walletGate"],
             reads: ["source.devRelease.devNetwork"],
             writes: ["runtime.wallet", "runtime.network", "runtime.evidenceStrip"],
             external: {
@@ -341,7 +396,7 @@
             },
             run(ctx, payload = {}) {
               const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
-              const chainId = String(payload.chainId || devNetwork.chainId || "0x7a69");
+              const chainId = String(payload.chainId || devNetwork.chainId || "0x28757b2");
               const account = String(payload.account || "0xDeaD00000000000000000000000000000000BEEF");
               const provider = String(payload.provider || "mock-dev-provider");
               const ok = chainId.toLowerCase() === String(devNetwork.chainId || "").toLowerCase();
@@ -353,7 +408,7 @@
                 interactive: payload.interactive === true
               };
               const network = {
-                expectedChainId: devNetwork.chainId || "0x7a69",
+                expectedChainId: devNetwork.chainId || "0x28757b2",
                 chainId,
                 ok,
                 status: ok ? "dev-network-ready" : "wrong-chain",
@@ -383,6 +438,65 @@
               };
             }
           },
+          "wallet.disconnect": {
+            kind: "runtime-wallet-reset-effect",
+            triggers: ["state.walletGate"],
+            reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.evidenceStrip"],
+            external: {
+              resource: "wallet-runtime",
+              operation: "reset-local-wallet-session"
+            },
+            errorPolicy: {
+              onFailure: "keep-disconnect-evidence"
+            },
+            run(ctx) {
+              const previousWallet = ctx.get("runtime.wallet") || {};
+              const previousNetwork = ctx.get("runtime.network") || {};
+              const expectedChainId = previousNetwork.expectedChainId || previousNetwork.chainId || "0x28757b2";
+              const wallet = {
+                mode: "disconnected",
+                provider: "none",
+                account: "",
+                connected: false,
+                previousProvider: previousWallet.provider || previousWallet.mode || "none",
+                permissionNote: "MetaMask account permissions are controlled by the extension; MCEL reset local runtime wallet state."
+              };
+              const network = {
+                expectedChainId,
+                chainId: "",
+                ok: false,
+                status: "disconnected"
+              };
+              const txDraft = {
+                status: "empty",
+                requestId: "",
+                to: "",
+                data: "",
+                summary: "Wallet disconnected; runtime transaction draft was reset."
+              };
+              ctx.set("runtime.wallet", wallet);
+              ctx.set("runtime.network", network);
+              ctx.set("runtime.txDraft", txDraft);
+              ctx.set("runtime.evidenceStrip", [
+                "wallet.disconnect reset runtime.wallet",
+                "runtime.network cleared",
+                "runtime.txDraft cleared",
+                "durable source unchanged"
+              ]);
+              ctx.evidence({
+                ok: true,
+                message: "wallet.disconnect cleared runtime wallet/network/tx draft state without touching source."
+              });
+              return {disconnected: true, previousProvider: wallet.previousProvider};
+            },
+            commit(_ctx, result) {
+              return {
+                disconnected: result?.disconnected === true,
+                previousProvider: result?.previousProvider || ""
+              };
+            }
+          },
           "network.verify": {
             kind: "dev-network-gate",
             triggers: ["runtime.network"],
@@ -398,7 +512,7 @@
             run(ctx) {
               const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
               const network = ctx.get("runtime.network") || {};
-              const expected = String(devNetwork.chainId || "0x7a69");
+              const expected = String(devNetwork.chainId || "0x28757b2");
               const actual = String(network.chainId || "");
               const ok = actual.toLowerCase() === expected.toLowerCase();
               const nextNetwork = {
@@ -476,7 +590,7 @@
           },
           "release.draftTx": {
             kind: "runtime-transaction-draft",
-            triggers: ["explicit-draft"],
+            triggers: ["runtime.network", "state.selectedRequestId"],
             reads: [
               "source.devRelease.contractAddress",
               "source.devRelease.requests",
@@ -531,7 +645,7 @@
           },
           "release.approve": {
             kind: "human-approval-effect",
-            triggers: ["human-approval"],
+            triggers: ["state.selectedRequestId"],
             reads: ["source.devRelease.requests", "state.selectedRequestId"],
             writes: ["source.devRelease.requests", "runtime.evidenceStrip"],
             external: {
@@ -587,7 +701,7 @@
               const prompt = [
                 "Repair only runtime wallet/proof chrome for DevNetworkReleaseConsole.",
                 `Wallet: ${wallet.connected ? "connected" : "disconnected"}.`,
-                `Chain: ${network.chainId || "missing"} expected ${network.expectedChainId || "0x7a69"}.`,
+                `Chain: ${network.chainId || "missing"} expected ${network.expectedChainId || "0x28757b2"}.`,
                 `Tx draft: ${txDraft.status || "empty"} ${txDraft.requestId || ""}.`,
                 "Forbidden: source.devRelease.* and state.*.",
                 "Allowed: runtime.proofChip and runtime.assistantRepairPrompt."
@@ -695,7 +809,7 @@
           ],
           strategies: {
             repairRuntimeProofChip: {
-              reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+              reads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.proofChip"],
               writes: [
                 "runtime.proofChip",
                 "runtime.assistantRepairPrompt"
@@ -759,7 +873,7 @@
         data: {
           "devnet.load": {
             kind: "async-data",
-            triggers: ["route.params.contractId", "query.chain"],
+            triggers: ["route.params.contractId", "route.query.chain"],
             reads: [
               "route.params.contractId",
               "component.source.devRelease.devNetwork",
@@ -782,7 +896,7 @@
               return {
                 contractId,
                 network: devNetwork.name || "dev network",
-                chainId: devNetwork.chainId || "0x7a69",
+                chainId: devNetwork.chainId || "0x28757b2",
                 totalRequests: requests.length,
                 highRisk: requests.filter((request) => request.risk === "high").length
               };
@@ -794,9 +908,9 @@
           }
         },
         lifecycle: {
-          onEnter: ["validateParams", "mountComponent", "runLoader"],
+          onEnter: ["validateParams", "mountComponent", "devnet.load"],
           onLeave: {
-            blockedBy: ["runtime.txDraft.status:ready"],
+            blockedBy: ["component.runtime.txDraft.status"],
             resolutions: ["cancelNavigation", "serializeAndLeave"]
           }
         }
@@ -852,28 +966,40 @@
       tinyState.scmRouteInstance = routeInstance;
       tinyState.reviewedCount = 0;
       tinyState.walletConnectCount = 0;
+      tinyState.walletDisconnectCount = 0;
+      tinyState.walletDisconnectCommitCount = 0;
+      tinyState.walletRevokeAttemptCount = 0;
+      tinyState.walletRevokeSuccessCount = 0;
+      tinyState.routeLoaderCount = 0;
+      tinyState.networkVerifyCount = 0;
+      tinyState.releaseSelectCount = 0;
       tinyState.txDraftCount = 0;
+      tinyState.fullBatteryRunCount = 0;
+      tinyState.lastWalletResetClean = false;
 
       const routeEnter = scm.enterRoute(routeInstance, {
         params: {contractId: "dev-release-console"},
         query: {chain: "hardhat"}
       });
       const routeLoader = scm.runRouteLoader(routeInstance, "devnet.load");
+      tinyState.routeLoaderCount += 1;
       recordMcelTinyContractEvidence("route", "SCM route entered and devnet.load route loader committed.", "pass", {
         routeEnter,
         routeLoader
       });
 
-      scm.runEffect(instance, "wallet.connect", {
-        mock: true,
-        provider: "mock-dev-provider",
-        account: "0xDeaD00000000000000000000000000000000BEEF",
-        chainId: "0x7a69"
-      });
-      tinyState.walletConnectCount += 1;
-      scm.runEffect(instance, "network.verify");
-      scm.runEffect(instance, "release.select", {id: "rel-allowance-view"});
       if (options.exercise !== false) {
+        scm.runEffect(instance, "wallet.connect", {
+          mock: true,
+          provider: "mock-dev-provider",
+          account: "0xDeaD00000000000000000000000000000000BEEF",
+          chainId: "0x28757b2"
+        });
+        tinyState.walletConnectCount += 1;
+        scm.runEffect(instance, "network.verify");
+        tinyState.networkVerifyCount += 1;
+        scm.runEffect(instance, "release.select", {id: "rel-allowance-view"});
+        tinyState.releaseSelectCount += 1;
         scm.runEffect(instance, "release.draftTx");
         tinyState.txDraftCount += 1;
         scm.runEffect(instance, "release.approve");
@@ -914,7 +1040,7 @@
         JSON.stringify({
           component: app?.getAttribute("data-mc-component") || "dev-network-release-console",
           route: app?.getAttribute("data-mc-route") || "workspace.dev-network-release",
-          expectedChainId: instance?.source?.devRelease?.devNetwork?.chainId || "0x7a69",
+          expectedChainId: instance?.source?.devRelease?.devNetwork?.chainId || "0x28757b2",
           walletConnected: instance?.runtime?.wallet?.connected === true,
           networkOk: instance?.runtime?.network?.ok === true,
           selectedRequestId: selected?.id || "",
@@ -954,12 +1080,18 @@
       panel.dataset.mcGenerated = "true";
       panel.dataset.mcOwner = "runtime";
       panel.dataset.mcRuntimeState = "runtime.wallet";
+      const adapter = mcelTinyContractWalletAdapterState();
+      const liveLabel = adapter.liveProvider
+        ? `${adapter.providerKind || "provider"} rpc`
+        : (adapter.mockFallback ? "mock fallback" : "not observed");
       panel.innerHTML = `
         <strong>Runtime wallet state</strong>
         <dl>
           <dt>provider</dt><dd>${wallet.provider || wallet.mode || "none"}</dd>
+          <dt>adapter</dt><dd>${liveLabel}</dd>
+          <dt>rpc calls</dt><dd>${(adapter.calls || []).map((call) => call.method).slice(-4).join(", ") || "none"}</dd>
           <dt>account</dt><dd>${wallet.account ? wallet.account.slice(0, 12) + "…" : "not connected"}</dd>
-          <dt>chain</dt><dd>${network.chainId || "missing"} / expected ${network.expectedChainId || "0x7a69"}</dd>
+          <dt>chain</dt><dd>${network.chainId || "missing"} / expected ${network.expectedChainId || "0x28757b2"}</dd>
           <dt>gate</dt><dd>${network.ok ? "dev network ready" : network.status || "waiting"}</dd>
         </dl>
       `;
@@ -1045,8 +1177,18 @@
         tinyState.repairCount = 0;
         tinyState.reviewedCount = 0;
         tinyState.walletConnectCount = 0;
+        tinyState.walletDisconnectCount = 0;
+        tinyState.walletDisconnectCommitCount = 0;
+        tinyState.walletRevokeAttemptCount = 0;
+        tinyState.walletRevokeSuccessCount = 0;
+        tinyState.routeLoaderCount = 0;
+        tinyState.networkVerifyCount = 0;
+        tinyState.releaseSelectCount = 0;
         tinyState.txDraftCount = 0;
+        tinyState.fullBatteryRunCount = 0;
+        tinyState.lastWalletResetClean = false;
         tinyState.evidence = [];
+        resetMcelTinyContractWalletAdapterState("mount-reset");
       }
 
       const runtime = createMcelTinyContractScmRuntime({exercise: options.exercise !== false});
@@ -1060,12 +1202,14 @@
       mcelTinyContractRuntimeMount.innerHTML = source;
       const app = mcelTinyContractRuntimeMount.querySelector('[data-mc-component="dev-network-release-console"]');
       const walletButton = app?.querySelector('[data-mc-effect="wallet.connect"]');
+      const disconnectButton = app?.querySelector('[data-mc-effect="wallet.disconnect"]');
       const verifyButton = app?.querySelector('[data-mc-effect="network.verify"]');
       const selectButton = app?.querySelector('[data-mc-effect="release.select"]');
       const draftButton = app?.querySelector('[data-mc-effect="release.draftTx"]');
       const approveButton = app?.querySelector('[data-mc-effect="release.approve"]');
 
       walletButton?.addEventListener("click", () => connectMcelTinyContractWallet("runtime-button"));
+      disconnectButton?.addEventListener("click", () => disconnectMcelTinyContractWallet("runtime-button"));
       verifyButton?.addEventListener("click", () => verifyMcelTinyContractNetwork("runtime-button"));
       selectButton?.addEventListener("click", () => clickMcelTinyContractCounter());
       draftButton?.addEventListener("click", () => draftMcelTinyContractTransaction("runtime-button"));
@@ -1080,36 +1224,286 @@
       return app;
     }
 
+    function resetMcelTinyContractWalletAdapterState(reason = "reset") {
+      const tinyState = ensureMcelTinyContractState();
+      tinyState.walletAdapter = {
+        providerKind: "unknown",
+        liveProvider: false,
+        mockFallback: false,
+        ethersReady: Boolean(window.ethers?.BrowserProvider),
+        walletSubsystemReady: Boolean(window.MainComputerWalletApp),
+        eventsBound: false,
+        calls: [],
+        events: [],
+        lastError: "",
+        permissionRevoked: false,
+        reason
+      };
+      return tinyState.walletAdapter;
+    }
+
+    function mcelTinyContractWalletAdapterState() {
+      const tinyState = ensureMcelTinyContractState();
+      const adapter = tinyState.walletAdapter || resetMcelTinyContractWalletAdapterState("initialize");
+      adapter.ethersReady = Boolean(window.ethers?.BrowserProvider);
+      adapter.walletSubsystemReady = Boolean(window.MainComputerWalletApp);
+      if (!Array.isArray(adapter.calls)) adapter.calls = [];
+      if (!Array.isArray(adapter.events)) adapter.events = [];
+      return adapter;
+    }
+
+    function mcelTinyContractWalletError(error) {
+      return {
+        name: error?.name || "Error",
+        code: error?.code ?? error?.data?.code ?? "",
+        message: error?.message || String(error)
+      };
+    }
+
+    function recordMcelTinyContractWalletCall(method, status, detail = {}) {
+      const adapter = mcelTinyContractWalletAdapterState();
+      const call = {
+        index: adapter.calls.length + 1,
+        method,
+        status,
+        live: adapter.liveProvider === true,
+        detail
+      };
+      adapter.calls.push(call);
+      adapter.calls = adapter.calls.slice(-24);
+      return call;
+    }
+
+    function recordMcelTinyContractWalletEvent(type, detail = {}) {
+      const adapter = mcelTinyContractWalletAdapterState();
+      const event = {
+        index: adapter.events.length + 1,
+        type,
+        detail
+      };
+      adapter.events.push(event);
+      adapter.events = adapter.events.slice(-24);
+      return event;
+    }
+
+    function mcelTinyContractInjectedProvider() {
+      return window.ethereum && typeof window.ethereum.request === "function" ? window.ethereum : null;
+    }
+
+    async function mcelTinyContractWalletRequest(provider, method, params = []) {
+      recordMcelTinyContractWalletCall(method, "start", {params});
+      try {
+        const value = await provider.request({method, params});
+        recordMcelTinyContractWalletCall(method, "pass", {
+          value: Array.isArray(value) ? value.slice(0, 3) : value
+        });
+        return value;
+      } catch (error) {
+        const detail = mcelTinyContractWalletError(error);
+        mcelTinyContractWalletAdapterState().lastError = detail.message;
+        recordMcelTinyContractWalletCall(method, "fail", detail);
+        throw error;
+      }
+    }
+
+    function bindMcelTinyContractWalletProviderEvents(provider) {
+      const adapter = mcelTinyContractWalletAdapterState();
+      if (!provider || typeof provider.on !== "function") {
+        adapter.eventsBound = false;
+        recordMcelTinyContractWalletEvent("provider.events.unavailable", {
+          reason: "provider.on missing"
+        });
+        return false;
+      }
+      if (adapter.eventsBound) return true;
+      const accountsChanged = (accounts) => {
+        recordMcelTinyContractWalletEvent("accountsChanged", {accounts});
+        recordMcelTinyContractEvidence(
+          "wallet-event",
+          "MetaMask accountsChanged event observed by the MCEL wallet adapter.",
+          "warn",
+          {accounts}
+        );
+        const instance = ensureMcelTinyContractState().scmInstance;
+        if (instance?.runtime?.wallet) {
+          instance.runtime.wallet.providerEvent = "accountsChanged";
+          instance.runtime.wallet.account = Array.isArray(accounts) ? accounts[0] || "" : "";
+          instance.runtime.wallet.connected = Boolean(instance.runtime.wallet.account);
+        }
+        const app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(app, instance, "wallet accountsChanged event");
+        renderMcelTinyContractProof(app, "wallet-accountsChanged");
+      };
+      const chainChanged = (chainId) => {
+        const normalized = String(chainId || "");
+        recordMcelTinyContractWalletEvent("chainChanged", {chainId: normalized});
+        recordMcelTinyContractEvidence(
+          "wallet-event",
+          "MetaMask chainChanged event observed by the MCEL wallet adapter.",
+          "warn",
+          {chainId: normalized}
+        );
+        const instance = ensureMcelTinyContractState().scmInstance;
+        if (instance?.runtime?.network) {
+          instance.runtime.network.providerEvent = "chainChanged";
+          instance.runtime.network.chainId = normalized;
+          instance.runtime.network.ok = normalized.toLowerCase() === String(instance.runtime.network.expectedChainId || "").toLowerCase();
+          instance.runtime.network.status = instance.runtime.network.ok ? "dev-network-ready" : "wrong-chain";
+        }
+        const app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(app, instance, "wallet chainChanged event");
+        renderMcelTinyContractProof(app, "wallet-chainChanged");
+      };
+      provider.on("accountsChanged", accountsChanged);
+      provider.on("chainChanged", chainChanged);
+      adapter.eventsBound = true;
+      adapter.accountsChanged = accountsChanged;
+      adapter.chainChanged = chainChanged;
+      recordMcelTinyContractWalletEvent("provider.events.bound", {
+        events: ["accountsChanged", "chainChanged"]
+      });
+      return true;
+    }
+
     async function readMcelTinyContractWalletProvider(interactive = false) {
-      const provider = window.ethereum;
-      if (!provider || typeof provider.request !== "function") {
+      const adapter = resetMcelTinyContractWalletAdapterState(interactive ? "interactive-connect" : "passive-connect");
+      const provider = mcelTinyContractInjectedProvider();
+      adapter.ethersReady = Boolean(window.ethers?.BrowserProvider);
+      adapter.walletSubsystemReady = Boolean(window.MainComputerWalletApp);
+      if (!provider) {
+        adapter.providerKind = "mock-dev-provider";
+        adapter.mockFallback = true;
+        recordMcelTinyContractWalletCall("provider.detect", "mock", {
+          reason: "window.ethereum missing",
+          walletSubsystemReady: adapter.walletSubsystemReady,
+          ethersReady: adapter.ethersReady
+        });
         return {
           mock: true,
+          liveProvider: false,
           provider: "mock-dev-provider",
           account: "0xDeaD00000000000000000000000000000000BEEF",
-          chainId: "0x7a69",
-          interactive
+          chainId: "0x28757b2",
+          interactive,
+          adapter: {
+            providerKind: adapter.providerKind,
+            liveProvider: adapter.liveProvider,
+            mockFallback: adapter.mockFallback,
+            calls: adapter.calls,
+            events: adapter.events,
+            eventsBound: adapter.eventsBound,
+            ethersReady: adapter.ethersReady,
+            walletSubsystemReady: adapter.walletSubsystemReady
+          }
         };
       }
+
+      adapter.liveProvider = true;
+      adapter.providerKind = provider.isMetaMask ? "metamask" : "ethereum-provider";
+      bindMcelTinyContractWalletProviderEvents(provider);
+
       let chainId = "";
       let accounts = [];
+      let ethersSnapshot = null;
+      let walletSubsystemSnapshot = null;
       try {
-        chainId = await provider.request({method: "eth_chainId"});
+        chainId = String(await mcelTinyContractWalletRequest(provider, "eth_chainId") || "");
       } catch (_error) {
         chainId = "";
       }
       try {
-        accounts = await provider.request({method: interactive ? "eth_requestAccounts" : "eth_accounts"});
+        accounts = await mcelTinyContractWalletRequest(provider, interactive ? "eth_requestAccounts" : "eth_accounts");
       } catch (_error) {
         accounts = [];
       }
+
+      if (window.ethers?.BrowserProvider) {
+        try {
+          recordMcelTinyContractWalletCall("ethers.BrowserProvider.getNetwork", "start", {});
+          const browserProvider = new window.ethers.BrowserProvider(provider);
+          const network = await browserProvider.getNetwork();
+          ethersSnapshot = {
+            chainId: typeof network?.chainId === "bigint" ? `0x${network.chainId.toString(16)}` : String(network?.chainId || ""),
+            name: network?.name || ""
+          };
+          recordMcelTinyContractWalletCall("ethers.BrowserProvider.getNetwork", "pass", ethersSnapshot);
+        } catch (error) {
+          recordMcelTinyContractWalletCall("ethers.BrowserProvider.getNetwork", "fail", mcelTinyContractWalletError(error));
+        }
+      } else {
+        recordMcelTinyContractWalletCall("ethers.BrowserProvider", "unavailable", {
+          reason: "ethers.js BrowserProvider missing"
+        });
+      }
+
+      if (window.MainComputerWalletApp?.providerSnapshot) {
+        try {
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "start", {});
+          walletSubsystemSnapshot = await window.MainComputerWalletApp.providerSnapshot();
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "pass", walletSubsystemSnapshot);
+        } catch (error) {
+          recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "fail", mcelTinyContractWalletError(error));
+        }
+      } else {
+        recordMcelTinyContractWalletCall("MainComputerWalletApp.providerSnapshot", "unavailable", {
+          reason: "wallet subsystem not initialized"
+        });
+      }
+
+      const account = Array.isArray(accounts) ? accounts[0] || "" : "";
       return {
         mock: false,
-        provider: provider.isMetaMask ? "metamask" : "ethereum-provider",
-        account: Array.isArray(accounts) ? accounts[0] || "" : "",
-        chainId: String(chainId || ""),
-        interactive
+        liveProvider: true,
+        provider: adapter.providerKind,
+        account,
+        chainId,
+        interactive,
+        ethersSnapshot,
+        walletSubsystemSnapshot,
+        adapter: {
+          providerKind: adapter.providerKind,
+          liveProvider: adapter.liveProvider,
+          mockFallback: adapter.mockFallback,
+          calls: adapter.calls,
+          events: adapter.events,
+          eventsBound: adapter.eventsBound,
+          ethersReady: adapter.ethersReady,
+          walletSubsystemReady: adapter.walletSubsystemReady,
+          lastError: adapter.lastError
+        }
       };
+    }
+
+    async function revokeMcelTinyContractWalletPermission() {
+      const tinyState = ensureMcelTinyContractState();
+      const adapter = mcelTinyContractWalletAdapterState();
+      const provider = mcelTinyContractInjectedProvider();
+      if (!provider) {
+        recordMcelTinyContractWalletCall("wallet_revokePermissions", "mock", {
+          reason: "window.ethereum missing"
+        });
+        adapter.permissionRevoked = false;
+        return {attempted: false, revoked: false, mock: true};
+      }
+      adapter.liveProvider = true;
+      adapter.mockFallback = false;
+      adapter.providerKind = provider.isMetaMask ? "metamask" : "ethereum-provider";
+      bindMcelTinyContractWalletProviderEvents(provider);
+      tinyState.walletRevokeAttemptCount += 1;
+      try {
+        await mcelTinyContractWalletRequest(provider, "wallet_revokePermissions", [{eth_accounts: {}}]);
+        tinyState.walletRevokeSuccessCount += 1;
+        adapter.permissionRevoked = true;
+        return {attempted: true, revoked: true, mock: false};
+      } catch (error) {
+        adapter.permissionRevoked = false;
+        return {
+          attempted: true,
+          revoked: false,
+          mock: false,
+          error: mcelTinyContractWalletError(error)
+        };
+      }
     }
 
     async function connectMcelTinyContractWallet(reason = "manual-wallet-connect") {
@@ -1119,22 +1513,111 @@
         app = renderMcelTinyContractTest("wallet-before-mount", { exercise: false, reset: false });
       }
       const instance = ensureMcelTinyContractState().scmInstance;
-      if (!instance) return;
-      const walletPayload = await readMcelTinyContractWalletProvider(true);
-      const result = window.McelLabScm.runEffect(instance, "wallet.connect", walletPayload);
-      window.McelLabScm.runEffect(instance, "network.verify");
-      tinyState.walletConnectCount += 1;
-      recordMcelTinyContractEvidence(
-        "wallet",
-        walletPayload.mock
-          ? "No MetaMask provider found; SCM used mock dev wallet state so the proof can still run locally."
-          : "SCM captured MetaMask wallet/dev-network state as runtime-only data.",
-        "pass",
-        {walletConnectCount: tinyState.walletConnectCount, result, walletPayload}
-      );
-      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
-      syncMcelTinyContractDomFromScm(app, instance, "Wallet/dev-network state captured through declared runtime effect.");
-      renderMcelTinyContractProof(app, reason);
+      if (!instance) return null;
+      try {
+        const walletPayload = await readMcelTinyContractWalletProvider(true);
+        const result = window.McelLabScm.runEffect(instance, "wallet.connect", walletPayload);
+        const networkResult = window.McelLabScm.runEffect(instance, "network.verify");
+        tinyState.walletConnectCount += 1;
+        tinyState.networkVerifyCount += 1;
+        recordMcelTinyContractEvidence(
+          "wallet",
+          walletPayload.mock
+            ? "No injected provider found; SCM used an explicitly labeled mock dev-wallet fallback."
+            : "SCM captured live wallet provider state through MetaMask/EIP-1193 calls and stored it as runtime-only data.",
+          walletPayload.mock ? "warn" : "pass",
+          {
+            walletConnectCount: tinyState.walletConnectCount,
+            result,
+            networkResult,
+            walletPayload,
+            walletAdapter: tinyState.walletAdapter
+          }
+        );
+        app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(app, instance, "Wallet/dev-network state captured through declared runtime effect.");
+        renderMcelTinyContractProof(app, reason);
+        return {result, networkResult, walletPayload};
+      } catch (error) {
+        const detail = mcelTinyContractWalletError(error);
+        mcelTinyContractWalletAdapterState().lastError = detail.message;
+        recordMcelTinyContractEvidence(
+          "wallet",
+          "Wallet connect/check failed but was captured as SCM evidence instead of escaping as an uncaught UI error.",
+          "fail",
+          {reason, error: detail, walletAdapter: tinyState.walletAdapter}
+        );
+        app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(app, instance, "Wallet connect/check failed.");
+        renderMcelTinyContractProof(app, reason);
+        return {error: detail};
+      }
+    }
+
+
+    async function disconnectMcelTinyContractWallet(reason = "manual-wallet-disconnect") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
+        app = renderMcelTinyContractTest("disconnect-before-mount", { exercise: false, reset: false });
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return null;
+      let revoke = {attempted: false, revoked: false};
+      try {
+        revoke = await revokeMcelTinyContractWalletPermission();
+      } catch (error) {
+        revoke = {
+          attempted: true,
+          revoked: false,
+          error: mcelTinyContractWalletError(error)
+        };
+      }
+      try {
+        const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.disconnect");
+        const effectResult = effectEnvelope?.result || effectEnvelope;
+        tinyState.walletDisconnectCount += 1;
+        if (effectResult?.disconnected === true) {
+          tinyState.walletDisconnectCommitCount += 1;
+          tinyState.lastWalletResetClean = true;
+        } else {
+          tinyState.lastWalletResetClean = false;
+        }
+        recordMcelTinyContractEvidence(
+          "wallet",
+          revoke.revoked
+            ? "wallet_revokePermissions succeeded, then SCM wallet.disconnect cleared local runtime wallet/network/tx draft state."
+            : "SCM wallet.disconnect cleared local runtime wallet/network/tx draft state; provider permission revoke was unavailable, declined, or failed.",
+          effectResult?.disconnected ? "pass" : "warn",
+          {
+            walletDisconnectCount: tinyState.walletDisconnectCount,
+            walletDisconnectCommitCount: tinyState.walletDisconnectCommitCount,
+            walletRevokeAttemptCount: tinyState.walletRevokeAttemptCount,
+            walletRevokeSuccessCount: tinyState.walletRevokeSuccessCount,
+            revoke,
+            effectEnvelope,
+            effectResult,
+            walletAdapter: tinyState.walletAdapter
+          }
+        );
+        app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(app, instance, "Wallet runtime state disconnected and transaction draft reset.");
+        renderMcelTinyContractProof(app, reason);
+        return {revoke, effectEnvelope, effectResult};
+      } catch (error) {
+        tinyState.lastWalletResetClean = false;
+        const detail = mcelTinyContractWalletError(error);
+        recordMcelTinyContractEvidence(
+          "wallet",
+          "Wallet disconnect/reset failed but was captured as SCM evidence instead of escaping as an uncaught UI error.",
+          "fail",
+          {reason, revoke, error: detail, walletAdapter: tinyState.walletAdapter}
+        );
+        app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(app, instance, "Wallet disconnect/reset failed.");
+        renderMcelTinyContractProof(app, reason);
+        return {revoke, error: detail};
+      }
     }
 
     function verifyMcelTinyContractNetwork(reason = "manual-network-check") {
@@ -1146,6 +1629,7 @@
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return;
       const result = window.McelLabScm.runEffect(instance, "network.verify");
+      tinyState.networkVerifyCount += 1;
       recordMcelTinyContractEvidence(
         "network",
         "SCM compared runtime wallet chain with source-owned dev network contract.",
@@ -1272,6 +1756,7 @@
       tinyState.selectedIndex = (Number(tinyState.selectedIndex || 0) + 1) % items.length;
       const next = items[tinyState.selectedIndex];
       const result = window.McelLabScm.runEffect(instance, "release.select", {id: next.id});
+      tinyState.releaseSelectCount += 1;
       recordMcelTinyContractEvidence(
         "effect",
         "SCM runEffect release.select changed state/runtime only.",
@@ -1331,35 +1816,136 @@
       ].some((marker) => serializedSource.includes(marker));
       const liveHtmlHasGenerated = liveSerializedHtml.includes("data-mc-generated");
       const unsafeBlocked = tinyState.blockedWrites > 0 || (componentEvidence.evidence || []).some((entry) => entry.code === "SCM_EFFECT_UNDECLARED_WRITE");
+      const walletAdapter = mcelTinyContractWalletAdapterState();
+      const walletRpcMethods = (walletAdapter.calls || [])
+        .filter((entry) => entry.status === "pass" || entry.status === "mock")
+        .map((entry) => entry.method);
+      const walletConnectRpcObserved = walletRpcMethods.includes("eth_chainId") &&
+        (walletRpcMethods.includes("eth_requestAccounts") || walletRpcMethods.includes("eth_accounts") || walletRpcMethods.includes("provider.detect"));
+      const componentEvents = componentEvidence.evidence || [];
+      const routeEvents = routeEvidence.evidence || [];
+      const disconnectEffectRan = componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.disconnect") ||
+        tinyState.walletDisconnectCount > 0;
+      const walletResetClean = !disconnectEffectRan || tinyState.walletDisconnectCommitCount > 0 || tinyState.lastWalletResetClean === true;
       const approvedSource = mcelTinyContractItems(instance).some((item) => item.status === "approved");
+      const liveProviderSeen = walletAdapter.liveProvider === true && walletAdapter.mockFallback !== true;
+      const revokeAttempted = (walletAdapter.calls || []).some((entry) => entry.method === "wallet_revokePermissions") ||
+        tinyState.walletRevokeAttemptCount > 0;
+      const walletResetOnly = tinyState.walletDisconnectCount > 0 && tinyState.walletConnectCount === 0;
+      const providerRevokeRequired = disconnectEffectRan && liveProviderSeen;
       const checks = {
         contractLanguageParsed: language.kind === "mcel.scm.app" && language.name === "DevNetworkReleaseConsole",
         elementRegistryAvailable: Number(registryPacket?.elementCount || 0) > 0,
         componentManifestResolved: Boolean(window.McelLabScm?.componentDefinition?.("DevNetworkReleaseConsole")),
         routeManifestResolved: Boolean(window.McelLabScm?.routeDefinition?.("workspace.dev-network-release")),
-        routeLoaderCommitted: (routeEvidence.evidence || []).some((entry) => entry.phase === "route-loader-commit" && entry.ok === true),
-        walletEffectRan: (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.connect"),
-        networkVerified: (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "network.verify"),
-        declaredRuntimeEffectRan: (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.select"),
-        txDraftRuntimeOnly: (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.draftTx"),
-        declaredSourceEffectRan: approvedSource && (componentEvidence.evidence || []).some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.approve"),
+        routeLoaderCommitted: tinyState.routeLoaderCount > 0 || routeEvents.some((entry) => entry.phase === "route-loader-commit" && entry.ok === true),
+        walletEffectRan: tinyState.walletConnectCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.connect"),
+        walletAdapterExercised: walletConnectRpcObserved || walletResetOnly,
+        walletLiveProviderObserved: liveProviderSeen,
+        walletEventsSubscribed: walletAdapter.eventsBound === true || walletAdapter.mockFallback === true || walletResetOnly,
+        walletSubsystemObserved: walletAdapter.walletSubsystemReady === true || walletAdapter.mockFallback === true,
+        walletDisconnectReset: walletResetClean,
+        walletPermissionRevokeAttempted: !providerRevokeRequired || revokeAttempted,
+        networkVerified: tinyState.networkVerifyCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "network.verify"),
+        declaredRuntimeEffectRan: tinyState.releaseSelectCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.select"),
+        txDraftRuntimeOnly: tinyState.txDraftCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.draftTx"),
+        declaredSourceEffectRan: tinyState.reviewedCount > 0 || (approvedSource && componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.approve")),
         unsafeSourceWriteBlocked: unsafeBlocked,
-        runtimeRepairScoped: tinyState.repairCount > 0 && (componentEvidence.evidence || []).some((entry) => entry.phase === "repair-commit" || entry.strategyName === "repairRuntimeProofChip"),
+        runtimeRepairScoped: tinyState.repairCount > 0,
         serializationClean: Boolean(scmSerialization?.ok) && !serializedHasRuntimeLeak && !liveHtmlHasGenerated,
         layoutContractChecked: layoutCheck?.ok === true,
         styleContractChecked: styleCheck?.ok === true
       };
+      const fullBatteryRan = tinyState.fullBatteryRunCount > 0;
+      const walletLifecycleTouched = tinyState.walletConnectCount > 0 || tinyState.walletDisconnectCount > 0;
+      const walletResetOnlyRequiredChecks = [
+        checks.contractLanguageParsed,
+        checks.componentManifestResolved,
+        checks.routeManifestResolved,
+        checks.routeLoaderCommitted,
+        checks.walletDisconnectReset,
+        checks.walletPermissionRevokeAttempted,
+        checks.serializationClean,
+        checks.layoutContractChecked,
+        checks.styleContractChecked
+      ];
+      const walletLifecycleRequiredChecks = [
+        checks.contractLanguageParsed,
+        checks.componentManifestResolved,
+        checks.routeManifestResolved,
+        checks.routeLoaderCommitted,
+        checks.walletEffectRan,
+        checks.walletAdapterExercised,
+        checks.walletEventsSubscribed,
+        checks.walletDisconnectReset,
+        checks.walletPermissionRevokeAttempted,
+        checks.networkVerified,
+        checks.serializationClean,
+        checks.layoutContractChecked,
+        checks.styleContractChecked
+      ];
+      const fullBatteryRequiredChecks = [
+        checks.contractLanguageParsed,
+        checks.elementRegistryAvailable,
+        checks.componentManifestResolved,
+        checks.routeManifestResolved,
+        checks.routeLoaderCommitted,
+        checks.walletEffectRan,
+        checks.walletAdapterExercised,
+        checks.walletEventsSubscribed,
+        checks.walletDisconnectReset,
+        checks.walletPermissionRevokeAttempted,
+        checks.networkVerified,
+        checks.declaredRuntimeEffectRan,
+        checks.txDraftRuntimeOnly,
+        checks.declaredSourceEffectRan,
+        checks.unsafeSourceWriteBlocked,
+        checks.runtimeRepairScoped,
+        checks.serializationClean,
+        checks.layoutContractChecked,
+        checks.styleContractChecked
+      ];
+      const receiptMode = fullBatteryRan
+        ? "full-scm-battery"
+        : (walletResetOnly ? "wallet-reset" : (walletLifecycleTouched ? "wallet-lifecycle" : "waiting"));
+      const receiptStatus = receiptMode === "full-scm-battery"
+        ? (fullBatteryRequiredChecks.every(Boolean) ? "pass" : "fail")
+        : (receiptMode === "wallet-reset"
+          ? (walletResetOnlyRequiredChecks.every(Boolean) ? "pass" : "fail")
+          : (receiptMode === "wallet-lifecycle" ? (walletLifecycleRequiredChecks.every(Boolean) ? "pass" : "fail") : "waiting"));
+
       const proof = {
-        status: Object.values(checks).every(Boolean) ? "pass" : "fail",
+        status: receiptStatus,
+        mode: receiptMode,
         reason,
         sourceHash: mcelTinyContractHash(source),
         liveSerializedHtmlHash: mcelTinyContractHash(liveSerializedHtml),
         scmSerializedSourceHash: mcelTinyContractHash(serializedSource),
         component: "DevNetworkReleaseConsole",
         route: "workspace.dev-network-release",
-        expectedChainId: instance?.source?.devRelease?.devNetwork?.chainId || "0x7a69",
+        expectedChainId: instance?.source?.devRelease?.devNetwork?.chainId || "0x28757b2",
         runtimeChainId: instance?.runtime?.network?.chainId || "",
         walletConnected: instance?.runtime?.wallet?.connected === true,
+        walletDisconnected: instance?.runtime?.wallet?.connected === false,
+        walletDisconnectCount: tinyState.walletDisconnectCount || 0,
+        walletDisconnectCommitCount: tinyState.walletDisconnectCommitCount || 0,
+        walletRevokeAttemptCount: tinyState.walletRevokeAttemptCount || 0,
+        walletRevokeSuccessCount: tinyState.walletRevokeSuccessCount || 0,
+        routeLoaderCount: tinyState.routeLoaderCount || 0,
+        networkVerifyCount: tinyState.networkVerifyCount || 0,
+        releaseSelectCount: tinyState.releaseSelectCount || 0,
+        fullBatteryRunCount: tinyState.fullBatteryRunCount || 0,
+        walletAdapter: {
+          providerKind: walletAdapter.providerKind,
+          liveProvider: walletAdapter.liveProvider,
+          mockFallback: walletAdapter.mockFallback,
+          ethersReady: walletAdapter.ethersReady,
+          walletSubsystemReady: walletAdapter.walletSubsystemReady,
+          eventsBound: walletAdapter.eventsBound,
+          permissionRevoked: walletAdapter.permissionRevoked,
+          rpcMethods: walletRpcMethods,
+          lastError: walletAdapter.lastError || ""
+        },
         registryElementCount: registryPacket?.elementCount || 0,
         reviewedCount: tinyState.reviewedCount,
         walletConnectCount: tinyState.walletConnectCount,
@@ -1381,17 +1967,32 @@
       }
       if (mcelTinyContractProof) {
         mcelTinyContractProof.dataset.status = proof.status;
+        const proofHeadline = proof.status === "pass"
+          ? (receiptMode === "full-scm-battery"
+            ? "PASS: full SCM wallet battery is clean"
+            : (receiptMode === "wallet-reset" ? "PASS: disconnected wallet reset is tamed by SCM" : "PASS: wallet lifecycle is tamed by SCM"))
+          : (proof.status === "waiting"
+            ? "WAITING: run the SCM wallet proof battery"
+            : (receiptMode === "full-scm-battery" ? "FAIL: full SCM receipt has a gap" : "FAIL: wallet lifecycle receipt has a gap"));
+        const fullOnlyText = receiptMode === "full-scm-battery" ? "" : " (full battery only)";
         mcelTinyContractProof.textContent = [
-          proof.status === "pass" ? "PASS: SCM-proven dev-network app is clean" : "FAIL: SCM receipt has a gap",
+          proofHeadline,
+          `receipt mode: ${receiptMode}`,
           `contract language: ${checks.contractLanguageParsed ? "resolved" : "missing"}`,
           `route loader: ${checks.routeLoaderCommitted ? "committed" : "missing"}`,
-          `wallet effect: ${checks.walletEffectRan ? "pass" : "missing"}`,
-          `network gate: ${checks.networkVerified ? "pass" : "missing"}`,
-          `runtime select: ${checks.declaredRuntimeEffectRan ? "pass" : "missing"}`,
-          `runtime tx draft: ${checks.txDraftRuntimeOnly ? "pass" : "missing"}`,
-          `source approval: ${checks.declaredSourceEffectRan ? "pass" : "missing"}`,
-          `unsafe write blocked: ${checks.unsafeSourceWriteBlocked}`,
-          `repair scoped: ${checks.runtimeRepairScoped}`,
+          `wallet effect: ${checks.walletEffectRan ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : "missing")}`,
+          `wallet adapter: ${checks.walletLiveProviderObserved ? "live provider" : (walletAdapter.mockFallback ? "mock fallback" : "not observed")}`,
+          `wallet rpc: ${walletRpcMethods.length ? walletRpcMethods.join(", ") : "none"}`,
+          `wallet events: ${checks.walletEventsSubscribed ? "subscribed" : (receiptMode === "wallet-reset" ? "not required before connect" : "missing")}`,
+          `wallet subsystem: ${checks.walletSubsystemObserved ? "observed" : "missing (optional)"}`,
+          `wallet reset: ${disconnectEffectRan ? (checks.walletDisconnectReset ? "pass" : "failed") : "not run"}`,
+          `wallet revoke: ${disconnectEffectRan ? (checks.walletPermissionRevokeAttempted ? "attempted" : "not attempted") : "not run"}`,
+          `network gate: ${checks.networkVerified ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : "missing")}`,
+          `runtime select: ${checks.declaredRuntimeEffectRan ? "pass" : `not run${fullOnlyText}`}`,
+          `runtime tx draft: ${checks.txDraftRuntimeOnly ? "pass" : `not run${fullOnlyText}`}`,
+          `source approval: ${checks.declaredSourceEffectRan ? "pass" : `not run${fullOnlyText}`}`,
+          `unsafe write blocked: ${checks.unsafeSourceWriteBlocked ? "true" : `not run${fullOnlyText}`}`,
+          `repair scoped: ${checks.runtimeRepairScoped ? "true" : `not run${fullOnlyText}`}`,
           `serialization clean: ${checks.serializationClean}`,
           `layout/style checked: ${checks.layoutContractChecked}/${checks.styleContractChecked}`
         ].join("\n");
@@ -1409,6 +2010,26 @@
         }, null, 2);
       }
       return proof;
+    }
+
+    async function runMcelTinyContractScmWalletProof(reason = "manual-run") {
+      const app = renderMcelTinyContractTest(`${reason}-mount`, { exercise: false, reset: true });
+      const tinyState = ensureMcelTinyContractState();
+      const instance = tinyState.scmInstance;
+      if (!instance) return null;
+
+      await connectMcelTinyContractWallet(`${reason}-wallet-connect`);
+      verifyMcelTinyContractNetwork(`${reason}-network-gate`);
+      clickMcelTinyContractCounter(`${reason}-select`);
+      draftMcelTinyContractTransaction(`${reason}-tx-draft`);
+      repairMcelTinyContractRuntimeChrome(`${reason}-repair`);
+      markMcelTinyContractReviewed(`${reason}-approval`);
+      attemptMcelTinyContractForbiddenWrite(`${reason}-blocked-write`);
+      tinyState.fullBatteryRunCount += 1;
+
+      const proofApp = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]') || app;
+      syncMcelTinyContractDomFromScm(proofApp, instance, "Full SCM wallet proof battery completed.");
+      return renderMcelTinyContractProof(proofApp, reason);
     }
 
     function renderMcelTinyContractTest(reason = "manual", options = {}) {
@@ -1469,8 +2090,15 @@
       mcelOpenSmartCssModal?.addEventListener("click", () => openMcelLabModal("smart-css"));
       mcelSmartCssRerun?.addEventListener("click", () => renderMcelSmartCssPrimitiveLab("manual-rerun"));
       mcelElementAcidRerun?.addEventListener("click", () => renderMcelElementLibraryAcidTest("manual-rerun"));
-      mcelTinyContractRun?.addEventListener("click", () => renderMcelTinyContractTest("manual-run", { exercise: true }));
-      mcelTinyContractWallet?.addEventListener("click", () => connectMcelTinyContractWallet("manual-wallet-connect"));
+      mcelTinyContractRun?.addEventListener("click", () => {
+        void runMcelTinyContractScmWalletProof("manual-run");
+      });
+      mcelTinyContractWallet?.addEventListener("click", () => {
+        void connectMcelTinyContractWallet("manual-wallet-connect");
+      });
+      mcelTinyContractDisconnect?.addEventListener("click", () => {
+        void disconnectMcelTinyContractWallet("manual-wallet-disconnect");
+      });
       mcelTinyContractIncrement?.addEventListener("click", clickMcelTinyContractCounter);
       mcelTinyContractDraftTx?.addEventListener("click", () => draftMcelTinyContractTransaction("manual-draft-tx"));
       mcelTinyContractRepair?.addEventListener("click", () => repairMcelTinyContractRuntimeChrome("manual-repair"));

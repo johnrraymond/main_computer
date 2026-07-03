@@ -30,6 +30,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HUB_SERVICE_TOOL_PATH = Path(__file__).resolve().with_name("coolify_hub_service.py")
+DEPLOY_PACKET_TOOL_PATH = Path(__file__).resolve().with_name("deploy_packet.py")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -46,7 +47,20 @@ def _load_hub_service_module() -> Any:
     return module
 
 
+def _load_deploy_packet_module() -> Any:
+    if "deploy_packet" in sys.modules:
+        return sys.modules["deploy_packet"]
+    spec = importlib.util.spec_from_file_location("deploy_packet", DEPLOY_PACKET_TOOL_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not import {DEPLOY_PACKET_TOOL_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 hub_tool = _load_hub_service_module()
+packet_tool = _load_deploy_packet_module()
 
 CoolifyClient = hub_tool.CoolifyClient
 CoolifyResponse = hub_tool.CoolifyResponse
@@ -379,6 +393,30 @@ def load_fdb_placement(path: Path) -> FoundationDBPlacement:
     )
 
 
+def load_fdb_placement_from_packet(path: Path) -> FoundationDBPlacement:
+    packet = packet_tool.load_packet(path)
+    source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
+    placement_path = repo_relative_path(packet_tool.clean_required_string(source.get("placement_path"), "source.placement_path"))
+    placement = load_fdb_placement(placement_path)
+    enabled_ids = packet_tool.packet_enabled_fdb_ids(packet)
+    instances = tuple(instance for instance in placement.instances if instance.id in enabled_ids)
+    if not instances:
+        raise CoolifyHubDeployError("Deploy packet must enable at least one FoundationDB instance.")
+    return FoundationDBPlacement(
+        network_key=placement.network_key,
+        image=placement.image,
+        cluster_description=placement.cluster_description,
+        cluster_id=placement.cluster_id,
+        cluster_file_path=placement.cluster_file_path,
+        namespace=placement.namespace,
+        configure=placement.configure,
+        instances=instances,
+        servers=placement.servers,
+        topology_path=placement.topology_path,
+        public_entry_urls=placement.public_entry_urls,
+    )
+
+
 def fdb_cluster_contents(placement: FoundationDBPlacement) -> str:
     coordinators = ",".join(f"{instance.vpn_ip}:{instance.port}" for instance in placement.instances)
     return f"{placement.cluster_description}:{placement.cluster_id}@{coordinators}"
@@ -441,12 +479,50 @@ def fdb_configure_bootstrap_script(placement: FoundationDBPlacement) -> str:
     )
 
 
+def render_disabled_fdb_compose(placement: FoundationDBPlacement, server_name: str) -> str:
+    cluster_dir = posix_dirname(placement.cluster_file_path)
+    cluster_contents = fdb_cluster_contents(placement)
+    marker_key = service_key(f"{placement.network_key}-fdb-disabled")
+    script = "\n".join(
+        [
+            "set -eu",
+            f"mkdir -p {sh_quote(cluster_dir)}",
+            f"printf '%s\\n' {sh_quote(cluster_contents)} > {sh_quote(placement.cluster_file_path)}",
+            f"echo 'No FoundationDB instances are enabled for {placement.network_key} on {server_name}.'",
+            "tail -f /dev/null",
+        ]
+    )
+    return "\n".join(
+        [
+            f"name: {fdb_service_name(placement.network_key, server_name)}",
+            "",
+            "services:",
+            f"  {marker_key}:",
+            f"    image: {yaml_quote(placement.image)}",
+            "    restart: unless-stopped",
+            "    volumes:",
+            f"      - {yaml_quote(f'{cluster_dir}:{cluster_dir}')}",
+            "    entrypoint:",
+            "      - /bin/sh",
+            "      - -euc",
+            f"      - {yaml_quote(script)}",
+            "    healthcheck:",
+            "      test: [\"CMD-SHELL\", \"test -s " + placement.cluster_file_path + "\"]",
+            "      interval: 30s",
+            "      timeout: 5s",
+            "      start_period: 5s",
+            "      retries: 3",
+            "",
+        ]
+    )
+
+
 def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str) -> str:
     if server_name not in placement.servers:
         raise CoolifyHubDeployError(f"Unknown server {server_name!r}.")
     instances = [instance for instance in placement.instances if instance.coolify_server == server_name]
     if not instances:
-        raise CoolifyHubDeployError(f"No FoundationDB instances are assigned to {server_name!r}.")
+        return render_disabled_fdb_compose(placement, server_name)
     cluster_dir = posix_dirname(placement.cluster_file_path)
     lines: list[str] = [
         f"name: {fdb_service_name(placement.network_key, server_name)}",
@@ -764,6 +840,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy shared FoundationDB services for a Coolify hub topology.")
     parser.add_argument("action", choices=["plan", "apply"], help="Use plan to render payloads; use apply to call Coolify.")
     parser.add_argument("--placement", type=Path, default=DEFAULT_PLACEMENT_PATH, help="Path to testnet-coolify-deployment.json.")
+    parser.add_argument("--packet", type=Path, default=None, help="Read enabled Hub/FDB generation from deploy/packets/<network>-packet.json.")
     parser.add_argument(
         "--set-coolify-url",
         action="append",
@@ -805,7 +882,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        placement = load_fdb_placement(repo_relative_path(args.placement))
+        placement = (
+            load_fdb_placement_from_packet(repo_relative_path(args.packet))
+            if args.packet
+            else load_fdb_placement(repo_relative_path(args.placement))
+        )
         if not str(args.coolify_environment_name or "").strip():
             # Apply the same default before planning so service payloads are stable
             # and the apply path resolves the same environment name.

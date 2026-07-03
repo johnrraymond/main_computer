@@ -30,6 +30,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HUB_SERVICE_TOOL_PATH = Path(__file__).resolve().with_name("coolify_hub_service.py")
 FDB_CLUSTER_TOOL_PATH = Path(__file__).resolve().with_name("coolify_fdb_cluster.py")
+DEPLOY_PACKET_TOOL_PATH = Path(__file__).resolve().with_name("deploy_packet.py")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -48,6 +49,7 @@ def _load_module(name: str, path: Path) -> Any:
 
 hub_tool = _load_module("coolify_hub_service", HUB_SERVICE_TOOL_PATH)
 fdb_tool = _load_module("coolify_fdb_cluster", FDB_CLUSTER_TOOL_PATH)
+packet_tool = _load_module("deploy_packet", DEPLOY_PACKET_TOOL_PATH)
 
 CoolifyClient = hub_tool.CoolifyClient
 CoolifyResponse = hub_tool.CoolifyResponse
@@ -91,6 +93,8 @@ class HubClusterPlacement:
     hubs: tuple[HubPlacement, ...]
     public_entry_urls: tuple[str, ...]
     topology_cluster_id: str
+    packet_topology_contents: str = ""
+    packet_fdb_cluster_contents: str = ""
 
 
 class _ProfileForContext:
@@ -450,6 +454,30 @@ def load_hub_cluster_placement(path: Path) -> HubClusterPlacement:
     )
 
 
+def load_hub_cluster_placement_from_packet(path: Path) -> HubClusterPlacement:
+    packet = packet_tool.load_packet(path)
+    source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
+    placement_path = repo_relative_path(packet_tool.clean_required_string(source.get("placement_path"), "source.placement_path"))
+    placement = load_hub_cluster_placement(placement_path)
+    enabled_hubs = packet_tool.packet_enabled_hub_ids(packet)
+    hubs = tuple(hub for hub in placement.hubs if hub.hub_id in enabled_hubs)
+    if not hubs:
+        raise CoolifyHubDeployError("Deploy packet must enable at least one Hub.")
+    return HubClusterPlacement(
+        network_key=placement.network_key,
+        topology_path=placement.topology_path,
+        topology_container_path=packet_tool.packet_hub_topology_path(packet),
+        cluster_file_path=placement.cluster_file_path,
+        namespace=placement.namespace,
+        servers=placement.servers,
+        hubs=hubs,
+        public_entry_urls=placement.public_entry_urls,
+        topology_cluster_id=placement.topology_cluster_id,
+        packet_topology_contents=packet_tool.packet_hub_topology_json(packet),
+        packet_fdb_cluster_contents=packet_tool.packet_fdb_cluster_contents(packet),
+    )
+
+
 def load_network_profile(placement: HubClusterPlacement, args: argparse.Namespace) -> Any:
     registry = hub_tool.load_hub_network_registry(args.network_config)
     profile = registry.get(placement.network_key)
@@ -560,10 +588,76 @@ def render_hub_command_yaml(parts: list[str]) -> list[str]:
     return [f"      - {yaml_quote(part)}" for part in parts]
 
 
+def render_packet_hub_start_script(placement: HubClusterPlacement, hub: HubPlacement, command: list[str]) -> str:
+    topology_contents = placement.packet_topology_contents.rstrip("\n")
+    fdb_cluster_contents = placement.packet_fdb_cluster_contents.rstrip("\n")
+    topology_dir = fdb_tool.posix_dirname(placement.topology_container_path)
+    cluster_dir = fdb_tool.posix_dirname(hub.cluster_file_path)
+    lines = [
+        "set -eu",
+        f"mkdir -p {sh_quote(topology_dir)} {sh_quote(cluster_dir)}",
+        f"cat > {sh_quote(placement.topology_container_path)} <<'MAINCOMPUTERTOPOLOGY'",
+        topology_contents,
+        "MAINCOMPUTERTOPOLOGY",
+        f"printf '%s\\n' {sh_quote(fdb_cluster_contents)} > {sh_quote(hub.cluster_file_path)}",
+        "exec " + shlex.join(command),
+    ]
+    return "\n".join(lines)
+
+
+def hub_container_command_parts(placement: HubClusterPlacement, hub: HubPlacement, command: list[str]) -> list[str]:
+    if not placement.packet_topology_contents:
+        return command
+    return ["/bin/sh", "-euc", render_packet_hub_start_script(placement, hub, command)]
+
+
+def render_disabled_hub_compose(placement: HubClusterPlacement, profile: Any, args: argparse.Namespace, server_name: str) -> str:
+    marker_key = service_key(f"{placement.network_key}-hubs-disabled")
+    script_lines = [
+        "set -eu",
+        f"echo 'No Hub instances are enabled for {placement.network_key} on {server_name}.'",
+    ]
+    if placement.packet_topology_contents:
+        topology_dir = fdb_tool.posix_dirname(placement.topology_container_path)
+        cluster_dir = fdb_tool.posix_dirname(placement.cluster_file_path)
+        script_lines.extend(
+            [
+                f"mkdir -p {sh_quote(topology_dir)} {sh_quote(cluster_dir)}",
+                f"cat > {sh_quote(placement.topology_container_path)} <<'MAINCOMPUTERTOPOLOGY'",
+                placement.packet_topology_contents.rstrip("\n"),
+                "MAINCOMPUTERTOPOLOGY",
+                f"printf '%s\\n' {sh_quote(placement.packet_fdb_cluster_contents.rstrip(chr(10)))} > {sh_quote(placement.cluster_file_path)}",
+            ]
+        )
+    script_lines.append("tail -f /dev/null")
+    script = "\n".join(script_lines)
+    return "\n".join(
+        [
+            f"name: {hub_service_name(placement, server_name)}",
+            "",
+            "services:",
+            f"  {marker_key}:",
+            "    image: alpine:3.20",
+            "    restart: unless-stopped",
+            "    command:",
+            "      - /bin/sh",
+            "      - -euc",
+            f"      - {yaml_quote(script)}",
+            "    healthcheck:",
+            "      test: [\"CMD-SHELL\", \"true\"]",
+            "      interval: 30s",
+            "      timeout: 5s",
+            "      start_period: 5s",
+            "      retries: 3",
+            "",
+        ]
+    )
+
+
 def render_server_hub_compose(placement: HubClusterPlacement, profile: Any, args: argparse.Namespace, server_name: str) -> str:
     local_hubs = hubs_for_server(placement, server_name)
     if not local_hubs:
-        raise CoolifyHubDeployError(f"No hubs are assigned to server {server_name!r}.")
+        return render_disabled_hub_compose(placement, profile, args, server_name)
     build_context = hub_tool.remote_git_build_context(args)
     dockerfile = hub_tool.effective_dockerfile_location(profile, args).lstrip("/") or "Dockerfile.hub.exp-fdb"
     service_name = hub_service_name(placement, server_name)
@@ -578,7 +672,7 @@ def render_server_hub_compose(placement: HubClusterPlacement, profile: Any, args
         rid = router_id(key)
         runtime_bind = f"{hub_tool.remote_runtime_bind_source(hub.runtime_dir)}:{hub.runtime_dir}"
         image = f"main-computer-{placement.network_key}-{key}:remote"
-        command = hub_command_parts(profile, placement, hub, args)
+        command = hub_container_command_parts(placement, hub, hub_command_parts(profile, placement, hub, args))
         lines.extend(
             [
                 f"  {key}:",
@@ -757,8 +851,9 @@ def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
         "environment_uuid": args.coolify_environment_uuid or "<resolved-at-apply>",
     }
     payload = service_payload(placement, profile, args, server_name=server_name, context=context_preview)
+    local_hubs = hubs_for_server(placement, server_name)
     traefik_dynamic_config = None
-    if shared_entry_hosts(placement):
+    if shared_entry_hosts(placement) and local_hubs:
         traefik_dynamic_config = {
             "installed": bool(getattr(args, "install_traefik_dynamic_config", False)),
             "container_service": traefik_dynamic_config_service_key(placement, server_name),
@@ -777,7 +872,7 @@ def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
                 "cluster_file_path": hub.cluster_file_path,
                 "namespace": hub.namespace,
             }
-            for hub in hubs_for_server(placement, server_name)
+            for hub in local_hubs
         ],
         "docker_compose": compose,
         "traefik_dynamic_config": traefik_dynamic_config,
@@ -879,8 +974,21 @@ def apply_result(placement: HubClusterPlacement, profile: Any, args: argparse.Na
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy Hub services for a multi-hub Coolify topology.")
-    parser.add_argument("action", choices=["plan", "apply"], help="Use plan to render payloads; use apply to call Coolify.")
+    parser.add_argument(
+        "action",
+        choices=["list-components", "prep-packet", "plan", "apply"],
+        help="Use prep-packet to select a Hub/FDB generation; use plan/apply to deploy Hub services.",
+    )
+    parser.add_argument("network", nargs="?", default="", help="Network key for list-components/prep-packet, e.g. testnet.")
     parser.add_argument("--placement", type=Path, default=DEFAULT_PLACEMENT_PATH, help="Path to testnet-coolify-deployment.json.")
+    parser.add_argument("--packet", type=Path, default=None, help="Read enabled Hub/FDB generation from deploy/packets/<network>-packet.json.")
+    parser.add_argument("--topology", type=Path, default=None, help="Optional topology path override for prep-packet/list-components.")
+    parser.add_argument("--hubs", default="", help="Comma-separated Hub ids to enable for prep-packet.")
+    parser.add_argument("--fdb", default="", help="Comma-separated FoundationDB instance ids to enable for prep-packet.")
+    parser.add_argument("--generation", default="", help="Optional deploy packet generation id.")
+    parser.add_argument("--intent", default="", help="Optional human-readable operator intent stored in the deploy packet.")
+    parser.add_argument("--out", default="", help="Output path for prep-packet. Defaults to deploy/packets/<network>-packet.json.")
+    parser.add_argument("--no-archive", action="store_true", help="Do not archive an existing different packet before writing.")
     parser.add_argument("--network-config", type=Path, default=None, help="Path to hub_networks.json.")
 
     parser.add_argument(
@@ -952,16 +1060,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        placement = load_hub_cluster_placement(repo_relative_path(args.placement))
-        profile = load_network_profile(placement, args)
-        if not str(args.coolify_environment_name or "").strip():
-            args.coolify_environment_name = f"{placement.network_key}-{DEFAULT_ENVIRONMENT_SUFFIX}"
-        result = (
-            {"ok": True, "plan": plan_result(placement, profile, args)}
-            if args.action == "plan"
-            else apply_result(placement, profile, args)
-        )
-    except (CoolifyHubDeployError, HubNetworkConfigError) as exc:
+        if args.action in {"list-components", "prep-packet"}:
+            network = packet_tool.clean_identifier(args.network or "", "network")
+            if args.placement == DEFAULT_PLACEMENT_PATH and network != "testnet":
+                placement_path = packet_tool.default_placement_path(network)
+            else:
+                placement_path = repo_relative_path(args.placement or packet_tool.default_placement_path(network))
+            topology_path = repo_relative_path(args.topology) if args.topology else None
+            if args.action == "list-components":
+                result = packet_tool.list_components_result(network, placement_path, topology_path)
+            else:
+                result = packet_tool.prep_packet_result(
+                    argparse.Namespace(
+                        network=network,
+                        placement=placement_path,
+                        topology=topology_path or "",
+                        hubs=args.hubs,
+                        fdb=args.fdb,
+                        generation=args.generation,
+                        intent=args.intent,
+                        out=args.out,
+                        no_archive=args.no_archive,
+                    )
+                )
+        else:
+            placement = (
+                load_hub_cluster_placement_from_packet(repo_relative_path(args.packet))
+                if args.packet
+                else load_hub_cluster_placement(repo_relative_path(args.placement))
+            )
+            profile = load_network_profile(placement, args)
+            if not str(args.coolify_environment_name or "").strip():
+                args.coolify_environment_name = f"{placement.network_key}-{DEFAULT_ENVIRONMENT_SUFFIX}"
+            result = (
+                {"ok": True, "plan": plan_result(placement, profile, args)}
+                if args.action == "plan"
+                else apply_result(placement, profile, args)
+            )
+    except (CoolifyHubDeployError, HubNetworkConfigError, packet_tool.DeployPacketError) as exc:
         result = {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
         if args.json:
             print(json.dumps(result, sort_keys=True))

@@ -124,6 +124,7 @@
     <div class="mcel-tiny-contract-actions" role="group" aria-label="SCM-proven dev-network actions">
       <button type="button" id="mcel-tiny-contract-run">Run SCM + wallet proof</button>
       <button type="button" id="mcel-tiny-contract-wallet">Connect/check MetaMask devnet</button>
+      <button type="button" id="mcel-tiny-contract-disconnect">Disconnect/reset wallet</button>
       <button type="button" id="mcel-tiny-contract-increment">Select next release</button>
       <button type="button" id="mcel-tiny-contract-tx-draft">Draft release transaction</button>
       <button type="button" id="mcel-tiny-contract-repair">Repair runtime wallet hint</button>
@@ -189,6 +190,10 @@
     "wallet.connect": {
       "reads": ["source.devRelease.devNetwork"],
       "writes": ["runtime.wallet", "runtime.network", "runtime.evidenceStrip"]
+    },
+    "wallet.disconnect": {
+      "reads": ["runtime.wallet", "runtime.network", "runtime.txDraft"],
+      "writes": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.evidenceStrip"]
     },
     "network.verify": {
       "reads": ["source.devRelease.devNetwork", "runtime.network"],
@@ -259,8 +264,8 @@
   data-mc-failure-behavior="block-undeclared-source-write"
 >
   <header data-mc-component="dev-release.header" data-mc-owner="source">
-    <p data-mc-field="devRelease.devNetwork" data-mc-network="hardhat" data-mc-chain-id="0x7a69">
-      Dev network: Hardhat local chain 31337
+    <p data-mc-field="devRelease.devNetwork" data-mc-network="hardhat" data-mc-chain-id="0x28757b2">
+      Dev network: Main Computer Dev Chain 42424242
     </p>
     <h1 data-mc-field="devRelease.title" data-mc-required>Dev Network Release Console</h1>
     <p data-mc-field="devRelease.summary">
@@ -276,14 +281,21 @@
       data-mc-effect="wallet.connect"
       data-mc-reads="source.devRelease.devNetwork"
       data-mc-writes="runtime.wallet runtime.network runtime.evidenceStrip"
-      data-mc-trigger="explicit-wallet-connect"
+      data-mc-trigger="state.walletGate"
     >Connect dev wallet</button>
+    <button
+      type="button"
+      data-mc-effect="wallet.disconnect"
+      data-mc-reads="runtime.wallet runtime.network runtime.txDraft"
+      data-mc-writes="runtime.wallet runtime.network runtime.txDraft runtime.evidenceStrip"
+      data-mc-trigger="state.walletGate"
+    >Disconnect/reset wallet</button>
     <button
       type="button"
       data-mc-effect="network.verify"
       data-mc-reads="source.devRelease.devNetwork runtime.network"
       data-mc-writes="runtime.network runtime.evidenceStrip"
-      data-mc-trigger="explicit-network-check"
+      data-mc-trigger="state.walletGate"
     >Verify dev network</button>
     <aside data-mc-slot="runtime.wallet" data-mc-owner="runtime"></aside>
   </section>
@@ -313,14 +325,14 @@
       data-mc-effect="release.draftTx"
       data-mc-reads="source.devRelease.contractAddress source.devRelease.requests state.selectedRequestId runtime.wallet runtime.network"
       data-mc-writes="runtime.txDraft runtime.evidenceStrip"
-      data-mc-trigger="explicit-draft"
+      data-mc-trigger="runtime.network", "state.selectedRequestId"
     >Draft transaction</button>
     <button
       type="button"
       data-mc-effect="release.approve"
       data-mc-reads="source.devRelease.requests state.selectedRequestId"
       data-mc-writes="source.devRelease.requests runtime.evidenceStrip"
-      data-mc-trigger="human-approval"
+      data-mc-trigger="state.selectedRequestId"
     >Approve release source</button>
   </section>
 

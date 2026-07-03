@@ -1947,6 +1947,87 @@
   gap: 6px;
 }
 
+/* Patch 18E: Code Studio SCM receipt surface.
+   The right inspector now turns contract/effect/runtime proof state into a compact receipt instead
+   of making users infer effect gaps from raw JSON. */
+.code-studio-scm-receipt-card {
+  border-color: rgba(86, 156, 214, 0.55);
+  background:
+    linear-gradient(135deg, rgba(0, 122, 204, 0.16), rgba(27, 27, 27, 0.92)),
+    #1b1b1b;
+}
+
+.code-studio-scm-effect-graph {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.code-studio-scm-effect-node {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  background: #202020;
+}
+
+.code-studio-scm-effect-node div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.code-studio-scm-effect-node strong,
+.code-studio-scm-effect-node span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.code-studio-scm-effect-node span {
+  color: #a8a8a8;
+  font-size: 11px;
+}
+
+.code-studio-scm-effect-node code {
+  border: 1px solid #3c3c3c;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: #111111;
+  color: #dcdcaa;
+  font-size: 11px;
+}
+
+.code-studio-scm-effect-node[data-status="pass"] {
+  border-color: rgba(70, 190, 130, 0.55);
+}
+
+.code-studio-scm-effect-node[data-status="fail"] {
+  border-color: rgba(255, 95, 87, 0.65);
+}
+
+.code-studio-scm-effect-node[data-status="declared"],
+.code-studio-scm-effect-node[data-status="waiting"] {
+  border-color: rgba(220, 220, 170, 0.45);
+}
+
+.code-studio-scm-gap-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 18px;
+  color: #d4d4d4;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.code-studio-scm-gap-list li {
+  padding-left: 2px;
+  overflow-wrap: anywhere;
+}
+
 .code-studio-proof-dock-tabs {
   color: #c7c7c7;
 }

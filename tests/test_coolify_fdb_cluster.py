@@ -22,6 +22,7 @@ spec.loader.exec_module(coolify_fdb_cluster)
 def _args(**overrides):
     defaults = {
         "placement": REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
+        "packet": None,
         "set_coolify_url": [
             "coolify-a:https://ipaddress1:8000",
             "coolify-b:https://ipaddress2:8000",
@@ -185,6 +186,33 @@ class CoolifyFdbClusterTests(unittest.TestCase):
         self.assertNotIn("command = /usr/sbin/fdbserver", compose)
         self.assertIn("entrypoint:", compose)
         self.assertNotIn("    command:", compose)
+
+    def test_packet_filters_fdb_instances_and_writes_cluster_file_on_unselected_host(self) -> None:
+        packet = coolify_fdb_cluster.packet_tool.build_packet(
+            network="testnet",
+            placement_path=REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
+            topology_path=None,
+            selected_hubs=["testnet-hub1"],
+            selected_fdb=["testnet-fdb1"],
+            generation="testnet-unit",
+        )
+        packet_path = REPO_ROOT / "runtime" / "testnet-unit-fdb-packet.json"
+        try:
+            packet_path.write_text(coolify_fdb_cluster.packet_tool.canonical_packet_json(packet), encoding="utf-8")
+            placement = coolify_fdb_cluster.load_fdb_placement_from_packet(packet_path)
+
+            self.assertEqual([instance.id for instance in placement.instances], ["testnet-fdb1"])
+            self.assertEqual(
+                coolify_fdb_cluster.fdb_cluster_contents(placement),
+                "main_computer_testnet:7f0396a2939ca9c6@10.116.0.3:4550",
+            )
+            compose_b = coolify_fdb_cluster.render_server_fdb_compose(placement, "coolify-b")
+            self.assertIn("testnet-fdb-disabled:", compose_b)
+            self.assertIn("No FoundationDB instances are enabled for testnet on coolify-b.", compose_b)
+            self.assertIn("main_computer_testnet:7f0396a2939ca9c6@10.116.0.3:4550", compose_b)
+            self.assertNotIn("testnet-fdb3:", compose_b)
+        finally:
+            packet_path.unlink(missing_ok=True)
 
     def test_missing_coolify_url_mapping_is_rejected(self) -> None:
         placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)

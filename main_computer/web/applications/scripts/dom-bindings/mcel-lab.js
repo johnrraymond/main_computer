@@ -36,9 +36,30 @@
           repairCount: 0,
           reviewedCount: 0,
           walletConnectCount: 0,
+          walletDisconnectCount: 0,
+          walletDisconnectCommitCount: 0,
+          walletRevokeAttemptCount: 0,
+          walletRevokeSuccessCount: 0,
+          routeLoaderCount: 0,
+          networkVerifyCount: 0,
+          releaseSelectCount: 0,
           txDraftCount: 0,
+          fullBatteryRunCount: 0,
+          lastWalletResetClean: false,
           lastProof: null,
           evidence: [],
+          walletAdapter: {
+            providerKind: "unknown",
+            liveProvider: false,
+            mockFallback: false,
+            ethersReady: false,
+            walletSubsystemReady: false,
+            eventsBound: false,
+            calls: [],
+            events: [],
+            lastError: "",
+            permissionRevoked: false
+          },
           scmInstance: null,
           scmRouteInstance: null
         },
@@ -130,6 +151,7 @@
     const mcelTinyContractRun = document.querySelector("#mcel-tiny-contract-run");
     const mcelTinyContractIncrement = document.querySelector("#mcel-tiny-contract-increment");
     const mcelTinyContractWallet = document.querySelector("#mcel-tiny-contract-wallet");
+    const mcelTinyContractDisconnect = document.querySelector("#mcel-tiny-contract-disconnect");
     const mcelTinyContractDraftTx = document.querySelector("#mcel-tiny-contract-tx-draft");
     const mcelTinyContractRepair = document.querySelector("#mcel-tiny-contract-repair");
     const mcelTinyContractBlockWrite = document.querySelector("#mcel-tiny-contract-block-write");

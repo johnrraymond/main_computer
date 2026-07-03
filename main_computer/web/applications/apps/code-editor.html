@@ -198,21 +198,29 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
       </section>
 
       <aside class="code-studio-inspector" aria-label="Tabbed SCM and AI inspector" data-code-studio-workbench-region="scm-ai-inspector" data-mc-component-id="code-editor.studio.inspector" data-mc-component-kind="panel" data-mc-component-label="Tabbed SCM / AI Inspector" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
-        <section class="code-studio-scm-ai-inspector" id="code-studio-flagship-inspector" aria-label="SCM / AI Inspector">
+        <section class="code-studio-scm-ai-inspector" id="code-studio-flagship-inspector" aria-label="SCM Receipt Inspector">
           <div class="code-studio-panel-heading code-studio-scm-ai-heading">
-            <strong>SCM / AI</strong>
-            <span>Contract · Evidence · Runtime · AI</span>
+            <strong>SCM Receipt</strong>
+            <span>Contract · Effects · Runtime · Repair</span>
           </div>
-          <div class="code-studio-scm-ai-tabs" role="tablist" aria-label="SCM and AI concerns">
+          <div class="code-studio-scm-ai-tabs" role="tablist" aria-label="SCM receipt, effects, runtime, and repair">
             <button type="button" class="active" role="tab" aria-selected="true" data-code-studio-scm-ai-tab="contract" id="code-studio-scm-ai-tab-contract">Contract</button>
-            <button type="button" role="tab" aria-selected="false" data-code-studio-scm-ai-tab="evidence" id="code-studio-scm-ai-tab-evidence">Evidence</button>
+            <button type="button" role="tab" aria-selected="false" data-code-studio-scm-ai-tab="evidence" id="code-studio-scm-ai-tab-evidence">Effects</button>
             <button type="button" role="tab" aria-selected="false" data-code-studio-scm-ai-tab="runtime" id="code-studio-scm-ai-tab-runtime">Runtime</button>
-            <button type="button" role="tab" aria-selected="false" data-code-studio-scm-ai-tab="ai" id="code-studio-scm-ai-tab-ai">AI</button>
+            <button type="button" role="tab" aria-selected="false" data-code-studio-scm-ai-tab="ai" id="code-studio-scm-ai-tab-ai">Repair</button>
           </div>
 
           <div class="code-studio-scm-ai-panel active" role="tabpanel" data-code-studio-scm-ai-panel="contract" id="code-studio-scm-ai-panel-contract">
+            <div class="code-studio-scm-ai-card code-studio-scm-receipt-card">
+              <strong>SCM receipt</strong>
+              <p>The authoring surface should answer which contract battery ran, where the gaps are, and whether source stayed clean.</p>
+              <dl id="code-studio-flagship-receipt-summary">
+                <dt>Mode</dt><dd>waiting</dd>
+                <dt>Receipt</dt><dd>not run</dd>
+              </dl>
+            </div>
             <div class="code-studio-scm-ai-card">
-              <strong>Contract</strong>
+              <strong>Contract surface</strong>
               <p>What is supposed to be true before rendering: ownership, allowed reads/writes, composition, and failure behavior.</p>
               <dl id="code-studio-flagship-contract-summary">
                 <dt>Component</dt><dd>CodeStudio 2.9.0</dd>
@@ -224,7 +232,25 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
 
           <div class="code-studio-scm-ai-panel" role="tabpanel" data-code-studio-scm-ai-panel="evidence" id="code-studio-scm-ai-panel-evidence" hidden>
             <div class="code-studio-scm-ai-card">
-              <strong>Evidence</strong>
+              <strong>Selected effect</strong>
+              <p>Click an evidence row or author an element with <code>data-mc-effect</code> to inspect declared reads, writes, latest status, and next action.</p>
+              <dl id="code-studio-flagship-selected-effect-summary">
+                <dt>Effect</dt><dd>none selected</dd>
+                <dt>Status</dt><dd>waiting</dd>
+              </dl>
+            </div>
+            <div class="code-studio-scm-ai-card">
+              <strong>Effect graph</strong>
+              <p>Route loaders, wallet/provider effects, runtime mutations, source approvals, serialization, and repair should show as compact governed steps.</p>
+              <div class="code-studio-scm-effect-graph" id="code-studio-flagship-effect-graph" aria-label="SCM effect graph preview"></div>
+            </div>
+            <div class="code-studio-scm-ai-card">
+              <strong>Actionable gaps</strong>
+              <p>Missing proof should become the next thing to run or inspect, not a JSON wall.</p>
+              <ol class="code-studio-scm-gap-list" id="code-studio-flagship-actionable-gaps"></ol>
+            </div>
+            <div class="code-studio-scm-ai-card">
+              <strong>Evidence summary</strong>
               <p>What the live system has proven: gate state, visible evidence, violations, and the selected proof row.</p>
               <dl id="code-studio-flagship-evidence-summary">
                 <dt>Gates</dt><dd>pending refresh</dd>
@@ -236,7 +262,23 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
 
           <div class="code-studio-scm-ai-panel" role="tabpanel" data-code-studio-scm-ai-panel="runtime" id="code-studio-scm-ai-panel-runtime" hidden>
             <div class="code-studio-scm-ai-card">
-              <strong>Runtime</strong>
+              <strong>Current runtime</strong>
+              <p>Current runtime state is separate from historical proof receipts. Reconnects should not rewrite the meaning of an earlier reset proof.</p>
+              <dl id="code-studio-flagship-current-runtime-summary">
+                <dt>Mounted</dt><dd>not mounted</dd>
+                <dt>Dirty state</dt><dd>clean</dd>
+              </dl>
+            </div>
+            <div class="code-studio-scm-ai-card">
+              <strong>Historical proof</strong>
+              <p>Replay, serialization, repair, and persistence are receipts of what ran, not just the current UI state.</p>
+              <dl id="code-studio-flagship-proof-history-summary">
+                <dt>Replay</dt><dd>not run</dd>
+                <dt>Serialization</dt><dd>not run</dd>
+              </dl>
+            </div>
+            <div class="code-studio-scm-ai-card">
+              <strong>Runtime route</strong>
               <p>What happened live: route params/query, effects, persistence, serialization, and replay comparison state.</p>
               <dl id="code-studio-flagship-runtime-summary">
                 <dt>Route</dt><dd>workspace.file/src/app.js</dd>
@@ -248,7 +290,7 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
 
           <div class="code-studio-scm-ai-panel" role="tabpanel" data-code-studio-scm-ai-panel="ai" id="code-studio-scm-ai-panel-ai" hidden>
             <div class="code-studio-scm-ai-card">
-              <strong>AI</strong>
+              <strong>Repair boundary</strong>
               <p>What an agent may use next: repair prompt, contract helper, exported packet, and explicit forbidden-change boundaries.</p>
               <dl id="code-studio-flagship-ai-summary">
                 <dt>Repair prompt</dt><dd>ready after evidence export</dd>

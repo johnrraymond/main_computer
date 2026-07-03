@@ -22,6 +22,7 @@ def _args(**overrides):
     defaults = {
         "placement": REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
         "network_config": None,
+        "packet": None,
         "set_coolify_url": [
             "coolify-a:http://ipaddress1:8000",
             "coolify-b:http://ipaddress2:8000",
@@ -116,23 +117,23 @@ class CoolifyHubClusterTests(unittest.TestCase):
         self.assertEqual(placement.namespace, "main-computer-testnet-exp-fdb-stable-live-sessions")
         self.assertEqual(placement.topology_container_path, "/app/deploy/hub-topology/testnet-topology.json")
 
-    def test_mainnet_placement_loads_single_mainnet_hub(self) -> None:
+    def test_mainnet_placement_loads_three_mainnet_hubs_across_a_b(self) -> None:
         placement = coolify_hub_cluster.load_hub_cluster_placement(
             REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json"
         )
 
         self.assertEqual(placement.network_key, "mainnet")
-        self.assertEqual(sorted(placement.servers), ["mainnet-a"])
-        self.assertEqual([hub.hub_id for hub in placement.hubs], ["mainnet-hub1"])
+        self.assertEqual(sorted(placement.servers), ["coolify-a", "coolify-b"])
+        self.assertEqual([hub.hub_id for hub in placement.hubs], ["mainnet-hub1", "mainnet-hub2", "mainnet-hub3"])
         self.assertEqual(placement.cluster_file_path, "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster")
         self.assertEqual(placement.namespace, "main-computer-mainnet-exp-fdb-stable-live-sessions")
         self.assertEqual(placement.topology_container_path, "/app/deploy/hub-topology/mainnet-topology.json")
         self.assertEqual(placement.public_entry_urls, ("https://mainnet-hub.greatlibrary.io",))
 
-    def test_mainnet_placement_plan_renders_mainnet_hub_service(self) -> None:
+    def test_mainnet_placement_plan_renders_mainnet_hub_services(self) -> None:
         args = _args(
             placement=REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json",
-            set_coolify_url=["mainnet-a:http://mainnet-coolify:8000"],
+            set_coolify_url=["coolify-a:http://mainnet-a-coolify:8000", "coolify-b:http://mainnet-b-coolify:8000"],
             coolify_project_name="Main Computer",
             coolify_environment_name="mainnet-hubs",
         )
@@ -140,11 +141,13 @@ class CoolifyHubClusterTests(unittest.TestCase):
         profile = coolify_hub_cluster.load_network_profile(placement, args)
 
         plan = coolify_hub_cluster.plan_result(placement, profile, args)
-        compose = coolify_hub_cluster.render_server_hub_compose(placement, profile, args, "mainnet-a")
+        compose = coolify_hub_cluster.render_server_hub_compose(placement, profile, args, "coolify-a")
 
         self.assertEqual(plan["network_key"], "mainnet")
-        self.assertEqual(plan["servers"][0]["service_name"], "main-computer-mainnet-hubs-mainnet-a")
+        self.assertEqual(plan["servers"][0]["service_name"], "main-computer-mainnet-hubs-coolify-a")
+        self.assertEqual(plan["servers"][1]["service_name"], "main-computer-mainnet-hubs-coolify-b")
         self.assertIn("mainnet-hub1:", compose)
+        self.assertIn("mainnet-hub2:", compose)
         self.assertIn("https://mainnet-hub1.greatlibrary.io", compose)
         self.assertIn("--chain-id", compose)
         self.assertIn("42424240", compose)
@@ -265,6 +268,36 @@ class CoolifyHubClusterTests(unittest.TestCase):
         self.assertIn("testnet-hub.greatlibrary.io", config["contents"])
         self.assertIn("testnet-hub1:8785", config["contents"])
         self.assertIn("testnet-hub2:8785", config["contents"])
+
+    def test_packet_selects_enabled_hubs_and_renders_config_layer_for_unselected_host(self) -> None:
+        packet = coolify_hub_cluster.packet_tool.build_packet(
+            network="testnet",
+            placement_path=REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json",
+            topology_path=None,
+            selected_hubs=["testnet-hub1", "testnet-hub2"],
+            selected_fdb=["testnet-fdb1"],
+            generation="testnet-unit",
+        )
+        packet_path = REPO_ROOT / "runtime" / "testnet-unit-packet.json"
+        try:
+            packet_path.write_text(coolify_hub_cluster.packet_tool.canonical_packet_json(packet), encoding="utf-8")
+            placement = coolify_hub_cluster.load_hub_cluster_placement_from_packet(packet_path)
+            profile = coolify_hub_cluster.load_network_profile(placement, _args())
+
+            compose_a = coolify_hub_cluster.render_server_hub_compose(placement, profile, _args(), "coolify-a")
+            compose_b = coolify_hub_cluster.render_server_hub_compose(placement, profile, _args(), "coolify-b")
+
+            self.assertEqual([hub.hub_id for hub in placement.hubs], ["testnet-hub1", "testnet-hub2"])
+            self.assertIn("deploy-packet-topology.json", compose_a)
+            self.assertIn("testnet-unit", compose_a)
+            self.assertIn("testnet-hub1:", compose_a)
+            self.assertIn("testnet-hub2:", compose_a)
+            self.assertNotIn("testnet-hub3:", compose_a)
+            self.assertIn("main_computer_testnet:7f0396a2939ca9c6@10.116.0.3:4550", compose_a)
+            self.assertIn("testnet-hubs-disabled:", compose_b)
+            self.assertIn("No Hub instances are enabled for testnet on coolify-b.", compose_b)
+        finally:
+            packet_path.unlink(missing_ok=True)
 
     def test_missing_coolify_url_mapping_is_rejected(self) -> None:
         args = _args(set_coolify_url=["coolify-a:http://ipaddress1:8000"])

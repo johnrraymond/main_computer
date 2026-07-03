@@ -2264,6 +2264,9 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "MetaMask/dev-network state" in app
     assert "Run SCM + wallet proof" in app
     assert "Connect/check MetaMask devnet" in app
+    assert "Disconnect/reset wallet" in app
+    assert "0x28757b2" in app
+    assert "Main Computer Dev Chain" in app
     assert "Draft release transaction" in app
     assert 'id="mcel-tiny-contract-language-template"' in app
     assert 'id="mcel-tiny-contract-runtime-mount"' in app
@@ -2271,12 +2274,14 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert 'id="mcel-tiny-contract-map"' in app
     assert 'id="mcel-tiny-contract-evidence"' in app
     assert 'id="mcel-tiny-contract-wallet"' in app
+    assert 'id="mcel-tiny-contract-disconnect"' in app
     assert 'id="mcel-tiny-contract-tx-draft"' in app
     assert 'id="mcel-tiny-contract-repair"' in app
     assert 'id="mcel-tiny-contract-block-write"' in app
     assert '"kind": "mcel.scm.app"' in app
     assert '"name": "DevNetworkReleaseConsole"' in app
     assert '"wallet.connect"' in app
+    assert '"wallet.disconnect"' in app
     assert '"network.verify"' in app
     assert '"release.draftTx"' in app
     assert '"release.approve"' in app
@@ -2289,6 +2294,7 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert 'data-mc-field="devRelease.devNetwork"' in app
     assert 'data-mc-field="devRelease.requests"' in app
     assert 'data-mc-effect="wallet.connect"' in app
+    assert 'data-mc-effect="wallet.disconnect"' in app
     assert 'data-mc-effect="network.verify"' in app
     assert 'data-mc-effect="release.select"' in app
     assert 'data-mc-effect="release.draftTx"' in app
@@ -2312,6 +2318,13 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "repairCount" in bindings
     assert "reviewedCount" in bindings
     assert "walletConnectCount" in bindings
+    assert "walletDisconnectCommitCount" in bindings
+    assert "walletRevokeAttemptCount" in bindings
+    assert "routeLoaderCount" in bindings
+    assert "networkVerifyCount" in bindings
+    assert "releaseSelectCount" in bindings
+    assert "fullBatteryRunCount" in bindings
+    assert "lastWalletResetClean" in bindings
     assert "txDraftCount" in bindings
     assert "mcelTinyContractLanguageTemplate" in bindings
     assert "mcelTinyContractRuntimeMount" in bindings
@@ -2320,6 +2333,7 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "mcelTinyContractProof" in bindings
     assert "mcelTinyContractEvidence" in bindings
     assert "mcelTinyContractWallet" in bindings
+    assert "mcelTinyContractDisconnect" in bindings
     assert "mcelTinyContractDraftTx" in bindings
     assert "mcelTinyContractRepair" in bindings
     assert "mcelTinyContractBlockWrite" in bindings
@@ -2333,12 +2347,24 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "workspace.dev-network-release" in ui
     assert "devnet.load" in ui
     assert "wallet.connect" in ui
+    assert "wallet.disconnect" in ui
     assert "network.verify" in ui
     assert "release.draftTx" in ui
     assert "release.approve" in ui
     assert "ai.repairWalletHint" in ui
     assert "readMcelTinyContractWalletProvider" in ui
+    assert "mcelTinyContractWalletRequest" in ui
+    assert "bindMcelTinyContractWalletProviderEvents" in ui
+    assert "wallet_revokePermissions" in ui
+    assert "0x28757b2" in ui
+    assert "ethers.BrowserProvider.getNetwork" in ui
+    assert "MainComputerWalletApp.providerSnapshot" in ui
+    assert "runMcelTinyContractScmWalletProof" in ui
     assert "connectMcelTinyContractWallet" in ui
+    assert "disconnectMcelTinyContractWallet" in ui
+    assert 'const previousNetwork = ctx.get("runtime.network") || {}' in ui
+    assert 'const expectedChainId = previousNetwork.expectedChainId || previousNetwork.chainId || "0x28757b2";' in ui
+    assert 'ctx.get("source.devRelease.devNetwork.chainId")' not in ui
     assert "draftMcelTinyContractTransaction" in ui
     assert "McelLabScm.defineComponent" in ui or "defineComponent" in ui
     assert "McelLabScm.defineRoute" in ui or "defineRoute" in ui
@@ -2356,17 +2382,58 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "SCM_EFFECT_UNDECLARED_WRITE" in ui
     assert "routeLoaderCommitted" in ui
     assert "walletEffectRan" in ui
+    assert "walletDisconnectReset" in ui
+    assert "walletDisconnectCommitCount" in ui
+    assert "walletRevokeAttemptCount" in ui
+    assert "routeLoaderCount" in ui
+    assert "networkVerifyCount" in ui
+    assert "releaseSelectCount" in ui
+    assert "fullBatteryRunCount" in ui
+    assert "lastWalletResetClean" in ui
+    assert "walletAdapterExercised" in ui
+    assert "walletLiveProviderObserved" in ui
+    assert "walletEventsSubscribed" in ui
+    assert "walletSubsystemObserved" in ui
+    assert "walletPermissionRevokeAttempted" in ui
+    assert "receiptMode" in ui
+    assert "wallet-reset" in ui
+    assert "wallet-lifecycle" in ui
+    assert "full-scm-battery" in ui
+    assert "PASS: disconnected wallet reset is tamed by SCM" in ui
+    assert "PASS: wallet lifecycle is tamed by SCM" in ui
+    assert "PASS: full SCM wallet battery is clean" in ui
+    assert "missing (optional)" in ui
+    assert "not required for reset" in ui
+    assert "not required before connect" in ui
+    assert "full battery only" in ui
     assert "networkVerified" in ui
     assert "txDraftRuntimeOnly" in ui
     assert "declaredRuntimeEffectRan" in ui
     assert "declaredSourceEffectRan" in ui
     assert "unsafeSourceWriteBlocked" in ui
     assert "runtimeRepairScoped" in ui
+    assert '"runtime.proofChip"' in ui
     assert "serializationClean" in ui
     assert "layoutContractChecked" in ui
     assert "styleContractChecked" in ui
     assert "loadMcelTinyContractIntoSourceEditor" in ui
-    assert "renderMcelTinyContractTest(\"boot\")" in ui
+    assert "renderMcelTinyContractTest(\"boot\", { exercise: false })" in ui
+    assert "window.McelLabScm" in ui
+    assert "provider permission revoke" in ui or "wallet_revokePermissions" in ui
+    assert "captured as SCM evidence instead of escaping as an uncaught UI error" in ui
+    assert "wallet adapter:" in ui
+    assert "wallet rpc:" in ui
+    assert "wallet events:" in ui
+
+    assert "explicit-wallet-connect" not in ui
+    assert "explicit-draft" not in ui
+    assert 'triggers: ["state.walletGate"]' in ui
+    assert 'triggers: ["runtime.network", "state.selectedRequestId"]' in ui
+    assert '"route.query.chain"' in ui
+    assert '"devnet.load"' in ui
+    assert '"runLoader"' not in ui
+    assert '"component.runtime.txDraft.status"' in ui
+    assert '"runtime.txDraft.status:ready"' not in ui
 
     assert ".mcel-tiny-contract-test" in style
     assert ".mcel-tiny-contract-runtime [data-mc-component=\"dev-network-release-console\"]" in style

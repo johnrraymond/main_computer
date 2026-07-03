@@ -1910,7 +1910,7 @@
         return result;
       }
 
-      // Flagship inspector mental model: Contract = what should be true, Evidence = what is proven, Runtime = what happened, AI = what may change next.
+      // Flagship inspector mental model: Contract = what must hold, Effects = what may mutate, Runtime = what is current, Repair = what may change next.
       function gateLabel(value) {
         return value === false ? "fail" : "ok";
       }
@@ -1958,6 +1958,264 @@
         }
       }
 
+      function normalizeScmSurfaceList(value) {
+        if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+        return String(value || "")
+          .split(/[,\s]+/)
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+
+      function formatScmSurfaceList(value, fallback = "none declared") {
+        const items = normalizeScmSurfaceList(value);
+        return items.length ? items.join(", ") : fallback;
+      }
+
+      function compactSourceSnippet(value, limit = 72) {
+        const text = String(value || "").replace(/\s+/g, " ").trim();
+        if (!text) return "source element";
+        return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+      }
+
+      function extractContractEffectsFromHtml(html, filePath = "source.html") {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(String(html || ""), "text/html");
+        return [...doc.querySelectorAll("[data-mc-effect]")].map((node, index) => {
+          const effectName = node.getAttribute("data-mc-effect") || `effect-${index + 1}`;
+          return {
+            name: effectName,
+            kind: "declared-effect",
+            status: "declared",
+            trigger: node.getAttribute("data-mc-trigger") || node.getAttribute("data-mc-event") || "explicit",
+            reads: normalizeScmSurfaceList(node.getAttribute("data-mc-reads") || node.getAttribute("data-mc-read")),
+            writes: normalizeScmSurfaceList(node.getAttribute("data-mc-writes") || node.getAttribute("data-mc-write")),
+            sourcePath: filePath,
+            sourceLabel: compactSourceSnippet(node.textContent || node.getAttribute("aria-label") || effectName)
+          };
+        });
+      }
+
+      function collectContractEffectSurface(fields = workspaceFields()) {
+        const byName = new Map();
+        const add = (entry) => {
+          if (!entry?.name) return;
+          const existing = byName.get(entry.name);
+          if (!existing) {
+            byName.set(entry.name, entry);
+            return;
+          }
+          byName.set(entry.name, {
+            ...existing,
+            ...entry,
+            reads: [...new Set([...(existing.reads || []), ...(entry.reads || [])])],
+            writes: [...new Set([...(existing.writes || []), ...(entry.writes || [])])],
+            sourcePath: existing.sourcePath || entry.sourcePath,
+            sourceLabel: existing.sourceLabel || entry.sourceLabel
+          });
+        };
+
+        (fields.files || []).forEach((file) => {
+          extractContractEffectsFromHtml(file.value, file.path || "source.html").forEach(add);
+        });
+        extractContractEffectsFromHtml(sourceEditor.value, "workspace-source").forEach(add);
+
+        [
+          {name: "runValidation", kind: "component-effect", trigger: "validate", reads: ["source.workspace.files"], writes: ["runtime.validationReport"]},
+          {name: "loadWorkspace", kind: "route-effect", trigger: "route loader", reads: ["route.params.workspaceId"], writes: ["runtime.workspace"]},
+          {name: "loadFile", kind: "route-effect", trigger: "route loader", reads: ["route.params.fileId"], writes: ["runtime.loadedFile"]},
+          {name: "saveFile", kind: "source-effect", trigger: "explicit save", reads: ["runtime.loadedFile"], writes: ["source.workspace.files"]},
+          {name: "serialize", kind: "serialization", trigger: "explicit serialize", reads: ["source.workspace.files", "runtime.preview"], writes: ["runtime.serializedOutput"]},
+          {name: "repair:rebuildWorkbenchShell", kind: "repair", trigger: "AI repair", reads: ["runtime.validationReport", "runtime.evidence"], writes: ["runtime.repairResult"]}
+        ].forEach(add);
+
+        return [...byName.values()];
+      }
+
+      function effectNameFromEvidence(entry = {}) {
+        return entry.effectName
+          || entry.transitionName
+          || entry.loaderName
+          || entry.strategyName
+          || entry.childName
+          || "";
+      }
+
+      function evidenceStatusLabel(entry = {}) {
+        if (!entry || entry.kind === "mcel-code-studio-idle-evidence") return "waiting";
+        if (evidenceEntryIsViolation(entry)) return "fail";
+        if (entry.ok === false) return "fail";
+        if (entry.skipped) return "skipped";
+        if (entry.phase || entry.kind || entry.code) return "pass";
+        return "waiting";
+      }
+
+      function statusRank(status) {
+        if (status === "fail") return 4;
+        if (status === "pass") return 3;
+        if (status === "skipped") return 2;
+        if (status === "declared") return 1;
+        return 0;
+      }
+
+      function mergeEffectStatus(current, next) {
+        return statusRank(next) > statusRank(current) ? next : current;
+      }
+
+      function buildEffectGraphModel(summary, gates, fields, selectedEvidence) {
+        const effectMap = new Map();
+        collectContractEffectSurface(fields).forEach((effect) => {
+          effectMap.set(effect.name, {
+            ...effect,
+            status: effect.status || "declared",
+            latestEvidence: null
+          });
+        });
+
+        (summary.allEvidence || []).forEach((entry) => {
+          const name = effectNameFromEvidence(entry);
+          if (!name) return;
+          const existing = effectMap.get(name) || {
+            name,
+            kind: evidenceEntryScope(entry, "effect"),
+            trigger: entry.phase || "evidence",
+            reads: [],
+            writes: [],
+            sourcePath: evidenceEntryScope(entry, "effect"),
+            sourceLabel: evidenceEntryLabel(entry)
+          };
+          const status = evidenceStatusLabel(entry);
+          effectMap.set(name, {
+            ...existing,
+            status: mergeEffectStatus(existing.status || "waiting", status),
+            latestEvidence: entry,
+            sourceLabel: existing.sourceLabel || evidenceEntryLabel(entry)
+          });
+        });
+
+        const validationStatus = gates.effect?.runValidation?.ok === false ? "fail" : gates.effect?.runValidation?.skipped ? "skipped" : gates.effect?.runValidation?.ok ? "pass" : "declared";
+        const loadWorkspaceStatus = gates.effect?.loadWorkspace?.ok === false ? "fail" : gates.effect?.loadWorkspace?.ok ? "pass" : "declared";
+        const loadFileStatus = gates.effect?.loadFile?.ok === false ? "fail" : gates.effect?.loadFile?.ok ? "pass" : "declared";
+        const saveStatus = gates.effect?.saveFile?.ok === false ? "fail" : gates.effect?.saveFile?.ok ? "pass" : "declared";
+        const serializationStatus = gates.serialization?.ok === false ? "fail" : gates.serialization?.resultKind || gates.serialization?.code ? "pass" : "declared";
+        const repairStatus = gates.repair?.ok === false ? "fail" : gates.repair?.resultKind || gates.repair?.code ? "pass" : "declared";
+
+        [
+          ["runValidation", validationStatus],
+          ["loadWorkspace", loadWorkspaceStatus],
+          ["loadFile", loadFileStatus],
+          ["saveFile", saveStatus],
+          ["serialize", serializationStatus],
+          ["repair:rebuildWorkbenchShell", repairStatus]
+        ].forEach(([name, status]) => {
+          const current = effectMap.get(name);
+          if (!current) return;
+          effectMap.set(name, {...current, status: mergeEffectStatus(current.status || "waiting", status)});
+        });
+
+        let selectedName = effectNameFromEvidence(selectedEvidence);
+        if (!selectedName && selectedEvidence?.scope === "serialization") selectedName = "serialize";
+        if (!selectedName && selectedEvidence?.scope === "repair") selectedName = "repair:rebuildWorkbenchShell";
+        const effects = [...effectMap.values()].sort((left, right) => {
+          const statusDelta = statusRank(right.status) - statusRank(left.status);
+          return statusDelta || String(left.name).localeCompare(String(right.name));
+        });
+        const selected = effectMap.get(selectedName)
+          || effects.find((effect) => effect.status === "fail")
+          || effects.find((effect) => effect.status === "declared")
+          || effects[0]
+          || null;
+
+        return {effects, selected};
+      }
+
+      function buildActionableScmGaps(summary, gates, effectGraph, selectedEvidence) {
+        const gaps = [];
+        if (gates.available === false) {
+          gaps.push("SCM bridge unavailable: load the runtime bridge before trusting proof output.");
+        }
+        if (gates.ok === false) {
+          gaps.push("Run or inspect the failing SCM gate in the proof dock.");
+        }
+        if (summary.combined.violations > 0) {
+          gaps.push(`Open violation detail: ${summary.combined.violations} blocking or suspicious evidence entr${summary.combined.violations === 1 ? "y" : "ies"}.`);
+        }
+        const declaredOnly = (effectGraph.effects || []).filter((effect) => effect.status === "declared").slice(0, 3);
+        declaredOnly.forEach((effect) => {
+          gaps.push(`Run or inspect ${effect.name}; it is declared but has no committed receipt in the current evidence.`);
+        });
+        if (selectedEvidence && evidenceEntryIsViolation(selectedEvidence)) {
+          gaps.unshift(`Selected evidence is failing: ${evidenceEntryLabel(selectedEvidence)}.`);
+        }
+        if (!gaps.length) {
+          gaps.push("No current gaps: open the proof dock only if you need raw replay, serialized output, or repair payloads.");
+        }
+        return gaps.slice(0, 5);
+      }
+
+      function buildScmReceiptSurfaceModel(summary, gates, fields, selectedEvidence, persistence, replayComparison, contractAuthoring) {
+        const effectGraph = buildEffectGraphModel(summary, gates, fields, selectedEvidence);
+        const selectedEffect = effectGraph.selected || {};
+        const receiptMode = studioState.lastReport ? "authoring-refresh" : "waiting";
+        const receiptOk = receiptMode !== "waiting" && gates.ok !== false && summary.combined.violations === 0;
+        const gaps = buildActionableScmGaps(summary, gates, effectGraph, selectedEvidence);
+        const activePane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "source";
+        const selected = selectedFile(fields);
+        return {
+          receiptMode,
+          receiptOk,
+          effectGraph: effectGraph.effects,
+          actionableGaps: gaps,
+          receiptRows: [
+            ["Mode", receiptMode],
+            ["Receipt", receiptMode === "waiting" ? "not run" : receiptOk ? "pass" : `gap · ${summary.combined.violations} violation(s)`],
+            ["Selected effect", selectedEffect.name || "none"],
+            ["Provider / external", "shown when contract evidence records adapter or RPC calls"],
+            ["Raw payloads", "Bottom Proof Dock only"]
+          ],
+          selectedEffectRows: [
+            ["Effect", selectedEffect.name || "none selected"],
+            ["Status", selectedEffect.status || "waiting"],
+            ["Trigger", selectedEffect.trigger || selectedEffect.kind || "not declared"],
+            ["Reads", formatScmSurfaceList(selectedEffect.reads)],
+            ["Writes", formatScmSurfaceList(selectedEffect.writes)],
+            ["Source", `${selectedEffect.sourcePath || "evidence"} · ${selectedEffect.sourceLabel || "no source element selected"}`]
+          ],
+          currentRuntimeRows: [
+            ["Active pane", activePane],
+            ["Mounted", studioState.mounted ? "mounted" : "not mounted"],
+            ["Dirty state", studioState.dirty ? "dirty" : "clean"],
+            ["Selected file", selected?.path || studioState.selectedPath || "none"],
+            ["Runtime chrome", "runtime preview, editor UI, evidence, assistant output"],
+            ["Route key", currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())]
+          ],
+          proofHistoryRows: [
+            ["Replay", replayComparison ? (replayComparison.stable ? "stable" : "changed") : "not run"],
+            ["Serialization", gates.serialization?.ok === false ? "fail" : studioState.lastSerializationGate ? "clean source checked" : "not run"],
+            ["Repair", gates.repair?.ok === false ? "fail" : studioState.lastRepairGate ? "scoped repair checked" : "not run"],
+            ["Persistence", `${persistence.status || "not saved"}${persistence.savedAt ? ` · ${persistence.savedAt}` : ""}`],
+            ["Contract helper", contractAuthoring ? "generated" : "not generated"]
+          ]
+        };
+      }
+
+      function renderScmEffectGraph(node, effects = []) {
+        if (!node) return;
+        node.innerHTML = (effects || []).slice(0, 9).map((effect) => `
+          <article class="code-studio-scm-effect-node" data-status="${escapeHtml(effect.status || "waiting")}">
+            <div>
+              <strong>${escapeHtml(effect.name || "effect")}</strong>
+              <span>${escapeHtml(effect.kind || effect.trigger || "governed effect")}</span>
+            </div>
+            <code>${escapeHtml(effect.status || "waiting")}</code>
+          </article>
+        `).join("") || '<p class="code-studio-empty-state">No governed effects found in the current contract surface.</p>';
+      }
+
+      function renderActionableScmGaps(node, gaps = []) {
+        if (!node) return;
+        node.innerHTML = (gaps || []).map((gap) => `<li>${escapeHtml(gap)}</li>`).join("");
+      }
+
       function buildFlagshipInspectorModel(report = studioState.lastReport) {
         const fields = workspaceFields();
         const selected = selectedFile(fields);
@@ -1969,6 +2227,7 @@
         const selectedEvidence = resolveSelectedScmEvidence(summary, filter, entries);
         const contractAuthoring = studioState.lastScmContractAuthoringExport || studioState.lastScmContractAuthoringHelper || null;
         const replayComparison = studioState.lastScmReplaySnapshotComparison;
+        const receiptSurface = buildScmReceiptSurfaceModel(summary, gates, fields, selectedEvidence, persistence, replayComparison, contractAuthoring);
 
         return {
           fields,
@@ -1979,6 +2238,7 @@
           selectedEvidence,
           contractAuthoring,
           replayComparison,
+          ...receiptSurface,
           contractRows: [
             ["Component", `CodeStudio ${window.McelCodeStudioScm?.componentVersion || "2.9.0"}`],
             ["Route", `${window.McelCodeStudioScm?.routeName || "workspace.file"} · ${window.McelCodeStudioScm?.routeVersion || "1.1.0"}`],
@@ -2021,8 +2281,14 @@
         if (!flagshipInspector) return null;
         const model = buildFlagshipInspectorModel(report);
         updateTopCommandStatus(model.summary, model.gates, model.persistence, model.fields);
+        renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-receipt-summary"), model.receiptRows);
         renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-contract-summary"), model.contractRows);
+        renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-selected-effect-summary"), model.selectedEffectRows);
+        renderScmEffectGraph(flagshipInspector.querySelector("#code-studio-flagship-effect-graph"), model.effectGraph);
+        renderActionableScmGaps(flagshipInspector.querySelector("#code-studio-flagship-actionable-gaps"), model.actionableGaps);
         renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-evidence-summary"), model.evidenceRows);
+        renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-current-runtime-summary"), model.currentRuntimeRows);
+        renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-proof-history-summary"), model.proofHistoryRows);
         renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-runtime-summary"), model.runtimeRows);
         renderDefinitionList(flagshipInspector.querySelector("#code-studio-flagship-ai-summary"), model.aiRows);
 
