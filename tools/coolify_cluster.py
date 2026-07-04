@@ -567,7 +567,7 @@ def hub_args_for_cluster(args: argparse.Namespace, packet_path: Path) -> argpars
         coolify_retries=args.coolify_retries,
         coolify_retry_sleep_s=args.coolify_retry_sleep_s,
         no_deploy=args.no_deploy,
-        install_traefik_dynamic_config=args.install_traefik_dynamic_config,
+        no_traefik_sidecar=args.no_traefik_sidecar,
         force_deploy=args.force_deploy,
         dry_run=args.dry_run,
         json=args.json,
@@ -873,7 +873,9 @@ def next_commands(args: argparse.Namespace, packet_path: Path) -> list[str]:
         base[0] += " --no-private-state"
     if getattr(args, "private_state", None):
         base[0] += f' --private-state "{args.private_state}"'
-    base.append(
+    if getattr(args, "no_traefik_sidecar", False):
+        base[0] += " --no-traefik-sidecar"
+    apply_command = (
         "python .\\tools\\coolify_cluster.py apply "
         + args.network
         + " --hubs "
@@ -882,6 +884,13 @@ def next_commands(args: argparse.Namespace, packet_path: Path) -> list[str]:
         + args.fdb
         + (f' --git-repo "{args.git_repo}"' if str(args.git_repo or "").strip() else "")
     )
+    if args.no_private_state:
+        apply_command += " --no-private-state"
+    if getattr(args, "private_state", None):
+        apply_command += f' --private-state "{args.private_state}"'
+    if getattr(args, "no_traefik_sidecar", False):
+        apply_command += " --no-traefik-sidecar"
+    base.append(apply_command)
     return base
 
 
@@ -1019,7 +1028,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--coolify-retry-sleep-s", type=float, default=DEFAULT_RETRY_SLEEP_S)
     parser.add_argument("--no-deploy", action="store_true", help="Create/update only; do not trigger deploys.")
-    parser.add_argument("--install-traefik-dynamic-config", action="store_true")
+    parser.add_argument(
+        "--no-traefik-sidecar",
+        action="store_true",
+        help="Disable the default public-entry Traefik sidecar for Hub public_entry_urls.",
+    )
+    parser.add_argument("--install-traefik-dynamic-config", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--force-deploy", action="store_true", help="Ask Coolify to force rebuild/redeploy services.")
     parser.add_argument("--dry-run", action="store_true", help="For apply: render plans without Coolify calls.")
     parser.add_argument("--json", action="store_true", help="Print compact machine-readable JSON.")

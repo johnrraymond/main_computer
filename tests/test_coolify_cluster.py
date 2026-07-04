@@ -112,6 +112,7 @@ class CoolifyClusterOrchestratorTests(unittest.TestCase):
             self.assertEqual(result["stages"]["hub"]["plan"]["coolify_project_name"], "Main Computer")
             self.assertEqual(result["stages"]["foundationdb"]["plan"]["servers"][0]["coolify_url_source"], "private-state:coolify.hosts.A.url")
             self.assertEqual(result["stages"]["hub"]["plan"]["servers"][1]["coolify_url_source"], "private-state:coolify.hosts.B.url")
+            self.assertTrue(result["stages"]["hub"]["plan"]["servers"][0]["traefik_dynamic_config"]["installed"])
 
     def test_preflight_reports_missing_project_before_lower_apply_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -178,6 +179,36 @@ class CoolifyClusterOrchestratorTests(unittest.TestCase):
             self.assertFalse(packet_path.exists())
             warning_codes = {item["code"] for item in result["preflight"]["warnings"]}
             self.assertIn("private_state_disabled", warning_codes)
+
+
+    def test_no_traefik_sidecar_is_preserved_in_next_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            packet_path = Path(tmp) / "testnet-packet.json"
+            state_path = Path(tmp) / "main_computer.private.yaml"
+            state_path.write_text(PRIVATE_STATE, encoding="utf-8")
+            args = coolify_cluster.parse_args(
+                [
+                    "preflight",
+                    "testnet",
+                    "--hubs",
+                    "testnet-hub1,testnet-hub2,testnet-hub3",
+                    "--fdb",
+                    "testnet-fdb1,testnet-fdb2,testnet-fdb3",
+                    "--git-repo",
+                    "https://github.com/example/main_computer",
+                    "--packet",
+                    str(packet_path),
+                    "--private-state",
+                    str(state_path),
+                    "--no-traefik-sidecar",
+                ]
+            )
+            packet = coolify_cluster.build_candidate_packet(args)
+            result = coolify_cluster.preflight_result(args, packet)
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(all("--no-traefik-sidecar" in command for command in result["preflight"]["next_commands"]))
+
 
 
 if __name__ == "__main__":

@@ -290,8 +290,7 @@ shape without touching Coolify:
 python .\tools\coolify_cluster.py preflight testnet `
   --hubs testnet-hub1,testnet-hub2,testnet-hub3 `
   --fdb testnet-fdb1,testnet-fdb2,testnet-fdb3 `
-  --git-repo "https://github.com/johnrraymond/main_computer" `
-  --coolify-project-name "Main Computer"
+  --git-repo "https://github.com/johnrraymond/main_computer"
 ```
 
 The preflight action does **not** write `deploy/packets/testnet-packet.json`. It
@@ -322,9 +321,7 @@ FDB and Hub plans from that packet:
 python .\tools\coolify_cluster.py plan testnet `
   --hubs testnet-hub1,testnet-hub2,testnet-hub3 `
   --fdb testnet-fdb1,testnet-fdb2,testnet-fdb3 `
-  --install-traefik-dynamic-config `
-  --git-repo "https://github.com/johnrraymond/main_computer" `
-  --coolify-project-name "Main Computer"
+  --git-repo "https://github.com/johnrraymond/main_computer"
 ```
 
 Apply the full cluster. This also performs the lookahead before writing the
@@ -335,9 +332,7 @@ Coolify apply starts:
 python .\tools\coolify_cluster.py apply testnet `
   --hubs testnet-hub1,testnet-hub2,testnet-hub3 `
   --fdb testnet-fdb1,testnet-fdb2,testnet-fdb3 `
-  --install-traefik-dynamic-config `
   --git-repo "https://github.com/johnrraymond/main_computer" `
-  --coolify-project-name "Main Computer" `
   --force-deploy
 ```
 
@@ -347,17 +342,15 @@ Generate a smaller packet and plan/apply it by changing only the selected ids:
 python .\tools\coolify_cluster.py plan testnet `
   --hubs testnet-hub1,testnet-hub2 `
   --fdb testnet-fdb1 `
-  --install-traefik-dynamic-config `
-  --git-repo "https://github.com/johnrraymond/main_computer" `
-  --coolify-project-name "Main Computer"
+  --git-repo "https://github.com/johnrraymond/main_computer"
 ```
 
 `--hubs` and `--fdb` are comma-separated component ids. The `-hubs` and `-fdb`
 aliases are also accepted for operator convenience, but the double-dash spelling
 is preferred in docs and scripts.
 
-Prefer private state for Coolify host URL and token resolution. The expected
-local file is:
+The normal path uses private state automatically for Coolify host URL, token,
+project, server, and destination context. The expected local file is:
 
 ```text
 runtime/state/main_computer.private.yaml
@@ -390,9 +383,15 @@ coolify:
 ```
 
 The orchestrator and lower-level deployers match packet/placement host names
-such as `coolify-a` and `coolify-b` to those private-state slots. CLI
-`--set-coolify-url`, project, server, destination, and token flags are still
-available as explicit overrides, but should not be the normal operator path.
+such as `coolify-a` and `coolify-b` to those private-state slots. The
+`coolify.project_name` or `coolify.project_uuid` value is also read from the same
+private file, so the normal `coolify_cluster.py` commands do not need a
+`--coolify-project-name` flag. CLI `--set-coolify-url`, project, server,
+destination, and token flags are still available as explicit overrides, but
+should not be the normal operator path. Pass `--no-private-state` only for
+deliberate override/debug runs where all required private values are supplied on
+the CLI.
+
 The orchestrator preflight checks that the private state has enough information
 for the later apply path before it writes the candidate packet or calls Coolify.
 For example, a missing `coolify.project_name`/`project_uuid` is reported as a
@@ -444,9 +443,6 @@ Plan the Hub layer from the same packet:
 $GitRepo = "https://github.com/johnrraymond/main_computer"
 
 python .\tools\coolify_hub_cluster.py plan testnet `
-  --coolify-project-name "Main Computer" `
-  --coolify-environment-name "testnet-hubs" `
-  --install-traefik-dynamic-config `
   --git-repo $GitRepo
 ```
 
@@ -454,9 +450,6 @@ Apply the Hub layer from the packet:
 
 ```powershell
 python .\tools\coolify_hub_cluster.py apply testnet `
-  --coolify-project-name "Main Computer" `
-  --coolify-environment-name "testnet-hubs" `
-  --install-traefik-dynamic-config `
   --git-repo $GitRepo `
   --force-deploy
 ```
@@ -490,10 +483,11 @@ packet-selected topology and FDB cluster file, then keeps a non-serving config
 container alive. The host is therefore configured to serve no Hubs for that
 network generation.
 
-The public entry alias, `https://testnet-hub.greatlibrary.io`, is installed by
-`--install-traefik-dynamic-config`. That adds a long-running non-routed config
-manager container to each Coolify Hub service. On hosts with enabled Hubs, the
-manager writes the packet-selected Traefik dynamic config under
+The public entry alias, `https://testnet-hub.greatlibrary.io`, is managed by
+the default Traefik sidecar. The sidecar adds a long-running non-routed config
+manager container to each Coolify Hub service. No install flag is needed. Pass
+`--no-traefik-sidecar` only to disable that public-entry manager. On hosts with
+enabled Hubs, the manager writes the packet-selected Traefik dynamic config under
 `/data/coolify/proxy/dynamic`. On known hosts with no enabled Hubs, it removes
 the stale per-host public-entry config and stays healthy so old packet routing
 does not survive a contraction.
@@ -652,8 +646,14 @@ Use these when staging the deployment:
 
 ```text
 --dry-run                 For `apply`, render the apply plan without Coolify calls.
---no-deploy               Create/update the Coolify app but do not trigger deploy.
+--no-deploy               Create/update the Coolify app/service but do not trigger deploy.
 --force-deploy            Force a deploy trigger when Coolify supports it.
+--no-traefik-sidecar      Disable the default public-entry Traefik manager sidecar.
+--no-private-state        Disable runtime/state/main_computer.private.yaml lookup.
+--fdb-only                Cluster orchestrator: prepare packet and run only FDB stage.
+--hubs-only               Cluster orchestrator: prepare packet and run only Hub stage.
+--packet <path>           Override deploy/packets/<network>-packet.json for debug runs.
+--no-archive              Do not archive a replaced candidate packet.
 --rpc-check warn          Warn instead of failing if the chain RPC check fails.
 --rpc-check skip          Skip the pre-deploy chain RPC check.
 --hub-health-check warn   Warn instead of failing if public Hub status is unhealthy.
