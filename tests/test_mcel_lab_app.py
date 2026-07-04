@@ -2457,6 +2457,21 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "serializationClean" in ui
     assert "layoutContractChecked" in ui
     assert "styleContractChecked" in ui
+    assert "function mcelTinyContractObservation(app" in ui
+    assert "mcelTinyContractComputedSnapshot" in ui
+    assert "mcelTinyContractDomRect" in ui
+    assert "mcel-lab-browser-layout-observation" in ui
+    assert "getComputedStyle" in ui
+    assert "getBoundingClientRect" in ui
+    assert "layout observation:" in ui
+    assert '"browser-dom"' in ui
+    assert "layoutObservation" in ui
+    assert "height: 520" not in ui
+    assert "documentHeightRatio: 1.05" not in ui
+    assert "walletPanel: true" not in ui
+    assert "releaseQueue: true" not in ui
+    assert "txPreview: true" not in ui
+    assert "evidenceStrip: true" not in ui
     assert "loadMcelTinyContractIntoSourceEditor" in ui
     assert "renderMcelTinyContractTest(\"boot\", { exercise: false })" in ui
     assert "window.McelLabScm" in ui

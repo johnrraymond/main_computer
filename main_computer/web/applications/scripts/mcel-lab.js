@@ -320,29 +320,99 @@
       };
     }
 
-    function mcelTinyContractObservation() {
+    function mcelTinyContractDomRect(node) {
+      if (!node || typeof node.getBoundingClientRect !== "function") return {};
+      const rect = node.getBoundingClientRect();
       return {
+        x: Number(rect.x || 0),
+        y: Number(rect.y || 0),
+        top: Number(rect.top || 0),
+        right: Number(rect.right || 0),
+        bottom: Number(rect.bottom || 0),
+        left: Number(rect.left || 0),
+        width: Number(rect.width || 0),
+        height: Number(rect.height || 0)
+      };
+    }
+
+    function mcelTinyContractComputedSnapshot(node, properties = []) {
+      const snapshot = {};
+      if (!node || typeof window.getComputedStyle !== "function") return snapshot;
+      const computed = window.getComputedStyle(node);
+      properties.forEach((property) => {
+        snapshot[property] = computed.getPropertyValue(property) || computed[property] || "";
+      });
+      return snapshot;
+    }
+
+    function mcelTinyContractNodePresent(node) {
+      if (!node) return false;
+      if (node.isConnected === false) return false;
+      return true;
+    }
+
+    function mcelTinyContractDocumentHeightRatio(rootNode, shellNode) {
+      const rootRect = mcelTinyContractDomRect(rootNode);
+      const shellRect = mcelTinyContractDomRect(shellNode);
+      const appHeight = rootRect.height || rootNode?.scrollHeight || rootNode?.offsetHeight || 0;
+      const shellHeight = shellRect.height || shellNode?.clientHeight || shellNode?.offsetHeight || window.innerHeight || appHeight || 0;
+      if (!appHeight || !shellHeight) return null;
+      return Number((appHeight / shellHeight).toFixed(3));
+    }
+
+    function mcelTinyContractObservation(app = null) {
+      const rootNode = app?.matches?.('[data-mc-component="dev-network-release-console"]')
+        ? app
+        : (app?.querySelector?.('[data-mc-component="dev-network-release-console"]')
+          || mcelTinyContractRuntimeMount?.querySelector?.('[data-mc-component="dev-network-release-console"]')
+          || null);
+      const shellNode = rootNode?.closest?.(".mcel-tiny-contract-runtime") || mcelTinyContractRuntimeMount || rootNode?.parentElement || rootNode;
+      const txNode = rootNode?.querySelector?.(".mcel-dev-release-console__tx") || null;
+      const walletPanel = rootNode?.querySelector?.('[data-mc-component="dev-release.wallet"]') || null;
+      const releaseQueue = rootNode?.querySelector?.('[data-mc-field="devRelease.requests"]') || null;
+      const txPreview = rootNode?.querySelector?.('[data-mc-slot="runtime.txDraft"]') || null;
+      const evidenceStrip = rootNode?.querySelector?.('[data-mc-slot="runtime.evidenceStrip"]') || null;
+      const regionEntries = {
+        walletPanel,
+        releaseQueue,
+        txPreview,
+        evidenceStrip
+      };
+      const regions = Object.fromEntries(Object.entries(regionEntries).map(([key, node]) => [key, mcelTinyContractNodePresent(node)]));
+      const presentSelectors = [
+        rootNode ? ".mcel-dev-release-console" : "",
+        walletPanel ? "[data-mc-component='dev-release.wallet']" : "",
+        releaseQueue ? "[data-mc-field='devRelease.requests']" : "",
+        txPreview ? "[data-mc-slot='runtime.txDraft']" : "",
+        evidenceStrip ? "[data-mc-slot='runtime.evidenceStrip']" : "",
+        txNode ? ".mcel-dev-release-console__tx" : ""
+      ].filter(Boolean);
+      const rootRect = mcelTinyContractDomRect(rootNode);
+      const shellRect = mcelTinyContractDomRect(shellNode);
+      const documentHeightRatio = mcelTinyContractDocumentHeightRatio(rootNode, shellNode);
+      return {
+        kind: "mcel-lab-browser-layout-observation",
+        source: "browser-dom",
+        measured: Boolean(rootNode),
         computed: {
-          ".mcel-dev-release-console": {
-            display: "grid",
-            overflow: "hidden"
-          },
-          ".mcel-dev-release-console__tx": {
-            overflow: "auto"
-          }
+          ".mcel-dev-release-console": mcelTinyContractComputedSnapshot(rootNode, ["display", "overflow"]),
+          ".mcel-dev-release-console__tx": mcelTinyContractComputedSnapshot(txNode, ["overflow"])
         },
-        regions: {
-          walletPanel: true,
-          releaseQueue: true,
-          txPreview: true,
-          evidenceStrip: true
-        },
+        regions,
         rects: {
-          ".mcel-dev-release-console": {
-            height: 520
-          }
+          ".mcel-dev-release-console": rootRect,
+          ".mcel-tiny-contract-runtime": shellRect
         },
-        documentHeightRatio: 1.05
+        presentSelectors,
+        metrics: {
+          appHeight: rootRect.height || rootNode?.scrollHeight || 0,
+          shellHeight: shellRect.height || shellNode?.clientHeight || 0,
+          appScrollHeight: rootNode?.scrollHeight || 0,
+          shellScrollHeight: shellNode?.scrollHeight || 0,
+          viewportHeight: window.innerHeight || 0,
+          documentHeightRatio
+        },
+        documentHeightRatio
       };
     }
 
@@ -2405,6 +2475,7 @@
       let scmSerialization = null;
       let layoutCheck = null;
       let styleCheck = null;
+      let layoutObservation = null;
       let registryPacket = null;
 
       try {
@@ -2415,8 +2486,9 @@
 
       if (instance && window.McelLabScm) {
         try {
-          layoutCheck = window.McelLabScm.checkLayoutContract(instance, mcelTinyContractObservation());
-          styleCheck = window.McelLabScm.checkStyleContract(instance, mcelTinyContractObservation());
+          layoutObservation = mcelTinyContractObservation(app);
+          layoutCheck = window.McelLabScm.checkLayoutContract(instance, layoutObservation);
+          styleCheck = window.McelLabScm.checkStyleContract(instance, layoutObservation);
           scmSerialization = window.McelLabScm.serializeComponent(instance, {format: "clean-source-json"});
         } catch (error) {
           recordMcelTinyContractEvidence("serialize", "SCM serialization/layout/style check failed.", "fail", {
@@ -2602,6 +2674,14 @@
           lastError: walletAdapter.lastError || ""
         },
         registryElementCount: registryPacket?.elementCount || 0,
+        layoutObservation: {
+          kind: layoutObservation?.kind || "",
+          source: layoutObservation?.source || "",
+          measured: layoutObservation?.measured === true,
+          regions: layoutObservation?.regions || {},
+          metrics: layoutObservation?.metrics || {},
+          documentHeightRatio: layoutObservation?.documentHeightRatio ?? null
+        },
         reviewedCount: tinyState.reviewedCount,
         walletConnectCount: tinyState.walletConnectCount,
         txDraftCount: tinyState.txDraftCount,
@@ -2651,6 +2731,7 @@
           `unsafe write blocked: ${checks.unsafeSourceWriteBlocked ? "true" : `not run${fullOnlyText}`}`,
           `repair scoped: ${checks.runtimeRepairScoped ? "true" : `not run${fullOnlyText}`}`,
           `serialization clean: ${checks.serializationClean}`,
+          `layout observation: ${layoutObservation?.source || "missing"}${layoutObservation?.measured ? " measured" : " not measured"}`,
           `layout/style checked: ${checks.layoutContractChecked}/${checks.styleContractChecked}`
         ].join("\n");
       }
