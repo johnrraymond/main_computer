@@ -35,6 +35,7 @@ import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,7 @@ LOCAL_COOLIFY_SEEDS = {"test"}
 DEFAULT_GENERATED_OFFICE_ENVIRONMENTS = {"test", "testnet"}
 LOCAL_COOLIFY_DEFAULT_URL = "http://127.0.0.1:8000"
 LOCAL_COOLIFY_TOKEN_RELATIVE_PATH = Path("runtime") / "coolify-local-docker" / "api-token.txt"
+PRIVATE_STATE_RELATIVE_PATH = Path("runtime") / "state" / "main_computer.private.yaml"
 LOCAL_COOLIFY_DEFAULT_ENVIRONMENT = "production"
 LOCAL_COOLIFY_RPC_CONTAINER_URL = f"http://mc-qbft-rpc:{RPC_CONTAINER_PORT}"
 LOCAL_QBFT_SUBNET_CANDIDATES = (
@@ -293,15 +295,26 @@ class PlannedHost:
     address: str
     coolify_url: str
     runtime_root: str
+    project_name: str = ""
+    project_uuid: str = ""
+    server_name: str = ""
+    server_uuid: str = ""
+    destination_uuid: str = ""
+    environment_uuid: str = ""
+    api_token: str = ""
+    api_token_env: str = ""
+    api_token_file: str = ""
+    service_uuid: str = ""
 
 
 @dataclass(frozen=True)
 class PlannedService:
     id: str
     role: str
+    roles: tuple[str, ...]
     host: str
     container_ip: str
-    rpc_host_port: int
+    rpc_host_port: int | None
     p2p_host_port: int
     rpc_bind_host: str
     p2p_bind_host: str
@@ -347,11 +360,18 @@ class NetworkPlan:
             "besu_image": self.besu_image,
             "public_rpc": self.public_rpc,
             "topology_policy": asdict(self.topology_policy),
-            "hosts": [asdict(host) for host in self.hosts],
+            "hosts": [planned_host_to_dict(host) for host in self.hosts],
             "services": [asdict(service) for service in self.services],
             "warnings": list(self.warnings),
             "operator_checks": operator_checks(self),
         }
+
+
+def planned_host_to_dict(host: PlannedHost) -> dict[str, Any]:
+    payload = asdict(host)
+    if payload.get("api_token"):
+        payload["api_token"] = "<redacted>"
+    return {key: value for key, value in payload.items() if value not in ("", None)}
 
 
 def safe_id(value: object, *, kind: str) -> str:
@@ -435,6 +455,220 @@ def load_seed(name_or_path: str) -> tuple[str, dict[str, Any]]:
     raise PlanError(f"Unknown network seed {name_or_path!r}. Known seeds: {', '.join(sorted(NETWORK_SEEDS))}")
 
 
+def private_value_is_known(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip()) and not (value.strip().startswith("<") and value.strip().endswith(">"))
+    if isinstance(value, (list, tuple, dict)):
+        return bool(value)
+    return True
+
+
+def load_private_state_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+    except ImportError as exc:
+        raise PlanError("PyYAML is required to read runtime/state/main_computer.private.yaml.") from exc
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise PlanError(f"Private state must contain a YAML mapping: {path}")
+    return data
+
+
+def mapping_get(mapping: Mapping[str, Any], *keys: str) -> Any:
+    node: Any = mapping
+    for key in keys:
+        if not isinstance(node, Mapping):
+            return None
+        node = node.get(key)
+    return node
+
+
+def first_known(*values: Any) -> str:
+    for value in values:
+        if private_value_is_known(value):
+            return str(value).strip()
+    return ""
+
+
+def private_state_path_for(root: Path, private_state_path: str | Path | None) -> Path:
+    if private_state_path is None or str(private_state_path).strip() == "":
+        return root / PRIVATE_STATE_RELATIVE_PATH
+    path = Path(private_state_path)
+    return path if path.is_absolute() else root / path
+
+
+def container_ip_for_private_instance(subnet: ipaddress._BaseNetwork, *, role: str, index: int) -> str:
+    base = int(subnet.network_address)
+    offset = (20 + index) if role == "rpc" else (11 + index)
+    candidate = ipaddress.ip_address(base + offset)
+    if candidate not in subnet:
+        raise PlanError(f"docker_subnet {subnet} is too small for generated QBFT container IP offset {offset}.")
+    return str(candidate)
+
+
+def private_state_seed(
+    network_name: str,
+    *,
+    root: Path | None = None,
+    private_state_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Return a seed built from manual private-state QBFT instances, if present."""
+
+    root = root or repo_root()
+    path = private_state_path_for(root, private_state_path)
+    state = load_private_state_yaml(path)
+    network = mapping_get(state, "networks", network_name)
+    instances = mapping_get(state, "networks", network_name, "qbft", "instances")
+    if not isinstance(network, Mapping) or not isinstance(instances, Mapping) or not instances:
+        return None
+
+    default_seed = copy.deepcopy(NETWORK_SEEDS.get(network_name, {}))
+    chain_id = network.get("chain_id", default_seed.get("chain_id"))
+    if not private_value_is_known(chain_id):
+        raise PlanError(f"networks.{network_name}.chain_id is required when private-state qbft.instances is present.")
+
+    environment = first_known(network.get("kind"), default_seed.get("environment"), network_name).lower()
+    docker_subnet_text = first_known(
+        mapping_get(network, "qbft", "docker_subnet"),
+        default_seed.get("docker_subnet"),
+        "172.28.241.0/24",
+    )
+    try:
+        subnet = ipaddress.ip_network(docker_subnet_text, strict=False)
+    except ValueError as exc:
+        raise PlanError(f"networks.{network_name}.qbft.docker_subnet is invalid: {docker_subnet_text!r}") from exc
+
+    coolify_state = state.get("coolify") if isinstance(state.get("coolify"), Mapping) else {}
+    coolify_hosts = coolify_state.get("hosts") if isinstance(coolify_state, Mapping) and isinstance(coolify_state.get("hosts"), Mapping) else {}
+    local_test = coolify_state.get("local_test") if isinstance(coolify_state, Mapping) and isinstance(coolify_state.get("local_test"), Mapping) else {}
+
+    slot_to_host_id: dict[str, str] = {}
+    hosts: dict[str, dict[str, Any]] = {}
+    services: list[dict[str, Any]] = []
+    role_indexes = {"validator": 0, "rpc": 0}
+
+    for raw_instance_id, raw_instance in instances.items():
+        instance_id = safe_id(raw_instance_id, kind="service")
+        if not isinstance(raw_instance, Mapping):
+            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id} must be a mapping.")
+
+        raw_roles = raw_instance.get("roles")
+        if not isinstance(raw_roles, list) or not raw_roles:
+            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.roles must list validator and/or rpc.")
+        roles = tuple(dict.fromkeys(str(role).strip().lower() for role in raw_roles if str(role).strip()))
+        bad_roles = [role for role in roles if role not in {"validator", "rpc"}]
+        if bad_roles:
+            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.roles has unsupported role(s): {bad_roles}")
+        if not roles:
+            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.roles must not be empty.")
+
+        role = "validator" if "validator" in roles else "rpc"
+        coolify_slot = str(raw_instance.get("coolify_host") or "").strip()
+        if not coolify_slot:
+            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.coolify_host is required.")
+        host_payload: Mapping[str, Any]
+        if coolify_slot == "local_test":
+            host_payload = local_test if isinstance(local_test, Mapping) else {}
+        else:
+            maybe_host = coolify_hosts.get(coolify_slot) if isinstance(coolify_hosts, Mapping) else None
+            if not isinstance(maybe_host, Mapping):
+                raise PlanError(
+                    f"networks.{network_name}.qbft.instances.{raw_instance_id}.coolify_host references missing coolify.hosts.{coolify_slot}."
+                )
+            host_payload = maybe_host
+
+        host_id = slot_to_host_id.setdefault(coolify_slot, safe_id(coolify_slot, kind="host"))
+        if host_id not in hosts:
+            public_ip = first_known(host_payload.get("public_ip"), host_payload.get("host"), host_payload.get("address"), host_payload.get("vpn_ip"))
+            host_name = first_known(host_payload.get("name"), coolify_slot)
+            hosts[host_id] = {
+                "ssh": first_known(host_payload.get("ssh"), f"root@{public_ip}" if public_ip else ""),
+                "address": public_ip,
+                "coolify_url": first_known(host_payload.get("url"), host_payload.get("coolify_url")),
+                "runtime_root": first_known(
+                    host_payload.get("runtime_root"),
+                    default_seed.get("runtime_root"),
+                    f"/srv/main-computer/qbft-{network_name}/runtime",
+                ),
+                "project_name": first_known(host_payload.get("project_name"), coolify_state.get("project_name") if isinstance(coolify_state, Mapping) else ""),
+                "project_uuid": first_known(host_payload.get("project_uuid"), coolify_state.get("project_uuid") if isinstance(coolify_state, Mapping) else ""),
+                "server_name": first_known(host_payload.get("server_name"), host_name),
+                "server_uuid": first_known(host_payload.get("server_uuid"), coolify_state.get("server_uuid") if isinstance(coolify_state, Mapping) else ""),
+                "destination_uuid": first_known(host_payload.get("destination_uuid"), coolify_state.get("destination_uuid") if isinstance(coolify_state, Mapping) else ""),
+                "environment_uuid": first_known(host_payload.get("environment_uuid"), coolify_state.get("environment_uuid") if isinstance(coolify_state, Mapping) else ""),
+                "api_token": first_known(host_payload.get("api_token")),
+                "api_token_env": first_known(host_payload.get("api_token_env")),
+                "api_token_file": first_known(host_payload.get("api_token_file")),
+                "service_uuid": first_known(host_payload.get("qbft_service_uuid"), host_payload.get("service_uuid")),
+            }
+
+        rpc_host_port = raw_instance.get("rpc_host_port")
+        if "rpc" in roles and not private_value_is_known(rpc_host_port):
+            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.rpc_host_port is required for rpc role.")
+        p2p_host_port = raw_instance.get("p2p_host_port")
+        if "validator" in roles and not private_value_is_known(p2p_host_port):
+            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.p2p_host_port is required for validator role.")
+        if not private_value_is_known(p2p_host_port):
+            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.p2p_host_port is required for QBFT peer connectivity.")
+
+        index = role_indexes[role]
+        role_indexes[role] += 1
+        services.append(
+            {
+                "id": instance_id,
+                "role": role,
+                "roles": list(roles),
+                "host": host_id,
+                "container_ip": first_known(raw_instance.get("container_ip"), container_ip_for_private_instance(subnet, role=role, index=index)),
+                **({"rpc_host_port": rpc_host_port} if private_value_is_known(rpc_host_port) else {}),
+                "p2p_host_port": p2p_host_port,
+            }
+        )
+
+    seed = copy.deepcopy(default_seed)
+    seed.update(
+        {
+            "description": first_known(network.get("display_name"), default_seed.get("description"), f"Private-state QBFT topology for {network_name}"),
+            "environment": environment,
+            "chain_id": chain_id,
+            "compose_project": first_known(default_seed.get("compose_project"), f"main-computer-qbft-{network_name}"),
+            "docker_network": first_known(default_seed.get("docker_network"), f"mc-qbft-{network_name}-network"),
+            "docker_subnet": str(subnet),
+            "besu_image": first_known(mapping_get(network, "qbft", "besu_image"), default_seed.get("besu_image"), DEFAULT_BESU_IMAGE),
+            "runtime_root": first_known(default_seed.get("runtime_root"), f"/srv/main-computer/qbft-{network_name}/runtime"),
+            "public_rpc": bool(default_seed.get("public_rpc", False)),
+            "hosts": hosts,
+            "services": services,
+            "source": f"private-state:{path.as_posix()}",
+        }
+    )
+    policy = dict(seed.get("topology_policy") or {})
+    policy.setdefault("minimum_validators", 1)
+    policy.setdefault("minimum_rpc_nodes", 0)
+    seed["topology_policy"] = policy
+    return seed
+
+
+def load_seed_with_private_state(
+    name_or_path: str,
+    *,
+    private_state_path: str | Path | None = None,
+) -> tuple[str, dict[str, Any]]:
+    name, seed = load_seed(name_or_path)
+    if Path(name_or_path).is_file():
+        return name, seed
+    private_seed = private_state_seed(name, private_state_path=private_state_path)
+    if private_seed is not None:
+        return name, private_seed
+    return name, seed
+
+
 def validate_runtime_root(value: object, *, host_id: str) -> str:
     text = str(value or "").strip().replace("\\", "/")
     if not text.startswith("/"):
@@ -454,8 +688,9 @@ def build_plan(
     target_address: str | None = None,
     coolify_url: str | None = None,
     runtime_root: str | None = None,
+    private_state_path: str | Path | None = None,
 ) -> NetworkPlan:
-    name, seed = load_seed(seed_name_or_path)
+    name, seed = load_seed_with_private_state(seed_name_or_path, private_state_path=private_state_path)
 
     if seed.get("requires_mainnet_ack") and not allow_mainnet:
         raise PlanError("Mainnet seed requires --allow-mainnet. Review the plan before real mainnet use.")
@@ -502,6 +737,16 @@ def build_plan(
             address=str(raw_host.get("address") or "").strip(),
             coolify_url=str(raw_host.get("coolify_url") or "").strip(),
             runtime_root=runtime_root,
+            project_name=str(raw_host.get("project_name") or "").strip(),
+            project_uuid=str(raw_host.get("project_uuid") or "").strip(),
+            server_name=str(raw_host.get("server_name") or "").strip(),
+            server_uuid=str(raw_host.get("server_uuid") or "").strip(),
+            destination_uuid=str(raw_host.get("destination_uuid") or "").strip(),
+            environment_uuid=str(raw_host.get("environment_uuid") or "").strip(),
+            api_token=str(raw_host.get("api_token") or "").strip(),
+            api_token_env=str(raw_host.get("api_token_env") or "").strip(),
+            api_token_file=str(raw_host.get("api_token_file") or "").strip(),
+            service_uuid=str(raw_host.get("service_uuid") or "").strip(),
         )
 
     effective_public_rpc = bool(seed.get("public_rpc", False) if public_rpc is None else public_rpc)
@@ -516,7 +761,7 @@ def build_plan(
     )
 
     seen_ids: set[str] = set()
-    seen_global_ports: dict[int, str] = {}
+    seen_global_ports: dict[tuple[str, int], str] = {}
     seen_container_ips: set[str] = set()
     services: list[PlannedService] = []
     for raw in raw_services:
@@ -527,9 +772,20 @@ def build_plan(
             raise PlanError(f"Duplicate service id: {service_id}")
         seen_ids.add(service_id)
 
-        role = str(raw.get("role") or "").strip().lower()
+        raw_roles = raw.get("roles")
+        if isinstance(raw_roles, list):
+            roles = tuple(dict.fromkeys(str(item).strip().lower() for item in raw_roles if str(item).strip()))
+            role = "validator" if "validator" in roles else ("rpc" if "rpc" in roles else "")
+        else:
+            role = str(raw.get("role") or "").strip().lower()
+            roles = (role,) if role else ()
         if role not in {"validator", "rpc"}:
             raise PlanError(f"Unsupported role for {service_id}: {role!r}")
+        bad_roles = [item for item in roles if item not in {"validator", "rpc"}]
+        if bad_roles:
+            raise PlanError(f"Unsupported roles for {service_id}: {bad_roles!r}")
+        if not roles:
+            roles = (role,)
 
         host_id = safe_id(raw.get("host"), kind="host")
         if host_id not in hosts:
@@ -546,25 +802,37 @@ def build_plan(
             raise PlanError(f"Duplicate container_ip: {container_ip}")
         seen_container_ips.add(container_ip)
 
-        rpc_port = require_int(raw.get("rpc_host_port"), name=f"{service_id}.rpc_host_port")
+        raw_rpc_port = raw.get("rpc_host_port")
+        rpc_port = require_int(raw_rpc_port, name=f"{service_id}.rpc_host_port") if raw_rpc_port not in (None, "") else None
         p2p_port = require_int(raw.get("p2p_host_port"), name=f"{service_id}.p2p_host_port")
-        for port, purpose in [(rpc_port, "rpc"), (p2p_port, "p2p")]:
-            if port in seen_global_ports:
+        if "rpc" in roles and rpc_port is None:
+            raise PlanError(f"{service_id}.rpc_host_port is required when roles includes rpc")
+        service_ports: list[tuple[int, str]] = [(p2p_port, "p2p")]
+        if rpc_port is not None:
+            service_ports.insert(0, (rpc_port, "rpc"))
+        for port, purpose in service_ports:
+            port_key = (host_id, int(port))
+            if port_key in seen_global_ports:
                 raise PlanError(
-                    f"Host port {port} is reused by {service_id}.{purpose}; "
-                    f"already assigned to {seen_global_ports[port]}"
+                    f"Host port {port} on host {host_id} is reused by {service_id}.{purpose}; "
+                    f"already assigned to {seen_global_ports[port_key]}"
                 )
-            seen_global_ports[port] = f"{service_id}.{purpose}"
+            seen_global_ports[port_key] = f"{service_id}.{purpose}"
 
         runtime_root = hosts[host_id].runtime_root
         role_runtime_dir = "rpc-node" if role == "rpc" else service_id
-        service_public_rpc = bool(effective_public_rpc and (role == "rpc" or (role == "validator" and not has_dedicated_rpc)))
-        service_rpc_bind_host = "0.0.0.0" if service_public_rpc else "127.0.0.1"
+        service_public_rpc = bool(
+            rpc_port is not None
+            and effective_public_rpc
+            and ("rpc" in roles or (role == "validator" and not has_dedicated_rpc))
+        )
+        service_rpc_bind_host = "0.0.0.0" if service_public_rpc else ("127.0.0.1" if rpc_port is not None else "")
         service_rpc_host = hosts[host_id].address if service_public_rpc and hosts[host_id].address else "127.0.0.1"
         services.append(
             PlannedService(
                 id=service_id,
                 role=role,
+                roles=roles,
                 host=host_id,
                 container_ip=container_ip,
                 rpc_host_port=rpc_port,
@@ -573,7 +841,7 @@ def build_plan(
                 p2p_bind_host=p2p_bind_host,
                 data_path=f"{runtime_root}/{role_runtime_dir}/data",
                 static_nodes_path=f"{runtime_root}/{role_runtime_dir}/static-nodes.json",
-                rpc_url_on_host=f"http://{service_rpc_host}:{rpc_port}",
+                rpc_url_on_host=f"http://{service_rpc_host}:{rpc_port}" if rpc_port is not None else "",
                 p2p_advertise=f"{hosts[host_id].address or host_id}:{p2p_port}",
             )
         )
@@ -834,16 +1102,20 @@ def rpc_target_service(plan: NetworkPlan) -> PlannedService:
     """Return the service that operator tooling should use for JSON-RPC.
 
     Prefer a dedicated non-validator RPC node.  Low-resource testnets may omit
-    that node; in that case the first validator is the RPC endpoint.
+    that node; in that case the first validator with a published RPC host port is
+    the RPC endpoint.
     """
 
-    rpc_nodes = [service for service in plan.services if service.role == "rpc"]
+    rpc_nodes = [service for service in plan.services if service.role == "rpc" and service.rpc_host_port is not None]
     if rpc_nodes:
         return rpc_nodes[0]
-    validators = [service for service in plan.services if service.role == "validator"]
+    rpc_role_nodes = [service for service in plan.services if "rpc" in service.roles and service.rpc_host_port is not None]
+    if rpc_role_nodes:
+        return rpc_role_nodes[0]
+    validators = [service for service in plan.services if service.role == "validator" and service.rpc_host_port is not None]
     if validators:
         return validators[0]
-    raise PlanError("Plan has no service that can serve JSON-RPC")
+    raise PlanError("Plan has no service with a published JSON-RPC host port")
 
 
 def yaml_quote(value: object) -> str:
@@ -1077,7 +1349,7 @@ def service_should_publish_p2p(plan: NetworkPlan, service: PlannedService) -> bo
 
 def service_should_publish_rpc(plan: NetworkPlan, service: PlannedService) -> bool:
     del plan
-    return service.role == "rpc" or service.rpc_bind_host != ""
+    return service.rpc_host_port is not None and service.rpc_bind_host != ""
 
 
 def render_volume_mount(plan: NetworkPlan, host: PlannedHost, *, managed_volume: bool) -> tuple[str, list[str]]:
@@ -1152,6 +1424,7 @@ def render_compose_for_host(
     include_bootstrap: bool = True,
     managed_volume: bool = True,
 ) -> str:
+    host_id = safe_id(host_id, kind="host")
     hosts = host_by_id(plan)
     if host_id not in hosts:
         raise PlanError(f"Unknown host for compose rendering: {host_id}")
@@ -1207,9 +1480,7 @@ def render_compose_for_host(
             ]
         )
         port_lines: list[str] = []
-        if service.role == "rpc" or service.rpc_bind_host == "0.0.0.0":
-            port_lines.append(f"      - {yaml_quote(f'{service.rpc_bind_host}:{service.rpc_host_port}:{RPC_CONTAINER_PORT}')}")
-        elif service.role == "validator":
+        if service_should_publish_rpc(plan, service):
             port_lines.append(f"      - {yaml_quote(f'{service.rpc_bind_host}:{service.rpc_host_port}:{RPC_CONTAINER_PORT}')}")
         if service_should_publish_p2p(plan, service):
             port_lines.append(f"      - {yaml_quote(f'{service.p2p_bind_host}:{service.p2p_host_port}:{P2P_CONTAINER_PORT}')}")
@@ -1277,7 +1548,10 @@ def render_compose_for_host(
 
 
 def operator_checks(plan: NetworkPlan) -> dict[str, Any]:
-    ports = sorted({service.rpc_host_port for service in plan.services} | {service.p2p_host_port for service in plan.services})
+    ports = sorted(
+        {service.p2p_host_port for service in plan.services}
+        | {service.rpc_host_port for service in plan.services if service.rpc_host_port is not None}
+    )
     grep_ports = "|".join(str(port) for port in ports)
     first_rpc = rpc_target_service(plan)
     return {
@@ -1588,27 +1862,62 @@ def operator_log(args: argparse.Namespace | None, message: str, **fields: Any) -
     print(" ".join(parts), flush=True)
 
 
-def resolve_coolify_token(args: argparse.Namespace) -> tuple[str, str]:
+def read_token_file(path_text: str) -> str:
+    path = Path(path_text)
+    if not path.is_file():
+        return ""
+    token = path.read_text(encoding="utf-8").strip()
+    if token.startswith("token="):
+        token = token.split("=", 1)[1].strip()
+    return token
+
+
+def coolify_host_for_action(plan: NetworkPlan | None, host_id: str | None = None) -> PlannedHost | None:
+    if plan is None or not plan.hosts:
+        return None
+    if host_id:
+        hosts = host_by_id(plan)
+        return hosts.get(host_id)
+    return next((host for host in plan.hosts if services_for_host(plan, host.id)), plan.hosts[0])
+
+
+def resolve_coolify_token(
+    args: argparse.Namespace,
+    plan: NetworkPlan | None = None,
+    *,
+    host_id: str | None = None,
+) -> tuple[str, str]:
     if getattr(args, "coolify_token", ""):
         return str(args.coolify_token), "direct"
-    token_env = str(getattr(args, "coolify_token_env", "") or DEFAULT_COOLIFY_TOKEN_ENV)
-    if token_env and os.environ.get(token_env):
-        return str(os.environ[token_env]), f"env:{token_env}"
+
+    explicit_env = str(getattr(args, "coolify_token_env", "") or "").strip()
+    env_candidates = [explicit_env] if explicit_env and explicit_env != DEFAULT_COOLIFY_TOKEN_ENV else []
+    host = coolify_host_for_action(plan, host_id)
+    if host is not None and host.api_token_env:
+        env_candidates.append(host.api_token_env)
+    env_candidates.append(DEFAULT_COOLIFY_TOKEN_ENV)
+    for token_env in dict.fromkeys(env_candidates):
+        if token_env and os.environ.get(token_env):
+            return str(os.environ[token_env]), f"env:{token_env}"
+
     token_file = str(getattr(args, "coolify_token_file", "") or "").strip()
     if token_file:
-        path = Path(token_file)
-        if path.is_file():
-            token = path.read_text(encoding="utf-8").strip()
-            if token.startswith("token="):
-                token = token.split("=", 1)[1].strip()
-            if token:
-                return token, f"file:{path}"
+        token = read_token_file(token_file)
+        if token:
+            return token, f"file:{token_file}"
+    if host is not None and host.api_token_file:
+        token = read_token_file(host.api_token_file)
+        if token:
+            return token, f"file:{host.api_token_file}"
+    if host is not None and host.api_token:
+        return host.api_token, f"private-state:coolify.hosts.{host.id}.api_token"
+
     local_token = str(getattr(args, "_local_coolify_token", "") or "").strip()
     if local_token:
         return local_token, str(getattr(args, "_local_coolify_token_source", "") or "local-helper")
     raise CoolifyError(
         "Coolify token is required. Pass --coolify-token, --coolify-token-env, "
-        f"or set {DEFAULT_COOLIFY_TOKEN_ENV}."
+        f"set {DEFAULT_COOLIFY_TOKEN_ENV}, or define coolify.hosts.<slot>.api_token/api_token_env in private state."
     )
 
 
@@ -1725,13 +2034,19 @@ def response_to_dict(response: CoolifyResponse, *, token: str = "", token_source
     return result
 
 
-def coolify_client_from_args(args: argparse.Namespace, plan: NetworkPlan | None = None) -> tuple[CoolifyClient, str, str]:
+def coolify_client_from_args(
+    args: argparse.Namespace,
+    plan: NetworkPlan | None = None,
+    *,
+    host_id: str | None = None,
+) -> tuple[CoolifyClient, str, str]:
     url = str(getattr(args, "coolify_url", "") or "").strip()
-    if not url and plan is not None and plan.hosts:
-        url = next((host.coolify_url for host in plan.hosts if host.coolify_url), "")
+    host = coolify_host_for_action(plan, host_id or str(getattr(args, "_coolify_host_id", "") or ""))
+    if not url and host is not None:
+        url = host.coolify_url
     if not url:
-        raise CoolifyError("Coolify URL is required. Pass --coolify-url or use --single-host.")
-    token, token_source = resolve_coolify_token(args)
+        raise CoolifyError("Coolify URL is required. Pass --coolify-url or define coolify.hosts.<slot>.url in private state.")
+    token, token_source = resolve_coolify_token(args, plan, host_id=host_id)
     return CoolifyClient(
         url,
         token,
@@ -2187,18 +2502,21 @@ def resolve_coolify_create_context(
     args: argparse.Namespace,
     client: CoolifyClient,
     tried: list[dict[str, Any]],
+    host_id: str | None = None,
 ) -> tuple[dict[str, str], dict[str, Any]]:
-    project_uuid = str(getattr(args, "coolify_project_uuid", "") or "").strip()
-    server_uuid = str(getattr(args, "coolify_server_uuid", "") or "").strip()
-    destination_uuid = str(getattr(args, "coolify_destination_uuid", "") or "").strip()
+    host = coolify_host_for_action(plan, host_id)
+    project_uuid = str(getattr(args, "coolify_project_uuid", "") or (host.project_uuid if host else "") or "").strip()
+    server_uuid = str(getattr(args, "coolify_server_uuid", "") or (host.server_uuid if host else "") or "").strip()
+    destination_uuid = str(getattr(args, "coolify_destination_uuid", "") or (host.destination_uuid if host else "") or "").strip()
     environment_name = str(getattr(args, "coolify_environment", "") or plan.environment).strip() or "test"
-    environment_uuid = str(getattr(args, "coolify_environment_uuid", "") or "").strip()
+    environment_uuid = str(getattr(args, "coolify_environment_uuid", "") or (host.environment_uuid if host else "") or "").strip()
     context: dict[str, Any] = {
         "project_uuid": project_uuid,
         "server_uuid": server_uuid,
         "destination_uuid": destination_uuid,
         "environment_name": environment_name,
         "environment_uuid": environment_uuid,
+        **({"host": host.id} if host else {}),
     }
 
     if not project_uuid:
@@ -2207,7 +2525,7 @@ def resolve_coolify_create_context(
         if response.ok:
             project_uuid, selection = choose_coolify_uuid(
                 explicit_uuid="",
-                explicit_name=str(getattr(args, "coolify_project_name", "") or ""),
+                explicit_name=str(getattr(args, "coolify_project_name", "") or (host.project_name if host else "") or ""),
                 items=projects,
                 kind="project",
                 args=args,
@@ -2223,7 +2541,7 @@ def resolve_coolify_create_context(
         if response.ok:
             server_uuid, selection = choose_coolify_uuid(
                 explicit_uuid="",
-                explicit_name=str(getattr(args, "coolify_server_name", "") or ""),
+                explicit_name=str(getattr(args, "coolify_server_name", "") or (host.server_name if host else "") or ""),
                 items=servers,
                 kind="server",
                 args=args,
@@ -2253,7 +2571,6 @@ def resolve_coolify_create_context(
         "environment_uuid": str(context.get("environment_uuid") or "").strip(),
     }
     return payload, context
-
 
 def base64_compose(compose: str) -> str:
     return base64.b64encode(compose.encode("utf-8")).decode("ascii")
@@ -2616,7 +2933,8 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
 
 def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = False) -> dict[str, Any]:
     local_context = ensure_local_coolify_context(plan, args, require_infra=not bool(getattr(args, "dry_run", False)))
-    host_id = str(getattr(args, "host", "") or single_host_id(plan))
+    raw_host_id = str(getattr(args, "host", "") or "")
+    host_id = safe_id(raw_host_id, kind="host") if raw_host_id else single_host_id(plan)
     operator_log(args, "coolify-sync render-compose start", network=plan.name, host=host_id)
     compose = render_compose_for_host(
         plan,
@@ -2626,7 +2944,8 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
     )
     compose_b64 = base64_compose(compose)
     service_name = str(getattr(args, "coolify_service_name", "") or project_service_name(plan, host_id))
-    service_uuid = str(getattr(args, "coolify_service_uuid", "") or "").strip()
+    host = host_by_id(plan).get(host_id)
+    service_uuid = str(getattr(args, "coolify_service_uuid", "") or (host.service_uuid if host else "") or "").strip()
     operator_log(
         args,
         "coolify-sync render-compose done",
@@ -2650,6 +2969,7 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
             **({"local_coolify": local_context} if local_context else {}),
         }
 
+    setattr(args, "_coolify_host_id", host_id)
     client, token, token_source = coolify_client_from_args(args, plan)
     operator_log(args, "coolify-sync check-api start", url=client.base_url)
     version = client.request("GET", "/api/v1/version")
@@ -2714,7 +3034,7 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
         )
 
     if not service_uuid:
-        create_refs, create_context = resolve_coolify_create_context(plan=plan, args=args, client=client, tried=tried)
+        create_refs, create_context = resolve_coolify_create_context(plan=plan, args=args, client=client, tried=tried, host_id=host_id)
         create_context["existing_service"] = existing_service_context
         project_uuid = str(create_refs.get("project_uuid") or "").strip()
         server_uuid = str(create_refs.get("server_uuid") or "").strip()
@@ -2962,6 +3282,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Action to run. Omit this to print the step-by-step deployment runbook.",
     )
     parser.add_argument("network", nargs="?", default="testnet", help="Seed name from NETWORK_SEEDS or a JSON seed path.")
+    parser.add_argument(
+        "--private-state",
+        default="",
+        help="Private YAML path to use for networks.<network>.qbft.instances. Defaults to runtime/state/main_computer.private.yaml.",
+    )
     parser.add_argument("--host", default="", help="Host id for compose rendering. Defaults to the first host with services.")
     parser.add_argument("--out", default="", help="Output directory for the write action.")
     parser.add_argument("--besu-image", default="", help="Override the Besu image tag in the seed.")
@@ -3061,6 +3386,7 @@ def build_plan_from_args(args: argparse.Namespace) -> NetworkPlan:
         target_address=args.target_address or None,
         coolify_url=args.coolify_url or None,
         runtime_root=args.runtime_root or None,
+        private_state_path=args.private_state or None,
     )
 
 

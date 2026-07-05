@@ -67,6 +67,7 @@ PAUSED_SELECTOR = "0x5c975abb"
 
 SENSITIVE_KEYS = {"private_key", "ssh_private_key", "password", "api_token"}
 PROVENANCE_COMMENT_COLUMN = 96
+QBFT_ALLOWED_ROLES = {"validator", "rpc"}
 
 ANVIL_DEFAULTS = {
     "deployer": {
@@ -159,16 +160,22 @@ PREFERRED_ORDER: dict[tuple[str, ...], list[str]] = {
         "display_name",
         "kind",
         "chain_id",
+        "remote_coolify_hosts",
         "rpc",
         "qbft",
-        "remote_coolify_hosts",
         "hub",
         "foundationdb",
         "wallets",
         "contracts",
         "last_seen",
     ],
-    ("networks", "*", "qbft"): ["coolify_host", "validators", "rpc_port", "validator_p2p_ports"],
+    ("networks", "*", "qbft"): ["instances"],
+    ("networks", "*", "qbft", "instances", "*"): [
+        "coolify_host",
+        "roles",
+        "rpc_host_port",
+        "p2p_host_port",
+    ],
     ("networks", "*", "hub"): [
         "public_url",
         "bind_host",
@@ -274,6 +281,7 @@ class StateBuilder:
         self.provenance: dict[tuple[str, ...], str] = {}
         self.live_preferences: dict[str, str] = {}
         self.live_mismatches: list[dict[str, Any]] = []
+        self.warnings: list[dict[str, Any]] = []
         mark_existing_provenance(self.state, self.provenance, ())
 
     def get(self, path: tuple[str, ...]) -> Any:
@@ -347,6 +355,15 @@ class StateBuilder:
 
     def unresolved_live_mismatches(self) -> list[dict[str, Any]]:
         return [mismatch for mismatch in self.live_mismatches if mismatch.get("preference") not in {"local", "remote"}]
+
+    def record_warning(self, code: str, path: tuple[str, ...], message: str, **details: Any) -> None:
+        payload: dict[str, Any] = {
+            "code": code,
+            "path": ".".join(str(part) for part in path),
+            "message": message,
+        }
+        payload.update(details)
+        self.warnings.append(payload)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -433,6 +450,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Added {added_secrets} sensitive value(s) to {LOCAL_SECRETS_RELATIVE_PATH.as_posix()}")
     else:
         print(yaml_text, end="")
+
+    for warning in builder.warnings:
+        print("sync_warning: " + json.dumps(warning, sort_keys=True), file=sys.stderr)
     return 0
 
 
@@ -444,7 +464,9 @@ def populate_state(builder: StateBuilder, root: Path) -> None:
     populate_dev_network(builder, root)
     populate_remote_network(builder, root, "testnet")
     populate_remote_network(builder, root, "mainnet")
+    remove_legacy_qbft_summary_fields(builder)
     sanitize_manual_coolify_host_references(builder)
+    validate_qbft_instances(builder)
 
 
 
@@ -565,6 +587,123 @@ def sanitize_manual_coolify_host_references(builder: StateBuilder) -> None:
                 if value_is_known(coolify_host) and str(coolify_host) not in allowed_slots:
                     builder.delete_path(("networks", str(network_name), "hub", "instances", str(hub_id), "coolify_host"))
 
+        qbft_instances = builder.get(("networks", str(network_name), "qbft", "instances"))
+        if isinstance(qbft_instances, Mapping):
+            for instance_id, instance in list(qbft_instances.items()):
+                if not isinstance(instance, Mapping):
+                    continue
+                coolify_host = instance.get("coolify_host")
+                if value_is_known(coolify_host) and str(coolify_host) not in allowed_slots:
+                    builder.delete_path(
+                        (
+                            "networks",
+                            str(network_name),
+                            "qbft",
+                            "instances",
+                            str(instance_id),
+                            "coolify_host",
+                        )
+                    )
+
+
+def remove_legacy_qbft_summary_fields(builder: StateBuilder) -> None:
+    """Drop the old generated QBFT summary shape without touching manual instances."""
+
+    networks = builder.get(("networks",))
+    if not isinstance(networks, Mapping):
+        return
+    for network_name, network_payload in list(networks.items()):
+        if not isinstance(network_payload, Mapping):
+            continue
+        for field in ("coolify_host", "validators", "rpc_port", "validator_p2p_ports"):
+            builder.delete_path(("networks", str(network_name), "qbft", field))
+
+
+def validate_qbft_instances(builder: StateBuilder) -> None:
+    """Emit non-fatal structured warnings for manually-owned QBFT topology."""
+
+    allowed_slots = manual_coolify_host_slots(builder)
+    allowed_slots.add("local_test")
+    networks = builder.get(("networks",))
+    if not isinstance(networks, Mapping):
+        return
+
+    for network_name, network_payload in list(networks.items()):
+        if not isinstance(network_payload, Mapping):
+            continue
+        instances = builder.get(("networks", str(network_name), "qbft", "instances"))
+        if not isinstance(instances, Mapping):
+            continue
+
+        ports_by_host: dict[tuple[str, int], list[str]] = {}
+        for instance_id, instance in list(instances.items()):
+            path = ("networks", str(network_name), "qbft", "instances", str(instance_id))
+            if not isinstance(instance, Mapping):
+                builder.record_warning("qbft_instance_not_mapping", path, "QBFT instance must be a mapping.")
+                continue
+
+            raw_roles = instance.get("roles")
+            roles = [str(role).strip().lower() for role in raw_roles] if isinstance(raw_roles, list) else []
+            roles = [role for role in roles if role]
+            if not roles:
+                builder.record_warning("qbft_instance_missing_roles", path + ("roles",), "QBFT instance has no roles.")
+            for role in roles:
+                if role not in QBFT_ALLOWED_ROLES:
+                    builder.record_warning(
+                        "qbft_instance_invalid_role",
+                        path + ("roles",),
+                        "QBFT instance role is not supported.",
+                        role=role,
+                        allowed_roles=sorted(QBFT_ALLOWED_ROLES),
+                    )
+
+            rpc_port = parse_int_maybe(instance.get("rpc_host_port"))
+            p2p_port = parse_int_maybe(instance.get("p2p_host_port"))
+            if "rpc" in roles and rpc_port is None:
+                builder.record_warning(
+                    "qbft_rpc_missing_rpc_host_port",
+                    path + ("rpc_host_port",),
+                    "QBFT instance with rpc role lacks rpc_host_port.",
+                )
+            if "validator" in roles and p2p_port is None:
+                builder.record_warning(
+                    "qbft_validator_missing_p2p_host_port",
+                    path + ("p2p_host_port",),
+                    "QBFT validator instance lacks p2p_host_port.",
+                )
+
+            coolify_host = instance.get("coolify_host")
+            if value_is_known(coolify_host):
+                host_slot = str(coolify_host)
+                if host_slot not in allowed_slots:
+                    builder.record_warning(
+                        "qbft_missing_coolify_host_slot",
+                        path + ("coolify_host",),
+                        "QBFT instance references a missing coolify.hosts slot.",
+                        coolify_host=host_slot,
+                    )
+                for field, port in (("rpc_host_port", rpc_port), ("p2p_host_port", p2p_port)):
+                    if port is None:
+                        continue
+                    ports_by_host.setdefault((host_slot, port), []).append(".".join((*path, field)))
+            else:
+                builder.record_warning(
+                    "qbft_instance_missing_coolify_host",
+                    path + ("coolify_host",),
+                    "QBFT instance has no coolify_host placement.",
+                )
+
+        for (host_slot, port), paths in sorted(ports_by_host.items()):
+            if len(paths) > 1:
+                builder.record_warning(
+                    "qbft_duplicate_host_port",
+                    ("networks", str(network_name), "qbft", "instances"),
+                    "Two QBFT instances on the same coolify_host use the same host port.",
+                    coolify_host=host_slot,
+                    host_port=port,
+                    references=paths,
+                )
+
 
 def populate_default_wallets(builder: StateBuilder) -> None:
     for role, payload in ANVIL_DEFAULTS.items():
@@ -586,14 +725,6 @@ def populate_test_network(builder: StateBuilder, root: Path) -> None:
         rpc_port = find_rpc_port(seed)
         if rpc_port is not None:
             builder.set_value(network + ("rpc",), f"http://127.0.0.1:{rpc_port}", source)
-            builder.set_value(network + ("qbft", "rpc_port"), rpc_port, source)
-        services = seed.get("services")
-        if isinstance(services, list):
-            validators = [svc for svc in services if isinstance(svc, dict) and svc.get("role") == "validator"]
-            builder.set_value(network + ("qbft", "validators"), len(validators), source)
-            p2p_ports = [svc.get("p2p_host_port") for svc in validators if isinstance(svc.get("p2p_host_port"), int)]
-            builder.set_value(network + ("qbft", "validator_p2p_ports"), p2p_ports, source)
-        builder.set_value(network + ("qbft", "coolify_host"), "local_test", source)
 
     add_default_network_wallets(builder, "test", source="repo:anvil-default-wallets")
     builder.set_existing_or_null_network_slot(network + ("wallets", "hub_admin", "address"))
@@ -613,8 +744,7 @@ def populate_dev_network(builder: StateBuilder, root: Path) -> None:
         chain = deployment.get("chain")
         if isinstance(chain, dict):
             builder.set_if_known(network + ("chain_id",), chain.get("chain_id"), source)
-            builder.set_if_known(network + ("rpc",), chain.get("rpc_url") or chain.get("host_rpc_url"), source)
-
+    
         add_default_network_wallets(builder, "dev", source="repo:anvil-default-wallets")
 
         hub_admin = deployment.get("hub_admin")
@@ -718,7 +848,6 @@ def populate_remote_topology(builder: StateBuilder, root: Path, network_name: st
         builder.set_if_known(network + ("display_name",), network_info.get("network_display_name"), source, overwrite=False)
         builder.set_if_known(network + ("kind",), network_info.get("network_kind"), source, overwrite=False)
         builder.set_if_known(network + ("chain_id",), parse_int_maybe(network_info.get("chain_id")), source, overwrite=False)
-        builder.set_if_known(network + ("rpc",), network_info.get("chain_rpc_url"), source, overwrite=False)
 
     storage = topology.get("storage")
     if isinstance(storage, dict):
@@ -841,7 +970,6 @@ def apply_deployment_payload(
     chain = deployment.get("chain")
     if isinstance(chain, dict):
         builder.set_if_known(network + ("chain_id",), parse_int_maybe(chain.get("chain_id")), source)
-        builder.set_if_known(network + ("rpc",), chain.get("rpc_url") or chain.get("host_rpc_url"), source)
 
     for role in ("hub_admin", "smoke_client", "deployer", "escrow_owner"):
         record = deployment.get(role)
@@ -1842,6 +1970,10 @@ def preferred_order_for_path(path: tuple[str, ...]) -> list[str]:
     wildcard = tuple("*" if index % 2 == 1 and path[index - 1] in {"networks", "wallets", "contracts"} else part for index, part in enumerate(path))
     if wildcard in PREFERRED_ORDER:
         return PREFERRED_ORDER[wildcard]
+    if len(path) >= 5 and path[0] == "networks" and path[2] in {"hub", "qbft"} and path[3] == "instances":
+        collapsed = ("networks", "*", path[2], "instances", "*") + path[5:]
+        if collapsed in PREFERRED_ORDER:
+            return PREFERRED_ORDER[collapsed]
     if len(path) >= 2 and path[0] == "networks":
         collapsed = ("networks", "*") + path[2:]
         if collapsed in PREFERRED_ORDER:
