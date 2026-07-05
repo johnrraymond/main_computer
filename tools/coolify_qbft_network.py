@@ -11,7 +11,7 @@ adding a seed entry, then run:
 The planner is deliberately safer than an imperative deploy script.  It first
 turns a small seed table into a concrete port/host/service plan, validates that
 ports are unique, and writes the Compose files that can be pasted into Coolify
-Raw Docker Compose resources.  A later action can call Coolify/SSH APIs, but the
+Raw Docker Compose resources.  A later action can call Coolify APIs, but the
 layout contract lives here.
 """
 
@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shlex
+import secrets
 import socket
 import subprocess
 import sys
@@ -52,6 +53,21 @@ DEFAULT_COOLIFY_API_RETRY_SLEEP_S = 2.0
 DEFAULT_RPC_WAIT_TIMEOUT_S = 0.0
 DEFAULT_RPC_POLL_INTERVAL_S = 2.0
 DEFAULT_RPC_MIN_PEERS_AUTO = -1
+DEFAULT_CHAIN_OBSERVATION_TIMEOUT_S = 8.0
+DEFAULT_MUTATE_RPC_WAIT_TIMEOUT_S = 300.0
+DEFAULT_JSON_RPC_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "MainComputerQbftDeployer/1.0"
+)
+TRAEFIK_DYNAMIC_CONFIG_DIR = "/data/coolify/proxy/dynamic"
+TRAEFIK_DYNAMIC_CONFIG_IMAGE = "alpine:3.20"
+TRAEFIK_DYNAMIC_CONFIG_REFRESH_S = 300
+QBFT_CONFIG_TRANSFER_IMAGE = "python:3.12-alpine"
+QBFT_CONFIG_EXPORT_IMAGE = "alpine:3.20"
+DEFAULT_QBFT_CONFIG_EXPORT_PORT = 38173
+DEFAULT_QBFT_CONFIG_EXPORT_TIMEOUT_S = 240.0
+DEFAULT_QBFT_CONFIG_EXPORT_TRANSPORT = "public-entry"
+QBFT_CONFIG_EXPORT_PUBLIC_PATH_PREFIX = "/__main-computer/qbft-config"
 DEFAULT_FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:latest"
 DEFAULT_DEPLOY_CONTRACTS_TIMEOUT_S = 0.0
 DEFAULT_DEPLOYMENT_SOURCE_KIND = "coolify-qbft-testnet-deploy"
@@ -316,7 +332,7 @@ class PlannedService:
     host: str
     container_ip: str
     rpc_host_port: int | None
-    p2p_host_port: int
+    p2p_host_port: int | None
     rpc_bind_host: str
     p2p_bind_host: str
     data_path: str
@@ -348,6 +364,7 @@ class NetworkPlan:
     hosts: tuple[PlannedHost, ...]
     services: tuple[PlannedService, ...]
     warnings: tuple[str, ...]
+    external_rpc_url: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -360,6 +377,8 @@ class NetworkPlan:
             "docker_subnet": self.docker_subnet,
             "besu_image": self.besu_image,
             "public_rpc": self.public_rpc,
+            **({"external_rpc_url": self.external_rpc_url} if self.external_rpc_url else {}),
+            "rpc_public_entry": rpc_public_entry_plan(self),
             "topology_policy": asdict(self.topology_policy),
             "hosts": [planned_host_to_dict(host) for host in self.hosts],
             "services": [asdict(service) for service in self.services],
@@ -380,6 +399,34 @@ def safe_id(value: object, *, kind: str) -> str:
     if not SAFE_ID_RE.match(text):
         raise PlanError(f"Invalid {kind} id {value!r}; use lowercase letters, numbers, '.', '_' or '-'.")
     return text
+
+
+def split_selected_ids(value: object, *, kind: str) -> tuple[str, ...]:
+    """Return a duplicate-free tuple of comma-separated logical ids."""
+
+    if value in (None, ""):
+        return ()
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = []
+        for item in value:
+            raw_items.extend(str(item).split(","))
+    else:
+        raw_items = [str(value)]
+
+    selected: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        item = str(raw or "").strip()
+        if not item:
+            continue
+        clean = safe_id(item, kind=kind)
+        if clean in seen:
+            raise PlanError(f"Duplicate {kind} id in selection: {clean}")
+        seen.add(clean)
+        selected.append(clean)
+    return tuple(selected)
 
 
 def require_int(value: object, *, name: str, minimum: int = 1, maximum: int = 65535) -> int:
@@ -589,7 +636,7 @@ def private_state_seed(
             public_ip = first_known(host_payload.get("public_ip"), host_payload.get("host"), host_payload.get("address"), host_payload.get("vpn_ip"))
             host_name = first_known(host_payload.get("name"), coolify_slot)
             hosts[host_id] = {
-                "ssh": first_known(host_payload.get("ssh"), f"root@{public_ip}" if public_ip else ""),
+                "ssh": first_known(host_payload.get("ssh")),
                 "address": public_ip,
                 "coolify_url": first_known(host_payload.get("url"), host_payload.get("coolify_url")),
                 "runtime_root": first_known(
@@ -599,7 +646,7 @@ def private_state_seed(
                 ),
                 "project_name": first_known(host_payload.get("project_name"), coolify_state.get("project_name") if isinstance(coolify_state, Mapping) else ""),
                 "project_uuid": first_known(host_payload.get("project_uuid"), coolify_state.get("project_uuid") if isinstance(coolify_state, Mapping) else ""),
-                "server_name": first_known(host_payload.get("server_name"), host_name),
+                "server_name": first_known(host_payload.get("server_name"), coolify_state.get("server_name") if isinstance(coolify_state, Mapping) else ""),
                 "server_uuid": first_known(host_payload.get("server_uuid"), coolify_state.get("server_uuid") if isinstance(coolify_state, Mapping) else ""),
                 "destination_uuid": first_known(host_payload.get("destination_uuid"), coolify_state.get("destination_uuid") if isinstance(coolify_state, Mapping) else ""),
                 "environment_uuid": first_known(host_payload.get("environment_uuid"), coolify_state.get("environment_uuid") if isinstance(coolify_state, Mapping) else ""),
@@ -615,8 +662,6 @@ def private_state_seed(
         p2p_host_port = raw_instance.get("p2p_host_port")
         if "validator" in roles and not private_value_is_known(p2p_host_port):
             raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.p2p_host_port is required for validator role.")
-        if not private_value_is_known(p2p_host_port):
-            raise PlanError(f"networks.{network_name}.qbft.instances.{raw_instance_id}.p2p_host_port is required for QBFT peer connectivity.")
 
         index = role_indexes[role]
         role_indexes[role] += 1
@@ -628,9 +673,16 @@ def private_state_seed(
                 "host": host_id,
                 "container_ip": first_known(raw_instance.get("container_ip"), container_ip_for_private_instance(subnet, role=role, index=index)),
                 **({"rpc_host_port": rpc_host_port} if private_value_is_known(rpc_host_port) else {}),
-                "p2p_host_port": p2p_host_port,
+                **({"p2p_host_port": p2p_host_port} if private_value_is_known(p2p_host_port) else {}),
             }
         )
+
+    external_rpc_url = first_known(network.get("rpc"), network.get("rpc_url"), default_seed.get("external_rpc_url"))
+    qbft_public_rpc = mapping_get(network, "qbft", "public_rpc")
+    if private_value_is_known(qbft_public_rpc):
+        public_rpc = bool(qbft_public_rpc)
+    else:
+        public_rpc = bool(default_seed.get("public_rpc", False) or external_rpc_url)
 
     seed = copy.deepcopy(default_seed)
     seed.update(
@@ -643,7 +695,8 @@ def private_state_seed(
             "docker_subnet": str(subnet),
             "besu_image": first_known(mapping_get(network, "qbft", "besu_image"), default_seed.get("besu_image"), DEFAULT_BESU_IMAGE),
             "runtime_root": first_known(default_seed.get("runtime_root"), f"/srv/main-computer/qbft-{network_name}/runtime"),
-            "public_rpc": bool(default_seed.get("public_rpc", False)),
+            "public_rpc": public_rpc,
+            "external_rpc_url": external_rpc_url,
             "hosts": hosts,
             "services": services,
             "source": f"private-state:{path.as_posix()}",
@@ -690,8 +743,10 @@ def build_plan(
     coolify_url: str | None = None,
     runtime_root: str | None = None,
     private_state_path: str | Path | None = None,
+    instances: str | tuple[str, ...] | list[str] | None = None,
 ) -> NetworkPlan:
     name, seed = load_seed_with_private_state(seed_name_or_path, private_state_path=private_state_path)
+    selected_instances = split_selected_ids(instances, kind="instance") if instances not in (None, "") else ()
 
     if seed.get("requires_mainnet_ack") and not allow_mainnet:
         raise PlanError("Mainnet seed requires --allow-mainnet. Review the plan before real mainnet use.")
@@ -756,6 +811,23 @@ def build_plan(
     raw_services = seed.get("services")
     if not isinstance(raw_services, list) or not raw_services:
         raise PlanError("seed.services must be a non-empty list")
+
+    if selected_instances:
+        raw_services_by_id: dict[str, dict[str, Any]] = {}
+        for raw in raw_services:
+            if not isinstance(raw, dict):
+                raise PlanError("Each service entry must be an object")
+            service_id = safe_id(raw.get("id"), kind="service")
+            raw_services_by_id[service_id] = raw
+        missing = [item for item in selected_instances if item not in raw_services_by_id]
+        if missing:
+            available = ", ".join(sorted(raw_services_by_id)) or "<none>"
+            raise PlanError(
+                f"Unknown --instances selection for {name!r}: {', '.join(missing)}. "
+                f"Available instances: {available}"
+            )
+        raw_services = [raw_services_by_id[item] for item in selected_instances]
+
     has_dedicated_rpc = any(
         isinstance(raw, dict) and str(raw.get("role") or "").strip().lower() == "rpc"
         for raw in raw_services
@@ -805,12 +877,17 @@ def build_plan(
 
         raw_rpc_port = raw.get("rpc_host_port")
         rpc_port = require_int(raw_rpc_port, name=f"{service_id}.rpc_host_port") if raw_rpc_port not in (None, "") else None
-        p2p_port = require_int(raw.get("p2p_host_port"), name=f"{service_id}.p2p_host_port")
+        raw_p2p_port = raw.get("p2p_host_port")
+        p2p_port = require_int(raw_p2p_port, name=f"{service_id}.p2p_host_port") if raw_p2p_port not in (None, "") else None
+        if "validator" in roles and p2p_port is None:
+            raise PlanError(f"{service_id}.p2p_host_port is required when roles includes validator")
         if "rpc" in roles and rpc_port is None:
             raise PlanError(f"{service_id}.rpc_host_port is required when roles includes rpc")
-        service_ports: list[tuple[int, str]] = [(p2p_port, "p2p")]
+        service_ports: list[tuple[int, str]] = []
         if rpc_port is not None:
-            service_ports.insert(0, (rpc_port, "rpc"))
+            service_ports.append((rpc_port, "rpc"))
+        if p2p_port is not None and service_should_consider_p2p_host_port_for_collision(role):
+            service_ports.append((p2p_port, "p2p"))
         for port, purpose in service_ports:
             port_key = (host_id, int(port))
             if port_key in seen_global_ports:
@@ -843,7 +920,7 @@ def build_plan(
                 data_path=f"{runtime_root}/{role_runtime_dir}/data",
                 static_nodes_path=f"{runtime_root}/{role_runtime_dir}/static-nodes.json",
                 rpc_url_on_host=f"http://{service_rpc_host}:{rpc_port}" if rpc_port is not None else "",
-                p2p_advertise=f"{hosts[host_id].address or host_id}:{p2p_port}",
+                p2p_advertise=f"{hosts[host_id].address or host_id}:{p2p_port}" if p2p_port is not None else "",
             )
         )
 
@@ -896,8 +973,18 @@ def build_plan(
         docker_subnet=docker_subnet,
         besu_image=image,
         public_rpc=effective_public_rpc,
+        external_rpc_url=str(seed.get("external_rpc_url") or "").strip(),
         topology_policy=topology_policy,
-        hosts=tuple(sorted(hosts.values(), key=lambda item: item.id)),
+        hosts=tuple(
+            sorted(
+                (
+                    host
+                    for host in hosts.values()
+                    if not selected_instances or host.id in {service.host for service in services}
+                ),
+                key=lambda item: item.id,
+            )
+        ),
         services=tuple(sorted(services, key=lambda item: item.id)),
         warnings=tuple(warnings),
     )
@@ -1125,6 +1212,1275 @@ def yaml_quote(value: object) -> str:
     return f'"{escaped}"'
 
 
+def shell_single_quote(value: object) -> str:
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def compose_service_key(value: object, *, fallback: str = "service") -> str:
+    clean = str(value or "").strip().lower()
+    clean = re.sub(r"[^a-z0-9_.-]+", "-", clean).strip("-")
+    if not clean:
+        clean = fallback
+    if not re.match(r"^[a-z0-9][a-z0-9_.-]*$", clean):
+        raise PlanError(f"Invalid compose service key derived from {value!r}: {clean!r}")
+    return clean
+
+
+def traefik_router_id(value: object, *, fallback: str = "main-computer-rpc") -> str:
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "").strip()).strip("-")
+    return clean or fallback
+
+
+def canonical_rpc_hostname(plan: NetworkPlan) -> str:
+    """Return the hostname for networks.<network>.rpc, or an empty string."""
+
+    url = str(plan.external_rpc_url or "").strip()
+    if not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError as exc:
+        raise PlanError(f"external_rpc_url must be a valid http(s) URL: {url!r}") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise PlanError(f"external_rpc_url must be a valid http(s) URL with a hostname: {url!r}")
+    return parsed.hostname
+
+
+def rpc_public_entry_enabled(plan: NetworkPlan) -> bool:
+    return bool(canonical_rpc_hostname(plan))
+
+
+def rpc_public_entry_dynamic_config_filename(plan: NetworkPlan, host_id: str) -> str:
+    return (
+        f"main-computer-{traefik_router_id(plan.name).lower()}"
+        f"-rpc-public-entry-{traefik_router_id(host_id).lower()}.yml"
+    )
+
+
+def rpc_public_entry_dynamic_config_path(plan: NetworkPlan, host_id: str) -> str:
+    return f"{TRAEFIK_DYNAMIC_CONFIG_DIR}/{rpc_public_entry_dynamic_config_filename(plan, host_id)}"
+
+
+def rpc_public_entry_service_key(plan: NetworkPlan, host_id: str) -> str:
+    return compose_service_key(f"{plan.name}-rpc-public-entry-config-{host_id}")
+
+
+def local_rpc_entry_services(plan: NetworkPlan, host_id: str) -> list[PlannedService]:
+    host_id = safe_id(host_id, kind="host")
+    return [
+        service
+        for service in services_for_host(plan, host_id)
+        if "rpc" in service.roles and service.rpc_host_port is not None
+    ]
+
+
+def rpc_public_entry_backend_url(plan: NetworkPlan, host: PlannedHost, service: PlannedService) -> str:
+    del plan
+    if service.rpc_bind_host != "0.0.0.0":
+        raise PlanError(
+            f"RPC public-entry backend {service.id!r} on host {host.id!r} is not published on 0.0.0.0. "
+            "Set networks.<network>.qbft.public_rpc=true or declare networks.<network>.rpc in private state."
+        )
+    address = str(host.address or "").strip()
+    if not address:
+        raise PlanError(
+            f"Host {host.id!r} needs an address/public_ip before it can render "
+            f"the RPC public-entry backend for service {service.id!r}."
+        )
+    if ":" in address and not address.startswith("[") and not re.match(r"^[A-Za-z0-9.-]+$", address):
+        address = f"[{address}]"
+    return f"http://{address}:{service.rpc_host_port}"
+
+
+def rpc_public_entry_plan(plan: NetworkPlan) -> dict[str, Any]:
+    hostname = canonical_rpc_hostname(plan)
+    if not hostname:
+        return {"enabled": False}
+    hosts = host_by_id(plan)
+    host_entries: dict[str, Any] = {}
+    for host in plan.hosts:
+        local_rpcs = local_rpc_entry_services(plan, host.id)
+        host_entries[host.id] = {
+            "action": "write" if local_rpcs else "remove",
+            "container_service": rpc_public_entry_service_key(plan, host.id),
+            "path": rpc_public_entry_dynamic_config_path(plan, host.id),
+            "rpc_instances": [service.id for service in local_rpcs],
+            "backends": [rpc_public_entry_backend_url(plan, hosts[host.id], service) for service in local_rpcs],
+        }
+    return {
+        "enabled": True,
+        "url": plan.external_rpc_url,
+        "hostname": hostname,
+        "dynamic_config_dir": TRAEFIK_DYNAMIC_CONFIG_DIR,
+        "hosts": host_entries,
+    }
+
+
+
+
+def mutation_action_values(args: argparse.Namespace) -> dict[str, str]:
+    values = {
+        "add": str(getattr(args, "add", "") or "").strip(),
+        "retire": str(getattr(args, "retire", "") or "").strip(),
+        "promote": str(getattr(args, "promote", "") or "").strip(),
+        "demote": str(getattr(args, "demote", "") or "").strip(),
+    }
+    return {key: value for key, value in values.items() if value}
+
+
+def parse_mutation_role_targets(value: str, *, kind: str) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    for raw in split_selected_ids(value, kind=kind):
+        if ":" not in raw:
+            raise PlanError(f"--{kind} entries must use instance:role syntax; got {raw!r}.")
+        instance_id, role = raw.split(":", 1)
+        instance_id = safe_id(instance_id, kind="instance")
+        role = str(role or "").strip().lower()
+        if role not in {"validator", "rpc", "validator-only", "rpc-only"}:
+            raise PlanError(
+                f"--{kind} target for {instance_id!r} must be validator, rpc, validator-only, or rpc-only; got {role!r}."
+            )
+        targets[instance_id] = role
+    return targets
+
+
+def planned_service_by_id(plan: NetworkPlan) -> dict[str, PlannedService]:
+    return {service.id: service for service in plan.services}
+
+
+def mutation_kind_for_services(action: str, services: list[PlannedService], role_targets: dict[str, str] | None = None) -> str:
+    role_targets = role_targets or {}
+    has_validator = any("validator" in service.roles for service in services)
+    has_rpc = any("rpc" in service.roles for service in services)
+    if action == "promote":
+        has_validator = any(role_targets.get(service.id) in {"validator", "validator-only"} for service in services)
+        has_rpc = any(role_targets.get(service.id) in {"rpc", "rpc-only"} for service in services)
+    elif action == "demote":
+        has_validator = any(
+            "validator" in service.roles and role_targets.get(service.id) in {"rpc", "rpc-only"}
+            for service in services
+        )
+        has_rpc = any(
+            "rpc" in service.roles and role_targets.get(service.id) in {"validator", "validator-only"}
+            for service in services
+        )
+    if has_validator and has_rpc:
+        suffix = "validator-rpc"
+    elif has_validator:
+        suffix = "validator"
+    elif has_rpc:
+        suffix = "rpc"
+    else:
+        suffix = "instance"
+    if len(services) > 1:
+        suffix = f"mixed-{suffix}" if suffix != "instance" else "mixed"
+    return f"{action}-{suffix}"
+
+
+def mutation_requires_consensus_change(action: str, services: list[PlannedService], role_targets: dict[str, str] | None = None) -> bool:
+    role_targets = role_targets or {}
+    if action in {"add", "retire"}:
+        return any("validator" in service.roles for service in services)
+    if action == "promote":
+        return any(role_targets.get(service.id) in {"validator", "validator-only"} for service in services)
+    if action == "demote":
+        return any("validator" in service.roles and role_targets.get(service.id) in {"rpc", "rpc-only"} for service in services)
+    return False
+
+
+def mutation_affects_rpc(action: str, services: list[PlannedService], role_targets: dict[str, str] | None = None) -> bool:
+    role_targets = role_targets or {}
+    if action in {"add", "retire"}:
+        return any("rpc" in service.roles and service.rpc_host_port is not None for service in services)
+    if action == "promote":
+        return any(role_targets.get(service.id) in {"rpc", "rpc-only"} for service in services)
+    if action == "demote":
+        return any("rpc" in service.roles and role_targets.get(service.id) in {"validator", "validator-only"} for service in services)
+    return False
+
+
+def mutation_rpc_services(plan: NetworkPlan, action: str, services: list[PlannedService], role_targets: dict[str, str] | None = None) -> list[PlannedService]:
+    del plan
+    role_targets = role_targets or {}
+    result: list[PlannedService] = []
+    for service in services:
+        if action in {"add", "retire"} and "rpc" in service.roles and service.rpc_host_port is not None:
+            result.append(service)
+        elif action == "promote" and role_targets.get(service.id) in {"rpc", "rpc-only"} and service.rpc_host_port is not None:
+            result.append(service)
+        elif action == "demote" and "rpc" in service.roles and role_targets.get(service.id) in {"validator", "validator-only"} and service.rpc_host_port is not None:
+            result.append(service)
+    return result
+
+
+def mutation_public_rpc_entry_hosts(plan: NetworkPlan, rpc_services: list[PlannedService]) -> list[str]:
+    """Return public-entry host ids whose rendered local RPC pool would change.
+
+    This deliberately reads from the public-entry plan instead of assuming an RPC
+    backend's host is the entry owner.  Today those hosts usually match because
+    the entry sidecar is rendered per Coolify host; keeping the lookup separate
+    makes the packet model ready for an explicit entry-owner topology later.
+    """
+
+    if not rpc_services or not rpc_public_entry_enabled(plan):
+        return []
+    rpc_ids = {service.id for service in rpc_services}
+    public_entry = rpc_public_entry_plan(plan)
+    hosts_payload = public_entry.get("hosts") if isinstance(public_entry, dict) else {}
+    affected: list[str] = []
+    if isinstance(hosts_payload, dict):
+        for host_id, payload in hosts_payload.items():
+            if not isinstance(payload, dict):
+                continue
+            instances = set(str(item) for item in payload.get("rpc_instances") or [])
+            if rpc_ids.intersection(instances):
+                affected.append(str(host_id))
+    return sorted(dict.fromkeys(affected))
+
+
+def mutation_phases(action: str, *, requires_consensus_change: bool, affects_rpc: bool) -> list[str]:
+    phases = ["preflight"]
+    if action in {"add", "promote"}:
+        if affects_rpc:
+            phases.extend(["slurp-current-config", "seed-new-node-bootstrap"])
+        phases.append("deploy-service")
+        if affects_rpc:
+            phases.extend(["wait-direct-rpc", "verify-chain-id", "commit-full-network-topology"])
+        if requires_consensus_change:
+            phases.extend(["verify-node-identity", "propose-validator-vote", "wait-validator-set", "verify-block-production"])
+        if affects_rpc:
+            phases.extend(["update-public-rpc-entry", "verify-public-rpc"])
+        return phases
+
+    if action in {"retire", "demote"}:
+        if affects_rpc:
+            phases.extend(["remove-public-rpc-entry", "verify-public-rpc"])
+        if requires_consensus_change:
+            phases.extend(
+                [
+                    "verify-current-validator-set",
+                    "verify-quorum-after-removal",
+                    "propose-validator-vote",
+                    "wait-validator-set-removal",
+                    "verify-block-production",
+                ]
+            )
+        phases.extend(["stop-coolify-service", "optionally-mark-private-state-retired"])
+        return phases
+
+    raise PlanError(f"Unsupported mutation action: {action!r}")
+
+
+def build_mutation_packet(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    values = mutation_action_values(args)
+    if not values:
+        raise PlanError("mutate requires one of --add, --retire, --promote, or --demote.")
+    if len(values) > 1:
+        raise PlanError("mutate accepts exactly one mutation intent per packet.")
+
+    action, raw_value = next(iter(values.items()))
+    service_catalog = planned_service_by_id(plan)
+    role_targets: dict[str, str] = {}
+    if action in {"add", "retire"}:
+        instance_ids = list(split_selected_ids(raw_value, kind="instance"))
+    else:
+        role_targets = parse_mutation_role_targets(raw_value, kind=action)
+        instance_ids = list(role_targets)
+
+    missing = [instance_id for instance_id in instance_ids if instance_id not in service_catalog]
+    if missing:
+        available = ", ".join(sorted(service_catalog)) or "<none>"
+        raise PlanError(
+            f"Unknown mutate instance selection for {plan.name!r}: {', '.join(missing)}. "
+            f"Available instances: {available}"
+        )
+    if not instance_ids:
+        raise PlanError(f"--{action} must select at least one instance.")
+
+    services = [service_catalog[instance_id] for instance_id in instance_ids]
+    host_ids = sorted(dict.fromkeys(service.host for service in services))
+    hosts = host_by_id(plan)
+    coolify_services = [project_service_name(plan, host_id) for host_id in host_ids]
+    rpc_services = mutation_rpc_services(plan, action, services, role_targets)
+    rpc_backends = [
+        rpc_public_entry_backend_url(plan, hosts[service.host], service)
+        for service in rpc_services
+        if service.host in hosts
+    ]
+    affected_public_rpc_entry_hosts = mutation_public_rpc_entry_hosts(plan, rpc_services)
+    affected_public_rpc_entries = [plan.external_rpc_url] if affected_public_rpc_entry_hosts and plan.external_rpc_url else []
+    requires_consensus = mutation_requires_consensus_change(action, services, role_targets)
+    affects_rpc = mutation_affects_rpc(action, services, role_targets)
+    phases = mutation_phases(action, requires_consensus_change=requires_consensus, affects_rpc=affects_rpc)
+
+    required_ack: list[str] = []
+    if requires_consensus:
+        required_ack.append("consensus-validator-change")
+        if plan.environment == "mainnet" or plan.name == "mainnet":
+            required_ack.append("mainnet-consensus-change")
+
+    acknowledged: list[str] = []
+    if bool(getattr(args, "ack_consensus_change", False)):
+        acknowledged.append("consensus-validator-change")
+    if bool(getattr(args, "ack_mainnet_consensus_change", False)):
+        acknowledged.append("mainnet-consensus-change")
+
+    observed_state = build_mutation_observed_state(plan, args)
+
+    packet: dict[str, Any] = {
+        "ok": bool(observed_state.get("ok", True)) if bool(getattr(args, "observe_chain", False)) else True,
+        "mode": "plan",
+        "network": plan.name,
+        "environment": plan.environment,
+        "mutation": mutation_kind_for_services(action, services, role_targets),
+        "intent": {
+            "action": action,
+            "value": raw_value,
+            **({"role_targets": role_targets} if role_targets else {}),
+        },
+        "affected_instances": instance_ids,
+        "affected_coolify_hosts": host_ids,
+        "affected_coolify_services": coolify_services,
+        "affected_rpc_backends": rpc_backends,
+        "affected_public_rpc_entries": affected_public_rpc_entries,
+        "affected_public_rpc_entry_hosts": affected_public_rpc_entry_hosts,
+        "requires_consensus_change": requires_consensus,
+        "requires_ack": required_ack,
+        "acknowledged": acknowledged,
+        "phases": phases,
+        "observed_state": observed_state,
+        "execution": {
+            "implemented": False,
+            "no_mutation_performed": True,
+            "message": "mutate planner is read-only in this version; mutate --apply is intentionally refused.",
+        },
+        "warnings": list(plan.warnings),
+    }
+    if plan.external_rpc_url:
+        packet["canonical_rpc_url"] = plan.external_rpc_url
+    if rpc_public_entry_enabled(plan):
+        packet["rpc_public_entry"] = {
+            "enabled": True,
+            "hostname": canonical_rpc_hostname(plan),
+            "affected_hosts": affected_public_rpc_entry_hosts,
+        }
+    return packet
+
+
+def write_mutation_packet_if_requested(packet: dict[str, Any], args: argparse.Namespace) -> None:
+    packet_path = str(getattr(args, "packet", "") or "").strip()
+    if not packet_path:
+        return
+    path = Path(packet_path)
+    if path.is_dir():
+        raise PlanError(f"--packet must be a file path, not a directory: {packet_path!r}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
+    packet["packet_path"] = str(path)
+
+
+def args_copy_with(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace:
+    """Return an argparse-like namespace copy with selected attributes replaced."""
+
+    values = dict(vars(args))
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def plan_with_only_services(plan: NetworkPlan, service_ids: list[str] | tuple[str, ...] | set[str]) -> NetworkPlan:
+    """Return a rendering/execution view containing only the requested services.
+
+    Mutate planning intentionally loads the whole private-state catalog so it can
+    name future instances.  A mutation executor must not hand that whole catalog
+    to a host-scoped Coolify service, otherwise ``mutate --add rpc-2`` could also
+    start unrelated future validators declared in private state.  This helper is
+    the narrow target-state view used for the host compose pushed by rpc-only
+    mutation execution.
+    """
+
+    wanted = {safe_id(service_id, kind="service") for service_id in service_ids}
+    selected_services = tuple(service for service in plan.services if service.id in wanted)
+    found = {service.id for service in selected_services}
+    missing = sorted(wanted - found)
+    if missing:
+        raise PlanError(f"Cannot build mutation execution plan; missing service(s): {', '.join(missing)}")
+    if not selected_services:
+        raise PlanError("Cannot build mutation execution plan without services.")
+    host_ids = {service.host for service in selected_services}
+    selected_hosts = tuple(host for host in plan.hosts if host.id in host_ids)
+    return replace(plan, hosts=selected_hosts, services=selected_services)
+
+
+def services_by_host(services: list[PlannedService] | tuple[PlannedService, ...]) -> dict[str, list[PlannedService]]:
+    grouped: dict[str, list[PlannedService]] = {}
+    for service in services:
+        grouped.setdefault(service.host, []).append(service)
+    return grouped
+
+
+def mutation_apply_is_supported_rpc_add(packet: dict[str, Any], services: list[PlannedService]) -> bool:
+    if packet.get("requires_consensus_change"):
+        return False
+    intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
+    if intent.get("action") != "add":
+        return False
+    return bool(services) and all("rpc" in service.roles and "validator" not in service.roles for service in services)
+
+
+def mutate_rpc_wait_args(args: argparse.Namespace, *, rpc_url: str) -> argparse.Namespace:
+    timeout_s = float(getattr(args, "rpc_timeout_s", DEFAULT_RPC_WAIT_TIMEOUT_S))
+    if timeout_s <= 0:
+        timeout_s = DEFAULT_MUTATE_RPC_WAIT_TIMEOUT_S
+    return args_copy_with(args, rpc_url=rpc_url, rpc_timeout_s=timeout_s)
+
+
+def default_mutation_observed_state() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "private_state": "loaded",
+        "coolify": "not-inspected",
+        "direct_rpc": "not-inspected",
+        "consensus": "not-inspected",
+        "public_rpc": "not-inspected",
+    }
+
+
+def json_rpc_hex_to_int(value: object, *, field: str) -> int:
+    text = str(value or "").strip()
+    try:
+        if text.lower().startswith("0x"):
+            return int(text, 16)
+        return int(text)
+    except ValueError as exc:
+        raise RuntimeError(f"{field} returned non-integer hex value: {text!r}") from exc
+
+
+def chain_observation_timeout_from_args(args: argparse.Namespace) -> float:
+    value = float(getattr(args, "chain_observation_timeout_s", DEFAULT_CHAIN_OBSERVATION_TIMEOUT_S))
+    return DEFAULT_CHAIN_OBSERVATION_TIMEOUT_S if value <= 0 else value
+
+
+def chain_observation_rpc_candidates(plan: NetworkPlan, args: argparse.Namespace) -> list[dict[str, str]]:
+    """Return the RPC surfaces that are safe to inspect for current chain state.
+
+    Unlike apply readiness, mutation planning often builds the full private-state
+    catalog so it can name future instances.  Direct host-port URLs in that full
+    catalog can point at nodes that intentionally do not exist yet.  Chain
+    observation therefore prefers the canonical network RPC entry, falling back to
+    direct candidates only when no canonical/explicit RPC URL is available.
+    """
+
+    explicit = str(getattr(args, "rpc_url", "") or "").strip()
+    if explicit:
+        return [{"url": explicit, "source": "explicit"}]
+
+    configured = str(getattr(plan, "external_rpc_url", "") or "").strip()
+    if configured:
+        return [{"url": configured, "source": "configured-network-rpc"}]
+
+    return rpc_probe_url_candidates(plan, args)
+
+
+def observe_rpc_endpoint(
+    plan: NetworkPlan,
+    candidate: Mapping[str, str],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    url = str(candidate.get("url") or "").strip()
+    source = str(candidate.get("source") or "unknown").strip() or "unknown"
+    if not url:
+        return {
+            "ok": False,
+            "url": url,
+            "source": source,
+            "error": "empty RPC URL",
+        }
+
+    timeout_s = chain_observation_timeout_from_args(args)
+    rpc_user_agent = str(getattr(args, "rpc_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
+    expected_chain_id = hex(plan.chain_id)
+
+    try:
+        chain_id = str(json_rpc(url, "eth_chainId", timeout_s=timeout_s, user_agent=rpc_user_agent))
+        block_hex = str(json_rpc(url, "eth_blockNumber", timeout_s=timeout_s, user_agent=rpc_user_agent))
+        peer_hex = str(json_rpc(url, "net_peerCount", timeout_s=timeout_s, user_agent=rpc_user_agent))
+        validators_raw = json_rpc(
+            url,
+            "qbft_getValidatorsByBlockNumber",
+            ["latest"],
+            timeout_s=timeout_s,
+            user_agent=rpc_user_agent,
+        )
+        block_number = json_rpc_hex_to_int(block_hex, field="eth_blockNumber")
+        peer_count = json_rpc_hex_to_int(peer_hex, field="net_peerCount")
+        validators = [str(item) for item in validators_raw] if isinstance(validators_raw, list) else []
+        chain_id_matches = chain_id.lower() == expected_chain_id.lower()
+        payload: dict[str, Any] = {
+            "ok": chain_id_matches,
+            "url": url,
+            "source": source,
+            "chain_id": chain_id,
+            "expected_chain_id": expected_chain_id,
+            "chain_id_matches_plan": chain_id_matches,
+            "block_number": block_number,
+            "block_number_hex": block_hex,
+            "peer_count": peer_count,
+            "peer_count_hex": peer_hex,
+            "validators": validators,
+            "validator_count": len(validators),
+        }
+        if not chain_id_matches:
+            payload["error"] = f"expected chain id {expected_chain_id}, got {chain_id}"
+        return payload
+    except Exception as exc:  # noqa: BLE001 - operator packet should capture endpoint failure.
+        return {
+            "ok": False,
+            "url": url,
+            "source": source,
+            "expected_chain_id": expected_chain_id,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def rpc_probe_status(probes: list[dict[str, Any]], sources: set[str], *, absent: str = "not-inspected") -> str:
+    matching = [probe for probe in probes if str(probe.get("source") or "") in sources]
+    if not matching:
+        return absent
+    return "ok" if any(bool(probe.get("ok")) for probe in matching) else "error"
+
+
+def observe_chain_state(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    candidates = chain_observation_rpc_candidates(plan, args)
+    if not candidates:
+        return {
+            "ok": False,
+            "network": plan.name,
+            "environment": plan.environment,
+            "expected_chain_id": hex(plan.chain_id),
+            "direct_rpc": "not-configured",
+            "canonical_rpc": "not-configured",
+            "consensus": "not-inspected",
+            "probes": [],
+            "errors": ["No RPC URL is available for chain observation."],
+        }
+
+    probes = [observe_rpc_endpoint(plan, candidate, args) for candidate in candidates]
+    successful = [probe for probe in probes if bool(probe.get("ok"))]
+    consensus_probe = successful[0] if successful else None
+    errors = [str(probe.get("error")) for probe in probes if probe.get("error")]
+    direct_status = rpc_probe_status(probes, {"direct-host-port"}, absent="not-inspected")
+    canonical_absent = "not-configured" if not str(plan.external_rpc_url or "").strip() else "not-inspected"
+    canonical_status = rpc_probe_status(probes, {"configured-network-rpc"}, absent=canonical_absent)
+    explicit_status = rpc_probe_status(probes, {"explicit"}, absent="not-inspected")
+
+    chain: dict[str, Any] = {}
+    if consensus_probe is not None:
+        chain = {
+            "source_url": consensus_probe.get("url"),
+            "source": consensus_probe.get("source"),
+            "chain_id": consensus_probe.get("chain_id"),
+            "expected_chain_id": consensus_probe.get("expected_chain_id"),
+            "chain_id_matches_plan": consensus_probe.get("chain_id_matches_plan"),
+            "block_number": consensus_probe.get("block_number"),
+            "block_number_hex": consensus_probe.get("block_number_hex"),
+            "peer_count": consensus_probe.get("peer_count"),
+            "peer_count_hex": consensus_probe.get("peer_count_hex"),
+            "validators": consensus_probe.get("validators", []),
+            "validator_count": consensus_probe.get("validator_count", 0),
+        }
+
+    return {
+        "ok": bool(consensus_probe),
+        "network": plan.name,
+        "environment": plan.environment,
+        "expected_chain_id": hex(plan.chain_id),
+        "direct_rpc": direct_status,
+        "canonical_rpc": canonical_status,
+        "explicit_rpc": explicit_status,
+        "consensus": "ok" if consensus_probe is not None else "error",
+        "chain": chain,
+        "probes": probes,
+        **({"errors": errors} if errors else {}),
+    }
+
+
+def build_mutation_observed_state(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    if not bool(getattr(args, "observe_chain", False)):
+        return default_mutation_observed_state()
+
+    observation = observe_chain_state(plan, args)
+    return {
+        "ok": bool(observation.get("ok")),
+        "private_state": "loaded",
+        "coolify": "not-inspected",
+        "direct_rpc": observation.get("direct_rpc", "not-inspected"),
+        "consensus": observation.get("consensus", "not-inspected"),
+        "public_rpc": observation.get("canonical_rpc", "not-inspected"),
+        "canonical_rpc": observation.get("canonical_rpc", "not-inspected"),
+        "explicit_rpc": observation.get("explicit_rpc", "not-inspected"),
+        "chain": observation.get("chain", {}),
+        "rpc_probes": observation.get("probes", []),
+        **({"errors": observation.get("errors", [])} if observation.get("errors") else {}),
+    }
+
+
+def candidate_qbft_config_source_hosts(plan: NetworkPlan, target_services: list[PlannedService], args: argparse.Namespace) -> list[str]:
+    forced = str(getattr(args, "config_root_host", "") or "").strip()
+    if forced:
+        return [safe_id(forced, kind="host")]
+    target_ids = {service.id for service in target_services}
+    target_hosts = {service.host for service in target_services}
+
+    # Prefer hosts that are not being mutated.  A newly introduced host can have
+    # planned services in private state before it has any live QBFT runtime
+    # material, so it should not be treated as a config source merely because it
+    # appears in the future topology.
+    preferred: list[str] = []
+    fallback: list[str] = []
+    for service in plan.services:
+        if service.id in target_ids:
+            continue
+        if service.host not in fallback:
+            fallback.append(service.host)
+        if service.host not in target_hosts and service.host not in preferred:
+            preferred.append(service.host)
+    return preferred or fallback
+
+
+def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argparse.Namespace, host_id: str) -> dict[str, Any]:
+    hosts = host_by_id(plan)
+    if host_id not in hosts:
+        raise PlanError(f"Unknown config source host: {host_id}")
+    port = qbft_config_export_port(args)
+    token = qbft_config_export_token()
+    service_name = qbft_config_export_service_name(plan, host_id)
+    compose = render_qbft_config_exporter_compose(plan, host_id, token=token, port=port)
+    export_args = args_copy_with(
+        args,
+        host=host_id,
+        coolify_service_name=service_name,
+        _compose_override=compose,
+    )
+    sync_result = coolify_sync(plan, export_args, deploy=not bool(getattr(args, "no_deploy", False)))
+    source_url = qbft_config_export_url(hosts[host_id], port=port, token=token)
+    if bool(getattr(args, "dry_run", False)) or bool(getattr(args, "no_deploy", False)):
+        return {
+            "ok": True,
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "source_host": host_id,
+            "source_url": source_url,
+            "service_name": service_name,
+            "sync": sync_result,
+            "message": "QBFT config export planned; live slurp skipped.",
+        }
+    if not sync_result.get("ok"):
+        return {
+            "ok": False,
+            "source_host": host_id,
+            "source_url": source_url,
+            "service_name": service_name,
+            "sync": sync_result,
+            "missing_files": ["export-service-deploy-failed"],
+        }
+    # Give Coolify/Docker enough time to pull/start the tiny HTTP exporter before fetching.
+    # This is intentionally separate from the Coolify API timeout; service deployment is queued/asynchronous.
+    deadline = time.time() + qbft_config_export_timeout_s(args)
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            payload = fetch_json_url(source_url, timeout_s=min(10.0, max(2.0, qbft_config_export_timeout_s(args) / 12.0)))
+            if not isinstance(payload, Mapping):
+                raise RuntimeError(f"exporter returned non-object payload: {type(payload).__name__}")
+            result = normalize_qbft_config_bundle(payload, source_host=host_id, source_url=source_url)
+            result["service_name"] = service_name
+            result["sync"] = sync_result
+            return result
+        except Exception as exc:  # noqa: BLE001 - return diagnostic for operator packet.
+            last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(2.0)
+    return {
+        "ok": False,
+        "source_host": host_id,
+        "source_url": source_url,
+        "service_name": service_name,
+        "sync": sync_result,
+        "missing_files": ["export-fetch-timeout"],
+        "error": last_error,
+    }
+
+
+def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argparse.Namespace, host_id: str) -> dict[str, Any]:
+    """Slurp QBFT config through a Coolify-managed temporary public-entry tool.
+
+    This is Coolify-native and does not use SSH.  It creates/updates a small
+    source-host Coolify service that:
+      * mounts candidate QBFT runtime volumes / bind roots,
+      * serves a tokenized non-secret config bundle on an internal export port,
+      * writes a separate Traefik dynamic config file for a temporary HTTP path.
+
+    The operator fetches that path through the host's normal public entrypoint
+    using the canonical RPC Host header, so the workflow does not depend on
+    opening the temporary export port to the internet.  A cleanup compose removes
+    the temporary dynamic config after the bundle is fetched.
+    """
+
+    hosts = host_by_id(plan)
+    if host_id not in hosts:
+        raise PlanError(f"Unknown config source host: {host_id}")
+    if not rpc_public_entry_enabled(plan):
+        return {
+            "ok": False,
+            "source_host": host_id,
+            "transport": "public-entry",
+            "missing_files": ["rpc-public-entry-not-enabled"],
+            "error": "Public-entry config slurp requires networks.<network>.rpc.",
+        }
+
+    port = qbft_config_export_port(args)
+    token = qbft_config_export_token()
+    host = hosts[host_id]
+    hostname = canonical_rpc_hostname(plan)
+    public_url = qbft_config_export_public_entry_url(host, token=token)
+    service_name = qbft_config_export_service_name(plan, host_id)
+    compose = render_qbft_config_exporter_compose(plan, host_id, token=token, port=port, public_entry=True)
+    cleanup_compose = render_qbft_config_export_cleanup_compose(plan, host_id)
+
+    export_args = args_copy_with(
+        args,
+        host=host_id,
+        coolify_service_name=service_name,
+        _compose_override=compose,
+    )
+    cleanup_args = args_copy_with(
+        args,
+        host=host_id,
+        coolify_service_name=service_name,
+        _compose_override=cleanup_compose,
+    )
+
+    sync_result = coolify_sync(plan, export_args, deploy=not bool(getattr(args, "no_deploy", False)))
+    if bool(getattr(args, "dry_run", False)) or bool(getattr(args, "no_deploy", False)):
+        return {
+            "ok": True,
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "source_host": host_id,
+            "source_url": public_url,
+            "host_header": hostname,
+            "transport": "public-entry",
+            "service_name": service_name,
+            "sync": sync_result,
+            "message": "QBFT config public-entry export planned; live slurp skipped.",
+        }
+    if not sync_result.get("ok"):
+        return {
+            "ok": False,
+            "source_host": host_id,
+            "source_url": public_url,
+            "host_header": hostname,
+            "transport": "public-entry",
+            "service_name": service_name,
+            "sync": sync_result,
+            "missing_files": ["public-entry-export-deploy-failed"],
+        }
+
+    deadline = time.time() + qbft_config_export_timeout_s(args)
+    last_error = ""
+    result: dict[str, Any] | None = None
+    while time.time() < deadline:
+        try:
+            payload = fetch_json_url(
+                public_url,
+                timeout_s=min(10.0, max(2.0, qbft_config_export_timeout_s(args) / 12.0)),
+                headers={"Host": hostname},
+            )
+            if not isinstance(payload, Mapping):
+                raise RuntimeError(f"exporter returned non-object payload: {type(payload).__name__}")
+            result = normalize_qbft_config_bundle(payload, source_host=host_id, source_url=public_url)
+            result["host_header"] = hostname
+            result["transport"] = "public-entry"
+            result["service_name"] = service_name
+            result["sync"] = sync_result
+            break
+        except Exception as exc:  # noqa: BLE001 - return diagnostic for operator packet.
+            last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(2.0)
+
+    cleanup_result = coolify_sync(plan, cleanup_args, deploy=True)
+    if result is not None:
+        result["cleanup"] = cleanup_result
+        return result
+    return {
+        "ok": False,
+        "source_host": host_id,
+        "source_url": public_url,
+        "host_header": hostname,
+        "transport": "public-entry",
+        "service_name": service_name,
+        "sync": sync_result,
+        "cleanup": cleanup_result,
+        "missing_files": ["public-entry-export-fetch-timeout"],
+        "error": last_error,
+    }
+
+
+def export_qbft_config_from_host(plan: NetworkPlan, args: argparse.Namespace, host_id: str) -> dict[str, Any]:
+    transport = qbft_config_export_transport(args)
+    if transport == "direct-port":
+        result = export_qbft_config_from_host_via_direct_port(plan, args, host_id)
+        result["transport"] = "direct-port"
+        return result
+    result = export_qbft_config_from_host_via_public_entry(plan, args, host_id)
+    result["transport"] = "public-entry"
+    return result
+
+
+def discover_qbft_config_bundle(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    target_services: list[PlannedService],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    source_hosts = candidate_qbft_config_source_hosts(plan, target_services, args)
+    if not source_hosts:
+        raise PlanError("No existing QBFT config source host is available for this mutation.")
+    exports: list[dict[str, Any]] = []
+    for host_id in source_hosts:
+        exports.append(export_qbft_config_from_host(plan, args, host_id))
+    if bool(getattr(args, "dry_run", False)) or bool(getattr(args, "no_deploy", False)):
+        placeholder_bundle = {
+            "ok": True,
+            "source_host": source_hosts[0],
+            "lineage_hash": "dry-run",
+            "files": {
+                "genesis_json": "{\"dry_run\":true}\n",
+                "static_nodes_all_json": "[]\n",
+                "network_metadata_json": "{\"dry_run\":true}\n",
+            },
+            "sha256": {},
+        }
+        return placeholder_bundle, {
+            "ok": True,
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "candidate_hosts": source_hosts,
+            "exports": exports,
+            "message": "QBFT config source discovery planned; live bundle not fetched.",
+        }
+    selected = select_qbft_config_source(exports, forced_host=str(getattr(args, "config_root_host", "") or ""))
+    return selected, {
+        "ok": True,
+        "candidate_hosts": source_hosts,
+        "selected_source_host": selected.get("source_host"),
+        "selected_lineage_hash": selected.get("lineage_hash"),
+        "exports": [
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"files", "sync"}
+            }
+            for item in exports
+        ],
+    }
+
+
+def apply_rpc_add_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: dict[str, Any]) -> dict[str, Any]:
+    """Execute the safe subset of mutate: adding rpc-only instances.
+
+    This deliberately does not change validator sets and does not edit private
+    state.  The executor first slurps the current non-secret QBFT runtime config
+    from an existing host, seeds the new node with that material, starts the new
+    RPC unrouted, waits for direct health, and only then publishes the host-local
+    public RPC entry.
+    """
+
+    service_catalog = planned_service_by_id(plan)
+    target_ids = [str(item) for item in packet.get("affected_instances") or []]
+    target_services = [service_catalog[service_id] for service_id in target_ids if service_id in service_catalog]
+    if not mutation_apply_is_supported_rpc_add(packet, target_services):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": (
+                "mutate --apply currently supports only rpc-only adds. "
+                "Validator changes remain planner-only until the consensus executor lands."
+            ),
+            "execution": {
+                "implemented": False,
+                "no_mutation_performed": True,
+                "message": "Unsupported mutation executor path.",
+            },
+        }
+
+    if bool(getattr(args, "observe_chain", False)) and not bool(packet.get("ok", False)):
+        return {
+            **packet,
+            "mode": "apply",
+            "error": "preflight chain observation failed; refusing to mutate.",
+            "execution": {
+                "implemented": True,
+                "no_mutation_performed": True,
+                "message": "RPC-only add executor refused because observed_state.ok is false.",
+            },
+        }
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    no_deploy = bool(getattr(args, "no_deploy", False))
+    phases: list[dict[str, Any]] = []
+    hosts = host_by_id(plan)
+
+    try:
+        runtime_bundle, discovery = discover_qbft_config_bundle(plan, args, target_services)
+    except PlanError as exc:
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": str(exc),
+            "execution": {
+                "implemented": True,
+                "dry_run": dry_run,
+                "no_mutation_performed": dry_run,
+                "message": "RPC-only add refused while selecting/slurping the current QBFT config source.",
+            },
+            "apply_phases": phases,
+        }
+    phases.append({"phase": "slurp-current-config", "result": discovery})
+    if not discovery.get("ok"):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "execution": {
+                "implemented": True,
+                "dry_run": dry_run,
+                "no_mutation_performed": dry_run,
+                "message": "RPC-only add failed while slurping current QBFT config.",
+            },
+            "apply_phases": phases,
+        }
+
+    for host_id, host_services in services_by_host(target_services).items():
+        host_plan = plan_with_only_services(plan, [service.id for service in host_services])
+        deploy_args = args_copy_with(
+            args,
+            host=host_id,
+            no_bootstrap=True,
+            _runtime_import_bundle=runtime_bundle,
+            _include_rpc_public_entry=False,
+        )
+        sync_result = coolify_sync(host_plan, deploy_args, deploy=not no_deploy)
+        phases.append({"phase": "seed-new-node-bootstrap", "host": host_id, "result": sync_result})
+        phases.append({"phase": "deploy-service", "host": host_id, "result": sync_result})
+        if not sync_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": dry_run,
+                    "message": f"RPC-only add failed while updating Coolify service on host {host_id}.",
+                },
+                "apply_phases": phases,
+            }
+
+        if dry_run or bool(getattr(args, "skip_wait_rpc", False)) or no_deploy:
+            phases.append(
+                {
+                    "phase": "wait-direct-rpc",
+                    "host": host_id,
+                    "result": {
+                        "ok": True,
+                        "dry_run": dry_run,
+                        "skipped": bool(getattr(args, "skip_wait_rpc", False)),
+                    },
+                }
+            )
+        else:
+            for service in host_services:
+                backend_url = rpc_public_entry_backend_url(plan, hosts[service.host], service)
+                wait_args = mutate_rpc_wait_args(args, rpc_url=backend_url)
+                wait_result = wait_for_rpc(plan, wait_args)
+                phases.append({"phase": "wait-direct-rpc", "host": host_id, "instance": service.id, "result": wait_result})
+                if not wait_result.get("ok", False):
+                    return {
+                        **packet,
+                        "ok": False,
+                        "mode": "apply",
+                        "execution": {
+                            "implemented": True,
+                            "dry_run": dry_run,
+                            "no_mutation_performed": dry_run,
+                            "message": (
+                                f"RPC-only add failed while waiting for {service.id} direct RPC. "
+                                "The public RPC entry was not enabled for this host."
+                            ),
+                        },
+                        "apply_phases": phases,
+                    }
+
+        publish_args = args_copy_with(
+            args,
+            host=host_id,
+            no_bootstrap=True,
+            _runtime_import_bundle=runtime_bundle,
+            _include_rpc_public_entry=True,
+        )
+        publish_result = coolify_sync(host_plan, publish_args, deploy=not no_deploy)
+        phases.append({"phase": "commit-full-network-topology", "host": host_id, "result": publish_result})
+        phases.append({"phase": "update-public-rpc-entry", "host": host_id, "result": publish_result})
+        if not publish_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": dry_run,
+                    "message": f"RPC-only add verified direct RPC but failed to enable public RPC entry on host {host_id}.",
+                },
+                "apply_phases": phases,
+            }
+
+    if rpc_public_entry_enabled(plan):
+        if dry_run:
+            phases.append({"phase": "verify-public-rpc", "result": {"ok": True, "dry_run": True}})
+        else:
+            public_result = observe_chain_state(plan, args_copy_with(args, rpc_url=""))
+            phases.append({"phase": "verify-public-rpc", "result": public_result})
+            if not public_result.get("ok", False):
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": dry_run,
+                        "message": "RPC-only add deployed direct RPC but canonical public RPC verification failed.",
+                    },
+                    "apply_phases": phases,
+                }
+
+    return {
+        **packet,
+        "ok": True,
+        "mode": "apply",
+        "execution": {
+            "implemented": True,
+            "dry_run": dry_run,
+            "no_mutation_performed": dry_run,
+            "message": (
+                "RPC-only add dry-run completed without mutating Coolify."
+                if dry_run
+                else (
+                    "RPC-only add applied: current config slurped, new RPC bootstrapped unrouted, "
+                    "direct RPC verified, public entry enabled, and canonical RPC checked."
+                )
+            ),
+        },
+        "apply_phases": phases,
+    }
+
+
+def mutate_network(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    packet = build_mutation_packet(plan, args)
+    write_mutation_packet_if_requested(packet, args)
+    if bool(getattr(args, "apply", False)):
+        return apply_rpc_add_mutation(plan, args, packet)
+    return packet
+
+
+def render_rpc_public_entry_dynamic_config(
+    plan: NetworkPlan,
+    host_id: str,
+    *,
+    config_export: Mapping[str, Any] | None = None,
+) -> str:
+    host_id = safe_id(host_id, kind="host")
+    hosts = host_by_id(plan)
+    if host_id not in hosts:
+        raise PlanError(f"Unknown host for RPC public-entry rendering: {host_id}")
+    hostname = canonical_rpc_hostname(plan)
+    if not hostname:
+        raise PlanError("RPC public-entry sidecar requires networks.<network>.rpc / external_rpc_url.")
+    local_rpcs = local_rpc_entry_services(plan, host_id)
+    if not local_rpcs:
+        raise PlanError(f"No rpc-role services are assigned to host {host_id!r}.")
+    rid = traefik_router_id(f"{plan.name}-{hostname}")
+    middleware_prefix = traefik_router_id(f"{plan.name}-rpc-public-entry")
+    service_name = f"{rid}-service"
+    export_enabled = bool(config_export)
+    export_token = str((config_export or {}).get("token") or "").strip()
+    export_port = int((config_export or {}).get("port") or DEFAULT_QBFT_CONFIG_EXPORT_PORT)
+    export_service_name = f"{rid}-config-export-service"
+    export_router_id = f"{rid}-config-export-http"
+    export_path = qbft_config_export_public_path(export_token) if export_enabled else ""
+    lines: list[str] = [
+        "# Generated by tools/coolify_qbft_network.py RPC public-entry sidecar.",
+        "# Do not edit this file by hand; rerun the QBFT deployer instead.",
+        "http:",
+        "  middlewares:",
+        f"    {middleware_prefix}-redirect-to-https:",
+        "      redirectScheme:",
+        "        scheme: https",
+        "  routers:",
+    ]
+    if export_enabled:
+        lines.extend(
+            [
+                f"    {export_router_id}:",
+                "      entryPoints:",
+                "        - http",
+                f"      rule: {yaml_quote(f'Host(`{hostname}`) && Path(`{export_path}`)')}",
+                "      priority: 10000",
+                f"      service: {export_service_name}",
+            ]
+        )
+    lines.extend(
+        [
+            f"    {rid}-http:",
+            "      entryPoints:",
+            "        - http",
+            f"      rule: {yaml_quote(f'Host(`{hostname}`)')}",
+            "      service: noop@internal",
+            "      middlewares:",
+            f"        - {middleware_prefix}-redirect-to-https",
+            f"    {rid}-https:",
+            "      entryPoints:",
+            "        - https",
+            f"      rule: {yaml_quote(f'Host(`{hostname}`)')}",
+            f"      service: {service_name}",
+            "      tls:",
+            "        certResolver: letsencrypt",
+            "  services:",
+        ]
+    )
+    if export_enabled:
+        host = hosts[host_id]
+        lines.extend(
+            [
+                f"    {export_service_name}:",
+                "      loadBalancer:",
+                "        passHostHeader: true",
+                "        servers:",
+                f"          - url: {yaml_quote(f'http://{host.address}:{export_port}')}",
+            ]
+        )
+    lines.extend(
+        [
+            f"    {service_name}:",
+            "      loadBalancer:",
+            "        passHostHeader: true",
+            "        servers:",
+        ]
+    )
+    host = hosts[host_id]
+    for service in local_rpcs:
+        lines.append(f"          - url: {yaml_quote(rpc_public_entry_backend_url(plan, host, service))}")
+    return "\n".join(lines) + "\n"
+
+
+
+def render_rpc_public_entry_writer_script(
+    plan: NetworkPlan,
+    host_id: str,
+    *,
+    config_export: Mapping[str, Any] | None = None,
+) -> str:
+    config_path = rpc_public_entry_dynamic_config_path(plan, host_id)
+    config = render_rpc_public_entry_dynamic_config(plan, host_id, config_export=config_export).rstrip("\n")
+    refresh_s = max(30, int(TRAEFIK_DYNAMIC_CONFIG_REFRESH_S))
+    return "\n".join(
+        [
+            "set -eu",
+            f"CONFIG_PATH={shell_single_quote(config_path)}",
+            f"CONFIG_DIR={shell_single_quote(TRAEFIK_DYNAMIC_CONFIG_DIR)}",
+            f"REFRESH_SECONDS={refresh_s}",
+            "write_config() {",
+            '  mkdir -p "$$CONFIG_DIR"',
+            '  tmp="$${CONFIG_PATH}.tmp"',
+            "  cat > \"$$tmp\" <<'TRAEFIKDYNAMICCONFIG'",
+            config,
+            "TRAEFIKDYNAMICCONFIG",
+            '  mv "$$tmp" "$$CONFIG_PATH"',
+            '  echo "Installed RPC Traefik dynamic config: $$CONFIG_PATH"',
+            "}",
+            "write_config",
+            'while true; do sleep "$$REFRESH_SECONDS"; write_config; done',
+        ]
+    )
+
+
+def render_rpc_public_entry_cleanup_script(plan: NetworkPlan, host_id: str) -> str:
+    config_path = rpc_public_entry_dynamic_config_path(plan, host_id)
+    refresh_s = max(30, int(TRAEFIK_DYNAMIC_CONFIG_REFRESH_S))
+    return "\n".join(
+        [
+            "set -eu",
+            f"CONFIG_PATH={shell_single_quote(config_path)}",
+            f"REFRESH_SECONDS={refresh_s}",
+            'rm -f "$$CONFIG_PATH"',
+            'echo "Removed stale RPC Traefik dynamic config: $$CONFIG_PATH"',
+            'while true; do sleep "$$REFRESH_SECONDS"; rm -f "$$CONFIG_PATH"; done',
+        ]
+    )
+
+
+def append_rpc_public_entry_sidecar(
+    lines: list[str],
+    plan: NetworkPlan,
+    host_id: str,
+    *,
+    config_export: Mapping[str, Any] | None = None,
+) -> None:
+    if not rpc_public_entry_enabled(plan):
+        return
+
+    host_id = safe_id(host_id, kind="host")
+    local_rpcs = local_rpc_entry_services(plan, host_id)
+    config_path = rpc_public_entry_dynamic_config_path(plan, host_id)
+    hostname = canonical_rpc_hostname(plan)
+    service_key = rpc_public_entry_service_key(plan, host_id)
+    if local_rpcs:
+        installer_script = render_rpc_public_entry_writer_script(plan, host_id, config_export=config_export)
+        first_backend = rpc_public_entry_backend_url(plan, host_by_id(plan)[host_id], local_rpcs[0])
+        healthcheck = (
+            f"test -s {shlex.quote(config_path)} "
+            f"&& grep -Fq -- {shlex.quote(hostname)} {shlex.quote(config_path)} "
+            f"&& grep -Fq -- {shlex.quote(first_backend)} {shlex.quote(config_path)}"
+        )
+    else:
+        installer_script = render_rpc_public_entry_cleanup_script(plan, host_id)
+        healthcheck = f"test ! -e {shlex.quote(config_path)}"
+
+    lines.extend(
+        [
+            f"  {service_key}:",
+            f"    image: {yaml_quote(TRAEFIK_DYNAMIC_CONFIG_IMAGE)}",
+            "    init: true",
+            "    restart: unless-stopped",
+            "    labels:",
+            "      - \"traefik.enable=false\"",
+            "    volumes:",
+            f"      - {yaml_quote(f'{TRAEFIK_DYNAMIC_CONFIG_DIR}:{TRAEFIK_DYNAMIC_CONFIG_DIR}')}",
+            "    command:",
+            "      - /bin/sh",
+            "      - -euc",
+            "      - |-",
+            *[f"        {line}" if line else "" for line in installer_script.splitlines()],
+            "    healthcheck:",
+            f'      test: ["CMD-SHELL", {yaml_quote(healthcheck)}]',
+            "      interval: 30s",
+            "      timeout: 5s",
+            "      start_period: 10s",
+            "      retries: 5",
+            "",
+        ]
+    )
+
+
 def service_runtime_dir(service: PlannedService) -> str:
     return "rpc-node" if service.role == "rpc" else service.id
 
@@ -1169,6 +2525,12 @@ def qbft_config(plan: NetworkPlan) -> dict[str, Any]:
 
 def managed_volume_name(plan: NetworkPlan, host_id: str) -> str:
     return safe_id(f"{plan.compose_project}-{host_id}-runtime", kind="volume")
+
+
+def legacy_managed_volume_name(plan: NetworkPlan) -> str:
+    """Return the pre-host-split runtime volume name used by early testnet deploys."""
+
+    return safe_id(f"{plan.compose_project}-runtime", kind="volume")
 
 
 def render_json_heredoc(value: Any) -> str:
@@ -1344,8 +2706,12 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
     return "\n".join(lines)
 
 
+def service_should_consider_p2p_host_port_for_collision(role: str) -> bool:
+    return role == "validator"
+
+
 def service_should_publish_p2p(plan: NetworkPlan, service: PlannedService) -> bool:
-    return service.role == "validator" and len({item.host for item in plan.services}) > 1
+    return service.role == "validator" and service.p2p_host_port is not None and len({item.host for item in plan.services}) > 1
 
 
 def service_should_publish_rpc(plan: NetworkPlan, service: PlannedService) -> bool:
@@ -1363,6 +2729,674 @@ def render_volume_mount(plan: NetworkPlan, host: PlannedHost, *, managed_volume:
         "        target: /smoke",
         "        is_directory: true",
     ]
+
+
+QBFT_RUNTIME_CONFIG_FILES = {
+    "genesis_json": "/smoke/genesis.json",
+    "static_nodes_all_json": "/smoke/static-nodes-all.json",
+    "network_metadata_json": "/smoke/network-metadata.json",
+}
+
+
+def qbft_config_export_service_name(plan: NetworkPlan, host_id: str) -> str:
+    return safe_id(f"{plan.compose_project}-{host_id}-config-export", kind="service")
+
+
+def qbft_config_export_token() -> str:
+    return secrets.token_urlsafe(18).replace("-", "").replace("_", "")
+
+
+def qbft_config_export_port(args: argparse.Namespace) -> int:
+    return require_int(
+        getattr(args, "config_export_port", DEFAULT_QBFT_CONFIG_EXPORT_PORT),
+        name="config_export_port",
+        minimum=1024,
+        maximum=65535,
+    )
+
+
+def qbft_config_export_timeout_s(args: argparse.Namespace) -> float:
+    value = getattr(args, "config_export_timeout_s", DEFAULT_QBFT_CONFIG_EXPORT_TIMEOUT_S)
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError) as exc:
+        raise PlanError(f"config_export_timeout_s must be a number of seconds, got {value!r}") from exc
+    if timeout <= 0:
+        raise PlanError("config_export_timeout_s must be greater than 0.")
+    return timeout
+
+
+def qbft_config_export_url(host: PlannedHost, *, port: int, token: str) -> str:
+    if not host.address:
+        raise PlanError(f"Host {host.id!r} does not have a public address for QBFT config export.")
+    return f"http://{host.address}:{port}/{token}.json"
+
+
+def qbft_config_export_public_path(token: str) -> str:
+    token = str(token or "").strip().strip("/")
+    if not token or "/" in token or ".." in token:
+        raise PlanError("QBFT config export token is invalid.")
+    return f"{QBFT_CONFIG_EXPORT_PUBLIC_PATH_PREFIX}/{token}.json"
+
+
+def qbft_config_export_public_entry_url(host: PlannedHost, *, token: str) -> str:
+    if not host.address:
+        raise PlanError(f"Host {host.id!r} does not have a public address for QBFT config export.")
+    return f"http://{host.address}{qbft_config_export_public_path(token)}"
+
+
+def qbft_config_export_transport(args: argparse.Namespace) -> str:
+    raw = str(getattr(args, "config_export_transport", DEFAULT_QBFT_CONFIG_EXPORT_TRANSPORT) or DEFAULT_QBFT_CONFIG_EXPORT_TRANSPORT).strip().lower()
+    if raw not in {"public-entry", "direct-port"}:
+        raise PlanError("--config-export-transport must be one of: public-entry, direct-port")
+    return raw
+
+
+def qbft_config_export_mount_sources(plan: NetworkPlan, host_id: str) -> list[dict[str, str]]:
+    """Return ordered host-local places that may contain current QBFT runtime material.
+
+    Early single-host testnet deployments used a hostless runtime volume name;
+    newer split-host deployments use one volume per Coolify host.  Operators can
+    also run with the configured bind runtime root.  Config discovery should
+    treat empty/missing candidates as uninitialized, not as fatal, and select the
+    one complete lineage if exactly one exists.
+    """
+
+    host_id = safe_id(host_id, kind="host")
+    hosts = host_by_id(plan)
+    if host_id not in hosts:
+        raise PlanError(f"Unknown host for config export: {host_id}")
+    host = hosts[host_id]
+    candidates: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, label: str, source: str, target: str) -> None:
+        source = str(source or "").strip()
+        if not source:
+            return
+        key = (kind, source)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append({"kind": kind, "label": label, "source": source, "target": target})
+
+    add("volume", "managed-host-volume", managed_volume_name(plan, host_id), "/sources/managed-host-volume")
+    add("volume", "legacy-network-volume", legacy_managed_volume_name(plan), "/sources/legacy-network-volume")
+    add("bind", "host-runtime-root", host.runtime_root, "/sources/host-runtime-root")
+    return candidates
+
+
+def qbft_config_export_dynamic_config_path(plan: NetworkPlan, host_id: str) -> str:
+    host_id = safe_id(host_id, kind="host")
+    filename = safe_id(f"{plan.compose_project}-{host_id}-qbft-config-export", kind="dynamic_config")
+    return f"{TRAEFIK_DYNAMIC_CONFIG_DIR}/{filename}.yml"
+
+
+def render_qbft_config_export_public_entry_dynamic_config(plan: NetworkPlan, host_id: str, *, token: str, port: int) -> str:
+    host_id = safe_id(host_id, kind="host")
+    hosts = host_by_id(plan)
+    if host_id not in hosts:
+        raise PlanError(f"Unknown host for QBFT config export public-entry rendering: {host_id}")
+    hostname = canonical_rpc_hostname(plan)
+    if not hostname:
+        raise PlanError("QBFT config export public-entry requires networks.<network>.rpc / external_rpc_url.")
+    export_path = qbft_config_export_public_path(token)
+    rid = traefik_router_id(f"{plan.name}-{hostname}-qbft-config-export")
+    service_name = f"{rid}-service"
+    host = hosts[host_id]
+    return "\n".join(
+        [
+            "# Generated by tools/coolify_qbft_network.py temporary QBFT config export sidecar.",
+            "# Non-secret runtime config only. Remove by redeploying the cleanup compose.",
+            "http:",
+            "  routers:",
+            f"    {rid}-http:",
+            "      entryPoints:",
+            "        - http",
+            f"      rule: {yaml_quote(f'Host(`{hostname}`) && Path(`{export_path}`)')}",
+            "      priority: 10000",
+            f"      service: {service_name}",
+            "  services:",
+            f"    {service_name}:",
+            "      loadBalancer:",
+            "        passHostHeader: true",
+            "        servers:",
+            f"          - url: {yaml_quote(f'http://{host.address}:{port}')}",
+            "",
+        ]
+    )
+
+
+def render_qbft_config_export_public_entry_writer_script(plan: NetworkPlan, host_id: str, *, token: str, port: int) -> str:
+    config_path = qbft_config_export_dynamic_config_path(plan, host_id)
+    config = render_qbft_config_export_public_entry_dynamic_config(plan, host_id, token=token, port=port).rstrip("\n")
+    refresh_s = max(30, int(TRAEFIK_DYNAMIC_CONFIG_REFRESH_S))
+    return "\n".join(
+        [
+            "set -eu",
+            f"CONFIG_PATH={shell_single_quote(config_path)}",
+            f"CONFIG_DIR={shell_single_quote(TRAEFIK_DYNAMIC_CONFIG_DIR)}",
+            f"REFRESH_SECONDS={refresh_s}",
+            "write_config() {",
+            '  mkdir -p "$$CONFIG_DIR"',
+            '  tmp="$${CONFIG_PATH}.tmp"',
+            "  cat > \"$$tmp\" <<'TRAEFIKDYNAMICCONFIG'",
+            config,
+            "TRAEFIKDYNAMICCONFIG",
+            '  mv "$$tmp" "$$CONFIG_PATH"',
+            '  echo "Installed temporary QBFT config export Traefik dynamic config: $$CONFIG_PATH"',
+            "}",
+            "write_config",
+            'while true; do sleep "$$REFRESH_SECONDS"; write_config; done',
+        ]
+    )
+
+
+def render_qbft_config_export_public_entry_cleanup_script(plan: NetworkPlan, host_id: str) -> str:
+    config_path = qbft_config_export_dynamic_config_path(plan, host_id)
+    refresh_s = max(30, int(TRAEFIK_DYNAMIC_CONFIG_REFRESH_S))
+    return "\n".join(
+        [
+            "set -eu",
+            f"CONFIG_PATH={shell_single_quote(config_path)}",
+            f"REFRESH_SECONDS={refresh_s}",
+            'rm -f "$$CONFIG_PATH"',
+            'echo "Removed temporary QBFT config export Traefik dynamic config: $$CONFIG_PATH"',
+            'while true; do sleep "$$REFRESH_SECONDS"; rm -f "$$CONFIG_PATH"; done',
+        ]
+    )
+
+
+def render_qbft_config_exporter_shell(
+    plan: NetworkPlan,
+    host_id: str,
+    config_export: Mapping[str, Any],
+) -> str:
+    """Render shell for a Coolify-native config exporter sidecar.
+
+    The sidecar is deployed inside the source host's normal QBFT service stack
+    and exposed through that host's generated RPC public-entry Traefik config.
+    It scans the same candidate runtime sources as the standalone exporter and
+    serves only non-secret runtime material.
+    """
+
+    token = str(config_export.get("token") or "").strip()
+    if not token:
+        raise PlanError("QBFT config exporter sidecar requires a token.")
+    source_payload = [
+        {"label": item["label"], "path": item["target"], "kind": item["kind"], "source": item["source"]}
+        for item in qbft_config_export_mount_sources(plan, host_id)
+    ]
+    lines: list[str] = [
+        "set -eu",
+        "mkdir -p /serve",
+        f"TOKEN={shlex.quote(token)}",
+        f"NETWORK={shlex.quote(plan.name)}",
+        f"HOST_ID={shlex.quote(host_id)}",
+        "json_escape() {",
+        "  sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g' -e ':a;N;$!ba;s/\\n/\\\\n/g'",
+        "}",
+        "json_string() { printf '%s' \"$1\" | json_escape; }",
+        "file_b64() {",
+        "  if base64 --help 2>/dev/null | grep -q -- '-w'; then base64 -w 0 \"$1\"; else base64 \"$1\" | tr -d '\\n'; fi",
+        "}",
+        "file_sha256() { sha256sum \"$1\" | awk '{print $1}'; }",
+        "SOURCE_COUNT=0",
+    ]
+    for index, source in enumerate(source_payload):
+        lines.extend(
+            [
+                f"SRC_LABEL_{index}={shlex.quote(str(source.get('label') or ''))}",
+                f"SRC_PATH_{index}={shlex.quote(str(source.get('path') or ''))}",
+                f"SRC_KIND_{index}={shlex.quote(str(source.get('kind') or ''))}",
+                f"SRC_SOURCE_{index}={shlex.quote(str(source.get('source') or ''))}",
+                f"SOURCE_COUNT={index + 1}",
+            ]
+        )
+    lines.extend(
+        [
+            "OK=false",
+            "SOURCE_MOUNT=",
+            "MISSING_JSON=",
+            "GENESIS_B64=",
+            "STATIC_B64=",
+            "METADATA_B64=",
+            "GENESIS_SHA=",
+            "STATIC_SHA=",
+            "METADATA_SHA=",
+            "i=0",
+            "while [ \"$i\" -lt \"$SOURCE_COUNT\" ]; do",
+            "  eval label=\"\\${SRC_LABEL_$i}\"",
+            "  eval root=\"\\${SRC_PATH_$i}\"",
+            "  missing=\"\"",
+            "  [ -f \"$root/genesis.json\" ] || missing=\"$missing /smoke/genesis.json\"",
+            "  [ -f \"$root/static-nodes-all.json\" ] || missing=\"$missing /smoke/static-nodes-all.json\"",
+            "  [ -f \"$root/network-metadata.json\" ] || missing=\"$missing /smoke/network-metadata.json\"",
+            "  if [ -z \"$missing\" ]; then",
+            "    OK=true",
+            "    SOURCE_MOUNT=\"$label\"",
+            "    GENESIS_B64=$(file_b64 \"$root/genesis.json\")",
+            "    STATIC_B64=$(file_b64 \"$root/static-nodes-all.json\")",
+            "    METADATA_B64=$(file_b64 \"$root/network-metadata.json\")",
+            "    GENESIS_SHA=$(file_sha256 \"$root/genesis.json\")",
+            "    STATIC_SHA=$(file_sha256 \"$root/static-nodes-all.json\")",
+            "    METADATA_SHA=$(file_sha256 \"$root/network-metadata.json\")",
+            "    break",
+            "  fi",
+            "  for item in $missing; do",
+            "    entry=\"$label:$item\"",
+            "    esc=$(json_string \"$entry\")",
+            "    if [ -z \"$MISSING_JSON\" ]; then MISSING_JSON=\"\\\"$esc\\\"\"; else MISSING_JSON=\"$MISSING_JSON,\\\"$esc\\\"\"; fi",
+            "  done",
+            "  i=$((i + 1))",
+            "done",
+            "source_mount_esc=$(json_string \"$SOURCE_MOUNT\")",
+            "cat > \"/serve/$TOKEN.json\" <<JSON",
+            "{",
+            "  \"ok\": $OK,",
+            "  \"network\": \"$(json_string \"$NETWORK\")\",",
+            "  \"host\": \"$(json_string \"$HOST_ID\")\",",
+            "  \"source_mount\": \"$source_mount_esc\",",
+            "  \"missing_files\": [$MISSING_JSON],",
+            "  \"files_b64\": {",
+            "    \"genesis_json\": \"$GENESIS_B64\",",
+            "    \"static_nodes_all_json\": \"$STATIC_B64\",",
+            "    \"network_metadata_json\": \"$METADATA_B64\"",
+            "  },",
+            "  \"sha256\": {",
+            "    \"genesis_json\": \"$GENESIS_SHA\",",
+            "    \"static_nodes_all_json\": \"$STATIC_SHA\",",
+            "    \"network_metadata_json\": \"$METADATA_SHA\"",
+            "  }",
+            "}",
+            "JSON",
+            "printf '%s\\n' \"{\\\"ok\\\":$OK,\\\"host\\\":\\\"$HOST_ID\\\",\\\"source_mount\\\":\\\"$source_mount_esc\\\",\\\"missing_files\\\":[$MISSING_JSON]}\"",
+            "cd /serve",
+            "exec busybox httpd -f -p 0.0.0.0:8080",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_qbft_config_exporter_compose(plan: NetworkPlan, host_id: str, *, token: str, port: int, public_entry: bool = False) -> str:
+    """Render a temporary config-export service for existing host runtime material.
+
+    The exporter exposes only non-secret QBFT runtime material: genesis,
+    static-nodes-all, and network metadata.  Validator key files are never read
+    or included.  The URL path includes a per-run token so accidental probes
+    do not receive the bundle.
+
+    The service scans the current host-specific volume, the old hostless
+    single-host volume, and the configured bind runtime root.  Missing
+    candidates are reported as empty/uninitialized instead of failing the export
+    service deployment.  The exporter uses alpine plus shell/base64 instead of
+    a Python image so config discovery can start quickly on new Coolify hosts.
+    """
+
+    host_id = safe_id(host_id, kind="host")
+    if host_id not in host_by_id(plan):
+        raise PlanError(f"Unknown host for config export: {host_id}")
+    sources = qbft_config_export_mount_sources(plan, host_id)
+    source_payload = [
+        {"label": item["label"], "path": item["target"], "kind": item["kind"], "source": item["source"]}
+        for item in sources
+    ]
+    payload_script = "\n".join(
+        [
+            "set -eu",
+            "mkdir -p /serve",
+            f"TOKEN={shlex.quote(token)}",
+            f"NETWORK={shlex.quote(plan.name)}",
+            f"HOST_ID={shlex.quote(host_id)}",
+            f"SOURCES_JSON={shlex.quote(json.dumps(source_payload, sort_keys=True))}",
+            "json_escape() {",
+            "  sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g' -e ':a;N;$!ba;s/\\n/\\\\n/g'",
+            "}",
+            "json_string() {",
+            "  printf '%s' \"$1\" | json_escape",
+            "}",
+            "file_b64() {",
+            "  if base64 --help 2>/dev/null | grep -q -- '-w'; then base64 -w 0 \"$1\"; else base64 \"$1\" | tr -d '\\n'; fi",
+            "}",
+            "file_sha256() {",
+            "  sha256sum \"$1\" | awk '{print $1}'",
+            "}",
+            "source_field() {",
+            "  python3 - <<'PY' \"$SOURCES_JSON\" \"$1\" \"$2\" 2>/dev/null || true",
+            "import json, sys",
+            "sources = json.loads(sys.argv[1])",
+            "idx = int(sys.argv[2])",
+            "key = sys.argv[3]",
+            "try:",
+            "    print(sources[idx].get(key, ''))",
+            "except Exception:",
+            "    pass",
+            "PY",
+            "}",
+            "# Alpine normally has no Python.  If python3 is absent, fall back to a",
+            "# shell-friendly source table generated by the deployer below.",
+            "SOURCE_COUNT=0",
+        ]
+    )
+    for index, source in enumerate(source_payload):
+        payload_script += "\n" + "\n".join(
+            [
+                f"SRC_LABEL_{index}={shlex.quote(str(source.get('label') or ''))}",
+                f"SRC_PATH_{index}={shlex.quote(str(source.get('path') or ''))}",
+                f"SRC_KIND_{index}={shlex.quote(str(source.get('kind') or ''))}",
+                f"SRC_SOURCE_{index}={shlex.quote(str(source.get('source') or ''))}",
+                f"SOURCE_COUNT={index + 1}",
+            ]
+        )
+    payload_script += "\n" + "\n".join(
+        [
+            "OK=false",
+            "SOURCE_MOUNT=",
+            "MISSING_JSON=",
+            "GENESIS_B64=",
+            "STATIC_B64=",
+            "METADATA_B64=",
+            "GENESIS_SHA=",
+            "STATIC_SHA=",
+            "METADATA_SHA=",
+            "i=0",
+            "while [ \"$i\" -lt \"$SOURCE_COUNT\" ]; do",
+            "  eval label=\"\\${SRC_LABEL_$i}\"",
+            "  eval root=\"\\${SRC_PATH_$i}\"",
+            "  missing=\"\"",
+            "  [ -f \"$root/genesis.json\" ] || missing=\"$missing /smoke/genesis.json\"",
+            "  [ -f \"$root/static-nodes-all.json\" ] || missing=\"$missing /smoke/static-nodes-all.json\"",
+            "  [ -f \"$root/network-metadata.json\" ] || missing=\"$missing /smoke/network-metadata.json\"",
+            "  if [ -z \"$missing\" ]; then",
+            "    OK=true",
+            "    SOURCE_MOUNT=\"$label\"",
+            "    GENESIS_B64=$(file_b64 \"$root/genesis.json\")",
+            "    STATIC_B64=$(file_b64 \"$root/static-nodes-all.json\")",
+            "    METADATA_B64=$(file_b64 \"$root/network-metadata.json\")",
+            "    GENESIS_SHA=$(file_sha256 \"$root/genesis.json\")",
+            "    STATIC_SHA=$(file_sha256 \"$root/static-nodes-all.json\")",
+            "    METADATA_SHA=$(file_sha256 \"$root/network-metadata.json\")",
+            "    break",
+            "  fi",
+            "  for item in $missing; do",
+            "    entry=\"$label:$item\"",
+            "    esc=$(json_string \"$entry\")",
+            "    if [ -z \"$MISSING_JSON\" ]; then MISSING_JSON=\"\\\"$esc\\\"\"; else MISSING_JSON=\"$MISSING_JSON,\\\"$esc\\\"\"; fi",
+            "  done",
+            "  i=$((i + 1))",
+            "done",
+            "source_mount_esc=$(json_string \"$SOURCE_MOUNT\")",
+            "cat > \"/serve/$TOKEN.json\" <<JSON",
+            "{",
+            "  \"ok\": $OK,",
+            "  \"network\": \"$(json_string \"$NETWORK\")\",",
+            "  \"host\": \"$(json_string \"$HOST_ID\")\",",
+            "  \"source_mount\": \"$source_mount_esc\",",
+            "  \"missing_files\": [$MISSING_JSON],",
+            "  \"files_b64\": {",
+            "    \"genesis_json\": \"$GENESIS_B64\",",
+            "    \"static_nodes_all_json\": \"$STATIC_B64\",",
+            "    \"network_metadata_json\": \"$METADATA_B64\"",
+            "  },",
+            "  \"sha256\": {",
+            "    \"genesis_json\": \"$GENESIS_SHA\",",
+            "    \"static_nodes_all_json\": \"$STATIC_SHA\",",
+            "    \"network_metadata_json\": \"$METADATA_SHA\"",
+            "  }",
+            "}",
+            "JSON",
+            "printf '%s\\n' \"{\\\"ok\\\":$OK,\\\"host\\\":\\\"$HOST_ID\\\",\\\"source_mount\\\":\\\"$source_mount_esc\\\",\\\"missing_files\\\":[$MISSING_JSON]}\"",
+            "cd /serve",
+            "exec busybox httpd -f -p 0.0.0.0:8080",
+        ]
+    )
+    payload_script = escape_compose_interpolation(payload_script)
+    lines = [
+        f"name: {plan.compose_project}-{host_id}-config-export",
+        "",
+        "services:",
+        "  qbft-config-export:",
+        f"    image: {yaml_quote(QBFT_CONFIG_EXPORT_IMAGE)}",
+        "    restart: unless-stopped",
+        "    ports:",
+        f"      - {yaml_quote(f'0.0.0.0:{port}:8080')}",
+        "    volumes:",
+    ]
+    for source in sources:
+        if source["kind"] == "volume":
+            lines.append(f"      - {yaml_quote(f'{source['source']}:{source['target']}:ro')}")
+        elif source["kind"] == "bind":
+            lines.extend(
+                [
+                    "      - type: bind",
+                    f"        source: {yaml_quote(source['source'])}",
+                    f"        target: {source['target']}",
+                    "        read_only: true",
+                    "        bind:",
+                    "          create_host_path: true",
+                ]
+            )
+    lines.extend(
+        [
+            "    entrypoint:",
+            "      - /bin/sh",
+            "      - -ec",
+            "      - |-",
+            *[f"        {line}" if line else "" for line in payload_script.splitlines()],
+            "",
+        ]
+    )
+    if public_entry:
+        writer_script = escape_compose_interpolation(
+            render_qbft_config_export_public_entry_writer_script(plan, host_id, token=token, port=port)
+        )
+        healthcheck_path = qbft_config_export_dynamic_config_path(plan, host_id)
+        export_path = qbft_config_export_public_path(token)
+        lines.extend(
+            [
+                "  qbft-config-export-public-entry:",
+                f"    image: {yaml_quote(TRAEFIK_DYNAMIC_CONFIG_IMAGE)}",
+                "    init: true",
+                "    restart: unless-stopped",
+                "    labels:",
+                "      - \"traefik.enable=false\"",
+                "    volumes:",
+                f"      - {yaml_quote(f'{TRAEFIK_DYNAMIC_CONFIG_DIR}:{TRAEFIK_DYNAMIC_CONFIG_DIR}')}",
+                "    command:",
+                "      - /bin/sh",
+                "      - -euc",
+                "      - |-",
+                *[f"        {line}" if line else "" for line in writer_script.splitlines()],
+                "    healthcheck:",
+                f'      test: ["CMD-SHELL", {yaml_quote(f"test -s {shlex.quote(healthcheck_path)} && grep -Fq -- {shlex.quote(export_path)} {shlex.quote(healthcheck_path)}")}]',
+                "      interval: 30s",
+                "      timeout: 5s",
+                "      start_period: 10s",
+                "      retries: 5",
+                "",
+            ]
+        )
+    volume_sources = [source["source"] for source in sources if source["kind"] == "volume"]
+    if volume_sources:
+        lines.append("volumes:")
+        for volume_name in volume_sources:
+            lines.extend(
+                [
+                    f"  {volume_name}:",
+                    f"    name: {volume_name}",
+                ]
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_qbft_config_export_cleanup_compose(plan: NetworkPlan, host_id: str) -> str:
+    host_id = safe_id(host_id, kind="host")
+    cleanup_script = escape_compose_interpolation(render_qbft_config_export_public_entry_cleanup_script(plan, host_id))
+    return "\n".join(
+        [
+            f"name: {plan.compose_project}-{host_id}-config-export",
+            "",
+            "services:",
+            "  qbft-config-export-public-entry-cleanup:",
+            f"    image: {yaml_quote(TRAEFIK_DYNAMIC_CONFIG_IMAGE)}",
+            "    init: true",
+            "    restart: unless-stopped",
+            "    labels:",
+            "      - \"traefik.enable=false\"",
+            "    volumes:",
+            f"      - {yaml_quote(f'{TRAEFIK_DYNAMIC_CONFIG_DIR}:{TRAEFIK_DYNAMIC_CONFIG_DIR}')}",
+            "    command:",
+            "      - /bin/sh",
+            "      - -euc",
+            "      - |-",
+            *[f"        {line}" if line else "" for line in cleanup_script.splitlines()],
+            "",
+        ]
+    )
+
+
+def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str, source_url: str) -> dict[str, Any]:
+    files = payload.get("files") if isinstance(payload.get("files"), Mapping) else {}
+    files_b64 = payload.get("files_b64") if isinstance(payload.get("files_b64"), Mapping) else {}
+    if not files and files_b64:
+        decoded_files: dict[str, str] = {}
+        for key, value in files_b64.items():
+            try:
+                decoded_files[str(key)] = base64.b64decode(str(value or ""), validate=True).decode("utf-8", errors="replace")
+            except Exception:
+                decoded_files[str(key)] = ""
+        files = decoded_files
+    sha256 = payload.get("sha256") if isinstance(payload.get("sha256"), Mapping) else {}
+    missing = [str(item) for item in payload.get("missing_files") or []]
+    source_mount = str(payload.get("source_mount") or "")
+    raw_candidates = payload.get("source_candidates") if isinstance(payload.get("source_candidates"), list) else []
+    source_candidates = [item for item in raw_candidates if isinstance(item, Mapping)]
+    if not bool(payload.get("ok")):
+        return {
+            "ok": False,
+            "source_host": source_host,
+            "source_url": source_url,
+            "source_mount": source_mount,
+            "source_candidates": source_candidates,
+            "missing_files": missing,
+            "sha256": {str(key): str(value) for key, value in sha256.items()},
+        }
+    required = sorted(QBFT_RUNTIME_CONFIG_FILES)
+    missing_keys = [key for key in required if not str(files.get(key) or "").strip()]
+    if missing_keys:
+        return {
+            "ok": False,
+            "source_host": source_host,
+            "source_url": source_url,
+            "source_mount": source_mount,
+            "source_candidates": source_candidates,
+            "missing_files": missing + missing_keys,
+            "sha256": {str(key): str(value) for key, value in sha256.items()},
+        }
+    return {
+        "ok": True,
+        "source_host": source_host,
+        "source_url": source_url,
+        "source_mount": source_mount,
+        "source_candidates": source_candidates,
+        "files": {key: str(files.get(key) or "") for key in required},
+        "sha256": {str(key): str(value) for key, value in sha256.items()},
+        "lineage_hash": str(sha256.get("genesis_json") or ""),
+    }
+
+
+def fetch_json_url(url: str, *, timeout_s: float, headers: Mapping[str, str] | None = None) -> Any:
+    request_headers = {"Accept": "application/json"}
+    if headers:
+        request_headers.update({str(key): str(value) for key, value in headers.items()})
+    request = urllib.request.Request(url, headers=request_headers)
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    return json.loads(raw)
+
+
+def select_qbft_config_source(exports: list[dict[str, Any]], *, forced_host: str = "") -> dict[str, Any]:
+    forced_host = safe_id(forced_host, kind="host") if forced_host else ""
+    usable = [item for item in exports if bool(item.get("ok"))]
+    if forced_host:
+        forced = [item for item in usable if item.get("source_host") == forced_host]
+        if not forced:
+            missing = [item for item in exports if item.get("source_host") == forced_host]
+            detail = missing[0].get("missing_files") if missing else []
+            raise PlanError(f"--config-root-host {forced_host!r} did not provide usable QBFT config material; missing={detail}")
+        return forced[0]
+    if not usable:
+        missing_summary = {str(item.get("source_host")): item.get("missing_files", []) for item in exports}
+        raise PlanError(
+            "No existing QBFT runtime config source was found. "
+            f"Missing/unusable hosts: {json.dumps(missing_summary, sort_keys=True)}"
+        )
+    lineage_to_hosts: dict[str, list[str]] = {}
+    for item in usable:
+        lineage = str(item.get("lineage_hash") or "")
+        lineage_to_hosts.setdefault(lineage, []).append(str(item.get("source_host") or ""))
+    if len(lineage_to_hosts) > 1:
+        raise PlanError(
+            "Multiple QBFT genesis/config lineages were found; refusing to guess. "
+            f"Rerun with --config-root-host. Lineages: {json.dumps(lineage_to_hosts, sort_keys=True)}"
+        )
+    return usable[0]
+
+
+def render_qbft_runtime_import_shell(
+    plan: NetworkPlan,
+    services: list[PlannedService],
+    bundle: Mapping[str, Any],
+) -> str:
+    files = bundle.get("files") if isinstance(bundle.get("files"), Mapping) else {}
+    if not files:
+        raise PlanError("QBFT runtime import requires exported config files.")
+    payload = {
+        "network": plan.name,
+        "chain_id": plan.chain_id,
+        "source_host": bundle.get("source_host", ""),
+        "sha256": bundle.get("sha256", {}),
+        "files": {key: str(files.get(key) or "") for key in QBFT_RUNTIME_CONFIG_FILES},
+        "runtime_dirs": sorted(dict.fromkeys(service_runtime_dir(service) for service in services)),
+    }
+    payload_json = json.dumps(payload, sort_keys=True)
+    return "\n".join(
+        [
+            "set -eu",
+            "mkdir -p /smoke",
+            "python3 - <<'PY'",
+            "import hashlib, json, os, shutil",
+            f"payload = json.loads({json.dumps(payload_json)})",
+            "files = payload.get('files') or {}",
+            "required = {",
+            "  'genesis_json': '/smoke/genesis.json',",
+            "  'static_nodes_all_json': '/smoke/static-nodes-all.json',",
+            "  'network_metadata_json': '/smoke/network-metadata.json',",
+            "}",
+            "for key, path in required.items():",
+            "    text = files.get(key) or ''",
+            "    if not text.strip():",
+            "        raise SystemExit(f'missing runtime config payload key: {key}')",
+            "    data = text.encode('utf-8')",
+            "    expected = (payload.get('sha256') or {}).get(key)",
+            "    digest = hashlib.sha256(data).hexdigest()",
+            "    if expected and expected != digest:",
+            "        raise SystemExit(f'sha256 mismatch for {key}: expected {expected}, got {digest}')",
+            "    os.makedirs(os.path.dirname(path), exist_ok=True)",
+            "    tmp = path + '.tmp'",
+            "    with open(tmp, 'wb') as fh:",
+            "        fh.write(data)",
+            "    os.replace(tmp, path)",
+            "for runtime_dir in payload.get('runtime_dirs') or []:",
+            "    if not runtime_dir or '/' in runtime_dir or runtime_dir.startswith('.'):",
+            "        raise SystemExit(f'unsafe runtime dir: {runtime_dir!r}')",
+            "    os.makedirs(f'/smoke/{runtime_dir}/data', exist_ok=True)",
+            "    shutil.copyfile('/smoke/static-nodes-all.json', f'/smoke/{runtime_dir}/static-nodes.json')",
+            "print(json.dumps({'ok': True, 'source_host': payload.get('source_host'), 'runtime_dirs': payload.get('runtime_dirs'), 'genesis_sha256': (payload.get('sha256') or {}).get('genesis_json')}, sort_keys=True))",
+            "PY",
+        ]
+    )
 
 
 def render_besu_service_shell(plan: NetworkPlan, service: PlannedService) -> str:
@@ -1424,6 +3458,9 @@ def render_compose_for_host(
     *,
     include_bootstrap: bool = True,
     managed_volume: bool = True,
+    runtime_import_bundle: Mapping[str, Any] | None = None,
+    include_rpc_public_entry: bool = True,
+    config_export: Mapping[str, Any] | None = None,
 ) -> str:
     host_id = safe_id(host_id, kind="host")
     hosts = host_by_id(plan)
@@ -1445,6 +3482,70 @@ def render_compose_for_host(
 
     volume_name, volume_lines = render_volume_mount(plan, host, managed_volume=managed_volume)
     rpc_target = rpc_target_service(plan)
+    config_export = config_export or None
+    config_export_volume_names: list[str] = []
+    if config_export is not None:
+        export_sources = qbft_config_export_mount_sources(plan, host_id)
+        export_volume_lines: list[str] = []
+        for source in export_sources:
+            if source["kind"] == "volume":
+                export_volume_lines.append(f"      - {yaml_quote(f'{source['source']}:{source['target']}:ro')}")
+                config_export_volume_names.append(str(source["source"]))
+            elif source["kind"] == "bind":
+                export_volume_lines.extend(
+                    [
+                        "      - type: bind",
+                        f"        source: {yaml_quote(source['source'])}",
+                        f"        target: {source['target']}",
+                        "        read_only: true",
+                        "        bind:",
+                        "          create_host_path: true",
+                    ]
+                )
+        export_script = escape_compose_interpolation(render_qbft_config_exporter_shell(plan, host_id, config_export))
+        export_port = int(config_export.get("port") or DEFAULT_QBFT_CONFIG_EXPORT_PORT)
+        lines.extend(
+            [
+                "  qbft-config-export:",
+                f"    image: {yaml_quote(QBFT_CONFIG_EXPORT_IMAGE)}",
+                "    restart: unless-stopped",
+                "    labels:",
+                "      - \"traefik.enable=false\"",
+                "    ports:",
+                f"      - {yaml_quote(f'0.0.0.0:{export_port}:8080')}",
+                "    volumes:",
+                *export_volume_lines,
+                "    entrypoint:",
+                "      - /bin/sh",
+                "      - -ec",
+                "      - |-",
+            ]
+        )
+        lines.extend([f"        {line}" if line else "" for line in export_script.splitlines()])
+        lines.append("")
+    include_runtime_import = runtime_import_bundle is not None
+    if include_runtime_import:
+        import_script = escape_compose_interpolation(render_qbft_runtime_import_shell(plan, services, runtime_import_bundle or {}))
+        lines.extend(
+            [
+                "  qbft-runtime-import:",
+                f"    image: {yaml_quote(QBFT_CONFIG_TRANSFER_IMAGE)}",
+                "    restart: \"no\"",
+                "    exclude_from_hc: true",
+                "    entrypoint:",
+                "      - /bin/sh",
+                "      - -ec",
+                "      - |-",
+            ]
+        )
+        lines.extend([f"        {line}" if line else "" for line in import_script.splitlines()])
+        lines.extend(
+            [
+                "    volumes:",
+                *volume_lines,
+                "",
+            ]
+        )
     if include_bootstrap:
         bootstrap_script = escape_compose_interpolation(render_bootstrap_shell(plan))
         lines.extend(
@@ -1488,14 +3589,22 @@ def render_compose_for_host(
         if port_lines:
             lines.append("    ports:")
             lines.extend(port_lines)
-        if include_bootstrap:
-            lines.extend(
-                [
-                    "    depends_on:",
-                    "      qbft-bootstrap:",
-                    "        condition: service_completed_successfully",
-                ]
-            )
+        if include_bootstrap or include_runtime_import:
+            lines.append("    depends_on:")
+            if include_bootstrap:
+                lines.extend(
+                    [
+                        "      qbft-bootstrap:",
+                        "        condition: service_completed_successfully",
+                    ]
+                )
+            if include_runtime_import:
+                lines.extend(
+                    [
+                        "      qbft-runtime-import:",
+                        "        condition: service_completed_successfully",
+                    ]
+                )
         besu_shell = escape_compose_interpolation(render_besu_service_shell(plan, service))
         lines.extend(
             [
@@ -1524,6 +3633,9 @@ def render_compose_for_host(
             )
         lines.append("")
 
+    if include_rpc_public_entry:
+        append_rpc_public_entry_sidecar(lines, plan, host_id, config_export=config_export)
+
     lines.extend(
         [
             "networks:",
@@ -1537,35 +3649,38 @@ def render_compose_for_host(
         ]
     )
     if managed_volume:
-        lines.extend(
-            [
-                "volumes:",
-                f"  {volume_name}:",
-                f"    name: {volume_name}",
-                "",
-            ]
-        )
+        volume_names = list(dict.fromkeys([volume_name, *config_export_volume_names]))
+        lines.append("volumes:")
+        for item in volume_names:
+            lines.extend(
+                [
+                    f"  {item}:",
+                    f"    name: {item}",
+                ]
+            )
+        lines.append("")
     return "\n".join(lines)
 
 
 def operator_checks(plan: NetworkPlan) -> dict[str, Any]:
     ports = sorted(
-        {service.p2p_host_port for service in plan.services}
+        {service.p2p_host_port for service in plan.services if service.p2p_host_port is not None}
         | {service.rpc_host_port for service in plan.services if service.rpc_host_port is not None}
     )
     grep_ports = "|".join(str(port) for port in ports)
     first_rpc = rpc_target_service(plan)
+    rpc_url = str(plan.external_rpc_url or first_rpc.rpc_url_on_host).strip()
     return {
         "preflight_ports": ports,
         "preflight_command": f"sudo ss -tulpn | grep -E ':({grep_ports})\\\\b' || true",
-        "first_rpc_url": first_rpc.rpc_url_on_host,
+        "first_rpc_url": rpc_url,
         "chain_id_probe": (
-            f"curl -s {first_rpc.rpc_url_on_host} "
+            f"curl -s {rpc_url} "
             "-H 'content-type: application/json' "
             "--data '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}'"
         ),
         "block_probe": (
-            f"curl -s {first_rpc.rpc_url_on_host} "
+            f"curl -s {rpc_url} "
             "-H 'content-type: application/json' "
             "--data '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\",\"params\":[]}'"
         ),
@@ -1577,27 +3692,17 @@ def render_commands(plan: NetworkPlan) -> str:
     lines = [
         f"# Operator checks for {plan.name}",
         "",
-        "# Run on every planned host before deploying the Coolify Compose resource:",
+        "# Coolify deploys are API-driven. Do not use SSH as the deploy path.",
+        "# Use private state for Coolify URL/token/server/project context.",
+        "",
+        "# Optional host-side port sanity check, to run from whatever host admin shell you already use:",
         checks["preflight_command"],
         "",
-        "# Create runtime roots before bootstrapping genesis/keys:",
+        "# After Coolify deploy, verify the operator RPC endpoint:",
+        checks["chain_id_probe"],
+        checks["block_probe"],
+        "",
     ]
-    for host in plan.hosts:
-        lines.append(f"ssh {host.ssh or host.id} 'mkdir -p {host.runtime_root}'")
-    lines.extend(
-        [
-            "",
-            "# After Coolify deploy, verify the operator RPC endpoint on its host:",
-            checks["chain_id_probe"],
-            checks["block_probe"],
-            "",
-            "# Keep RPC private at first. From the operator workstation, tunnel it:",
-        ]
-    )
-    first_rpc = rpc_target_service(plan)
-    rpc_host = host_by_id(plan)[first_rpc.host]
-    lines.append(f"ssh -L {first_rpc.rpc_host_port}:127.0.0.1:{first_rpc.rpc_host_port} {rpc_host.ssh or rpc_host.id}")
-    lines.append("")
     return "\n".join(lines)
 
 
@@ -1767,7 +3872,7 @@ def ensure_local_coolify_context(plan: NetworkPlan, args: argparse.Namespace, *,
         raise CoolifyError(
             "local Coolify is not ready for QBFT test deployment. "
             "The local test deployer now reuses the startup-managed Coolify stack instead of starting a second fallback stack. "
-            f"Start/repair the Main Computer local startup golden path, then retry apply test --all. "
+            f"Start/repair the Main Computer local startup golden path, then retry apply test. "
             f"dashboard={dashboard}; detail={infra_detail}"
         )
     context["infra"] = infra_detail
@@ -2020,19 +4125,15 @@ def parse_response_body(raw: str) -> Any:
 
 
 def response_to_dict(response: CoolifyResponse, *, token: str = "", token_source: str = "") -> dict[str, Any]:
-    result = {
-        "ok": bool(response.ok),
-        "status": response.status,
-        "method": response.method,
-        "url": response.url,
-        "path": response.path,
-        "body": response.body,
-    }
-    if token:
-        result["token"] = redact_secret(token)
-    if token_source:
-        result["token_source"] = token_source
-    return result
+    """Return an operator-safe Coolify response summary.
+
+    The old deploy/apply output included raw Coolify API bodies.  Some endpoints
+    return full project/server/service graphs, including nested settings and
+    tokens.  Keep the request/status/error shape but never echo the full body in
+    operator JSON.
+    """
+
+    return coolify_response_summary(response, token=token, token_source=token_source)
 
 
 def coolify_response_summary(response: CoolifyResponse, *, token: str = "", token_source: str = "") -> dict[str, Any]:
@@ -2738,50 +4839,70 @@ def discover_coolify_topology(plan: NetworkPlan, args: argparse.Namespace) -> di
 
 
 def discover_rpc_topology(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
-    try:
-        rpc_url = infer_external_rpc_url(plan, args)
-    except PlanError as exc:
-        return {"ok": True, "attempted": False, "reason": str(exc)}
-
-    result: dict[str, Any] = {"ok": False, "attempted": True, "rpc_url": rpc_url}
-    try:
-        chain_id = str(json_rpc(rpc_url, "eth_chainId", timeout_s=float(getattr(args, "rpc_timeout_s", 8.0) or 8.0)))
-        block_hex = str(json_rpc(rpc_url, "eth_blockNumber", timeout_s=float(getattr(args, "rpc_timeout_s", 8.0) or 8.0)))
-        peer_hex = str(json_rpc(rpc_url, "net_peerCount", timeout_s=float(getattr(args, "rpc_timeout_s", 8.0) or 8.0)))
-        result.update(
-            {
-                "ok": True,
-                "chain_id": chain_id,
-                "expected_chain_id": hex(plan.chain_id),
-                "chain_id_matches": chain_id.lower() == hex(plan.chain_id).lower(),
-                "block_number": int(block_hex, 16),
-                "peer_count": int(peer_hex, 16),
-            }
-        )
+    rpc_candidates = rpc_probe_url_candidates(plan, args)
+    if not rpc_candidates:
         try:
-            validators = json_rpc(
-                rpc_url,
-                "qbft_getValidatorsByBlockNumber",
-                ["latest"],
-                timeout_s=float(getattr(args, "rpc_timeout_s", 8.0) or 8.0),
+            infer_external_rpc_url(plan, args)
+        except PlanError as exc:
+            return {"ok": True, "attempted": False, "reason": str(exc)}
+        return {"ok": True, "attempted": False, "reason": "No RPC probe URL candidates were available."}
+
+    result: dict[str, Any] = {
+        "ok": False,
+        "attempted": True,
+        "rpc_candidates": rpc_candidates,
+        "rpc_url": rpc_candidates[0]["url"],
+    }
+    rpc_timeout = float(getattr(args, "rpc_timeout_s", 8.0) or 8.0)
+    rpc_user_agent = str(getattr(args, "rpc_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
+    errors: list[dict[str, str]] = []
+    for candidate in rpc_candidates:
+        rpc_url = candidate["url"]
+        rpc_source = candidate["source"]
+        try:
+            chain_id = str(json_rpc(rpc_url, "eth_chainId", timeout_s=rpc_timeout, user_agent=rpc_user_agent))
+            block_hex = str(json_rpc(rpc_url, "eth_blockNumber", timeout_s=rpc_timeout, user_agent=rpc_user_agent))
+            peer_hex = str(json_rpc(rpc_url, "net_peerCount", timeout_s=rpc_timeout, user_agent=rpc_user_agent))
+            result.update(
+                {
+                    "ok": True,
+                    "rpc_url": rpc_url,
+                    "rpc_url_source": rpc_source,
+                    "chain_id": chain_id,
+                    "expected_chain_id": hex(plan.chain_id),
+                    "chain_id_matches": chain_id.lower() == hex(plan.chain_id).lower(),
+                    "block_number": int(block_hex, 16),
+                    "peer_count": int(peer_hex, 16),
+                }
             )
-            result["qbft_validators"] = validators if isinstance(validators, list) else []
-            result["consensus_topology"] = {
-                "observed": True,
-                "validator_addresses": result["qbft_validators"],
-                "validator_instance_mapping": {
-                    "available": False,
-                    "reason": "validator address metadata is not yet recorded in the QBFT service catalog",
-                },
-            }
+            try:
+                validators = json_rpc(
+                    rpc_url,
+                    "qbft_getValidatorsByBlockNumber",
+                    ["latest"],
+                    timeout_s=rpc_timeout,
+                    user_agent=rpc_user_agent,
+                )
+                result["qbft_validators"] = validators if isinstance(validators, list) else []
+                result["consensus_topology"] = {
+                    "observed": True,
+                    "validator_addresses": result["qbft_validators"],
+                    "validator_instance_mapping": {
+                        "available": False,
+                        "reason": "validator address metadata is not yet recorded in the QBFT service catalog",
+                    },
+                }
+            except Exception as exc:  # noqa: BLE001
+                result["consensus_topology"] = {
+                    "observed": False,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            return result
         except Exception as exc:  # noqa: BLE001
-            result["consensus_topology"] = {
-                "observed": False,
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-            }
-    except Exception as exc:  # noqa: BLE001
-        result.update({"ok": False, "error": str(exc), "error_type": type(exc).__name__})
+            errors.append({"url": rpc_url, "source": rpc_source, "error": str(exc), "error_type": type(exc).__name__})
+
+    result.update({"ok": False, "errors": errors, "error": errors[-1]["error"] if errors else "unknown RPC probe failure"})
     return result
 
 
@@ -2840,6 +4961,8 @@ def discover_topology_stage_summary(phase: str, result: Mapping[str, Any]) -> di
             {
                 "attempted": bool(result.get("attempted")),
                 "rpc_url": result.get("rpc_url", ""),
+                "rpc_url_source": result.get("rpc_url_source", ""),
+                "rpc_candidates": result.get("rpc_candidates", []),
                 "chain_id_matches": result.get("chain_id_matches"),
                 "block_number": result.get("block_number"),
                 "peer_count": result.get("peer_count"),
@@ -3069,29 +5192,96 @@ def single_host_id(plan: NetworkPlan) -> str:
     return hosts_with_services[0]
 
 
+def rpc_direct_url_candidates(plan: NetworkPlan) -> list[str]:
+    """Return operator-reachable host-port RPC URLs derived from the service plan."""
+
+    hosts = host_by_id(plan)
+    candidates: list[str] = []
+    for service in plan.services:
+        if service.rpc_host_port is None or not service.rpc_url_on_host:
+            continue
+        if is_local_coolify_plan(plan):
+            candidates.append(service.rpc_url_on_host)
+            continue
+        host = hosts.get(service.host)
+        if service.rpc_bind_host == "0.0.0.0" and host is not None and host.address:
+            candidates.append(service.rpc_url_on_host)
+    return list(dict.fromkeys(candidates))
+
+
+def rpc_probe_url_candidates(plan: NetworkPlan, args: argparse.Namespace) -> list[dict[str, str]]:
+    """Return RPC URLs to probe, preferring generated host-port URLs for apply.
+
+    networks.<network>.rpc is the stable public/user-facing RPC surface, but it can
+    legitimately lag behind a just-created Coolify service while DNS/proxy/domain
+    routing is being wired.  The deploy readiness check should first prove the
+    node's published host port, then fall back to the configured public URL.
+    """
+
+    explicit = str(getattr(args, "rpc_url", "") or "").strip()
+    if explicit:
+        return [{"url": explicit, "source": "explicit"}]
+
+    candidates: list[dict[str, str]] = []
+    for url in rpc_direct_url_candidates(plan):
+        candidates.append({"url": url, "source": "direct-host-port"})
+    configured = str(getattr(plan, "external_rpc_url", "") or "").strip()
+    if configured:
+        candidates.append({"url": configured, "source": "configured-network-rpc"})
+
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for candidate in candidates:
+        url = str(candidate.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        unique.append({"url": url, "source": str(candidate.get("source") or "unknown")})
+    return unique
+
+
 def infer_external_rpc_url(plan: NetworkPlan, args: argparse.Namespace) -> str:
     explicit = str(getattr(args, "rpc_url", "") or "").strip()
     if explicit:
         return explicit
-    rpc_node = rpc_target_service(plan)
-    if is_local_coolify_plan(plan):
-        return rpc_node.rpc_url_on_host
-    if rpc_node.rpc_bind_host == "0.0.0.0":
-        return rpc_node.rpc_url_on_host
+    configured = str(getattr(plan, "external_rpc_url", "") or "").strip()
+    if configured:
+        return configured
+    candidates = rpc_direct_url_candidates(plan)
+    if candidates:
+        return candidates[0]
     raise PlanError(
-        "RPC is not externally reachable from the operator machine. Pass --public-rpc "
-        "or --rpc-url after exposing the non-validator RPC through Coolify."
+        "RPC is not externally reachable from the operator machine. Pass --rpc-url "
+        "or declare networks.<network>.rpc / a public RPC host port in private state."
     )
 
 
-def json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 8.0) -> Any:
+def json_rpc(
+    url: str,
+    method: str,
+    params: list[Any] | None = None,
+    *,
+    timeout_s: float = 8.0,
+    user_agent: str = DEFAULT_JSON_RPC_USER_AGENT,
+) -> Any:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers={"content-type": "application/json"}, method="POST")
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    clean_user_agent = str(user_agent or "").strip()
+    if clean_user_agent:
+        headers["User-Agent"] = clean_user_agent
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+        raise RuntimeError(f"JSON-RPC {method} failed for {url}: {type(exc).__name__}: {exc}") from exc
     if "error" in payload:
         raise RuntimeError(f"{method} returned JSON-RPC error: {payload['error']}")
     return payload.get("result")
+
 
 
 def default_rpc_min_peers(plan: NetworkPlan) -> int:
@@ -3115,24 +5305,29 @@ def rpc_min_peers_from_args(plan: NetworkPlan, args: argparse.Namespace) -> int:
 
 
 def wait_for_rpc(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
-    rpc_url = infer_external_rpc_url(plan, args)
+    rpc_candidates = rpc_probe_url_candidates(plan, args)
+    if not rpc_candidates:
+        # Reuse the operator-facing error from the legacy single-URL helper.
+        infer_external_rpc_url(plan, args)
+
     expected_chain_id = hex(plan.chain_id)
     timeout_s = float(getattr(args, "rpc_timeout_s", DEFAULT_RPC_WAIT_TIMEOUT_S))
     poll_interval_s = float(getattr(args, "rpc_poll_interval_s", DEFAULT_RPC_POLL_INTERVAL_S))
     min_peers = rpc_min_peers_from_args(plan, args)
     require_block_advance = not bool(getattr(args, "no_rpc_require_block_advance", False))
+    rpc_user_agent = str(getattr(args, "rpc_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
     deadline = None if timeout_s <= 0 else time.monotonic() + timeout_s
     last_error: object = None
     last_chain_id = ""
     last_block_number: int | None = None
     last_peer_count: int | None = None
-    first_observed_block: int | None = None
-    block_advanced = False
+    first_observed_block_by_url: dict[str, int] = {}
+    block_advanced_by_url: dict[str, bool] = {}
     attempt = 0
     operator_log(
         args,
         "wait-rpc start",
-        rpc_url=rpc_url,
+        rpc_urls=",".join(candidate["url"] for candidate in rpc_candidates),
         expected_chain_id=expected_chain_id,
         timeout_s=timeout_s,
         min_peers=min_peers,
@@ -3140,79 +5335,95 @@ def wait_for_rpc(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
     )
     while deadline is None or time.monotonic() < deadline:
         attempt += 1
-        try:
-            chain_id = str(json_rpc(rpc_url, "eth_chainId", timeout_s=8.0))
-            last_chain_id = chain_id
-            if chain_id.lower() != expected_chain_id.lower():
-                raise RuntimeError(f"expected chain id {expected_chain_id}, got {chain_id}")
-            block_hex = str(json_rpc(rpc_url, "eth_blockNumber", timeout_s=8.0))
-            block_number = int(block_hex, 16)
-            peer_hex = str(json_rpc(rpc_url, "net_peerCount", timeout_s=8.0))
-            peer_count = int(peer_hex, 16)
-            last_block_number = block_number
-            last_peer_count = peer_count
-            if first_observed_block is None:
-                first_observed_block = block_number
-            if block_number > first_observed_block:
-                block_advanced = True
-            operator_log(
-                args,
-                "wait-rpc probe",
-                attempt=attempt,
-                chain_id=chain_id,
-                block_number=block_number,
-                peer_count=peer_count,
-                first_observed_block=first_observed_block,
-                block_advanced=block_advanced,
-            )
-
-            not_ready_reasons: list[str] = []
-            if block_number < 1:
-                not_ready_reasons.append(f"block_number {block_number} < 1")
-            if peer_count < min_peers:
-                not_ready_reasons.append(f"peer_count {peer_count} < required {min_peers}")
-            if require_block_advance and not block_advanced:
-                not_ready_reasons.append(
-                    f"block has not advanced beyond first observed block {first_observed_block}"
-                )
-
-            if not not_ready_reasons:
+        attempt_errors: list[str] = []
+        for candidate in rpc_candidates:
+            rpc_url = candidate["url"]
+            rpc_source = candidate["source"]
+            try:
+                chain_id = str(json_rpc(rpc_url, "eth_chainId", timeout_s=8.0, user_agent=rpc_user_agent))
+                last_chain_id = chain_id
+                if chain_id.lower() != expected_chain_id.lower():
+                    raise RuntimeError(f"expected chain id {expected_chain_id}, got {chain_id}")
+                block_hex = str(json_rpc(rpc_url, "eth_blockNumber", timeout_s=8.0, user_agent=rpc_user_agent))
+                block_number = int(block_hex, 16)
+                peer_hex = str(json_rpc(rpc_url, "net_peerCount", timeout_s=8.0, user_agent=rpc_user_agent))
+                peer_count = int(peer_hex, 16)
+                last_block_number = block_number
+                last_peer_count = peer_count
+                if rpc_url not in first_observed_block_by_url:
+                    first_observed_block_by_url[rpc_url] = block_number
+                    block_advanced_by_url[rpc_url] = False
+                if block_number > first_observed_block_by_url[rpc_url]:
+                    block_advanced_by_url[rpc_url] = True
+                first_observed_block = first_observed_block_by_url[rpc_url]
+                block_advanced = block_advanced_by_url[rpc_url]
                 operator_log(
                     args,
-                    "wait-rpc done",
+                    "wait-rpc probe",
+                    attempt=attempt,
+                    rpc_url=rpc_url,
+                    rpc_url_source=rpc_source,
+                    chain_id=chain_id,
                     block_number=block_number,
                     peer_count=peer_count,
                     first_observed_block=first_observed_block,
                     block_advanced=block_advanced,
                 )
-                return {
-                    "ok": True,
-                    "rpc_url": rpc_url,
-                    "chain_id": chain_id,
-                    "block_number": block_number,
-                    "peer_count": peer_count,
-                    "first_observed_block": first_observed_block,
-                    "block_advanced": block_advanced,
-                    "min_peers": min_peers,
-                }
 
-            last_error = "; ".join(not_ready_reasons)
-            operator_log(args, "wait-rpc not-ready", attempt=attempt, reason=last_error)
-        except Exception as exc:  # noqa: BLE001 - operator-facing retry loop
-            last_error = str(exc)
-            operator_log(args, "wait-rpc retry", attempt=attempt, error=last_error)
+                not_ready_reasons: list[str] = []
+                if block_number < 1:
+                    not_ready_reasons.append(f"block_number {block_number} < 1")
+                if peer_count < min_peers:
+                    not_ready_reasons.append(f"peer_count {peer_count} < required {min_peers}")
+                if require_block_advance and not block_advanced:
+                    not_ready_reasons.append(
+                        f"block has not advanced beyond first observed block {first_observed_block}"
+                    )
+
+                if not not_ready_reasons:
+                    operator_log(
+                        args,
+                        "wait-rpc done",
+                        rpc_url=rpc_url,
+                        rpc_url_source=rpc_source,
+                        block_number=block_number,
+                        peer_count=peer_count,
+                        first_observed_block=first_observed_block,
+                        block_advanced=block_advanced,
+                    )
+                    return {
+                        "ok": True,
+                        "rpc_url": rpc_url,
+                        "rpc_url_source": rpc_source,
+                        "rpc_candidates": rpc_candidates,
+                        "chain_id": chain_id,
+                        "block_number": block_number,
+                        "peer_count": peer_count,
+                        "first_observed_block": first_observed_block,
+                        "block_advanced": block_advanced,
+                        "min_peers": min_peers,
+                    }
+
+                last_error = "; ".join(not_ready_reasons)
+                attempt_errors.append(f"{rpc_source} {rpc_url}: {last_error}")
+            except Exception as exc:  # noqa: BLE001 - operator-facing retry loop
+                last_error = str(exc)
+                attempt_errors.append(f"{rpc_source} {rpc_url}: {last_error}")
+        operator_log(args, "wait-rpc retry", attempt=attempt, error=" | ".join(attempt_errors))
         time.sleep(poll_interval_s)
+
+    first_observed_blocks = {url: value for url, value in first_observed_block_by_url.items()}
+    block_advanced = {url: value for url, value in block_advanced_by_url.items()}
     raise CoolifyError(
-        f"Timed out waiting for RPC {rpc_url}; "
+        f"Timed out waiting for RPC candidates {rpc_candidates!r}; "
         f"last_chain_id={last_chain_id!r}; "
         f"last_block_number={last_block_number!r}; "
         f"last_peer_count={last_peer_count!r}; "
-        f"first_observed_block={first_observed_block!r}; "
+        f"first_observed_blocks={first_observed_blocks!r}; "
         f"block_advanced={block_advanced!r}; "
         f"min_peers={min_peers!r}; "
         f"last_error={last_error!r}"
     )
-
 
 def process_timeout_arg(timeout_s: float | None) -> float | None:
     """Return a subprocess timeout, treating zero/negative values as unbounded."""
@@ -3406,12 +5617,19 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
     raw_host_id = str(getattr(args, "host", "") or "")
     host_id = safe_id(raw_host_id, kind="host") if raw_host_id else single_host_id(plan)
     operator_log(args, "coolify-sync render-compose start", network=plan.name, host=host_id)
-    compose = render_compose_for_host(
-        plan,
-        host_id,
-        include_bootstrap=not bool(getattr(args, "no_bootstrap", False)),
-        managed_volume=not bool(getattr(args, "bind_runtime_root", False)),
-    )
+    compose_override = str(getattr(args, "_compose_override", "") or "")
+    if compose_override:
+        compose = compose_override
+    else:
+        compose = render_compose_for_host(
+            plan,
+            host_id,
+            include_bootstrap=not bool(getattr(args, "no_bootstrap", False)),
+            managed_volume=not bool(getattr(args, "bind_runtime_root", False)),
+            runtime_import_bundle=getattr(args, "_runtime_import_bundle", None),
+            include_rpc_public_entry=bool(getattr(args, "_include_rpc_public_entry", True)),
+            config_export=getattr(args, "_config_export", None),
+        )
     compose_b64 = base64_compose(compose)
     service_name = str(getattr(args, "coolify_service_name", "") or project_service_name(plan, host_id))
     host = host_by_id(plan).get(host_id)
@@ -3669,7 +5887,7 @@ def apply_network(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]
     configure_local_coolify_defaults(plan, args)
     if len({service.host for service in plan.services}) > 1:
         raise PlanError("apply currently supports single-host plans. Split-host deployment needs explicit shared genesis/key distribution.")
-    operator_log(args, "apply start", network=plan.name, all=bool(getattr(args, "all", False)), dry_run=bool(getattr(args, "dry_run", False)))
+    operator_log(args, "apply start", network=plan.name, dry_run=bool(getattr(args, "dry_run", False)))
     phases: list[dict[str, Any]] = []
     if bool(getattr(args, "dry_run", False)):
         operator_log(args, "apply phase skipped", phase="coolify-check", reason="dry-run")
@@ -3715,7 +5933,7 @@ def apply_network(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]
         wait_result = wait_for_rpc(plan, args)
         phases.append({"phase": "wait-rpc", "result": wait_result})
         operator_log(args, "apply phase result", phase="wait-rpc", ok=wait_result.get("ok"), block_number=wait_result.get("block_number"))
-    if bool(getattr(args, "deploy_contracts", False)) or bool(getattr(args, "all", False)):
+    if bool(getattr(args, "deploy_contracts", False)):
         operator_log(args, "apply phase start", phase="deploy-contracts")
         contract_result = deploy_contracts(plan, args)
         phases.append({"phase": "deploy-contracts", "result": contract_result})
@@ -3727,7 +5945,7 @@ def apply_network(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plan, render, and apply Coolify-managed Besu QBFT network layouts.")
+    parser = argparse.ArgumentParser(description="Plan, render, and apply Coolify-managed Besu QBFT network layouts.", allow_abbrev=False)
     parser.add_argument(
         "action",
         nargs="?",
@@ -3745,10 +5963,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "coolify-check",
             "coolify-discover",
             "discover-topology",
+            "observe-chain",
             "coolify-sync",
             "wait-rpc",
             "deploy-contracts",
             "apply",
+            "mutate",
         ],
         help="Action to run. Omit this to print the step-by-step deployment runbook.",
     )
@@ -3758,13 +5978,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Private YAML path to use for networks.<network>.qbft.instances. Defaults to runtime/state/main_computer.private.yaml.",
     )
-    parser.add_argument("--host", default="", help="Host id for compose rendering. Defaults to the first host with services.")
+    parser.add_argument(
+        "--instances",
+        default="",
+        help=(
+            "Comma-separated logical QBFT instance ids to deploy/discover from private state. "
+            "The Coolify host is inferred from each selected instance."
+        ),
+    )
+    parser.add_argument(
+        "--add",
+        default="",
+        help="For mutate: comma-separated logical QBFT instance ids to add safely.",
+    )
+    parser.add_argument(
+        "--retire",
+        default="",
+        help="For mutate: comma-separated logical QBFT instance ids to retire safely.",
+    )
+    parser.add_argument(
+        "--promote",
+        default="",
+        help="For mutate: comma-separated instance:role promotions, e.g. rpc-1:validator.",
+    )
+    parser.add_argument(
+        "--demote",
+        default="",
+        help="For mutate: comma-separated instance:role demotions, e.g. validator-rpc-1:rpc-only.",
+    )
+    parser.add_argument("--plan", action="store_true", help="For mutate: emit a read-only mutation packet. This is the default.")
+    parser.add_argument("--apply", action="store_true", help="For mutate: execute the packet. Currently refused until executor support lands.")
+    parser.add_argument("--packet", default="", help="For mutate: optional JSON path to write the read-only mutation packet.")
+    parser.add_argument("--observe-chain", action="store_true", help="For mutate: include read-only chain/RPC observation in the mutation packet.")
+    parser.add_argument("--chain-observation-timeout-s", type=float, default=DEFAULT_CHAIN_OBSERVATION_TIMEOUT_S, help="Per-call JSON-RPC timeout for observe-chain / mutate --observe-chain.")
+    parser.add_argument("--ack-consensus-change", action="store_true", help="For future mutate --apply validator changes.")
+    parser.add_argument("--ack-mainnet-consensus-change", action="store_true", help="For future mutate --apply mainnet validator changes.")
+    parser.add_argument("--config-root-host", default="", help="For mutate --apply: force the QBFT runtime config/genesis source host when multiple lineages are found.")
+    parser.add_argument("--config-export-port", type=int, default=DEFAULT_QBFT_CONFIG_EXPORT_PORT, help="Temporary host port used to slurp non-secret QBFT runtime config from the selected source host.")
+    parser.add_argument("--config-export-timeout-s", type=float, default=DEFAULT_QBFT_CONFIG_EXPORT_TIMEOUT_S, help="Seconds to wait for the temporary QBFT config export service to become reachable.")
+    parser.add_argument("--config-export-transport", default=DEFAULT_QBFT_CONFIG_EXPORT_TRANSPORT, choices=["public-entry", "direct-port"], help="Transport for slurping current QBFT runtime config. public-entry redeploys the source QBFT stack with a temporary tokenized public-entry route; direct-port uses the older temporary host port.")
+    parser.add_argument("--host", default="", help="Optional host id for compose rendering/debug. Normal deploys infer this from --instances.")
     parser.add_argument("--out", default="", help="Output directory for the write action.")
     parser.add_argument("--besu-image", default="", help="Override the Besu image tag in the seed.")
     parser.add_argument("--public-rpc", action="store_true", help="Bind the non-validator RPC host port to 0.0.0.0 for operator access.")
     parser.add_argument("--allow-mainnet", action="store_true", help="Allow planning from a seed marked requires_mainnet_ack, such as mainnet.")
 
-    parser.add_argument("--single-host", default="", help="Override a single-host seed with this SSH target/address, e.g. root@157.245.92.74.")
+    parser.add_argument("--single-host", default="", help=argparse.SUPPRESS)
     parser.add_argument("--target-address", default="", help="Override the public host/IP used in the plan.")
     parser.add_argument("--runtime-root", default="", help="Override runtime root for all hosts in the seed.")
 
@@ -3796,6 +6055,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--container-rpc-url", default="", help="RPC URL reachable from the Foundry deployment container. Local Coolify test defaults to http://mc-qbft-rpc:8545.")
     parser.add_argument("--rpc-timeout-s", type=float, default=DEFAULT_RPC_WAIT_TIMEOUT_S)
     parser.add_argument("--rpc-poll-interval-s", type=float, default=DEFAULT_RPC_POLL_INTERVAL_S)
+    parser.add_argument(
+        "--rpc-user-agent",
+        default=DEFAULT_JSON_RPC_USER_AGENT,
+        help=(
+            "User-Agent used for operator JSON-RPC checks. "
+            "Some HTTPS RPC edges reject Python urllib\'s default identity."
+        ),
+    )
     parser.add_argument(
         "--rpc-min-peers",
         type=int,
@@ -3830,7 +6097,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hub-wait-poll-s", type=float, default=5.0)
     parser.add_argument("--hub-status-timeout-s", type=float, default=8.0)
 
-    parser.add_argument("--all", action="store_true", help="For apply: deploy Compose, wait for RPC, and deploy contracts.")
     parser.add_argument("--deploy-contracts", action="store_true", help="For apply: deploy contracts after RPC is healthy.")
     parser.add_argument("--deployment-run-id", default="", help="Override the contract deployment run id.")
     parser.add_argument("--deployment-project-name", default="", help="Override contract deployment project name.")
@@ -3869,6 +6135,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def build_plan_from_args(args: argparse.Namespace) -> NetworkPlan:
+    # mutate needs the full private-state instance catalog so it can name the
+    # target and affected host/service resources even when the current apply
+    # selection is narrower.
+    instances = None if getattr(args, "action", "") == "mutate" else (getattr(args, "instances", "") or None)
     return build_plan(
         args.network,
         besu_image=args.besu_image or None,
@@ -3879,6 +6149,7 @@ def build_plan_from_args(args: argparse.Namespace) -> NetworkPlan:
         coolify_url=args.coolify_url or None,
         runtime_root=args.runtime_root or None,
         private_state_path=args.private_state or None,
+        instances=instances,
     )
 
 
@@ -3894,181 +6165,70 @@ def render_operator_runbook() -> str:
         Main Computer Coolify QBFT network runbook
         =========================================
 
-        This tool renders and deploys a Besu QBFT network into a Coolify Docker
-        Compose service. Run this command with no arguments any time you forget
-        the exact sequence.
+        This tool renders and deploys Besu/QBFT nodes into Coolify Docker Compose
+        services through the Coolify HTTP API. Remote Coolify deploys do not use
+        SSH; URL, token, project, server, destination, and environment context
+        should come from runtime/state/main_computer.private.yaml.
 
-        Recommended server size
-        -----------------------
-        Current remote testnet default: one Besu/QBFT validator that also serves the operator RPC port.
-        This low-resource shape is intentional until the test machine can handle the four-validator plus RPC target.
-        The mainnet seed still requires explicit acknowledgement and currently uses one validator plus one dedicated RPC node.
-        Smaller 2 vCPU / 4 GB boxes may work for short rehearsals, but tiny 1-2 GB boxes can publish Docker ports
-        while Besu is still starved or unhealthy.
+        Normal private-state deploy
+        ---------------------------
 
-        1. Prepare the remote Linux server
-        ----------------------------------
-        From your Windows machine:
+        A private-state QBFT instance is a logical node declaration:
 
-            ssh root@<SERVER_IP>
+            networks:
+              testnet:
+                rpc: https://testnet-rpc.greatlibrary.io
+                qbft:
+                  instances:
+                    validator-rpc-1:
+                      coolify_host: A
+                      roles: [rpc, validator]
+                      rpc_host_port: 30010
+                      p2p_host_port: 30321
 
-        On the server, install/verify Docker:
+        Deploy just that one-node service topology:
 
-            curl -fsSL https://get.docker.com | sh
-            systemctl enable --now docker
-            docker version
+            python .\tools\coolify_qbft_network.py apply testnet `
+              --instances validator-rpc-1
 
-        If you use UFW or a cloud firewall, allow SSH, Coolify, HTTP/HTTPS,
-        and the public testnet RPC port:
+        Contract deployment is explicit and separate:
 
-            ufw allow OpenSSH
-            ufw allow 80/tcp
-            ufw allow 443/tcp
-            ufw allow 8000/tcp
-            ufw allow 6001/tcp
-            ufw allow 6002/tcp
-            ufw allow 30010/tcp
-            ufw --force enable
+            python .\tools\coolify_qbft_network.py deploy-contracts testnet
 
-        2. Install Coolify on the remote server
-        ---------------------------------------
-        Still on the server, run the official quick installer:
+        The deployer infers the Coolify host from
+        networks.testnet.qbft.instances.validator-rpc-1.coolify_host. Do not pass
+        an SSH target and do not pass --host for the normal deploy path.
 
-            curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
-
-        Then open Coolify in your browser:
-
-            http://<SERVER_IP>:8000
-
-        Create the first admin account immediately after installation.
-
-        3. Create a Coolify API token
-        -----------------------------
-        In the Coolify UI, create a new API token. Keep it private. If you paste
-        it into chat/logs, rotate it before using the server for anything real.
-
-        In PowerShell, store the token in an environment variable:
-
-            $env:MAIN_COMPUTER_COOLIFY_TOKEN = "paste-your-token-here"
-
-        4. Set the target IP and Coolify URL locally
-        -------------------------------------------
-        In your repo checkout on Windows:
-
-            $hostIp = "<SERVER_IP>"
-            $coolifyUrl = "http://<SERVER_IP>:8000"
-
-        Use exactly one http:// prefix. Do not write http://http://... and do
-        not put :8000 after a trailing slash.
-
-        5. Check that the Coolify API is reachable
-        ------------------------------------------
-
-            python .\tools\coolify_qbft_network.py coolify-check testnet `
-              --coolify-url $coolifyUrl `
-              --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN
-
-        Expected: JSON with "ok": true.
-
-        6. Discover Coolify project/server context
-        ------------------------------------------
-
-            python .\tools\coolify_qbft_network.py coolify-discover testnet `
-              --single-host root@$hostIp `
-              --coolify-url $coolifyUrl `
-              --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN
-
-        If Coolify has one project/server/environment, the tool can usually
-        select it automatically. If discovery reports ambiguity, copy the UUIDs
-        it prints and pass them to apply with --coolify-project-uuid,
-        --coolify-server-uuid, and --coolify-environment.
-
-        7. Deploy the selected QBFT network
-        ------------------------------------
-
-            python .\tools\coolify_qbft_network.py apply testnet --all `
-              --single-host root@$hostIp `
-              --coolify-url $coolifyUrl `
-              --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN `
-              --public-rpc
-
-        This creates or updates the canonical Coolify Docker Compose service
-        named main-computer-qbft-testnet-a, deploys it, waits for RPC, then
-        deploys contracts when --all is present.
-
-        The testnet public RPC URL will be:
-
-            http://<SERVER_IP>:30010
-
-        Expected chain id:
-
-            0x28757b1
-
-        Contract deployment now publishes this Coolify surface as the first-class
-        testnet environment, not the local loopback test environment:
-
-            runtime/deployments/testnet/latest.json
-
-        After contracts deploy, run the Hub and smoke against the same network key:
-
-            python -m main_computer.cli hub --network testnet
-            python .\scripts\smoke_hub_network_client.py --network testnet
-
-        8. Verify on the remote server
-        ------------------------------
-
-            ssh root@<SERVER_IP>
-
-            docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' \
-              | grep -E 'qbft|validator|rpc|besu|30010' || true
-
-            curl -v --max-time 10 http://127.0.0.1:30010 \
-              -H 'content-type: application/json' \
-              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
-
-        Expected response:
-
-            {"jsonrpc":"2.0","id":1,"result":"0x28757b1"}
-
-        9. Safe reruns
-        --------------
-
-        Do not pass --coolify-service-name for the normal testnet path. The
-        tool derives the canonical service name from the network and host id:
-        main-computer-qbft-testnet-a. It refuses to blindly create another
-        same-purpose service when it detects duplicate Coolify services returned
-        by the Coolify API.
-
-        If you already know the service UUID, you can pin the target explicitly:
-
-            python .\tools\coolify_qbft_network.py apply testnet --all `
-              --single-host root@$hostIp `
-              --coolify-url $coolifyUrl `
-              --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN `
-              --coolify-service-uuid <COOLIFY_SERVICE_UUID> `
-              --public-rpc
-
-        10. Useful commands
-        -------------------
-
-        Render compose without deploying:
-
-            python .\tools\coolify_qbft_network.py compose testnet `
-              --single-host root@$hostIp `
-              --public-rpc
-
-        Print the planned topology:
+        Read-only checks
+        ----------------
 
             python .\tools\coolify_qbft_network.py plan testnet `
-              --single-host root@$hostIp `
-              --public-rpc
+              --instances validator-rpc-1
 
-        Show this runbook again:
+            python .\tools\coolify_qbft_network.py compose testnet `
+              --instances validator-rpc-1
 
-            python .\tools\coolify_qbft_network.py docs
+            python .\tools\coolify_qbft_network.py discover-topology testnet `
+              --instances validator-rpc-1
+
+        Optional Hub verification
+        -------------------------
+
+            python .\tools\coolify_qbft_network.py discover-topology testnet `
+              --instances validator-rpc-1 `
+              --verify-hub
+
+        Useful notes
+        ------------
+
+        * --instances selects logical QBFT instances from private state.
+        * The selected Coolify host is inferred from each instance.
+        * networks.<network>.rpc is used as the default external RPC URL when set.
+        * --host is only a compose/debug override.
+        * --single-host is deprecated compatibility plumbing and is not the
+          remote Coolify deploy path.
         """
     ).strip() + "\n"
-
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
@@ -4120,6 +6280,10 @@ def main(argv: list[str] | None = None) -> int:
             result = discover_topology(plan, args)
             print_json(result)
             return 0 if result.get("ok") else 1
+        if args.action == "observe-chain":
+            result = observe_chain_state(plan, args)
+            print_json(result)
+            return 0 if result.get("ok") else 1
         if args.action == "coolify-sync":
             result = coolify_sync(plan, args, deploy=not bool(args.no_deploy))
             print_json(result)
@@ -4133,6 +6297,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result.get("ok") else 1
         if args.action == "apply":
             result = apply_network(plan, args)
+            print_json(result)
+            return 0 if result.get("ok") else 1
+        if args.action == "mutate":
+            result = mutate_network(plan, args)
             print_json(result)
             return 0 if result.get("ok") else 1
     except (PlanError, CoolifyError, TimeoutError, socket.timeout) as exc:

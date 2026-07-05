@@ -84,7 +84,7 @@ normal local QBFT deploy path; it reuses the Website Builder local-Coolify token
 file/bootstrap contract and publishes the network-scoped manifest:
 
 ```powershell
-python .\tools\coolify_qbft_network.py apply test --all
+python .\tools\coolify_qbft_network.py apply test --deploy-contracts
 python -m main_computer.cli hub --network test
 ```
 

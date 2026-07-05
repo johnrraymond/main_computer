@@ -6513,6 +6513,15 @@ body.mcel-modal-open {
 
 .mcel-tiny-contract-runtime [data-mc-slot="runtime.proofChip"] {
   grid-area: proof;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mcel-tiny-contract-runtime [data-mc-slot="runtime.proofChip"] [data-mc-generated="true"] {
+  max-height: 82px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .mcel-tiny-contract-runtime [data-mc-slot="runtime.evidenceStrip"] {

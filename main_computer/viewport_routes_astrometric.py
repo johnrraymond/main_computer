@@ -13,6 +13,17 @@ class ViewportAstrometricRoutesMixin:
         self.server.signal("api-astrometric-status")
         self._send_json(self.server.astrometric_renderer.status())
 
+    def _handle_astrometric_diagnostics(self) -> None:
+        try:
+            self.server.signal("api-astrometric-diagnostics")
+            self._send_json(self.server.astrometric_renderer.diagnostics())
+        except AstrometricRendererError as exc:
+            self.server.signal("api-astrometric-diagnostics-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+        except Exception as exc:
+            self.server.signal("api-astrometric-diagnostics-unhandled-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def _handle_astrometric_action(self) -> None:
         try:
             body = self._read_json()
@@ -79,8 +90,9 @@ class ViewportAstrometricRoutesMixin:
                 self.send_header("Cache-Control", "no-store, max-age=0")
                 self.send_header("Connection", "close")
                 self.end_headers()
+                reader = getattr(upstream, "read1", upstream.read)
                 while True:
-                    chunk = upstream.read(65536)
+                    chunk = reader(4096)
                     if not chunk:
                         break
                     self.wfile.write(chunk)

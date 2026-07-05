@@ -1,11 +1,6 @@
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
-#include <GL/glew.h>
+#include <cuda_runtime.h>
+#include <stdio.h>  // libjpeg declares FILE* APIs in jpeglib.h when stdio is visible.
 #include <jpeglib.h>
-
-#include <glm/glm.hpp>
-#include <glm/gtc/constants.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -37,7 +32,9 @@
 namespace {
 
 constexpr double kSagittariusARs = 1.269e10;
+constexpr float kSagittariusARsF = 1.269e10f;
 constexpr float kDefaultFovDegrees = 60.0f;
+constexpr float kPi = 3.14159265358979323846f;
 
 std::atomic<bool> g_running{true};
 
@@ -66,14 +63,6 @@ float envFloat(const char* name, float fallback, float minimum, float maximum) {
 std::string envString(const char* name, const std::string& fallback) {
     const char* raw = std::getenv(name);
     return raw && *raw ? std::string(raw) : fallback;
-}
-
-std::string readFile(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) throw std::runtime_error("Unable to read shader: " + path);
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return ss.str();
 }
 
 std::string jsonEscape(const std::string& value) {
@@ -148,49 +137,122 @@ bool sendString(int fd, const std::string& text) {
     return sendAll(fd, text.data(), text.size());
 }
 
+struct Vec3 {
+    float x;
+    float y;
+    float z;
+};
+
+__host__ __device__ inline Vec3 v3(float x, float y, float z) {
+    return Vec3{x, y, z};
+}
+
+__host__ __device__ inline Vec3 operator+(Vec3 a, Vec3 b) {
+    return v3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+__host__ __device__ inline Vec3 operator-(Vec3 a, Vec3 b) {
+    return v3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+__host__ __device__ inline Vec3 operator*(Vec3 a, float s) {
+    return v3(a.x * s, a.y * s, a.z * s);
+}
+
+__host__ __device__ inline Vec3 operator*(float s, Vec3 a) {
+    return a * s;
+}
+
+__host__ __device__ inline Vec3 operator/(Vec3 a, float s) {
+    return v3(a.x / s, a.y / s, a.z / s);
+}
+
+__host__ __device__ inline float dot(Vec3 a, Vec3 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+__host__ __device__ inline Vec3 cross(Vec3 a, Vec3 b) {
+    return v3(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    );
+}
+
+__host__ __device__ inline float length(Vec3 a) {
+    return sqrtf(dot(a, a));
+}
+
+__host__ __device__ inline Vec3 normalize(Vec3 a) {
+    float len = length(a);
+    if (len < 1.0e-20f) return v3(0.0f, 0.0f, 0.0f);
+    return a / len;
+}
+
+__host__ __device__ inline float clampf(float value, float low, float high) {
+    return fminf(high, fmaxf(low, value));
+}
+
+__host__ __device__ inline float fractf(float value) {
+    return value - floorf(value);
+}
+
+__host__ __device__ inline float mixf(float a, float b, float t) {
+    return a * (1.0f - t) + b * t;
+}
+
+__host__ __device__ inline Vec3 mix3(Vec3 a, Vec3 b, float t) {
+    return v3(mixf(a.x, b.x, t), mixf(a.y, b.y, t), mixf(a.z, b.z, t));
+}
+
+__host__ __device__ inline float smoothstep(float edge0, float edge1, float x) {
+    float t = clampf((x - edge0) / fmaxf(edge1 - edge0, 1.0e-20f), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
 struct Camera {
-    glm::vec3 target{0.0f, 0.0f, 0.0f};
-    float radius = 6.34194e10f;
-    float minRadius = 1.45e10f;
-    float maxRadius = 8.0e11f;
-    float azimuth = 0.0f;
-    float elevation = glm::pi<float>() / 2.0f;
+    Vec3 target{0.0f, 0.0f, 0.0f};
+    float radius = 1.65e11f;
+    float minRadius = 1.05e11f;
+    float maxRadius = 1.0e12f;
+    float azimuth = 0.18f;
+    float elevation = 1.10f;
     float orbitSpeed = 0.0065f;
     float panSpeed = 0.0012f;
     float zoomSpeed = 1.075f;
     float fovDegrees = kDefaultFovDegrees;
 
-    glm::vec3 position() const {
-        return {
+    Vec3 position() const {
+        return v3(
             target.x + radius * std::sin(elevation) * std::cos(azimuth),
             target.y + radius * std::cos(elevation),
-            target.z + radius * std::sin(elevation) * std::sin(azimuth),
-        };
+            target.z + radius * std::sin(elevation) * std::sin(azimuth)
+        );
     }
 
-    glm::vec3 forward() const {
-        return glm::normalize(target - position());
+    Vec3 forward() const {
+        return normalize(target - position());
     }
 
-    glm::vec3 right() const {
-        glm::vec3 f = forward();
-        glm::vec3 r = glm::cross(f, glm::vec3(0, 1, 0));
-        if (glm::length(r) < 1e-5f) return glm::vec3(1, 0, 0);
-        return glm::normalize(r);
+    Vec3 right() const {
+        Vec3 f = forward();
+        Vec3 r = cross(f, v3(0.0f, 1.0f, 0.0f));
+        if (length(r) < 1e-5f) return v3(1.0f, 0.0f, 0.0f);
+        return normalize(r);
     }
 
-    glm::vec3 up() const {
-        return glm::normalize(glm::cross(right(), forward()));
+    Vec3 up() const {
+        return normalize(cross(right(), forward()));
     }
 
     void orbit(float dx, float dy) {
         azimuth -= dx * orbitSpeed;
         elevation -= dy * orbitSpeed;
-        elevation = std::max(0.01f, std::min(glm::pi<float>() - 0.01f, elevation));
+        elevation = std::max(0.01f, std::min(kPi - 0.01f, elevation));
     }
 
     void pan(float dx, float dy) {
-        target += -right() * dx * panSpeed * radius + up() * dy * panSpeed * radius;
+        target = target + right() * (-dx * panSpeed * radius) + up() * (dy * panSpeed * radius);
     }
 
     void zoom(float wheelDelta) {
@@ -204,10 +266,10 @@ struct Camera {
     }
 
     void reset() {
-        target = glm::vec3(0.0f);
-        radius = 6.34194e10f;
-        azimuth = 0.0f;
-        elevation = glm::pi<float>() / 2.0f;
+        target = v3(0.0f, 0.0f, 0.0f);
+        radius = 1.65e11f;
+        azimuth = 0.18f;
+        elevation = 1.10f;
         fovDegrees = kDefaultFovDegrees;
     }
 };
@@ -222,230 +284,314 @@ struct SharedState {
     int height = 360;
     int fps = 10;
     int jpegQuality = 86;
-    int idleSteps = 520;
-    int movingSteps = 220;
-    float idleStepLength = 3.4e7f;
-    float movingStepLength = 5.4e7f;
+    int idleSteps = 1900;
+    int movingSteps = 800;
+    float idleStepLength = 1.5e8f;
+    float movingStepLength = 1.8e8f;
     std::string rendererMode = "gpu";
+    std::string rendererBackend = "cuda";
     bool httpReady = false;
     bool rendererThreadStarted = false;
     bool rendererThreadDone = false;
     bool rendererFatal = false;
     bool glReady = false;
+    bool cudaReady = false;
     uint64_t frameSeq = 0;
     double frameMs = 0.0;
     std::string startupPhase = "created";
-    std::string eglDisplay;
-    std::string glVendor;
+    std::string eglDisplay = "not used";
+    std::string glVendor = "CUDA";
     std::string glRenderer;
     std::string glVersion;
+    std::string cudaDevice;
+    int cudaDeviceOrdinal = -1;
+    int cudaRuntimeVersion = 0;
     std::string lastError;
     std::vector<unsigned char> jpeg;
 };
 
-#ifndef EGL_PLATFORM_DEVICE_EXT
-#define EGL_PLATFORM_DEVICE_EXT 0x313F
-#endif
+std::string cudaErrorText(cudaError_t status) {
+    std::ostringstream out;
+    out << cudaGetErrorName(status) << ": " << cudaGetErrorString(status);
+    return out.str();
+}
 
-using EglQueryDevicesEXTProc = EGLBoolean (*)(EGLint, EGLDeviceEXT*, EGLint*);
-using EglGetPlatformDisplayEXTProc = EGLDisplay (*)(EGLenum, void*, const EGLint*);
-
-std::string eglErrorString(EGLint error) {
-    switch (error) {
-        case EGL_SUCCESS: return "EGL_SUCCESS";
-        case EGL_NOT_INITIALIZED: return "EGL_NOT_INITIALIZED";
-        case EGL_BAD_ACCESS: return "EGL_BAD_ACCESS";
-        case EGL_BAD_ALLOC: return "EGL_BAD_ALLOC";
-        case EGL_BAD_ATTRIBUTE: return "EGL_BAD_ATTRIBUTE";
-        case EGL_BAD_CONTEXT: return "EGL_BAD_CONTEXT";
-        case EGL_BAD_CONFIG: return "EGL_BAD_CONFIG";
-        case EGL_BAD_CURRENT_SURFACE: return "EGL_BAD_CURRENT_SURFACE";
-        case EGL_BAD_DISPLAY: return "EGL_BAD_DISPLAY";
-        case EGL_BAD_SURFACE: return "EGL_BAD_SURFACE";
-        case EGL_BAD_MATCH: return "EGL_BAD_MATCH";
-        case EGL_BAD_PARAMETER: return "EGL_BAD_PARAMETER";
-        case EGL_BAD_NATIVE_PIXMAP: return "EGL_BAD_NATIVE_PIXMAP";
-        case EGL_BAD_NATIVE_WINDOW: return "EGL_BAD_NATIVE_WINDOW";
-        case EGL_CONTEXT_LOST: return "EGL_CONTEXT_LOST";
-        default: {
-            std::ostringstream ss;
-            ss << "EGL error 0x" << std::hex << error;
-            return ss.str();
-        }
+void cudaCheck(cudaError_t status, const std::string& where) {
+    if (status != cudaSuccess) {
+        throw std::runtime_error(where + " failed: " + cudaErrorText(status));
     }
 }
 
-bool initializeDisplayCandidate(EGLDisplay candidate, const std::string& label, EGLDisplay& display, std::string& selected, std::string& attempts) {
-    if (candidate == EGL_NO_DISPLAY) {
-        attempts += label + ": EGL_NO_DISPLAY; ";
-        return false;
-    }
-
-    EGLint major = 0;
-    EGLint minor = 0;
-    if (eglInitialize(candidate, &major, &minor)) {
-        display = candidate;
-        std::ostringstream ss;
-        ss << label << " (EGL " << major << "." << minor << ")";
-        selected = ss.str();
-        return true;
-    }
-
-    attempts += label + ": " + eglErrorString(eglGetError()) + "; ";
-    return false;
-}
-
-EGLDisplay openInitializedEglDisplay(std::string& selected, std::string& attempts) {
-    EGLDisplay display = EGL_NO_DISPLAY;
-
-    auto queryDevices = reinterpret_cast<EglQueryDevicesEXTProc>(eglGetProcAddress("eglQueryDevicesEXT"));
-    auto getPlatformDisplay = reinterpret_cast<EglGetPlatformDisplayEXTProc>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
-
-    if (queryDevices && getPlatformDisplay) {
-        EGLDeviceEXT devices[16]{};
-        EGLint deviceCount = 0;
-        if (queryDevices(16, devices, &deviceCount) && deviceCount > 0) {
-            for (EGLint i = 0; i < deviceCount; ++i) {
-                std::ostringstream label;
-                label << "EGL device " << i;
-                EGLDisplay candidate = getPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, devices[i], nullptr);
-                if (initializeDisplayCandidate(candidate, label.str(), display, selected, attempts)) {
-                    return display;
-                }
-            }
-        } else {
-            attempts += "eglQueryDevicesEXT returned no EGL devices; ";
-        }
-    } else {
-        attempts += "EGL_EXT_device_enumeration/EGL_EXT_platform_device not available; ";
-    }
-
-    EGLDisplay fallback = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (initializeDisplayCandidate(fallback, "EGL default display", display, selected, attempts)) {
-        return display;
-    }
-
-    throw std::runtime_error("No usable headless EGL display was available. " + attempts);
-}
-
-class EglContext {
-public:
-    EGLDisplay display = EGL_NO_DISPLAY;
-    EGLSurface surface = EGL_NO_SURFACE;
-    EGLContext context = EGL_NO_CONTEXT;
-    std::string selectedDisplay;
-
-    EglContext(int width, int height) {
-        std::string attempts;
-        display = openInitializedEglDisplay(selectedDisplay, attempts);
-
-        if (!eglBindAPI(EGL_OPENGL_API)) {
-            throw std::runtime_error("eglBindAPI(EGL_OPENGL_API) failed: " + eglErrorString(eglGetError()));
-        }
-
-        EGLint configAttribs[] = {
-            EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-            EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-            EGL_RED_SIZE, 8,
-            EGL_GREEN_SIZE, 8,
-            EGL_BLUE_SIZE, 8,
-            EGL_ALPHA_SIZE, 8,
-            EGL_DEPTH_SIZE, 0,
-            EGL_NONE
-        };
-
-        EGLConfig config = nullptr;
-        EGLint numConfigs = 0;
-        if (!eglChooseConfig(display, configAttribs, &config, 1, &numConfigs) || numConfigs < 1) {
-            throw std::runtime_error("eglChooseConfig failed: " + eglErrorString(eglGetError()));
-        }
-
-        EGLint surfaceAttribs[] = {
-            EGL_WIDTH, width,
-            EGL_HEIGHT, height,
-            EGL_NONE
-        };
-        surface = eglCreatePbufferSurface(display, config, surfaceAttribs);
-        if (surface == EGL_NO_SURFACE) {
-            throw std::runtime_error("eglCreatePbufferSurface failed: " + eglErrorString(eglGetError()));
-        }
-
-        const EGLint EGL_CONTEXT_MAJOR_VERSION_KHR = 0x3098;
-        const EGLint EGL_CONTEXT_MINOR_VERSION_KHR = 0x30FB;
-        const EGLint EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR = 0x30FD;
-        const EGLint EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR = 0x00000001;
-        EGLint contextAttribs[] = {
-            EGL_CONTEXT_MAJOR_VERSION_KHR, 4,
-            EGL_CONTEXT_MINOR_VERSION_KHR, 3,
-            EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
-            EGL_NONE
-        };
-
-        context = eglCreateContext(display, config, EGL_NO_CONTEXT, contextAttribs);
-        if (context == EGL_NO_CONTEXT) {
-            throw std::runtime_error("eglCreateContext OpenGL 4.3 core failed: " + eglErrorString(eglGetError()));
-        }
-        if (!eglMakeCurrent(display, surface, surface, context)) {
-            throw std::runtime_error("eglMakeCurrent failed: " + eglErrorString(eglGetError()));
-        }
-
-        glewExperimental = GL_TRUE;
-        GLenum glewStatus = glewInit();
-        glGetError(); // GLEW can set a harmless GL_INVALID_ENUM with core contexts.
-        if (glewStatus != GLEW_OK) {
-            throw std::runtime_error(std::string("glewInit failed: ") + reinterpret_cast<const char*>(glewGetErrorString(glewStatus)));
-        }
-    }
-
-    ~EglContext() {
-        if (display != EGL_NO_DISPLAY) {
-            eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-            if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
-            if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
-            eglTerminate(display);
-        }
-    }
+struct CameraParams {
+    int width;
+    int height;
+    int moving;
+    Vec3 camPos;
+    Vec3 camRight;
+    Vec3 camUp;
+    Vec3 camForward;
+    float tanHalfFov;
+    float aspect;
+    float diskInner;
+    float diskOuter;
+    float diskThickness;
+    int idleSteps;
+    int movingSteps;
+    float idleStepLength;
+    float movingStepLength;
 };
 
-GLuint compileComputeProgram(const std::string& source) {
-    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
-    const char* src = source.c_str();
-    glShaderSource(shader, 1, &src, nullptr);
-    glCompileShader(shader);
+struct Ray {
+    float x;
+    float y;
+    float z;
+    float r;
+    float theta;
+    float phi;
+    float dr;
+    float dtheta;
+    float dphi;
+    float E;
+    float L;
+};
 
-    GLint compiled = GL_FALSE;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
-    if (!compiled) {
-        GLint length = 0;
-        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
-        std::string log(std::max(1, length), '\0');
-        glGetShaderInfoLog(shader, length, nullptr, log.data());
-        glDeleteShader(shader);
-        throw std::runtime_error("Compute shader compile failed: " + log);
+__device__ float hash13(Vec3 p) {
+    p.x = fractf(p.x * 0.3183099f + 0.11f);
+    p.y = fractf(p.y * 0.3183099f + 0.17f);
+    p.z = fractf(p.z * 0.3183099f + 0.23f);
+    p = p * 17.0f;
+    return fractf(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+__device__ Ray initRay(Vec3 pos, Vec3 dir) {
+    Ray ray{};
+    ray.x = pos.x;
+    ray.y = pos.y;
+    ray.z = pos.z;
+    ray.r = fmaxf(length(pos), kSagittariusARsF * 1.01f);
+    ray.theta = acosf(clampf(pos.z / ray.r, -1.0f, 1.0f));
+    ray.phi = atan2f(pos.y, pos.x);
+
+    float sinTheta = fmaxf(sinf(ray.theta), 1e-4f);
+    float dx = dir.x;
+    float dy = dir.y;
+    float dz = dir.z;
+    ray.dr = sinf(ray.theta) * cosf(ray.phi) * dx + sinf(ray.theta) * sinf(ray.phi) * dy + cosf(ray.theta) * dz;
+    ray.dtheta = (cosf(ray.theta) * cosf(ray.phi) * dx + cosf(ray.theta) * sinf(ray.phi) * dy - sinf(ray.theta) * dz) / ray.r;
+    ray.dphi = (-sinf(ray.phi) * dx + cosf(ray.phi) * dy) / (ray.r * sinTheta);
+
+    ray.L = ray.r * ray.r * sinTheta * ray.dphi;
+    float f = fmaxf(1.0f - kSagittariusARsF / ray.r, 1e-4f);
+    float angular = ray.r * ray.r * (ray.dtheta * ray.dtheta + sinTheta * sinTheta * ray.dphi * ray.dphi);
+    float dt_dL = sqrtf(fmaxf((ray.dr * ray.dr) / f + angular, 1e-8f));
+    ray.E = f * dt_dL;
+    return ray;
+}
+
+__device__ bool intercept(const Ray& ray) {
+    return ray.r <= kSagittariusARsF * 1.025f;
+}
+
+__device__ void geodesicRHS(const Ray& ray, Vec3& d1, Vec3& d2) {
+    float r = fmaxf(ray.r, kSagittariusARsF * 1.001f);
+    float theta = clampf(ray.theta, 0.001f, 3.14059f);
+    float dr = ray.dr;
+    float dtheta = ray.dtheta;
+    float dphi = ray.dphi;
+    float f = fmaxf(1.0f - kSagittariusARsF / r, 1e-4f);
+    float dt_dL = ray.E / f;
+    float sinTheta = fmaxf(sinf(theta), 1e-4f);
+    float cosTheta = cosf(theta);
+
+    d1 = v3(dr, dtheta, dphi);
+    d2.x = - (kSagittariusARsF / (2.0f * r * r)) * f * dt_dL * dt_dL
+         + (kSagittariusARsF / (2.0f * r * r * f)) * dr * dr
+         + r * (dtheta * dtheta + sinTheta * sinTheta * dphi * dphi);
+    d2.y = -2.0f * dr * dtheta / r + sinTheta * cosTheta * dphi * dphi;
+    d2.z = -2.0f * dr * dphi / r - 2.0f * cosTheta / sinTheta * dtheta * dphi;
+}
+
+__device__ void rk4Step(Ray& ray, float dL) {
+    Vec3 k1a, k1b;
+    geodesicRHS(ray, k1a, k1b);
+
+    Ray r2 = ray;
+    r2.r += 0.5f * dL * k1a.x;
+    r2.theta += 0.5f * dL * k1a.y;
+    r2.phi += 0.5f * dL * k1a.z;
+    r2.dr += 0.5f * dL * k1b.x;
+    r2.dtheta += 0.5f * dL * k1b.y;
+    r2.dphi += 0.5f * dL * k1b.z;
+    Vec3 k2a, k2b;
+    geodesicRHS(r2, k2a, k2b);
+
+    Ray r3 = ray;
+    r3.r += 0.5f * dL * k2a.x;
+    r3.theta += 0.5f * dL * k2a.y;
+    r3.phi += 0.5f * dL * k2a.z;
+    r3.dr += 0.5f * dL * k2b.x;
+    r3.dtheta += 0.5f * dL * k2b.y;
+    r3.dphi += 0.5f * dL * k2b.z;
+    Vec3 k3a, k3b;
+    geodesicRHS(r3, k3a, k3b);
+
+    Ray r4 = ray;
+    r4.r += dL * k3a.x;
+    r4.theta += dL * k3a.y;
+    r4.phi += dL * k3a.z;
+    r4.dr += dL * k3b.x;
+    r4.dtheta += dL * k3b.y;
+    r4.dphi += dL * k3b.z;
+    Vec3 k4a, k4b;
+    geodesicRHS(r4, k4a, k4b);
+
+    ray.r += dL * (k1a.x + 2.0f * k2a.x + 2.0f * k3a.x + k4a.x) / 6.0f;
+    ray.theta += dL * (k1a.y + 2.0f * k2a.y + 2.0f * k3a.y + k4a.y) / 6.0f;
+    ray.phi += dL * (k1a.z + 2.0f * k2a.z + 2.0f * k3a.z + k4a.z) / 6.0f;
+    ray.dr += dL * (k1b.x + 2.0f * k2b.x + 2.0f * k3b.x + k4b.x) / 6.0f;
+    ray.dtheta += dL * (k1b.y + 2.0f * k2b.y + 2.0f * k3b.y + k4b.y) / 6.0f;
+    ray.dphi += dL * (k1b.z + 2.0f * k2b.z + 2.0f * k3b.z + k4b.z) / 6.0f;
+
+    ray.theta = clampf(ray.theta, 0.001f, 3.14059f);
+    ray.x = ray.r * sinf(ray.theta) * cosf(ray.phi);
+    ray.y = ray.r * sinf(ray.theta) * sinf(ray.phi);
+    ray.z = ray.r * cosf(ray.theta);
+}
+
+struct DiskHit {
+    bool hit;
+    Vec3 pos;
+    float radius;
+    float angle;
+    float radialT;
+    float edge;
+};
+
+__device__ DiskHit intersectDiskPlane(Vec3 oldPos, Vec3 newPos, const CameraParams& params) {
+    DiskHit hit{};
+    hit.hit = false;
+    hit.pos = newPos;
+    hit.radius = 0.0f;
+    hit.angle = 0.0f;
+    hit.radialT = 0.0f;
+    hit.edge = 0.0f;
+
+    // Match the upstream shader's contract: the disk is hit only when the ray
+    // crosses the equatorial x/z plane.  Do not use a "near plane" fallback:
+    // grazing rays that merely skim close to y == 0 create the visible
+    // horizontal scratch/clipping line across the disk.
+    float product = oldPos.y * newPos.y;
+    if (!(product < 0.0f)) {
+        return hit;
     }
 
-    GLuint program = glCreateProgram();
-    glAttachShader(program, shader);
-    glLinkProgram(program);
-    glDeleteShader(shader);
-
-    GLint linked = GL_FALSE;
-    glGetProgramiv(program, GL_LINK_STATUS, &linked);
-    if (!linked) {
-        GLint length = 0;
-        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
-        std::string log(std::max(1, length), '\0');
-        glGetProgramInfoLog(program, length, nullptr, log.data());
-        glDeleteProgram(program);
-        throw std::runtime_error("Compute program link failed: " + log);
+    float dy = newPos.y - oldPos.y;
+    if (fabsf(dy) < 1.0e-6f) {
+        return hit;
     }
-    return program;
+
+    float segmentT = clampf(-oldPos.y / dy, 0.0f, 1.0f);
+    Vec3 pos = oldPos + (newPos - oldPos) * segmentT;
+    float radius = sqrtf(pos.x * pos.x + pos.z * pos.z);
+    if (radius < params.diskInner || radius > params.diskOuter) {
+        return hit;
+    }
+
+    hit.hit = true;
+    hit.pos = pos;
+    hit.radius = radius;
+    hit.angle = atan2f(pos.z, pos.x);
+    hit.radialT = clampf((radius - params.diskInner) / fmaxf(1.0f, params.diskOuter - params.diskInner), 0.0f, 1.0f);
+    hit.edge = smoothstep(params.diskInner, params.diskInner * 1.02f, radius)
+             * (1.0f - smoothstep(params.diskOuter * 0.985f, params.diskOuter, radius));
+    return hit;
+}
+
+__device__ Vec3 skyColor(Vec3 dir) {
+    Vec3 d = normalize(dir);
+    float milky = powf(fmaxf(0.0f, 1.0f - fabsf(d.y) * 1.6f), 2.5f);
+    Vec3 floored = v3(floorf(d.x * 1400.0f), floorf(d.y * 1400.0f), floorf(d.z * 1400.0f));
+    float grid = hash13(floored);
+    float star = smoothstep(0.9965f, 1.0f, grid);
+    Vec3 nebula = mix3(v3(0.015f, 0.025f, 0.055f), v3(0.08f, 0.035f, 0.13f), milky);
+    return nebula + v3(star * 1.0f, star * 0.88f, star * 0.68f);
+}
+
+__global__ void renderKernel(uchar4* out, CameraParams params) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= params.width || y >= params.height) return;
+
+    float u = (2.0f * (static_cast<float>(x) + 0.5f) / static_cast<float>(params.width) - 1.0f)
+            * params.aspect * params.tanHalfFov;
+    float v = (1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / static_cast<float>(params.height))
+            * params.tanHalfFov;
+    Vec3 dir = normalize(params.camRight * u + params.camUp * v + params.camForward);
+    Ray ray = initRay(params.camPos, dir);
+
+    Vec3 previous = v3(ray.x, ray.y, ray.z);
+    Vec3 color = v3(0.0f, 0.0f, 0.0f);
+    bool hitBlackHole = false;
+    bool hitDisk = false;
+    DiskHit diskHit{};
+
+    int steps = params.moving != 0 ? params.movingSteps : params.idleSteps;
+    float dL = params.moving != 0 ? params.movingStepLength : params.idleStepLength;
+
+    for (int i = 0; i < steps; ++i) {
+        if (intercept(ray)) {
+            hitBlackHole = true;
+            break;
+        }
+        rk4Step(ray, dL);
+        Vec3 current = v3(ray.x, ray.y, ray.z);
+        DiskHit candidate = intersectDiskPlane(previous, current, params);
+        if (candidate.hit) {
+            diskHit = candidate;
+            hitDisk = true;
+            break;
+        }
+        previous = current;
+        if (ray.r > 1.0e13f) break;
+    }
+
+    Vec3 background = skyColor(dir);
+    if (hitBlackHole) {
+        color = v3(0.0f, 0.0f, 0.0f);
+    } else if (hitDisk) {
+        // The upstream shader emitted an RGBA disk layer that OpenGL blended
+        // over whatever had already been drawn.  MJPEG has no alpha channel, so
+        // this renderer must explicitly composite the disk hit over a
+        // background instead of treating the disk hit as a solid final image.
+        // Keeping the camera outside diskOuter prevents the camera from
+        // starting inside the accretion disk annulus, which was the real cause
+        // of the "clipped sheet" view.
+        float t = diskHit.radialT;
+        float originalR = clampf(diskHit.radius / fmaxf(1.0f, params.diskOuter), 0.0f, 1.0f);
+        Vec3 upstreamDisk = v3(1.0f, fmaxf(0.16f, originalR), 0.2f);
+        Vec3 warmOuter = mix3(v3(1.0f, 0.70f, 0.22f), v3(1.0f, 0.34f, 0.08f), t);
+        float innerGlow = 1.0f + 0.22f * (1.0f - t);
+        float limb = 0.88f + 0.12f * fmaxf(0.0f, sinf(diskHit.angle) * 0.5f + 0.5f);
+        Vec3 diskColor = mix3(upstreamDisk, warmOuter, 0.35f) * innerGlow * limb;
+        float diskAlpha = clampf((0.32f + 0.62f * originalR) * diskHit.edge, 0.0f, 0.92f);
+        color = mix3(background, diskColor, diskAlpha);
+    } else {
+        color = background;
+    }
+
+    float vignette = smoothstep(1.25f, 0.15f, length(v3(u / fmaxf(params.aspect, 0.01f), v, 0.0f)));
+    color = color * mixf(0.76f, 1.0f, vignette);
+
+    unsigned char r = static_cast<unsigned char>(clampf(color.x, 0.0f, 1.0f) * 255.0f);
+    unsigned char g = static_cast<unsigned char>(clampf(color.y, 0.0f, 1.0f) * 255.0f);
+    unsigned char b = static_cast<unsigned char>(clampf(color.z, 0.0f, 1.0f) * 255.0f);
+    out[static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x)] = make_uchar4(r, g, b, 255);
 }
 
 std::vector<unsigned char> encodeJpeg(const std::vector<unsigned char>& rgba, int width, int height, int quality) {
     std::vector<unsigned char> rgb(static_cast<size_t>(width) * static_cast<size_t>(height) * 3);
     for (int y = 0; y < height; ++y) {
-        int srcY = height - 1 - y; // OpenGL origin is bottom-left; JPEG/browser origin is top-left.
+        int srcY = y;
         for (int x = 0; x < width; ++x) {
             size_t src = (static_cast<size_t>(srcY) * width + x) * 4;
             size_t dst = (static_cast<size_t>(y) * width + x) * 3;
@@ -494,58 +640,68 @@ std::vector<unsigned char> makeSmokeRgba(int width, int height, uint64_t seq) {
             float ny = static_cast<float>(y - centerY) / static_cast<float>(centerY);
             float r = std::sqrt(nx * nx + ny * ny);
             bool ring = std::fabs(r - 0.48f) < 0.018f || std::fabs(r - 0.72f) < 0.014f;
-            bool cross = std::abs(x - centerX) < 1 || std::abs(y - centerY) < 1;
+            bool crosshair = std::abs(x - centerX) < 1 || std::abs(y - centerY) < 1;
             bool tick = ((x + static_cast<int>(seq * 5)) % 48) < 3 && (y % 48) < 3;
             size_t i = (static_cast<size_t>(y) * width + x) * 4;
             unsigned char base = static_cast<unsigned char>(std::max(0.0f, 28.0f - r * 18.0f));
-            rgba[i + 0] = ring ? 240 : (cross ? 120 : (tick ? 80 : base));
-            rgba[i + 1] = ring ? 190 : (cross ? 210 : (tick ? 140 : static_cast<unsigned char>(base + 8)));
-            rgba[i + 2] = ring ? 60 : (cross ? 255 : (tick ? 220 : static_cast<unsigned char>(base + 18)));
+            rgba[i + 0] = ring ? 240 : (crosshair ? 120 : (tick ? 80 : base));
+            rgba[i + 1] = ring ? 190 : (crosshair ? 210 : (tick ? 140 : static_cast<unsigned char>(base + 8)));
+            rgba[i + 2] = ring ? 60 : (crosshair ? 255 : (tick ? 220 : static_cast<unsigned char>(base + 18)));
             rgba[i + 3] = 255;
         }
     }
     return rgba;
 }
 
-class Renderer {
+
+
+class CudaRenderer {
 public:
-    Renderer(SharedState& shared) : state(shared), context(shared.width, shared.height) {
-        const GLubyte* vendor = glGetString(GL_VENDOR);
-        const GLubyte* renderer = glGetString(GL_RENDERER);
-        const GLubyte* version = glGetString(GL_VERSION);
-        {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            state.eglDisplay = context.selectedDisplay;
-            state.glVendor = vendor ? reinterpret_cast<const char*>(vendor) : "";
-            state.glRenderer = renderer ? reinterpret_cast<const char*>(renderer) : "";
-            state.glVersion = version ? reinterpret_cast<const char*>(version) : "";
-            state.startupPhase = "compiling compute shader";
+    explicit CudaRenderer(SharedState& shared) : state(shared) {
+        int deviceCount = 0;
+        cudaCheck(cudaGetDeviceCount(&deviceCount), "cudaGetDeviceCount");
+        if (deviceCount < 1) {
+            throw std::runtime_error("No CUDA-capable NVIDIA GPU is visible inside the renderer container.");
         }
-        state.cv.notify_all();
 
-        std::string shaderPath = std::string(ASTROMETRIC_SHADER_DIR) + "/astrometric_service.comp";
-        program = compileComputeProgram(readFile(shaderPath));
+        int device = envInt("ASTROMETRIC_RENDERER_CUDA_DEVICE", 0, 0, deviceCount - 1);
+        cudaCheck(cudaSetDevice(device), "cudaSetDevice");
+        cudaCheck(cudaFree(nullptr), "cuda runtime initialization");
 
-        glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, state.width, state.height);
-        pixels.resize(static_cast<size_t>(state.width) * static_cast<size_t>(state.height) * 4);
+        cudaDeviceProp prop{};
+        cudaCheck(cudaGetDeviceProperties(&prop, device), "cudaGetDeviceProperties");
+        int runtimeVersion = 0;
+        cudaRuntimeGetVersion(&runtimeVersion);
+
+        size_t pixelCount = static_cast<size_t>(state.width) * static_cast<size_t>(state.height);
+        cudaCheck(cudaMalloc(&devicePixels, pixelCount * sizeof(uchar4)), "cudaMalloc framebuffer");
+        hostRgba.resize(pixelCount * 4);
 
         {
             std::lock_guard<std::mutex> lock(state.mutex);
-            state.glReady = true;
+            state.cudaReady = true;
+            state.glReady = true; // compatibility with the existing frontend/status tests
             state.rendererFatal = false;
-            state.startupPhase = "OpenGL ready; rendering first frame";
+            state.startupPhase = "CUDA ready; rendering first frame";
             state.lastError.clear();
+            state.cudaDevice = prop.name;
+            state.cudaDeviceOrdinal = device;
+            state.cudaRuntimeVersion = runtimeVersion;
+            state.glVendor = "CUDA";
+            state.glRenderer = state.cudaDevice;
+            std::ostringstream version;
+            version << "CUDA runtime " << runtimeVersion;
+            state.glVersion = version.str();
+            state.eglDisplay = "not used; CUDA kernel backend";
         }
         state.cv.notify_all();
     }
 
-    ~Renderer() {
-        if (texture) glDeleteTextures(1, &texture);
-        if (program) glDeleteProgram(program);
+    ~CudaRenderer() {
+        if (devicePixels) {
+            cudaFree(devicePixels);
+            devicePixels = nullptr;
+        }
     }
 
     void renderLoop() {
@@ -562,27 +718,31 @@ public:
                 quality = state.jpegQuality;
                 state.dirty = false;
                 if (state.frameSeq == 0) {
-                    state.startupPhase = "rendering first frame";
+                    state.startupPhase = "rendering first CUDA frame";
                 }
             }
 
             auto start = std::chrono::steady_clock::now();
             try {
                 renderFrame(camera, moving);
-                auto jpeg = encodeJpeg(pixels, state.width, state.height, quality);
+                auto jpeg = encodeJpeg(hostRgba, state.width, state.height, quality);
                 auto stop = std::chrono::steady_clock::now();
-                std::lock_guard<std::mutex> lock(state.mutex);
-                state.jpeg = std::move(jpeg);
-                state.frameSeq += 1;
-                state.frameMs = std::chrono::duration<double, std::milli>(stop - start).count();
-                state.startupPhase = "streaming";
-                state.rendererFatal = false;
-                state.lastError.clear();
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    state.jpeg = std::move(jpeg);
+                    state.frameSeq += 1;
+                    state.frameMs = std::chrono::duration<double, std::milli>(stop - start).count();
+                    state.startupPhase = "streaming CUDA renderer";
+                    state.rendererFatal = false;
+                    state.lastError.clear();
+                }
                 state.cv.notify_all();
             } catch (const std::exception& exc) {
-                std::lock_guard<std::mutex> lock(state.mutex);
-                state.startupPhase = "rendering error; retrying";
-                state.lastError = exc.what();
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    state.startupPhase = "CUDA rendering error; retrying";
+                    state.lastError = exc.what();
+                }
                 state.cv.notify_all();
             }
 
@@ -595,51 +755,37 @@ public:
 
 private:
     SharedState& state;
-    EglContext context;
-    GLuint program = 0;
-    GLuint texture = 0;
-    std::vector<unsigned char> pixels;
-
-    void uniform3(const char* name, const glm::vec3& v) {
-        GLint location = glGetUniformLocation(program, name);
-        if (location >= 0) glUniform3f(location, v.x, v.y, v.z);
-    }
+    uchar4* devicePixels = nullptr;
+    std::vector<unsigned char> hostRgba;
 
     void renderFrame(const Camera& camera, bool moving) {
-        glUseProgram(program);
-        glBindImageTexture(0, texture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        CameraParams params{};
+        params.width = state.width;
+        params.height = state.height;
+        params.moving = moving ? 1 : 0;
+        params.camPos = camera.position();
+        params.camRight = camera.right();
+        params.camUp = camera.up();
+        params.camForward = camera.forward();
+        params.tanHalfFov = std::tan((camera.fovDegrees * kPi / 180.0f) * 0.5f);
+        params.aspect = static_cast<float>(state.width) / static_cast<float>(std::max(1, state.height));
+        params.diskInner = static_cast<float>(kSagittariusARs * 2.2);
+        params.diskOuter = static_cast<float>(kSagittariusARs * 5.2);
+        params.diskThickness = static_cast<float>(kSagittariusARs * 0.025);
+        params.idleSteps = state.idleSteps;
+        params.movingSteps = state.movingSteps;
+        params.idleStepLength = state.idleStepLength;
+        params.movingStepLength = state.movingStepLength;
 
-        glUniform1i(glGetUniformLocation(program, "uWidth"), state.width);
-        glUniform1i(glGetUniformLocation(program, "uHeight"), state.height);
-        glUniform1i(glGetUniformLocation(program, "uMoving"), moving ? 1 : 0);
-        glUniform1f(glGetUniformLocation(program, "uTanHalfFov"), std::tan(glm::radians(camera.fovDegrees) * 0.5f));
-        glUniform1f(glGetUniformLocation(program, "uAspect"), float(state.width) / float(std::max(1, state.height)));
-        glUniform1f(glGetUniformLocation(program, "uDiskInner"), float(kSagittariusARs * 2.4));
-        glUniform1f(glGetUniformLocation(program, "uDiskOuter"), float(kSagittariusARs * 7.2));
-        glUniform1f(glGetUniformLocation(program, "uDiskThickness"), float(kSagittariusARs * 0.015));
-        glUniform1i(glGetUniformLocation(program, "uIdleSteps"), state.idleSteps);
-        glUniform1i(glGetUniformLocation(program, "uMovingSteps"), state.movingSteps);
-        glUniform1f(glGetUniformLocation(program, "uIdleStepLength"), state.idleStepLength);
-        glUniform1f(glGetUniformLocation(program, "uMovingStepLength"), state.movingStepLength);
-
-        uniform3("uCamPos", camera.position());
-        uniform3("uCamRight", camera.right());
-        uniform3("uCamUp", camera.up());
-        uniform3("uCamForward", camera.forward());
-
-        GLuint groupsX = static_cast<GLuint>((state.width + 15) / 16);
-        GLuint groupsY = static_cast<GLuint>((state.height + 15) / 16);
-        glDispatchCompute(groupsX, groupsY, 1);
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
-
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-        GLenum err = glGetError();
-        if (err != GL_NO_ERROR) {
-            std::ostringstream ss;
-            ss << "OpenGL render/readback error 0x" << std::hex << err;
-            throw std::runtime_error(ss.str());
-        }
+        dim3 block(16, 16);
+        dim3 grid(
+            static_cast<unsigned int>((state.width + block.x - 1) / block.x),
+            static_cast<unsigned int>((state.height + block.y - 1) / block.y)
+        );
+        renderKernel<<<grid, block>>>(devicePixels, params);
+        cudaCheck(cudaGetLastError(), "renderKernel launch");
+        cudaCheck(cudaDeviceSynchronize(), "renderKernel synchronize");
+        cudaCheck(cudaMemcpy(hostRgba.data(), devicePixels, hostRgba.size(), cudaMemcpyDeviceToHost), "cudaMemcpy framebuffer");
     }
 };
 
@@ -664,6 +810,7 @@ std::string healthJson(SharedState& state) {
         << "\"ok\":true,"
         << "\"renderer\":\"main-computer-astrometric-renderer\","
         << "\"renderer_mode\":\"" << jsonEscape(state.rendererMode) << "\","
+        << "\"renderer_backend\":\"" << jsonEscape(state.rendererBackend) << "\","
         << "\"http_ready\":" << (state.httpReady ? "true" : "false") << ","
         << "\"renderer_thread_started\":" << (state.rendererThreadStarted ? "true" : "false") << ","
         << "\"renderer_thread_done\":" << (state.rendererThreadDone ? "true" : "false") << ","
@@ -680,11 +827,15 @@ std::string healthJson(SharedState& state) {
         << "\"idle_step_length\":" << state.idleStepLength << ","
         << "\"moving_step_length\":" << state.movingStepLength << ","
         << "\"gl_ready\":" << (state.glReady ? "true" : "false") << ","
+        << "\"cuda_ready\":" << (state.cudaReady ? "true" : "false") << ","
         << "\"stream_ready\":" << (!state.jpeg.empty() ? "true" : "false") << ","
         << "\"egl_display\":\"" << jsonEscape(state.eglDisplay) << "\","
         << "\"gl_vendor\":\"" << jsonEscape(state.glVendor) << "\","
         << "\"gl_renderer\":\"" << jsonEscape(state.glRenderer) << "\","
         << "\"gl_version\":\"" << jsonEscape(state.glVersion) << "\","
+        << "\"cuda_device\":\"" << jsonEscape(state.cudaDevice) << "\","
+        << "\"cuda_device_ordinal\":" << state.cudaDeviceOrdinal << ","
+        << "\"cuda_runtime_version\":" << state.cudaRuntimeVersion << ","
         << "\"last_error\":\"" << jsonEscape(state.lastError) << "\","
         << "\"camera\":" << cameraJson(state.camera)
         << "}";
@@ -930,20 +1081,21 @@ void runServer(SharedState& state, const std::string& bindHost, int port) {
     close(serverFd);
 }
 
-void runRendererThread(SharedState& state) {
+void runCudaRendererThread(SharedState& state) {
     {
         std::lock_guard<std::mutex> lock(state.mutex);
         state.rendererThreadStarted = true;
         state.rendererThreadDone = false;
         state.rendererFatal = false;
         state.glReady = false;
-        state.startupPhase = "initializing EGL/OpenGL";
+        state.cudaReady = false;
+        state.startupPhase = "initializing CUDA renderer";
         state.lastError.clear();
     }
     state.cv.notify_all();
 
     try {
-        Renderer renderer(state);
+        CudaRenderer renderer(state);
         {
             std::lock_guard<std::mutex> lock(state.mutex);
             state.dirty = true;
@@ -951,8 +1103,6 @@ void runRendererThread(SharedState& state) {
         }
         state.cv.notify_all();
 
-        // EGL/OpenGL contexts are thread-local. Construct Renderer and keep every
-        // GL command on this single thread; the HTTP server owns only control I/O.
         renderer.renderLoop();
 
         {
@@ -969,11 +1119,12 @@ void runRendererThread(SharedState& state) {
             state.rendererThreadDone = true;
             state.rendererFatal = true;
             state.glReady = false;
+            state.cudaReady = false;
             state.startupPhase = "renderer failed";
             state.lastError = exc.what();
         }
         state.cv.notify_all();
-        std::cerr << "Astrometric renderer fatal error: " << exc.what() << std::endl;
+        std::cerr << "Astrometric CUDA renderer fatal error: " << exc.what() << std::endl;
     }
 }
 
@@ -984,11 +1135,13 @@ void runSmokeRendererThread(SharedState& state) {
         state.rendererThreadDone = false;
         state.rendererFatal = false;
         state.glReady = false;
+        state.cudaReady = false;
         state.eglDisplay = "diagnostic smoke mode";
         state.glVendor = "no GPU";
         state.glRenderer = "CPU diagnostic JPEG generator";
         state.glVersion = "smoke";
-        state.startupPhase = "diagnostic smoke stream starting; EGL/OpenGL bypassed";
+        state.cudaDevice = "";
+        state.startupPhase = "diagnostic smoke stream starting; CUDA bypassed";
         state.lastError.clear();
     }
     state.cv.notify_all();
@@ -1044,22 +1197,30 @@ int main() {
     state.height = envInt("ASTROMETRIC_RENDERER_HEIGHT", 360, 120, 1080);
     state.fps = envInt("ASTROMETRIC_RENDERER_FPS", 10, 1, 60);
     state.jpegQuality = envInt("ASTROMETRIC_RENDERER_JPEG_QUALITY", 86, 35, 95);
-    state.idleSteps = envInt("ASTROMETRIC_RENDERER_IDLE_STEPS", 520, 80, 6000);
-    state.movingSteps = envInt("ASTROMETRIC_RENDERER_MOVING_STEPS", 220, 40, 3000);
-    state.idleStepLength = envFloat("ASTROMETRIC_RENDERER_IDLE_STEP_LENGTH", 3.4e7f, 1.0e6f, 5.0e8f);
-    state.movingStepLength = envFloat("ASTROMETRIC_RENDERER_MOVING_STEP_LENGTH", 5.4e7f, 1.0e6f, 8.0e8f);
+    state.idleSteps = envInt("ASTROMETRIC_RENDERER_IDLE_STEPS", 1900, 80, 6000);
+    state.movingSteps = envInt("ASTROMETRIC_RENDERER_MOVING_STEPS", 800, 40, 3000);
+    state.idleStepLength = envFloat("ASTROMETRIC_RENDERER_IDLE_STEP_LENGTH", 1.5e8f, 1.0e6f, 5.0e8f);
+    state.movingStepLength = envFloat("ASTROMETRIC_RENDERER_MOVING_STEP_LENGTH", 1.8e8f, 1.0e6f, 8.0e8f);
     state.rendererMode = envString("ASTROMETRIC_RENDERER_MODE", "gpu");
+    state.rendererBackend = envString("ASTROMETRIC_RENDERER_BACKEND", "cuda");
     std::transform(state.rendererMode.begin(), state.rendererMode.end(), state.rendererMode.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    std::transform(state.rendererBackend.begin(), state.rendererBackend.end(), state.rendererBackend.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
     if (state.rendererMode != "gpu" && state.rendererMode != "smoke") {
         state.rendererMode = "gpu";
+    }
+    if (state.rendererBackend != "cuda") {
+        state.rendererBackend = "cuda";
     }
 
     std::string bindHost = envString("ASTROMETRIC_RENDERER_BIND", "0.0.0.0");
     int port = envInt("ASTROMETRIC_RENDERER_PORT", 8794, 1024, 65535);
 
     std::cerr << "Astrometric renderer starting mode=" << state.rendererMode
+              << " backend=" << state.rendererBackend
               << " bind=" << bindHost << ":" << port
               << " size=" << state.width << "x" << state.height
               << " fps=" << state.fps << std::endl;
@@ -1084,7 +1245,7 @@ int main() {
             std::thread rendererThread(runSmokeRendererThread, std::ref(state));
             rendererThread.detach();
         } else {
-            std::thread rendererThread(runRendererThread, std::ref(state));
+            std::thread rendererThread(runCudaRendererThread, std::ref(state));
             rendererThread.detach();
         }
 

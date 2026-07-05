@@ -50,6 +50,75 @@
       const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
       const LIVE_WORKSPACE_PERSISTENCE_KEY = "main-computer-code-studio-live-workspace-v1";
       const MCEL_RUNTIME_PACKAGE_VERSION = "mcel-runtime.v0.1.15";
+      const SCM_RECEIPT_VECTOR_VERSION = "1.0.0";
+      const SCM_LAB_RECEIPT_KIND = "mcel-lab-medium-scm-proven-dev-network-app-receipt";
+      const SCM_LAB_RECEIPT_PROOF_KIND = "mcel-code-studio-normalized-lab-receipt-vector";
+      const SCM_LAB_RECEIPT_EFFECT_SURFACE = {
+        "wallet.connect": {
+          label: "wallet.connect",
+          category: "wallet-action",
+          declaredReads: ["source.devRelease.devNetwork", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletAdapter"],
+          declaredWrites: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletAdapter", "runtime.externalOutcome", "runtime.evidenceStrip"],
+          passNextAction: "draft tx",
+          blockedNextAction: "retry connect",
+          exceptionNextAction: "inspect exception"
+        },
+        "wallet.provider.accountsChanged": {
+          label: "wallet.provider.accountsChanged",
+          category: "provider-event",
+          declaredReads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
+          declaredWrites: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+          passNextAction: "inspect account update",
+          blockedNextAction: "retry connect",
+          exceptionNextAction: "inspect provider exception"
+        },
+        "wallet.provider.chainChanged": {
+          label: "wallet.provider.chainChanged",
+          category: "provider-event",
+          declaredReads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
+          declaredWrites: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+          passNextAction: "inspect chain gate",
+          blockedNextAction: "switch network",
+          exceptionNextAction: "inspect provider exception"
+        },
+        "wallet.provider.disconnect": {
+          label: "wallet.provider.disconnect",
+          category: "provider-event",
+          declaredReads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
+          declaredWrites: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+          passNextAction: "retry connect",
+          blockedNextAction: "retry connect",
+          exceptionNextAction: "inspect provider exception"
+        },
+        "wallet.provider.error": {
+          label: "wallet.provider.error",
+          category: "provider-event",
+          declaredReads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
+          declaredWrites: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+          passNextAction: "inspect exception",
+          blockedNextAction: "inspect exception",
+          exceptionNextAction: "inspect exception"
+        },
+        "release.draftTx": {
+          label: "release.draftTx",
+          category: "tx-draft",
+          declaredReads: ["source.devRelease.contractAddress", "source.devRelease.requests", "state.selectedRequestId", "runtime.wallet", "runtime.network", "runtime.externalOutcome"],
+          declaredWrites: ["runtime.txDraft", "runtime.evidenceStrip"],
+          passNextAction: "inspect tx draft",
+          blockedNextAction: "retry connect",
+          exceptionNextAction: "inspect exception"
+        },
+        "ai.repairWalletHint": {
+          label: "ai.repairWalletHint",
+          category: "repair-packet",
+          declaredReads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome", "runtime.proofChip"],
+          declaredWrites: ["runtime.proofChip", "runtime.repairPacket", "runtime.assistantRepairPrompt", "runtime.evidenceStrip"],
+          forbiddenWrites: ["source.devRelease", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"],
+          passNextAction: "inspect bounded repair packet",
+          blockedNextAction: "inspect bounded repair packet",
+          exceptionNextAction: "inspect bounded repair packet"
+        }
+      };
 
       if (!sourceEditor || !runtimePreview) return;
 
@@ -75,6 +144,7 @@
         lastScmContractAuthoringHelper: null,
         lastScmContractAuthoringHelperText: "",
         lastScmContractAuthoringExport: null,
+        lastScmReceiptVector: null,
         persistenceHydrated: false,
         lastSerializationGate: null,
         lastRepairGate: null,
@@ -1024,6 +1094,335 @@
         };
       }
 
+      function parseScmReceiptJsonCandidate(value) {
+        if (typeof value !== "string") return value || null;
+        const text = value.trim();
+        if (!text) return null;
+        try {
+          return JSON.parse(text);
+        } catch (_error) {
+          const firstBrace = text.indexOf("{");
+          const lastBrace = text.lastIndexOf("}");
+          if (firstBrace >= 0 && lastBrace > firstBrace) {
+            try {
+              return JSON.parse(text.slice(firstBrace, lastBrace + 1));
+            } catch (_nestedError) {
+              return null;
+            }
+          }
+          return null;
+        }
+      }
+
+      function uniqueScmReceiptList(...values) {
+        const seen = new Set();
+        const items = [];
+        values.forEach((value) => {
+          normalizeScmSurfaceList(value).forEach((item) => {
+            if (!seen.has(item)) {
+              seen.add(item);
+              items.push(item);
+            }
+          });
+        });
+        return items;
+      }
+
+      function normalizeReceiptOutcome(value, fallback = "waiting") {
+        const text = String(value || fallback || "waiting").trim().toLowerCase();
+        if (["pass", "blocked", "exception", "fail", "waiting"].includes(text)) return text;
+        if (text === "ok" || text === "success") return "pass";
+        if (text === "rejected" || text === "denied" || text === "cancelled" || text === "canceled") return "blocked";
+        return fallback;
+      }
+
+      function normalizeReceiptExternalOutcome(value = {}) {
+        const outcome = value && typeof value === "object" ? value : {};
+        const status = normalizeReceiptOutcome(outcome.status || outcome.actionOutcome || outcome.outcome, "waiting");
+        return jsonSafeClone({
+          kind: outcome.kind || (status === "waiting" ? "" : "mcel-external-outcome"),
+          status,
+          reason: outcome.reason || outcome.code || "",
+          message: outcome.message || "",
+          provider: outcome.provider || outcome.providerKind || "",
+          method: outcome.method || outcome.rpcMethod || "",
+          account: outcome.account || outcome.selectedAddress || "",
+          chainId: outcome.chainId || "",
+          nextAction: outcome.nextAction || "",
+          sequence: outcome.sequence ?? null,
+          raw: outcome
+        });
+      }
+
+      function inferLabReceiptEffect(proof = {}, componentEvidence = [], selectedEvidence = null) {
+        const selectedName = selectedEvidence?.effectName || selectedEvidence?.transitionName || proof.selectedEffect || "";
+        if (selectedName) return selectedName;
+        const effectEntries = [...(componentEvidence || [])]
+          .reverse()
+          .filter((entry) => entry?.effectName || entry?.transitionName);
+        const latestEffect = effectEntries[0]?.effectName || effectEntries[0]?.transitionName || "";
+        if (latestEffect) return latestEffect;
+        if ((proof.repairPacketCount || 0) > 0 || proof.checks?.repairPacketGenerated) return "ai.repairWalletHint";
+        if ((proof.txDraftCount || 0) > 0 || proof.checks?.txDraftRuntimeOnly) return "release.draftTx";
+        if ((proof.providerAccountsChangedCount || 0) > 0) return "wallet.provider.accountsChanged";
+        if ((proof.providerChainChangedCount || 0) > 0) return "wallet.provider.chainChanged";
+        if ((proof.providerDisconnectCount || 0) > 0) return "wallet.provider.disconnect";
+        if ((proof.providerErrorCount || 0) > 0) return "wallet.provider.error";
+        if ((proof.walletConnectCount || 0) > 0 || proof.externalOutcome?.kind === "mcel-external-outcome") return "wallet.connect";
+        return "";
+      }
+
+      function labReceiptEffectDeclaration(effectName = "", componentEvidence = [], selectedEvidence = null) {
+        const catalog = SCM_LAB_RECEIPT_EFFECT_SURFACE[effectName] || null;
+        const evidence = selectedEvidence?.effectName === effectName
+          ? selectedEvidence
+          : [...(componentEvidence || [])].reverse().find((entry) => entry?.effectName === effectName) || null;
+        return {
+          label: effectName || catalog?.label || "",
+          category: catalog?.category || evidenceEntryScope(evidence || {}, "effect"),
+          declaredReads: uniqueScmReceiptList(evidence?.reads, evidence?.declaredReads, catalog?.declaredReads),
+          declaredWrites: uniqueScmReceiptList(evidence?.writes, evidence?.declaredWrites, catalog?.declaredWrites),
+          forbiddenWrites: uniqueScmReceiptList(evidence?.forbiddenWrites, catalog?.forbiddenWrites),
+          passNextAction: catalog?.passNextAction || "",
+          blockedNextAction: catalog?.blockedNextAction || "",
+          exceptionNextAction: catalog?.exceptionNextAction || ""
+        };
+      }
+
+      function inferLabReceiptNextAction(effectName, actionOutcome, externalOutcome = {}, declaration = {}) {
+        if (externalOutcome.nextAction) return externalOutcome.nextAction;
+        if (actionOutcome === "exception") return declaration.exceptionNextAction || "inspect exception";
+        if (actionOutcome === "blocked") return declaration.blockedNextAction || "retry blocked action";
+        if (effectName === "wallet.connect") return declaration.passNextAction || "draft tx";
+        if (effectName === "release.draftTx") return declaration.passNextAction || "inspect tx draft";
+        if (effectName === "ai.repairWalletHint") return declaration.passNextAction || "inspect bounded repair packet";
+        return declaration.passNextAction || "inspect receipt";
+      }
+
+      function normalizeLabReceiptRuntimeConsequences(effectName, proof = {}, actionOutcome = "waiting") {
+        const consequences = [];
+        const checks = proof.checks || {};
+        if (effectName === "wallet.connect") {
+          consequences.push("runtime.wallet updated");
+          consequences.push("runtime.network updated");
+          consequences.push(actionOutcome === "pass" ? "runtime.txDraft preserved until draft effect" : "runtime.txDraft cleared");
+        } else if (effectName === "wallet.provider.accountsChanged") {
+          consequences.push((proof.providerAccountDisconnectCount || 0) > 0 ? "disconnected wallet" : "committed account update");
+          consequences.push("runtime.walletEvents updated");
+          consequences.push("runtime.txDraft cleared");
+        } else if (effectName === "wallet.provider.chainChanged") {
+          consequences.push("runtime.network updated");
+          consequences.push("runtime.walletEvents updated");
+          consequences.push("runtime.txDraft cleared");
+        } else if (effectName === "release.draftTx") {
+          consequences.push(checks.txDraftRuntimeOnly ? "runtime.txDraft updated" : "runtime.txDraft not proven");
+          consequences.push("source unchanged");
+          consequences.push("no transaction send attempted");
+        } else if (effectName === "ai.repairWalletHint") {
+          consequences.push("runtime.repairPacket updated");
+          consequences.push("runtime.assistantRepairPrompt updated");
+          consequences.push("source unchanged");
+          consequences.push("live AI call false");
+        }
+        if (checks.sourceSafeAfterExternalOutcome) consequences.push("source unchanged after external outcome");
+        return [...new Set(consequences)];
+      }
+
+      function normalizeLabReceiptTxDraftBoundary(proof = {}, repairPacket = {}) {
+        const evidence = repairPacket?.evidence || {};
+        const boundary = proof.txDraftBoundary || evidence.txDraftBoundary || proof.runtimeTxDraft?.boundary || "";
+        const nonce = proof.txDraftBoundary?.nonce || proof.runtimeTxDraft?.nonce || {};
+        const gasEstimate = proof.txDraftBoundary?.gasEstimate || proof.runtimeTxDraft?.gasEstimate || {};
+        const ethCall = proof.txDraftBoundary?.ethCall || proof.runtimeTxDraft?.ethCall || {};
+        const noSend = proof.runtimeTxDraft?.noSend === true || boundary === "runtime-only-no-send" || proof.checks?.txDraftRuntimeOnly === true;
+        return jsonSafeClone({
+          status: proof.runtimeTxDraft?.status || (proof.checks?.txDraftRuntimeOnly ? "observed" : "not-observed"),
+          boundary: boundary || (noSend ? "runtime-only-no-send" : ""),
+          noSend,
+          probeStatus: {
+            nonce: nonce.status || proof.nonceStatus || "",
+            gasEstimate: gasEstimate.status || proof.gasStatus || "",
+            ethCall: ethCall.status || proof.ethCallStatus || ""
+          },
+          raw: proof.txDraftBoundary || proof.runtimeTxDraft || evidence || null
+        });
+      }
+
+      function normalizeLabReceiptRepairPacket(proof = {}, declaration = {}) {
+        const packet = proof.repairPacket || {};
+        const generated = packet.kind === "mcel-repair-packet"
+          || packet.status === "ready"
+          || (proof.repairPacketCount || 0) > 0
+          || proof.checks?.repairPacketGenerated === true;
+        const liveAiCall = packet.liveAiCall === false || proof.checks?.repairPacketNoLiveAiCall === true
+          ? false
+          : (packet.liveAiCall === true ? true : null);
+        return jsonSafeClone({
+          status: generated ? "generated" : "not required",
+          generated,
+          liveAiCall,
+          allowedWrites: uniqueScmReceiptList(declaration.declaredWrites, packet.allowedWrites),
+          forbiddenWrites: uniqueScmReceiptList(packet.forbiddenWrites, declaration.forbiddenWrites),
+          boundaryBlocked: proof.checks?.repairBoundaryBlocked === true || (proof.repairBoundaryBlockedCount || 0) > 0,
+          packet
+        });
+      }
+
+      function normalizeLabReceiptLayoutObservation(proof = {}) {
+        const observation = proof.layoutObservation || {};
+        return jsonSafeClone({
+          kind: observation.kind || "",
+          source: observation.source || "",
+          measured: observation.measured === true,
+          regions: observation.regions || {},
+          metrics: observation.metrics || {},
+          documentHeightRatio: observation.documentHeightRatio ?? null,
+          violations: proof.layoutViolations || [],
+          styleViolations: proof.styleViolations || []
+        });
+      }
+
+      function findMcelLabReceiptPayload() {
+        const node = document.querySelector("#mcel-tiny-contract-evidence");
+        if (!node) return null;
+        return parseScmReceiptJsonCandidate(node.textContent || "");
+      }
+
+      function normalizeMcelLabReceiptVector(input, options = {}) {
+        const envelope = parseScmReceiptJsonCandidate(input);
+        if (!envelope || typeof envelope !== "object") return null;
+        const proof = envelope.proof && typeof envelope.proof === "object" ? envelope.proof : envelope;
+        const looksLikeLabReceipt = envelope.kind === SCM_LAB_RECEIPT_KIND
+          || proof.component === "DevNetworkReleaseConsole"
+          || proof.externalOutcome?.kind === "mcel-external-outcome"
+          || Boolean(proof.actionOutcome || proof.governanceOutcome || proof.safetyOutcome || proof.proofCompleteness);
+        if (!looksLikeLabReceipt) return null;
+
+        const componentEvidence = Array.isArray(envelope.componentEvidence) ? envelope.componentEvidence : [];
+        const selectedEvidence = options.selectedEvidence || null;
+        const selectedEffect = inferLabReceiptEffect(proof, componentEvidence, selectedEvidence);
+        const declaration = labReceiptEffectDeclaration(selectedEffect, componentEvidence, selectedEvidence);
+        const externalOutcome = normalizeReceiptExternalOutcome(proof.externalOutcome || envelope.externalOutcome || {});
+        const actionOutcome = normalizeReceiptOutcome(proof.actionOutcome || externalOutcome.status || proof.status, "waiting");
+        const governanceOutcome = normalizeReceiptOutcome(proof.governanceOutcome, "waiting");
+        const safetyOutcome = normalizeReceiptOutcome(proof.safetyOutcome, "waiting");
+        const repairPacket = normalizeLabReceiptRepairPacket(proof, declaration);
+        const txDraftBoundary = normalizeLabReceiptTxDraftBoundary(proof, repairPacket.packet);
+        const nextAction = proof.nextAction || inferLabReceiptNextAction(selectedEffect, actionOutcome, externalOutcome, declaration);
+
+        return jsonSafeClone({
+          kind: SCM_LAB_RECEIPT_PROOF_KIND,
+          vectorVersion: SCM_RECEIPT_VECTOR_VERSION,
+          sourceKind: envelope.kind || "mcel-lab-receipt-proof",
+          ingestedAt: new Date().toISOString(),
+          status: proof.status || actionOutcome,
+          mode: proof.mode || "",
+          selectedEffect,
+          selectedEffectCategory: declaration.category,
+          actionOutcome,
+          externalOutcome,
+          governanceOutcome,
+          safetyOutcome,
+          proofCompleteness: proof.proofCompleteness || "waiting",
+          declaredReads: uniqueScmReceiptList(proof.declaredReads, declaration.declaredReads),
+          declaredWrites: uniqueScmReceiptList(proof.declaredWrites, declaration.declaredWrites),
+          runtimeConsequences: normalizeLabReceiptRuntimeConsequences(selectedEffect, proof, actionOutcome),
+          nextAction,
+          repairPacket,
+          txDraftBoundary,
+          layoutObservation: normalizeLabReceiptLayoutObservation(proof),
+          checks: proof.checks || {},
+          rawReceipt: envelope
+        });
+      }
+
+      function normalizeScmReceiptVector(input, options = {}) {
+        const direct = parseScmReceiptJsonCandidate(input);
+        if (direct?.kind === SCM_LAB_RECEIPT_PROOF_KIND) return jsonSafeClone(direct);
+        const labVector = normalizeMcelLabReceiptVector(direct, options);
+        if (labVector) return labVector;
+        if (direct?.receiptVector) return normalizeScmReceiptVector(direct.receiptVector, options);
+        if (direct?.proof) return normalizeScmReceiptVector(direct.proof, options);
+        return jsonSafeClone({
+          kind: SCM_LAB_RECEIPT_PROOF_KIND,
+          vectorVersion: SCM_RECEIPT_VECTOR_VERSION,
+          sourceKind: "not-ingested",
+          ingestedAt: "",
+          status: "waiting",
+          mode: "waiting",
+          selectedEffect: "",
+          selectedEffectCategory: "",
+          actionOutcome: "waiting",
+          externalOutcome: normalizeReceiptExternalOutcome({}),
+          governanceOutcome: "waiting",
+          safetyOutcome: "waiting",
+          proofCompleteness: "waiting",
+          declaredReads: [],
+          declaredWrites: [],
+          runtimeConsequences: [],
+          nextAction: "",
+          repairPacket: {
+            status: "not required",
+            generated: false,
+            liveAiCall: null,
+            allowedWrites: [],
+            forbiddenWrites: [],
+            boundaryBlocked: false,
+            packet: {}
+          },
+          txDraftBoundary: {
+            status: "not-observed",
+            boundary: "",
+            noSend: false,
+            probeStatus: {nonce: "", gasEstimate: "", ethCall: ""},
+            raw: null
+          },
+          layoutObservation: {
+            kind: "",
+            source: "",
+            measured: false,
+            regions: {},
+            metrics: {},
+            documentHeightRatio: null,
+            violations: [],
+            styleViolations: []
+          },
+          checks: {},
+          rawReceipt: null
+        });
+      }
+
+      function ingestScmReceiptVector(input, options = {}) {
+        const vector = normalizeScmReceiptVector(input, options);
+        studioState.lastScmReceiptVector = vector.sourceKind === "not-ingested" ? null : vector;
+        return vector;
+      }
+
+      function collectScmReceiptVector(report = studioState.lastReport, summary = null, selectedEvidence = null) {
+        const evidenceSummary = summary || collectScmEvidenceSummary(report);
+        const candidates = [
+          report?.receiptVector,
+          report?.labReceipt,
+          report?.mcelLabReceipt,
+          selectedEvidence?.receiptVector,
+          selectedEvidence?.proof,
+          selectedEvidence?.rawReceipt,
+          evidenceSummary?.componentPacket?.receiptVector,
+          evidenceSummary?.componentPacket?.labReceipt,
+          evidenceSummary?.routePacket?.receiptVector,
+          studioState.lastScmReceiptVector,
+          findMcelLabReceiptPayload()
+        ];
+        for (const candidate of candidates) {
+          const vector = normalizeScmReceiptVector(candidate, {selectedEvidence});
+          if (vector.sourceKind !== "not-ingested") {
+            studioState.lastScmReceiptVector = vector;
+            return vector;
+          }
+        }
+        return normalizeScmReceiptVector(null, {selectedEvidence});
+      }
+
       function idleScmEvidenceEntry(filter = "all") {
         return {
           kind: "mcel-scm-evidence",
@@ -1612,6 +2011,7 @@
           dirtyState: collectDirtyStateSummary(fields),
           persistence: collectLiveWorkspacePersistenceSummary(),
           contractAuthoring: studioState.lastScmContractAuthoringExport,
+          receiptVector: collectScmReceiptVector(report, summary, selectedEntry),
           gates: collectGateStatus(gates),
           evidence: {
             component: summary.componentPacket,
@@ -2155,30 +2555,47 @@
       function buildScmReceiptSurfaceModel(summary, gates, fields, selectedEvidence, persistence, replayComparison, contractAuthoring) {
         const effectGraph = buildEffectGraphModel(summary, gates, fields, selectedEvidence);
         const selectedEffect = effectGraph.selected || {};
-        const receiptMode = studioState.lastReport ? "authoring-refresh" : "waiting";
-        const receiptOk = receiptMode !== "waiting" && gates.ok !== false && summary.combined.violations === 0;
+        const receiptVector = collectScmReceiptVector(studioState.lastReport, summary, selectedEvidence);
+        const vectorEffect = receiptVector?.selectedEffect || "";
+        const receiptVectorIngested = receiptVector?.sourceKind !== "not-ingested";
+        const receiptMode = receiptVector?.mode && receiptVectorIngested
+          ? receiptVector.mode
+          : (studioState.lastReport ? "authoring-refresh" : "waiting");
+        const receiptOk = receiptVectorIngested
+          ? ["pass", "blocked", "exception"].includes(receiptVector.status) && receiptVector.governanceOutcome !== "fail" && receiptVector.safetyOutcome !== "fail" && receiptVector.proofCompleteness !== "incomplete"
+          : receiptMode !== "waiting" && gates.ok !== false && summary.combined.violations === 0;
+        const receiptLabel = receiptVectorIngested
+          ? receiptVector.status
+          : (receiptMode === "waiting" ? "not run" : receiptOk ? "pass" : `gap · ${summary.combined.violations} violation(s)`);
         const gaps = buildActionableScmGaps(summary, gates, effectGraph, selectedEvidence);
         const activePane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "source";
         const selected = selectedFile(fields);
         return {
           receiptMode,
           receiptOk,
+          receiptVector,
           effectGraph: effectGraph.effects,
           actionableGaps: gaps,
           receiptRows: [
             ["Mode", receiptMode],
-            ["Receipt", receiptMode === "waiting" ? "not run" : receiptOk ? "pass" : `gap · ${summary.combined.violations} violation(s)`],
-            ["Selected effect", selectedEffect.name || "none"],
-            ["Provider / external", "shown when contract evidence records adapter or RPC calls"],
+            ["Receipt", receiptLabel],
+            ["Selected effect", vectorEffect || selectedEffect.name || "none"],
+            ["Action outcome", receiptVector?.actionOutcome || "waiting"],
+            ["External outcome", receiptVector?.externalOutcome?.status && receiptVector.externalOutcome.status !== "waiting"
+              ? `${receiptVector.externalOutcome.status}${receiptVector.externalOutcome.reason ? ` · ${receiptVector.externalOutcome.reason}` : ""}`
+              : "not ingested"],
+            ["Governance / Safety", `${receiptVector?.governanceOutcome || "waiting"} / ${receiptVector?.safetyOutcome || "waiting"}`],
+            ["Proof completeness", receiptVector?.proofCompleteness || "waiting"],
+            ["Next action", receiptVector?.nextAction || "none"],
             ["Raw payloads", "Bottom Proof Dock only"]
           ],
           selectedEffectRows: [
-            ["Effect", selectedEffect.name || "none selected"],
-            ["Status", selectedEffect.status || "waiting"],
-            ["Trigger", selectedEffect.trigger || selectedEffect.kind || "not declared"],
-            ["Reads", formatScmSurfaceList(selectedEffect.reads)],
-            ["Writes", formatScmSurfaceList(selectedEffect.writes)],
-            ["Source", `${selectedEffect.sourcePath || "evidence"} · ${selectedEffect.sourceLabel || "no source element selected"}`]
+            ["Effect", vectorEffect || selectedEffect.name || "none selected"],
+            ["Status", receiptVector?.actionOutcome && receiptVector.actionOutcome !== "waiting" ? receiptVector.actionOutcome : (selectedEffect.status || "waiting")],
+            ["Trigger", selectedEffect.trigger || selectedEffect.kind || receiptVector?.selectedEffectCategory || "not declared"],
+            ["Reads", formatScmSurfaceList(receiptVector?.declaredReads?.length ? receiptVector.declaredReads : selectedEffect.reads)],
+            ["Writes", formatScmSurfaceList(receiptVector?.declaredWrites?.length ? receiptVector.declaredWrites : selectedEffect.writes)],
+            ["Source", `${selectedEffect.sourcePath || receiptVector?.sourceKind || "evidence"} · ${selectedEffect.sourceLabel || "receipt vector normalized"} `]
           ],
           currentRuntimeRows: [
             ["Active pane", activePane],
@@ -2960,6 +3377,9 @@
         exportScmEvidence,
         exportScmRouteEvidence,
         collectScmEvidenceSummary,
+        normalizeScmReceiptVector,
+        ingestScmReceiptVector,
+        collectScmReceiptVector,
         buildScmEvidenceDebugPacket,
         exportScmEvidenceDebugPacket,
         copyCurrentScmEvidenceDebugPacket,

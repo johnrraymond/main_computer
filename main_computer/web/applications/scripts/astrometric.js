@@ -5,13 +5,16 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       pointer: null,
       lastCameraSend: 0,
       pendingCameraPayload: null,
-      lastStatus: null
+      lastStatus: null,
+      busy: false
     });
 
     const ASTROMETRIC_STATUS_ENDPOINT = "/api/applications/astrometric/status";
     const ASTROMETRIC_ACTION_ENDPOINT = "/api/applications/astrometric/action";
+    const ASTROMETRIC_DIAGNOSTICS_ENDPOINT = "/api/applications/astrometric/diagnostics";
     const ASTROMETRIC_CAMERA_ENDPOINT = "/api/applications/astrometric/camera";
     const ASTROMETRIC_STREAM_ENDPOINT = "/api/applications/astrometric/stream.mjpg";
+    const ASTROMETRIC_BLANK_IMAGE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
     function astrometricSetStatus(message, mode = "idle") {
       if (astrometricStatusPill) {
@@ -40,6 +43,31 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       return astrometricRendererReachable(status) && Boolean(renderer.stream_ready || Number(renderer.frame_seq || 0) > 0);
     }
 
+    function astrometricDockerLifecycle(status) {
+      return status?.docker?.container || {};
+    }
+
+    function astrometricContainerRunning(status) {
+      const lifecycle = astrometricDockerLifecycle(status);
+      return Boolean(lifecycle.running || String(lifecycle.state || "").toLowerCase() === "running");
+    }
+
+    function astrometricApplyButtonState(status = astrometricState.lastStatus) {
+      const busy = Boolean(astrometricState.busy);
+      const running = astrometricContainerRunning(status);
+      const streamReady = astrometricRendererStreamReady(status);
+      const dockerAvailable = status?.docker?.available !== false;
+
+      if (astrometricStartButton) astrometricStartButton.disabled = busy || !dockerAvailable || running;
+      if (astrometricSmokeButton) astrometricSmokeButton.disabled = busy || !dockerAvailable || running;
+      if (astrometricRestartButton) astrometricRestartButton.disabled = busy || !dockerAvailable || !running;
+      if (astrometricStopButton) astrometricStopButton.disabled = busy || !dockerAvailable || !running;
+      if (astrometricResetCameraButton) astrometricResetCameraButton.disabled = busy || !streamReady;
+      if (astrometricQuality) astrometricQuality.disabled = busy || !streamReady;
+      if (astrometricRefreshButton) astrometricRefreshButton.disabled = busy;
+      if (astrometricDiagnoseButton) astrometricDiagnoseButton.disabled = busy;
+    }
+
     function astrometricFormatScientific(value) {
       const number = Number(value);
       return Number.isFinite(number) ? number.toExponential(3) : "n/a";
@@ -53,22 +81,30 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
 
       const renderer = status?.renderer || {};
       const docker = status?.docker || {};
+      const lifecycle = astrometricDockerLifecycle(status);
       const reachable = astrometricRendererReachable(status);
       const streamReady = astrometricRendererStreamReady(status);
       const frameSeq = Number(renderer.frame_seq || 0);
       const frameMs = Number(renderer.frame_ms || 0);
       const camera = renderer.camera || {};
+      const rendererMode = String(renderer.renderer_mode || "gpu");
 
       if (astrometricDockerState) {
+        const composeCommand = Array.isArray(docker.compose_command) ? docker.compose_command.join(" ") : "available";
+        const project = docker.compose_project ? ` · project ${docker.compose_project}` : "";
+        const state = lifecycle.state ? ` · ${lifecycle.running ? "running" : lifecycle.state}` : "";
         astrometricDockerState.textContent = docker.available
-          ? `compose ${Array.isArray(docker.compose_command) ? docker.compose_command.join(" ") : "available"}`
+          ? `compose ${composeCommand}${project}${state}`
           : `not available${docker.error ? `: ${docker.error}` : ""}`;
       }
       if (astrometricGpuState) {
         if (reachable) {
-          const gpuName = renderer.gl_vendor || renderer.gl_renderer
-            ? `${renderer.gl_vendor || "GL"} / ${renderer.gl_renderer || "renderer unknown"}`
-            : (renderer.egl_display || "GPU renderer");
+          const backend = renderer.renderer_backend || renderer.renderer_mode || "gpu";
+          const gpuName = renderer.cuda_device
+            ? `CUDA / ${renderer.cuda_device}`
+            : (renderer.gl_vendor || renderer.gl_renderer
+              ? `${renderer.gl_vendor || backend} / ${renderer.gl_renderer || "renderer unknown"}`
+              : (renderer.egl_display || "GPU renderer"));
           const phase = renderer.startup_phase || "waiting for first frame";
           astrometricGpuState.textContent = streamReady ? gpuName : `${gpuName} · ${phase}`;
         } else {
@@ -93,7 +129,7 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       }
 
       if (streamReady) {
-        astrometricSetStatus("GPU stream live", "live");
+        astrometricSetStatus(rendererMode === "smoke" ? "diagnostic smoke stream live" : "GPU stream live", "live");
         astrometricAttachStream();
       } else if (reachable) {
         const phase = renderer.startup_phase || "waiting for first frame";
@@ -101,9 +137,10 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
         astrometricSetStatus(`${phase}${lastError}`, renderer.last_error || renderer.renderer_fatal ? "error" : "working");
         astrometricDetachStream();
       } else {
-        astrometricSetStatus("renderer offline", "offline");
+        astrometricSetStatus("renderer stopped", "offline");
         astrometricDetachStream();
       }
+      astrometricApplyButtonState(status);
     }
 
     async function astrometricFetchStatus() {
@@ -127,9 +164,8 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
     }
 
     function astrometricSetBusy(isBusy) {
-      [astrometricStartButton, astrometricRestartButton, astrometricStopButton, astrometricResetCameraButton, astrometricRefreshButton].forEach((button) => {
-        if (button) button.disabled = Boolean(isBusy);
-      });
+      astrometricState.busy = Boolean(isBusy);
+      astrometricApplyButtonState(astrometricState.lastStatus);
     }
 
     async function astrometricRendererAction(action) {
@@ -137,6 +173,9 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       astrometricSetStatus(`${action} requested`, "working");
       try {
         const result = await astrometricPost(ASTROMETRIC_ACTION_ENDPOINT, {action});
+        if (action === "stop") {
+          astrometricDetachStream("renderer stopped");
+        }
         if (astrometricStatusJson) {
           astrometricStatusJson.textContent = astrometricPretty(result);
         }
@@ -154,6 +193,28 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       }
     }
 
+    async function astrometricFetchDiagnostics() {
+      astrometricSetBusy(true);
+      astrometricSetStatus("collecting Docker diagnostics", "working");
+      try {
+        const response = await fetch(ASTROMETRIC_DIAGNOSTICS_ENDPOINT, {cache: "no-store"});
+        const diagnostics = await response.json().catch(() => ({ok: false, error: "Invalid JSON response"}));
+        if (diagnostics.status) {
+          astrometricRenderStatus(diagnostics.status);
+        }
+        if (astrometricStatusJson) {
+          astrometricStatusJson.textContent = astrometricPretty(diagnostics);
+        }
+        astrometricSetStatus(diagnostics.ok === false ? (diagnostics.error || "diagnostics failed") : "diagnostics collected", diagnostics.ok === false ? "error" : "working");
+        return diagnostics;
+      } catch (error) {
+        astrometricSetStatus(error?.message || "diagnostics failed", "error");
+        return null;
+      } finally {
+        astrometricSetBusy(false);
+      }
+    }
+
     function astrometricAttachStream() {
       if (!astrometricStream || astrometricState.streamAttached) return;
       astrometricStream.src = `${ASTROMETRIC_STREAM_ENDPOINT}?t=${Date.now()}`;
@@ -161,12 +222,18 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       astrometricViewport?.classList.add("streaming");
     }
 
-    function astrometricDetachStream() {
+    function astrometricDetachStream(message = "renderer stopped") {
       if (astrometricStream) {
-        astrometricStream.removeAttribute("src");
+        // Assigning a tiny data URI actively tears down the browser's MJPEG
+        // request.  Merely removing src can leave the previous stream request
+        // alive long enough to look as if Stop did nothing.
+        astrometricStream.src = ASTROMETRIC_BLANK_IMAGE;
       }
       astrometricState.streamAttached = false;
       astrometricViewport?.classList.remove("streaming");
+      if (astrometricViewportMessage && message) {
+        astrometricViewportMessage.textContent = message;
+      }
     }
 
     function astrometricScheduleStatusPolling() {
@@ -259,23 +326,40 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       astrometricBindViewportControls();
       if (!astrometricState.initialized) {
         astrometricState.initialized = true;
-        astrometricStartButton?.addEventListener("click", () => astrometricRendererAction("start"));
+        astrometricStartButton?.addEventListener("click", () => {
+          astrometricDetachStream();
+          astrometricRendererAction("start-gpu");
+        });
+        astrometricSmokeButton?.addEventListener("click", () => {
+          astrometricDetachStream();
+          astrometricRendererAction("start-smoke");
+        });
         astrometricRestartButton?.addEventListener("click", () => {
           astrometricDetachStream();
           astrometricRendererAction("restart");
         });
         astrometricStopButton?.addEventListener("click", () => {
-          astrometricDetachStream();
+          astrometricDetachStream("stopping renderer");
           astrometricRendererAction("stop");
         });
         astrometricRefreshButton?.addEventListener("click", () => astrometricFetchStatus().catch((error) => astrometricSetStatus(error?.message || "status failed", "error")));
-        astrometricResetCameraButton?.addEventListener("click", () => astrometricQueueCamera({type: "reset"}));
-        astrometricQuality?.addEventListener("change", () => astrometricQueueCamera({type: "quality", jpeg_quality: Number(astrometricQuality.value || 86)}));
+        astrometricDiagnoseButton?.addEventListener("click", () => astrometricFetchDiagnostics());
+        astrometricResetCameraButton?.addEventListener("click", () => {
+          if (astrometricRendererStreamReady(astrometricState.lastStatus)) {
+            astrometricQueueCamera({type: "reset"});
+          }
+        });
+        astrometricQuality?.addEventListener("change", () => {
+          if (astrometricRendererStreamReady(astrometricState.lastStatus)) {
+            astrometricQueueCamera({type: "quality", jpeg_quality: Number(astrometricQuality.value || 86)});
+          }
+        });
         astrometricStream?.addEventListener("error", () => {
           astrometricState.streamAttached = false;
           astrometricViewport?.classList.remove("streaming");
         });
       }
+      astrometricApplyButtonState(astrometricState.lastStatus);
       astrometricScheduleStatusPolling();
       astrometricFetchStatus().catch((error) => {
         astrometricSetStatus(error?.message || "renderer status unavailable", "error");

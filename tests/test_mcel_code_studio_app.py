@@ -706,6 +706,55 @@ class McelCodeStudioAppTests(unittest.TestCase):
         self.assertLess(runtime, ai)
 
 
+    def test_code_studio_normalizes_lab_receipt_vector_before_rendering(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        expected_script = [
+            'const SCM_RECEIPT_VECTOR_VERSION = "1.0.0";',
+            'const SCM_LAB_RECEIPT_KIND = "mcel-lab-medium-scm-proven-dev-network-app-receipt";',
+            'const SCM_LAB_RECEIPT_PROOF_KIND = "mcel-code-studio-normalized-lab-receipt-vector";',
+            "SCM_LAB_RECEIPT_EFFECT_SURFACE",
+            '"wallet.connect": {',
+            '"wallet.provider.accountsChanged": {',
+            '"release.draftTx": {',
+            '"ai.repairWalletHint": {',
+            '"runtime-only-no-send"',
+            '"runtime.proofChip", "runtime.repairPacket", "runtime.assistantRepairPrompt", "runtime.evidenceStrip"',
+            '"source.devRelease", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"',
+            "function normalizeMcelLabReceiptVector",
+            "function normalizeScmReceiptVector",
+            "function ingestScmReceiptVector",
+            "function collectScmReceiptVector",
+            "function findMcelLabReceiptPayload",
+            'document.querySelector("#mcel-tiny-contract-evidence")',
+            "actionOutcome",
+            "externalOutcome",
+            "governanceOutcome",
+            "safetyOutcome",
+            "proofCompleteness",
+            "selectedEffect",
+            "declaredReads",
+            "declaredWrites",
+            "nextAction",
+            "repairPacket",
+            "txDraftBoundary",
+            "layoutObservation",
+            "receiptVector: collectScmReceiptVector(report, summary, selectedEntry)",
+            "const receiptVector = collectScmReceiptVector(studioState.lastReport, summary, selectedEvidence);",
+            "normalizeScmReceiptVector,",
+            "ingestScmReceiptVector,",
+            "collectScmReceiptVector,",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        normalizer = script.index("function normalizeMcelLabReceiptVector")
+        renderer = script.index("function buildScmReceiptSurfaceModel")
+        self.assertLess(normalizer, renderer)
+
+        self.assertNotIn("PASS: wallet lifecycle is tamed by SCM", script)
+
 
     def test_code_studio_flagship_workbench_regions_are_hard_split(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")

@@ -218,7 +218,7 @@ under `runtime/coolify-local-docker`, while the QBFT deployer publishes
 `runtime/deployments/test/latest.json`.
 
 ```powershell
-python .\tools\coolify_qbft_network.py apply test --all
+python .\tools\coolify_qbft_network.py apply test --deploy-contracts
 $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
 python -m main_computer.cli hub --network test
 ```

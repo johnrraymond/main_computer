@@ -70,6 +70,53 @@ networks:
     return state_path
 
 
+
+def write_one_node_private_state(tmp_path: Path) -> Path:
+    state_path = tmp_path / "main_computer.private.yaml"
+    state_path.write_text(
+        """
+coolify:
+  project_name: Main Computer
+  hosts:
+    A:
+      name: coolify-a
+      public_ip: 198.51.100.10
+      url: http://198.51.100.10:8000/
+      api_token: secret-a
+      server_uuid: server-a
+      destination_uuid: destination-a
+    B:
+      name: coolify-b
+      public_ip: 198.51.100.11
+      url: http://198.51.100.11:8000/
+      api_token: secret-b
+      server_uuid: server-b
+      destination_uuid: destination-b
+
+networks:
+  testnet:
+    display_name: Main Computer Testnet
+    kind: testnet
+    chain_id: 42424241
+    remote_coolify_hosts: [A, B]
+    rpc: https://testnet-rpc.greatlibrary.io
+    qbft:
+      instances:
+        validator-rpc-1:
+          coolify_host: A
+          roles: [rpc, validator]
+          rpc_host_port: 30010
+          p2p_host_port: 30321
+        validator-2:
+          coolify_host: B
+          roles: [validator]
+          p2p_host_port: 30312
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return state_path
+
+
 def test_private_state_qbft_instances_drive_testnet_plan(tmp_path: Path) -> None:
     module = _load_module()
     state_path = write_private_state(tmp_path)
@@ -183,7 +230,7 @@ services:
         assert host_id in clients
         return clients[str(host_id)], "token", f"fake:{host_id}"
 
-    def fake_json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 8.0) -> Any:
+    def fake_json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 8.0, user_agent: str = "") -> Any:
         assert url == "https://rpc.example:8545"
         if method == "eth_chainId":
             return hex(plan.chain_id)
@@ -241,7 +288,7 @@ def test_discover_topology_can_run_optional_hub_verification_as_separate_stage(t
         assert host_id in clients
         return clients[str(host_id)], "token", f"fake:{host_id}"
 
-    def fake_json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 8.0) -> Any:
+    def fake_json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 8.0, user_agent: str = "") -> Any:
         if method == "eth_chainId":
             return hex(plan.chain_id)
         if method == "eth_blockNumber":
@@ -272,3 +319,288 @@ def test_discover_topology_can_run_optional_hub_verification_as_separate_stage(t
     assert result["hub_verification"]["result"]["hub_args"]["argv"][0:2] == ["verify", "testnet"]
     assert "--verify-chain-rpc-url" in result["hub_verification"]["result"]["hub_args"]["argv"]
     assert any(stage["phase"] == "verify-hub" for stage in result["stages"])
+
+
+def test_instances_selection_infers_single_coolify_host_from_private_state(tmp_path: Path) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+
+    args = module.parse_args(
+        [
+            "plan",
+            "testnet",
+            "--private-state",
+            str(state_path),
+            "--instances",
+            "validator-rpc-1",
+        ]
+    )
+    plan = module.build_plan_from_args(args)
+
+    assert [host.id for host in plan.hosts] == ["a"]
+    assert [service.id for service in plan.services] == ["validator-rpc-1"]
+    service = plan.services[0]
+    assert service.host == "a"
+    assert service.role == "validator"
+    assert service.roles == ("rpc", "validator")
+    assert service.rpc_host_port == 30010
+    assert plan.external_rpc_url == "https://testnet-rpc.greatlibrary.io"
+    assert plan.public_rpc is True
+    assert service.rpc_bind_host == "0.0.0.0"
+    assert service.rpc_url_on_host == "http://198.51.100.10:30010"
+    assert module.single_host_id(plan) == "a"
+    assert module.infer_external_rpc_url(plan, args) == "https://testnet-rpc.greatlibrary.io"
+    assert module.rpc_probe_url_candidates(plan, args) == [
+        {"url": "http://198.51.100.10:30010", "source": "direct-host-port"},
+        {"url": "https://testnet-rpc.greatlibrary.io", "source": "configured-network-rpc"},
+    ]
+
+
+def test_private_state_external_rpc_publishes_selected_rpc_host_port_by_default(tmp_path: Path) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+
+    plan = module.build_plan("testnet", private_state_path=state_path, instances="validator-rpc-1")
+    compose = module.render_compose_for_host(plan, "a", include_bootstrap=False)
+
+    assert '"0.0.0.0:30010:8545"' in compose
+
+
+def test_private_state_external_rpc_renders_local_public_entry_sidecar(tmp_path: Path) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+
+    plan = module.build_plan("testnet", private_state_path=state_path, instances="validator-rpc-1")
+    compose = module.render_compose_for_host(plan, "a", include_bootstrap=False)
+
+    assert "testnet-rpc-public-entry-config-a:" in compose
+    assert "/data/coolify/proxy/dynamic/main-computer-testnet-rpc-public-entry-a.yml" in compose
+    assert 'rule: "Host(`testnet-rpc.greatlibrary.io`)"' in compose
+    assert '- url: "http://198.51.100.10:30010"' in compose
+    assert "http://198.51.100.11:30010" not in compose
+
+
+def test_rpc_public_entry_sidecar_uses_only_local_rpc_topology(tmp_path: Path) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+
+    plan = module.build_plan("testnet", private_state_path=state_path)
+    compose_a = module.render_compose_for_host(plan, "a", include_bootstrap=False)
+    compose_b = module.render_compose_for_host(plan, "b", include_bootstrap=False)
+
+    assert "testnet-rpc-public-entry-config-a:" in compose_a
+    assert '- url: "http://198.51.100.10:30010"' in compose_a
+    assert "http://198.51.100.11" not in compose_a
+
+    assert "testnet-rpc-public-entry-config-b:" in compose_b
+    assert "Removed stale RPC Traefik dynamic config" in compose_b
+    assert 'Host(`testnet-rpc.greatlibrary.io`)' not in compose_b
+    assert "http://198.51.100.10:30010" not in compose_b
+
+
+def test_wait_rpc_uses_direct_host_port_before_configured_public_rpc(tmp_path: Path, monkeypatch: Any) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+    args = module.parse_args(
+        [
+            "wait-rpc",
+            "testnet",
+            "--private-state",
+            str(state_path),
+            "--instances",
+            "validator-rpc-1",
+            "--no-rpc-require-block-advance",
+        ]
+    )
+    plan = module.build_plan_from_args(args)
+    calls: list[str] = []
+
+    def fake_json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 8.0, user_agent: str = "") -> Any:
+        calls.append(url)
+        assert url == "http://198.51.100.10:30010"
+        if method == "eth_chainId":
+            return hex(plan.chain_id)
+        if method == "eth_blockNumber":
+            return "0x2a"
+        if method == "net_peerCount":
+            return "0x0"
+        raise AssertionError(method)
+
+    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
+
+    result = module.wait_for_rpc(plan, args)
+
+    assert result["ok"] is True
+    assert result["rpc_url"] == "http://198.51.100.10:30010"
+    assert result["rpc_url_source"] == "direct-host-port"
+    assert "https://testnet-rpc.greatlibrary.io" not in calls
+
+
+def test_coolify_sync_dry_run_infers_host_from_selected_instance_without_host_flag(tmp_path: Path) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+    args = module.parse_args(
+        [
+            "coolify-sync",
+            "testnet",
+            "--private-state",
+            str(state_path),
+            "--instances",
+            "validator-rpc-1",
+            "--dry-run",
+        ]
+    )
+    plan = module.build_plan_from_args(args)
+
+    result = module.coolify_sync(plan, args, deploy=False)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["service_name"] == "main-computer-qbft-testnet-a"
+    assert "validator-rpc-1:" in result["compose"]
+    assert "validator-2:" not in result["compose"]
+
+
+def test_qbft_operator_runbook_does_not_recommend_ssh_deploy_path() -> None:
+    module = _load_module()
+
+    runbook = module.render_operator_runbook()
+
+    assert "--instances validator-rpc-1" in runbook
+    assert "apply testnet --all" not in runbook
+    assert "--host A" not in runbook
+    assert "--single-host root@" not in runbook
+    assert "ssh root@" not in runbook
+
+
+def write_one_node_private_state_without_server_uuid(tmp_path: Path) -> Path:
+    state_path = tmp_path / "main_computer.private.yaml"
+    state_path.write_text(
+        """
+coolify:
+  project_name: Main Computer
+  hosts:
+    A:
+      name: coolify-a
+      public_ip: 198.51.100.10
+      url: http://198.51.100.10:8000/
+      api_token: secret-a
+
+networks:
+  testnet:
+    display_name: Main Computer Testnet
+    kind: testnet
+    chain_id: 42424241
+    remote_coolify_hosts: [A]
+    rpc: https://testnet-rpc.greatlibrary.io
+    qbft:
+      instances:
+        validator-rpc-1:
+          coolify_host: A
+          roles: [rpc, validator]
+          rpc_host_port: 30010
+          p2p_host_port: 30321
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return state_path
+
+
+class _CreateServiceFakeCoolifyClient:
+    def __init__(self, module: Any) -> None:
+        self.module = module
+        self.base_url = "http://fake-coolify"
+        self.created_payload: dict[str, Any] | None = None
+        self.requests: list[tuple[str, str, Any]] = []
+
+    def request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        self.requests.append((method.upper(), path, payload))
+        method = method.upper()
+        if path == "/api/v1/version":
+            return self.module.CoolifyResponse(True, 200, method, "http://fake-coolify", path, "4.1.2")
+        if path == "/api/v1/services" and method == "GET":
+            return self.module.CoolifyResponse(True, 200, method, "http://fake-coolify", path, [])
+        if path == "/api/v1/projects":
+            return self.module.CoolifyResponse(
+                True,
+                200,
+                method,
+                "http://fake-coolify",
+                path,
+                [{"uuid": "project-1", "name": "Main Computer"}],
+            )
+        if path == "/api/v1/servers":
+            return self.module.CoolifyResponse(
+                True,
+                200,
+                method,
+                "http://fake-coolify",
+                path,
+                [{"uuid": "server-1", "name": "localhost", "settings": {"sentinel_token": "must-not-leak"}}],
+            )
+        if path == "/api/v1/projects/project-1/environments":
+            return self.module.CoolifyResponse(
+                True,
+                200,
+                method,
+                "http://fake-coolify",
+                path,
+                [{"uuid": "env-1", "name": "testnet"}],
+            )
+        if path == "/api/v1/services" and method == "POST":
+            assert payload is not None
+            self.created_payload = dict(payload)
+            return self.module.CoolifyResponse(True, 201, method, "http://fake-coolify", path, {"uuid": "service-1"})
+        if path in {"/api/v1/services/service-1", "/api/v1/services/service-1/compose"} and method in {"PATCH", "PUT"}:
+            return self.module.CoolifyResponse(True, 200, method, "http://fake-coolify", path, {"uuid": "service-1"})
+        return self.module.CoolifyResponse(False, 404, method, "http://fake-coolify", path, {"message": "unknown"})
+
+
+def _contains_exact_key(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(_contains_exact_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_exact_key(item, key) for item in value)
+    return False
+
+
+def test_coolify_sync_uses_singleton_coolify_server_when_private_host_name_is_not_server_name(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state_without_server_uuid(tmp_path)
+    args = module.parse_args(
+        [
+            "coolify-sync",
+            "testnet",
+            "--private-state",
+            str(state_path),
+            "--instances",
+            "validator-rpc-1",
+            "--no-deploy",
+        ]
+    )
+    plan = module.build_plan_from_args(args)
+
+    assert plan.hosts[0].id == "a"
+    assert plan.hosts[0].server_name == ""
+
+    fake_client = _CreateServiceFakeCoolifyClient(module)
+
+    def fake_client_from_args(call_args: Any, call_plan: Any, *, host_id: str | None = None) -> tuple[Any, str, str]:
+        assert host_id in {None, "a"}
+        return fake_client, "token", "fake-token"
+
+    monkeypatch.setattr(module, "coolify_client_from_args", fake_client_from_args)
+
+    result = module.coolify_sync(plan, args, deploy=False)
+
+    assert result["ok"] is True
+    assert result["service_uuid"] == "service-1"
+    assert fake_client.created_payload is not None
+    assert fake_client.created_payload["server_uuid"] == "server-1"
+    assert fake_client.created_payload["project_uuid"] == "project-1"
+    assert fake_client.created_payload["environment_uuid"] == "env-1"
+    assert fake_client.created_payload["name"] == "main-computer-qbft-testnet-a"
+    assert not _contains_exact_key(result, "body")

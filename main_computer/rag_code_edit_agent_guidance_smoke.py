@@ -45,7 +45,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Protocol, Sequence
 
 
 MODE = "rag_code_edit_agent_guidance_smoke"
@@ -59,6 +59,8 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_DOCKER_IMAGE = "main-computer-executor:latest"
 CONTAINER_RUN_DIR = "/smoke_run"
 CONTAINER_SOURCE_DIR = "/smoke_src"
+CONTAINER_REPLAY_REPORT_PATH = f"{CONTAINER_RUN_DIR}/replay_source_report.json"
+CONTAINER_LIVE_PLAN_PATH = f"{CONTAINER_RUN_DIR}/live_plan.json"
 DOCKER_IMAGE_BUILD_HINT = "docker compose -f docker-compose.executor.yml build executor-image"
 APP_PY_INITIAL = """\
 def greet(name: str) -> str:
@@ -92,6 +94,17 @@ README_MD = """# Mini Greeting Repo
 
 Fixture repository for the code-editing agent guidance smoke.
 """
+
+
+DEFAULT_LIVE_PLAN_PAYLOAD: dict[str, Any] = {
+    "agent_mode": "live-plan",
+    "planner": "fixture-live-planner",
+    "selected_files": ["app.py"],
+    "allowed_write_paths": ["app.py"],
+    "edit_strategy": "live_plan_trim_greeting_with_deterministic_apply",
+    "requires_verification_before_commit": True,
+    "rationale": "Plan-only adapter chooses app.py; deterministic safe applier performs the actual mutation.",
+}
 
 
 @dataclass(frozen=True)
@@ -270,8 +283,10 @@ def build_docker_agent_command(
     task: str,
     guidance_window_seconds: float,
     poll_seconds: float,
+    replay_report_path: str = "",
+    live_plan_path: str = "",
 ) -> list[str]:
-    return [
+    command = [
         "docker",
         "run",
         "--rm",
@@ -323,6 +338,11 @@ def build_docker_agent_command(
         "--poll-seconds",
         str(poll_seconds),
     ]
+    if replay_report_path:
+        command.extend(["--replay-report", replay_report_path])
+    if live_plan_path:
+        command.extend(["--live-plan-path", live_plan_path])
+    return command
 
 
 def text_sha256(text: str) -> str:
@@ -461,10 +481,33 @@ def derive_guidance_state(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+class CodeEditAgentAdapter(Protocol):
+    """Swappable agent-brain seam for the code-editing smoke.
+
+    The supervisor, Docker boundary, Git workflow, guidance stream, verification,
+    commit, and report schema stay fixed.  Adapters are only allowed to decide
+    what plan to emit and how to perform the authorized edit inside that harness.
+    """
+
+    agent_mode: str
+
+    def metadata(self) -> dict[str, Any]:
+        ...
+
+    def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+
 class DeterministicCodeEditAgent:
     """Predictable adapter that exercises the real harness without model variance."""
 
     agent_mode = "deterministic"
+
+    def metadata(self) -> dict[str, Any]:
+        return {"agent_mode": self.agent_mode, "replay_source_report_path": ""}
 
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -490,6 +533,275 @@ class DeterministicCodeEditAgent:
             "before_sha256": text_sha256(before),
             "after_sha256": text_sha256(after),
         }
+
+
+class ReplayCodeEditAgent:
+    """Replay adapter for comparing future live runs against a known contract shape.
+
+    Replay deliberately reuses the deterministic safe edit path for now.  Its
+    value is that it reads a prior report, validates that the report has the
+    expected smoke shape, and carries the prior changed-file contract into a new
+    Docker-contained run.  That lets failures be separated into harness failures
+    versus adapter/model-choice failures before live editing is introduced.
+    """
+
+    agent_mode = "replay"
+
+    def __init__(self, replay_report: dict[str, Any], replay_report_path: Path) -> None:
+        self.replay_report = replay_report
+        self.replay_report_path = replay_report_path
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "agent_mode": self.agent_mode,
+            "replay_source_report_path": str(self.replay_report_path),
+            "replay_source_agent_mode": self.replay_report.get("agent_mode"),
+            "replay_source_run_id": self.replay_report.get("run_id"),
+            "replay_source_changed_files": self.replay_report.get("changed_files", []),
+        }
+
+    def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        source_changed_files = [safe_relative_path(path) for path in self.replay_report.get("changed_files", ["app.py"])]
+        if source_changed_files != ["app.py"]:
+            raise SmokeFailure(f"replay source changed files are not supported by this stage: {source_changed_files!r}")
+        return {
+            "agent_mode": self.agent_mode,
+            "task": task,
+            "selected_files": source_changed_files,
+            "allowed_write_paths": source_changed_files,
+            "forbidden_paths": guidance_state.get("forbidden_paths", []),
+            "edit_strategy": "replay_known_trim_implementation",
+            "replay_source": {
+                "path": str(self.replay_report_path),
+                "source_agent_mode": self.replay_report.get("agent_mode"),
+                "source_scenario": self.replay_report.get("scenario"),
+                "source_changed_files": source_changed_files,
+            },
+            "requires_verification_before_commit": True,
+        }
+
+    def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
+        return DeterministicCodeEditAgent().apply_edit(worktree, plan)
+
+
+def default_live_plan_payload() -> dict[str, Any]:
+    return json.loads(json.dumps(DEFAULT_LIVE_PLAN_PAYLOAD))
+
+
+def load_live_plan_payload(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+    if getattr(args, "live_plan_json", ""):
+        try:
+            payload = json.loads(args.live_plan_json)
+        except json.JSONDecodeError as exc:
+            raise SmokeFailure("--live-plan-json must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise SmokeFailure("--live-plan-json must parse to an object")
+        return payload, "inline-json"
+    if getattr(args, "live_plan_path", ""):
+        path = Path(args.live_plan_path).resolve()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise SmokeFailure(f"live plan file does not exist: {path}") from exc
+        except json.JSONDecodeError as exc:
+            raise SmokeFailure(f"live plan file is not valid JSON: {path}") from exc
+        if not isinstance(payload, dict):
+            raise SmokeFailure(f"live plan file must parse to an object: {path}")
+        return payload, str(path)
+    return default_live_plan_payload(), "default-fixture"
+
+
+def validated_live_plan_payload(
+    *,
+    raw_plan: dict[str, Any],
+    task: str,
+    guidance_state: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    selected_files = [safe_relative_path(path) for path in raw_plan.get("selected_files", [])]
+    allowed_write_paths = [safe_relative_path(path) for path in raw_plan.get("allowed_write_paths", [])]
+    if selected_files != ["app.py"]:
+        raise SmokeFailure(f"live plan selected_files must be ['app.py'] at this stage; got {selected_files!r}")
+    if allowed_write_paths != ["app.py"]:
+        raise SmokeFailure(f"live plan allowed_write_paths must be ['app.py'] at this stage; got {allowed_write_paths!r}")
+    forbidden_paths = [safe_relative_path(path) for path in guidance_state.get("forbidden_paths", [])]
+    overlap = sorted(set(allowed_write_paths) & set(forbidden_paths))
+    if overlap:
+        raise SmokeFailure(f"live plan attempts to write forbidden paths: {overlap!r}")
+    if raw_plan.get("requires_verification_before_commit") is not True:
+        raise SmokeFailure("live plan must require verification before commit")
+    strategy = str(raw_plan.get("edit_strategy", "")).strip()
+    if strategy not in {"live_plan_trim_greeting_with_deterministic_apply", "replace_app_py_with_known_trim_implementation"}:
+        raise SmokeFailure(f"unsupported live plan edit_strategy: {strategy!r}")
+    return {
+        "agent_mode": "live-plan",
+        "task": task,
+        "selected_files": selected_files,
+        "allowed_write_paths": allowed_write_paths,
+        "forbidden_paths": forbidden_paths,
+        "edit_strategy": strategy,
+        "planner": str(raw_plan.get("planner") or "unspecified"),
+        "planner_source": source,
+        "planning_only": True,
+        "apply_mode": "deterministic_safe_applier",
+        "requires_verification_before_commit": True,
+        "rationale": str(raw_plan.get("rationale") or ""),
+    }
+
+
+class LivePlanCodeEditAgent:
+    """Plan-only adapter: a live/pluggable planner may choose the plan, but not edit files.
+
+    This stage intentionally keeps mutation delegated to the deterministic safe
+    applier.  The adapter can only emit and validate an edit_plan_boundary.  That
+    gives future model-backed planning a Docker-contained target without granting
+    freeform write authority.
+    """
+
+    agent_mode = "live-plan"
+
+    def __init__(self, raw_plan: dict[str, Any], plan_source: str) -> None:
+        self.raw_plan = raw_plan
+        self.plan_source = plan_source
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "agent_mode": self.agent_mode,
+            "planner_source": self.plan_source,
+            "planning_only": True,
+            "apply_mode": "deterministic_safe_applier",
+        }
+
+    def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        return validated_live_plan_payload(
+            raw_plan=self.raw_plan,
+            task=task,
+            guidance_state=guidance_state,
+            source=self.plan_source,
+        )
+
+    def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
+        if plan.get("planning_only") is not True or plan.get("apply_mode") != "deterministic_safe_applier":
+            raise SmokeFailure("live-plan adapter may only use the deterministic safe applier at this stage")
+        result = DeterministicCodeEditAgent().apply_edit(worktree, plan)
+        return {
+            **result,
+            "applied_by": "deterministic_safe_applier",
+            "planned_by": self.agent_mode,
+        }
+
+
+
+def load_report(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SmokeFailure(f"report does not exist: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise SmokeFailure(f"report is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise SmokeFailure(f"report must parse to an object: {path}")
+    return payload
+
+
+def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
+    if args.agent == "deterministic":
+        return DeterministicCodeEditAgent()
+    if args.agent == "replay":
+        if not args.replay_report:
+            raise SmokeFailure("--agent replay requires --replay-report")
+        replay_report_path = Path(args.replay_report).resolve()
+        replay_report = load_report(replay_report_path)
+        comparison = compare_report_contract_shape(replay_report, replay_report)
+        if not comparison["ok"]:
+            raise SmokeFailure(f"replay source report is malformed: {comparison['mismatches']!r}")
+        return ReplayCodeEditAgent(replay_report, replay_report_path)
+    if args.agent == "live-plan":
+        raw_plan, plan_source = load_live_plan_payload(args)
+        return LivePlanCodeEditAgent(raw_plan, plan_source)
+    raise SmokeFailure(f"unsupported agent mode for this smoke stage: {args.agent!r}")
+
+
+REQUIRED_REPORT_KEYS = (
+    "ok",
+    "mode",
+    "scenario",
+    "agent_mode",
+    "run_id",
+    "target_branch",
+    "base_head",
+    "final_head",
+    "main_head",
+    "commit",
+    "changed_files",
+    "guidance_events",
+    "forbidden_paths",
+    "verification",
+    "contracts",
+    "failed_contracts",
+    "boundaries",
+)
+
+REQUIRED_BOUNDARY_NAMES = (
+    "bootstrap_boundary",
+    "guidance_boundary",
+    "edit_plan_boundary",
+    "verification_boundary",
+    "commit_boundary",
+)
+
+
+def report_contract_shape(report: dict[str, Any]) -> dict[str, Any]:
+    contracts = report.get("contracts") if isinstance(report.get("contracts"), dict) else {}
+    boundaries = report.get("boundaries") if isinstance(report.get("boundaries"), list) else []
+    boundary_names = [
+        str(item.get("name") or "")
+        for item in boundaries
+        if isinstance(item, dict)
+    ]
+    return {
+        "required_keys_present": {key: key in report for key in REQUIRED_REPORT_KEYS},
+        "contract_keys": sorted(str(key) for key in contracts.keys()),
+        "boundary_names": boundary_names,
+        "required_boundaries_present": {
+            name: name in boundary_names
+            for name in REQUIRED_BOUNDARY_NAMES
+        },
+        "changed_files": sorted(str(path).replace("\\", "/") for path in report.get("changed_files", [])),
+        "forbidden_paths": sorted(str(path).replace("\\", "/") for path in report.get("forbidden_paths", [])),
+        "verification_checks": sorted(str(item) for item in report.get("verification", {}).get("checks", []))
+        if isinstance(report.get("verification"), dict)
+        else [],
+    }
+
+
+def compare_report_contract_shape(expected: dict[str, Any], actual: dict[str, Any]) -> dict[str, Any]:
+    expected_shape = report_contract_shape(expected)
+    actual_shape = report_contract_shape(actual)
+    mismatches: list[dict[str, Any]] = []
+    for key in sorted(set(expected_shape) | set(actual_shape)):
+        if expected_shape.get(key) != actual_shape.get(key):
+            mismatches.append(
+                {
+                    "field": key,
+                    "expected": expected_shape.get(key),
+                    "actual": actual_shape.get(key),
+                }
+            )
+    required_actual = actual_shape.get("required_keys_present", {})
+    for key, present in required_actual.items():
+        if not present:
+            mismatches.append({"field": f"missing_required_key.{key}", "expected": True, "actual": False})
+    required_boundaries = actual_shape.get("required_boundaries_present", {})
+    for name, present in required_boundaries.items():
+        if not present:
+            mismatches.append({"field": f"missing_required_boundary.{name}", "expected": True, "actual": False})
+    return {
+        "ok": not mismatches,
+        "expected_shape": expected_shape,
+        "actual_shape": actual_shape,
+        "mismatches": mismatches,
+    }
 
 
 def verify_worktree(worktree: Path) -> dict[str, Any]:
@@ -576,8 +888,9 @@ def run_agent(args: argparse.Namespace) -> int:
             source_mount=agent_source_mount,
         )
 
-        if args.agent != "deterministic":
-            raise SmokeFailure(f"unsupported agent mode for this smoke stage: {args.agent!r}")
+        agent_adapter = build_agent_adapter(args)
+        agent_adapter_metadata = agent_adapter.metadata()
+        event("agent_adapter_selected", **agent_adapter_metadata)
 
         origin = run_dir / "origin"
         worktree = run_dir / "worktree"
@@ -598,6 +911,7 @@ def run_agent(args: argparse.Namespace) -> int:
             {
                 "boundary_type": "agent_bootstrap",
                 "agent_mode": args.agent,
+                "adapter": agent_adapter.agent_mode,
                 "task": task,
                 "repo": {
                     "origin_path": str(origin),
@@ -661,8 +975,7 @@ def run_agent(args: argparse.Namespace) -> int:
             accepted_guidance_count=len(guidance_state["accepted"]),
         )
 
-        brain = DeterministicCodeEditAgent()
-        plan = brain.plan(task, guidance_state)
+        plan = agent_adapter.plan(task, guidance_state)
         edit_plan_boundary = write_boundary(
             run_dir,
             "edit_plan_boundary",
@@ -676,7 +989,7 @@ def run_agent(args: argparse.Namespace) -> int:
         event("boundary_committed", boundary="edit_plan_boundary", sha256=edit_plan_boundary["sha256"])
 
         event("stage_started", stage="apply_edit", files=plan["allowed_write_paths"])
-        edit_result = brain.apply_edit(worktree, plan)
+        edit_result = agent_adapter.apply_edit(worktree, plan)
         event("edit_applied", files=edit_result["changed_files"], after_sha256=edit_result["after_sha256"])
 
         event("stage_started", stage="verification")
@@ -711,7 +1024,7 @@ def run_agent(args: argparse.Namespace) -> int:
         event("stage_started", stage="commit")
         commit = create_commit(
             worktree,
-            "smoke: apply guided deterministic greeting edit",
+            f"smoke: apply {args.agent} guided greeting edit",
             changed_files_before_commit,
         )
         final_head = git_stdout(worktree, ["rev-parse", "HEAD"])
@@ -722,7 +1035,7 @@ def run_agent(args: argparse.Namespace) -> int:
         event("commit_created", sha=commit["sha"], branch=branch, files=changed_files)
 
         contracts = {
-            "agent_mode_deterministic": args.agent == "deterministic",
+            "agent_adapter_selected": agent_adapter.agent_mode == args.agent,
             "agent_containerized": agent_containerized,
             "docker_network_none": agent_docker_network == "none",
             "docker_source_mount_read_only": agent_source_mount == "readonly",
@@ -760,6 +1073,8 @@ def run_agent(args: argparse.Namespace) -> int:
             "mode": MODE,
             "scenario": SCENARIO,
             "agent_mode": args.agent,
+            "agent_adapter": agent_adapter_metadata,
+            "edit_plan": plan,
             "run_id": args.run_id,
             "run_dir": str(run_dir),
             "commands_path": str(commands_path),
@@ -848,7 +1163,31 @@ def run_supervisor(args: argparse.Namespace) -> int:
         task=args.task,
         guidance_window_seconds=args.guidance_window_seconds,
         poll_seconds=args.poll_seconds,
+        replay_report_path=CONTAINER_REPLAY_REPORT_PATH if args.agent == "replay" else "",
+        live_plan_path=CONTAINER_LIVE_PLAN_PATH if args.agent == "live-plan" else "",
     )
+
+    if args.agent == "replay":
+        if not args.replay_report:
+            raise SmokeFailure("--agent replay requires --replay-report")
+        replay_source = Path(args.replay_report).resolve()
+        if not replay_source.exists():
+            raise SmokeFailure(f"replay report does not exist: {replay_source}")
+        shutil.copy2(replay_source, run_dir / "replay_source_report.json")
+    if args.agent == "live-plan":
+        live_plan_destination = run_dir / "live_plan.json"
+        if args.live_plan_path:
+            live_plan_source = Path(args.live_plan_path).resolve()
+            if not live_plan_source.exists():
+                raise SmokeFailure(f"live plan file does not exist: {live_plan_source}")
+            shutil.copy2(live_plan_source, live_plan_destination)
+        elif args.live_plan_json:
+            payload = json.loads(args.live_plan_json)
+            if not isinstance(payload, dict):
+                raise SmokeFailure("--live-plan-json must parse to an object")
+            atomic_write_json(live_plan_destination, payload)
+        else:
+            atomic_write_json(live_plan_destination, default_live_plan_payload())
 
     emit_event(
         "supervisor_started",
@@ -929,6 +1268,12 @@ def run_supervisor(args: argparse.Namespace) -> int:
     run_started_events = [event for event in received_events if event.get("event") == "run_started"]
     agent_run_started = run_started_events[-1] if run_started_events else {}
     agent_contracts = agent_report.get("contracts", {}) if isinstance(agent_report.get("contracts"), dict) else {}
+    agent_adapter_report = agent_report.get("agent_adapter", {}) if isinstance(agent_report.get("agent_adapter"), dict) else {}
+    comparison_report_path = args.compare_report or (args.replay_report if args.agent == "replay" else "")
+    report_shape_comparison: dict[str, Any] | None = None
+    if comparison_report_path:
+        report_shape_comparison = compare_report_contract_shape(load_report(Path(comparison_report_path)), agent_report)
+
     docker_command_contracts = {
         "agent_containerized": bool(agent_run_started.get("containerized")) and bool(agent_contracts.get("agent_containerized")),
         "docker_network_none": "--network" in child_args
@@ -953,10 +1298,17 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "verification_passed": bool(agent_contracts.get("verification_passed")),
         "commit_created": bool(agent_contracts.get("commit_created")),
         "report_written": report_path.exists() and bool(agent_contracts.get("report_written")),
+        "live_plan_deterministic_apply": args.agent != "live-plan"
+        or (
+            agent_adapter_report.get("planning_only") is True
+            and agent_adapter_report.get("apply_mode") == "deterministic_safe_applier"
+        ),
         "required_event_order": event_names.index("guidance_window_open") < event_names.index("edit_applied")
         if "guidance_window_open" in event_names and "edit_applied" in event_names
         else False,
     }
+    if report_shape_comparison is not None:
+        contracts["report_contract_shape_matches_reference"] = bool(report_shape_comparison.get("ok"))
     failed_contracts = sorted(name for name, ok in contracts.items() if not ok)
 
     supervisor_report = {
@@ -978,6 +1330,7 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "guidance_payload": guidance_payload,
         "contracts": contracts,
         "failed_contracts": failed_contracts,
+        "report_shape_comparison": report_shape_comparison,
         "agent_report": agent_report,
     }
     atomic_write_json(supervisor_report_path, supervisor_report)
@@ -1004,11 +1357,358 @@ def run_supervisor(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def namespace_with(args: argparse.Namespace, **updates: Any) -> argparse.Namespace:
+    payload = dict(vars(args))
+    payload.update(updates)
+    return argparse.Namespace(**payload)
+
+
+def run_replay_cycle(args: argparse.Namespace) -> int:
+    """Run deterministic first, then replay its report through the same Docker harness."""
+
+    cycle_id = args.run_id or run_id_from_now()
+    parent_work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
+    cycle_dir = parent_work_root / cycle_id
+    cycle_dir.mkdir(parents=True, exist_ok=True)
+    cycle_report_path = cycle_dir / "replay_cycle_report.json"
+    deterministic_run_id = f"{cycle_id}-deterministic"
+    replay_run_id = f"{cycle_id}-replay"
+
+    emit_event(
+        "replay_cycle_started",
+        run_id=cycle_id,
+        role="supervisor",
+        agent_boundary="docker",
+        deterministic_run_id=deterministic_run_id,
+        replay_run_id=replay_run_id,
+        cycle_dir=str(cycle_dir),
+    )
+
+    deterministic_args = namespace_with(
+        args,
+        exercise_replay=False,
+        agent="deterministic",
+        run_id=deterministic_run_id,
+        work_root=str(cycle_dir),
+        replay_report="",
+        compare_report="",
+    )
+    emit_event("replay_cycle_stage_started", run_id=cycle_id, stage="deterministic_baseline")
+    deterministic_rc = run_supervisor(deterministic_args)
+    deterministic_run_dir = cycle_dir / deterministic_run_id
+    deterministic_agent_report_path = deterministic_run_dir / "report.json"
+    deterministic_supervisor_report_path = deterministic_run_dir / "supervisor_report.json"
+
+    if deterministic_rc != 0 or not deterministic_agent_report_path.exists():
+        cycle_report = {
+            "ok": False,
+            "mode": MODE,
+            "scenario": SCENARIO,
+            "cycle_id": cycle_id,
+            "failed_stage": "deterministic_baseline",
+            "deterministic_returncode": deterministic_rc,
+            "deterministic_agent_report_path": str(deterministic_agent_report_path),
+            "deterministic_supervisor_report_path": str(deterministic_supervisor_report_path),
+            "replay_returncode": None,
+            "contracts": {
+                "deterministic_self_check_passed": False,
+                "replay_self_check_passed": False,
+                "report_contract_shape_matches_reference": False,
+            },
+        }
+        atomic_write_json(cycle_report_path, cycle_report)
+        emit_event(
+            "replay_cycle_failed",
+            run_id=cycle_id,
+            failed_stage="deterministic_baseline",
+            report_path=str(cycle_report_path),
+            deterministic_returncode=deterministic_rc,
+        )
+        return 1
+
+    emit_event(
+        "replay_cycle_stage_completed",
+        run_id=cycle_id,
+        stage="deterministic_baseline",
+        report_path=str(deterministic_agent_report_path),
+    )
+
+    replay_args = namespace_with(
+        args,
+        exercise_replay=False,
+        agent="replay",
+        run_id=replay_run_id,
+        work_root=str(cycle_dir),
+        replay_report=str(deterministic_agent_report_path),
+        compare_report=str(deterministic_agent_report_path),
+    )
+    emit_event("replay_cycle_stage_started", run_id=cycle_id, stage="replay")
+    replay_rc = run_supervisor(replay_args)
+    replay_run_dir = cycle_dir / replay_run_id
+    replay_agent_report_path = replay_run_dir / "report.json"
+    replay_supervisor_report_path = replay_run_dir / "supervisor_report.json"
+
+    deterministic_agent_report = load_report(deterministic_agent_report_path)
+    replay_agent_report = load_report(replay_agent_report_path) if replay_agent_report_path.exists() else {}
+    deterministic_supervisor_report = (
+        load_report(deterministic_supervisor_report_path) if deterministic_supervisor_report_path.exists() else {}
+    )
+    replay_supervisor_report = load_report(replay_supervisor_report_path) if replay_supervisor_report_path.exists() else {}
+    shape_comparison = compare_report_contract_shape(deterministic_agent_report, replay_agent_report)
+
+    deterministic_contracts = (
+        deterministic_supervisor_report.get("contracts", {})
+        if isinstance(deterministic_supervisor_report.get("contracts"), dict)
+        else {}
+    )
+    replay_contracts = (
+        replay_supervisor_report.get("contracts", {})
+        if isinstance(replay_supervisor_report.get("contracts"), dict)
+        else {}
+    )
+    replay_agent_adapter = (
+        replay_agent_report.get("agent_adapter", {}) if isinstance(replay_agent_report.get("agent_adapter"), dict) else {}
+    )
+    contracts = {
+        "deterministic_self_check_passed": deterministic_rc == 0 and bool(deterministic_supervisor_report.get("ok")),
+        "replay_self_check_passed": replay_rc == 0 and bool(replay_supervisor_report.get("ok")),
+        "deterministic_agent_containerized": bool(deterministic_contracts.get("agent_containerized")),
+        "replay_agent_containerized": bool(replay_contracts.get("agent_containerized")),
+        "replay_agent_mode": replay_agent_report.get("agent_mode") == "replay",
+        "replay_recorded_source_report": replay_agent_adapter.get("replay_source_report_path") == CONTAINER_REPLAY_REPORT_PATH,
+        "replay_compared_against_deterministic": bool(replay_contracts.get("report_contract_shape_matches_reference")),
+        "report_contract_shape_matches_reference": bool(shape_comparison.get("ok")),
+        "deterministic_then_replay_order": True,
+    }
+    failed_contracts = sorted(name for name, ok in contracts.items() if not ok)
+    cycle_report = {
+        "ok": not failed_contracts,
+        "mode": MODE,
+        "scenario": SCENARIO,
+        "cycle_id": cycle_id,
+        "run_dir": str(cycle_dir),
+        "deterministic": {
+            "run_id": deterministic_run_id,
+            "returncode": deterministic_rc,
+            "agent_report_path": str(deterministic_agent_report_path),
+            "supervisor_report_path": str(deterministic_supervisor_report_path),
+            "agent_report": deterministic_agent_report,
+        },
+        "replay": {
+            "run_id": replay_run_id,
+            "returncode": replay_rc,
+            "replay_source_report_path": str(deterministic_agent_report_path),
+            "agent_report_path": str(replay_agent_report_path),
+            "supervisor_report_path": str(replay_supervisor_report_path),
+            "agent_report": replay_agent_report,
+        },
+        "report_shape_comparison": shape_comparison,
+        "contracts": contracts,
+        "failed_contracts": failed_contracts,
+    }
+    atomic_write_json(cycle_report_path, cycle_report)
+    if failed_contracts:
+        emit_event(
+            "replay_cycle_failed",
+            run_id=cycle_id,
+            failed_contracts=failed_contracts,
+            report_path=str(cycle_report_path),
+        )
+        return 1
+    emit_event(
+        "replay_cycle_passed",
+        run_id=cycle_id,
+        report_path=str(cycle_report_path),
+        deterministic_report_path=str(deterministic_agent_report_path),
+        replay_report_path=str(replay_agent_report_path),
+        contracts=contracts,
+    )
+    return 0
+
+
+def run_live_plan_cycle(args: argparse.Namespace) -> int:
+    """Run deterministic first, then plan-only live adapter with deterministic apply."""
+
+    cycle_id = args.run_id or run_id_from_now()
+    parent_work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
+    cycle_dir = parent_work_root / cycle_id
+    cycle_dir.mkdir(parents=True, exist_ok=True)
+    cycle_report_path = cycle_dir / "live_plan_cycle_report.json"
+    deterministic_run_id = f"{cycle_id}-deterministic"
+    live_plan_run_id = f"{cycle_id}-live-plan"
+
+    emit_event(
+        "live_plan_cycle_started",
+        run_id=cycle_id,
+        role="supervisor",
+        agent_boundary="docker",
+        deterministic_run_id=deterministic_run_id,
+        live_plan_run_id=live_plan_run_id,
+        cycle_dir=str(cycle_dir),
+    )
+
+    deterministic_args = namespace_with(
+        args,
+        exercise_replay=False,
+        exercise_live_plan=False,
+        agent="deterministic",
+        run_id=deterministic_run_id,
+        work_root=str(cycle_dir),
+        replay_report="",
+        compare_report="",
+        live_plan_path="",
+        live_plan_json="",
+    )
+    emit_event("live_plan_cycle_stage_started", run_id=cycle_id, stage="deterministic_baseline")
+    deterministic_rc = run_supervisor(deterministic_args)
+    deterministic_run_dir = cycle_dir / deterministic_run_id
+    deterministic_agent_report_path = deterministic_run_dir / "report.json"
+    deterministic_supervisor_report_path = deterministic_run_dir / "supervisor_report.json"
+
+    if deterministic_rc != 0 or not deterministic_agent_report_path.exists():
+        cycle_report = {
+            "ok": False,
+            "mode": MODE,
+            "scenario": SCENARIO,
+            "cycle_id": cycle_id,
+            "failed_stage": "deterministic_baseline",
+            "deterministic_returncode": deterministic_rc,
+            "deterministic_agent_report_path": str(deterministic_agent_report_path),
+            "deterministic_supervisor_report_path": str(deterministic_supervisor_report_path),
+            "live_plan_returncode": None,
+            "contracts": {
+                "deterministic_self_check_passed": False,
+                "live_plan_self_check_passed": False,
+                "report_contract_shape_matches_reference": False,
+            },
+        }
+        atomic_write_json(cycle_report_path, cycle_report)
+        emit_event(
+            "live_plan_cycle_failed",
+            run_id=cycle_id,
+            failed_stage="deterministic_baseline",
+            report_path=str(cycle_report_path),
+            deterministic_returncode=deterministic_rc,
+        )
+        return 1
+
+    live_plan_args = namespace_with(
+        args,
+        exercise_replay=False,
+        exercise_live_plan=False,
+        agent="live-plan",
+        run_id=live_plan_run_id,
+        work_root=str(cycle_dir),
+        replay_report="",
+        compare_report=str(deterministic_agent_report_path),
+        live_plan_path="",
+        live_plan_json=json.dumps(default_live_plan_payload(), sort_keys=True),
+    )
+    emit_event("live_plan_cycle_stage_started", run_id=cycle_id, stage="live_plan")
+    live_plan_rc = run_supervisor(live_plan_args)
+    live_plan_run_dir = cycle_dir / live_plan_run_id
+    live_plan_agent_report_path = live_plan_run_dir / "report.json"
+    live_plan_supervisor_report_path = live_plan_run_dir / "supervisor_report.json"
+
+    deterministic_agent_report = load_report(deterministic_agent_report_path)
+    live_plan_agent_report = load_report(live_plan_agent_report_path) if live_plan_agent_report_path.exists() else {}
+    deterministic_supervisor_report = (
+        load_report(deterministic_supervisor_report_path) if deterministic_supervisor_report_path.exists() else {}
+    )
+    live_plan_supervisor_report = (
+        load_report(live_plan_supervisor_report_path) if live_plan_supervisor_report_path.exists() else {}
+    )
+    shape_comparison = compare_report_contract_shape(deterministic_agent_report, live_plan_agent_report)
+
+    deterministic_contracts = (
+        deterministic_supervisor_report.get("contracts", {})
+        if isinstance(deterministic_supervisor_report.get("contracts"), dict)
+        else {}
+    )
+    live_plan_contracts = (
+        live_plan_supervisor_report.get("contracts", {})
+        if isinstance(live_plan_supervisor_report.get("contracts"), dict)
+        else {}
+    )
+    live_plan_adapter = (
+        live_plan_agent_report.get("agent_adapter", {})
+        if isinstance(live_plan_agent_report.get("agent_adapter"), dict)
+        else {}
+    )
+    live_plan_edit_plan = (
+        live_plan_agent_report.get("edit_plan", {}) if isinstance(live_plan_agent_report.get("edit_plan"), dict) else {}
+    )
+    contracts = {
+        "deterministic_self_check_passed": deterministic_rc == 0 and bool(deterministic_supervisor_report.get("ok")),
+        "live_plan_self_check_passed": live_plan_rc == 0 and bool(live_plan_supervisor_report.get("ok")),
+        "deterministic_agent_containerized": bool(deterministic_contracts.get("agent_containerized")),
+        "live_plan_agent_containerized": bool(live_plan_contracts.get("agent_containerized")),
+        "live_plan_agent_mode": live_plan_agent_report.get("agent_mode") == "live-plan",
+        "live_plan_planning_only": live_plan_adapter.get("planning_only") is True
+        and live_plan_edit_plan.get("planning_only") is True,
+        "deterministic_safe_apply_after_live_plan": live_plan_adapter.get("apply_mode") == "deterministic_safe_applier"
+        and live_plan_edit_plan.get("apply_mode") == "deterministic_safe_applier",
+        "live_plan_compared_against_deterministic": bool(live_plan_contracts.get("report_contract_shape_matches_reference")),
+        "report_contract_shape_matches_reference": bool(shape_comparison.get("ok")),
+        "deterministic_then_live_plan_order": True,
+    }
+    failed_contracts = sorted(name for name, ok in contracts.items() if not ok)
+    cycle_report = {
+        "ok": not failed_contracts,
+        "mode": MODE,
+        "scenario": SCENARIO,
+        "cycle_id": cycle_id,
+        "run_dir": str(cycle_dir),
+        "deterministic": {
+            "run_id": deterministic_run_id,
+            "returncode": deterministic_rc,
+            "agent_report_path": str(deterministic_agent_report_path),
+            "supervisor_report_path": str(deterministic_supervisor_report_path),
+            "agent_report": deterministic_agent_report,
+        },
+        "live_plan": {
+            "run_id": live_plan_run_id,
+            "returncode": live_plan_rc,
+            "agent_report_path": str(live_plan_agent_report_path),
+            "supervisor_report_path": str(live_plan_supervisor_report_path),
+            "agent_report": live_plan_agent_report,
+        },
+        "report_shape_comparison": shape_comparison,
+        "contracts": contracts,
+        "failed_contracts": failed_contracts,
+    }
+    atomic_write_json(cycle_report_path, cycle_report)
+    if failed_contracts:
+        emit_event(
+            "live_plan_cycle_failed",
+            run_id=cycle_id,
+            failed_contracts=failed_contracts,
+            report_path=str(cycle_report_path),
+        )
+        return 1
+    emit_event(
+        "live_plan_cycle_passed",
+        run_id=cycle_id,
+        report_path=str(cycle_report_path),
+        deterministic_report_path=str(deterministic_agent_report_path),
+        live_plan_report_path=str(live_plan_agent_report_path),
+        contracts=contracts,
+    )
+    return 0
+
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic code-editing agent guidance smoke.")
     parser.add_argument("--role", choices=["supervisor", "agent"], default="supervisor")
-    parser.add_argument("--agent", choices=["deterministic"], default="deterministic")
+    parser.add_argument("--agent", choices=["deterministic", "replay", "live-plan"], default="deterministic")
     parser.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
+    parser.add_argument("--replay-report", default="", help="Prior agent report to replay through the same harness.")
+    parser.add_argument("--live-plan-path", default="", help="JSON live-planning artifact for --agent live-plan.")
+    parser.add_argument("--live-plan-json", default="", help="Inline JSON live-planning artifact for --agent live-plan.")
+    parser.add_argument("--compare-report", default="", help="Prior report whose contract shape should match this run.")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--work-root", default="", help="Supervisor work root. Defaults to a short temp directory.")
     parser.add_argument("--run-dir", default="", help="Agent run directory.")
@@ -1020,6 +1720,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guidance-window-seconds", type=float, default=DEFAULT_GUIDANCE_WINDOW_SECONDS)
     parser.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--exercise-replay",
+        action="store_true",
+        help="Run deterministic first, then replay its report through the same Docker-contained harness.",
+    )
+    parser.add_argument(
+        "--exercise-live-plan",
+        action="store_true",
+        help="Run deterministic first, then live-plan with deterministic apply through the same Docker-contained harness.",
+    )
     return parser
 
 
@@ -1032,6 +1742,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.run_dir:
             args.run_dir = str(default_work_root() / args.run_id)
         return run_agent(args)
+    if args.exercise_replay:
+        return run_replay_cycle(args)
+    if args.exercise_live_plan:
+        return run_live_plan_cycle(args)
     return run_supervisor(args)
 
 

@@ -1,4 +1,4 @@
-FROM nvidia/opengl:1.2-glvnd-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -8,11 +8,7 @@ RUN apt-get update \
        cmake \
        curl \
        g++ \
-       libegl1-mesa-dev \
-       libglew-dev \
-       libglm-dev \
        libjpeg-dev \
-       libglvnd-dev \
        make \
        pkg-config \
     && rm -rf /var/lib/apt/lists/*

@@ -41,7 +41,7 @@ non-validator RPC node at `http://127.0.0.1:30010` after the local Coolify QBFT
 deployer has published `runtime/deployments/test/latest.json`:
 
 ```powershell
-python .\tools\coolify_qbft_network.py apply test --all
+python .\tools\coolify_qbft_network.py apply test --deploy-contracts
 python -m main_computer.cli hub --network test
 ```
 

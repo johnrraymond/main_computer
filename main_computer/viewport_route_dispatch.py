@@ -1809,6 +1809,9 @@ def dispatch_get(self) -> None:
     if route_path == "/api/applications/astrometric/status":
         self._handle_astrometric_status()
         return
+    if route_path == "/api/applications/astrometric/diagnostics":
+        self._handle_astrometric_diagnostics()
+        return
     if route_path == "/api/applications/astrometric/frame.jpg":
         self._handle_astrometric_frame()
         return

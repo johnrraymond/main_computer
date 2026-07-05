@@ -4,7 +4,7 @@
       <div>
         <p class="eyebrow">GPU Docker renderer</p>
         <h2>Astrometric 3D</h2>
-        <p>Streams a C++ OpenGL compute Schwarzschild renderer from a Docker GPU container. Drag to orbit, Shift-drag to pan, and scroll to dolly the backend camera.</p>
+        <p>Streams a C++ CUDA Schwarzschild ray renderer from a Docker GPU container. Drag to orbit, Shift-drag to pan, and scroll to dolly the backend camera.</p>
       </div>
       <div class="astrometric-status-stack">
         <span class="status-pill astrometric-status-pill" id="astrometric-status-pill">renderer idle</span>
@@ -23,12 +23,12 @@
         </div>
         <div class="astrometric-viewport" id="astrometric-viewport" tabindex="0" aria-label="Astrometric renderer viewport. Drag to orbit. Shift drag to pan. Mouse wheel zooms.">
           <img id="astrometric-stream" alt="Astrometric black-hole renderer stream">
-          <div class="astrometric-reticle" aria-hidden="true"></div>
           <div class="astrometric-viewport-message" id="astrometric-viewport-message">Start the renderer to attach the GPU stream.</div>
         </div>
         <div class="astrometric-control-strip" aria-label="Astrometric renderer controls">
           <button type="button" id="astrometric-start-button">Start GPU Renderer</button>
-          <button type="button" id="astrometric-restart-button">Restart</button>
+          <button type="button" id="astrometric-smoke-button" title="Diagnostic only: starts the same Docker service in no-CUDA smoke mode to test port mapping and streaming.">Start Port Smoke</button>
+          <button type="button" id="astrometric-restart-button">Restart GPU</button>
           <button type="button" id="astrometric-stop-button">Stop</button>
           <button type="button" id="astrometric-reset-camera-button">Reset Camera</button>
           <label>
@@ -42,9 +42,12 @@
         <div class="astrometric-card-head">
           <div>
             <h3>Renderer contract</h3>
-            <p>Docker lifecycle and camera events are owned by the backend.</p>
+            <p>Docker lifecycle is explicit: this page starts and stops only the Astrometric renderer Compose project.</p>
           </div>
-          <button type="button" id="astrometric-refresh-button">Refresh</button>
+          <div class="astrometric-inspector-actions">
+            <button type="button" id="astrometric-refresh-button">Refresh</button>
+            <button type="button" id="astrometric-diagnose-button">Diagnose</button>
+          </div>
         </div>
         <dl class="astrometric-metrics">
           <div>
@@ -71,6 +74,9 @@
             <li>Shift + drag: pan the camera target.</li>
             <li>Wheel: dolly in/out.</li>
             <li>Reset Camera: returns to the original Sagittarius A* framing.</li>
+            <li>Start/Stop: controls only the dedicated <code>main-computer-astrometric</code> Compose project.</li>
+            <li>Diagnose: collects Docker Compose ps/logs/inspect output when the port is closed.</li>
+            <li>Start Port Smoke: diagnostic no-CUDA stream; if it works but GPU does not, the failure is in CUDA/NVIDIA runtime or kernel startup.</li>
           </ul>
         </div>
         <pre id="astrometric-status-json" class="astrometric-status-json">{}</pre>

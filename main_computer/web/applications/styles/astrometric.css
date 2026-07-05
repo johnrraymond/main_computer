@@ -85,6 +85,13 @@
       grid-template-rows: auto minmax(0, 1fr) auto;
     }
 
+    .astrometric-inspector-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 0.5rem;
+    }
+
     .astrometric-card-head button,
     .astrometric-control-strip button,
     .astrometric-inspector button {
@@ -139,17 +146,6 @@
       min-height: 320px;
       object-fit: contain;
       background: #000;
-    }
-
-    .astrometric-reticle {
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-      background:
-        linear-gradient(90deg, transparent calc(50% - 0.5px), rgba(125, 211, 252, 0.32) 50%, transparent calc(50% + 0.5px)),
-        linear-gradient(0deg, transparent calc(50% - 0.5px), rgba(125, 211, 252, 0.32) 50%, transparent calc(50% + 0.5px));
-      mix-blend-mode: screen;
-      opacity: 0.35;
     }
 
     .astrometric-viewport-message {

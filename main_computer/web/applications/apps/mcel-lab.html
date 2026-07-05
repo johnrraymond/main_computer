@@ -160,7 +160,7 @@
   "kind": "mcel.scm.app",
   "name": "DevNetworkReleaseConsole",
   "version": "0.2.0",
-  "whyScmMatters": "Wallet/provider state, dev-network chain checks, route-loaded contract data, source-owned approvals, runtime-only transaction drafts, and AI repair hints overlap. Without SCM it is easy for account, chain, tx preview, or assistant output to leak into durable source.",
+  "whyScmMatters": "Wallet/provider state, dev-network chain checks, route-loaded contract data, source-owned approvals, runtime-only transaction drafts, and bounded repair packets overlap. Without SCM it is easy for account, chain, tx preview, or repair output to leak into durable source.",
   "route": {
     "name": "workspace.dev-network-release",
     "segments": ["workspace", "dev-network", "{contractId}", "release-console"],
@@ -183,6 +183,7 @@
       "walletAdapter",
       "walletEvents",
       "proofChip",
+      "repairPacket",
       "assistantRepairPrompt",
       "serializedSource",
       "evidenceStrip"
@@ -236,8 +237,9 @@
       "writes": ["source.devRelease.requests", "runtime.evidenceStrip"]
     },
     "ai.repairWalletHint": {
-      "reads": ["runtime.wallet", "runtime.network", "runtime.txDraft"],
-      "writes": ["runtime.proofChip", "runtime.assistantRepairPrompt"]
+      "reads": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome", "runtime.proofChip"],
+      "writes": ["runtime.proofChip", "runtime.repairPacket", "runtime.assistantRepairPrompt", "runtime.evidenceStrip"],
+      "operation": "build-bounded-repair-packet-no-model-call"
     }
   },
   "forbiddenTrial": {

@@ -1,33 +1,36 @@
 cmake_minimum_required(VERSION 3.21)
-project(MainComputerAstrometricRenderer LANGUAGES CXX)
+project(MainComputerAstrometricRenderer LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-find_package(OpenGL REQUIRED)
-find_package(GLEW REQUIRED)
-find_package(glm REQUIRED)
+# Keep the image usable on common NVIDIA cards without needing GPU access
+# during docker build.  The final virtual PTX target gives some forward
+# compatibility for newer cards.
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 52 61 75 86 89 89-virtual)
+endif()
+
+find_package(CUDAToolkit REQUIRED)
 find_package(JPEG REQUIRED)
 find_package(Threads REQUIRED)
 
 add_executable(astrometric-renderer
-    src/astrometric_renderer.cpp
+    src/astrometric_renderer.cu
 )
 
 target_include_directories(astrometric-renderer PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${JPEG_INCLUDE_DIR}
 )
 
 target_link_libraries(astrometric-renderer PRIVATE
-    OpenGL::GL
-    GLEW::GLEW
-    glm::glm
+    CUDA::cudart
     JPEG::JPEG
     Threads::Threads
-    EGL
 )
 
-target_compile_definitions(astrometric-renderer PRIVATE
-    ASTROMETRIC_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+target_compile_options(astrometric-renderer PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
 )

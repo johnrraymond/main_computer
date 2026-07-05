@@ -114,6 +114,8 @@
           runCount: 0,
           blockedWrites: 0,
           repairCount: 0,
+          repairPacketCount: 0,
+          repairBoundaryBlockedCount: 0,
           reviewedCount: 0,
           walletConnectCount: 0,
           walletDisconnectCount: 0,
@@ -136,6 +138,7 @@
           externalExceptionCount: 0,
           lastWalletResetClean: false,
           lastExternalOutcome: null,
+          lastWalletActionOutcome: null,
           lastProof: null,
           evidence: [],
           walletAdapter: null,
@@ -301,8 +304,31 @@
         txDraft: {
           status: "empty",
           requestId: "",
+          createdFrom: {},
+          from: "",
           to: "",
+          value: "0x0",
+          chainId: "",
+          expectedChainId: "0x28757b2",
           data: "",
+          calldata: "",
+          calldataEncoding: "",
+          methodSignature: "",
+          argsPreview: [],
+          nonce: {
+            method: "eth_getTransactionCount",
+            status: "not-probed"
+          },
+          gasEstimate: {
+            method: "eth_estimateGas",
+            status: "not-probed"
+          },
+          ethCall: {
+            method: "eth_call",
+            status: "not-probed"
+          },
+          noSend: true,
+          boundary: "runtime-only-no-send",
           summary: "No transaction draft has been built."
         },
         walletAdapter: {
@@ -330,6 +356,12 @@
           text: "Runtime wallet proof chip waiting.",
           status: "pending",
           repaired: false
+        },
+        repairPacket: {
+          kind: "mcel-repair-packet",
+          status: "not-generated",
+          target: "runtime.proofChip",
+          reason: "Repair packet has not been generated."
         },
         assistantRepairPrompt: "",
         serializedSource: "",
@@ -440,6 +472,77 @@
       };
     }
 
+    function mcelTinyContractRepairForbiddenWrites() {
+      return [
+        "source.devRelease",
+        "source.devRelease.devNetwork",
+        "source.devRelease.requests",
+        "source.devRelease.contractAddress",
+        "state.selectedRequestId",
+        "runtime.wallet",
+        "runtime.wallet.account",
+        "runtime.network",
+        "runtime.network.chainId",
+        "runtime.txDraft",
+        "runtime.externalOutcome"
+      ];
+    }
+
+    function buildMcelTinyContractRepairPacket({wallet = {}, network = {}, txDraft = {}, externalOutcome = {}, proofChip = {}, payload = {}} = {}) {
+      const reason = payload.reason || "runtime-proof-display-gap";
+      const outcomeStatus = externalOutcome?.status || "waiting";
+      const outcomeReason = externalOutcome?.reason || "not-run";
+      const txStatus = txDraft?.status || "empty";
+      return {
+        kind: "mcel-repair-packet",
+        version: "0.1.0",
+        status: "ready",
+        target: "runtime.proofChip",
+        reason,
+        createdAt: new Date().toISOString(),
+        liveAiCall: false,
+        modelCall: "not-requested",
+        allowedWrites: [
+          "runtime.proofChip",
+          "runtime.assistantRepairPrompt",
+          "runtime.repairPacket",
+          "runtime.evidenceStrip"
+        ],
+        forbiddenWrites: mcelTinyContractRepairForbiddenWrites(),
+        evidence: {
+          walletConnected: wallet.connected === true,
+          walletProvider: wallet.provider || wallet.mode || "unknown",
+          networkStatus: network.status || "waiting",
+          networkOk: network.ok === true,
+          chainId: network.chainId || "",
+          expectedChainId: network.expectedChainId || "0x28757b2",
+          externalOutcomeStatus: outcomeStatus,
+          externalOutcomeReason: outcomeReason,
+          txDraftStatus: txStatus,
+          txDraftBoundary: txDraft.boundary || "runtime-only-no-send",
+          proofChipStatus: proofChip.status || "pending",
+          proofChipTextPresent: Boolean(proofChip.text)
+        },
+        instruction: [
+          "Summarize the runtime proof state only.",
+          "Do not change source.devRelease, state, runtime.wallet, runtime.network, runtime.txDraft, or runtime.externalOutcome.",
+          "Return proposed runtime proof text only; SCM will reject undeclared writes."
+        ].join(" ")
+      };
+    }
+
+    function summarizeMcelTinyContractRepairPacket(packet = {}) {
+      const evidence = packet.evidence || {};
+      return [
+        `repair packet target=${packet.target || "runtime.proofChip"}`,
+        `outcome=${evidence.externalOutcomeStatus || "waiting"}:${evidence.externalOutcomeReason || "not-run"}`,
+        `wallet=${evidence.walletConnected ? "connected" : "not-connected"}`,
+        `network=${evidence.networkStatus || "waiting"}`,
+        `txDraft=${evidence.txDraftStatus || "empty"}`,
+        "liveAiCall=false"
+      ].join(" · ");
+    }
+
     function mcelTinyContractScmManifest() {
       return {
         version: "0.2.0",
@@ -465,6 +568,7 @@
             "walletEvents",
             "externalOutcome",
             "proofChip",
+            "repairPacket",
             "assistantRepairPrompt",
             "serializedSource",
             "evidenceStrip"
@@ -1138,7 +1242,7 @@
             errorPolicy: {
               onFailure: "runtime-draft-only"
             },
-            run(ctx) {
+            run(ctx, payload = {}) {
               const contractAddress = ctx.get("source.devRelease.contractAddress");
               const requests = ctx.get("source.devRelease.requests") || [];
               const selectedId = ctx.get("state.selectedRequestId") || requests[0]?.id || "";
@@ -1148,15 +1252,79 @@
               const externalOutcome = ctx.get("runtime.externalOutcome") || {};
               const externalBlocked = ["blocked", "exception"].includes(externalOutcome.status);
               const ready = Boolean(wallet.connected && network.ok && request && !externalBlocked);
+              const draftProbe = payload.draftProbe?.kind === "mcel-runtime-tx-draft-probe"
+                ? payload.draftProbe
+                : null;
+              const encoding = ready
+                ? (draftProbe?.encoding || mcelTinyContractEncodeTxDraftData(request, wallet, contractAddress))
+                : {
+                    status: "blocked",
+                    methodSignature: request?.contractMethod || "",
+                    functionName: mcelTinyContractTxFunctionName(request?.contractMethod || ""),
+                    argsPreview: [],
+                    calldata: "",
+                    data: "",
+                    calldataEncoding: externalBlocked ? "blocked-by-external-outcome" : "blocked-by-wallet-network-gate"
+                  };
+              const tx = ready
+                ? (draftProbe?.tx || {
+                    from: wallet.account || "",
+                    to: contractAddress || "",
+                    value: "0x0",
+                    data: encoding.calldata || encoding.data || "",
+                    chainId: network.chainId || "",
+                    noSend: true
+                  })
+                : {
+                    from: "",
+                    to: contractAddress || "",
+                    value: "0x0",
+                    data: "",
+                    chainId: network.chainId || "",
+                    noSend: true
+                  };
               const txDraft = {
                 status: ready ? "ready" : "blocked",
                 requestId: request?.id || "",
-                to: contractAddress || "",
-                chainId: network.chainId || "",
-                from: wallet.account || "",
-                data: request ? `method:${request.contractMethod}` : "",
+                createdFrom: {
+                  requestId: request?.id || "",
+                  sourcePath: "source.devRelease.requests",
+                  contractMethod: request?.contractMethod || "",
+                  status: request?.status || "",
+                  risk: request?.risk || ""
+                },
+                to: tx.to || "",
+                from: tx.from || "",
+                value: tx.value || "0x0",
+                chainId: tx.chainId || network.chainId || "",
+                expectedChainId: network.expectedChainId || "",
+                data: tx.data || "",
+                calldata: tx.data || encoding.calldata || "",
+                calldataEncoding: encoding.calldataEncoding || "unknown",
+                encodingStatus: encoding.status || "unknown",
+                methodSignature: encoding.methodSignature || request?.contractMethod || "",
+                functionName: encoding.functionName || mcelTinyContractTxFunctionName(request?.contractMethod || ""),
+                argsPreview: encoding.argsPreview || [],
+                nonce: draftProbe?.nonce || {
+                  method: "eth_getTransactionCount",
+                  status: ready ? "not-probed" : "skipped",
+                  reason: ready ? "probe-unavailable" : "wallet-network-gate-blocked"
+                },
+                gasEstimate: draftProbe?.gasEstimate || {
+                  method: "eth_estimateGas",
+                  status: ready ? "not-probed" : "skipped",
+                  reason: ready ? "probe-unavailable" : "wallet-network-gate-blocked"
+                },
+                ethCall: draftProbe?.ethCall || {
+                  method: "eth_call",
+                  status: ready ? "not-probed" : "skipped",
+                  reason: ready ? "probe-unavailable" : "wallet-network-gate-blocked"
+                },
+                rpcEvidence: draftProbe?.rpc || [],
+                noSend: true,
+                boundary: "runtime-only-no-send",
                 summary: ready
-                  ? `Drafted runtime-only tx for ${request.id} to ${contractAddress}.`
+                  ? `Drafted runtime-only no-send tx for ${request.id} to ${contractAddress}.`
                   : (externalBlocked
                     ? `Transaction draft blocked by external outcome ${externalOutcome.status}: ${externalOutcome.reason || "unknown"}.`
                     : "Transaction draft blocked until wallet and dev-network gate are ready.")
@@ -1164,19 +1332,30 @@
               ctx.set("runtime.txDraft", txDraft);
               ctx.set("runtime.evidenceStrip", [
                 `release.draftTx status=${txDraft.status}`,
+                `noSend=${txDraft.noSend}`,
                 `to=${txDraft.to || "missing"}`,
-                `request=${txDraft.requestId || "missing"}`
+                `from=${txDraft.from ? txDraft.from.slice(0, 10) + "…" : "missing"}`,
+                `calldata=${txDraft.calldata ? txDraft.calldata.slice(0, 18) + "…" : "blocked"}`,
+                `nonce=${txDraft.nonce?.status || "unknown"}`,
+                `gas=${txDraft.gasEstimate?.status || "unknown"}`
               ]);
               ctx.evidence({
                 ok: ready,
                 message: ready
-                  ? "release.draftTx produced a runtime-only transaction draft."
-                  : "release.draftTx stayed runtime-only and reported a blocked wallet/network gate."
+                  ? "release.draftTx produced a runtime-only no-send transaction draft with calldata, nonce/gas probe status, and source request provenance."
+                  : "release.draftTx stayed runtime-only and reported a blocked wallet/network/external outcome gate."
               });
               return txDraft;
             },
             commit(_ctx, result) {
-              return {status: result?.status || "", requestId: result?.requestId || ""};
+              return {
+                status: result?.status || "",
+                requestId: result?.requestId || "",
+                noSend: result?.noSend === true,
+                calldataEncoding: result?.calldataEncoding || "",
+                gasStatus: result?.gasEstimate?.status || "",
+                nonceStatus: result?.nonce?.status || ""
+              };
             }
           },
           "release.approve": {
@@ -1239,13 +1418,13 @@
             }
           },
           "ai.repairWalletHint": {
-            kind: "ai-repair-effect",
-            triggers: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
-            reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
-            writes: ["runtime.proofChip", "runtime.assistantRepairPrompt"],
+            kind: "repair-packet-effect",
+            triggers: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"],
+            reads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome", "runtime.proofChip"],
+            writes: ["runtime.proofChip", "runtime.repairPacket", "runtime.assistantRepairPrompt", "runtime.evidenceStrip"],
             external: {
-              resource: "ai-repair",
-              operation: "repair-runtime-wallet-hint"
+              resource: "repair-packet",
+              operation: "build-bounded-repair-packet-no-model-call"
             },
             errorPolicy: {
               onFailure: "leave-source-untouched"
@@ -1254,28 +1433,40 @@
               const wallet = ctx.get("runtime.wallet") || {};
               const network = ctx.get("runtime.network") || {};
               const txDraft = ctx.get("runtime.txDraft") || {};
-              const prompt = [
-                "Repair only runtime wallet/proof chrome for DevNetworkReleaseConsole.",
-                `Wallet: ${wallet.connected ? "connected" : "disconnected"}.`,
-                `Chain: ${network.chainId || "missing"} expected ${network.expectedChainId || "0x28757b2"}.`,
-                `Tx draft: ${txDraft.status || "empty"} ${txDraft.requestId || ""}.`,
-                "Forbidden: source.devRelease.* and state.*.",
-                "Allowed: runtime.proofChip and runtime.assistantRepairPrompt."
-              ].join("\n");
+              const externalOutcome = ctx.get("runtime.externalOutcome") || {};
+              const proofChip = ctx.get("runtime.proofChip") || {};
+              const packet = buildMcelTinyContractRepairPacket({wallet, network, txDraft, externalOutcome, proofChip, payload});
+              const prompt = JSON.stringify(packet, null, 2);
+              ctx.set("runtime.repairPacket", packet);
               ctx.set("runtime.assistantRepairPrompt", prompt);
               ctx.set("runtime.proofChip", {
-                text: payload.text || `Runtime wallet hint repaired; source stayed untouched.`,
-                status: "repaired",
-                repaired: true
+                text: payload.text || summarizeMcelTinyContractRepairPacket(packet),
+                status: "repair-packet-ready",
+                repaired: true,
+                repairPacketReady: true,
+                liveAiCall: false
               });
+              ctx.set("runtime.evidenceStrip", [
+                "repair packet generated",
+                `target=${packet.target}`,
+                `externalOutcome=${packet.evidence.externalOutcomeStatus}`,
+                "liveAiCall=false",
+                "forbidden writes declared"
+              ]);
               ctx.evidence({
                 ok: true,
-                message: "AI repair stayed inside runtime-owned wallet/proof boundary."
+                message: "Repair packet was generated inside runtime-owned proof boundary; no live AI call was made.",
+                repairPacket: packet
               });
-              return {repaired: true, walletConnected: wallet.connected === true};
+              return {repaired: true, walletConnected: wallet.connected === true, repairPacketReady: true, liveAiCall: false};
             },
             commit(_ctx, result) {
-              return {repaired: result?.repaired === true, walletConnected: result?.walletConnected === true};
+              return {
+                repaired: result?.repaired === true,
+                walletConnected: result?.walletConnected === true,
+                repairPacketReady: result?.repairPacketReady === true,
+                liveAiCall: result?.liveAiCall === true
+              };
             }
           }
         },
@@ -1338,6 +1529,7 @@
             "runtime.walletEvents",
             "runtime.externalOutcome",
             "runtime.proofChip",
+            "runtime.repairPacket",
             "runtime.assistantRepairPrompt",
             "runtime.serializedSource",
             "runtime.evidenceStrip"
@@ -1351,6 +1543,8 @@
             "runtime.walletAdapter",
             "runtime.walletEvents",
             "runtime.externalOutcome",
+            "runtime.repairPacket",
+            "mcel-repair-packet",
             "MetaMask",
             "0xDeaD0000"
           ],
@@ -1362,45 +1556,54 @@
         repairContract: {
           allowed: [
             "runtime.proofChip",
-            "runtime.assistantRepairPrompt"
+            "runtime.repairPacket",
+            "runtime.assistantRepairPrompt",
+            "runtime.evidenceStrip"
           ],
-          forbidden: [
-            "source.devRelease",
-            "state.selectedRequestId",
-            "runtime.wallet"
-          ],
+          forbidden: mcelTinyContractRepairForbiddenWrites(),
           strategies: {
             repairRuntimeProofChip: {
-              reads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.proofChip"],
+              reads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome", "runtime.proofChip"],
               writes: [
                 "runtime.proofChip",
-                "runtime.assistantRepairPrompt"
+                "runtime.repairPacket",
+                "runtime.assistantRepairPrompt",
+                "runtime.evidenceStrip"
               ],
               apply(ctx, payload = {}) {
                 const wallet = ctx.get("runtime.wallet") || {};
                 const network = ctx.get("runtime.network") || {};
                 const txDraft = ctx.get("runtime.txDraft") || {};
-                ctx.set("runtime.assistantRepairPrompt", [
-                  "SCM repair context for DevNetworkReleaseConsole runtime wallet hint.",
-                  `Wallet connected: ${wallet.connected === true}.`,
-                  `Network status: ${network.status || "waiting"}.`,
-                  `Tx draft: ${txDraft.status || "empty"}.`,
-                  "Allowed writes: runtime.proofChip, runtime.assistantRepairPrompt.",
-                  "Forbidden writes: source.devRelease, state.selectedRequestId, runtime.wallet."
-                ].join("\n"));
+                const externalOutcome = ctx.get("runtime.externalOutcome") || {};
+                const proofChip = ctx.get("runtime.proofChip") || {};
+                const packet = buildMcelTinyContractRepairPacket({wallet, network, txDraft, externalOutcome, proofChip, payload});
+                ctx.set("runtime.repairPacket", packet);
+                ctx.set("runtime.assistantRepairPrompt", JSON.stringify(packet, null, 2));
                 ctx.set("runtime.proofChip", {
-                  text: payload.text || `Repair strategy rebuilt runtime wallet hint for ${network.status || "waiting"}.`,
-                  status: "repaired",
-                  repaired: true
+                  text: payload.text || summarizeMcelTinyContractRepairPacket(packet),
+                  status: "repair-packet-ready",
+                  repaired: true,
+                  repairPacketReady: true,
+                  liveAiCall: false
                 });
+                ctx.set("runtime.evidenceStrip", [
+                  "repairRuntimeProofChip generated bounded repair packet",
+                  `target=${packet.target}`,
+                  `externalOutcome=${packet.evidence.externalOutcomeStatus}`,
+                  "allowed writes: runtime proof display only",
+                  "liveAiCall=false"
+                ]);
                 ctx.evidence({
                   ok: true,
-                  message: "repairRuntimeProofChip wrote only runtime-owned repair paths."
+                  message: "repairRuntimeProofChip produced a bounded repair packet without changing source, wallet, network, tx draft, or external outcome.",
+                  repairPacket: packet
                 });
-                return {repaired: true};
+                return {repaired: true, repairPacketReady: true, forbiddenWrites: packet.forbiddenWrites, liveAiCall: false};
               },
               post(ctx) {
-                return Boolean(ctx.get("runtime.proofChip")?.repaired);
+                const chip = ctx.get("runtime.proofChip") || {};
+                const packet = ctx.get("runtime.repairPacket") || {};
+                return Boolean(chip.repaired && packet.kind === "mcel-repair-packet" && packet.liveAiCall === false);
               }
             }
           }
@@ -1677,6 +1880,7 @@
       const slot = app?.querySelector('[data-mc-slot="runtime.txDraft"]');
       if (!slot) return;
       const txDraft = instance?.runtime?.txDraft || {};
+      const network = instance?.runtime?.network || {};
       const selected = selectedMcelTinyContractItem(instance);
       const output = document.createElement("section");
       output.className = "mcel-dev-release-console__tx";
@@ -1688,9 +1892,16 @@
         <p>${summaryText || txDraft.summary || "Transaction draft is waiting."}</p>
         <dl>
           <dt>request</dt><dd>${txDraft.requestId || selected?.id || "none"}</dd>
-          <dt>status</dt><dd>${txDraft.status || "empty"}</dd>
+          <dt>status</dt><dd>${txDraft.status || "empty"}${txDraft.noSend ? " · no-send" : ""}</dd>
+          <dt>from</dt><dd>${txDraft.from ? txDraft.from.slice(0, 12) + "…" : "not drafted"}</dd>
           <dt>to</dt><dd>${txDraft.to || "not drafted"}</dd>
-          <dt>data</dt><dd>${txDraft.data || "not drafted"}</dd>
+          <dt>value</dt><dd>${txDraft.value || "0x0"}</dd>
+          <dt>chain</dt><dd>${txDraft.chainId || "missing"} / expected ${txDraft.expectedChainId || network.expectedChainId || "0x28757b2"}</dd>
+          <dt>method</dt><dd>${txDraft.methodSignature || "not drafted"}</dd>
+          <dt>calldata</dt><dd>${txDraft.calldata ? txDraft.calldata.slice(0, 22) + "…" : "not drafted"}</dd>
+          <dt>nonce</dt><dd>${txDraft.nonce?.status || "not-probed"}</dd>
+          <dt>gas</dt><dd>${txDraft.gasEstimate?.status || "not-probed"}</dd>
+          <dt>call</dt><dd>${txDraft.ethCall?.status || "not-probed"}</dd>
         </dl>
       `;
       slot.replaceChildren(output);
@@ -1750,6 +1961,8 @@
         tinyState.selectedIndex = 0;
         tinyState.blockedWrites = 0;
         tinyState.repairCount = 0;
+        tinyState.repairPacketCount = 0;
+        tinyState.repairBoundaryBlockedCount = 0;
         tinyState.reviewedCount = 0;
         tinyState.walletConnectCount = 0;
         tinyState.walletDisconnectCount = 0;
@@ -1772,6 +1985,7 @@
         tinyState.externalExceptionCount = 0;
         tinyState.lastWalletResetClean = false;
         tinyState.lastExternalOutcome = null;
+        tinyState.lastWalletActionOutcome = null;
         tinyState.evidence = [];
         resetMcelTinyContractWalletAdapterState("mount-reset");
       }
@@ -1797,7 +2011,7 @@
       disconnectButton?.addEventListener("click", () => disconnectMcelTinyContractWallet("runtime-button"));
       verifyButton?.addEventListener("click", () => verifyMcelTinyContractNetwork("runtime-button"));
       selectButton?.addEventListener("click", () => clickMcelTinyContractCounter());
-      draftButton?.addEventListener("click", () => draftMcelTinyContractTransaction("runtime-button"));
+      draftButton?.addEventListener("click", () => { void draftMcelTinyContractTransaction("runtime-button"); });
       approveButton?.addEventListener("click", () => markMcelTinyContractReviewed("runtime-button"));
 
       syncMcelTinyContractDomFromScm(app, runtime.instance, reason);
@@ -2049,6 +2263,8 @@
         : "exception";
       const outcome = {
         kind: "mcel-external-outcome",
+        sequence: Number(input.sequence || 0),
+        capturedAt: String(input.capturedAt || ""),
         operation: String(input.operation || "wallet.unknown"),
         phase: String(input.phase || "external"),
         status,
@@ -2075,13 +2291,28 @@
       return outcome;
     }
 
+    function mcelTinyContractIsWalletActionOutcome(outcome) {
+      return outcome?.kind === "mcel-external-outcome" && ["wallet.connect", "wallet.disconnect"].includes(outcome.operation);
+    }
+
+    function mcelTinyContractOutcomeSequence(outcome) {
+      return Number(outcome?.sequence || 0);
+    }
+
     function recordMcelTinyContractExternalOutcome(outcomeInput = {}) {
       const tinyState = ensureMcelTinyContractState();
-      const outcome = mcelTinyContractExternalOutcome(outcomeInput);
       tinyState.externalOutcomeCount += 1;
+      const outcome = mcelTinyContractExternalOutcome({
+        ...outcomeInput,
+        sequence: tinyState.externalOutcomeCount,
+        capturedAt: new Date().toISOString()
+      });
       if (outcome.status === "blocked") tinyState.externalBlockedCount += 1;
       if (outcome.status === "exception") tinyState.externalExceptionCount += 1;
       tinyState.lastExternalOutcome = outcome;
+      if (mcelTinyContractIsWalletActionOutcome(outcome)) {
+        tinyState.lastWalletActionOutcome = outcome;
+      }
       const adapter = mcelTinyContractWalletAdapterState();
       if (!Array.isArray(adapter.externalOutcomes)) adapter.externalOutcomes = [];
       adapter.externalOutcomes.push(outcome);
@@ -2193,6 +2424,233 @@
         rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true),
         nextAction: "Open the proof dock and inspect the captured external exception."
       });
+    }
+
+    function mcelTinyContractLatestWalletActionOutcome(instance = null) {
+      const tinyState = ensureMcelTinyContractState();
+      const runtimeOutcome = instance?.runtime?.externalOutcome;
+      const stateOutcome = tinyState.lastWalletActionOutcome;
+      const genericStateOutcome = tinyState.lastExternalOutcome;
+      const candidates = [runtimeOutcome, stateOutcome, genericStateOutcome]
+        .filter((outcome) => outcome?.kind === "mcel-external-outcome")
+        .filter((outcome) => mcelTinyContractIsWalletActionOutcome(outcome) || !stateOutcome);
+      if (!candidates.length) {
+        return mcelTinyContractExternalOutcome({
+          operation: "wallet.lifecycle",
+          phase: "waiting",
+          status: "waiting",
+          known: false,
+          reason: "not-run",
+          message: "No external wallet outcome has been captured."
+        });
+      }
+      return candidates.reduce((latest, outcome) => {
+        return mcelTinyContractOutcomeSequence(outcome) >= mcelTinyContractOutcomeSequence(latest) ? outcome : latest;
+      }, candidates[0]);
+    }
+
+    function mcelTinyContractTxSelector(signature = "") {
+      let hash = 0;
+      Array.from(String(signature || "")).forEach((char) => {
+        hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+      });
+      return (hash >>> 0).toString(16).padStart(8, "0").slice(0, 8);
+    }
+
+    function mcelTinyContractBytes32FromText(value = "") {
+      const hex = Array.from(String(value || "")).map((char) => {
+        return char.charCodeAt(0).toString(16).padStart(2, "0");
+      }).join("");
+      return `0x${hex.slice(0, 64).padEnd(64, "0")}`;
+    }
+
+    function mcelTinyContractTxFunctionName(signature = "") {
+      return String(signature || "").split("(")[0] || "";
+    }
+
+    function mcelTinyContractTxDraftArgs(request = {}, wallet = {}, contractAddress = "") {
+      const signature = String(request.contractMethod || "");
+      if (signature.startsWith("allowance(")) {
+        return [
+          wallet.account || "0x0000000000000000000000000000000000000000",
+          contractAddress || "0x0000000000000000000000000000000000000000"
+        ];
+      }
+      if (signature.includes("bytes32")) {
+        return [mcelTinyContractBytes32FromText(request.id || signature)];
+      }
+      return [];
+    }
+
+    function mcelTinyContractTxArgPreview(args = []) {
+      return args.map((arg) => {
+        const text = String(arg || "");
+        return text.length > 18 ? `${text.slice(0, 14)}…${text.slice(-4)}` : text;
+      });
+    }
+
+    function mcelTinyContractFallbackCalldata(signature = "", args = []) {
+      const selector = mcelTinyContractTxSelector(signature);
+      const payload = args.map((arg) => {
+        const text = String(arg || "");
+        if (text.startsWith("0x")) return text.slice(2).padStart(64, "0").slice(-64);
+        return mcelTinyContractBytes32FromText(text).slice(2);
+      }).join("");
+      return `0x${selector}${payload}`;
+    }
+
+    function mcelTinyContractEncodeTxDraftData(request = {}, wallet = {}, contractAddress = "") {
+      const methodSignature = String(request.contractMethod || "");
+      const functionName = mcelTinyContractTxFunctionName(methodSignature);
+      const args = mcelTinyContractTxDraftArgs(request, wallet, contractAddress);
+      if (!methodSignature) {
+        return {
+          status: "missing",
+          methodSignature,
+          functionName,
+          args,
+          argsPreview: [],
+          calldata: "",
+          data: "",
+          calldataEncoding: "missing-method"
+        };
+      }
+      try {
+        if (window.ethers?.Interface) {
+          const iface = new window.ethers.Interface([`function ${methodSignature}`]);
+          const calldata = iface.encodeFunctionData(functionName, args);
+          return {
+            status: "encoded",
+            methodSignature,
+            functionName,
+            args,
+            argsPreview: mcelTinyContractTxArgPreview(args),
+            calldata,
+            data: calldata,
+            calldataEncoding: "ethers.Interface"
+          };
+        }
+      } catch (error) {
+        return {
+          status: "fallback",
+          methodSignature,
+          functionName,
+          args,
+          argsPreview: mcelTinyContractTxArgPreview(args),
+          calldata: mcelTinyContractFallbackCalldata(methodSignature, args),
+          data: mcelTinyContractFallbackCalldata(methodSignature, args),
+          calldataEncoding: "deterministic-fallback",
+          encodingError: mcelTinyContractWalletError(error)
+        };
+      }
+      const calldata = mcelTinyContractFallbackCalldata(methodSignature, args);
+      return {
+        status: "fallback",
+        methodSignature,
+        functionName,
+        args,
+        argsPreview: mcelTinyContractTxArgPreview(args),
+        calldata,
+        data: calldata,
+        calldataEncoding: "deterministic-fallback"
+      };
+    }
+
+    async function mcelTinyContractOptionalWalletRequest(provider, method, params = []) {
+      if (!provider || typeof provider.request !== "function") {
+        return {
+          method,
+          status: "skipped",
+          reason: "provider-unavailable"
+        };
+      }
+      try {
+        const value = await mcelTinyContractWalletRequest(provider, method, params);
+        return {
+          method,
+          status: "pass",
+          value
+        };
+      } catch (error) {
+        return {
+          method,
+          status: "unavailable",
+          error: mcelTinyContractWalletError(error)
+        };
+      }
+    }
+
+    async function buildMcelTinyContractTxDraftProbe(instance) {
+      const source = instance?.source || {};
+      const state = instance?.state || {};
+      const runtime = instance?.runtime || {};
+      const contractAddress = source.devRelease?.contractAddress || "";
+      const requests = source.devRelease?.requests || [];
+      const selectedId = state.selectedRequestId || requests[0]?.id || "";
+      const request = requests.find((entry) => entry.id === selectedId) || requests[0] || null;
+      const wallet = runtime.wallet || {};
+      const network = runtime.network || {};
+      const externalOutcome = runtime.externalOutcome || {};
+      const externalBlocked = ["blocked", "exception"].includes(externalOutcome.status);
+      const ready = Boolean(wallet.connected && network.ok && request && !externalBlocked);
+      const encoding = ready
+        ? mcelTinyContractEncodeTxDraftData(request, wallet, contractAddress)
+        : {
+            status: "blocked",
+            methodSignature: request?.contractMethod || "",
+            functionName: mcelTinyContractTxFunctionName(request?.contractMethod || ""),
+            args: [],
+            argsPreview: [],
+            calldata: "",
+            data: "",
+            calldataEncoding: "blocked-until-wallet-network-ready"
+          };
+      const tx = {
+        from: ready ? (wallet.account || "") : "",
+        to: ready ? (contractAddress || "") : "",
+        value: "0x0",
+        data: ready ? (encoding.calldata || encoding.data || "") : "",
+        chainId: network.chainId || "",
+        noSend: true
+      };
+      const provider = ready ? mcelTinyContractInjectedProvider() : null;
+      const nonce = ready
+        ? await mcelTinyContractOptionalWalletRequest(provider, "eth_getTransactionCount", [tx.from, "pending"])
+        : {method: "eth_getTransactionCount", status: "skipped", reason: "wallet-network-gate-blocked"};
+      const gasEstimate = ready
+        ? await mcelTinyContractOptionalWalletRequest(provider, "eth_estimateGas", [{
+            from: tx.from,
+            to: tx.to,
+            value: tx.value,
+            data: tx.data
+          }])
+        : {method: "eth_estimateGas", status: "skipped", reason: "wallet-network-gate-blocked"};
+      const ethCall = ready
+        ? await mcelTinyContractOptionalWalletRequest(provider, "eth_call", [{
+            from: tx.from,
+            to: tx.to,
+            value: tx.value,
+            data: tx.data
+          }, "latest"])
+        : {method: "eth_call", status: "skipped", reason: "wallet-network-gate-blocked"};
+      return {
+        kind: "mcel-runtime-tx-draft-probe",
+        noSend: true,
+        ready,
+        createdFrom: {
+          requestId: request?.id || "",
+          sourcePath: "source.devRelease.requests",
+          contractMethod: request?.contractMethod || "",
+          status: request?.status || "",
+          risk: request?.risk || ""
+        },
+        tx,
+        encoding,
+        nonce,
+        gasEstimate,
+        ethCall,
+        rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+      };
     }
 
     function recordMcelTinyContractWalletCall(method, status, detail = {}) {
@@ -2660,16 +3118,35 @@
         const detail = mcelTinyContractWalletError(error);
         const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractExceptionOutcome("wallet.connect", "connect-handler", error));
         mcelTinyContractWalletAdapterState().lastError = detail.message;
+        let effectEnvelope = null;
+        try {
+          effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.connect", {
+            provider: mcelTinyContractWalletAdapterState().providerKind || "exception",
+            account: "",
+            chainId: "",
+            interactive: true,
+            outcome,
+            adapter: mcelTinyContractWalletAdapterState()
+          });
+          tinyState.walletConnectCount += 1;
+        } catch (scmError) {
+          recordMcelTinyContractEvidence(
+            "wallet",
+            "Wallet connect exception envelope could not be committed through SCM.",
+            "fail",
+            {reason, error: detail, outcome, scmError: mcelTinyContractWalletError(scmError), walletAdapter: tinyState.walletAdapter}
+          );
+        }
         recordMcelTinyContractEvidence(
           "wallet",
-          "Wallet connect/check produced an external exception envelope instead of escaping as an uncaught UI error.",
+          "Wallet connect/check produced an external exception envelope and committed the blocked runtime state through SCM.",
           "warn",
-          {reason, error: detail, outcome, walletAdapter: tinyState.walletAdapter}
+          {reason, error: detail, outcome, effectEnvelope, walletAdapter: tinyState.walletAdapter}
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet connect/check failed.");
         renderMcelTinyContractProof(app, reason);
-        return {error: detail};
+        return {error: detail, outcome, effectEnvelope};
       }
     }
 
@@ -2764,25 +3241,73 @@
       renderMcelTinyContractProof(app, reason);
     }
 
-    function draftMcelTinyContractTransaction(reason = "manual-draft-tx") {
+    async function draftMcelTinyContractTransaction(reason = "manual-draft-tx") {
       const tinyState = ensureMcelTinyContractState();
       let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
       if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
         app = renderMcelTinyContractTest("draft-before-mount", { exercise: false, reset: false });
       }
       const instance = ensureMcelTinyContractState().scmInstance;
-      if (!instance) return;
-      const result = window.McelLabScm.runEffect(instance, "release.draftTx");
+      if (!instance) return null;
+      let draftProbe = null;
+      try {
+        draftProbe = await buildMcelTinyContractTxDraftProbe(instance);
+      } catch (error) {
+        draftProbe = {
+          kind: "mcel-runtime-tx-draft-probe",
+          noSend: true,
+          ready: false,
+          error: mcelTinyContractWalletError(error),
+          nonce: {method: "eth_getTransactionCount", status: "exception", error: mcelTinyContractWalletError(error)},
+          gasEstimate: {method: "eth_estimateGas", status: "exception", error: mcelTinyContractWalletError(error)},
+          ethCall: {method: "eth_call", status: "exception", error: mcelTinyContractWalletError(error)},
+          rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+        };
+      }
+      const result = window.McelLabScm.runEffect(instance, "release.draftTx", {draftProbe});
+      const effectResult = result?.result || result || {};
       tinyState.txDraftCount += 1;
       recordMcelTinyContractEvidence(
         "tx-draft",
-        "SCM release.draftTx built a runtime-only transaction draft; no transaction was sent.",
-        result?.status === "ready" ? "pass" : "warn",
-        {txDraftCount: tinyState.txDraftCount, result}
+        "SCM release.draftTx built or blocked a realistic runtime-only no-send transaction draft.",
+        effectResult?.status === "ready" ? "pass" : "warn",
+        {txDraftCount: tinyState.txDraftCount, result, draftProbe}
       );
       app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
       syncMcelTinyContractDomFromScm(app, instance, "Runtime-only transaction draft updated.");
       renderMcelTinyContractProof(app, reason);
+      return {result, draftProbe};
+    }
+
+    function attemptMcelTinyContractForbiddenRepairWrite(instance, reason = "manual-repair-boundary") {
+      const tinyState = ensureMcelTinyContractState();
+      if (!instance || !window.McelLabScm?.createRepairContext) return null;
+      try {
+        const ctx = window.McelLabScm.createRepairContext(instance, "repairRuntimeProofChip");
+        ctx.set("runtime.wallet.account", "0x0000000000000000000000000000000000000000");
+        recordMcelTinyContractEvidence(
+          "repair-boundary",
+          "Unexpected repair write to runtime.wallet.account succeeded.",
+          "fail",
+          { attemptedField: "runtime.wallet.account", reason }
+        );
+        return {blocked: false};
+      } catch (error) {
+        tinyState.repairBoundaryBlockedCount += 1;
+        const detail = {
+          attemptedField: "runtime.wallet.account",
+          code: error?.violation?.code || error?.name || "Error",
+          message: error?.message || String(error),
+          reason
+        };
+        recordMcelTinyContractEvidence(
+          "repair-boundary",
+          "SCM blocked repair packet from mutating runtime.wallet.account.",
+          "pass",
+          detail
+        );
+        return {blocked: true, detail};
+      }
     }
 
     function repairMcelTinyContractRuntimeChrome(reason = "manual-repair") {
@@ -2794,17 +3319,27 @@
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return;
       const result = window.McelLabScm.repairComponent(instance, "repairRuntimeProofChip", {
-        text: `Runtime wallet hint repaired at ${reason}.`
+        reason: "external-outcome-proof-display-gap",
+        text: `Repair packet ready for ${reason}; no live AI call was made.`
       });
+      const repairPacket = instance.runtime?.repairPacket || {};
+      const boundaryProbe = attemptMcelTinyContractForbiddenRepairWrite(instance, reason);
       tinyState.repairCount += 1;
+      if (repairPacket.kind === "mcel-repair-packet") tinyState.repairPacketCount += 1;
       recordMcelTinyContractEvidence(
         "repair",
-        "SCM repairComponent rebuilt runtime wallet/proof hint without touching source or wallet account state.",
+        "SCM generated a bounded repair packet for runtime proof display without calling AI or touching source/wallet/network/tx draft state.",
         "pass",
-        { repairCount: tinyState.repairCount, result }
+        {
+          repairCount: tinyState.repairCount,
+          repairPacketCount: tinyState.repairPacketCount,
+          repairPacket,
+          boundaryProbe,
+          result
+        }
       );
       app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
-      syncMcelTinyContractDomFromScm(app, instance, "Runtime wallet hint repaired.");
+      syncMcelTinyContractDomFromScm(app, instance, "Runtime repair packet generated.");
       renderMcelTinyContractProof(app, reason);
     }
 
@@ -2963,18 +3498,8 @@
         tinyState.walletRevokeAttemptCount > 0;
       const walletResetOnly = tinyState.walletDisconnectCount > 0 && tinyState.walletConnectCount === 0;
       const providerRevokeRequired = disconnectEffectRan && liveProviderSeen;
-      const externalOutcome = instance?.runtime?.externalOutcome?.kind === "mcel-external-outcome"
-        ? instance.runtime.externalOutcome
-        : (tinyState.lastExternalOutcome?.kind === "mcel-external-outcome"
-          ? tinyState.lastExternalOutcome
-          : mcelTinyContractExternalOutcome({
-              operation: "wallet.lifecycle",
-              phase: "waiting",
-              status: "waiting",
-              known: false,
-              reason: "not-run",
-              message: "No external wallet outcome has been captured."
-            }));
+      const runtimeTxDraft = instance?.runtime?.txDraft || {};
+      const externalOutcome = mcelTinyContractLatestWalletActionOutcome(instance);
       const actionOutcome = externalOutcome.status || "waiting";
       const externalOutcomeCaptured = externalOutcome.kind === "mcel-external-outcome" && actionOutcome !== "waiting";
       const externalBlockedOrException = ["blocked", "exception"].includes(actionOutcome);
@@ -3010,7 +3535,17 @@
         txDraftRuntimeOnly: tinyState.txDraftCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.draftTx"),
         declaredSourceEffectRan: tinyState.reviewedCount > 0 || (approvedSource && componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.approve")),
         unsafeSourceWriteBlocked: unsafeBlocked,
-        runtimeRepairScoped: tinyState.repairCount > 0,
+        repairPacketGenerated: tinyState.repairPacketCount > 0 || (
+          instance?.runtime?.repairPacket?.kind === "mcel-repair-packet" &&
+          instance?.runtime?.repairPacket?.status === "ready"
+        ),
+        repairPacketNoLiveAiCall: (
+          instance?.runtime?.repairPacket?.kind === "mcel-repair-packet" &&
+          instance?.runtime?.repairPacket?.status === "ready" &&
+          instance?.runtime?.repairPacket?.liveAiCall === false
+        ) || instance?.runtime?.proofChip?.liveAiCall === false,
+        repairBoundaryBlocked: tinyState.repairBoundaryBlockedCount > 0 || (componentEvents.some((entry) => String(entry.code || "").startsWith("SCM_REPAIR_") && entry.ok === false)),
+        runtimeRepairScoped: tinyState.repairCount > 0 && (tinyState.repairPacketCount > 0 || instance?.runtime?.repairPacket?.kind === "mcel-repair-packet") && (tinyState.repairBoundaryBlockedCount > 0 || componentEvents.some((entry) => String(entry.code || "").startsWith("SCM_REPAIR_") && entry.ok === false)),
         serializationClean: Boolean(scmSerialization?.ok) && !serializedHasRuntimeLeak && !liveHtmlHasGenerated,
         layoutContractChecked: layoutCheck?.ok === true,
         styleContractChecked: styleCheck?.ok === true
@@ -3151,10 +3686,15 @@
           metrics: layoutObservation?.metrics || {},
           documentHeightRatio: layoutObservation?.documentHeightRatio ?? null
         },
+        layoutViolations: layoutCheck?.violations || [],
+        styleViolations: styleCheck?.violations || [],
         reviewedCount: tinyState.reviewedCount,
         walletConnectCount: tinyState.walletConnectCount,
         txDraftCount: tinyState.txDraftCount,
         repairCount: tinyState.repairCount,
+        repairPacketCount: tinyState.repairPacketCount,
+        repairBoundaryBlockedCount: tinyState.repairBoundaryBlockedCount,
+        repairPacket: instance?.runtime?.repairPacket || {},
         blockedSourceWrites: tinyState.blockedWrites,
         checks
       };
@@ -3183,6 +3723,11 @@
                 ? "WAITING: run the SCM wallet proof battery"
                 : (receiptMode === "full-scm-battery" ? "FAIL: full SCM governance/safety receipt has a gap" : "FAIL: wallet lifecycle governance/safety receipt has a gap"))));
         const fullOnlyText = receiptMode === "full-scm-battery" ? "" : " (full battery only)";
+        const repairPacketLine = receiptMode === "full-scm-battery"
+          ? `repair packet: ${checks.repairPacketGenerated ? "generated" : "not run"} · liveAiCall=${checks.repairPacketNoLiveAiCall ? "false" : "unknown"} · boundary=${checks.repairBoundaryBlocked ? "blocked forbidden repair write" : "not proven"}`
+          : (checks.repairPacketGenerated
+            ? `repair packet: generated outside ${receiptMode} · liveAiCall=${checks.repairPacketNoLiveAiCall ? "false" : "unknown"} · boundary not required`
+            : `repair packet: not required for ${receiptMode}`);
         mcelTinyContractProof.textContent = [
           proofHeadline,
           `receipt mode: ${receiptMode}`,
@@ -3209,12 +3754,15 @@
           `network gate: ${checks.networkVerified ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : "missing")}`,
           `runtime select: ${checks.declaredRuntimeEffectRan ? "pass" : `not run${fullOnlyText}`}`,
           `runtime tx draft: ${checks.txDraftRuntimeOnly ? "pass" : `not run${fullOnlyText}`}`,
+          `tx draft boundary: ${runtimeTxDraft.noSend ? "no-send" : "not built"} · calldata=${runtimeTxDraft.calldata ? (runtimeTxDraft.calldataEncoding || "present") : "missing"} · nonce=${runtimeTxDraft.nonce?.status || "not-probed"} · gas=${runtimeTxDraft.gasEstimate?.status || "not-probed"} · call=${runtimeTxDraft.ethCall?.status || "not-probed"}`,
           `source approval: ${checks.declaredSourceEffectRan ? "pass" : `not run${fullOnlyText}`}`,
           `unsafe write blocked: ${checks.unsafeSourceWriteBlocked ? "true" : `not run${fullOnlyText}`}`,
+          repairPacketLine,
           `repair scoped: ${checks.runtimeRepairScoped ? "true" : `not run${fullOnlyText}`}`,
           `serialization clean: ${checks.serializationClean}`,
           `layout observation: ${layoutObservation?.source || "missing"}${layoutObservation?.measured ? " measured" : " not measured"}`,
-          `layout/style checked: ${checks.layoutContractChecked}/${checks.styleContractChecked}`
+          `layout/style checked: ${checks.layoutContractChecked}/${checks.styleContractChecked}`,
+          `layout/style issues: layout=${(layoutCheck?.violations || []).length} style=${(styleCheck?.violations || []).length}`
         ].join("\n");
       }
       if (mcelTinyContractEvidence) {
@@ -3241,7 +3789,7 @@
       await connectMcelTinyContractWallet(`${reason}-wallet-connect`);
       verifyMcelTinyContractNetwork(`${reason}-network-gate`);
       clickMcelTinyContractCounter(`${reason}-select`);
-      draftMcelTinyContractTransaction(`${reason}-tx-draft`);
+      await draftMcelTinyContractTransaction(`${reason}-tx-draft`);
       repairMcelTinyContractRuntimeChrome(`${reason}-repair`);
       markMcelTinyContractReviewed(`${reason}-approval`);
       attemptMcelTinyContractForbiddenWrite(`${reason}-blocked-write`);
@@ -3320,7 +3868,7 @@
         void disconnectMcelTinyContractWallet("manual-wallet-disconnect");
       });
       mcelTinyContractIncrement?.addEventListener("click", clickMcelTinyContractCounter);
-      mcelTinyContractDraftTx?.addEventListener("click", () => draftMcelTinyContractTransaction("manual-draft-tx"));
+      mcelTinyContractDraftTx?.addEventListener("click", () => { void draftMcelTinyContractTransaction("manual-draft-tx"); });
       mcelTinyContractRepair?.addEventListener("click", () => repairMcelTinyContractRuntimeChrome("manual-repair"));
       mcelTinyContractBlockWrite?.addEventListener("click", () => attemptMcelTinyContractForbiddenWrite("manual-blocked-write"));
       mcelTinyContractLoadSource?.addEventListener("click", loadMcelTinyContractIntoSourceEditor);

@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+
+import pytest
 from pathlib import Path
 
 
@@ -805,7 +807,7 @@ def test_wait_for_rpc_requires_peer_and_block_advancement(monkeypatch) -> None:
     peers = iter(["0x0", "0x1", "0x1"])
     calls: list[str] = []
 
-    def fake_json_rpc(url: str, method: str, params=None, *, timeout_s: float = 8.0):  # noqa: ANN001
+    def fake_json_rpc(url: str, method: str, params=None, *, timeout_s: float = 8.0, user_agent: str = ""):  # noqa: ANN001
         calls.append(method)
         assert url == "http://127.0.0.1:30010"
         if method == "eth_chainId":
@@ -879,7 +881,7 @@ def test_wait_for_rpc_allows_zero_peers_for_single_besu_plan(monkeypatch) -> Non
     )
     blocks = iter(["0x0", "0x2"])
 
-    def fake_json_rpc(url: str, method: str, params=None, *, timeout_s: float = 8.0):  # noqa: ANN001
+    def fake_json_rpc(url: str, method: str, params=None, *, timeout_s: float = 8.0, user_agent: str = ""):  # noqa: ANN001
         if method == "eth_chainId":
             return "0x28757b1"
         if method == "eth_blockNumber":
@@ -907,11 +909,11 @@ def test_main_without_args_prints_operator_runbook(capsys) -> None:
 
     assert code == 0
     assert "Main Computer Coolify QBFT network runbook" in captured.out
-    assert "1. Prepare the remote Linux server" in captured.out
-    assert "2. Install Coolify on the remote server" in captured.out
-    assert "3. Create a Coolify API token" in captured.out
-    assert "7. Deploy the selected QBFT network" in captured.out
-    assert "python .\\tools\\coolify_qbft_network.py apply testnet --all" in captured.out
+    assert "Remote Coolify deploys do not use" in captured.out
+    assert "python .\\tools\\coolify_qbft_network.py apply testnet `" in captured.out
+    assert "apply testnet --all" not in captured.out
+    assert "--instances validator-rpc-1" in captured.out
+    assert "--host A" not in captured.out
     assert "the following arguments are required" not in captured.err
 
 
@@ -922,17 +924,25 @@ def test_docs_action_prints_same_operator_runbook(capsys) -> None:
     captured = capsys.readouterr()
 
     assert code == 0
-    assert "curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash" in captured.out
-    assert "http://<SERVER_IP>:30010" in captured.out
+    assert "networks.<network>.rpc is used as the default external RPC URL" in captured.out
+    assert "--single-host root@" not in captured.out
+    assert "ssh root@" not in captured.out
 
 
-def test_apply_defaults_wait_indefinitely_for_rpc_and_contract_deploy() -> None:
+def test_apply_defaults_wait_indefinitely_for_rpc_and_keeps_contracts_explicit() -> None:
     module = _load_module()
 
-    args = module.parse_args(["apply", "testnet", "--all"])
+    args = module.parse_args(["apply", "testnet"])
 
     assert args.rpc_timeout_s == 0.0
     assert args.deploy_contracts_timeout_s == 0.0
+
+
+def test_apply_rejects_removed_all_shortcut() -> None:
+    module = _load_module()
+
+    with pytest.raises(SystemExit):
+        module.parse_args(["apply", "testnet", "--all"])
 
 
 
@@ -955,7 +965,7 @@ def test_local_test_seed_targets_local_coolify_and_test_manifest() -> None:
 def test_local_test_subnet_repair_moves_static_ips_and_metadata_when_default_overlaps(monkeypatch) -> None:
     module = _load_module()
     plan = module.build_plan("test")
-    args = module.parse_args(["apply", "test", "--all", "--quiet"])
+    args = module.parse_args(["apply", "test", "--quiet"])
 
     monkeypatch.setattr(
         module,
@@ -986,7 +996,7 @@ def test_local_test_subnet_repair_moves_static_ips_and_metadata_when_default_ove
 def test_local_test_subnet_override_reports_overlap(monkeypatch) -> None:
     module = _load_module()
     plan = module.build_plan("test")
-    args = module.parse_args(["apply", "test", "--all", "--quiet", "--docker-subnet", "172.30.241.0/24"])
+    args = module.parse_args(["apply", "test", "--quiet", "--docker-subnet", "172.30.241.0/24"])
 
     monkeypatch.setattr(
         module,
@@ -1005,7 +1015,7 @@ def test_local_test_subnet_override_reports_overlap(monkeypatch) -> None:
 def test_local_test_apply_dry_run_uses_local_coolify_defaults_without_token_env() -> None:
     module = _load_module()
     plan = module.build_plan("test")
-    args = module.parse_args(["apply", "test", "--all", "--dry-run", "--quiet"])
+    args = module.parse_args(["apply", "test", "--dry-run", "--quiet"])
 
     result = module.apply_network(plan, args)
 
@@ -1266,3 +1276,68 @@ def test_local_test_context_does_not_start_fallback_coolify_stack_when_startup_s
     assert "startup-managed Coolify stack" in message
     assert "dashboard=http://127.0.0.1:8123" in message
     assert "service \"coolify\" is not running" in message
+
+
+def test_json_rpc_uses_default_browser_like_user_agent(monkeypatch) -> None:
+    module = _load_module()
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return b'{"jsonrpc":"2.0","id":1,"result":"0x1"}'
+
+    def fake_urlopen(request, timeout):
+        captured["method"] = request.get_method()
+        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    assert module.json_rpc("https://testnet-rpc.example", "eth_chainId", timeout_s=7.0) == "0x1"
+
+    assert captured["method"] == "POST"
+    assert captured["timeout"] == 7.0
+    assert captured["headers"]["user-agent"] == module.DEFAULT_JSON_RPC_USER_AGENT
+    assert captured["headers"]["accept"] == "application/json"
+    assert captured["headers"]["content-type"] == "application/json"
+
+
+def test_wait_for_rpc_passes_configured_user_agent(monkeypatch) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", public_rpc=True)
+    calls = []
+
+    def fake_json_rpc(url, method, params=None, *, timeout_s=8.0, user_agent=""):
+        calls.append({"url": url, "method": method, "user_agent": user_agent})
+        if method == "eth_chainId":
+            return hex(plan.chain_id)
+        if method == "eth_blockNumber":
+            return "0x2"
+        if method == "net_peerCount":
+            return "0x0"
+        raise AssertionError(f"unexpected RPC method: {method}")
+
+    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
+    args = module.argparse.Namespace(
+        rpc_url="https://testnet-rpc.example",
+        rpc_timeout_s=1.0,
+        rpc_poll_interval_s=0.0,
+        rpc_min_peers=0,
+        no_rpc_require_block_advance=True,
+        rpc_user_agent="MainComputerQbftTest/1.0",
+        quiet=True,
+    )
+
+    result = module.wait_for_rpc(plan, args)
+
+    assert result["ok"] is True
+    assert result["rpc_url"] == "https://testnet-rpc.example"
+    assert [call["method"] for call in calls] == ["eth_chainId", "eth_blockNumber", "net_peerCount"]
+    assert {call["user_agent"] for call in calls} == {"MainComputerQbftTest/1.0"}

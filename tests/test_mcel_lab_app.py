@@ -2290,6 +2290,9 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert '"release.draftTx"' in app
     assert '"release.approve"' in app
     assert '"ai.repairWalletHint"' in app
+    assert '"repairPacket"' in app
+    assert '"build-bounded-repair-packet-no-model-call"' in app
+    assert "bounded repair packets" in app
     assert 'data-mc-component="dev-network-release-console"' in app
     assert 'data-mc-source-id="dev-release-console.source.html"' in app
     assert 'data-mc-route="workspace.dev-network-release"' in app
@@ -2370,6 +2373,8 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "runMcelTinyContractProviderEventEffect" in ui
     assert "wallet_revokePermissions" in ui
     assert "0x28757b2" in ui
+    assert 'fetch("https://api.openai' not in ui
+    assert "openai.chat.completions" not in ui
     assert "ethers.BrowserProvider.getNetwork" in ui
     assert "MainComputerWalletApp.providerSnapshot" in ui
     assert "MainComputerWalletApp.requestConnect" in ui
@@ -2449,10 +2454,45 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "full battery only" in ui
     assert "networkVerified" in ui
     assert "txDraftRuntimeOnly" in ui
+    assert "mcel-runtime-tx-draft-probe" in ui
+    assert "buildMcelTinyContractTxDraftProbe" in ui
+    assert "mcelTinyContractEncodeTxDraftData" in ui
+    assert "ethers.Interface" in ui
+    assert "deterministic-fallback" in ui
+    assert "eth_getTransactionCount" in ui
+    assert "eth_estimateGas" in ui
+    assert "eth_call" in ui
+    assert "runtime-only-no-send" in ui
+    assert "calldataEncoding" in ui
+    assert "nonceStatus" in ui
+    assert "gasStatus" in ui
+    assert "tx draft boundary:" in ui
+    assert "function renderMcelTinyRuntimeSummary" in ui
+    assert "const network = instance?.runtime?.network || {};" in ui
+    assert "txDraft.expectedChainId || network.expectedChainId" in ui
+    assert "`method:${request.contractMethod}`" not in ui
     assert "declaredRuntimeEffectRan" in ui
     assert "declaredSourceEffectRan" in ui
     assert "unsafeSourceWriteBlocked" in ui
     assert "runtimeRepairScoped" in ui
+    assert "repairPacketGenerated" in ui
+    assert "repairPacketNoLiveAiCall" in ui
+    assert "repairBoundaryBlocked" in ui
+    assert "mcel-repair-packet" in ui
+    assert "buildMcelTinyContractRepairPacket" in ui
+    assert "summarizeMcelTinyContractRepairPacket" in ui
+    assert "attemptMcelTinyContractForbiddenRepairWrite" in ui
+    assert "build-bounded-repair-packet-no-model-call" in ui
+    assert "liveAiCall=false" in ui
+    assert "repair packet:" in ui
+    assert "repair packet: not required for" in ui
+    assert "repair packet: generated outside" in ui
+    assert "boundary not required" in ui
+    assert "layout/style issues:" in ui
+    assert "layoutViolations" in ui
+    assert "styleViolations" in ui
+    assert 'repairPacket?.status === "ready"' in ui
+    assert "runtime.repairPacket" in ui
     assert '"runtime.proofChip"' in ui
     assert "serializationClean" in ui
     assert "layoutContractChecked" in ui
@@ -2481,6 +2521,11 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "mcelTinyContractExternalOutcome" in ui
     assert "mcelTinyContractOutcomeFromWalletPayload" in ui
     assert "mcelTinyContractOutcomeFromRevoke" in ui
+    assert "mcelTinyContractLatestWalletActionOutcome" in ui
+    assert "lastWalletActionOutcome" in ui
+    assert "sequence: tinyState.externalOutcomeCount" in ui
+    assert "Wallet connect/check produced an external exception envelope and committed the blocked runtime state through SCM." in ui
+    assert "Wallet connect exception envelope could not be committed through SCM." in ui
     assert "action outcome:" in ui
     assert "external outcome:" in ui
     assert "governance outcome:" in ui
@@ -2529,6 +2574,9 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert ".mcel-dev-release-console__wallet" in style
     assert ".mcel-dev-release-console__tx" in style
     assert ".mcel-dev-release-console__evidence-strip" in style
+    assert '[data-mc-slot="runtime.proofChip"] [data-mc-generated="true"]' in style
+    assert "max-height: 82px" in style
+    assert "overflow-wrap: anywhere" in style
     assert "#mcel-tiny-contract-map" in style
     assert "#mcel-tiny-contract-evidence" in style
 
