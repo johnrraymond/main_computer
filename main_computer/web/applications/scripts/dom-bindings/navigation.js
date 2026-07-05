@@ -6,6 +6,7 @@
     const appCopy = {
       desktop: ["Desktop", "Choose an app from the desktop grid.", "Desktop app launcher is ready."],
       webgl: ["Game Surface", "Arcstorm finale surface is ready.", "Game surface renders the selected Arcstorm finale sprite/particle showcase."],
+      astrometric: ["Astrometric 3D", "Docker-backed C++/GPU Schwarzschild renderer is ready.", "Astrometric 3D streams backend-rendered frames and forwards mouse camera controls."],
       calculator: ["Calculator", "Local arithmetic tool is ready.", "Calculator is running."],
       document: ["Document Editor", "Editable writing workspace is ready.", "Document Editor is running."],
       spreadsheet: ["Spreadsheet", "Editable sheet workspace is ready.", "Spreadsheet is running."],
@@ -27,6 +28,7 @@
     };
     const desktopApps = [
       {app: "webgl", glyph: "G", title: "Game Surface", summary: "project preview"},
+      {app: "astrometric", glyph: "BH", title: "Astrometric 3D", summary: "GPU ray render"},
       {app: "calculator", glyph: "C", title: "Calculator", summary: "arithmetic tool"},
       {app: "document", glyph: "D", title: "Document Editor", summary: "writing workspace"},
       {app: "spreadsheet", glyph: "S", title: "Spreadsheet", summary: "sheet workspace"},

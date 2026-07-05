@@ -205,6 +205,7 @@ APPLICATION_ROUTE_PREFIXES = ("/applications", "/apps", "/app")
 APPLICATION_ROUTE_NAMES = {
     "desktop",
     "webgl",
+    "astrometric",
     "calculator",
     "document",
     "spreadsheet",

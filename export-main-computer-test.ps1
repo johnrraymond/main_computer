@@ -621,6 +621,8 @@ $exportItems = @(
   "docker-compose.applications.yml",
   "docker-compose.gitea.yml",
   "Dockerfile.hub.exp-fdb",
+  "docker-compose.astrometric.yml",
+  "docker/astrometric-renderer/",
   "run-exp-fdb-hub.py",
   ".githooks",
   "docker",

@@ -1,0 +1,183 @@
+#version 430
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) writeonly uniform image2D outImage;
+
+uniform int uWidth;
+uniform int uHeight;
+uniform int uMoving;
+uniform vec3 uCamPos;
+uniform vec3 uCamRight;
+uniform vec3 uCamUp;
+uniform vec3 uCamForward;
+uniform float uTanHalfFov;
+uniform float uAspect;
+uniform float uDiskInner;
+uniform float uDiskOuter;
+uniform float uDiskThickness;
+uniform int uIdleSteps;
+uniform int uMovingSteps;
+uniform float uIdleStepLength;
+uniform float uMovingStepLength;
+
+const float SagA_rs = 1.269e10;
+const float ESCAPE_R = 1.0e13;
+
+struct Ray {
+    float x, y, z, r, theta, phi;
+    float dr, dtheta, dphi;
+    float E, L;
+};
+
+float hash13(vec3 p) {
+    p = fract(p * 0.3183099 + vec3(0.11, 0.17, 0.23));
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+Ray initRay(vec3 pos, vec3 dir) {
+    Ray ray;
+    ray.x = pos.x; ray.y = pos.y; ray.z = pos.z;
+    ray.r = max(length(pos), SagA_rs * 1.01);
+    ray.theta = acos(clamp(pos.z / ray.r, -1.0, 1.0));
+    ray.phi = atan(pos.y, pos.x);
+
+    float sinTheta = max(sin(ray.theta), 1e-4);
+    float dx = dir.x, dy = dir.y, dz = dir.z;
+    ray.dr     = sin(ray.theta)*cos(ray.phi)*dx + sin(ray.theta)*sin(ray.phi)*dy + cos(ray.theta)*dz;
+    ray.dtheta = (cos(ray.theta)*cos(ray.phi)*dx + cos(ray.theta)*sin(ray.phi)*dy - sin(ray.theta)*dz) / ray.r;
+    ray.dphi   = (-sin(ray.phi)*dx + cos(ray.phi)*dy) / (ray.r * sinTheta);
+
+    ray.L = ray.r * ray.r * sinTheta * ray.dphi;
+    float f = max(1.0 - SagA_rs / ray.r, 1e-4);
+    float angular = ray.r * ray.r * (ray.dtheta * ray.dtheta + sinTheta * sinTheta * ray.dphi * ray.dphi);
+    float dt_dL = sqrt(max((ray.dr * ray.dr) / f + angular, 1e-8));
+    ray.E = f * dt_dL;
+    return ray;
+}
+
+bool intercept(Ray ray) {
+    return ray.r <= SagA_rs * 1.025;
+}
+
+void geodesicRHS(Ray ray, out vec3 d1, out vec3 d2) {
+    float r = max(ray.r, SagA_rs * 1.001);
+    float theta = clamp(ray.theta, 0.001, 3.14059);
+    float dr = ray.dr;
+    float dtheta = ray.dtheta;
+    float dphi = ray.dphi;
+    float f = max(1.0 - SagA_rs / r, 1e-4);
+    float dt_dL = ray.E / f;
+    float sinTheta = max(sin(theta), 1e-4);
+    float cosTheta = cos(theta);
+
+    d1 = vec3(dr, dtheta, dphi);
+    d2.x = - (SagA_rs / (2.0 * r * r)) * f * dt_dL * dt_dL
+         + (SagA_rs / (2.0 * r * r * f)) * dr * dr
+         + r * (dtheta * dtheta + sinTheta * sinTheta * dphi * dphi);
+    d2.y = -2.0 * dr * dtheta / r + sinTheta * cosTheta * dphi * dphi;
+    d2.z = -2.0 * dr * dphi / r - 2.0 * cosTheta / sinTheta * dtheta * dphi;
+}
+
+void rk4Step(inout Ray ray, float dL) {
+    vec3 k1a, k1b;
+    geodesicRHS(ray, k1a, k1b);
+
+    Ray r2 = ray;
+    r2.r += 0.5 * dL * k1a.x; r2.theta += 0.5 * dL * k1a.y; r2.phi += 0.5 * dL * k1a.z;
+    r2.dr += 0.5 * dL * k1b.x; r2.dtheta += 0.5 * dL * k1b.y; r2.dphi += 0.5 * dL * k1b.z;
+    vec3 k2a, k2b;
+    geodesicRHS(r2, k2a, k2b);
+
+    Ray r3 = ray;
+    r3.r += 0.5 * dL * k2a.x; r3.theta += 0.5 * dL * k2a.y; r3.phi += 0.5 * dL * k2a.z;
+    r3.dr += 0.5 * dL * k2b.x; r3.dtheta += 0.5 * dL * k2b.y; r3.dphi += 0.5 * dL * k2b.z;
+    vec3 k3a, k3b;
+    geodesicRHS(r3, k3a, k3b);
+
+    Ray r4 = ray;
+    r4.r += dL * k3a.x; r4.theta += dL * k3a.y; r4.phi += dL * k3a.z;
+    r4.dr += dL * k3b.x; r4.dtheta += dL * k3b.y; r4.dphi += dL * k3b.z;
+    vec3 k4a, k4b;
+    geodesicRHS(r4, k4a, k4b);
+
+    ray.r      += dL * (k1a.x + 2.0 * k2a.x + 2.0 * k3a.x + k4a.x) / 6.0;
+    ray.theta  += dL * (k1a.y + 2.0 * k2a.y + 2.0 * k3a.y + k4a.y) / 6.0;
+    ray.phi    += dL * (k1a.z + 2.0 * k2a.z + 2.0 * k3a.z + k4a.z) / 6.0;
+    ray.dr     += dL * (k1b.x + 2.0 * k2b.x + 2.0 * k3b.x + k4b.x) / 6.0;
+    ray.dtheta += dL * (k1b.y + 2.0 * k2b.y + 2.0 * k3b.y + k4b.y) / 6.0;
+    ray.dphi   += dL * (k1b.z + 2.0 * k2b.z + 2.0 * k3b.z + k4b.z) / 6.0;
+
+    ray.theta = clamp(ray.theta, 0.001, 3.14059);
+    ray.x = ray.r * sin(ray.theta) * cos(ray.phi);
+    ray.y = ray.r * sin(ray.theta) * sin(ray.phi);
+    ray.z = ray.r * cos(ray.theta);
+}
+
+bool crossesDisk(vec3 oldPos, vec3 newPos, out float diskR, out float diskBand) {
+    bool crossed = oldPos.y * newPos.y <= 0.0 && abs(oldPos.y - newPos.y) > uDiskThickness;
+    diskR = length(vec2(newPos.x, newPos.z));
+    diskBand = smoothstep(uDiskInner, uDiskInner * 1.04, diskR) * (1.0 - smoothstep(uDiskOuter * 0.96, uDiskOuter, diskR));
+    return crossed && diskR >= uDiskInner && diskR <= uDiskOuter;
+}
+
+vec3 skyColor(vec3 dir) {
+    vec3 d = normalize(dir);
+    float milky = pow(max(0.0, 1.0 - abs(d.y) * 1.6), 2.5);
+    float grid = hash13(floor(d * 1400.0));
+    float star = smoothstep(0.9965, 1.0, grid);
+    vec3 nebula = mix(vec3(0.015, 0.025, 0.055), vec3(0.08, 0.035, 0.13), milky);
+    return nebula + vec3(star) * vec3(1.0, 0.88, 0.68);
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= uWidth || pix.y >= uHeight) return;
+
+    float u = (2.0 * (float(pix.x) + 0.5) / float(uWidth) - 1.0) * uAspect * uTanHalfFov;
+    float v = (1.0 - 2.0 * (float(pix.y) + 0.5) / float(uHeight)) * uTanHalfFov;
+    vec3 dir = normalize(u * uCamRight + v * uCamUp + uCamForward);
+    Ray ray = initRay(uCamPos, dir);
+
+    vec3 previous = vec3(ray.x, ray.y, ray.z);
+    vec4 color = vec4(0.0);
+    bool hitBlackHole = false;
+    bool hitDisk = false;
+    float diskR = 0.0;
+    float diskBand = 0.0;
+
+    int steps = uMoving != 0 ? uMovingSteps : uIdleSteps;
+    float dL = uMoving != 0 ? uMovingStepLength : uIdleStepLength;
+
+    for (int i = 0; i < steps; ++i) {
+        if (intercept(ray)) {
+            hitBlackHole = true;
+            break;
+        }
+        rk4Step(ray, dL);
+        vec3 current = vec3(ray.x, ray.y, ray.z);
+        if (crossesDisk(previous, current, diskR, diskBand)) {
+            hitDisk = true;
+            break;
+        }
+        previous = current;
+        if (ray.r > ESCAPE_R) break;
+    }
+
+    if (hitBlackHole) {
+        color = vec4(0.0, 0.0, 0.0, 1.0);
+    } else if (hitDisk) {
+        float t = clamp((diskR - uDiskInner) / max(1.0, uDiskOuter - uDiskInner), 0.0, 1.0);
+        float bands = 0.7 + 0.3 * sin(t * 96.0 + ray.phi * 12.0);
+        vec3 disk = mix(vec3(1.0, 0.86, 0.42), vec3(1.0, 0.18, 0.04), t) * bands;
+        float doppler = 0.72 + 0.55 * clamp(dot(normalize(vec3(ray.x, 0.0, ray.z)), normalize(uCamRight)), -0.6, 1.0);
+        color = vec4(disk * doppler * max(diskBand, 0.15), 1.0);
+    } else {
+        vec3 escaped = normalize(vec3(ray.x, ray.y, ray.z) - uCamPos);
+        color = vec4(skyColor(escaped), 1.0);
+    }
+
+    float vignette = smoothstep(1.25, 0.15, length(vec2(u / max(uAspect, 0.01), v)));
+    color.rgb *= mix(0.76, 1.0, vignette);
+    imageStore(outImage, pix, color);
+}

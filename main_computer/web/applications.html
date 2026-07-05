@@ -12,6 +12,7 @@
   <style>
     <!-- @include applications/styles/base.css -->
     <!-- @include applications/styles/app-layout.css -->
+    <!-- @include applications/styles/astrometric.css -->
     <!-- @include applications/styles/document.css -->
     <!-- @include applications/styles/chat-console.css -->
     <!-- @include applications/styles/ai-control.css -->
@@ -59,6 +60,10 @@
         <a class="app-card ready" href="/applications/webgl" data-app="webgl">
           <strong>Game Surface</strong>
           <span>Arcstorm finale sprite/particle showcase</span>
+        </a>
+        <a class="app-card ready" href="/applications/astrometric" data-app="astrometric" data-activity-open="streams">
+          <strong>Astrometric 3D</strong>
+          <span>GPU Docker black-hole ray renderer</span>
         </a>
         <a class="app-card ready" href="/applications/calculator" data-app="calculator">
           <strong>Calculator</strong>
@@ -180,6 +185,7 @@
             <div class="desktop-caption">Desktop applications</div>
           </div>
           <!-- @include applications/apps/webgl.html -->
+          <!-- @include applications/apps/astrometric.html -->
           <!-- @include applications/apps/calculator.html -->
           <!-- @include applications/apps/document.html -->
           <!-- @include applications/apps/spreadsheet.html -->
@@ -302,6 +308,7 @@
     <!-- @include applications/scripts/scene-viewer.js -->
     <!-- @include applications/scripts/app-routing.js -->
     <!-- @include applications/scripts/webgl-desktop.js -->
+    <!-- @include applications/scripts/astrometric.js -->
     <!-- @include applications/scripts/calculator.js -->
     <!-- @include applications/scripts/chat-thread-store.js -->
     <!-- @include applications/scripts/chat-thread-controller.js -->

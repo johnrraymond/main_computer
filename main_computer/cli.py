@@ -13,6 +13,8 @@ from main_computer.diagnostics import LEVELS as DIAGNOSTIC_LEVELS
 from main_computer.diagnostics import run_from_args as run_diagnostics_from_args
 from main_computer.harness import run_from_args as run_harness_from_args
 from main_computer.log_rotator import run_from_args as run_log_rotator_from_args
+from main_computer.log_metric_distribution import add_arguments as add_log_metric_arguments
+from main_computer.log_metric_distribution import run_from_args as run_log_metric_distribution_from_args
 from main_computer.heartbeat import HeartbeatConfig, serve as serve_heartbeat
 from main_computer.hub import DEFAULT_HUB_PORT, DEFAULT_HUB_WORKER_PORT, register_worker_with_hub, serve_hub, serve_hub_worker
 from main_computer.hub_networks import (
@@ -328,6 +330,22 @@ def cmd_rotate_logs(args: argparse.Namespace) -> int:
     return 1 if report.errors else 0
 
 
+def cmd_log_metrics(args: argparse.Namespace) -> int:
+    report = run_log_metric_distribution_from_args(args)
+    print(f"Read {report.records} record(s) from {len(report.paths)} input path(s)")
+    print(f"Plotted {report.metric_count} metric distribution(s): {report.output_png}")
+    if report.report_json:
+        print(f"Report: {report.report_json}")
+    for metric in report.metrics:
+        failed = [test.name for test in metric.tests if not test.ok]
+        status = "ok" if not failed else "check " + ", ".join(failed)
+        print(
+            f"{metric.metric}: n={metric.count} min={metric.min:g} "
+            f"p50={metric.median:g} p95={metric.p95:g} max={metric.max:g} [{status}]"
+        )
+    return 0 if report.metric_count else 1
+
+
 def cmd_code_stats(args: argparse.Namespace) -> int:
     report = run_code_stats_from_args(args)
     emit_code_stats_report(report, output_format=args.format, output=args.output, top=args.top)
@@ -618,6 +636,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rotate_logs.add_argument("--dry-run", action="store_true", help="Show files that would rotate without moving them.")
     rotate_logs.set_defaults(func=cmd_rotate_logs)
+
+    log_metrics = sub.add_parser(
+        "log-metrics",
+        help="Read log files, calculate metric distributions, and write a PNG graph.",
+    )
+    add_log_metric_arguments(log_metrics)
+    log_metrics.set_defaults(func=cmd_log_metrics)
 
     code_stats = sub.add_parser(
         "code-stats",

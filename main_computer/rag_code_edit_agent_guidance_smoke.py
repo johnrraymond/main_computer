@@ -16,18 +16,19 @@ that:
 * commits only to the target branch
 * writes a report that can later be compared with a live/model-backed run
 
-The default supervisor mode launches this same script as an agent subprocess and
-injects deterministic guidance after it observes a realtime
-``guidance_window_open`` event.  That keeps the first smoke deterministic while
-still exercising the stdout/input contract as a real process boundary.
+The default supervisor mode launches this same script as an agent process inside
+the ``main-computer-executor:latest`` Docker image and injects deterministic
+guidance after it observes a realtime ``guidance_window_open`` event.  That keeps
+the first smoke deterministic while still exercising the stdout/input contract as
+a real Docker security boundary.
 
 Run from the repository root:
 
     python -S main_computer/rag_code_edit_agent_guidance_smoke.py
 
-The deterministic agent is not a shortcut: it uses the same fixture repo, clone,
-branch, guidance channel, verification, commit, and report path that future live
-agent adapters should use.
+The deterministic agent is not a shortcut: it uses the same Docker boundary,
+fixture repo, clone, branch, guidance channel, verification, commit, and report
+path that future live agent adapters should use.
 """
 
 from __future__ import annotations
@@ -55,6 +56,10 @@ DEFAULT_TASK = "Make greet(name) trim surrounding whitespace before greeting."
 DEFAULT_GUIDANCE_WINDOW_SECONDS = 3.0
 DEFAULT_POLL_SECONDS = 0.05
 DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_DOCKER_IMAGE = "main-computer-executor:latest"
+CONTAINER_RUN_DIR = "/smoke_run"
+CONTAINER_SOURCE_DIR = "/smoke_src"
+DOCKER_IMAGE_BUILD_HINT = "docker compose -f docker-compose.executor.yml build executor-image"
 APP_PY_INITIAL = """\
 def greet(name: str) -> str:
     return f"Hello, {name}!"
@@ -220,6 +225,104 @@ def git(cwd: Path, args: Sequence[str], timeout_seconds: float = DEFAULT_TIMEOUT
 def require_git_available() -> None:
     if shutil.which("git") is None:
         raise SmokeFailure("git is required for this smoke but was not found on PATH")
+
+
+def require_docker_available() -> None:
+    if shutil.which("docker") is None:
+        raise SmokeFailure("Docker is required for this smoke because the agent must run inside a container.")
+
+
+def docker_image_available(image: str) -> bool:
+    if shutil.which("docker") is None:
+        return False
+    result = run_command(Path.cwd(), ["docker", "image", "inspect", image], timeout_seconds=10.0)
+    return result.returncode == 0 and not result.timed_out
+
+
+def require_docker_image(image: str) -> None:
+    require_docker_available()
+    if not docker_image_available(image):
+        raise SmokeFailure(
+            f"Docker image {image!r} is required for the agent container boundary. "
+            f"Build it with: {DOCKER_IMAGE_BUILD_HINT}"
+        )
+
+
+def docker_mount_arg(source: Path, target: str, *, readonly: bool = False) -> str:
+    # --mount avoids Windows drive-letter ambiguity that can make -v C:\...:...
+    # hard to parse consistently across shells.
+    option = f"type=bind,source={source.resolve()},target={target}"
+    if readonly:
+        option += ",readonly"
+    return option
+
+
+def build_docker_agent_command(
+    *,
+    image: str,
+    repo_root: Path,
+    run_dir: Path,
+    run_id: str,
+    commands_path: Path,
+    report_path: Path,
+    agent: str,
+    target_branch: str,
+    task: str,
+    guidance_window_seconds: float,
+    poll_seconds: float,
+) -> list[str]:
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--mount",
+        docker_mount_arg(run_dir, CONTAINER_RUN_DIR),
+        "--mount",
+        docker_mount_arg(repo_root, CONTAINER_SOURCE_DIR, readonly=True),
+        "-w",
+        CONTAINER_SOURCE_DIR,
+        "-e",
+        "PYTHONIOENCODING=utf-8",
+        "-e",
+        "PYTHONUTF8=1",
+        "-e",
+        "PYTHONUNBUFFERED=1",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "-e",
+        "MAIN_COMPUTER_AGENT_SMOKE_CONTAINER=1",
+        "-e",
+        "MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK=none",
+        "-e",
+        "MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT=readonly",
+        image,
+        "python",
+        "-S",
+        "-u",
+        f"{CONTAINER_SOURCE_DIR}/main_computer/rag_code_edit_agent_guidance_smoke.py",
+        "--role",
+        "agent",
+        "--agent",
+        agent,
+        "--run-id",
+        run_id,
+        "--run-dir",
+        CONTAINER_RUN_DIR,
+        "--commands-path",
+        f"{CONTAINER_RUN_DIR}/commands.jsonl",
+        "--report-path",
+        f"{CONTAINER_RUN_DIR}/report.json",
+        "--target-branch",
+        target_branch,
+        "--task",
+        task,
+        "--guidance-window-seconds",
+        str(guidance_window_seconds),
+        "--poll-seconds",
+        str(poll_seconds),
+    ]
 
 
 def text_sha256(text: str) -> str:
@@ -458,6 +561,9 @@ def run_agent(args: argparse.Namespace) -> int:
 
     try:
         require_git_available()
+        agent_containerized = os.environ.get("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER") == "1"
+        agent_docker_network = os.environ.get("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "")
+        agent_source_mount = os.environ.get("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "")
         event(
             "run_started",
             role="agent",
@@ -465,6 +571,9 @@ def run_agent(args: argparse.Namespace) -> int:
             scenario=SCENARIO,
             run_dir=str(run_dir),
             commands_path=str(commands_path),
+            containerized=agent_containerized,
+            docker_network=agent_docker_network,
+            source_mount=agent_source_mount,
         )
 
         if args.agent != "deterministic":
@@ -614,6 +723,9 @@ def run_agent(args: argparse.Namespace) -> int:
 
         contracts = {
             "agent_mode_deterministic": args.agent == "deterministic",
+            "agent_containerized": agent_containerized,
+            "docker_network_none": agent_docker_network == "none",
+            "docker_source_mount_read_only": agent_source_mount == "readonly",
             "guidance_seen": len(guidance_state["accepted"]) > 0,
             "guidance_integrated_before_edit": len(guidance_state["accepted"]) > 0
             and edit_plan_boundary["payload"]["timestamp"] >= guidance_boundary["payload"]["timestamp"],
@@ -713,55 +825,54 @@ def parse_child_event(line: str) -> dict[str, Any]:
 
 
 def run_supervisor(args: argparse.Namespace) -> int:
-    require_git_available()
+    require_docker_image(args.docker_image)
     run_id = args.run_id or run_id_from_now()
     work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
     run_dir = work_root / run_id
     commands_path = run_dir / "commands.jsonl"
     report_path = run_dir / "report.json"
     supervisor_report_path = run_dir / "supervisor_report.json"
+    repo_root = Path(__file__).resolve().parents[1]
     run_dir.mkdir(parents=True, exist_ok=True)
     commands_path.write_text("", encoding="utf-8")
 
-    child_args = [
-        sys.executable,
-        "-S",
-        "-u",
-        str(Path(__file__).resolve()),
-        "--role",
-        "agent",
-        "--agent",
-        args.agent,
-        "--run-id",
-        run_id,
-        "--run-dir",
-        str(run_dir),
-        "--commands-path",
-        str(commands_path),
-        "--report-path",
-        str(report_path),
-        "--target-branch",
-        args.target_branch,
-        "--task",
-        args.task,
-        "--guidance-window-seconds",
-        str(args.guidance_window_seconds),
-        "--poll-seconds",
-        str(args.poll_seconds),
-    ]
+    child_args = build_docker_agent_command(
+        image=args.docker_image,
+        repo_root=repo_root,
+        run_dir=run_dir,
+        run_id=run_id,
+        commands_path=commands_path,
+        report_path=report_path,
+        agent=args.agent,
+        target_branch=args.target_branch,
+        task=args.task,
+        guidance_window_seconds=args.guidance_window_seconds,
+        poll_seconds=args.poll_seconds,
+    )
 
     emit_event(
         "supervisor_started",
         run_id=run_id,
         role="supervisor",
         agent_mode=args.agent,
+        docker_image=args.docker_image,
         run_dir=str(run_dir),
         commands_path=str(commands_path),
+        agent_boundary="docker",
+    )
+    emit_event(
+        "agent_container_launching",
+        run_id=run_id,
+        docker_image=args.docker_image,
+        docker_network="none",
+        run_mount=str(run_dir),
+        source_mount=str(repo_root),
+        source_mount_mode="readonly",
     )
 
     proc = subprocess.Popen(
         child_args,
-        cwd=str(Path.cwd()),
+        cwd=str(repo_root),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -815,19 +926,33 @@ def run_supervisor(args: argparse.Namespace) -> int:
     agent_report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
 
     event_names = [event.get("event") for event in received_events]
+    run_started_events = [event for event in received_events if event.get("event") == "run_started"]
+    agent_run_started = run_started_events[-1] if run_started_events else {}
+    agent_contracts = agent_report.get("contracts", {}) if isinstance(agent_report.get("contracts"), dict) else {}
+    docker_command_contracts = {
+        "agent_containerized": bool(agent_run_started.get("containerized")) and bool(agent_contracts.get("agent_containerized")),
+        "docker_network_none": "--network" in child_args
+        and "none" in child_args
+        and bool(agent_contracts.get("docker_network_none")),
+        "docker_run_directory_mounted": docker_mount_arg(run_dir, CONTAINER_RUN_DIR) in child_args
+        and report_path.exists(),
+        "docker_source_mount_read_only": docker_mount_arg(repo_root, CONTAINER_SOURCE_DIR, readonly=True) in child_args
+        and bool(agent_contracts.get("docker_source_mount_read_only")),
+    }
     contracts = {
+        **docker_command_contracts,
         "child_process_ok": returncode == 0,
         "stdout_jsonl_events": len(received_events) >= 8,
         "stdout_realtime": guidance_window_seen_while_running and guidance_received_seen_while_running,
         "guidance_written_while_running": guidance_injected,
-        "guidance_seen_by_agent": bool(agent_report.get("contracts", {}).get("guidance_seen")),
-        "guidance_integrated_before_edit": bool(agent_report.get("contracts", {}).get("guidance_integrated_before_edit")),
-        "branch_isolated": bool(agent_report.get("contracts", {}).get("branch_isolated")),
-        "changed_files_scoped": bool(agent_report.get("contracts", {}).get("changed_files_scoped")),
-        "forbidden_files_unchanged": bool(agent_report.get("contracts", {}).get("forbidden_files_unchanged")),
-        "verification_passed": bool(agent_report.get("contracts", {}).get("verification_passed")),
-        "commit_created": bool(agent_report.get("contracts", {}).get("commit_created")),
-        "report_written": report_path.exists() and bool(agent_report.get("contracts", {}).get("report_written")),
+        "guidance_seen_by_agent": bool(agent_contracts.get("guidance_seen")),
+        "guidance_integrated_before_edit": bool(agent_contracts.get("guidance_integrated_before_edit")),
+        "branch_isolated": bool(agent_contracts.get("branch_isolated")),
+        "changed_files_scoped": bool(agent_contracts.get("changed_files_scoped")),
+        "forbidden_files_unchanged": bool(agent_contracts.get("forbidden_files_unchanged")),
+        "verification_passed": bool(agent_contracts.get("verification_passed")),
+        "commit_created": bool(agent_contracts.get("commit_created")),
+        "report_written": report_path.exists() and bool(agent_contracts.get("report_written")),
         "required_event_order": event_names.index("guidance_window_open") < event_names.index("edit_applied")
         if "guidance_window_open" in event_names and "edit_applied" in event_names
         else False,
@@ -839,6 +964,9 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "mode": MODE,
         "scenario": SCENARIO,
         "agent_mode": args.agent,
+        "agent_boundary": "docker",
+        "docker_image": args.docker_image,
+        "docker_command": child_args,
         "run_id": run_id,
         "run_dir": str(run_dir),
         "commands_path": str(commands_path),
@@ -880,6 +1008,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic code-editing agent guidance smoke.")
     parser.add_argument("--role", choices=["supervisor", "agent"], default="supervisor")
     parser.add_argument("--agent", choices=["deterministic"], default="deterministic")
+    parser.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
     parser.add_argument("--run-id", default="")
     parser.add_argument("--work-root", default="", help="Supervisor work root. Defaults to a short temp directory.")
     parser.add_argument("--run-dir", default="", help="Agent run directory.")

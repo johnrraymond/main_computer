@@ -1806,6 +1806,15 @@ def dispatch_get(self) -> None:
     if route_path == "/api/applications/onlyoffice/file":
         self._handle_onlyoffice_file_get()
         return
+    if route_path == "/api/applications/astrometric/status":
+        self._handle_astrometric_status()
+        return
+    if route_path == "/api/applications/astrometric/frame.jpg":
+        self._handle_astrometric_frame()
+        return
+    if route_path == "/api/applications/astrometric/stream.mjpg":
+        self._handle_astrometric_stream()
+        return
     if self.path in {"/", "/index.html", "/text"}:
         self.server.signal("route-text-console", path=self.path)
         self._send_text(TEXT_INDEX_HTML, "text/html; charset=utf-8")
@@ -2063,6 +2072,12 @@ def dispatch_post(self) -> None:
         return
     if route_path == "/api/executor/uploads":
         self._handle_executor_upload_create()
+        return
+    if route_path == "/api/applications/astrometric/action":
+        self._handle_astrometric_action()
+        return
+    if route_path == "/api/applications/astrometric/camera":
+        self._handle_astrometric_camera()
         return
     if self.path == "/api/activity/event":
         body = self._read_json()

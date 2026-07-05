@@ -1,5 +1,6 @@
     <!-- @include applications/scripts/dom-bindings/surface.js -->
     <!-- @include applications/scripts/dom-bindings/calculator.js -->
+    <!-- @include applications/scripts/dom-bindings/astrometric.js -->
     <!-- @include applications/scripts/dom-bindings/document.js -->
     <!-- @include applications/scripts/dom-bindings/spreadsheet.js -->
     <!-- @include applications/scripts/dom-bindings/onlyoffice.js -->

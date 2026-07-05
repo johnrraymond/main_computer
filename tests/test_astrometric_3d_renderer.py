@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from main_computer.astrometric_renderer_service import AstrometricRendererService
+from main_computer.viewport_route_dispatch import APPLICATION_ROUTE_NAMES, _application_route_target
+
+
+def test_astrometric_application_route_registered():
+    assert "astrometric" in APPLICATION_ROUTE_NAMES
+    assert _application_route_target("/applications/astrometric") == "astrometric"
+    assert _application_route_target("/apps/astrometric") == "astrometric"
+
+
+def test_astrometric_renderer_service_contract_paths(tmp_path: Path):
+    service = AstrometricRendererService(tmp_path)
+    assert service.compose_file == tmp_path / "docker-compose.astrometric.yml"
+    assert service.base_url == "http://127.0.0.1:8794"
+    assert service._compose_command("up", "-d", "--build", "astrometric-renderer")[-4:] == [
+        "up",
+        "-d",
+        "--build",
+        "astrometric-renderer",
+    ]
+
+
+def test_astrometric_status_is_safe_without_compose_file(tmp_path: Path):
+    service = AstrometricRendererService(tmp_path)
+    status = service.status()
+    assert status["ok"] is True
+    assert status["compose_present"] is False
+    assert status["renderer"]["base_url"] == "http://127.0.0.1:8794"
+    assert status["stream_path"] == "/api/applications/astrometric/stream.mjpg"
+
+
+def test_astrometric_renderer_health_distinguishes_reachable_from_stream_ready(tmp_path: Path, monkeypatch):
+    service = AstrometricRendererService(tmp_path)
+
+    class FakeResponse:
+        status = 200
+        content_type = "application/json"
+        headers = {}
+        body = b'{"ok":true,"frame_seq":0,"stream_ready":false,"gl_ready":true}'
+
+    monkeypatch.setattr(service, "_renderer_request", lambda *args, **kwargs: FakeResponse())
+    health = service.renderer_health()
+
+    assert health["reachable"] is True
+    assert health["stream_ready"] is False
+    assert health["gl_ready"] is True
+
+
+def test_astrometric_renderer_env_defaults_keep_startup_interactive(tmp_path: Path):
+    service = AstrometricRendererService(tmp_path)
+    env = service._renderer_env()
+
+    assert env["ASTROMETRIC_RENDERER_WIDTH"] == "800"
+    assert env["ASTROMETRIC_RENDERER_HEIGHT"] == "450"
+    assert env["ASTROMETRIC_RENDERER_FPS"] == "12"
+    assert env["ASTROMETRIC_RENDERER_IDLE_STEPS"] == "960"
+    assert env["ASTROMETRIC_RENDERER_MOVING_STEPS"] == "520"

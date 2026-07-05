@@ -1,0 +1,80 @@
+<section class="astrometric-app mc-app-pane" id="astrometric-app" style="display: none;" aria-label="Astrometric 3D renderer" data-mc-component-id="applications.astrometric" data-mc-component-kind="application" data-mc-component-label="Astrometric 3D">
+  <div class="astrometric-shell">
+    <header class="astrometric-hero">
+      <div>
+        <p class="eyebrow">GPU Docker renderer</p>
+        <h2>Astrometric 3D</h2>
+        <p>Streams a C++ OpenGL compute Schwarzschild renderer from a Docker GPU container. Drag to orbit, Shift-drag to pan, and scroll to dolly the backend camera.</p>
+      </div>
+      <div class="astrometric-status-stack">
+        <span class="status-pill astrometric-status-pill" id="astrometric-status-pill">renderer idle</span>
+        <span class="astrometric-endpoint" id="astrometric-endpoint">stream not attached</span>
+      </div>
+    </header>
+
+    <div class="astrometric-grid">
+      <article class="astrometric-render-card app-fullscreen-widget" data-mc-widget-id="astrometric.stream" data-mc-widget-kind="renderer" data-mc-widget-label="Astrometric Renderer Stream">
+        <div class="astrometric-card-head">
+          <div>
+            <h3>Live backend render</h3>
+            <p>MJPEG frames are produced by the C++ renderer, proxied through Main Computer, then displayed here.</p>
+          </div>
+          <button type="button" data-fullscreen-target>Full Screen</button>
+        </div>
+        <div class="astrometric-viewport" id="astrometric-viewport" tabindex="0" aria-label="Astrometric renderer viewport. Drag to orbit. Shift drag to pan. Mouse wheel zooms.">
+          <img id="astrometric-stream" alt="Astrometric black-hole renderer stream">
+          <div class="astrometric-reticle" aria-hidden="true"></div>
+          <div class="astrometric-viewport-message" id="astrometric-viewport-message">Start the renderer to attach the GPU stream.</div>
+        </div>
+        <div class="astrometric-control-strip" aria-label="Astrometric renderer controls">
+          <button type="button" id="astrometric-start-button">Start GPU Renderer</button>
+          <button type="button" id="astrometric-restart-button">Restart</button>
+          <button type="button" id="astrometric-stop-button">Stop</button>
+          <button type="button" id="astrometric-reset-camera-button">Reset Camera</button>
+          <label>
+            JPEG quality
+            <input id="astrometric-quality" type="range" min="45" max="95" value="86">
+          </label>
+        </div>
+      </article>
+
+      <aside class="astrometric-inspector" data-mc-widget-id="astrometric.inspector" data-mc-widget-kind="panel" data-mc-widget-label="Astrometric Renderer Inspector">
+        <div class="astrometric-card-head">
+          <div>
+            <h3>Renderer contract</h3>
+            <p>Docker lifecycle and camera events are owned by the backend.</p>
+          </div>
+          <button type="button" id="astrometric-refresh-button">Refresh</button>
+        </div>
+        <dl class="astrometric-metrics">
+          <div>
+            <dt>Docker</dt>
+            <dd id="astrometric-docker-state">unknown</dd>
+          </div>
+          <div>
+            <dt>GPU</dt>
+            <dd id="astrometric-gpu-state">not connected</dd>
+          </div>
+          <div>
+            <dt>Frame</dt>
+            <dd id="astrometric-frame-state">no frames</dd>
+          </div>
+          <div>
+            <dt>Camera</dt>
+            <dd id="astrometric-camera-state">not connected</dd>
+          </div>
+        </dl>
+        <div class="astrometric-instructions">
+          <strong>Controls</strong>
+          <ul>
+            <li>Drag: orbit the C++ camera.</li>
+            <li>Shift + drag: pan the camera target.</li>
+            <li>Wheel: dolly in/out.</li>
+            <li>Reset Camera: returns to the original Sagittarius A* framing.</li>
+          </ul>
+        </div>
+        <pre id="astrometric-status-json" class="astrometric-status-json">{}</pre>
+      </aside>
+    </div>
+  </div>
+</section>

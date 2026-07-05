@@ -10,6 +10,8 @@ from main_computer.viewport_http import ViewportHttpMixin
 from main_computer.viewport_route_dispatch import dispatch_get, dispatch_post
 from main_computer.viewport_routes_applications import ViewportApplicationRoutesMixin
 from main_computer.viewport_routes_aider import ViewportAiderRoutesMixin
+from main_computer.viewport_routes_astrometric import ViewportAstrometricRoutesMixin
+from main_computer.astrometric_renderer_service import AstrometricRendererService
 from main_computer.viewport_routes_calculator import ViewportCalculatorRoutesMixin
 from main_computer.viewport_routes_chat_console import ViewportChatConsoleRoutesMixin
 from main_computer.viewport_routes_conductor import ViewportConductorRoutesMixin
@@ -115,6 +117,7 @@ class ViewportServer(ThreadingHTTPServer):
             self.debug_root / "debug_asset_revisions",
         )
         self.aider_web_context = AiderWebContextStore(self.debug_root / "aider_web_context")
+        self.astrometric_renderer = AstrometricRendererService(self.debug_root)
         self.aider_jobs = AiderActionJobRegistry(self)
         self.worker_runtime_lock = threading.RLock()
         self.worker_runtime_service = WorkerRuntimeService(self)
@@ -156,6 +159,7 @@ class ViewportHandler(
     ViewportHttpMixin,
     ViewportApplicationRoutesMixin,
     ViewportAiderRoutesMixin,
+    ViewportAstrometricRoutesMixin,
     ViewportCalculatorRoutesMixin,
     ViewportChatConsoleRoutesMixin,
     ViewportConductorRoutesMixin,

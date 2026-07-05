@@ -132,6 +132,7 @@
       activeState.textContent = state;
       const isDesktop = normalizedApp === "desktop";
       const isWebgl = normalizedApp === "webgl";
+      const isAstrometric = normalizedApp === "astrometric";
       const isCalculator = normalizedApp === "calculator";
       const isDocument = normalizedApp === "document";
       const isSpreadsheet = normalizedApp === "spreadsheet";
@@ -156,6 +157,9 @@
       if (previousApp === "webgl" && normalizedApp !== "webgl") {
         pauseGameSurface();
       }
+      if (previousApp === "astrometric" && normalizedApp !== "astrometric") {
+        pauseAstrometricApp();
+      }
       if (previousApp === "game-editor" && normalizedApp !== "game-editor") {
         disposeGameEditorSurface();
       }
@@ -165,6 +169,7 @@
       }
       canvas.style.display = isWebgl ? "block" : "none";
       if (desktopOverlay) desktopOverlay.style.display = isDesktop ? "grid" : "none";
+      if (astrometricApp) astrometricApp.style.display = isAstrometric ? "grid" : "none";
       calculatorApp.style.display = isCalculator ? "grid" : "none";
       documentApp.style.display = isDocument ? "grid" : "none";
       spreadsheetApp.style.display = isSpreadsheet ? "grid" : "none";
@@ -183,7 +188,7 @@
       if (mcelLabApp) mcelLabApp.style.display = isMcelLab ? "grid" : "none";
       if (workerApp) workerApp.style.display = isWorker ? "grid" : "none";
       if (walletApp) walletApp.style.display = isWallet ? "grid" : "none";
-      stubMessage.style.display = isDesktop || isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isConductor || isTerminal || isChatConsole || isAiControl || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
+      stubMessage.style.display = isDesktop || isWebgl || isAstrometric || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isConductor || isTerminal || isChatConsole || isAiControl || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
       demoControls.style.display = isWebgl ? "grid" : "none";
       layoutDesktopIcons(normalizedApp);
       if (isDesktop) {
@@ -193,6 +198,10 @@
         running = true;
         glStatus.textContent = "game surface loading";
         initWebgl();
+      } else if (isAstrometric) {
+        running = false;
+        glStatus.textContent = "astrometric renderer ready";
+        initAstrometricApp();
       } else if (isCalculator) {
         running = false;
         glStatus.textContent = "calculator ready";

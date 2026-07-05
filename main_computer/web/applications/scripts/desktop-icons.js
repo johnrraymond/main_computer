@@ -5,6 +5,12 @@
         <path d="M9.5 6.5v11" />
         <path d="M14.5 6.5v11" />
       `,
+      astrometric: `
+        <circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none" />
+        <path d="M3.8 13.5c4.2-4.4 12.2-5.4 16.4-2" />
+        <path d="M4.5 16.5c3.8 2.4 10.9 2.4 15 0" />
+        <path d="M7 6.5c3.4-1.7 7.6-1.2 10 1.3" />
+      `,
       calculator: `
         <rect x="5" y="3.5" width="14" height="17" rx="3" />
         <path d="M8 7.5h8" />

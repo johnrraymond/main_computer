@@ -1,0 +1,17 @@
+const astrometricApp = document.querySelector("#astrometric-app");
+    const astrometricStatusPill = document.querySelector("#astrometric-status-pill");
+    const astrometricEndpoint = document.querySelector("#astrometric-endpoint");
+    const astrometricViewport = document.querySelector("#astrometric-viewport");
+    const astrometricStream = document.querySelector("#astrometric-stream");
+    const astrometricViewportMessage = document.querySelector("#astrometric-viewport-message");
+    const astrometricStartButton = document.querySelector("#astrometric-start-button");
+    const astrometricRestartButton = document.querySelector("#astrometric-restart-button");
+    const astrometricStopButton = document.querySelector("#astrometric-stop-button");
+    const astrometricResetCameraButton = document.querySelector("#astrometric-reset-camera-button");
+    const astrometricRefreshButton = document.querySelector("#astrometric-refresh-button");
+    const astrometricQuality = document.querySelector("#astrometric-quality");
+    const astrometricDockerState = document.querySelector("#astrometric-docker-state");
+    const astrometricGpuState = document.querySelector("#astrometric-gpu-state");
+    const astrometricFrameState = document.querySelector("#astrometric-frame-state");
+    const astrometricCameraState = document.querySelector("#astrometric-camera-state");
+    const astrometricStatusJson = document.querySelector("#astrometric-status-json");
