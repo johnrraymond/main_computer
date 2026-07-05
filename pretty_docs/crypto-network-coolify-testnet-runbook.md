@@ -92,7 +92,7 @@ python .\tools\coolify_qbft_network.py validate test
 python .\tools\coolify_qbft_network.py plan test
 python .\tools\coolify_qbft_network.py validate testnet
 python .\tools\coolify_qbft_network.py plan testnet
-python .\tools\coolify_qbft_network.py compose testnet --host testnet-a
+python .\tools\coolify_qbft_network.py compose testnet --host a
 python .\tools\coolify_qbft_network.py write testnet --out runtime\coolify-qbft\testnet
 ```
 
@@ -570,7 +570,7 @@ $disc = python .\tools\coolify_qbft_network.py coolify-discover testnet `
 $disc.services | Format-Table uuid,name,status,project_uuid,server_uuid
 
 $serviceUuid = ($disc.services | Where-Object {
-  $_.name -eq "main-computer-qbft-testnet-testnet-a"
+  $_.name -eq "main-computer-qbft-testnet-a"
 }).uuid
 
 $serviceUuid

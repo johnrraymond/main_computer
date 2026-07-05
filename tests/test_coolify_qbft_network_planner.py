@@ -54,13 +54,13 @@ def test_compose_render_contains_single_testnet_besu_and_managed_volume() -> Non
     module = _load_module()
 
     plan = module.build_plan("testnet", besu_image="hyperledger/besu:24.7.0")
-    compose = module.render_compose_for_host(plan, "testnet-a")
+    compose = module.render_compose_for_host(plan, "a")
 
-    assert "name: main-computer-qbft-testnet-testnet-a" in compose
+    assert "name: main-computer-qbft-testnet-a" in compose
     assert "qbft-bootstrap:" in compose
     assert "operator generate-blockchain-config" in compose
     assert '"127.0.0.1:30010:8545"' in compose
-    assert '"main-computer-qbft-testnet-testnet-a-runtime:/smoke"' in compose
+    assert '"main-computer-qbft-testnet-a-runtime:/smoke"' in compose
     assert "--genesis-file=/smoke/genesis.json" in compose
     assert "EXPECTED_QBFT_VALIDATOR_COUNT=1" in compose
     assert "EXPECTED_QBFT_RPC_COUNT=0" in compose
@@ -80,7 +80,7 @@ def test_bootstrap_command_escapes_shell_dollars_for_docker_compose() -> None:
     module = _load_module()
 
     plan = module.build_plan("testnet", besu_image="hyperledger/besu:24.7.0")
-    compose = module.render_compose_for_host(plan, "testnet-a")
+    compose = module.render_compose_for_host(plan, "a")
     bootstrap_entrypoint_script = compose.split("      - |-", 1)[1].split("\n    volumes:", 1)[0]
 
     assert "      - -ec" in compose
@@ -100,7 +100,7 @@ def test_bind_runtime_root_mode_uses_coolify_directory_hint() -> None:
     module = _load_module()
 
     plan = module.build_plan("testnet", besu_image="hyperledger/besu:24.7.0")
-    compose = module.render_compose_for_host(plan, "testnet-a", managed_volume=False)
+    compose = module.render_compose_for_host(plan, "a", managed_volume=False)
 
     assert "type: bind" in compose
     assert "source: \"/srv/main-computer/qbft-testnet/runtime\"" in compose
@@ -639,7 +639,7 @@ def test_coolify_sync_reports_multiple_discovered_projects(monkeypatch) -> None:
 def test_coolify_sync_reuses_existing_service_name_without_creating(monkeypatch) -> None:
     module = _load_module()
     plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
-    service_name = "main-computer-qbft-testnet-testnet-a"
+    service_name = "main-computer-qbft-testnet-a"
 
     class FakeClient:
         base_url = "http://coolify.example.test:8000"
@@ -682,7 +682,7 @@ def test_coolify_sync_reuses_existing_service_name_without_creating(monkeypatch)
 def test_coolify_sync_refuses_duplicate_existing_service_names(monkeypatch) -> None:
     module = _load_module()
     plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
-    service_name = "main-computer-qbft-testnet-testnet-a"
+    service_name = "main-computer-qbft-testnet-a"
 
     class FakeClient:
         base_url = "http://coolify.example.test:8000"

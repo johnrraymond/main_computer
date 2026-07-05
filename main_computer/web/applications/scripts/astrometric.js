@@ -66,10 +66,14 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       }
       if (astrometricGpuState) {
         if (reachable) {
-          const gpuName = `${renderer.gl_vendor || "GL"} / ${renderer.gl_renderer || "renderer unknown"}`;
-          astrometricGpuState.textContent = streamReady ? gpuName : `${gpuName} · waiting for first frame`;
+          const gpuName = renderer.gl_vendor || renderer.gl_renderer
+            ? `${renderer.gl_vendor || "GL"} / ${renderer.gl_renderer || "renderer unknown"}`
+            : (renderer.egl_display || "GPU renderer");
+          const phase = renderer.startup_phase || "waiting for first frame";
+          astrometricGpuState.textContent = streamReady ? gpuName : `${gpuName} · ${phase}`;
         } else {
-          astrometricGpuState.textContent = renderer.error || "renderer not reachable";
+          const tcp = renderer.tcp_open ? "TCP port open; HTTP health timed out" : "";
+          astrometricGpuState.textContent = renderer.error || tcp || "renderer not reachable";
         }
       }
       if (astrometricFrameState) {
@@ -85,15 +89,16 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
       if (astrometricEndpoint) {
         astrometricEndpoint.textContent = streamReady
           ? status.stream_path || ASTROMETRIC_STREAM_ENDPOINT
-          : (reachable ? "renderer starting; waiting for first frame" : "renderer offline");
+          : (reachable ? (renderer.startup_phase || "renderer starting; waiting for first frame") : "renderer offline");
       }
 
       if (streamReady) {
         astrometricSetStatus("GPU stream live", "live");
         astrometricAttachStream();
       } else if (reachable) {
+        const phase = renderer.startup_phase || "waiting for first frame";
         const lastError = renderer.last_error ? `: ${renderer.last_error}` : "";
-        astrometricSetStatus(`renderer starting${lastError}`, renderer.last_error ? "error" : "working");
+        astrometricSetStatus(`${phase}${lastError}`, renderer.last_error || renderer.renderer_fatal ? "error" : "working");
         astrometricDetachStream();
       } else {
         astrometricSetStatus("renderer offline", "offline");

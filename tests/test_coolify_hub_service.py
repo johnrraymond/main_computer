@@ -1187,5 +1187,31 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
 
 
+    def test_verify_action_is_read_only_and_does_not_require_git_repo(self) -> None:
+        args = coolify_hub_service.parse_args(
+            [
+                "verify",
+                "testnet",
+                "--verify-chain-rpc-url",
+                "https://rpc.example",
+                "--rpc-check",
+                "skip",
+                "--hub-health-check",
+                "skip",
+            ]
+        )
+
+        result = coolify_hub_service.verify(args)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "verify")
+        self.assertEqual(result["network"], "testnet")
+        self.assertEqual(result["chain_rpc_url"], "https://rpc.example")
+        self.assertEqual(result["phases"][0]["phase"], "verify-rpc")
+        self.assertEqual(result["phases"][0]["result"]["skipped"], True)
+        self.assertEqual(result["phases"][1]["phase"], "wait-hub")
+        self.assertEqual(result["phases"][1]["result"]["skipped"], True)
+
+
 if __name__ == "__main__":
     unittest.main()

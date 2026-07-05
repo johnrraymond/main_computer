@@ -1,4 +1,5 @@
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GL/glew.h>
 #include <jpeglib.h>
 
@@ -214,19 +215,25 @@ struct SharedState {
     std::mutex mutex;
     std::condition_variable cv;
     Camera camera;
-    bool moving = false;
+    bool moving = true;
     bool dirty = true;
-    int width = 960;
-    int height = 540;
-    int fps = 18;
+    int width = 640;
+    int height = 360;
+    int fps = 10;
     int jpegQuality = 86;
-    int idleSteps = 960;
-    int movingSteps = 520;
+    int idleSteps = 520;
+    int movingSteps = 220;
     float idleStepLength = 3.4e7f;
     float movingStepLength = 5.4e7f;
+    bool httpReady = false;
+    bool rendererThreadStarted = false;
+    bool rendererThreadDone = false;
+    bool rendererFatal = false;
     bool glReady = false;
     uint64_t frameSeq = 0;
     double frameMs = 0.0;
+    std::string startupPhase = "created";
+    std::string eglDisplay;
     std::string glVendor;
     std::string glRenderer;
     std::string glVersion;
@@ -234,20 +241,105 @@ struct SharedState {
     std::vector<unsigned char> jpeg;
 };
 
+#ifndef EGL_PLATFORM_DEVICE_EXT
+#define EGL_PLATFORM_DEVICE_EXT 0x313F
+#endif
+
+using EglQueryDevicesEXTProc = EGLBoolean (*)(EGLint, EGLDeviceEXT*, EGLint*);
+using EglGetPlatformDisplayEXTProc = EGLDisplay (*)(EGLenum, void*, const EGLint*);
+
+std::string eglErrorString(EGLint error) {
+    switch (error) {
+        case EGL_SUCCESS: return "EGL_SUCCESS";
+        case EGL_NOT_INITIALIZED: return "EGL_NOT_INITIALIZED";
+        case EGL_BAD_ACCESS: return "EGL_BAD_ACCESS";
+        case EGL_BAD_ALLOC: return "EGL_BAD_ALLOC";
+        case EGL_BAD_ATTRIBUTE: return "EGL_BAD_ATTRIBUTE";
+        case EGL_BAD_CONTEXT: return "EGL_BAD_CONTEXT";
+        case EGL_BAD_CONFIG: return "EGL_BAD_CONFIG";
+        case EGL_BAD_CURRENT_SURFACE: return "EGL_BAD_CURRENT_SURFACE";
+        case EGL_BAD_DISPLAY: return "EGL_BAD_DISPLAY";
+        case EGL_BAD_SURFACE: return "EGL_BAD_SURFACE";
+        case EGL_BAD_MATCH: return "EGL_BAD_MATCH";
+        case EGL_BAD_PARAMETER: return "EGL_BAD_PARAMETER";
+        case EGL_BAD_NATIVE_PIXMAP: return "EGL_BAD_NATIVE_PIXMAP";
+        case EGL_BAD_NATIVE_WINDOW: return "EGL_BAD_NATIVE_WINDOW";
+        case EGL_CONTEXT_LOST: return "EGL_CONTEXT_LOST";
+        default: {
+            std::ostringstream ss;
+            ss << "EGL error 0x" << std::hex << error;
+            return ss.str();
+        }
+    }
+}
+
+bool initializeDisplayCandidate(EGLDisplay candidate, const std::string& label, EGLDisplay& display, std::string& selected, std::string& attempts) {
+    if (candidate == EGL_NO_DISPLAY) {
+        attempts += label + ": EGL_NO_DISPLAY; ";
+        return false;
+    }
+
+    EGLint major = 0;
+    EGLint minor = 0;
+    if (eglInitialize(candidate, &major, &minor)) {
+        display = candidate;
+        std::ostringstream ss;
+        ss << label << " (EGL " << major << "." << minor << ")";
+        selected = ss.str();
+        return true;
+    }
+
+    attempts += label + ": " + eglErrorString(eglGetError()) + "; ";
+    return false;
+}
+
+EGLDisplay openInitializedEglDisplay(std::string& selected, std::string& attempts) {
+    EGLDisplay display = EGL_NO_DISPLAY;
+
+    auto queryDevices = reinterpret_cast<EglQueryDevicesEXTProc>(eglGetProcAddress("eglQueryDevicesEXT"));
+    auto getPlatformDisplay = reinterpret_cast<EglGetPlatformDisplayEXTProc>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
+
+    if (queryDevices && getPlatformDisplay) {
+        EGLDeviceEXT devices[16]{};
+        EGLint deviceCount = 0;
+        if (queryDevices(16, devices, &deviceCount) && deviceCount > 0) {
+            for (EGLint i = 0; i < deviceCount; ++i) {
+                std::ostringstream label;
+                label << "EGL device " << i;
+                EGLDisplay candidate = getPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, devices[i], nullptr);
+                if (initializeDisplayCandidate(candidate, label.str(), display, selected, attempts)) {
+                    return display;
+                }
+            }
+        } else {
+            attempts += "eglQueryDevicesEXT returned no EGL devices; ";
+        }
+    } else {
+        attempts += "EGL_EXT_device_enumeration/EGL_EXT_platform_device not available; ";
+    }
+
+    EGLDisplay fallback = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (initializeDisplayCandidate(fallback, "EGL default display", display, selected, attempts)) {
+        return display;
+    }
+
+    throw std::runtime_error("No usable headless EGL display was available. " + attempts);
+}
+
 class EglContext {
 public:
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
+    std::string selectedDisplay;
 
     EglContext(int width, int height) {
-        display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-        if (display == EGL_NO_DISPLAY) throw std::runtime_error("eglGetDisplay failed");
+        std::string attempts;
+        display = openInitializedEglDisplay(selectedDisplay, attempts);
 
-        EGLint major = 0, minor = 0;
-        if (!eglInitialize(display, &major, &minor)) throw std::runtime_error("eglInitialize failed");
-
-        if (!eglBindAPI(EGL_OPENGL_API)) throw std::runtime_error("eglBindAPI(EGL_OPENGL_API) failed");
+        if (!eglBindAPI(EGL_OPENGL_API)) {
+            throw std::runtime_error("eglBindAPI(EGL_OPENGL_API) failed: " + eglErrorString(eglGetError()));
+        }
 
         EGLint configAttribs[] = {
             EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
@@ -263,7 +355,7 @@ public:
         EGLConfig config = nullptr;
         EGLint numConfigs = 0;
         if (!eglChooseConfig(display, configAttribs, &config, 1, &numConfigs) || numConfigs < 1) {
-            throw std::runtime_error("eglChooseConfig failed");
+            throw std::runtime_error("eglChooseConfig failed: " + eglErrorString(eglGetError()));
         }
 
         EGLint surfaceAttribs[] = {
@@ -272,7 +364,9 @@ public:
             EGL_NONE
         };
         surface = eglCreatePbufferSurface(display, config, surfaceAttribs);
-        if (surface == EGL_NO_SURFACE) throw std::runtime_error("eglCreatePbufferSurface failed");
+        if (surface == EGL_NO_SURFACE) {
+            throw std::runtime_error("eglCreatePbufferSurface failed: " + eglErrorString(eglGetError()));
+        }
 
         const EGLint EGL_CONTEXT_MAJOR_VERSION_KHR = 0x3098;
         const EGLint EGL_CONTEXT_MINOR_VERSION_KHR = 0x30FB;
@@ -286,8 +380,12 @@ public:
         };
 
         context = eglCreateContext(display, config, EGL_NO_CONTEXT, contextAttribs);
-        if (context == EGL_NO_CONTEXT) throw std::runtime_error("eglCreateContext OpenGL 4.3 core failed");
-        if (!eglMakeCurrent(display, surface, surface, context)) throw std::runtime_error("eglMakeCurrent failed");
+        if (context == EGL_NO_CONTEXT) {
+            throw std::runtime_error("eglCreateContext OpenGL 4.3 core failed: " + eglErrorString(eglGetError()));
+        }
+        if (!eglMakeCurrent(display, surface, surface, context)) {
+            throw std::runtime_error("eglMakeCurrent failed: " + eglErrorString(eglGetError()));
+        }
 
         glewExperimental = GL_TRUE;
         GLenum glewStatus = glewInit();
@@ -392,10 +490,13 @@ public:
         const GLubyte* version = glGetString(GL_VERSION);
         {
             std::lock_guard<std::mutex> lock(state.mutex);
+            state.eglDisplay = context.selectedDisplay;
             state.glVendor = vendor ? reinterpret_cast<const char*>(vendor) : "";
             state.glRenderer = renderer ? reinterpret_cast<const char*>(renderer) : "";
             state.glVersion = version ? reinterpret_cast<const char*>(version) : "";
+            state.startupPhase = "compiling compute shader";
         }
+        state.cv.notify_all();
 
         std::string shaderPath = std::string(ASTROMETRIC_SHADER_DIR) + "/astrometric_service.comp";
         program = compileComputeProgram(readFile(shaderPath));
@@ -410,6 +511,8 @@ public:
         {
             std::lock_guard<std::mutex> lock(state.mutex);
             state.glReady = true;
+            state.rendererFatal = false;
+            state.startupPhase = "OpenGL ready; rendering first frame";
             state.lastError.clear();
         }
         state.cv.notify_all();
@@ -430,9 +533,12 @@ public:
                 std::unique_lock<std::mutex> lock(state.mutex);
                 state.cv.wait_for(lock, framePeriod, [&] { return state.dirty || !g_running.load(); });
                 camera = state.camera;
-                moving = state.moving;
+                moving = state.moving || state.frameSeq == 0;
                 quality = state.jpegQuality;
                 state.dirty = false;
+                if (state.frameSeq == 0) {
+                    state.startupPhase = "rendering first frame";
+                }
             }
 
             auto start = std::chrono::steady_clock::now();
@@ -444,10 +550,13 @@ public:
                 state.jpeg = std::move(jpeg);
                 state.frameSeq += 1;
                 state.frameMs = std::chrono::duration<double, std::milli>(stop - start).count();
+                state.startupPhase = "streaming";
+                state.rendererFatal = false;
                 state.lastError.clear();
                 state.cv.notify_all();
             } catch (const std::exception& exc) {
                 std::lock_guard<std::mutex> lock(state.mutex);
+                state.startupPhase = "rendering error; retrying";
                 state.lastError = exc.what();
                 state.cv.notify_all();
             }
@@ -529,6 +638,11 @@ std::string healthJson(SharedState& state) {
     out << "{"
         << "\"ok\":true,"
         << "\"renderer\":\"main-computer-astrometric-renderer\","
+        << "\"http_ready\":" << (state.httpReady ? "true" : "false") << ","
+        << "\"renderer_thread_started\":" << (state.rendererThreadStarted ? "true" : "false") << ","
+        << "\"renderer_thread_done\":" << (state.rendererThreadDone ? "true" : "false") << ","
+        << "\"renderer_fatal\":" << (state.rendererFatal ? "true" : "false") << ","
+        << "\"startup_phase\":\"" << jsonEscape(state.startupPhase) << "\","
         << "\"frame_seq\":" << state.frameSeq << ","
         << "\"frame_ms\":" << state.frameMs << ","
         << "\"width\":" << state.width << ","
@@ -541,6 +655,7 @@ std::string healthJson(SharedState& state) {
         << "\"moving_step_length\":" << state.movingStepLength << ","
         << "\"gl_ready\":" << (state.glReady ? "true" : "false") << ","
         << "\"stream_ready\":" << (!state.jpeg.empty() ? "true" : "false") << ","
+        << "\"egl_display\":\"" << jsonEscape(state.eglDisplay) << "\","
         << "\"gl_vendor\":\"" << jsonEscape(state.glVendor) << "\","
         << "\"gl_renderer\":\"" << jsonEscape(state.glRenderer) << "\","
         << "\"gl_version\":\"" << jsonEscape(state.glVersion) << "\","
@@ -550,9 +665,19 @@ std::string healthJson(SharedState& state) {
     return out.str();
 }
 
+const char* httpStatusText(int status) {
+    switch (status) {
+        case 200: return "OK";
+        case 400: return "Bad Request";
+        case 404: return "Not Found";
+        case 503: return "Service Unavailable";
+        default: return "OK";
+    }
+}
+
 void sendJson(int fd, int status, const std::string& body) {
     std::ostringstream header;
-    header << "HTTP/1.1 " << status << " OK\r\n"
+    header << "HTTP/1.1 " << status << " " << httpStatusText(status) << "\r\n"
            << "Content-Type: application/json; charset=utf-8\r\n"
            << "Cache-Control: no-store\r\n"
            << "Content-Length: " << body.size() << "\r\n"
@@ -708,6 +833,13 @@ void handleClient(int fd, SharedState& state) {
 
     if (req.method == "GET" && path == "/health") {
         sendJson(fd, 200, healthJson(state) + "\n");
+    } else if (req.method == "GET" && path == "/ready") {
+        bool ready = false;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            ready = !state.jpeg.empty() && !state.rendererFatal;
+        }
+        sendJson(fd, ready ? 200 : 503, healthJson(state) + "\n");
     } else if (req.method == "GET" && path == "/frame.jpg") {
         sendJpeg(fd, state);
     } else if (req.method == "GET" && path == "/stream.mjpg") {
@@ -747,6 +879,15 @@ void runServer(SharedState& state, const std::string& bindHost, int port) {
         throw std::runtime_error("listen() failed: " + error);
     }
 
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.httpReady = true;
+        if (state.startupPhase == "created") {
+            state.startupPhase = "HTTP ready; starting renderer";
+        }
+    }
+    state.cv.notify_all();
+
     std::cerr << "Astrometric renderer listening on " << bindHost << ":" << port << std::endl;
 
     while (g_running.load()) {
@@ -763,6 +904,53 @@ void runServer(SharedState& state, const std::string& bindHost, int port) {
     close(serverFd);
 }
 
+void runRendererThread(SharedState& state) {
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.rendererThreadStarted = true;
+        state.rendererThreadDone = false;
+        state.rendererFatal = false;
+        state.glReady = false;
+        state.startupPhase = "initializing EGL/OpenGL";
+        state.lastError.clear();
+    }
+    state.cv.notify_all();
+
+    try {
+        Renderer renderer(state);
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.dirty = true;
+            state.moving = true; // first frame uses the lower-latency moving integration profile
+        }
+        state.cv.notify_all();
+
+        // EGL/OpenGL contexts are thread-local. Construct Renderer and keep every
+        // GL command on this single thread; the HTTP server owns only control I/O.
+        renderer.renderLoop();
+
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.rendererThreadDone = true;
+            if (!state.rendererFatal) {
+                state.startupPhase = "renderer stopped";
+            }
+        }
+        state.cv.notify_all();
+    } catch (const std::exception& exc) {
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.rendererThreadDone = true;
+            state.rendererFatal = true;
+            state.glReady = false;
+            state.startupPhase = "renderer failed";
+            state.lastError = exc.what();
+        }
+        state.cv.notify_all();
+        std::cerr << "Astrometric renderer fatal error: " << exc.what() << std::endl;
+    }
+}
+
 void signalHandler(int) {
     g_running.store(false);
 }
@@ -774,12 +962,12 @@ int main() {
     std::signal(SIGTERM, signalHandler);
 
     SharedState state;
-    state.width = envInt("ASTROMETRIC_RENDERER_WIDTH", 800, 160, 1920);
-    state.height = envInt("ASTROMETRIC_RENDERER_HEIGHT", 450, 120, 1080);
-    state.fps = envInt("ASTROMETRIC_RENDERER_FPS", 12, 1, 60);
+    state.width = envInt("ASTROMETRIC_RENDERER_WIDTH", 640, 160, 1920);
+    state.height = envInt("ASTROMETRIC_RENDERER_HEIGHT", 360, 120, 1080);
+    state.fps = envInt("ASTROMETRIC_RENDERER_FPS", 10, 1, 60);
     state.jpegQuality = envInt("ASTROMETRIC_RENDERER_JPEG_QUALITY", 86, 35, 95);
-    state.idleSteps = envInt("ASTROMETRIC_RENDERER_IDLE_STEPS", 960, 80, 6000);
-    state.movingSteps = envInt("ASTROMETRIC_RENDERER_MOVING_STEPS", 520, 40, 3000);
+    state.idleSteps = envInt("ASTROMETRIC_RENDERER_IDLE_STEPS", 520, 80, 6000);
+    state.movingSteps = envInt("ASTROMETRIC_RENDERER_MOVING_STEPS", 220, 40, 3000);
     state.idleStepLength = envFloat("ASTROMETRIC_RENDERER_IDLE_STEP_LENGTH", 3.4e7f, 1.0e6f, 5.0e8f);
     state.movingStepLength = envFloat("ASTROMETRIC_RENDERER_MOVING_STEP_LENGTH", 5.4e7f, 1.0e6f, 8.0e8f);
 
@@ -787,14 +975,13 @@ int main() {
     int port = envInt("ASTROMETRIC_RENDERER_PORT", 8794, 1024, 65535);
 
     try {
-        Renderer renderer(state);
-
         std::thread serverThread([&] {
             try {
                 runServer(state, bindHost, port);
             } catch (const std::exception& exc) {
                 {
                     std::lock_guard<std::mutex> lock(state.mutex);
+                    state.startupPhase = "HTTP server failed";
                     state.lastError = std::string("HTTP server failed: ") + exc.what();
                 }
                 state.cv.notify_all();
@@ -803,20 +990,15 @@ int main() {
         });
         serverThread.detach();
 
-        {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            state.dirty = true;
+        std::thread rendererThread(runRendererThread, std::ref(state));
+        rendererThread.detach();
+
+        while (g_running.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
         state.cv.notify_all();
-
-        // EGL/OpenGL contexts are thread-local. Keep the GL context and all GL
-        // commands on the main renderer thread; the HTTP server runs separately.
-        renderer.renderLoop();
-
-        g_running.store(false);
-        state.cv.notify_all();
     } catch (const std::exception& exc) {
-        std::cerr << "Astrometric renderer fatal error: " << exc.what() << std::endl;
+        std::cerr << "Astrometric renderer service fatal error: " << exc.what() << std::endl;
         return 1;
     }
 

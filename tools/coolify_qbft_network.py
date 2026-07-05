@@ -73,6 +73,7 @@ DEFAULT_GENERATED_OFFICE_ENVIRONMENTS = {"test", "testnet"}
 LOCAL_COOLIFY_DEFAULT_URL = "http://127.0.0.1:8000"
 LOCAL_COOLIFY_TOKEN_RELATIVE_PATH = Path("runtime") / "coolify-local-docker" / "api-token.txt"
 PRIVATE_STATE_RELATIVE_PATH = Path("runtime") / "state" / "main_computer.private.yaml"
+HUB_SERVICE_TOOL_PATH = Path(__file__).resolve().with_name("coolify_hub_service.py")
 LOCAL_COOLIFY_DEFAULT_ENVIRONMENT = "production"
 LOCAL_COOLIFY_RPC_CONTAINER_URL = f"http://mc-qbft-rpc:{RPC_CONTAINER_PORT}"
 LOCAL_QBFT_SUBNET_CANDIDATES = (
@@ -186,7 +187,7 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
             ),
         },
         "hosts": {
-            "testnet-a": {
+            "a": {
                 "ssh": "root@TESTNET_MACHINE_IP",
                 "address": "TESTNET_MACHINE_IP",
                 "coolify_url": "https://coolify-testnet.example.com",
@@ -197,7 +198,7 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
             {
                 "id": "validator-1",
                 "role": "validator",
-                "host": "testnet-a",
+                "host": "a",
                 "container_ip": "172.28.241.11",
                 # The low-resource remote testnet intentionally has no dedicated
                 # RPC sidecar; validator-1 owns the operator RPC port.
@@ -1839,7 +1840,7 @@ def should_log(args: argparse.Namespace | None) -> bool:
     if bool(getattr(args, "quiet", False)):
         return False
     action = str(getattr(args, "action", "") or "")
-    return action in {"apply", "coolify-sync", "coolify-check", "coolify-discover", "wait-rpc", "deploy-contracts"}
+    return action in {"apply", "coolify-sync", "coolify-check", "coolify-discover", "discover-topology", "wait-rpc", "deploy-contracts"}
 
 
 def operator_log(args: argparse.Namespace | None, message: str, **fields: Any) -> None:
@@ -2027,6 +2028,52 @@ def response_to_dict(response: CoolifyResponse, *, token: str = "", token_source
         "path": response.path,
         "body": response.body,
     }
+    if token:
+        result["token"] = redact_secret(token)
+    if token_source:
+        result["token_source"] = token_source
+    return result
+
+
+def coolify_response_summary(response: CoolifyResponse, *, token: str = "", token_source: str = "") -> dict[str, Any]:
+    """Return an operator-safe response summary without echoing large Coolify API bodies.
+
+    Discovery endpoints can return entire server/application/service graphs, including
+    nested settings and tokens.  The topology report only needs request success,
+    status, path, and a small body shape/error summary.
+    """
+
+    body = response.body
+    result: dict[str, Any] = {
+        "ok": bool(response.ok),
+        "status": response.status,
+        "method": response.method,
+        "url": response.url,
+        "path": response.path,
+    }
+    if isinstance(body, Mapping):
+        result["body_type"] = "object"
+        result["body_keys"] = sorted(str(key) for key in body.keys())[:40]
+        for key in ("error", "message", "detail"):
+            value = body.get(key)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                result[key] = value
+        for key in ("errors", "data"):
+            value = body.get(key)
+            if isinstance(value, list):
+                result[f"{key}_count"] = len(value)
+            elif isinstance(value, Mapping):
+                result[f"{key}_keys"] = sorted(str(item) for item in value.keys())[:40]
+    elif isinstance(body, list):
+        result["body_type"] = "array"
+        result["body_count"] = len(body)
+    elif body not in (None, ""):
+        result["body_type"] = type(body).__name__
+        if isinstance(body, (str, int, float, bool)):
+            text = str(body)
+            result["body_preview"] = text if len(text) <= 200 else text[:197] + "..."
+    else:
+        result["body_type"] = "empty"
     if token:
         result["token"] = redact_secret(token)
     if token_source:
@@ -2414,6 +2461,429 @@ def coolify_discover(args: argparse.Namespace, plan: NetworkPlan | None = None) 
         }
     )
     return result
+
+
+def _load_hub_service_module() -> Any:
+    if "coolify_hub_service_for_qbft_verify" in sys.modules:
+        return sys.modules["coolify_hub_service_for_qbft_verify"]
+    spec = importlib.util.spec_from_file_location("coolify_hub_service_for_qbft_verify", HUB_SERVICE_TOOL_PATH)
+    if spec is None or spec.loader is None:
+        raise CoolifyError(f"Could not import Hub service verifier from {HUB_SERVICE_TOOL_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _decode_possible_compose_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    if "services:" in text or "\nservices:" in text:
+        return text
+    try:
+        decoded = base64.b64decode(text, validate=True).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    return decoded if "services:" in decoded or "\nservices:" in decoded else ""
+
+
+def coolify_compose_text_from_payload(payload: Any) -> str:
+    """Best-effort extraction of a raw Docker Compose document from Coolify API payloads."""
+
+    seen: set[int] = set()
+
+    def walk(value: Any) -> str:
+        marker = id(value)
+        if marker in seen:
+            return ""
+        seen.add(marker)
+        if isinstance(value, str):
+            return _decode_possible_compose_text(value)
+        if isinstance(value, list):
+            for item in value:
+                found = walk(item)
+                if found:
+                    return found
+            return ""
+        if not isinstance(value, Mapping):
+            return ""
+
+        preferred_keys = (
+            "docker_compose_raw",
+            "docker_compose",
+            "compose",
+            "docker_compose_file",
+            "dockerCompose",
+            "dockerComposeRaw",
+        )
+        for key in preferred_keys:
+            if key in value:
+                found = walk(value.get(key))
+                if found:
+                    return found
+        for nested_key in ("service", "data", "resource", "application", "settings"):
+            if nested_key in value:
+                found = walk(value.get(nested_key))
+                if found:
+                    return found
+        return ""
+
+    return walk(payload)
+
+
+def compose_service_keys(compose: str) -> list[str]:
+    if not str(compose or "").strip():
+        return []
+    try:
+        import yaml
+    except ImportError:
+        yaml = None  # type: ignore[assignment]
+    if yaml is not None:
+        try:
+            loaded = yaml.safe_load(compose)
+            services = loaded.get("services") if isinstance(loaded, Mapping) else None
+            if isinstance(services, Mapping):
+                return [str(key) for key in services]
+        except Exception:
+            pass
+
+    keys: list[str] = []
+    in_services = False
+    for raw_line in compose.splitlines():
+        if raw_line.startswith("services:"):
+            in_services = True
+            continue
+        if in_services and raw_line and not raw_line.startswith((" ", "\t")):
+            break
+        if in_services:
+            match = re.match(r"^  ([A-Za-z0-9_.-]+):\s*(?:#.*)?$", raw_line)
+            if match:
+                keys.append(match.group(1))
+    return keys
+
+
+def coolify_service_detail(
+    client: CoolifyClient,
+    args: argparse.Namespace,
+    service_uuid: str,
+) -> dict[str, Any]:
+    service_uuid = str(service_uuid or "").strip()
+    if not service_uuid:
+        return {"ok": False, "reason": "missing-service-uuid", "tried": []}
+
+    tried: list[dict[str, Any]] = []
+    for path in (
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/compose",
+    ):
+        response = client.request("GET", path)
+        tried.append({"path": path, "response": coolify_response_summary(response)})
+        if not response.ok:
+            continue
+        compose = coolify_compose_text_from_payload(response.body)
+        if compose:
+            return {
+                "ok": True,
+                "source": path,
+                "compose": compose,
+                "service_keys": compose_service_keys(compose),
+                "tried": tried,
+            }
+    return {"ok": False, "reason": "compose-not-returned-by-coolify-api", "tried": tried}
+
+
+def instance_catalog(plan: NetworkPlan) -> dict[str, dict[str, Any]]:
+    hosts = host_by_id(plan)
+    return {
+        service.id: {
+            "id": service.id,
+            "roles": list(service.roles),
+            "role": service.role,
+            "host": service.host,
+            "coolify_host": service.host,
+            "container_ip": service.container_ip,
+            "rpc_host_port": service.rpc_host_port,
+            "p2p_host_port": service.p2p_host_port,
+            "rpc_url_on_host": service.rpc_url_on_host,
+            "coolify_url": hosts[service.host].coolify_url if service.host in hosts else "",
+        }
+        for service in plan.services
+    }
+
+
+def discover_coolify_topology(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    available = instance_catalog(plan)
+    deployed: set[str] = set()
+    host_results: dict[str, Any] = {}
+    warnings: list[str] = []
+
+    for host in plan.hosts:
+        local_services = list(services_for_host(plan, host.id))
+        expected_service_name = project_service_name(plan, host.id)
+        host_result: dict[str, Any] = {
+            "ok": False,
+            "host_id": host.id,
+            "coolify_url": host.coolify_url,
+            "service_name": expected_service_name,
+            "expected_instances": [service.id for service in local_services],
+            "found": False,
+            "deployed_instances": [],
+            "warnings": [],
+        }
+        host_results[host.id] = host_result
+        try:
+            client, token, token_source = coolify_client_from_args(args, plan, host_id=host.id)
+            host_result["token_source"] = token_source
+            host_result["token_seen"] = bool(token)
+
+            version = client.request("GET", "/api/v1/version")
+            host_result["version"] = coolify_response_summary(version)
+            if not version.ok:
+                host_result["stage"] = "version"
+                continue
+
+            services_response, services = coolify_list(
+                client,
+                args,
+                "/api/v1/services",
+                label=f"services:{host.id}",
+                preferred_keys=("services",),
+            )
+            host_result["services_response"] = coolify_response_summary(services_response)
+            if not services_response.ok:
+                host_result["stage"] = "services"
+                continue
+
+            matches = [item for item in services if coolify_service_matches_name(item, expected_service_name)]
+            host_result["matches"] = [coolify_item_summary(item) for item in matches]
+            if len(matches) > 1:
+                host_result["stage"] = "duplicate-service-name"
+                host_result["warnings"].append(f"Multiple Coolify services named {expected_service_name!r} were returned.")
+                warnings.append(f"Host {host.id}: multiple Coolify services named {expected_service_name!r}.")
+                continue
+            if not matches:
+                host_result["ok"] = True
+                host_result["found"] = False
+                host_result["stage"] = "missing"
+                continue
+
+            match = matches[0]
+            service_uuid = coolify_item_uuid(match)
+            host_result["ok"] = True
+            host_result["found"] = True
+            host_result["service_uuid"] = service_uuid
+            host_result["service"] = coolify_item_summary(match)
+
+            compose = coolify_compose_text_from_payload(match)
+            detail: dict[str, Any] = {}
+            if compose:
+                detail = {"ok": True, "source": "services-list-item", "compose": compose, "service_keys": compose_service_keys(compose), "tried": []}
+            elif service_uuid:
+                detail = coolify_service_detail(client, args, service_uuid)
+            host_result["detail"] = {key: value for key, value in detail.items() if key != "compose"}
+
+            service_keys = set(detail.get("service_keys") or [])
+            if service_keys:
+                host_result["compose_service_keys"] = sorted(service_keys)
+                deployed_here = [
+                    service.id
+                    for service in local_services
+                    if service.id.replace("_", "-") in service_keys
+                ]
+                host_result["deployed_instances"] = deployed_here
+            else:
+                # Compatibility path for already-deployed services that predate
+                # richer labels/detail endpoints: a matching host stack proves the
+                # host-level QBFT service exists, but not which internal compose
+                # services are present. Infer only when the host has exactly one
+                # configured instance; otherwise report the internal topology as
+                # unknown rather than accidentally treating every available node as
+                # deployed.
+                if len(local_services) == 1:
+                    host_result["deployed_instances"] = [local_services[0].id]
+                    host_result["deployed_instance_source"] = "single-instance-host-stack-match-without-compose-detail"
+                    host_result["warnings"].append(
+                        "Coolify did not return compose detail; inferring the single configured instance on this host is deployed."
+                    )
+                    warnings.append(
+                        f"Host {host.id}: compose detail unavailable for {expected_service_name}; inferred the single configured instance."
+                    )
+                else:
+                    host_result["deployed_instances"] = []
+                    host_result["unknown_instances"] = [service.id for service in local_services]
+                    host_result["deployed_instance_source"] = "unknown-without-compose-detail"
+                    host_result["warnings"].append(
+                        "Coolify did not return compose detail; multiple configured instances share this host, so deployed instances are unknown."
+                    )
+                    warnings.append(
+                        f"Host {host.id}: compose detail unavailable for {expected_service_name}; multiple configured instances make per-node discovery unknown."
+                    )
+            deployed.update(host_result["deployed_instances"])
+        except Exception as exc:  # noqa: BLE001 - read-only operator report should include per-host errors
+            host_result["stage"] = "exception"
+            host_result["error"] = str(exc)
+            host_result["error_type"] = type(exc).__name__
+
+    return {
+        "ok": all(item.get("ok") for item in host_results.values()),
+        "hosts": host_results,
+        "available_instances": available,
+        "observed_deployed_instances": sorted(deployed),
+        "observed_missing_instances": sorted(set(available) - deployed),
+        "warnings": warnings,
+    }
+
+
+def discover_rpc_topology(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        rpc_url = infer_external_rpc_url(plan, args)
+    except PlanError as exc:
+        return {"ok": True, "attempted": False, "reason": str(exc)}
+
+    result: dict[str, Any] = {"ok": False, "attempted": True, "rpc_url": rpc_url}
+    try:
+        chain_id = str(json_rpc(rpc_url, "eth_chainId", timeout_s=float(getattr(args, "rpc_timeout_s", 8.0) or 8.0)))
+        block_hex = str(json_rpc(rpc_url, "eth_blockNumber", timeout_s=float(getattr(args, "rpc_timeout_s", 8.0) or 8.0)))
+        peer_hex = str(json_rpc(rpc_url, "net_peerCount", timeout_s=float(getattr(args, "rpc_timeout_s", 8.0) or 8.0)))
+        result.update(
+            {
+                "ok": True,
+                "chain_id": chain_id,
+                "expected_chain_id": hex(plan.chain_id),
+                "chain_id_matches": chain_id.lower() == hex(plan.chain_id).lower(),
+                "block_number": int(block_hex, 16),
+                "peer_count": int(peer_hex, 16),
+            }
+        )
+        try:
+            validators = json_rpc(
+                rpc_url,
+                "qbft_getValidatorsByBlockNumber",
+                ["latest"],
+                timeout_s=float(getattr(args, "rpc_timeout_s", 8.0) or 8.0),
+            )
+            result["qbft_validators"] = validators if isinstance(validators, list) else []
+            result["consensus_topology"] = {
+                "observed": True,
+                "validator_addresses": result["qbft_validators"],
+                "validator_instance_mapping": {
+                    "available": False,
+                    "reason": "validator address metadata is not yet recorded in the QBFT service catalog",
+                },
+            }
+        except Exception as exc:  # noqa: BLE001
+            result["consensus_topology"] = {
+                "observed": False,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+    except Exception as exc:  # noqa: BLE001
+        result.update({"ok": False, "error": str(exc), "error_type": type(exc).__name__})
+    return result
+
+
+def verify_hub_from_qbft_discovery(plan: NetworkPlan, args: argparse.Namespace, rpc_topology: Mapping[str, Any]) -> dict[str, Any]:
+    if not bool(getattr(args, "verify_hub", False)):
+        return {"ok": True, "skipped": True, "reason": "--verify-hub was not provided"}
+
+    hub_module = _load_hub_service_module()
+    argv = ["verify", plan.name]
+    hub_network_config = str(getattr(args, "hub_network_config", "") or "").strip()
+    if hub_network_config:
+        argv.extend(["--network-config", hub_network_config])
+
+    rpc_url = str(rpc_topology.get("rpc_url") or getattr(args, "rpc_url", "") or "").strip()
+    if rpc_url:
+        argv.extend(["--verify-chain-rpc-url", rpc_url])
+
+    argv.extend(["--rpc-check", str(getattr(args, "hub_rpc_check", "warn") or "warn")])
+    argv.extend(["--hub-health-check", str(getattr(args, "hub_health_check", "warn") or "warn")])
+    argv.extend(["--hub-wait-timeout-s", str(float(getattr(args, "hub_wait_timeout_s", 30.0)))])
+    argv.extend(["--hub-wait-poll-s", str(float(getattr(args, "hub_wait_poll_s", 5.0)))])
+    argv.extend(["--hub-status-timeout-s", str(float(getattr(args, "hub_status_timeout_s", 8.0)))])
+
+    try:
+        hub_args = hub_module.parse_args(argv)
+        result = hub_module.verify(hub_args)
+        return {"ok": bool(result.get("ok")), "skipped": False, "argv": argv, "result": result}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "skipped": False, "argv": argv, "error": str(exc), "error_type": type(exc).__name__}
+
+
+def discover_topology_stage_summary(phase: str, result: Mapping[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {"phase": phase, "ok": bool(result.get("ok"))}
+    if "skipped" in result:
+        summary["skipped"] = bool(result.get("skipped"))
+    if result.get("reason"):
+        summary["reason"] = result.get("reason")
+    if result.get("warnings"):
+        summary["warnings"] = result.get("warnings")
+    if phase == "discover-coolify-topology":
+        hosts = result.get("hosts") if isinstance(result.get("hosts"), Mapping) else {}
+        summary["hosts"] = {
+            str(host_id): {
+                "ok": bool(host_result.get("ok")) if isinstance(host_result, Mapping) else False,
+                "found": bool(host_result.get("found")) if isinstance(host_result, Mapping) else False,
+                "stage": host_result.get("stage") if isinstance(host_result, Mapping) else "unknown",
+                "deployed_instances": host_result.get("deployed_instances", []) if isinstance(host_result, Mapping) else [],
+                "service_name": host_result.get("service_name") if isinstance(host_result, Mapping) else "",
+            }
+            for host_id, host_result in hosts.items()
+        }
+        summary["observed_deployed_instances"] = result.get("observed_deployed_instances", [])
+        summary["observed_missing_instances"] = result.get("observed_missing_instances", [])
+    elif phase == "discover-rpc-topology":
+        summary.update(
+            {
+                "attempted": bool(result.get("attempted")),
+                "rpc_url": result.get("rpc_url", ""),
+                "chain_id_matches": result.get("chain_id_matches"),
+                "block_number": result.get("block_number"),
+                "peer_count": result.get("peer_count"),
+                "consensus_observed": bool((result.get("consensus_topology") or {}).get("observed"))
+                if isinstance(result.get("consensus_topology"), Mapping)
+                else False,
+            }
+        )
+    elif phase == "verify-hub":
+        summary["argv"] = result.get("argv", [])
+        if isinstance(result.get("result"), Mapping):
+            hub_result = result.get("result") or {}
+            summary["hub_ok"] = bool(hub_result.get("ok"))
+            summary["hub_warnings"] = hub_result.get("warnings", [])
+    return summary
+
+
+def discover_topology(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    operator_log(args, "discover-topology start", network=plan.name)
+    coolify_topology = discover_coolify_topology(plan, args)
+    rpc_topology = discover_rpc_topology(plan, args)
+    hub_verification = verify_hub_from_qbft_discovery(plan, args, rpc_topology)
+    stages = [
+        discover_topology_stage_summary("discover-coolify-topology", coolify_topology),
+        discover_topology_stage_summary("discover-rpc-topology", rpc_topology),
+        discover_topology_stage_summary("verify-hub", hub_verification),
+    ]
+    ok = bool(coolify_topology.get("ok")) and bool(rpc_topology.get("ok")) and bool(hub_verification.get("ok"))
+    return {
+        "ok": ok,
+        "action": "discover-topology",
+        "network": plan.name,
+        "available_instances": coolify_topology.get("available_instances", {}),
+        "coolify_topology": {
+            "hosts": coolify_topology.get("hosts", {}),
+            "warnings": coolify_topology.get("warnings", []),
+        },
+        "observed_deployed_instances": coolify_topology.get("observed_deployed_instances", []),
+        "observed_missing_instances": coolify_topology.get("observed_missing_instances", []),
+        "rpc_topology": rpc_topology,
+        "consensus_topology": rpc_topology.get("consensus_topology", {"observed": False}),
+        "hub_verification": hub_verification,
+        "stages": stages,
+    }
 
 
 def coolify_service_matches_name(item: dict[str, Any], service_name: str) -> bool:
@@ -3274,6 +3744,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "validate",
             "coolify-check",
             "coolify-discover",
+            "discover-topology",
             "coolify-sync",
             "wait-rpc",
             "deploy-contracts",
@@ -3337,6 +3808,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Do not require eth_blockNumber to advance across successful probes before deploy-contracts.",
     )
     parser.add_argument("--skip-wait-rpc", action="store_true", help="Skip wait-rpc phase in apply.")
+    parser.add_argument(
+        "--verify-hub",
+        action="store_true",
+        help="For discover-topology, also run the Hub verifier against the observed chain RPC surface.",
+    )
+    parser.add_argument("--hub-network-config", default="", help="Optional hub_networks.json path for --verify-hub.")
+    parser.add_argument(
+        "--hub-rpc-check",
+        choices=["require", "warn", "skip"],
+        default="warn",
+        help="Hub verifier RPC check mode used by --verify-hub.",
+    )
+    parser.add_argument(
+        "--hub-health-check",
+        choices=["require", "warn", "skip"],
+        default="warn",
+        help="Hub public status check mode used by --verify-hub.",
+    )
+    parser.add_argument("--hub-wait-timeout-s", type=float, default=30.0)
+    parser.add_argument("--hub-wait-poll-s", type=float, default=5.0)
+    parser.add_argument("--hub-status-timeout-s", type=float, default=8.0)
 
     parser.add_argument("--all", action="store_true", help="For apply: deploy Compose, wait for RPC, and deploy contracts.")
     parser.add_argument("--deploy-contracts", action="store_true", help="For apply: deploy contracts after RPC is healthy.")
@@ -3498,11 +3990,11 @@ def render_operator_runbook() -> str:
               --single-host root@$hostIp `
               --coolify-url $coolifyUrl `
               --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN `
-              --coolify-service-name main-computer-qbft-testnet-testnet-a `
               --public-rpc
 
-        This creates or updates the Coolify Docker Compose service, deploys it,
-        waits for RPC, then deploys contracts when --all is present.
+        This creates or updates the canonical Coolify Docker Compose service
+        named main-computer-qbft-testnet-a, deploys it, waits for RPC, then
+        deploys contracts when --all is present.
 
         The testnet public RPC URL will be:
 
@@ -3541,9 +4033,11 @@ def render_operator_runbook() -> str:
         9. Safe reruns
         --------------
 
-        Use the same --coolify-service-name on reruns. The tool now refuses to
-        blindly create another same-purpose service when it detects duplicate
-        Coolify services returned by the Coolify API.
+        Do not pass --coolify-service-name for the normal testnet path. The
+        tool derives the canonical service name from the network and host id:
+        main-computer-qbft-testnet-a. It refuses to blindly create another
+        same-purpose service when it detects duplicate Coolify services returned
+        by the Coolify API.
 
         If you already know the service UUID, you can pin the target explicitly:
 
@@ -3620,6 +4114,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result.get("ok") else 1
         if args.action == "coolify-discover":
             result = coolify_discover(args, plan)
+            print_json(result)
+            return 0 if result.get("ok") else 1
+        if args.action == "discover-topology":
+            result = discover_topology(plan, args)
             print_json(result)
             return 0 if result.get("ok") else 1
         if args.action == "coolify-sync":

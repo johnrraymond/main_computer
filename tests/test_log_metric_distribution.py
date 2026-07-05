@@ -6,7 +6,7 @@ from pathlib import Path
 import zipfile
 
 from main_computer.cli import build_parser
-from main_computer.log_metric_distribution import analyze_records, build_report_from_paths, iter_log_records
+from main_computer.log_metric_distribution import analyze_records, build_report_from_paths, discover_default_log_paths, iter_log_records, resolve_log_input_paths
 from main_computer.main_log_codec import LexLogWriter
 
 
@@ -130,6 +130,21 @@ def test_extracts_metrics_embedded_in_log_message_strings(tmp_path: Path) -> Non
     assert summaries[1].max == 200
 
 
+def test_deduplicates_numeric_field_repeated_in_message_text(tmp_path: Path) -> None:
+    log_path = tmp_path / "main.log.jsonl"
+    rows = [
+        {"duration_ms": 10, "message": "worker completed duration_ms=10"},
+        {"duration_ms": 20, "message": "worker completed duration_ms=20"},
+        {"duration_ms": 30, "message": "worker completed duration_ms=30"},
+    ]
+    log_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    summaries = analyze_records(iter_log_records([log_path]), metrics=["duration_ms"], bins=3)
+
+    assert summaries[0].count == 3
+    assert summaries[0].median == 20
+
+
 def test_scans_rotated_log_names_and_colon_units_inside_directories(tmp_path: Path) -> None:
     log_path = tmp_path / "worker.log.1"
     log_path.write_text(
@@ -238,3 +253,94 @@ def test_no_derived_option_can_preserve_strict_numeric_behavior(tmp_path: Path) 
 
     assert report.records == 2
     assert report.metric_count == 0
+
+
+def _make_project_root(path: Path) -> Path:
+    root = path / "project"
+    (root / "main_computer").mkdir(parents=True)
+    (root / "new_patch.py").write_text("# marker\n", encoding="utf-8")
+    return root
+
+
+def test_log_metrics_command_without_paths_reads_known_runtime_main_log(tmp_path: Path, monkeypatch) -> None:
+    project_root = _make_project_root(tmp_path)
+    log_path = project_root / "runtime" / "main_log" / "main.log.lex"
+    with LexLogWriter(log_path) as writer:
+        for index, duration in enumerate([10, 20, 30], start=1):
+            writer.write_record(
+                {
+                    "at": f"2026-01-01T00:0{index}:00+00:00",
+                    "service": "main-log",
+                    "duration_ms": duration,
+                    "message": f"request finished duration_ms={duration}",
+                }
+            )
+    output_png = project_root / "metrics.png"
+
+    monkeypatch.chdir(project_root)
+    args = build_parser().parse_args(["log-metrics", "--output-png", str(output_png)])
+
+    assert args.paths == []
+    result = args.func(args)
+
+    assert result == 0
+    assert output_png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_default_log_discovery_includes_runtime_and_archive_logs(tmp_path: Path, monkeypatch) -> None:
+    project_root = _make_project_root(tmp_path)
+    runtime_log = project_root / "runtime" / "service_supervisor" / "app-20260101.stdout.log"
+    runtime_log.parent.mkdir(parents=True)
+    runtime_log.write_text("duration_ms=10\n", encoding="utf-8")
+    archive_log = project_root.parent / "archive" / "logs" / "worker.log.zip"
+    archive_log.parent.mkdir(parents=True)
+    source = project_root / "worker.log"
+    source.write_text("duration_ms=20\n", encoding="utf-8")
+    with zipfile.ZipFile(archive_log, "w") as archive:
+        archive.write(source, "worker.log")
+    source.unlink()
+
+    monkeypatch.chdir(project_root)
+    discovered = discover_default_log_paths()
+
+    assert runtime_log.resolve() in discovered
+    assert archive_log.resolve() in discovered
+
+
+def test_default_logs_alias_falls_back_to_known_project_logs(tmp_path: Path, monkeypatch) -> None:
+    project_root = _make_project_root(tmp_path)
+    (project_root / "logs").mkdir()
+    runtime_log = project_root / "runtime" / "main_log" / "main.log.lex"
+    with LexLogWriter(runtime_log) as writer:
+        writer.write_record({"duration_ms": 10, "message": "one"})
+        writer.write_record({"duration_ms": 20, "message": "two"})
+        writer.write_record({"duration_ms": 30, "message": "three"})
+
+    monkeypatch.chdir(project_root)
+    resolved = resolve_log_input_paths([Path("logs")])
+    report = build_report_from_paths(
+        [Path("logs")],
+        metrics=["duration_ms"],
+        output_png=project_root / "metrics.png",
+        bins=3,
+    )
+
+    assert runtime_log.resolve() in resolved
+    assert report.records == 3
+    assert report.metrics[0].median == 20
+
+
+def test_default_log_discovery_does_not_treat_runtime_config_json_as_log(tmp_path: Path, monkeypatch) -> None:
+    project_root = _make_project_root(tmp_path)
+    deployment = project_root / "runtime" / "deployments" / "dev" / "latest.json"
+    deployment.parent.mkdir(parents=True)
+    deployment.write_text(json.dumps({"chain_id": 42424242, "rpc_port": 8545}), encoding="utf-8")
+    real_log = project_root / "logs" / "app.log"
+    real_log.parent.mkdir(parents=True)
+    real_log.write_text("duration_ms=10\n" "duration_ms=20\n" "duration_ms=30\n", encoding="utf-8")
+
+    monkeypatch.chdir(project_root)
+    report = build_report_from_paths([], metrics=["duration_ms"], output_png=project_root / "metrics.png", bins=3)
+
+    assert report.records == 3
+    assert report.metrics[0].median == 20

@@ -2525,12 +2525,16 @@ def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[s
     raise CoolifyHubDeployError(f"Hub status did not become ready at {status_url}: {last_error}")
 
 
-def load_profile(args: argparse.Namespace) -> HubNetworkProfile:
+def load_profile(args: argparse.Namespace, *, validate_deploy_args: bool = True) -> HubNetworkProfile:
     registry = load_hub_network_registry(args.network_config)
     raw_profile = registry.get(args.network)
     profile = coolify_deploy_profile(raw_profile, args)
+    verify_chain_rpc_url = str(getattr(args, "verify_chain_rpc_url", "") or "").strip()
+    if verify_chain_rpc_url:
+        profile = replace(profile, chain_rpc_url=verify_chain_rpc_url)
     validate_coolify_profile(profile)
-    validate_hub_deploy_args(profile, args)
+    if validate_deploy_args:
+        validate_hub_deploy_args(profile, args)
     return profile
 
 
@@ -2653,6 +2657,63 @@ def hub_health_check_mode(profile: HubNetworkProfile, args: argparse.Namespace) 
 
 def warning_payload(phase: str, mode: str, exc: BaseException) -> dict[str, Any]:
     return {"phase": phase, "mode": mode, "ok": False, "error": str(exc), "error_type": type(exc).__name__}
+
+
+def verify_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
+    """Verify the Hub-facing view of a chain without mutating Coolify.
+
+    This is intentionally narrower than ``apply``: it checks the chain RPC URL
+    the Hub profile will use and, unless skipped, the public Hub status endpoint.
+    It does not create/update Coolify resources, sync bridge signer material, or
+    trigger deploys.
+    """
+
+    phases: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+
+    rpc_mode = rpc_check_mode(profile, args)
+    if rpc_mode != "skip":
+        try:
+            rpc = verify_rpc(profile, args)
+            phases.append({"phase": "verify-rpc", "mode": rpc_mode, "result": rpc})
+        except CoolifyHubDeployError as exc:
+            warning = warning_payload("verify-rpc", rpc_mode, exc)
+            phases.append({"phase": "verify-rpc", "mode": rpc_mode, "result": warning})
+            if rpc_mode == "require":
+                raise
+            warnings.append(warning)
+    else:
+        phases.append({"phase": "verify-rpc", "mode": rpc_mode, "result": {"ok": True, "skipped": True}})
+
+    hub_mode = hub_health_check_mode(profile, args)
+    if hub_mode != "skip":
+        try:
+            hub = wait_for_hub(profile, args)
+            phases.append({"phase": "wait-hub", "mode": hub_mode, "result": hub})
+        except CoolifyHubDeployError as exc:
+            warning = warning_payload("wait-hub", hub_mode, exc)
+            phases.append({"phase": "wait-hub", "mode": hub_mode, "result": warning})
+            if hub_mode == "require":
+                raise
+            warnings.append(warning)
+    else:
+        phases.append({"phase": "wait-hub", "mode": hub_mode, "result": {"ok": True, "skipped": True}})
+
+    return {
+        "ok": True,
+        "action": "verify",
+        "network": profile.network_key,
+        "chain_rpc_url": profile.chain_rpc_url,
+        "hub_url": profile.hub_url,
+        "chain_id": profile.chain_id,
+        "warnings": warnings,
+        "phases": phases,
+    }
+
+
+def verify(args: argparse.Namespace) -> dict[str, Any]:
+    profile = load_profile(args, validate_deploy_args=False)
+    return verify_result(profile, args)
 
 
 def apply(args: argparse.Namespace) -> dict[str, Any]:
@@ -2813,7 +2874,7 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy Main Computer Hub applications into Coolify.")
-    parser.add_argument("action", choices=["plan", "apply"], help="Use plan for local payload rendering or apply for Coolify create/update.")
+    parser.add_argument("action", choices=["plan", "apply", "verify"], help="Use plan for local payload rendering, apply for Coolify create/update, or verify for read-only Hub checks.")
     parser.add_argument("network", choices=["test", "testnet", "mainnet"], help="Hub network to deploy. `test` targets the local Coolify/Besu-QBFT surface.")
 
     parser.add_argument("--network-config", type=Path, default=None, help="Path to hub_networks.json.")
@@ -2932,6 +2993,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Override the chain RPC URL passed to the Hub container. "
             "For local `test`, defaults to http://host.docker.internal:30010 while the operator RPC check still uses the test profile URL."
+        ),
+    )
+    parser.add_argument(
+        "--verify-chain-rpc-url",
+        default="",
+        help=(
+            "Override the chain RPC URL used by the read-only verify action. "
+            "This lets chain deployment discovery verify the Hub against the currently observed RPC surface."
         ),
     )
     parser.add_argument(
@@ -3060,6 +3129,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "plan":
             profile = load_profile(args)
             result = {"ok": True, "plan": plan_result(profile, args)}
+        elif args.action == "verify":
+            result = verify(args)
         else:
             result = apply(args)
     except (CoolifyHubDeployError, HubNetworkConfigError) as exc:

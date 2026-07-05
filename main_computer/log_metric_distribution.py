@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 import gzip
 import json
 import math
+import os
 from pathlib import Path
 import re
 import statistics
@@ -85,6 +86,48 @@ _DERIVED_METRIC_PREFERENCE = {
     "record.interarrival_ms": 6,
     "record.text_lines": 7,
     "record.field_count": 99,
+}
+PROJECT_MARKERS = ("pyproject.toml", "new_patch.py")
+DEFAULT_LOG_DIR_PARTS = (
+    ("logs",),
+    ("runtime", "main_log"),
+    ("runtime", "service_supervisor"),
+    ("runtime", "executor_service"),
+    ("runtime", "applications_service"),
+    ("runtime", "blockchain_service"),
+    ("runtime", "hub"),
+    ("runtime", "dev-chain"),
+    ("runtime", "logs"),
+    ("generated_component_docs", "work"),
+    ("tools", "documentation"),
+)
+DEFAULT_LOG_FILE_SUFFIXES = {
+    ".lex",
+    ".log",
+    ".jsonl",
+    ".ndjson",
+    ".out",
+    ".err",
+    ".trace",
+    ".stdout",
+    ".stderr",
+    ".console",
+    ".events",
+    ".metrics",
+}
+DEFAULT_LOG_NAME_TOKENS = ("log", "metric", "trace", "stdout", "stderr", "output", "event")
+SKIPPED_DEFAULT_SCAN_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
 }
 
 
@@ -403,22 +446,191 @@ def _looks_like_log_input(path: Path) -> bool:
         return True
     if suffix.startswith(".") and suffix[1:].isdigit() and any(token in name for token in (".log.", ".jsonl.", ".lex.", ".trace.")):
         return True
-    if not suffix and any(token in name for token in ("log", "metric", "trace", "stdout", "stderr", "output", "event")):
+    if not suffix and any(token in name for token in DEFAULT_LOG_NAME_TOKENS):
         return True
     return False
 
 
+def _looks_like_default_logs_alias(path: Path | str) -> bool:
+    normalized = str(path).replace("\\", "/").rstrip("/")
+    return normalized in {"", "logs", "./logs"}
+
+
+def _find_project_root(start: Path | None = None) -> Path | None:
+    current = (start or Path.cwd()).resolve()
+    if current.is_file():
+        current = current.parent
+
+    for candidate in (current, *current.parents):
+        if not (candidate / "main_computer").is_dir():
+            continue
+        if any((candidate / marker).exists() for marker in PROJECT_MARKERS):
+            return candidate
+    return None
+
+
+def _default_project_root() -> Path | None:
+    return _find_project_root(Path.cwd()) or _find_project_root(Path(__file__).resolve())
+
+
+def _is_relative_to(path: Path, possible_parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(possible_parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _is_under_part_sequence(relative_parts: tuple[str, ...], wanted_parts: tuple[str, ...]) -> bool:
+    wanted = tuple(part.lower() for part in wanted_parts)
+    if not wanted or len(relative_parts) < len(wanted):
+        return False
+    for index in range(0, len(relative_parts) - len(wanted) + 1):
+        if relative_parts[index : index + len(wanted)] == wanted:
+            return True
+    return False
+
+
+def _is_diagnostic_output_part(part: str) -> bool:
+    return part in {"diagnostics_output", "harness_output"} or part.startswith("diagnostics_output_") or part.startswith("harness_output_")
+
+
+def _inner_log_suffix(path: Path) -> str:
+    name = path.name.lower()
+    if name.endswith(".gz"):
+        return Path(name[:-3]).suffix.lower()
+    if name.endswith(".zip"):
+        return Path(name[:-4]).suffix.lower()
+    return path.suffix.lower()
+
+
+def _name_mentions_log_signal(path: Path) -> bool:
+    name = path.name.lower()
+    return any(token in name for token in DEFAULT_LOG_NAME_TOKENS)
+
+
+def _is_default_log_file(path: Path, project_root: Path) -> bool:
+    if not path.is_file():
+        return False
+
+    try:
+        relative = path.relative_to(project_root)
+        lower_parts = tuple(part.lower() for part in relative.parts)
+    except ValueError:
+        lower_parts = tuple(part.lower() for part in path.parts)
+
+    if any(part in SKIPPED_DEFAULT_SCAN_DIRS for part in lower_parts[:-1]):
+        return False
+    if "runtime" in lower_parts and "websites" in lower_parts:
+        return False
+
+    parent_parts = lower_parts[:-1]
+    suffix = path.suffix.lower()
+    inner_suffix = _inner_log_suffix(path)
+    in_logs_dir = "logs" in parent_parts
+    in_known_dir = any(_is_under_part_sequence(lower_parts, wanted) for wanted in DEFAULT_LOG_DIR_PARTS)
+    in_diagnostic_dir = any(_is_diagnostic_output_part(part) for part in parent_parts)
+    top_level = len(lower_parts) == 1
+
+    if in_logs_dir or in_known_dir or in_diagnostic_dir:
+        if inner_suffix in DEFAULT_LOG_FILE_SUFFIXES:
+            return True
+        if suffix in {".zip", ".gz"} and (inner_suffix in DEFAULT_LOG_FILE_SUFFIXES or _name_mentions_log_signal(path)):
+            return True
+        if suffix in {".json", ".txt", ".text"} and _name_mentions_log_signal(path):
+            return True
+
+    if top_level:
+        if inner_suffix in DEFAULT_LOG_FILE_SUFFIXES:
+            return True
+        if suffix in {".zip", ".gz"} and (inner_suffix in DEFAULT_LOG_FILE_SUFFIXES or _name_mentions_log_signal(path)):
+            return True
+        if suffix in {".json", ".txt", ".text"} and _name_mentions_log_signal(path):
+            return True
+
+    return False
+
+
+def _iter_default_log_files_under(root: Path, project_root: Path) -> Iterator[Path]:
+    if root.is_file():
+        if _is_default_log_file(root, project_root):
+            yield root
+        return
+    if not root.is_dir():
+        return
+
+    for directory, dir_names, file_names in os.walk(root):
+        dir_path = Path(directory)
+        dir_names[:] = [
+            name
+            for name in dir_names
+            if name.lower() not in SKIPPED_DEFAULT_SCAN_DIRS
+            and not (dir_path.name.lower() == "runtime" and name.lower() == "websites")
+        ]
+        for file_name in sorted(file_names):
+            candidate = dir_path / file_name
+            if _is_default_log_file(candidate, project_root):
+                yield candidate
+
+
+def _default_log_roots(project_root: Path) -> Iterator[Path]:
+    seen: set[Path] = set()
+    for parts in DEFAULT_LOG_DIR_PARTS:
+        path = project_root.joinpath(*parts)
+        if path not in seen:
+            seen.add(path)
+            yield path
+
+    for child in sorted(project_root.iterdir()) if project_root.exists() else []:
+        if child.is_dir() and _is_diagnostic_output_part(child.name.lower()) and child not in seen:
+            seen.add(child)
+            yield child
+
+    archive_logs = project_root.parent / "archive" / "logs"
+    if archive_logs not in seen:
+        seen.add(archive_logs)
+        yield archive_logs
+
+
+def discover_default_log_paths(start: Path | str | None = None) -> tuple[Path, ...]:
+    """Return Main Computer's known local log files for the current checkout.
+
+    This is the default input set for ``main-computer log-metrics``.  It checks
+    the canonical runtime logger, service-supervisor child stdout/stderr logs,
+    generated diagnostics, generated documentation work logs, top-level log
+    files, and the sibling ``../archive/logs`` tree used by ``rotate-logs``.
+    """
+
+    project_root = _find_project_root(Path(start)) if start is not None else _default_project_root()
+    if project_root is None:
+        return tuple()
+
+    candidates: dict[str, Path] = {}
+    for root in _default_log_roots(project_root):
+        for candidate in _iter_default_log_files_under(root, project_root):
+            candidates[str(candidate.resolve())] = candidate.resolve()
+
+    for candidate in project_root.iterdir() if project_root.exists() else []:
+        if candidate.is_file() and _is_default_log_file(candidate, project_root):
+            candidates[str(candidate.resolve())] = candidate.resolve()
+
+    return tuple(candidates[key] for key in sorted(candidates))
+
+
 def _expand_inputs(paths: Iterable[Path | str]) -> list[Path]:
-    expanded: list[Path] = []
+    expanded: dict[str, Path] = {}
     for raw_path in paths:
         path = Path(raw_path)
+        if _looks_like_default_logs_alias(raw_path):
+            for candidate in discover_default_log_paths():
+                expanded[str(candidate.resolve())] = candidate.resolve()
         if path.is_dir():
             for candidate in sorted(path.rglob("*")):
                 if candidate.is_file() and _looks_like_log_input(candidate):
-                    expanded.append(candidate)
+                    expanded[str(candidate.resolve())] = candidate.resolve()
         elif path.is_file():
-            expanded.append(path)
-    return expanded
+            expanded[str(path.resolve())] = path.resolve()
+    return [expanded[key] for key in sorted(expanded)]
 
 
 def _record_from_key_value_line(line: str) -> dict[str, Any] | None:
@@ -736,7 +948,12 @@ def analyze_records(
     record_list = list(records)
 
     for record in record_list:
+        seen_numeric_values: set[tuple[str, float]] = set()
         for name, value in _flatten_numeric_fields(record):
+            seen_key = (name, value)
+            if seen_key in seen_numeric_values:
+                continue
+            seen_numeric_values.add(seen_key)
             if wanted and name not in wanted:
                 continue
             values_by_metric.setdefault(name, []).append(value)
@@ -963,6 +1180,14 @@ def write_distribution_png(
     return output
 
 
+def resolve_log_input_paths(paths: Iterable[Path | str]) -> tuple[Path, ...]:
+    requested = tuple(Path(path) for path in paths)
+    if requested:
+        expanded = tuple(_expand_inputs(requested))
+        return expanded or requested
+    return discover_default_log_paths()
+
+
 def build_report_from_paths(
     paths: Iterable[Path | str],
     *,
@@ -975,8 +1200,9 @@ def build_report_from_paths(
     since_minutes: float | None = None,
     include_derived: bool = True,
 ) -> LogMetricReport:
-    path_list = tuple(str(Path(path)) for path in paths)
-    records = iter_log_records(path_list, since_minutes=since_minutes)
+    input_paths = resolve_log_input_paths(paths)
+    path_list = tuple(str(path) for path in input_paths)
+    records = iter_log_records(input_paths, since_minutes=since_minutes)
     summaries = analyze_records(
         records,
         metrics=metrics,
@@ -1014,9 +1240,13 @@ def build_report_from_paths(
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "paths",
-        nargs="+",
+        nargs="*",
         type=Path,
-        help="Log file, rotated .zip archive, or directory containing .jsonl/.lex/.log/.out/.err/.trace files.",
+        help=(
+            "Optional log file, rotated .zip archive, or directory. "
+            "When omitted, scans Main Computer's runtime/main_log, service logs, diagnostics, "
+            "generated work logs, top-level logs, and ../archive/logs."
+        ),
     )
     parser.add_argument(
         "--metric",

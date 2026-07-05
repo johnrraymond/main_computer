@@ -2476,7 +2476,28 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "renderMcelTinyContractTest(\"boot\", { exercise: false })" in ui
     assert "window.McelLabScm" in ui
     assert "provider permission revoke" in ui or "wallet_revokePermissions" in ui
-    assert "captured as SCM evidence instead of escaping as an uncaught UI error" in ui
+    assert "external exception envelope instead of escaping as an uncaught UI error" in ui
+    assert "mcel-external-outcome" in ui
+    assert "mcelTinyContractExternalOutcome" in ui
+    assert "mcelTinyContractOutcomeFromWalletPayload" in ui
+    assert "mcelTinyContractOutcomeFromRevoke" in ui
+    assert "action outcome:" in ui
+    assert "external outcome:" in ui
+    assert "governance outcome:" in ui
+    assert "safety outcome:" in ui
+    assert "proof completeness:" in ui
+    assert "BLOCKED: external wallet action did not complete; SCM containment passed" in ui
+    assert "EXCEPTION: external wallet outcome was captured; SCM containment passed" in ui
+    assert "tx draft after blocked/exception:" in ui
+    assert "source after blocked/exception:" in ui
+    assert "release.approve refused to mutate source" in ui
+    assert "Transaction draft blocked by external outcome" in ui
+    assert "account-grant-missing" in ui
+    assert "account-request-rejected" in ui
+    assert "uncategorized-external-exception" in ui
+    assert "sourceSafeAfterExternalOutcome" in ui
+    assert "txDraftBlockedAfterExternalOutcome" in ui
+    assert "externalOutcomeContained" in ui
     assert "wallet adapter:" in ui
     assert "wallet rpc:" in ui
     assert "wallet events:" in ui

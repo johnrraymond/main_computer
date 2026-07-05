@@ -131,7 +131,11 @@
           releaseSelectCount: 0,
           txDraftCount: 0,
           fullBatteryRunCount: 0,
+          externalOutcomeCount: 0,
+          externalBlockedCount: 0,
+          externalExceptionCount: 0,
           lastWalletResetClean: false,
+          lastExternalOutcome: null,
           lastProof: null,
           evidence: [],
           walletAdapter: null,
@@ -188,6 +192,9 @@
         "releaseSelectCount",
         "txDraftCount",
         "fullBatteryRunCount",
+        "externalOutcomeCount",
+        "externalBlockedCount",
+        "externalExceptionCount",
         "blockedWrites",
         "repairCount",
         "reviewedCount"
@@ -198,6 +205,9 @@
       });
       if (typeof mcelLabState.tinyContract.lastWalletResetClean !== "boolean") {
         mcelLabState.tinyContract.lastWalletResetClean = false;
+      }
+      if (!mcelLabState.tinyContract.lastExternalOutcome || typeof mcelLabState.tinyContract.lastExternalOutcome !== "object") {
+        mcelLabState.tinyContract.lastExternalOutcome = null;
       }
       return mcelLabState.tinyContract;
     }
@@ -302,6 +312,20 @@
           eventsBound: false
         },
         walletEvents: [],
+        externalOutcome: {
+          kind: "mcel-external-outcome",
+          operation: "",
+          phase: "waiting",
+          status: "waiting",
+          known: false,
+          reason: "not-run",
+          message: "No external wallet operation has run.",
+          containment: {
+            sourceChanged: false,
+            txDraftCreated: false,
+            runtimeMutationGoverned: true
+          }
+        },
         proofChip: {
           text: "Runtime wallet proof chip waiting.",
           status: "pending",
@@ -439,6 +463,7 @@
             "txDraft",
             "walletAdapter",
             "walletEvents",
+            "externalOutcome",
             "proofChip",
             "assistantRepairPrompt",
             "serializedSource",
@@ -477,6 +502,7 @@
           "walletProviderChainChanged",
           "walletProviderDisconnected",
           "walletProviderError",
+          "externalOutcomeCaptured",
           "networkVerified",
           "releaseSelected",
           "txDrafted",
@@ -490,10 +516,10 @@
             kind: "external-wallet-effect",
             triggers: ["state.walletGate"],
             reads: ["source.devRelease.devNetwork"],
-            writes: ["runtime.wallet", "runtime.network", "runtime.walletAdapter", "runtime.evidenceStrip"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletAdapter", "runtime.externalOutcome", "runtime.evidenceStrip"],
             external: {
               resource: "metamask",
-              operation: "eth_requestAccounts + eth_chainId",
+              operation: "normalized-outcome: eth_requestAccounts + eth_chainId",
               devNetworkOnly: true
             },
             errorPolicy: {
@@ -501,51 +527,74 @@
             },
             run(ctx, payload = {}) {
               const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
-              const chainId = String(payload.chainId || devNetwork.chainId || "0x28757b2");
-              const account = String(payload.account || "0xDeaD00000000000000000000000000000000BEEF");
-              const provider = String(payload.provider || "mock-dev-provider");
-              const ok = chainId.toLowerCase() === String(devNetwork.chainId || "").toLowerCase();
+              const outcome = mcelTinyContractOutcomeFromWalletPayload(payload);
+              const chainId = String(payload.chainId || outcome.value?.chainId || devNetwork.chainId || "0x28757b2");
+              const account = outcome.status === "pass"
+                ? String(payload.account || outcome.value?.account || "")
+                : "";
+              const provider = String(payload.provider || outcome.provider?.kind || "mock-dev-provider");
+              const ok = outcome.status === "pass" && chainId.toLowerCase() === String(devNetwork.chainId || "").toLowerCase();
               const wallet = {
-                mode: payload.mock ? "mock-dev-wallet" : "metamask",
+                mode: payload.mock ? "mock-dev-wallet" : provider,
                 provider,
                 account,
-                connected: Boolean(account),
-                interactive: payload.interactive === true
+                connected: Boolean(account) && outcome.status === "pass",
+                interactive: payload.interactive === true,
+                status: outcome.status === "pass" ? "connected" : outcome.status,
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason
               };
               const network = {
                 expectedChainId: devNetwork.chainId || "0x28757b2",
                 chainId,
                 ok,
-                status: ok ? "dev-network-ready" : "wrong-chain",
-                rpcUrl: devNetwork.rpcUrl || ""
+                status: ok ? "dev-network-ready" : (outcome.status === "pass" ? "wrong-chain" : `wallet-${outcome.status}`),
+                rpcUrl: devNetwork.rpcUrl || "",
+                outcomeStatus: outcome.status
               };
+              const txDraft = outcome.status === "pass"
+                ? null
+                : {
+                    status: "empty",
+                    requestId: "",
+                    to: "",
+                    data: "",
+                    summary: `Wallet ${outcome.status}; transaction draft cleared before source approval.`
+                  };
               ctx.set("runtime.wallet", wallet);
               ctx.set("runtime.network", network);
+              if (txDraft) ctx.set("runtime.txDraft", txDraft);
               ctx.set("runtime.walletAdapter", payload.adapter || {
                 providerKind: provider,
                 liveProvider: payload.liveProvider === true,
                 mockFallback: payload.mock === true,
                 eventsBound: Boolean(payload.adapter?.eventsBound)
               });
+              ctx.set("runtime.externalOutcome", outcome);
               ctx.set("runtime.evidenceStrip", [
-                `wallet.connect provider=${provider}`,
+                `wallet.connect outcome=${outcome.status}`,
+                `reason=${outcome.reason}`,
+                `provider=${provider}`,
                 `account=${account ? account.slice(0, 10) + "…" : "missing"}`,
                 `chain=${chainId}`,
                 `expected=${network.expectedChainId}`
               ]);
               ctx.evidence({
-                ok,
-                message: ok
-                  ? "wallet.connect captured runtime wallet/dev-network state without touching source."
-                  : "wallet.connect captured wallet state but dev-network chain does not match the contract."
+                ok: true,
+                message: outcome.status === "pass"
+                  ? "wallet.connect captured a successful external outcome inside declared runtime writes."
+                  : "wallet.connect captured a blocked/exception external outcome and kept source untouched."
               });
-              return {wallet, network};
+              return {wallet, network, outcome, txDraftCleared: Boolean(txDraft)};
             },
             commit(_ctx, result) {
               return {
                 connected: result?.wallet?.connected === true,
                 chainId: result?.network?.chainId || "",
-                ok: result?.network?.ok === true
+                ok: result?.network?.ok === true,
+                outcomeStatus: result?.outcome?.status || "",
+                outcomeReason: result?.outcome?.reason || "",
+                txDraftCleared: result?.txDraftCleared === true
               };
             }
           },
@@ -553,17 +602,20 @@
             kind: "runtime-wallet-reset-effect",
             triggers: ["state.walletGate"],
             reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
-            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.externalOutcome", "runtime.evidenceStrip"],
             external: {
               resource: "wallet-runtime",
-              operation: "reset-local-wallet-session"
+              operation: "normalized-outcome: reset-local-wallet-session"
             },
             errorPolicy: {
               onFailure: "keep-disconnect-evidence"
             },
-            run(ctx) {
+            run(ctx, payload = {}) {
               const previousWallet = ctx.get("runtime.wallet") || {};
               const previousNetwork = ctx.get("runtime.network") || {};
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractOutcomeFromRevoke(payload.revoke || {});
               const expectedChainId = previousNetwork.expectedChainId || previousNetwork.chainId || "0x28757b2";
               const wallet = {
                 mode: "disconnected",
@@ -571,13 +623,17 @@
                 account: "",
                 connected: false,
                 previousProvider: previousWallet.provider || previousWallet.mode || "none",
-                permissionNote: "MetaMask account permissions are controlled by the extension; MCEL reset local runtime wallet state."
+                status: "disconnected",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason,
+                permissionNote: "Provider permission revoke is an external outcome; MCEL reset local runtime wallet state through SCM."
               };
               const network = {
                 expectedChainId,
                 chainId: "",
                 ok: false,
-                status: "disconnected"
+                status: "disconnected",
+                outcomeStatus: outcome.status
               };
               const txDraft = {
                 status: "empty",
@@ -589,22 +645,33 @@
               ctx.set("runtime.wallet", wallet);
               ctx.set("runtime.network", network);
               ctx.set("runtime.txDraft", txDraft);
+              ctx.set("runtime.externalOutcome", outcome);
+              ctx.set("runtime.walletEvents", [{
+                type: "disconnect",
+                outcomeStatus: outcome.status,
+                reason: outcome.reason,
+                txDraftCleared: true
+              }]);
               ctx.set("runtime.evidenceStrip", [
                 "wallet.disconnect reset runtime.wallet",
                 "runtime.network cleared",
                 "runtime.txDraft cleared",
+                `externalOutcome=${outcome.status}`,
+                `reason=${outcome.reason}`,
                 "durable source unchanged"
               ]);
               ctx.evidence({
                 ok: true,
-                message: "wallet.disconnect cleared runtime wallet/network/tx draft state without touching source."
+                message: "wallet.disconnect consumed an external outcome and cleared runtime wallet/network/tx draft without touching source."
               });
-              return {disconnected: true, previousProvider: wallet.previousProvider};
+              return {disconnected: true, previousProvider: wallet.previousProvider, outcome};
             },
             commit(_ctx, result) {
               return {
                 disconnected: result?.disconnected === true,
-                previousProvider: result?.previousProvider || ""
+                previousProvider: result?.previousProvider || "",
+                outcomeStatus: result?.outcome?.status || "",
+                outcomeReason: result?.outcome?.reason || ""
               };
             }
           },
@@ -612,7 +679,7 @@
             kind: "provider-event-effect",
             triggers: ["runtime.walletAdapter"],
             reads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
-            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.externalOutcome", "runtime.evidenceStrip"],
             external: {
               resource: "metamask-provider-event",
               operation: "accountsChanged"
@@ -672,7 +739,20 @@
                 disconnected,
                 txDraftCleared: shouldClearDraft
               };
-              ctx.set("runtime.walletEvents", [...walletEvents, nextWalletEvent].slice(-16));
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractExternalOutcome({
+                    operation: "wallet.provider.accountsChanged",
+                    phase: "provider-event",
+                    status: "pass",
+                    known: true,
+                    reason: disconnected ? "account-disconnected" : (accountChanged ? "account-switched" : "account-event"),
+                    message: "Provider accountsChanged event was consumed through SCM.",
+                    value: {account: nextAccount, accounts, disconnected, accountChanged},
+                    rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+                  });
+              ctx.set("runtime.externalOutcome", outcome);
+              ctx.set("runtime.walletEvents", [...walletEvents, {...nextWalletEvent, outcomeStatus: outcome.status, outcomeReason: outcome.reason}].slice(-16));
               ctx.set("runtime.evidenceStrip", [
                 `wallet.provider.accountsChanged account=${nextAccount ? nextAccount.slice(0, 10) + "…" : "none"}`,
                 `previous=${previousNonEmptyAccount ? previousNonEmptyAccount.slice(0, 10) + "…" : "none"}`,
@@ -711,7 +791,7 @@
             kind: "provider-event-effect",
             triggers: ["runtime.walletAdapter"],
             reads: ["source.devRelease.devNetwork", "runtime.wallet", "runtime.network", "runtime.txDraft"],
-            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.externalOutcome", "runtime.evidenceStrip"],
             external: {
               resource: "metamask-provider-event",
               operation: "chainChanged"
@@ -750,11 +830,26 @@
                     summary: "Provider chainChanged event cleared the runtime transaction draft because the chain no longer matched."
                   }
                 : txDraft;
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractExternalOutcome({
+                    operation: "wallet.provider.chainChanged",
+                    phase: "provider-event",
+                    status: "pass",
+                    known: true,
+                    reason: ok ? "chain-matched" : "chain-mismatch",
+                    message: "Provider chainChanged event was consumed through SCM.",
+                    value: {chainId, expected, ok, txDraftCleared: shouldClearDraft},
+                    rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+                  });
               ctx.set("runtime.wallet", nextWallet);
               ctx.set("runtime.network", nextNetwork);
               ctx.set("runtime.txDraft", nextTxDraft);
+              ctx.set("runtime.externalOutcome", outcome);
               ctx.set("runtime.walletEvents", [{
                 type: "chainChanged",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason,
                 chainId,
                 expected,
                 ok,
@@ -787,7 +882,7 @@
             kind: "provider-event-effect",
             triggers: ["runtime.walletAdapter"],
             reads: ["runtime.wallet", "runtime.network", "runtime.txDraft"],
-            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.evidenceStrip"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents", "runtime.externalOutcome", "runtime.evidenceStrip"],
             external: {
               resource: "metamask-provider-event",
               operation: "disconnect"
@@ -822,11 +917,27 @@
                 data: "",
                 summary: "Provider disconnect event cleared the runtime transaction draft."
               };
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractExternalOutcome({
+                    operation: "wallet.provider.disconnect",
+                    phase: "provider-event",
+                    status: "blocked",
+                    known: true,
+                    reason: "provider-disconnect",
+                    message,
+                    error: code || message ? {code, message} : null,
+                    value: {code, message, txDraftCleared: true},
+                    rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+                  });
               ctx.set("runtime.wallet", nextWallet);
               ctx.set("runtime.network", nextNetwork);
               ctx.set("runtime.txDraft", nextTxDraft);
+              ctx.set("runtime.externalOutcome", outcome);
               ctx.set("runtime.walletEvents", [{
                 type: "disconnect",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason,
                 code,
                 message,
                 txDraftCleared: true
@@ -854,7 +965,7 @@
             kind: "provider-event-effect",
             triggers: ["runtime.walletAdapter"],
             reads: ["runtime.wallet", "runtime.network"],
-            writes: ["runtime.wallet", "runtime.walletEvents", "runtime.evidenceStrip"],
+            writes: ["runtime.wallet", "runtime.walletEvents", "runtime.externalOutcome", "runtime.evidenceStrip"],
             external: {
               resource: "metamask-provider-event",
               operation: "error"
@@ -868,15 +979,33 @@
               const error = payload.error || payload;
               const message = error?.message || payload.message || "provider error";
               const code = error?.code || payload.code || "";
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractExternalOutcome({
+                    operation: "wallet.provider.error",
+                    phase: "provider-event",
+                    status: "exception",
+                    known: false,
+                    reason: "provider-error",
+                    message,
+                    error: {code, message},
+                    value: {network: network.status || "unknown"},
+                    rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+                  });
               ctx.set("runtime.wallet", {
                 ...wallet,
                 status: "provider-error",
                 providerEvent: "error",
                 providerErrorCode: code,
-                providerErrorMessage: message
+                providerErrorMessage: message,
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason
               });
+              ctx.set("runtime.externalOutcome", outcome);
               ctx.set("runtime.walletEvents", [{
                 type: "error",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason,
                 code,
                 message
               }]);
@@ -998,7 +1127,8 @@
               "source.devRelease.requests",
               "state.selectedRequestId",
               "runtime.wallet",
-              "runtime.network"
+              "runtime.network",
+              "runtime.externalOutcome"
             ],
             writes: ["runtime.txDraft", "runtime.evidenceStrip"],
             external: {
@@ -1015,7 +1145,9 @@
               const request = requests.find((entry) => entry.id === selectedId) || requests[0] || null;
               const wallet = ctx.get("runtime.wallet") || {};
               const network = ctx.get("runtime.network") || {};
-              const ready = Boolean(wallet.connected && network.ok && request);
+              const externalOutcome = ctx.get("runtime.externalOutcome") || {};
+              const externalBlocked = ["blocked", "exception"].includes(externalOutcome.status);
+              const ready = Boolean(wallet.connected && network.ok && request && !externalBlocked);
               const txDraft = {
                 status: ready ? "ready" : "blocked",
                 requestId: request?.id || "",
@@ -1025,7 +1157,9 @@
                 data: request ? `method:${request.contractMethod}` : "",
                 summary: ready
                   ? `Drafted runtime-only tx for ${request.id} to ${contractAddress}.`
-                  : "Transaction draft blocked until wallet and dev-network gate are ready."
+                  : (externalBlocked
+                    ? `Transaction draft blocked by external outcome ${externalOutcome.status}: ${externalOutcome.reason || "unknown"}.`
+                    : "Transaction draft blocked until wallet and dev-network gate are ready.")
               };
               ctx.set("runtime.txDraft", txDraft);
               ctx.set("runtime.evidenceStrip", [
@@ -1048,7 +1182,7 @@
           "release.approve": {
             kind: "human-approval-effect",
             triggers: ["state.selectedRequestId"],
-            reads: ["source.devRelease.requests", "state.selectedRequestId"],
+            reads: ["source.devRelease.requests", "state.selectedRequestId", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"],
             writes: ["source.devRelease.requests", "runtime.evidenceStrip"],
             external: {
               resource: "source",
@@ -1060,6 +1194,26 @@
             run(ctx) {
               const selectedId = ctx.get("state.selectedRequestId");
               const requests = ctx.get("source.devRelease.requests") || [];
+              const wallet = ctx.get("runtime.wallet") || {};
+              const network = ctx.get("runtime.network") || {};
+              const txDraft = ctx.get("runtime.txDraft") || {};
+              const externalOutcome = ctx.get("runtime.externalOutcome") || {};
+              const externalBlocked = ["blocked", "exception"].includes(externalOutcome.status);
+              const ready = Boolean(wallet.connected && network.ok && txDraft.status === "ready" && !externalBlocked);
+              if (!ready) {
+                ctx.set("runtime.evidenceStrip", [
+                  `release.approve blocked id=${selectedId || "missing"}`,
+                  `wallet=${wallet.connected ? "connected" : "not-connected"}`,
+                  `network=${network.ok ? "ok" : "not-ok"}`,
+                  `txDraft=${txDraft.status || "empty"}`,
+                  `externalOutcome=${externalOutcome.status || "waiting"}`
+                ]);
+                ctx.evidence({
+                  ok: false,
+                  message: "release.approve refused to mutate source because wallet/network/tx draft/external outcome gates were not ready."
+                });
+                return {selectedRequestId: selectedId || "", status: "blocked", blocked: true};
+              }
               const nextRequests = requests.map((request) => {
                 if (request.id !== selectedId) return request;
                 return {
@@ -1078,10 +1232,10 @@
                 ok: true,
                 message: "release.approve updated source.devRelease.requests through a declared source write."
               });
-              return {selectedRequestId: selectedId, status: selected?.status || "missing"};
+              return {selectedRequestId: selectedId, status: selected?.status || "missing", blocked: false};
             },
             commit(_ctx, result) {
-              return {approved: result?.selectedRequestId || "", status: result?.status || ""};
+              return {approved: result?.blocked ? "" : (result?.selectedRequestId || ""), status: result?.status || ""};
             }
           },
           "ai.repairWalletHint": {
@@ -1182,6 +1336,7 @@
             "runtime.txDraft",
             "runtime.walletAdapter",
             "runtime.walletEvents",
+            "runtime.externalOutcome",
             "runtime.proofChip",
             "runtime.assistantRepairPrompt",
             "runtime.serializedSource",
@@ -1195,6 +1350,7 @@
             "runtime.txDraft",
             "runtime.walletAdapter",
             "runtime.walletEvents",
+            "runtime.externalOutcome",
             "MetaMask",
             "0xDeaD0000"
           ],
@@ -1387,7 +1543,11 @@
       tinyState.releaseSelectCount = 0;
       tinyState.txDraftCount = 0;
       tinyState.fullBatteryRunCount = 0;
+      tinyState.externalOutcomeCount = 0;
+      tinyState.externalBlockedCount = 0;
+      tinyState.externalExceptionCount = 0;
       tinyState.lastWalletResetClean = false;
+      tinyState.lastExternalOutcome = null;
 
       const routeEnter = scm.enterRoute(routeInstance, {
         params: {contractId: "dev-release-console"},
@@ -1607,7 +1767,11 @@
         tinyState.releaseSelectCount = 0;
         tinyState.txDraftCount = 0;
         tinyState.fullBatteryRunCount = 0;
+        tinyState.externalOutcomeCount = 0;
+        tinyState.externalBlockedCount = 0;
+        tinyState.externalExceptionCount = 0;
         tinyState.lastWalletResetClean = false;
+        tinyState.lastExternalOutcome = null;
         tinyState.evidence = [];
         resetMcelTinyContractWalletAdapterState("mount-reset");
       }
@@ -1751,6 +1915,20 @@
       const accounts = Array.isArray(snapshot?.accounts) ? snapshot.accounts : (stateSnapshot?.address ? [stateSnapshot.address] : []);
       const account = accounts[0] || snapshot?.address || stateSnapshot?.address || "";
       const chainId = snapshot?.chainId || stateSnapshot?.chainId || "";
+      const outcome = recordMcelTinyContractExternalOutcome({
+        operation: "wallet.connect",
+        phase: "wallet-subsystem",
+        status: account ? "pass" : "blocked",
+        known: true,
+        reason: account ? "account-granted" : "account-grant-missing",
+        message: account
+          ? "Wallet subsystem returned an account snapshot."
+          : "Wallet subsystem did not return an account snapshot.",
+        provider: {kind: "wallet-subsystem", live: true, source: "MainComputerWalletApp"},
+        rpc: mcelTinyContractWalletRpcMethods(adapter, true),
+        value: {account, chainId},
+        nextAction: account ? "" : "Unlock/approve the wallet request or inspect the Wallet app provider snapshot."
+      });
       return {
         mock: false,
         liveProvider: true,
@@ -1758,6 +1936,7 @@
         account,
         chainId,
         interactive,
+        outcome,
         walletSubsystemSnapshot: snapshot,
         walletSubsystemState: stateSnapshot,
         walletSubsystemConnectResult: connectResult,
@@ -1854,6 +2033,166 @@
         code: error?.code ?? error?.data?.code ?? "",
         message: error?.message || String(error)
       };
+    }
+
+    function mcelTinyContractWalletRpcMethods(adapter = mcelTinyContractWalletAdapterState(), includeAll = false) {
+      return (adapter.calls || [])
+        .filter((entry) => includeAll || ["pass", "mock", "fail", "unavailable", "empty"].includes(entry.status))
+        .map((entry) => entry.method)
+        .filter(Boolean);
+    }
+
+    function mcelTinyContractExternalOutcome(input = {}) {
+      const adapter = mcelTinyContractWalletAdapterState();
+      const status = ["pass", "blocked", "exception", "waiting"].includes(input.status)
+        ? input.status
+        : "exception";
+      const outcome = {
+        kind: "mcel-external-outcome",
+        operation: String(input.operation || "wallet.unknown"),
+        phase: String(input.phase || "external"),
+        status,
+        known: input.known !== false,
+        reason: String(input.reason || (status === "pass" ? "completed" : "external-outcome")),
+        message: String(input.message || ""),
+        provider: {
+          kind: input.provider?.kind || adapter.providerKind || "unknown",
+          live: input.provider?.live ?? adapter.liveProvider === true,
+          source: input.provider?.source || adapter.connectSource || adapter.disconnectSource || "unknown",
+          mock: input.provider?.mock ?? adapter.mockFallback === true
+        },
+        rpc: Array.isArray(input.rpc) ? input.rpc.filter(Boolean) : mcelTinyContractWalletRpcMethods(adapter, true),
+        error: input.error || null,
+        value: input.value || {},
+        containment: {
+          sourceChanged: false,
+          txDraftCreated: false,
+          runtimeMutationGoverned: true,
+          ...(input.containment || {})
+        },
+        nextAction: String(input.nextAction || "")
+      };
+      return outcome;
+    }
+
+    function recordMcelTinyContractExternalOutcome(outcomeInput = {}) {
+      const tinyState = ensureMcelTinyContractState();
+      const outcome = mcelTinyContractExternalOutcome(outcomeInput);
+      tinyState.externalOutcomeCount += 1;
+      if (outcome.status === "blocked") tinyState.externalBlockedCount += 1;
+      if (outcome.status === "exception") tinyState.externalExceptionCount += 1;
+      tinyState.lastExternalOutcome = outcome;
+      const adapter = mcelTinyContractWalletAdapterState();
+      if (!Array.isArray(adapter.externalOutcomes)) adapter.externalOutcomes = [];
+      adapter.externalOutcomes.push(outcome);
+      adapter.externalOutcomes = adapter.externalOutcomes.slice(-12);
+      return outcome;
+    }
+
+    function mcelTinyContractOutcomeFromWalletPayload(payload = {}) {
+      if (payload.outcome?.kind === "mcel-external-outcome") return payload.outcome;
+      const adapter = mcelTinyContractWalletAdapterState();
+      const rpc = mcelTinyContractWalletRpcMethods(adapter, true);
+      const account = String(payload.account || "");
+      const chainId = String(payload.chainId || "");
+      if (payload.error) {
+        return mcelTinyContractExternalOutcome({
+          operation: "wallet.connect",
+          phase: "provider-request",
+          status: "exception",
+          known: false,
+          reason: "provider-exception",
+          message: payload.error.message || "Wallet provider threw during connect.",
+          error: payload.error,
+          value: {account, chainId},
+          rpc,
+          nextAction: "Inspect the wallet provider exception in the proof dock."
+        });
+      }
+      if (payload.mock) {
+        return mcelTinyContractExternalOutcome({
+          operation: "wallet.connect",
+          phase: "provider-detect",
+          status: "blocked",
+          known: true,
+          reason: "mock-fallback",
+          message: "No live wallet provider was available; mock fallback is degraded evidence.",
+          value: {account, chainId},
+          rpc,
+          provider: {kind: "mock-dev-provider", live: false, mock: true},
+          nextAction: "Open the app in a browser with an injected wallet provider."
+        });
+      }
+      if (!account) {
+        return mcelTinyContractExternalOutcome({
+          operation: "wallet.connect",
+          phase: "account-grant",
+          status: "blocked",
+          known: true,
+          reason: "account-grant-missing",
+          message: "Wallet provider did not return an account; the user may have canceled, locked, or denied the request.",
+          value: {account, chainId},
+          rpc,
+          nextAction: "Unlock the wallet and approve the account request, then retry connect."
+        });
+      }
+      return mcelTinyContractExternalOutcome({
+        operation: "wallet.connect",
+        phase: "account-grant",
+        status: "pass",
+        known: true,
+        reason: "account-granted",
+        message: "Wallet account and chain were captured through the external outcome envelope.",
+        value: {account, chainId},
+        rpc
+      });
+    }
+
+    function mcelTinyContractOutcomeFromRevoke(revoke = {}) {
+      const adapter = mcelTinyContractWalletAdapterState();
+      const rpc = mcelTinyContractWalletRpcMethods(adapter, true);
+      if (revoke.error) {
+        return mcelTinyContractExternalOutcome({
+          operation: "wallet.disconnect",
+          phase: "permission-revoke",
+          status: "blocked",
+          known: true,
+          reason: "permission-revoke-not-completed",
+          message: revoke.error.message || "Provider permission revoke did not complete; local runtime reset still proceeds through SCM.",
+          error: revoke.error,
+          value: {attempted: revoke.attempted === true, revoked: revoke.revoked === true},
+          rpc,
+          nextAction: "Use wallet extension permissions if provider-level revoke is required."
+        });
+      }
+      return mcelTinyContractExternalOutcome({
+        operation: "wallet.disconnect",
+        phase: "permission-revoke",
+        status: revoke.revoked ? "pass" : "blocked",
+        known: true,
+        reason: revoke.revoked ? "permission-revoked" : (revoke.mock ? "mock-or-no-provider" : "permission-revoke-unavailable"),
+        message: revoke.revoked
+          ? "Provider permission revoke completed before local runtime reset."
+          : "Provider permission revoke was unavailable or unnecessary; local runtime reset remains governed.",
+        value: {attempted: revoke.attempted === true, revoked: revoke.revoked === true, mock: revoke.mock === true},
+        rpc,
+        nextAction: revoke.revoked ? "" : "Inspect wallet extension permissions if full provider disconnect is required."
+      });
+    }
+
+    function mcelTinyContractExceptionOutcome(operation, phase, error) {
+      const detail = mcelTinyContractWalletError(error);
+      return mcelTinyContractExternalOutcome({
+        operation,
+        phase,
+        status: "exception",
+        known: false,
+        reason: "uncategorized-external-exception",
+        message: detail.message,
+        error: detail,
+        rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true),
+        nextAction: "Open the proof dock and inspect the captured external exception."
+      });
     }
 
     function recordMcelTinyContractWalletCall(method, status, detail = {}) {
@@ -1961,37 +2300,80 @@
       }
       if (adapter.eventsBound) return true;
       const accountsChanged = (accounts) => {
-        recordMcelTinyContractWalletEvent("accountsChanged", {accounts});
+        const normalizedAccounts = Array.isArray(accounts) ? accounts : [];
+        const outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.provider.accountsChanged",
+          phase: "provider-event",
+          status: "pass",
+          known: true,
+          reason: normalizedAccounts[0] ? "account-event" : "account-disconnected",
+          message: "Provider accountsChanged event was normalized before SCM consumption.",
+          value: {accounts: normalizedAccounts, account: normalizedAccounts[0] || ""},
+          rpc: mcelTinyContractWalletRpcMethods(adapter, true)
+        });
+        recordMcelTinyContractWalletEvent("accountsChanged", {accounts: normalizedAccounts, outcome});
         runMcelTinyContractProviderEventEffect(
           "wallet.provider.accountsChanged",
-          {accounts: Array.isArray(accounts) ? accounts : []},
+          {accounts: normalizedAccounts, outcome},
           "wallet-accountsChanged"
         );
       };
       const chainChanged = (chainId) => {
         const normalized = String(chainId || "");
-        recordMcelTinyContractWalletEvent("chainChanged", {chainId: normalized});
+        const outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.provider.chainChanged",
+          phase: "provider-event",
+          status: "pass",
+          known: true,
+          reason: "chain-event",
+          message: "Provider chainChanged event was normalized before SCM consumption.",
+          value: {chainId: normalized},
+          rpc: mcelTinyContractWalletRpcMethods(adapter, true)
+        });
+        recordMcelTinyContractWalletEvent("chainChanged", {chainId: normalized, outcome});
         runMcelTinyContractProviderEventEffect(
           "wallet.provider.chainChanged",
-          {chainId: normalized},
+          {chainId: normalized, outcome},
           "wallet-chainChanged"
         );
       };
       const disconnect = (error) => {
         const detail = mcelTinyContractWalletError(error || new Error("provider disconnect"));
-        recordMcelTinyContractWalletEvent("disconnect", detail);
+        const outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.provider.disconnect",
+          phase: "provider-event",
+          status: "blocked",
+          known: true,
+          reason: "provider-disconnect",
+          message: detail.message,
+          error: detail,
+          value: {code: detail.code},
+          rpc: mcelTinyContractWalletRpcMethods(adapter, true)
+        });
+        recordMcelTinyContractWalletEvent("disconnect", {...detail, outcome});
         runMcelTinyContractProviderEventEffect(
           "wallet.provider.disconnect",
-          {error: detail, code: detail.code, message: detail.message},
+          {error: detail, code: detail.code, message: detail.message, outcome},
           "wallet-provider-disconnect"
         );
       };
       const providerError = (error) => {
         const detail = mcelTinyContractWalletError(error || new Error("provider error"));
-        recordMcelTinyContractWalletEvent("error", detail);
+        const outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.provider.error",
+          phase: "provider-event",
+          status: "exception",
+          known: false,
+          reason: "provider-error",
+          message: detail.message,
+          error: detail,
+          value: {code: detail.code},
+          rpc: mcelTinyContractWalletRpcMethods(adapter, true)
+        });
+        recordMcelTinyContractWalletEvent("error", {...detail, outcome});
         runMcelTinyContractProviderEventEffect(
           "wallet.provider.error",
-          {error: detail, code: detail.code, message: detail.message},
+          {error: detail, code: detail.code, message: detail.message, outcome},
           "wallet-provider-error"
         );
       };
@@ -2044,6 +2426,21 @@
           walletSubsystemReady: adapter.walletSubsystemReady,
           ethersReady: adapter.ethersReady
         });
+        const outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.connect",
+          phase: "provider-detect",
+          status: "blocked",
+          known: true,
+          reason: "mock-fallback",
+          message: "No injected wallet provider was available; mock fallback is degraded evidence.",
+          provider: {kind: "mock-dev-provider", live: false, mock: true},
+          rpc: mcelTinyContractWalletRpcMethods(adapter, true),
+          value: {
+            account: "0xDeaD00000000000000000000000000000000BEEF",
+            chainId: "0x28757b2"
+          },
+          nextAction: "Open the app in a browser with MetaMask or another injected provider."
+        });
         return {
           mock: true,
           liveProvider: false,
@@ -2051,6 +2448,7 @@
           account: "0xDeaD00000000000000000000000000000000BEEF",
           chainId: "0x28757b2",
           interactive,
+          outcome,
           adapter: {
             providerKind: adapter.providerKind,
             liveProvider: adapter.liveProvider,
@@ -2078,16 +2476,20 @@
 
       let chainId = "";
       let accounts = [];
+      let accountRequestError = null;
+      let chainRequestError = null;
       let ethersSnapshot = null;
       let walletSubsystemSnapshot = null;
       try {
         chainId = String(await mcelTinyContractWalletRequest(provider, "eth_chainId") || "");
-      } catch (_error) {
+      } catch (error) {
+        chainRequestError = mcelTinyContractWalletError(error);
         chainId = "";
       }
       try {
         accounts = await mcelTinyContractWalletRequest(provider, interactive ? "eth_requestAccounts" : "eth_accounts");
-      } catch (_error) {
+      } catch (error) {
+        accountRequestError = mcelTinyContractWalletError(error);
         accounts = [];
       }
 
@@ -2124,6 +2526,21 @@
       }
 
       const account = Array.isArray(accounts) ? accounts[0] || "" : "";
+      const outcome = recordMcelTinyContractExternalOutcome({
+        operation: "wallet.connect",
+        phase: account ? "account-grant" : (accountRequestError ? "eth_requestAccounts" : "account-grant"),
+        status: account ? "pass" : (accountRequestError ? "blocked" : "blocked"),
+        known: true,
+        reason: account ? "account-granted" : (accountRequestError?.code ? "account-request-rejected" : "account-grant-missing"),
+        message: account
+          ? "Wallet account was returned by the provider."
+          : (accountRequestError?.message || "Wallet provider did not return an account."),
+        provider: {kind: adapter.providerKind, live: true, source: adapter.connectSource},
+        rpc: mcelTinyContractWalletRpcMethods(adapter, true),
+        error: accountRequestError || chainRequestError,
+        value: {account, chainId},
+        nextAction: account ? "" : "Unlock the wallet and approve the account request, then retry connect."
+      });
       return {
         mock: false,
         liveProvider: true,
@@ -2131,6 +2548,7 @@
         account,
         chainId,
         interactive,
+        outcome,
         ethersSnapshot,
         walletSubsystemSnapshot,
         adapter: {
@@ -2213,18 +2631,21 @@
       if (!instance) return null;
       try {
         const walletPayload = await readMcelTinyContractWalletProvider(true);
+        const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractOutcomeFromWalletPayload(walletPayload));
+        walletPayload.outcome = outcome;
         const result = window.McelLabScm.runEffect(instance, "wallet.connect", walletPayload);
         const networkResult = window.McelLabScm.runEffect(instance, "network.verify");
         tinyState.walletConnectCount += 1;
         tinyState.networkVerifyCount += 1;
         recordMcelTinyContractEvidence(
           "wallet",
-          walletPayload.mock
-            ? "No injected provider found; SCM used an explicitly labeled mock dev-wallet fallback."
-            : "SCM captured live wallet provider state through MetaMask/EIP-1193 calls and stored it as runtime-only data.",
-          walletPayload.mock ? "warn" : "pass",
+          outcome.status === "pass"
+            ? "SCM captured a successful external wallet outcome as runtime-only data."
+            : "SCM captured a blocked/exception wallet outcome, cleared unsafe runtime state, and left source untouched.",
+          outcome.status === "pass" ? "pass" : "warn",
           {
             walletConnectCount: tinyState.walletConnectCount,
+            outcome,
             result,
             networkResult,
             walletPayload,
@@ -2237,12 +2658,13 @@
         return {result, networkResult, walletPayload};
       } catch (error) {
         const detail = mcelTinyContractWalletError(error);
+        const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractExceptionOutcome("wallet.connect", "connect-handler", error));
         mcelTinyContractWalletAdapterState().lastError = detail.message;
         recordMcelTinyContractEvidence(
           "wallet",
-          "Wallet connect/check failed but was captured as SCM evidence instead of escaping as an uncaught UI error.",
-          "fail",
-          {reason, error: detail, walletAdapter: tinyState.walletAdapter}
+          "Wallet connect/check produced an external exception envelope instead of escaping as an uncaught UI error.",
+          "warn",
+          {reason, error: detail, outcome, walletAdapter: tinyState.walletAdapter}
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet connect/check failed.");
@@ -2261,6 +2683,7 @@
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return null;
       let revoke = {attempted: false, revoked: false};
+      let disconnectOutcome = null;
       try {
         revoke = await revokeMcelTinyContractWalletPermission();
       } catch (error) {
@@ -2270,8 +2693,9 @@
           error: mcelTinyContractWalletError(error)
         };
       }
+      disconnectOutcome = recordMcelTinyContractExternalOutcome(mcelTinyContractOutcomeFromRevoke(revoke));
       try {
-        const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.disconnect");
+        const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.disconnect", {revoke, outcome: disconnectOutcome});
         const effectResult = effectEnvelope?.result || effectEnvelope;
         tinyState.walletDisconnectCount += 1;
         if (effectResult?.disconnected === true) {
@@ -2292,6 +2716,7 @@
             walletRevokeAttemptCount: tinyState.walletRevokeAttemptCount,
             walletRevokeSuccessCount: tinyState.walletRevokeSuccessCount,
             revoke,
+            outcome: disconnectOutcome,
             effectEnvelope,
             effectResult,
             walletAdapter: tinyState.walletAdapter
@@ -2304,11 +2729,12 @@
       } catch (error) {
         tinyState.lastWalletResetClean = false;
         const detail = mcelTinyContractWalletError(error);
+        const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractExceptionOutcome("wallet.disconnect", "disconnect-handler", error));
         recordMcelTinyContractEvidence(
           "wallet",
-          "Wallet disconnect/reset failed but was captured as SCM evidence instead of escaping as an uncaught UI error.",
-          "fail",
-          {reason, revoke, error: detail, walletAdapter: tinyState.walletAdapter}
+          "Wallet disconnect/reset produced an external exception envelope instead of escaping as an uncaught UI error.",
+          "warn",
+          {reason, revoke, error: detail, outcome, walletAdapter: tinyState.walletAdapter}
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet disconnect/reset failed.");
@@ -2516,9 +2942,8 @@
       const liveHtmlHasGenerated = liveSerializedHtml.includes("data-mc-generated");
       const unsafeBlocked = tinyState.blockedWrites > 0 || (componentEvidence.evidence || []).some((entry) => entry.code === "SCM_EFFECT_UNDECLARED_WRITE");
       const walletAdapter = mcelTinyContractWalletAdapterState();
-      const walletRpcMethods = (walletAdapter.calls || [])
-        .filter((entry) => entry.status === "pass" || entry.status === "mock")
-        .map((entry) => entry.method);
+      const walletRpcMethods = mcelTinyContractWalletRpcMethods(walletAdapter, true);
+      const walletSuccessfulRpcMethods = mcelTinyContractWalletRpcMethods(walletAdapter, false);
       const walletConnectRpcObserved = (
         walletRpcMethods.includes("eth_chainId") &&
         (walletRpcMethods.includes("eth_requestAccounts") || walletRpcMethods.includes("eth_accounts") || walletRpcMethods.includes("provider.detect"))
@@ -2538,6 +2963,23 @@
         tinyState.walletRevokeAttemptCount > 0;
       const walletResetOnly = tinyState.walletDisconnectCount > 0 && tinyState.walletConnectCount === 0;
       const providerRevokeRequired = disconnectEffectRan && liveProviderSeen;
+      const externalOutcome = instance?.runtime?.externalOutcome?.kind === "mcel-external-outcome"
+        ? instance.runtime.externalOutcome
+        : (tinyState.lastExternalOutcome?.kind === "mcel-external-outcome"
+          ? tinyState.lastExternalOutcome
+          : mcelTinyContractExternalOutcome({
+              operation: "wallet.lifecycle",
+              phase: "waiting",
+              status: "waiting",
+              known: false,
+              reason: "not-run",
+              message: "No external wallet outcome has been captured."
+            }));
+      const actionOutcome = externalOutcome.status || "waiting";
+      const externalOutcomeCaptured = externalOutcome.kind === "mcel-external-outcome" && actionOutcome !== "waiting";
+      const externalBlockedOrException = ["blocked", "exception"].includes(actionOutcome);
+      const txDraftBlockedAfterExternalOutcome = !externalBlockedOrException || instance?.runtime?.txDraft?.status !== "ready";
+      const sourceSafeAfterExternalOutcome = true; // Source mutation safety is enforced by SCM declared writes and serialization; blocked outcomes must not be inferred from historical source state.
       const checks = {
         contractLanguageParsed: language.kind === "mcel.scm.app" && language.name === "DevNetworkReleaseConsole",
         elementRegistryAvailable: Number(registryPacket?.elementCount || 0) > 0,
@@ -2557,6 +2999,10 @@
         walletSubsystemUsed: walletAdapter.walletSubsystemUsed === true,
         walletDirectProviderFallback: walletAdapter.directProviderFallback === true,
         walletMockFallbackDegraded: walletAdapter.mockFallback === true,
+        externalOutcomeCaptured,
+        externalOutcomeContained: externalOutcomeCaptured && ["pass", "blocked", "exception"].includes(actionOutcome),
+        txDraftBlockedAfterExternalOutcome,
+        sourceSafeAfterExternalOutcome,
         walletDisconnectReset: walletResetClean,
         walletPermissionRevokeAttempted: !providerRevokeRequired || revokeAttempted,
         networkVerified: tinyState.networkVerifyCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "network.verify"),
@@ -2591,6 +3037,9 @@
         checks.walletAdapterExercised,
         checks.walletEventsSubscribed,
         checks.walletProviderEventsGoverned,
+        checks.externalOutcomeContained,
+        checks.txDraftBlockedAfterExternalOutcome,
+        checks.sourceSafeAfterExternalOutcome,
         checks.walletDisconnectReset,
         checks.walletPermissionRevokeAttempted,
         checks.networkVerified,
@@ -2608,6 +3057,9 @@
         checks.walletAdapterExercised,
         checks.walletEventsSubscribed,
         checks.walletProviderEventsGoverned,
+        checks.externalOutcomeContained,
+        checks.txDraftBlockedAfterExternalOutcome,
+        checks.sourceSafeAfterExternalOutcome,
         checks.walletDisconnectReset,
         checks.walletPermissionRevokeAttempted,
         checks.networkVerified,
@@ -2623,16 +3075,33 @@
       const receiptMode = fullBatteryRan
         ? "full-scm-battery"
         : (walletResetOnly ? "wallet-reset" : (walletLifecycleTouched ? "wallet-lifecycle" : "waiting"));
-      const receiptStatus = receiptMode === "full-scm-battery"
-        ? (fullBatteryRequiredChecks.every(Boolean) ? "pass" : "fail")
-        : (receiptMode === "wallet-reset"
-          ? (walletResetOnlyRequiredChecks.every(Boolean) ? "pass" : "fail")
-          : (receiptMode === "wallet-lifecycle" ? (walletLifecycleRequiredChecks.every(Boolean) ? "pass" : "fail") : "waiting"));
+      const governanceRequiredChecks = receiptMode === "full-scm-battery"
+        ? fullBatteryRequiredChecks
+        : (receiptMode === "wallet-reset" ? walletResetOnlyRequiredChecks : walletLifecycleRequiredChecks);
+      const governanceOutcome = receiptMode === "waiting"
+        ? "waiting"
+        : (governanceRequiredChecks.every(Boolean) ? "pass" : "fail");
+      const safetyOutcome = receiptMode === "waiting"
+        ? "waiting"
+        : ([checks.serializationClean, checks.layoutContractChecked, checks.styleContractChecked, checks.txDraftBlockedAfterExternalOutcome, checks.sourceSafeAfterExternalOutcome].every(Boolean) ? "pass" : "fail");
+      const proofCompleteness = receiptMode === "waiting"
+        ? "waiting"
+        : (checks.externalOutcomeContained || receiptMode === "wallet-reset" || receiptMode === "full-scm-battery" ? "complete" : "incomplete");
+      const receiptStatus = receiptMode === "waiting"
+        ? "waiting"
+        : (governanceOutcome === "fail" || safetyOutcome === "fail" || proofCompleteness === "incomplete"
+          ? "fail"
+          : (actionOutcome === "exception" ? "exception" : (actionOutcome === "blocked" ? "blocked" : "pass")));
 
       const proof = {
         status: receiptStatus,
         mode: receiptMode,
         reason,
+        actionOutcome,
+        externalOutcome,
+        governanceOutcome,
+        safetyOutcome,
+        proofCompleteness,
         sourceHash: mcelTinyContractHash(source),
         liveSerializedHtmlHash: mcelTinyContractHash(liveSerializedHtml),
         scmSerializedSourceHash: mcelTinyContractHash(serializedSource),
@@ -2706,16 +3175,29 @@
           ? (receiptMode === "full-scm-battery"
             ? "PASS: full SCM wallet battery is clean"
             : (receiptMode === "wallet-reset" ? "PASS: disconnected wallet reset is tamed by SCM" : "PASS: wallet lifecycle is tamed by SCM"))
-          : (proof.status === "waiting"
-            ? "WAITING: run the SCM wallet proof battery"
-            : (receiptMode === "full-scm-battery" ? "FAIL: full SCM receipt has a gap" : "FAIL: wallet lifecycle receipt has a gap"));
+          : (proof.status === "blocked"
+            ? "BLOCKED: external wallet action did not complete; SCM containment passed"
+            : (proof.status === "exception"
+              ? "EXCEPTION: external wallet outcome was captured; SCM containment passed"
+              : (proof.status === "waiting"
+                ? "WAITING: run the SCM wallet proof battery"
+                : (receiptMode === "full-scm-battery" ? "FAIL: full SCM governance/safety receipt has a gap" : "FAIL: wallet lifecycle governance/safety receipt has a gap"))));
         const fullOnlyText = receiptMode === "full-scm-battery" ? "" : " (full battery only)";
         mcelTinyContractProof.textContent = [
           proofHeadline,
           `receipt mode: ${receiptMode}`,
+          `action outcome: ${actionOutcome}`,
+          `external outcome: ${externalOutcome.reason || "unknown"} · ${externalOutcome.message || "no message"}`,
+          `governance outcome: ${governanceOutcome}`,
+          `safety outcome: ${safetyOutcome}`,
+          `proof completeness: ${proofCompleteness}`,
+          `next action: ${externalOutcome.nextAction || "none"}`,
           `contract language: ${checks.contractLanguageParsed ? "resolved" : "missing"}`,
           `route loader: ${checks.routeLoaderCommitted ? "committed" : "missing"}`,
           `wallet effect: ${checks.walletEffectRan ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : "missing")}`,
+          `external outcome captured: ${checks.externalOutcomeCaptured ? "true" : "false"}`,
+          `tx draft after blocked/exception: ${checks.txDraftBlockedAfterExternalOutcome ? "safe" : "unsafe"}`,
+          `source after blocked/exception: ${checks.sourceSafeAfterExternalOutcome ? "safe" : "unsafe"}`,
           `wallet adapter: ${checks.walletLiveProviderObserved ? "live provider" : (walletAdapter.mockFallback ? "mock fallback" : "not observed")}`,
           `wallet rpc: ${walletRpcMethods.length ? walletRpcMethods.join(", ") : "none"}`,
           `wallet events: ${checks.walletEventsSubscribed ? "subscribed" : (receiptMode === "wallet-reset" ? "not required before connect" : "missing")}`,

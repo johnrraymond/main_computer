@@ -85,11 +85,11 @@ class AstrometricRendererService:
 
     def _renderer_env(self) -> dict[str, str]:
         env = {**os.environ, "ASTROMETRIC_RENDERER_PORT": str(self.port)}
-        env.setdefault("ASTROMETRIC_RENDERER_WIDTH", "800")
-        env.setdefault("ASTROMETRIC_RENDERER_HEIGHT", "450")
-        env.setdefault("ASTROMETRIC_RENDERER_FPS", "12")
-        env.setdefault("ASTROMETRIC_RENDERER_IDLE_STEPS", "960")
-        env.setdefault("ASTROMETRIC_RENDERER_MOVING_STEPS", "520")
+        env.setdefault("ASTROMETRIC_RENDERER_WIDTH", "640")
+        env.setdefault("ASTROMETRIC_RENDERER_HEIGHT", "360")
+        env.setdefault("ASTROMETRIC_RENDERER_FPS", "10")
+        env.setdefault("ASTROMETRIC_RENDERER_IDLE_STEPS", "520")
+        env.setdefault("ASTROMETRIC_RENDERER_MOVING_STEPS", "220")
         return env
 
     def _run_compose(self, *args: str, timeout: float = 180.0) -> dict[str, Any]:
@@ -158,6 +158,13 @@ class AstrometricRendererService:
         except (URLError, TimeoutError, socket.timeout, ConnectionError, OSError) as exc:
             raise AstrometricRendererError(str(exc)) from exc
 
+    def _tcp_probe(self, *, timeout: float = 0.5) -> dict[str, Any]:
+        try:
+            with socket.create_connection((self.host, self.port), timeout=timeout):
+                return {"tcp_open": True}
+        except Exception as exc:
+            return {"tcp_open": False, "tcp_error": str(exc)}
+
     def renderer_health(self, *, timeout: float = 1.5) -> dict[str, Any]:
         try:
             response = self._renderer_request("/health", timeout=timeout)
@@ -166,8 +173,8 @@ class AstrometricRendererService:
                 stream_ready = bool(payload.get("stream_ready") or int(payload.get("frame_seq") or 0) > 0)
                 return {"reachable": True, "stream_ready": stream_ready, **payload}
         except Exception as exc:
-            return {"reachable": False, "stream_ready": False, "error": str(exc)}
-        return {"reachable": False, "stream_ready": False, "error": "Renderer returned an invalid health payload."}
+            return {"reachable": False, "stream_ready": False, "error": str(exc), **self._tcp_probe()}
+        return {"reachable": False, "stream_ready": False, "error": "Renderer returned an invalid health payload.", **self._tcp_probe()}
 
     def _wait_for_renderer(self, *, timeout: float = 60.0) -> dict[str, Any]:
         """Wait until the C++ process is answering health and has produced a frame.
@@ -206,6 +213,7 @@ class AstrometricRendererService:
         compose_present = self.compose_file.exists()
         docker_available = True
         docker_error = ""
+        docker_version = ""
         try:
             base = self._docker_compose_base()
             completed = subprocess.run(
@@ -218,7 +226,8 @@ class AstrometricRendererService:
                 check=False,
             )
             docker_available = completed.returncode == 0
-            docker_error = (completed.stderr or completed.stdout).strip()
+            docker_version = (completed.stdout or completed.stderr).strip()
+            docker_error = "" if docker_available else (completed.stderr or completed.stdout).strip()
         except Exception as exc:
             docker_available = False
             docker_error = str(exc)
@@ -237,6 +246,7 @@ class AstrometricRendererService:
             "docker": {
                 "available": docker_available,
                 "error": docker_error,
+                "version": docker_version,
                 "compose_command": self._docker_compose_base(),
             },
             "stream_path": "/api/applications/astrometric/stream.mjpg",
@@ -252,14 +262,14 @@ class AstrometricRendererService:
         if action == "status":
             return self.status()
         if action == "start":
-            result = self._run_compose("up", "-d", "--build", "astrometric-renderer")
+            result = self._run_compose("up", "-d", "--build", "--force-recreate", "astrometric-renderer")
             if result.get("returncode", 1) == 0:
                 wait_health = self._wait_for_renderer(timeout=75.0)
         elif action == "stop":
             result = self._run_compose("down", "--remove-orphans", timeout=90)
         elif action == "restart":
             down = self._run_compose("down", "--remove-orphans", timeout=90)
-            up = self._run_compose("up", "-d", "--build", "astrometric-renderer")
+            up = self._run_compose("up", "-d", "--build", "--force-recreate", "astrometric-renderer")
             result = {"down": down, "up": up, "returncode": up.get("returncode", 1)}
             if result.get("returncode", 1) == 0:
                 wait_health = self._wait_for_renderer(timeout=75.0)
@@ -276,7 +286,12 @@ class AstrometricRendererService:
         message = ""
         if action in {"start", "restart"} and compose_ok and not renderer_ready:
             renderer = status.get("renderer", {})
-            reason = renderer.get("last_error") or renderer.get("error") or "renderer did not produce a frame before the startup timeout"
+            reason = (
+                renderer.get("last_error")
+                or renderer.get("startup_phase")
+                or renderer.get("error")
+                or "renderer did not produce a frame before the startup timeout"
+            )
             message = f"Renderer container started, but the GPU stream is not ready yet: {reason}"
         elif not compose_ok:
             message = "Docker Compose command failed."
