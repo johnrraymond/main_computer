@@ -155,7 +155,7 @@ PREFERRED_ORDER: dict[tuple[str, ...], list[str]] = {
     ],
     ("wallets",): ["defaults"],
     ("wallets", "defaults"): ["deployer", "captain", "o1", "o2", "o3"],
-    ("networks",): ["test", "dev", "local", "testnet", "mainnet"],
+    ("networks",): ["dev", "test", "testnet", "mainnet"],
     ("networks", "*"): [
         "display_name",
         "kind",
@@ -569,14 +569,17 @@ def sanitize_manual_coolify_host_references(builder: StateBuilder) -> None:
             continue
 
         remote_path = ("networks", str(network_name), "remote_coolify_hosts")
-        remote_hosts = builder.get(remote_path)
-        if isinstance(remote_hosts, list):
-            filtered = [str(slot) for slot in remote_hosts if str(slot) in allowed_slots and str(slot) != "local_test"]
-            if filtered:
-                if filtered != remote_hosts:
-                    builder.set_value(remote_path, filtered, "tool:manual-coolify-hosts", overwrite=True)
-            else:
-                builder.delete_path(remote_path)
+        if str(network_name) not in REMOTE_COOLIFY_DEPLOYMENT_RELATIVE_PATHS:
+            builder.delete_path(remote_path)
+        else:
+            remote_hosts = builder.get(remote_path)
+            if isinstance(remote_hosts, list):
+                filtered = [str(slot) for slot in remote_hosts if str(slot) in allowed_slots and str(slot) != "local_test"]
+                if filtered:
+                    if filtered != remote_hosts:
+                        builder.set_value(remote_path, filtered, "tool:manual-coolify-hosts", overwrite=True)
+                else:
+                    builder.delete_path(remote_path)
 
         instances = builder.get(("networks", str(network_name), "hub", "instances"))
         if isinstance(instances, Mapping):

@@ -121,3 +121,40 @@ def test_sync_records_structured_qbft_warnings() -> None:
     codes = {warning["code"] for warning in builder.warnings}
     assert "qbft_instance_invalid_role" in codes
     assert "qbft_rpc_missing_rpc_host_port" in codes
+
+def test_sync_removes_remote_coolify_hosts_from_local_test_network() -> None:
+    _sync, builder = populated_state(
+        {
+            "coolify": {
+                "hosts": {
+                    "A": {"name": "coolify-a"},
+                    "B": {"name": "coolify-b"},
+                }
+            },
+            "networks": {
+                "test": {
+                    "remote_coolify_hosts": ["A", "B"],
+                }
+            },
+        }
+    )
+
+    assert "remote_coolify_hosts" not in builder.state["networks"]["test"]
+
+
+def test_networks_render_in_private_state_environment_order() -> None:
+    sync = load_sync_tool()
+    state = {
+        "networks": {
+            "testnet": {"chain_id": 42424241},
+            "test": {"chain_id": 42424241},
+            "mainnet": {"chain_id": 42424240},
+            "dev": {"chain_id": 31337},
+        }
+    }
+
+    rendered = sync.emit_yaml(sync.order_mapping(state, ()), {})
+    assert rendered.index("  dev:") < rendered.index("  test:")
+    assert rendered.index("  test:") < rendered.index("  testnet:")
+    assert rendered.index("  testnet:") < rendered.index("  mainnet:")
+
