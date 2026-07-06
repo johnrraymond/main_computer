@@ -14,41 +14,111 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$blockers = @()
-$warnings = @()
-$solutions = @()
+$script:blockers = New-Object 'System.Collections.Generic.List[string]'
+$script:warnings = New-Object 'System.Collections.Generic.List[string]'
+$script:solutions = New-Object 'System.Collections.Generic.List[string]'
 
 function Quote-Pwsh([string]$Value) {
     return "'" + ($Value -replace "'", "''") + "'"
 }
 
-function Path-Args([string[]]$Paths) {
-    return ($Paths | ForEach-Object { Quote-Pwsh $_ }) -join " "
+function Add-UniqueLine($List, [string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return
+    }
+
+    if (-not $List.Contains($Text)) {
+        [void]$List.Add($Text)
+    }
 }
 
-function Add-Blocker([string]$Message, [string[]]$Commands = @()) {
-    $script:blockers += $Message
-    foreach ($command in $Commands) {
-        if (-not [string]::IsNullOrWhiteSpace($command)) {
-            $script:solutions += $command
+function Join-PathArgs($Paths) {
+    $quoted = @()
+
+    foreach ($path in @($Paths)) {
+        $text = [string]$path
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            $quoted += Quote-Pwsh $text
         }
+    }
+
+    return ($quoted -join " ")
+}
+
+function Add-Blocker([string]$Message, $Commands = @()) {
+    Add-UniqueLine $script:blockers $Message
+
+    foreach ($command in @($Commands)) {
+        Add-UniqueLine $script:solutions ([string]$command)
     }
 }
 
 function Add-Warning([string]$Message) {
-    $script:warnings += $Message
+    Add-UniqueLine $script:warnings $Message
 }
 
-function Show-List([string]$Title, [string[]]$Items) {
-    if ($Items.Count -eq 0) {
+function Show-List([string]$Title, $Items) {
+    $safeItems = @()
+
+    foreach ($item in @($Items)) {
+        $text = [string]$item
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            $safeItems += $text
+        }
+    }
+
+    if ($safeItems.Count -eq 0) {
         return
     }
 
     Write-Host ""
     Write-Host $Title -ForegroundColor Yellow
-    foreach ($item in $Items) {
+    foreach ($item in $safeItems) {
         Write-Host "  $item"
     }
+}
+
+function Git-Path([string]$Name) {
+    $path = (& git rev-parse --git-path $Name 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($path)) {
+        return ""
+    }
+
+    return $path.Trim()
+}
+
+function Normalize-ZipEntry([string]$Name) {
+    return ($Name -replace '\\', '/').Trim()
+}
+
+function Strip-KnownPatchRoot([string]$Name, [string]$RepoLeaf) {
+    $normalized = Normalize-ZipEntry $Name
+
+    foreach ($root in @($RepoLeaf, "main_computer_test")) {
+        if (-not [string]::IsNullOrWhiteSpace($root) -and $normalized.StartsWith("$root/")) {
+            return $normalized.Substring($root.Length + 1)
+        }
+    }
+
+    return $normalized
+}
+
+function Write-NotReadyAndExit([string]$Title = "NOT READY") {
+    Write-Host ""
+    Write-Host $Title -ForegroundColor Red
+    Show-List "Blockers:" $script:blockers
+
+    if ($script:solutions.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Suggested commands/actions. These were NOT run:" -ForegroundColor Yellow
+        foreach ($solution in $script:solutions) {
+            Write-Host "  $solution"
+        }
+    }
+
+    Write-Host ""
+    Write-Host "This script made no Git changes and did not apply the patch." -ForegroundColor Cyan
+    exit 1
 }
 
 # ---------------------------------------------------------------------------
@@ -67,23 +137,16 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     )
 }
 
-if ($blockers.Count -gt 0) {
-    Write-Host ""
-    Write-Host "NOT READY" -ForegroundColor Red
-    Show-List "Blockers:" $blockers
-    Show-List "Suggested next commands/actions:" $solutions
-    exit 1
+if ($script:blockers.Count -gt 0) {
+    Write-NotReadyAndExit
 }
 
 $repoRoot = (& git rev-parse --show-toplevel 2>$null)
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repoRoot)) {
-    Write-Host ""
-    Write-Host "NOT READY" -ForegroundColor Red
-    Write-Host "This directory is not inside a Git repository."
-    Write-Host ""
-    Write-Host "Suggested next command:"
-    Write-Host "cd <your-main_computer_test-repo>"
-    exit 1
+    Add-Blocker "This directory is not inside a Git repository." @(
+        "cd <your-main-computer-repo>"
+    )
+    Write-NotReadyAndExit
 }
 
 $repoRoot = $repoRoot.Trim()
@@ -105,7 +168,7 @@ if (-not (Test-Path $PatchZip)) {
     )
 }
 
-foreach ($secret in $SecretsFile) {
+foreach ($secret in @($SecretsFile)) {
     if (-not (Test-Path $secret)) {
         Add-Blocker "Required secrets file is missing: $secret" @(
             "Restore " + (Quote-Pwsh $secret) + " from your private backup/secrets source."
@@ -117,11 +180,6 @@ foreach ($secret in $SecretsFile) {
 # Refuse active Git operations
 # ---------------------------------------------------------------------------
 
-function Git-Path([string]$Name) {
-    $path = (& git rev-parse --git-path $Name).Trim()
-    return $path
-}
-
 $mergeHead = Git-Path "MERGE_HEAD"
 $rebaseMerge = Git-Path "rebase-merge"
 $rebaseApply = Git-Path "rebase-apply"
@@ -129,39 +187,44 @@ $cherryPickHead = Git-Path "CHERRY_PICK_HEAD"
 $revertHead = Git-Path "REVERT_HEAD"
 $bisectLog = Git-Path "BISECT_LOG"
 
-if (Test-Path $mergeHead) {
+if (-not [string]::IsNullOrWhiteSpace($mergeHead) -and (Test-Path $mergeHead)) {
     Add-Blocker "A merge is in progress." @(
-        "Resolve conflicts, then: git add -- <resolved-files>",
-        "Then commit: git commit",
+        "git status",
+        "After resolving conflicts: git add -- <resolved-files>",
+        "Then finish the merge: git commit",
         "Or abort the merge: git merge --abort"
     )
 }
 
-if ((Test-Path $rebaseMerge) -or (Test-Path $rebaseApply)) {
+if ((-not [string]::IsNullOrWhiteSpace($rebaseMerge) -and (Test-Path $rebaseMerge)) -or
+    (-not [string]::IsNullOrWhiteSpace($rebaseApply) -and (Test-Path $rebaseApply))) {
     Add-Blocker "A rebase is in progress." @(
-        "Resolve conflicts, then: git add -- <resolved-files>",
+        "git status",
+        "After resolving conflicts: git add -- <resolved-files>",
         "Then continue: git rebase --continue",
         "Or abort the rebase: git rebase --abort"
     )
 }
 
-if (Test-Path $cherryPickHead) {
+if (-not [string]::IsNullOrWhiteSpace($cherryPickHead) -and (Test-Path $cherryPickHead)) {
     Add-Blocker "A cherry-pick is in progress." @(
-        "Resolve conflicts, then: git add -- <resolved-files>",
+        "git status",
+        "After resolving conflicts: git add -- <resolved-files>",
         "Then continue: git cherry-pick --continue",
         "Or abort: git cherry-pick --abort"
     )
 }
 
-if (Test-Path $revertHead) {
+if (-not [string]::IsNullOrWhiteSpace($revertHead) -and (Test-Path $revertHead)) {
     Add-Blocker "A revert is in progress." @(
-        "Resolve conflicts, then: git add -- <resolved-files>",
+        "git status",
+        "After resolving conflicts: git add -- <resolved-files>",
         "Then continue: git revert --continue",
         "Or abort: git revert --abort"
     )
 }
 
-if (Test-Path $bisectLog) {
+if (-not [string]::IsNullOrWhiteSpace($bisectLog) -and (Test-Path $bisectLog)) {
     Add-Blocker "A bisect is in progress." @(
         "End bisect mode: git bisect reset"
     )
@@ -171,8 +234,19 @@ if (Test-Path $bisectLog) {
 # Branch/HEAD check
 # ---------------------------------------------------------------------------
 
-$branch = (& git branch --show-current).Trim()
-$currentCommit = (& git rev-parse HEAD).Trim()
+$branch = (& git branch --show-current 2>$null)
+if ($LASTEXITCODE -ne 0) {
+    $branch = ""
+} else {
+    $branch = $branch.Trim()
+}
+
+$currentCommit = (& git rev-parse HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($currentCommit)) {
+    $currentCommit = "<unknown>"
+} else {
+    $currentCommit = $currentCommit.Trim()
+}
 
 if ([string]::IsNullOrWhiteSpace($branch)) {
     Add-Blocker "Repository is in detached HEAD state." @(
@@ -188,19 +262,68 @@ Write-Host "Current commit: $currentCommit" -ForegroundColor Cyan
 # ---------------------------------------------------------------------------
 # Read-only dirty tree analysis
 # ---------------------------------------------------------------------------
+# Use `git status --porcelain` instead of `git diff` here. On Windows with
+# autocrlf/safecrlf warnings, native git stderr can become a terminating
+# PowerShell NativeCommandError under `$ErrorActionPreference = "Stop"`.
+# `git status` is enough for this guard and avoids mutating or refreshing files.
 
-$staged = @(& git diff --cached --name-only --)
-$unstaged = @(& git diff --name-only --)
-$untracked = @(& git ls-files --others --exclude-standard)
+$statusLines = @(& git -c core.safecrlf=false status --porcelain=v1 --untracked-files=all)
 
-$unmergedStatus = @(& git status --porcelain=v1) | Where-Object {
-    $_.Length -ge 2 -and @("DD", "AU", "UD", "UA", "DU", "AA", "UU") -contains $_.Substring(0, 2)
+if ($LASTEXITCODE -ne 0) {
+    Add-Blocker "Could not read Git working-tree status." @(
+        "git status",
+        "Fix any Git errors shown above, then rerun this preflight script."
+    )
+    $statusLines = @()
 }
 
-if ($unmergedStatus.Count -gt 0) {
+$staged = @()
+$unstaged = @()
+$untracked = @()
+$unmergedStatus = @()
+
+foreach ($line in @($statusLines)) {
+    $text = [string]$line
+    if ($text.Length -lt 3) {
+        continue
+    }
+
+    $xy = $text.Substring(0, 2)
+    $path = $text.Substring(3)
+
+    # Porcelain v1 represents renames/copies as: old -> new. The new path is
+    # the one a broad replacement-file patch would collide with.
+    if ($path -like "* -> *") {
+        $path = ($path -split " -> ", 2)[1]
+    }
+
+    if (@("DD", "AU", "UD", "UA", "DU", "AA", "UU") -contains $xy) {
+        $unmergedStatus += $text
+        continue
+    }
+
+    if ($xy -eq "??") {
+        $untracked += $path
+        continue
+    }
+
+    if ($xy.Substring(0, 1) -ne " ") {
+        $staged += $path
+    }
+
+    if ($xy.Substring(1, 1) -ne " ") {
+        $unstaged += $path
+    }
+}
+
+$staged = @($staged | Sort-Object -Unique)
+$unstaged = @($unstaged | Sort-Object -Unique)
+$untracked = @($untracked | Sort-Object -Unique)
+
+if (@($unmergedStatus).Count -gt 0) {
     Add-Blocker "There are unresolved merge-conflict paths." @(
-        "Inspect conflicts: git status",
-        "After resolving: git add -- <resolved-files>",
+        "git status",
+        "After resolving conflicts: git add -- <resolved-files>",
         "Then finish the active merge/rebase/cherry-pick/revert operation."
     )
 }
@@ -210,7 +333,7 @@ $trackedDirty = @($staged + $unstaged | Sort-Object -Unique)
 $untrackedJson = @()
 $untrackedBlocking = @()
 
-foreach ($path in $untracked) {
+foreach ($path in @($untracked)) {
     if ($path -match '(?i)\.json$' -and -not $BlockUntrackedJson) {
         $untrackedJson += $path
     } else {
@@ -239,24 +362,21 @@ if (Test-Path $PatchZip) {
                     continue
                 }
 
-                $name = $entry.FullName -replace '\\', '/'
+                $name = Normalize-ZipEntry $entry.FullName
 
                 if ($name.EndsWith("/")) {
                     continue
                 }
 
-                if ($name.StartsWith("/") -or $name.Contains("../") -or $name.Contains("/../")) {
+                $parts = @($name.Split("/") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                if ($name.StartsWith("/") -or ($parts -contains "..")) {
                     Add-Blocker "Patch zip contains an unsafe path: $name" @(
                         "Do not apply this patch zip. Rebuild the patch with safe repo-relative paths."
                     )
                     continue
                 }
 
-                if ($name.StartsWith("$repoLeaf/")) {
-                    $name = $name.Substring($repoLeaf.Length + 1)
-                }
-
-                $patchEntriesRepoRelative += $name
+                $patchEntriesRepoRelative += (Strip-KnownPatchRoot $name $repoLeaf)
             }
         } finally {
             $zip.Dispose()
@@ -271,19 +391,23 @@ if (Test-Path $PatchZip) {
 $patchEntriesRepoRelative = @($patchEntriesRepoRelative | Sort-Object -Unique)
 
 $untrackedJsonOverlapsPatch = @()
-foreach ($path in $untrackedJson) {
+foreach ($path in @($untrackedJson)) {
     $normalized = $path -replace '\\', '/'
     if ($patchEntriesRepoRelative -contains $normalized) {
         $untrackedJsonOverlapsPatch += $path
     }
 }
 
-if ($untrackedJsonOverlapsPatch.Count -gt 0) {
+if (@($untrackedJsonOverlapsPatch).Count -gt 0) {
+    $jsonArgs = Join-PathArgs $untrackedJsonOverlapsPatch
+    $jsonCommitMessage = Quote-Pwsh "checkpoint JSON files before patch"
+
     Add-Blocker "Untracked JSON files overlap files inside the patch zip." @(
-        "Review these paths: " + (Path-Args $untrackedJsonOverlapsPatch),
-        "Either commit them intentionally: git add -- " + (Path-Args $untrackedJsonOverlapsPatch),
-        "Then: git commit -m " + (Quote-Pwsh "checkpoint JSON files before patch"),
-        "Or move them outside the repo before patching."
+        "git status --short",
+        "Review overlapping JSON paths: $jsonArgs",
+        "To commit them intentionally: git add -- $jsonArgs",
+        "Then commit them: git commit -m $jsonCommitMessage",
+        "Or move those JSON files outside the repo before patching."
     )
 }
 
@@ -293,16 +417,19 @@ if ($untrackedJsonOverlapsPatch.Count -gt 0) {
 
 $pathsToCommit = @($trackedDirty + $untrackedBlocking | Sort-Object -Unique)
 
-if ($pathsToCommit.Count -gt 0) {
+if (@($pathsToCommit).Count -gt 0) {
+    $commitPathArgs = Join-PathArgs $pathsToCommit
+    $commitMessageArg = Quote-Pwsh $CommitMessage
+
     Add-Blocker "There are tracked changes or important untracked files that should be committed before patching." @(
         "git status --short",
-        "git add -- " + (Path-Args $pathsToCommit),
-        "git commit -m " + (Quote-Pwsh $CommitMessage)
+        "git add -- $commitPathArgs",
+        "git commit -m $commitMessageArg"
     )
 }
 
-if ($untrackedJson.Count -gt 0) {
-    Add-Warning "Untracked *.json files were found. They are treated as non-blocking generated/local files unless they overlap the patch zip."
+if (@($untrackedJson).Count -gt 0) {
+    Add-Warning "Untracked *.json files were found. They are non-blocking generated/local files unless they overlap the patch zip. They were not included in the suggested commit command. Make sure your secrets file is present so the app can regenerate local JSON state."
 }
 
 # ---------------------------------------------------------------------------
@@ -313,37 +440,41 @@ Show-List "Staged changes:" $staged
 Show-List "Unstaged tracked changes:" $unstaged
 Show-List "Untracked blocking files:" $untrackedBlocking
 Show-List "Untracked non-blocking *.json files:" $untrackedJson
-Show-List "Warnings:" $warnings
+Show-List "Warnings:" $script:warnings
 
 Write-Host ""
 
-if ($blockers.Count -gt 0) {
+if ($script:blockers.Count -gt 0) {
     Write-Host "NOT READY TO PATCH" -ForegroundColor Red
-    Show-List "Blockers:" $blockers
+    Show-List "Blockers:" $script:blockers
 
-    $solutions = @($solutions | Sort-Object -Unique)
-
-    Write-Host ""
-    Write-Host "Suggested commands/actions. These were NOT run:" -ForegroundColor Yellow
-    foreach ($solution in $solutions) {
-        Write-Host $solution
+    if ($script:solutions.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Suggested commands/actions. These were NOT run:" -ForegroundColor Yellow
+        foreach ($solution in $script:solutions) {
+            Write-Host "  $solution"
+        }
     }
 
     Write-Host ""
-    Write-Host "This script made no Git changes." -ForegroundColor Cyan
+    Write-Host "This script made no Git changes and did not apply the patch." -ForegroundColor Cyan
     exit 1
 }
 
+$dryRunCommand = "python " + (Quote-Pwsh $NewPatchScript) + " " + (Quote-Pwsh $PatchZip) + " --dry-run"
+$applyCommand = "python " + (Quote-Pwsh $NewPatchScript) + " " + (Quote-Pwsh $PatchZip)
+$rollbackCommand = "git reset --hard $currentCommit"
+
 Write-Host "READY FOR PATCH DRY-RUN" -ForegroundColor Green
 Write-Host ""
-Write-Host "This script made no Git changes." -ForegroundColor Cyan
+Write-Host "This script made no Git changes and did not apply the patch." -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next command to run manually:"
-Write-Host "python " + (Quote-Pwsh $NewPatchScript) + " " + (Quote-Pwsh $PatchZip) + " --dry-run"
+Write-Host "  $dryRunCommand"
 Write-Host ""
 Write-Host "After the dry-run succeeds, apply manually with:"
-Write-Host "python " + (Quote-Pwsh $NewPatchScript) + " " + (Quote-Pwsh $PatchZip)
+Write-Host "  $applyCommand"
 Write-Host ""
 Write-Host "Rollback checkpoint is the current commit:"
-Write-Host "git reset --hard $currentCommit"
+Write-Host "  $rollbackCommand"
 exit 0
