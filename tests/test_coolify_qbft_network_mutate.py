@@ -388,15 +388,95 @@ networks:
 def test_retire_cleanup_compose_removes_public_entry_when_host_has_no_remaining_nodes(tmp_path: Path) -> None:
     module = _load_module()
     plan = module.build_plan("testnet", private_state_path=write_rpc_retire_private_state(tmp_path))
+    rpc_service = module.planned_service_by_id(plan)["rpc-1"]
 
-    compose = module.render_retire_cleanup_compose_for_host(plan, "b")
+    compose = module.render_retire_cleanup_compose_for_host(plan, "b", [rpc_service])
 
     assert "testnet-rpc-public-entry-config-b:" in compose
     assert "Removed stale RPC Traefik dynamic config" in compose
+    assert "qbft-retire-orphan-cleanup:" in compose
+    assert "docker:27-cli" in compose
+    assert "/var/run/docker.sock:/var/run/docker.sock" in compose
+    assert "com.docker.compose.service=$$compose_service" in compose
+    assert "docker rm -f" in compose
+    assert "30013" in compose
     assert "rpc-1:" not in compose
     assert "validator-rpc-1:" not in compose
     assert "/data/coolify/proxy/dynamic" in compose
 
+
+
+def write_rpc_retire_with_remaining_private_state(tmp_path: Path) -> Path:
+    state_path = tmp_path / "main_computer.retire.remaining.private.yaml"
+    state_path.write_text(
+        """
+coolify:
+  project_name: Main Computer
+  hosts:
+    A:
+      name: coolify-a
+      public_ip: 198.51.100.10
+      url: http://198.51.100.10:8000/
+      api_token: secret-a
+      server_uuid: server-a
+      destination_uuid: destination-a
+    B:
+      name: coolify-b
+      public_ip: 198.51.100.11
+      url: http://198.51.100.11:8000/
+      api_token: secret-b
+      server_uuid: server-b
+      destination_uuid: destination-b
+
+networks:
+  testnet:
+    display_name: Main Computer Testnet
+    kind: testnet
+    chain_id: 42424241
+    rpc: https://testnet-rpc.greatlibrary.io
+    qbft:
+      instances:
+        validator-rpc-1:
+          coolify_host: A
+          roles: [rpc, validator]
+          rpc_host_port: 30010
+          p2p_host_port: 30321
+        validator-2:
+          coolify_host: B
+          roles: [validator]
+          p2p_host_port: 30312
+        rpc-1:
+          coolify_host: B
+          roles: [rpc]
+          rpc_host_port: 30013
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return state_path
+
+
+def test_rpc_retire_with_remaining_host_nodes_includes_orphan_cleanup_sidecar(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_rpc_retire_with_remaining_private_state(tmp_path))
+    rpc_service = module.planned_service_by_id(plan)["rpc-1"]
+
+    host_plan = module.plan_for_host_without_services(plan, "b", {"rpc-1"})
+    compose = module.render_compose_for_host(
+        host_plan,
+        "b",
+        include_bootstrap=False,
+        retire_cleanup_services=[rpc_service],
+    )
+
+    assert "validator-2:" in compose
+    assert "rpc-1:" not in compose
+    assert "qbft-retire-orphan-cleanup:" in compose
+    assert "docker:27-cli" in compose
+    assert "/var/run/docker.sock:/var/run/docker.sock" in compose
+    assert "com.docker.compose.project" in compose
+    assert "com.docker.compose.service=$$compose_service" in compose
+    assert "docker rm -f" in compose
+    assert "30013" in compose
 
 def test_mutate_apply_rpc_retire_redeploys_cleanup_compose_and_verifies_public_rpc(
     tmp_path: Path, monkeypatch: Any
@@ -425,6 +505,8 @@ def test_mutate_apply_rpc_retire_redeploys_cleanup_compose_and_verifies_public_r
         assert sync_args.no_bootstrap is True
         assert sync_args._compose_override
         assert "testnet-rpc-public-entry-config-b:" in sync_args._compose_override
+        assert "qbft-retire-orphan-cleanup:" in sync_args._compose_override
+        assert "docker rm -f" in sync_args._compose_override
         assert "rpc-1:" not in sync_args._compose_override
         assert deploy is True
         return {"ok": True, "service_uuid": "svc-b", "service_name": "main-computer-qbft-testnet-b"}
@@ -433,12 +515,13 @@ def test_mutate_apply_rpc_retire_redeploys_cleanup_compose_and_verifies_public_r
         calls.append(("wait-rpc", wait_plan, wait_args))
         assert wait_plan is plan
         assert wait_args.rpc_url == "https://testnet-rpc.greatlibrary.io"
+        assert wait_args.rpc_min_peers == 0
         return {
             "ok": True,
             "rpc_url": wait_args.rpc_url,
             "chain_id": hex(plan.chain_id),
             "block_number": 124,
-            "peer_count": 1,
+            "peer_count": 0,
             "block_advanced": True,
         }
 
@@ -475,6 +558,24 @@ def test_mutate_apply_rpc_retire_redeploys_cleanup_compose_and_verifies_public_r
         "verify-retired-direct-rpc-unreachable",
         "commit-topology",
     ]
+
+
+def test_mutate_rpc_retire_public_wait_args_preserves_explicit_peer_threshold(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_rpc_retire_private_state(tmp_path))
+
+    auto_args = module.mutate_rpc_retire_public_wait_args(
+        _args(rpc_min_peers=-1),
+        rpc_url=str(plan.external_rpc_url),
+    )
+    explicit_args = module.mutate_rpc_retire_public_wait_args(
+        _args(rpc_min_peers=2),
+        rpc_url=str(plan.external_rpc_url),
+    )
+
+    assert auto_args.rpc_url == "https://testnet-rpc.greatlibrary.io"
+    assert auto_args.rpc_min_peers == 0
+    assert explicit_args.rpc_min_peers == 2
 
 
 def test_mutate_apply_rpc_retire_refuses_validator_retire(tmp_path: Path, monkeypatch: Any) -> None:

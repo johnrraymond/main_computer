@@ -62,6 +62,7 @@ DEFAULT_JSON_RPC_USER_AGENT = (
 )
 TRAEFIK_DYNAMIC_CONFIG_DIR = "/data/coolify/proxy/dynamic"
 TRAEFIK_DYNAMIC_CONFIG_IMAGE = "alpine:3.20"
+RETIRED_QBFT_CLEANUP_IMAGE = "docker:27-cli"
 TRAEFIK_DYNAMIC_CONFIG_REFRESH_S = 300
 QBFT_CONFIG_TRANSFER_IMAGE = "python:3.12-alpine"
 QBFT_CONFIG_EXPORT_IMAGE = "python:3.12-alpine"
@@ -1666,6 +1667,24 @@ def mutate_rpc_wait_args(args: argparse.Namespace, *, rpc_url: str) -> argparse.
     return args_copy_with(args, rpc_url=rpc_url, rpc_timeout_s=timeout_s)
 
 
+def mutate_rpc_retire_public_wait_args(args: argparse.Namespace, *, rpc_url: str) -> argparse.Namespace:
+    """Build canonical-RPC wait args for the safe RPC-only retire executor.
+
+    Retiring a dedicated RPC node can leave the canonical entry pointing at a
+    single validator node.  In that healthy topology, ``net_peerCount`` may be
+    zero even while chain id matches and blocks advance.  Keep explicit operator
+    peer thresholds, but make the automatic threshold zero for retire
+    verification so the retire executor does not falsely fail after a successful
+    routing/compose update.
+    """
+
+    wait_args = mutate_rpc_wait_args(args, rpc_url=rpc_url)
+    requested_min_peers = int(getattr(args, "rpc_min_peers", DEFAULT_RPC_MIN_PEERS_AUTO))
+    if requested_min_peers < 0:
+        wait_args = args_copy_with(wait_args, rpc_min_peers=0)
+    return wait_args
+
+
 def default_mutation_observed_state() -> dict[str, Any]:
     return {
         "ok": True,
@@ -2518,11 +2537,12 @@ def apply_rpc_retire_mutation(plan: NetworkPlan, args: argparse.Namespace, packe
             host=host_id,
             no_bootstrap=True,
             _include_rpc_public_entry=True,
+            _retire_cleanup_services=tuple(retiring_host_services),
         )
         if remaining_service_ids:
             sync_result = coolify_sync(host_plan, deploy_args, deploy=not no_deploy)
         else:
-            cleanup_compose = render_retire_cleanup_compose_for_host(plan, host_id)
+            cleanup_compose = render_retire_cleanup_compose_for_host(plan, host_id, retiring_host_services)
             cleanup_args = args_copy_with(deploy_args, _compose_override=cleanup_compose)
             sync_result = coolify_sync(host_plan, cleanup_args, deploy=not no_deploy)
             sync_result = {
@@ -2556,10 +2576,10 @@ def apply_rpc_retire_mutation(plan: NetworkPlan, args: argparse.Namespace, packe
                 "retired_instances": [service.id for service in retiring_host_services],
                 "result": {
                     "ok": bool(sync_result.get("ok")),
-                    "method": "compose-omission",
+                    "method": "docker-label-cleanup-sidecar",
                     "message": (
-                        "Retired instance is omitted from the redeployed host compose. "
-                        "If Coolify leaves orphan containers, the retired direct RPC verification will fail."
+                        "Retired instance is omitted from the redeployed host compose and a one-shot Docker-label "
+                        "cleanup sidecar is included to remove orphan containers for the retired service."
                     ),
                 },
             }
@@ -2593,7 +2613,7 @@ def apply_rpc_retire_mutation(plan: NetworkPlan, args: argparse.Namespace, packe
             )
         else:
             try:
-                public_wait_args = mutate_rpc_wait_args(args, rpc_url=str(plan.external_rpc_url or ""))
+                public_wait_args = mutate_rpc_retire_public_wait_args(args, rpc_url=str(plan.external_rpc_url or ""))
                 public_result = wait_for_rpc(plan, public_wait_args)
             except Exception as exc:  # noqa: BLE001 - capture operator-facing failure in packet.
                 public_result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -4029,6 +4049,7 @@ def render_compose_for_host(
     runtime_import_bundle: Mapping[str, Any] | None = None,
     include_rpc_public_entry: bool = True,
     config_export: Mapping[str, Any] | None = None,
+    retire_cleanup_services: list[PlannedService] | tuple[PlannedService, ...] = (),
 ) -> str:
     host_id = safe_id(host_id, kind="host")
     hosts = host_by_id(plan)
@@ -4209,6 +4230,8 @@ def render_compose_for_host(
             )
         lines.append("")
 
+    append_retired_qbft_service_cleanup(lines, retire_cleanup_services)
+
     if include_rpc_public_entry:
         append_rpc_public_entry_sidecar(lines, plan, host_id, config_export=config_export)
 
@@ -4238,7 +4261,99 @@ def render_compose_for_host(
     return "\n".join(lines)
 
 
-def render_retire_cleanup_compose_for_host(plan: NetworkPlan, host_id: str) -> str:
+def render_retired_qbft_service_cleanup_shell(retired_services: list[PlannedService] | tuple[PlannedService, ...]) -> str:
+    """Return a Docker-socket cleanup script for retired host-local QBFT services.
+
+    Coolify sometimes deploys a compose target-state without removing containers
+    for services that disappeared from the compose file.  The cleanup container
+    runs inside the same Coolify compose project, discovers that project label
+    from its own container, and force-removes only containers for the retired
+    service names.  The host-port fallback catches the same orphan if Coolify's
+    deploy strategy changed the compose project label.
+    """
+
+    specs: list[tuple[str, str]] = []
+    for service in retired_services:
+        service_name = service.id.replace("_", "-")
+        rpc_port = "" if service.rpc_host_port is None else str(service.rpc_host_port)
+        specs.append((service_name, rpc_port))
+    spec_lines = "\n".join(f"{name}|{port}" for name, port in specs)
+    return "\n".join(
+        [
+            "set -eu",
+            f"rpc_container_port={RPC_CONTAINER_PORT}",
+            "self_id=${HOSTNAME:-}",
+            "compose_project=''",
+            "if [ -n \"$self_id\" ]; then",
+            "  compose_project=$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$self_id\" 2>/dev/null || true)",
+            "fi",
+            "echo \"QBFT retire cleanup compose_project=${compose_project:-unknown}\"",
+            "cat > /tmp/retired-qbft-services.txt <<'EOF_RETIRED_QBFT_SERVICES'",
+            spec_lines,
+            "EOF_RETIRED_QBFT_SERVICES",
+            "while IFS='|' read -r compose_service rpc_host_port; do",
+            "  [ -n \"$compose_service\" ] || continue",
+            "  echo \"Scanning for retired QBFT service $compose_service on RPC host port ${rpc_host_port:-unknown}\"",
+            "  docker ps -a -q --filter \"label=com.docker.compose.service=$compose_service\" | while read -r container_id; do",
+            "    [ -n \"$container_id\" ] || continue",
+            "    container_project=$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$container_id\" 2>/dev/null || true)",
+            "    published_rpc=$(docker port \"$container_id\" \"${rpc_container_port}/tcp\" 2>/dev/null || true)",
+            "    remove=false",
+            "    if [ -n \"$compose_project\" ] && [ \"$container_project\" = \"$compose_project\" ]; then",
+            "      remove=true",
+            "    fi",
+            "    if [ -n \"$rpc_host_port\" ]; then",
+            "      case \"$published_rpc\" in",
+            "        *\":$rpc_host_port\"*) remove=true ;;",
+            "      esac",
+            "    fi",
+            "    if [ \"$remove\" = true ]; then",
+            "      echo \"Removing retired QBFT container $container_id service=$compose_service project=${container_project:-unknown} published_rpc=${published_rpc:-none}\"",
+            "      docker rm -f \"$container_id\"",
+            "    else",
+            "      echo \"Keeping container $container_id service=$compose_service project=${container_project:-unknown} published_rpc=${published_rpc:-none}\"",
+            "    fi",
+            "  done",
+            "done < /tmp/retired-qbft-services.txt",
+            "echo 'QBFT retire orphan cleanup complete.'",
+        ]
+    )
+
+
+def append_retired_qbft_service_cleanup(
+    lines: list[str],
+    retired_services: list[PlannedService] | tuple[PlannedService, ...],
+) -> None:
+    """Append a one-shot cleanup service that removes orphan retired containers."""
+
+    if not retired_services:
+        return
+    cleanup_script = escape_compose_interpolation(render_retired_qbft_service_cleanup_shell(retired_services))
+    lines.extend(
+        [
+            "  qbft-retire-orphan-cleanup:",
+            f"    image: {yaml_quote(RETIRED_QBFT_CLEANUP_IMAGE)}",
+            "    restart: \"no\"",
+            "    exclude_from_hc: true",
+            "    labels:",
+            "      - \"traefik.enable=false\"",
+            "    volumes:",
+            "      - \"/var/run/docker.sock:/var/run/docker.sock\"",
+            "    entrypoint:",
+            "      - /bin/sh",
+            "      - -ec",
+            "      - |-",
+        ]
+    )
+    lines.extend([f"        {line}" if line else "" for line in cleanup_script.splitlines()])
+    lines.append("")
+
+
+def render_retire_cleanup_compose_for_host(
+    plan: NetworkPlan,
+    host_id: str,
+    retired_services: list[PlannedService] | tuple[PlannedService, ...] = (),
+) -> str:
     """Render a cleanup-only compose for an affected host with no remaining QBFT nodes.
 
     Raw snapshot/new_patch delivery cannot encode deletions by omission, and
@@ -4262,6 +4377,7 @@ def render_retire_cleanup_compose_for_host(plan: NetworkPlan, host_id: str) -> s
     ]
     before_len = len(lines)
     append_rpc_public_entry_sidecar(lines, cleanup_plan, host_id)
+    append_retired_qbft_service_cleanup(lines, retired_services)
     if len(lines) == before_len:
         # Compose requires at least one service.  When there is no public RPC
         # sidecar to clean up, keep a tiny inert service so updating the Coolify
@@ -6298,6 +6414,7 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
             runtime_import_bundle=getattr(args, "_runtime_import_bundle", None),
             include_rpc_public_entry=bool(getattr(args, "_include_rpc_public_entry", True)),
             config_export=getattr(args, "_config_export", None),
+            retire_cleanup_services=tuple(getattr(args, "_retire_cleanup_services", ()) or ()),
         )
     compose_b64 = base64_compose(compose)
     service_name = str(getattr(args, "coolify_service_name", "") or project_service_name(plan, host_id))
