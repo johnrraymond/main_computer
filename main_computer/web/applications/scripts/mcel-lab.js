@@ -107,6 +107,117 @@
       }, 0).toString(16);
     }
 
+    function mcelTinyContractStableJson(value) {
+      if (Array.isArray(value)) {
+        return `[${value.map((item) => mcelTinyContractStableJson(item)).join(",")}]`;
+      }
+      if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${mcelTinyContractStableJson(value[key])}`).join(",")}}`;
+      }
+      return JSON.stringify(value ?? null);
+    }
+
+    function mcelTinyContractObjectHash(value) {
+      return mcelTinyContractHash(mcelTinyContractStableJson(value));
+    }
+
+    function mcelTinyContractWalletAccountHash(account = "") {
+      const normalized = String(account || "").trim().toLowerCase();
+      return normalized ? `account:${mcelTinyContractHash(normalized)}` : "";
+    }
+
+    function mcelTinyContractTxProbeEnvelopeIds(draftProbe = {}) {
+      return ["nonce", "gasEstimate", "ethCall"]
+        .map((key) => {
+          const envelope = draftProbe?.[key] || {};
+          const method = envelope.method || key;
+          const status = envelope.status || "not-probed";
+          return `${method}:${status}`;
+        });
+    }
+
+    function mcelTinyContractTxDraftInvalidation(reason, detail = {}) {
+      return {
+        reason,
+        detail,
+        at: "runtime-tx-draft-boundary"
+      };
+    }
+
+    function mcelTinyContractTxDraftProvenance({
+      source = {},
+      state = {},
+      runtime = {},
+      request = null,
+      wallet = {},
+      network = {},
+      externalOutcome = {},
+      encoding = {},
+      draftProbe = null,
+      ready = false,
+      invalidatedBy = []
+    } = {}) {
+      const selectedRequestSnapshot = request
+        ? {
+            id: request.id || "",
+            title: request.title || "",
+            status: request.status || "",
+            risk: request.risk || "",
+            contractMethod: request.contractMethod || "",
+            evidenceRequired: request.evidenceRequired === true
+          }
+        : null;
+      const expectedChainId = network.expectedChainId || source.devRelease?.devNetwork?.chainId || "0x28757b2";
+      const actualChainId = network.chainId || "";
+      const sourceRequestHash = selectedRequestSnapshot ? mcelTinyContractObjectHash(selectedRequestSnapshot) : "";
+      const walletAccountHash = mcelTinyContractWalletAccountHash(wallet.account || wallet.address || "");
+      const chainOk = Boolean(actualChainId && String(actualChainId).toLowerCase() === String(expectedChainId).toLowerCase());
+      return {
+        provenanceVersion: "txDraft.provenance.v1",
+        sourceRequestHash,
+        selectedRequestSnapshot,
+        walletAccountHash,
+        chainProof: {
+          expectedChainId,
+          chainId: actualChainId,
+          ok: chainOk,
+          status: chainOk ? "matched" : "mismatch-or-missing"
+        },
+        externalOutcomeSequence: externalOutcome?.kind === "mcel-external-outcome"
+          ? [{
+              sequence: externalOutcome.sequence || null,
+              operation: externalOutcome.operation || "",
+              status: externalOutcome.status || "",
+              reason: externalOutcome.reason || ""
+            }]
+          : [],
+        networkGateSequence: [{
+          status: network.status || "waiting",
+          ok: network.ok === true,
+          expectedChainId,
+          chainId: actualChainId
+        }],
+        calldataSource: encoding.calldata || encoding.data
+          ? "abi-encoding"
+          : (encoding.calldataEncoding || "not-encoded"),
+        abiEncodingStatus: encoding.status || encoding.calldataEncoding || "unknown",
+        probeEnvelopeIds: draftProbe?.kind === "mcel-runtime-tx-draft-probe"
+          ? mcelTinyContractTxProbeEnvelopeIds(draftProbe)
+          : ["eth_getTransactionCount:not-probed", "eth_estimateGas:not-probed", "eth_call:not-probed"],
+        invalidatedBy: invalidatedBy.filter(Boolean),
+        valid: ready === true && invalidatedBy.length === 0,
+        validityInvariant: [
+          "same selected source request",
+          "same wallet account",
+          "same chain",
+          "wallet outcome pass",
+          "network gate pass",
+          "no provider event invalidated draft",
+          "no transaction send attempted"
+        ]
+      };
+    }
+
     function ensureMcelTinyContractState() {
       if (!mcelLabState.tinyContract) {
         mcelLabState.tinyContract = {
@@ -329,6 +440,31 @@
           },
           noSend: true,
           boundary: "runtime-only-no-send",
+          sourceRequestHash: "",
+          selectedRequestSnapshot: null,
+          walletAccountHash: "",
+          chainProof: {
+            expectedChainId: "0x28757b2",
+            chainId: "",
+            ok: false,
+            status: "waiting"
+          },
+          externalOutcomeSequence: [],
+          networkGateSequence: [],
+          calldataSource: "",
+          abiEncodingStatus: "",
+          probeEnvelopeIds: [],
+          invalidatedBy: [],
+          validityInvariant: [
+            "same selected source request",
+            "same wallet account",
+            "same chain",
+            "wallet outcome pass",
+            "network gate pass",
+            "no provider event invalidated draft",
+            "no transaction send attempted"
+          ],
+          valid: false,
           summary: "No transaction draft has been built."
         },
         walletAdapter: {
@@ -663,6 +799,37 @@
                     requestId: "",
                     to: "",
                     data: "",
+                    invalidatedBy: [
+                      mcelTinyContractTxDraftInvalidation(`wallet-${outcome.status}`, {
+                        outcomeStatus: outcome.status,
+                        outcomeReason: outcome.reason
+                      })
+                    ],
+                    sourceRequestHash: "",
+                    selectedRequestSnapshot: null,
+                    walletAccountHash: "",
+                    chainProof: {
+                      expectedChainId: devNetwork.chainId || "0x28757b2",
+                      chainId,
+                      ok: false,
+                      status: "wallet-not-ready"
+                    },
+                    externalOutcomeSequence: [{
+                      sequence: outcome.sequence || null,
+                      operation: outcome.operation || "wallet.connect",
+                      status: outcome.status,
+                      reason: outcome.reason
+                    }],
+                    networkGateSequence: [{
+                      status: network.status,
+                      ok: network.ok === true,
+                      expectedChainId: network.expectedChainId,
+                      chainId
+                    }],
+                    calldataSource: "not-encoded",
+                    abiEncodingStatus: "blocked-by-wallet",
+                    probeEnvelopeIds: [],
+                    valid: false,
                     summary: `Wallet ${outcome.status}; transaction draft cleared before source approval.`
                   };
               ctx.set("runtime.wallet", wallet);
@@ -744,6 +911,38 @@
                 requestId: "",
                 to: "",
                 data: "",
+                invalidatedBy: [
+                  mcelTinyContractTxDraftInvalidation("wallet-disconnected", {
+                    previousProvider: wallet.previousProvider,
+                    outcomeStatus: outcome.status,
+                    outcomeReason: outcome.reason
+                  })
+                ],
+                sourceRequestHash: "",
+                selectedRequestSnapshot: null,
+                walletAccountHash: "",
+                chainProof: {
+                  expectedChainId,
+                  chainId: "",
+                  ok: false,
+                  status: "wallet-disconnected"
+                },
+                externalOutcomeSequence: [{
+                  sequence: outcome.sequence || null,
+                  operation: outcome.operation || "wallet.disconnect",
+                  status: outcome.status,
+                  reason: outcome.reason
+                }],
+                networkGateSequence: [{
+                  status: network.status,
+                  ok: false,
+                  expectedChainId,
+                  chainId: ""
+                }],
+                calldataSource: "not-encoded",
+                abiEncodingStatus: "invalidated-by-wallet-disconnect",
+                probeEnvelopeIds: [],
+                valid: false,
                 summary: "Wallet disconnected; runtime transaction draft was reset."
               };
               ctx.set("runtime.wallet", wallet);
@@ -827,6 +1026,28 @@
                     requestId: "",
                     to: "",
                     data: "",
+                    sourceRequestHash: txDraft.sourceRequestHash || "",
+                    selectedRequestSnapshot: txDraft.selectedRequestSnapshot || null,
+                    walletAccountHash: mcelTinyContractWalletAccountHash(nextAccount),
+                    chainProof: txDraft.chainProof || {
+                      expectedChainId: network.expectedChainId || "0x28757b2",
+                      chainId: network.chainId || "",
+                      ok: network.ok === true,
+                      status: network.ok === true ? "matched" : "wallet-event"
+                    },
+                    externalOutcomeSequence: txDraft.externalOutcomeSequence || [],
+                    networkGateSequence: txDraft.networkGateSequence || [],
+                    calldataSource: txDraft.calldataSource || "not-encoded",
+                    abiEncodingStatus: "invalidated-by-account-event",
+                    probeEnvelopeIds: txDraft.probeEnvelopeIds || [],
+                    invalidatedBy: [
+                      ...(txDraft.invalidatedBy || []),
+                      mcelTinyContractTxDraftInvalidation(disconnected ? "account-disconnected" : "account-changed", {
+                        previousAccount: previousNonEmptyAccount || previousAccount,
+                        nextAccount
+                      })
+                    ],
+                    valid: false,
                     summary: "Provider accountsChanged event cleared the runtime transaction draft."
                   }
                 : txDraft;
@@ -931,6 +1152,28 @@
                     requestId: "",
                     to: "",
                     data: "",
+                    sourceRequestHash: txDraft.sourceRequestHash || "",
+                    selectedRequestSnapshot: txDraft.selectedRequestSnapshot || null,
+                    walletAccountHash: txDraft.walletAccountHash || mcelTinyContractWalletAccountHash(wallet.account || ""),
+                    chainProof: {
+                      expectedChainId: expected,
+                      chainId,
+                      ok,
+                      status: ok ? "matched" : "mismatch"
+                    },
+                    externalOutcomeSequence: txDraft.externalOutcomeSequence || [],
+                    networkGateSequence: [
+                      ...(txDraft.networkGateSequence || []),
+                      {status: ok ? "dev-network-ready" : "wrong-chain", ok, expectedChainId: expected, chainId}
+                    ],
+                    calldataSource: txDraft.calldataSource || "not-encoded",
+                    abiEncodingStatus: "invalidated-by-chain-event",
+                    probeEnvelopeIds: txDraft.probeEnvelopeIds || [],
+                    invalidatedBy: [
+                      ...(txDraft.invalidatedBy || []),
+                      mcelTinyContractTxDraftInvalidation("chain-changed", {expectedChainId: expected, chainId})
+                    ],
+                    valid: false,
                     summary: "Provider chainChanged event cleared the runtime transaction draft because the chain no longer matched."
                   }
                 : txDraft;
@@ -1019,6 +1262,29 @@
                 requestId: "",
                 to: "",
                 data: "",
+                sourceRequestHash: "",
+                selectedRequestSnapshot: null,
+                walletAccountHash: "",
+                chainProof: {
+                  expectedChainId: network.expectedChainId || "0x28757b2",
+                  chainId: network.chainId || "",
+                  ok: false,
+                  status: "provider-disconnected"
+                },
+                externalOutcomeSequence: [],
+                networkGateSequence: [{
+                  status: "provider-disconnected",
+                  ok: false,
+                  expectedChainId: network.expectedChainId || "0x28757b2",
+                  chainId: network.chainId || ""
+                }],
+                calldataSource: "not-encoded",
+                abiEncodingStatus: "invalidated-by-provider-disconnect",
+                probeEnvelopeIds: [],
+                invalidatedBy: [
+                  mcelTinyContractTxDraftInvalidation("provider-disconnect", {code, message})
+                ],
+                valid: false,
                 summary: "Provider disconnect event cleared the runtime transaction draft."
               };
               const outcome = payload.outcome?.kind === "mcel-external-outcome"
@@ -1196,16 +1462,66 @@
                 ctx.set("runtime.txDraft", {
                   status: "empty",
                   requestId: "",
+                  sourceRequestHash: "",
+                  selectedRequestSnapshot: null,
+                  walletAccountHash: "",
+                  chainProof: {
+                    expectedChainId: "0x28757b2",
+                    chainId: "",
+                    ok: false,
+                    status: "no-source-request"
+                  },
+                  externalOutcomeSequence: [],
+                  networkGateSequence: [],
+                  calldataSource: "not-encoded",
+                  abiEncodingStatus: "no-source-request",
+                  probeEnvelopeIds: [],
+                  invalidatedBy: [
+                    mcelTinyContractTxDraftInvalidation("source-request-missing", {})
+                  ],
+                  valid: false,
                   summary: "No release request is available."
                 });
                 return {selectedRequestId: "", found: false};
               }
+              const previousTxDraft = ctx.get("runtime.txDraft") || {};
+              const selectedSnapshot = {
+                id: request.id || "",
+                title: request.title || "",
+                status: request.status || "",
+                risk: request.risk || "",
+                contractMethod: request.contractMethod || "",
+                evidenceRequired: request.evidenceRequired === true
+              };
               ctx.set("state.selectedRequestId", request.id);
               ctx.set("runtime.txDraft", {
                 status: "selected",
                 requestId: request.id,
                 to: "",
                 data: "",
+                sourceRequestHash: mcelTinyContractObjectHash(selectedSnapshot),
+                selectedRequestSnapshot: selectedSnapshot,
+                walletAccountHash: previousTxDraft.walletAccountHash || "",
+                chainProof: previousTxDraft.chainProof || {
+                  expectedChainId: "0x28757b2",
+                  chainId: "",
+                  ok: false,
+                  status: "not-probed"
+                },
+                externalOutcomeSequence: previousTxDraft.externalOutcomeSequence || [],
+                networkGateSequence: previousTxDraft.networkGateSequence || [],
+                calldataSource: "not-encoded",
+                abiEncodingStatus: "selected-not-encoded",
+                probeEnvelopeIds: [],
+                invalidatedBy: previousTxDraft.requestId && previousTxDraft.requestId !== request.id
+                  ? [
+                      mcelTinyContractTxDraftInvalidation("source-request-changed", {
+                        previousRequestId: previousTxDraft.requestId,
+                        nextRequestId: request.id
+                      })
+                    ]
+                  : [],
+                valid: false,
                 summary: `Selected ${request.id}; transaction draft is not built yet.`,
                 risk: request.risk
               });
@@ -1251,6 +1567,28 @@
               const network = ctx.get("runtime.network") || {};
               const externalOutcome = ctx.get("runtime.externalOutcome") || {};
               const externalBlocked = ["blocked", "exception"].includes(externalOutcome.status);
+              const invalidatedBy = [];
+              if (!request) {
+                invalidatedBy.push(mcelTinyContractTxDraftInvalidation("source-request-missing", {selectedId}));
+              }
+              if (!wallet.connected) {
+                invalidatedBy.push(mcelTinyContractTxDraftInvalidation("wallet-not-connected", {
+                  accountHash: mcelTinyContractWalletAccountHash(wallet.account || "")
+                }));
+              }
+              if (!network.ok) {
+                invalidatedBy.push(mcelTinyContractTxDraftInvalidation("network-gate-failed", {
+                  expectedChainId: network.expectedChainId || "",
+                  chainId: network.chainId || "",
+                  status: network.status || "waiting"
+                }));
+              }
+              if (externalBlocked) {
+                invalidatedBy.push(mcelTinyContractTxDraftInvalidation(`external-outcome-${externalOutcome.status}`, {
+                  outcomeStatus: externalOutcome.status,
+                  outcomeReason: externalOutcome.reason || ""
+                }));
+              }
               const ready = Boolean(wallet.connected && network.ok && request && !externalBlocked);
               const draftProbe = payload.draftProbe?.kind === "mcel-runtime-tx-draft-probe"
                 ? payload.draftProbe
@@ -1283,6 +1621,19 @@
                     chainId: network.chainId || "",
                     noSend: true
                   };
+              const txDraftProvenance = mcelTinyContractTxDraftProvenance({
+                source: {devRelease: {devNetwork: ctx.get("source.devRelease.devNetwork") || {}}},
+                state: {selectedRequestId: selectedId},
+                runtime: {wallet, network, externalOutcome},
+                request,
+                wallet,
+                network,
+                externalOutcome,
+                encoding,
+                draftProbe,
+                ready,
+                invalidatedBy
+              });
               const txDraft = {
                 status: ready ? "ready" : "blocked",
                 requestId: request?.id || "",
@@ -1293,6 +1644,19 @@
                   status: request?.status || "",
                   risk: request?.risk || ""
                 },
+                sourceRequestHash: txDraftProvenance.sourceRequestHash,
+                selectedRequestSnapshot: txDraftProvenance.selectedRequestSnapshot,
+                walletAccountHash: txDraftProvenance.walletAccountHash,
+                chainProof: txDraftProvenance.chainProof,
+                externalOutcomeSequence: txDraftProvenance.externalOutcomeSequence,
+                networkGateSequence: txDraftProvenance.networkGateSequence,
+                calldataSource: txDraftProvenance.calldataSource,
+                abiEncodingStatus: txDraftProvenance.abiEncodingStatus,
+                probeEnvelopeIds: txDraftProvenance.probeEnvelopeIds,
+                invalidatedBy: txDraftProvenance.invalidatedBy,
+                validityInvariant: txDraftProvenance.validityInvariant,
+                valid: txDraftProvenance.valid,
+                provenanceVersion: txDraftProvenance.provenanceVersion,
                 to: tx.to || "",
                 from: tx.from || "",
                 value: tx.value || "0x0",
@@ -1337,7 +1701,9 @@
                 `from=${txDraft.from ? txDraft.from.slice(0, 10) + "…" : "missing"}`,
                 `calldata=${txDraft.calldata ? txDraft.calldata.slice(0, 18) + "…" : "blocked"}`,
                 `nonce=${txDraft.nonce?.status || "unknown"}`,
-                `gas=${txDraft.gasEstimate?.status || "unknown"}`
+                `gas=${txDraft.gasEstimate?.status || "unknown"}`,
+                `sourceRequestHash=${txDraft.sourceRequestHash || "missing"}`,
+                `invalidatedBy=${(txDraft.invalidatedBy || []).map((item) => item.reason).join("|") || "none"}`
               ]);
               ctx.evidence({
                 ok: ready,
@@ -1354,7 +1720,11 @@
                 noSend: result?.noSend === true,
                 calldataEncoding: result?.calldataEncoding || "",
                 gasStatus: result?.gasEstimate?.status || "",
-                nonceStatus: result?.nonce?.status || ""
+                nonceStatus: result?.nonce?.status || "",
+                sourceRequestHash: result?.sourceRequestHash || "",
+                walletAccountHash: result?.walletAccountHash || "",
+                chainProofStatus: result?.chainProof?.status || "",
+                invalidatedBy: (result?.invalidatedBy || []).map((entry) => entry.reason || "").filter(Boolean)
               };
             }
           },
@@ -3499,6 +3869,20 @@
       const walletResetOnly = tinyState.walletDisconnectCount > 0 && tinyState.walletConnectCount === 0;
       const providerRevokeRequired = disconnectEffectRan && liveProviderSeen;
       const runtimeTxDraft = instance?.runtime?.txDraft || {};
+      const txDraftInvalidationReasons = (runtimeTxDraft.invalidatedBy || []).map((entry) => entry.reason || "").filter(Boolean);
+      const txDraftProvenanceRecorded = Boolean(
+        runtimeTxDraft.provenanceVersion === "txDraft.provenance.v1" &&
+        runtimeTxDraft.sourceRequestHash &&
+        runtimeTxDraft.selectedRequestSnapshot &&
+        runtimeTxDraft.walletAccountHash &&
+        runtimeTxDraft.chainProof &&
+        Array.isArray(runtimeTxDraft.externalOutcomeSequence) &&
+        Array.isArray(runtimeTxDraft.networkGateSequence) &&
+        Array.isArray(runtimeTxDraft.probeEnvelopeIds)
+      );
+      const txDraftInvalidationRecorded = runtimeTxDraft.status === "ready"
+        ? txDraftInvalidationReasons.length === 0
+        : txDraftInvalidationReasons.length > 0 || runtimeTxDraft.status === "empty" || runtimeTxDraft.status === "selected";
       const externalOutcome = mcelTinyContractLatestWalletActionOutcome(instance);
       const actionOutcome = externalOutcome.status || "waiting";
       const externalOutcomeCaptured = externalOutcome.kind === "mcel-external-outcome" && actionOutcome !== "waiting";
@@ -3533,6 +3917,8 @@
         networkVerified: tinyState.networkVerifyCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "network.verify"),
         declaredRuntimeEffectRan: tinyState.releaseSelectCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.select"),
         txDraftRuntimeOnly: tinyState.txDraftCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.draftTx"),
+        txDraftProvenanceRecorded,
+        txDraftInvalidationRecorded,
         declaredSourceEffectRan: tinyState.reviewedCount > 0 || (approvedSource && componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.approve")),
         unsafeSourceWriteBlocked: unsafeBlocked,
         repairPacketGenerated: tinyState.repairPacketCount > 0 || (
@@ -3600,6 +3986,8 @@
         checks.networkVerified,
         checks.declaredRuntimeEffectRan,
         checks.txDraftRuntimeOnly,
+        checks.txDraftProvenanceRecorded,
+        checks.txDraftInvalidationRecorded,
         checks.declaredSourceEffectRan,
         checks.unsafeSourceWriteBlocked,
         checks.runtimeRepairScoped,
@@ -3691,6 +4079,20 @@
         reviewedCount: tinyState.reviewedCount,
         walletConnectCount: tinyState.walletConnectCount,
         txDraftCount: tinyState.txDraftCount,
+        runtimeTxDraft: runtimeTxDraft,
+        txDraftProvenance: {
+          provenanceVersion: runtimeTxDraft.provenanceVersion || "",
+          sourceRequestHash: runtimeTxDraft.sourceRequestHash || "",
+          walletAccountHash: runtimeTxDraft.walletAccountHash || "",
+          chainProof: runtimeTxDraft.chainProof || {},
+          externalOutcomeSequence: runtimeTxDraft.externalOutcomeSequence || [],
+          networkGateSequence: runtimeTxDraft.networkGateSequence || [],
+          calldataSource: runtimeTxDraft.calldataSource || "",
+          abiEncodingStatus: runtimeTxDraft.abiEncodingStatus || "",
+          probeEnvelopeIds: runtimeTxDraft.probeEnvelopeIds || [],
+          invalidatedBy: runtimeTxDraft.invalidatedBy || [],
+          valid: runtimeTxDraft.valid === true
+        },
         repairCount: tinyState.repairCount,
         repairPacketCount: tinyState.repairPacketCount,
         repairBoundaryBlockedCount: tinyState.repairBoundaryBlockedCount,
@@ -3755,6 +4157,7 @@
           `runtime select: ${checks.declaredRuntimeEffectRan ? "pass" : `not run${fullOnlyText}`}`,
           `runtime tx draft: ${checks.txDraftRuntimeOnly ? "pass" : `not run${fullOnlyText}`}`,
           `tx draft boundary: ${runtimeTxDraft.noSend ? "no-send" : "not built"} · calldata=${runtimeTxDraft.calldata ? (runtimeTxDraft.calldataEncoding || "present") : "missing"} · nonce=${runtimeTxDraft.nonce?.status || "not-probed"} · gas=${runtimeTxDraft.gasEstimate?.status || "not-probed"} · call=${runtimeTxDraft.ethCall?.status || "not-probed"}`,
+          `tx draft provenance: ${checks.txDraftProvenanceRecorded ? "recorded" : "missing"} · sourceRequestHash=${runtimeTxDraft.sourceRequestHash || "missing"} · accountHash=${runtimeTxDraft.walletAccountHash || "missing"} · chain=${runtimeTxDraft.chainProof?.status || "unknown"} · invalidatedBy=${txDraftInvalidationReasons.join("|") || "none"}`,
           `source approval: ${checks.declaredSourceEffectRan ? "pass" : `not run${fullOnlyText}`}`,
           `unsafe write blocked: ${checks.unsafeSourceWriteBlocked ? "true" : `not run${fullOnlyText}`}`,
           repairPacketLine,

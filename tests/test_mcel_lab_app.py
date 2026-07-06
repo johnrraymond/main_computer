@@ -2262,6 +2262,7 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
 
     assert "Medium SCM-proven MCEL app" in app
     assert "MetaMask/dev-network state" in app
+    assert "tx draft provenance" in app
     assert "Run SCM + wallet proof" in app
     assert "Connect/check MetaMask devnet" in app
     assert "Disconnect/reset wallet" in app
@@ -2467,6 +2468,24 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "nonceStatus" in ui
     assert "gasStatus" in ui
     assert "tx draft boundary:" in ui
+    assert "txDraft.provenance.v1" in ui
+    assert "sourceRequestHash" in ui
+    assert "selectedRequestSnapshot" in ui
+    assert "walletAccountHash" in ui
+    assert "chainProof" in ui
+    assert "externalOutcomeSequence" in ui
+    assert "networkGateSequence" in ui
+    assert "calldataSource" in ui
+    assert "abiEncodingStatus" in ui
+    assert "probeEnvelopeIds" in ui
+    assert "invalidatedBy" in ui
+    assert "validityInvariant" in ui
+    assert "mcelTinyContractTxDraftProvenance" in ui
+    assert "mcelTinyContractTxDraftInvalidation" in ui
+    assert "source-request-changed" in ui
+    assert "account-changed" in ui
+    assert "chain-changed" in ui
+    assert "tx draft provenance:" in ui
     assert "function renderMcelTinyRuntimeSummary" in ui
     assert "const network = instance?.runtime?.network || {};" in ui
     assert "txDraft.expectedChainId || network.expectedChainId" in ui

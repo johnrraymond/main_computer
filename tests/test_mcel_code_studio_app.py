@@ -536,6 +536,15 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "function runScmRegressionHarness",
             "function formatScmRegressionHarnessDetail",
             "function renderScmRegressionHarnessInProofDock",
+            "disposition",
+            "const safetyOk = sourceSafety.sourceUnchanged && sourceSafety.runtimeChromeStayedOutOfSource;",
+            'scenario.disposition === "BLOCKED"',
+            'scenario.disposition === "EXCEPTION"',
+            'detail?.disposition === "MISMATCH"',
+            "PASS",
+            "BLOCKED",
+            "EXCEPTION",
+            "MISMATCH",
             "function buildGenericScmReplayFixtures",
             "function runGenericScmReplayFixturePack",
             "function assertGenericScmReplayFixtureVector",
@@ -559,6 +568,9 @@ class McelCodeStudioAppTests(unittest.TestCase):
         for text in expected_script:
             with self.subTest(script=text):
                 self.assertIn(text, script)
+
+        self.assertNotIn('scenario.actionOk === false && !scenario.exception', script)
+        self.assertNotIn('const disposition = exception ? "EXCEPTION"', script)
 
         expected_style = [
             ".code-studio-scm-regression-harness",
@@ -586,12 +598,14 @@ class McelCodeStudioAppTests(unittest.TestCase):
         script = SCRIPT_PATH.read_text(encoding="utf-8")
 
         expected_script = [
-            'const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.0.0";',
+            'const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.1.0";',
             "function buildGenericScmReplayFixtureVector",
             "function buildWalletScmReplayFixtureReceipt",
             "function buildWalletScmReplayFixtures",
             "function buildCodeEditorScmReplayFixtures",
             "function assertGenericScmReplayFixtureVector",
+            "function classifyScmReplayFixtureDisposition",
+            "function buildScmReplayFixtureExpectationComparison",
             "function runGenericScmReplayFixturePack",
             'kind: "mcel-code-studio-generic-scm-replay-fixture-pack"',
             "wallet.connect.pass",
@@ -619,6 +633,13 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "code-editor.layout.observe.pass",
             "code-editor.layout.observe.fail",
             "runtimeOnlyWrites",
+            "expectedDisposition",
+            "expectedDisposition expected",
+            "observedDisposition",
+            "dispositionCounts",
+            "mismatchCount",
+            "fixtureMismatches",
+            "MISMATCH",
             "sourceUnchanged",
             "sourceWriteEffect",
             "sourceMutationGate",
@@ -626,6 +647,17 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "draftRuntimeOnlyUntilCommit",
             "sourceMutationsOnlyByCommitDraft",
             "txDraftNoSend",
+            "txDraftProvenanceRecorded",
+            "txDraftInvalidatedByContain",
+            "txDraftBoundary provenance was not recorded",
+            "txDraft invalidation missing",
+            "txDraft.provenance.v1",
+            "sourceRequestHash",
+            "walletAccountHash",
+            "chainProof",
+            "probeEnvelopeIds",
+            "accountInvalidatedDraftBoundary",
+            "chainInvalidatedDraftBoundary",
             "repairBoundaryBlocked",
             "layoutViolationCount",
             "fixturePacks: harness.fixturePacks || []",
@@ -932,7 +964,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'data-code-studio-scm-ai-action="copy-helper"',
             'data-code-studio-scm-ai-action="copy-packet"',
             "Bottom Proof Dock",
-            "Diagnostics · Evidence Detail · Replay · Draft Provenance · Serialization · Persistence · Logs",
+            "Diagnostics · Receipt Vector · Evidence Detail · Replay · Draft Provenance · Serialization · Persistence · Logs",
         ]
         for text in expected_markup:
             with self.subTest(markup=text):
@@ -965,6 +997,10 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "function setInspectorPanel",
             "function collectContractEffectSurface",
             "function buildScmReceiptSurfaceModel",
+            "function summarizeTxDraftProvenanceForWorkbench",
+            "function formatNormalizedScmReceiptVectorDetail",
+            "function renderScmReceiptVectorInProofDock",
+            'id="code-studio-open-scm-receipt-vector-detail"',
             "function renderScmEffectGraph",
             "function renderActionableScmGaps",
             "function buildFlagshipInspectorModel",
@@ -1014,6 +1050,14 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "function ingestScmReceiptVector",
             "function collectScmReceiptVector",
             "function findMcelLabReceiptPayload",
+            "function scmReceiptSelectedEvidenceKey",
+            "function buildScmReceiptSourceAuthority",
+            "function attachScmReceiptSourceAuthority",
+            "function summarizeScmReceiptSourceForWorkbench",
+            "function normalizeTxDraftInvalidationReasons",
+            "function summarizeTxDraftProvenanceForWorkbench",
+            "function formatNormalizedScmReceiptVectorDetail",
+            "function renderScmReceiptVectorInProofDock",
             'document.querySelector("#mcel-tiny-contract-evidence")',
             "actionOutcome",
             "externalOutcome",
@@ -1027,11 +1071,35 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "repairPacket",
             "txDraftBoundary",
             "layoutObservation",
+            "mcel-code-studio-tx-draft-provenance-workbench-summary",
+            "mcel-code-studio-normalized-scm-receipt-workbench-detail",
+            "mcel-code-studio-receipt-source-authority",
+            "mcel-code-studio-receipt-source-workbench-summary",
+            "Receipt source",
+            "Receipt freshness",
+            "Receipt authority",
+            "selected SCM evidence",
+            "live validation report",
+            "cached previous vector",
+            "not ingested",
+            "staleReason",
+            'provenance.valid === true',
+            '"provenance present"',
+            "provenancePresent: hasProvenance",
+            "Tx draft provenance",
+            "Receipt Vector in Bottom Proof Dock",
+            "Open receipt vector in proof dock",
+            "normalized-receipt-vector",
+            "copy-normalized-receipt-vector",
             "receiptVector: collectScmReceiptVector(report, summary, selectedEntry)",
             "const receiptVector = collectScmReceiptVector(studioState.lastReport, summary, selectedEvidence);",
             "normalizeScmReceiptVector,",
             "ingestScmReceiptVector,",
             "collectScmReceiptVector,",
+            "summarizeScmReceiptSourceForWorkbench,",
+            "summarizeTxDraftProvenanceForWorkbench,",
+            "formatNormalizedScmReceiptVectorDetail,",
+            "renderScmReceiptVectorInProofDock,",
         ]
         for text in expected_script:
             with self.subTest(script=text):
@@ -1041,6 +1109,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
         renderer = script.index("function buildScmReceiptSurfaceModel")
         self.assertLess(normalizer, renderer)
 
+        self.assertNotIn("provenance.valid === true || hasProvenance", script)
+        self.assertNotIn("studioState.lastScmReceiptVector,\n          findMcelLabReceiptPayload()", script)
         self.assertNotIn("PASS: wallet lifecycle is tamed by SCM", script)
 
 

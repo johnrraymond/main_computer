@@ -48,7 +48,7 @@
       const SCM_AI_REPAIR_PROMPT_VERSION = "1.0.0";
       const SCM_REPLAY_SNAPSHOT_VERSION = "1.0.0";
       const SCM_REGRESSION_HARNESS_VERSION = "1.0.0";
-      const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.0.0";
+      const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.1.0";
       const SCM_DRAFT_PROVENANCE_VERSION = "1.0.0";
       const SCM_CONTRACT_AUTHORING_HELPER_VERSION = "1.0.0";
       const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
@@ -1307,8 +1307,12 @@
         const gasEstimate = proof.txDraftBoundary?.gasEstimate || proof.runtimeTxDraft?.gasEstimate || {};
         const ethCall = proof.txDraftBoundary?.ethCall || proof.runtimeTxDraft?.ethCall || {};
         const noSend = proof.runtimeTxDraft?.noSend === true || boundary === "runtime-only-no-send" || proof.checks?.txDraftRuntimeOnly === true;
+        const rawTxDraft = proof.txDraftBoundary || proof.runtimeTxDraft || evidence || {};
+        const invalidatedBy = Array.isArray(rawTxDraft.invalidatedBy)
+          ? rawTxDraft.invalidatedBy
+          : (Array.isArray(proof.txDraftProvenance?.invalidatedBy) ? proof.txDraftProvenance.invalidatedBy : []);
         return jsonSafeClone({
-          status: proof.runtimeTxDraft?.status || (proof.checks?.txDraftRuntimeOnly ? "observed" : "not-observed"),
+          status: proof.runtimeTxDraft?.status || rawTxDraft.status || (proof.checks?.txDraftRuntimeOnly ? "observed" : "not-observed"),
           boundary: boundary || (noSend ? "runtime-only-no-send" : ""),
           noSend,
           probeStatus: {
@@ -1316,7 +1320,21 @@
             gasEstimate: gasEstimate.status || proof.gasStatus || "",
             ethCall: ethCall.status || proof.ethCallStatus || ""
           },
-          raw: proof.txDraftBoundary || proof.runtimeTxDraft || evidence || null
+          provenance: {
+            provenanceVersion: rawTxDraft.provenanceVersion || proof.txDraftProvenance?.provenanceVersion || "",
+            sourceRequestHash: rawTxDraft.sourceRequestHash || proof.txDraftProvenance?.sourceRequestHash || "",
+            selectedRequestSnapshot: rawTxDraft.selectedRequestSnapshot || proof.txDraftProvenance?.selectedRequestSnapshot || null,
+            walletAccountHash: rawTxDraft.walletAccountHash || proof.txDraftProvenance?.walletAccountHash || "",
+            chainProof: rawTxDraft.chainProof || proof.txDraftProvenance?.chainProof || {},
+            externalOutcomeSequence: rawTxDraft.externalOutcomeSequence || proof.txDraftProvenance?.externalOutcomeSequence || [],
+            networkGateSequence: rawTxDraft.networkGateSequence || proof.txDraftProvenance?.networkGateSequence || [],
+            calldataSource: rawTxDraft.calldataSource || proof.txDraftProvenance?.calldataSource || "",
+            abiEncodingStatus: rawTxDraft.abiEncodingStatus || proof.txDraftProvenance?.abiEncodingStatus || "",
+            probeEnvelopeIds: rawTxDraft.probeEnvelopeIds || proof.txDraftProvenance?.probeEnvelopeIds || [],
+            invalidatedBy,
+            valid: rawTxDraft.valid === true || proof.txDraftProvenance?.valid === true
+          },
+          raw: rawTxDraft || null
         });
       }
 
@@ -1447,6 +1465,20 @@
             boundary: "",
             noSend: false,
             probeStatus: {nonce: "", gasEstimate: "", ethCall: ""},
+            provenance: {
+              provenanceVersion: "",
+              sourceRequestHash: "",
+              selectedRequestSnapshot: null,
+              walletAccountHash: "",
+              chainProof: {},
+              externalOutcomeSequence: [],
+              networkGateSequence: [],
+              calldataSource: "",
+              abiEncodingStatus: "",
+              probeEnvelopeIds: [],
+              invalidatedBy: [],
+              valid: false
+            },
             raw: null
           },
           draftProvenance: {
@@ -1473,35 +1505,175 @@
         });
       }
 
+      function scmReceiptSelectedEvidenceKey(selectedEvidence = null) {
+        if (!selectedEvidence || selectedEvidence.phase === "idle") return "";
+        return String(
+          selectedEvidence.evidenceKey
+          || selectedEvidence.effectName
+          || selectedEvidence.effect
+          || selectedEvidence.phase
+          || ""
+        ).trim();
+      }
+
+      function scmReceiptSelectedEffectName(selectedEvidence = null) {
+        return String(
+          selectedEvidence?.effectName
+          || selectedEvidence?.effect
+          || selectedEvidence?.selectedEffect
+          || ""
+        ).trim();
+      }
+
+      function labelScmReceiptSourceAuthority(authority = "not-ingested") {
+        const labels = {
+          "selected-evidence": "selected SCM evidence",
+          "live-report": "live validation report",
+          "component-packet": "component evidence packet",
+          "route-packet": "route evidence packet",
+          "lab-dom": "Lab DOM receipt",
+          "imported": "imported receipt vector",
+          "cached": "cached previous vector",
+          "not-ingested": "not ingested"
+        };
+        return labels[authority] || authority || "not ingested";
+      }
+
+      function buildScmReceiptSourceAuthority(vector = null, descriptor = {}, selectedEvidence = null) {
+        const sourceKind = vector?.sourceKind || "not-ingested";
+        const authority = sourceKind === "not-ingested"
+          ? "not-ingested"
+          : (descriptor.authority || "unknown");
+        const selectedEvidenceKey = scmReceiptSelectedEvidenceKey(selectedEvidence);
+        const selectedEvidenceEffect = scmReceiptSelectedEffectName(selectedEvidence);
+        const vectorEffect = String(vector?.selectedEffect || "").trim();
+        const reasons = [];
+
+        let freshness = descriptor.freshness || "current";
+        let current = sourceKind !== "not-ingested";
+        if (sourceKind === "not-ingested") {
+          freshness = "not ingested";
+          current = false;
+          reasons.push("No Lab/SCM receipt vector has been ingested for the current workbench selection.");
+        } else if (authority === "cached") {
+          freshness = "stale";
+          current = false;
+          reasons.push("Using the previous normalized receipt vector because no current receipt source was found.");
+        } else if (selectedEvidenceEffect && vectorEffect && selectedEvidenceEffect !== vectorEffect) {
+          freshness = "stale";
+          current = false;
+          reasons.push(`Selected evidence effect ${selectedEvidenceEffect} does not match receipt vector effect ${vectorEffect}.`);
+        } else if (authority === "lab-dom") {
+          freshness = "external";
+          current = false;
+          reasons.push("Receipt came from Lab DOM evidence, not the selected Code Studio SCM evidence.");
+        } else if (descriptor.ambiguous === true) {
+          freshness = "needs verification";
+          current = false;
+          reasons.push("Receipt source was inferred from a fallback candidate.");
+        }
+
+        const label = sourceKind === "not-ingested"
+          ? "not ingested"
+          : `${labelScmReceiptSourceAuthority(authority)} · ${freshness}`;
+
+        return jsonSafeClone({
+          kind: "mcel-code-studio-receipt-source-authority",
+          authority,
+          sourceKind,
+          label,
+          freshness,
+          current,
+          stale: current === false && sourceKind !== "not-ingested",
+          staleReason: reasons,
+          selectedEvidenceKey,
+          selectedEvidenceEffect,
+          selectedEvidencePhase: selectedEvidence?.phase || "",
+          selectedEvidenceScope: selectedEvidence ? evidenceEntryScope(selectedEvidence) : "",
+          vectorEffect,
+          candidateRank: descriptor.rank ?? null,
+          candidateField: descriptor.field || "",
+          guidance: sourceKind === "not-ingested"
+            ? "Run or import a Lab/SCM receipt before trusting receipt-vector proof data."
+            : (current
+              ? "Receipt vector is tied to the current explicit workbench source."
+              : "Refresh evidence, select the matching SCM evidence entry, or open a current Lab receipt before trusting this vector.")
+        });
+      }
+
+      function attachScmReceiptSourceAuthority(vector = null, descriptor = {}, selectedEvidence = null) {
+        const safeVector = jsonSafeClone(vector || normalizeScmReceiptVector(null));
+        safeVector.receiptSource = buildScmReceiptSourceAuthority(safeVector, descriptor, selectedEvidence);
+        return safeVector;
+      }
+
+      function summarizeScmReceiptSourceForWorkbench(receiptVector = studioState.lastScmReceiptVector) {
+        const vector = receiptVector || normalizeScmReceiptVector(null);
+        const source = vector.receiptSource || buildScmReceiptSourceAuthority(vector, {}, null);
+        const reason = (source.staleReason || []).join(" ");
+        return jsonSafeClone({
+          kind: "mcel-code-studio-receipt-source-workbench-summary",
+          authority: source.authority || "not-ingested",
+          sourceKind: source.sourceKind || vector.sourceKind || "not-ingested",
+          label: source.label || "not ingested",
+          freshness: source.freshness || "not ingested",
+          current: source.current === true,
+          stale: source.stale === true,
+          staleReason: source.staleReason || [],
+          reason,
+          selectedEvidenceKey: source.selectedEvidenceKey || "",
+          selectedEvidenceEffect: source.selectedEvidenceEffect || "",
+          vectorEffect: source.vectorEffect || vector.selectedEffect || "",
+          guidance: source.guidance || ""
+        });
+      }
+
       function ingestScmReceiptVector(input, options = {}) {
         const vector = normalizeScmReceiptVector(input, options);
-        studioState.lastScmReceiptVector = vector.sourceKind === "not-ingested" ? null : vector;
-        return vector;
+        const sourced = attachScmReceiptSourceAuthority(vector, {
+          authority: options.authority || "imported",
+          field: options.field || "ingestScmReceiptVector",
+          freshness: options.freshness || "current"
+        }, options.selectedEvidence || null);
+        studioState.lastScmReceiptVector = sourced.sourceKind === "not-ingested" ? null : sourced;
+        return sourced;
       }
 
       function collectScmReceiptVector(report = studioState.lastReport, summary = null, selectedEvidence = null) {
         const evidenceSummary = summary || collectScmEvidenceSummary(report);
         const candidates = [
-          report?.receiptVector,
-          report?.labReceipt,
-          report?.mcelLabReceipt,
-          selectedEvidence?.receiptVector,
-          selectedEvidence?.proof,
-          selectedEvidence?.rawReceipt,
-          evidenceSummary?.componentPacket?.receiptVector,
-          evidenceSummary?.componentPacket?.labReceipt,
-          evidenceSummary?.routePacket?.receiptVector,
-          studioState.lastScmReceiptVector,
-          findMcelLabReceiptPayload()
+          {authority: "selected-evidence", field: "selectedEvidence.receiptVector", value: selectedEvidence?.receiptVector},
+          {authority: "selected-evidence", field: "selectedEvidence.proof", value: selectedEvidence?.proof},
+          {authority: "selected-evidence", field: "selectedEvidence.rawReceipt", value: selectedEvidence?.rawReceipt},
+          {authority: "live-report", field: "report.receiptVector", value: report?.receiptVector},
+          {authority: "live-report", field: "report.labReceipt", value: report?.labReceipt},
+          {authority: "live-report", field: "report.mcelLabReceipt", value: report?.mcelLabReceipt},
+          {authority: "component-packet", field: "componentPacket.receiptVector", value: evidenceSummary?.componentPacket?.receiptVector},
+          {authority: "component-packet", field: "componentPacket.labReceipt", value: evidenceSummary?.componentPacket?.labReceipt},
+          {authority: "route-packet", field: "routePacket.receiptVector", value: evidenceSummary?.routePacket?.receiptVector},
+          {authority: "lab-dom", field: "#mcel-tiny-contract-evidence", value: findMcelLabReceiptPayload()},
+          {authority: "cached", field: "studioState.lastScmReceiptVector", value: studioState.lastScmReceiptVector, freshness: "stale"}
         ];
-        for (const candidate of candidates) {
-          const vector = normalizeScmReceiptVector(candidate, {selectedEvidence});
+        for (const [index, candidate] of candidates.entries()) {
+          const vector = normalizeScmReceiptVector(candidate.value, {selectedEvidence});
           if (vector.sourceKind !== "not-ingested") {
-            studioState.lastScmReceiptVector = vector;
-            return vector;
+            const sourced = attachScmReceiptSourceAuthority(vector, {
+              authority: candidate.authority,
+              field: candidate.field,
+              rank: index + 1,
+              freshness: candidate.freshness || "current"
+            }, selectedEvidence);
+            if (candidate.authority !== "cached") {
+              studioState.lastScmReceiptVector = sourced;
+            }
+            return sourced;
           }
         }
-        return normalizeScmReceiptVector(null, {selectedEvidence});
+        return attachScmReceiptSourceAuthority(normalizeScmReceiptVector(null, {selectedEvidence}), {
+          authority: "not-ingested",
+          field: "none",
+          freshness: "not ingested"
+        }, selectedEvidence);
       }
 
       function idleScmEvidenceEntry(filter = "all") {
@@ -1968,6 +2140,20 @@
             boundary: "",
             noSend: false,
             probeStatus: {nonce: "", gasEstimate: "", ethCall: ""},
+            provenance: {
+              provenanceVersion: "",
+              sourceRequestHash: "",
+              selectedRequestSnapshot: null,
+              walletAccountHash: "",
+              chainProof: {},
+              externalOutcomeSequence: [],
+              networkGateSequence: [],
+              calldataSource: "",
+              abiEncodingStatus: "",
+              probeEnvelopeIds: [],
+              invalidatedBy: [],
+              valid: false
+            },
             raw: null
           },
           draftProvenance: fields.draftProvenance || {
@@ -2026,12 +2212,59 @@
       }
 
       function buildWalletScmReplayFixtures() {
+        const draftTxProvenance = {
+          provenanceVersion: "txDraft.provenance.v1",
+          sourceRequestHash: "srcReq:fixture-allowance-view",
+          selectedRequestSnapshot: {
+            id: "rel-allowance-view",
+            status: "needs-wallet",
+            risk: "medium",
+            contractMethod: "allowance(address,address)"
+          },
+          walletAccountHash: "account:fixture",
+          chainProof: {expectedChainId: "0x28757b2", chainId: "0x28757b2", ok: true, status: "matched"},
+          externalOutcomeSequence: [{sequence: 1, operation: "wallet.connect", status: "pass", reason: "account-granted"}],
+          networkGateSequence: [{status: "dev-network-ready", ok: true, expectedChainId: "0x28757b2", chainId: "0x28757b2"}],
+          calldataSource: "abi-encoding",
+          abiEncodingStatus: "encoded",
+          probeEnvelopeIds: ["eth_getTransactionCount:pass", "eth_estimateGas:pass", "eth_call:pass"],
+          invalidatedBy: [],
+          valid: true
+        };
         const draftTxBoundary = {
           status: "observed",
           boundary: "runtime-only-no-send",
           noSend: true,
           probeStatus: {nonce: "pass", gasEstimate: "pass", ethCall: "pass"},
-          raw: {boundary: "runtime-only-no-send"}
+          provenance: draftTxProvenance,
+          raw: {boundary: "runtime-only-no-send", ...draftTxProvenance}
+        };
+        const accountInvalidatedDraftBoundary = {
+          status: "empty",
+          boundary: "runtime-only-no-send",
+          noSend: true,
+          probeStatus: {nonce: "skipped", gasEstimate: "skipped", ethCall: "skipped"},
+          provenance: {
+            ...draftTxProvenance,
+            valid: false,
+            invalidatedBy: [{reason: "account-changed"}],
+            abiEncodingStatus: "invalidated-by-account-event"
+          },
+          raw: {boundary: "runtime-only-no-send", valid: false, invalidatedBy: [{reason: "account-changed"}]}
+        };
+        const chainInvalidatedDraftBoundary = {
+          status: "empty",
+          boundary: "runtime-only-no-send",
+          noSend: true,
+          probeStatus: {nonce: "skipped", gasEstimate: "skipped", ethCall: "skipped"},
+          provenance: {
+            ...draftTxProvenance,
+            valid: false,
+            chainProof: {expectedChainId: "0x28757b2", chainId: "0x1", ok: false, status: "mismatch"},
+            invalidatedBy: [{reason: "chain-changed"}],
+            abiEncodingStatus: "invalidated-by-chain-event"
+          },
+          raw: {boundary: "runtime-only-no-send", valid: false, invalidatedBy: [{reason: "chain-changed"}]}
         };
         return [
           {
@@ -2047,6 +2280,7 @@
             expected: {
               selectedEffect: "wallet.connect",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
               externalStatus: "pass",
               governanceOutcome: "pass",
               safetyOutcome: "pass",
@@ -2068,6 +2302,9 @@
             expected: {
               selectedEffect: "wallet.connect",
               actionOutcome: "blocked",
+              expectedDisposition: "BLOCKED",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "blocked",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2086,6 +2323,9 @@
             expected: {
               selectedEffect: "wallet.connect",
               actionOutcome: "exception",
+              expectedDisposition: "EXCEPTION",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "exception",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2099,14 +2339,18 @@
             receipt: buildWalletScmReplayFixtureReceipt("wallet.provider.accountsChanged", "pass", {
               reason: "account-switch",
               account: "0xswitched"
-            }, {providerAccountsChangedCount: 1}),
+            }, {providerAccountsChangedCount: 1, runtimeTxDraft: accountInvalidatedDraftBoundary}),
             expected: {
               selectedEffect: "wallet.provider.accountsChanged",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
-              consequencesContain: ["committed account update", "runtime.txDraft cleared"]
+              consequencesContain: ["committed account update", "runtime.txDraft cleared"],
+              txDraftInvalidatedByContain: ["account-changed"]
             }
           },
           {
@@ -2119,6 +2363,9 @@
             expected: {
               selectedEffect: "wallet.provider.accountsChanged",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               consequencesContain: ["disconnected wallet", "runtime.txDraft cleared"]
@@ -2132,15 +2379,19 @@
               reason: "wrong-chain",
               chainId: "0x1",
               nextAction: "switch network"
-            }, {providerChainChangedCount: 1, checks: {networkGatePass: false}}),
+            }, {providerChainChangedCount: 1, runtimeTxDraft: chainInvalidatedDraftBoundary, checks: {networkGatePass: false}}),
             expected: {
               selectedEffect: "wallet.provider.chainChanged",
               actionOutcome: "blocked",
+              expectedDisposition: "BLOCKED",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "blocked",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               nextAction: "switch network",
-              consequencesContain: ["runtime.network updated", "runtime.txDraft cleared"]
+              consequencesContain: ["runtime.network updated", "runtime.txDraft cleared"],
+              txDraftInvalidatedByContain: ["chain-changed"]
             }
           },
           {
@@ -2158,10 +2409,14 @@
             expected: {
               selectedEffect: "release.draftTx",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               txDraftNoSend: true,
+              txDraftProvenanceRecorded: true,
               consequencesContain: ["runtime.txDraft updated", "source unchanged", "no transaction send attempted"]
             }
           },
@@ -2176,6 +2431,9 @@
             expected: {
               selectedEffect: "release.draftTx",
               actionOutcome: "blocked",
+              expectedDisposition: "BLOCKED",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "blocked",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2194,6 +2452,9 @@
             expected: {
               selectedEffect: "release.draftTx",
               actionOutcome: "blocked",
+              expectedDisposition: "BLOCKED",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "blocked",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2221,6 +2482,9 @@
             expected: {
               selectedEffect: "ai.repairWalletHint",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               repairPacketGenerated: true,
@@ -2250,6 +2514,9 @@
             expected: {
               selectedEffect: "ai.repairWalletHint",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               repairPacketGenerated: true,
@@ -2288,6 +2555,9 @@
             expected: {
               selectedEffect: "editor.monaco.mount",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2312,6 +2582,9 @@
             expected: {
               selectedEffect: "editor.monaco.mount",
               actionOutcome: "blocked",
+              expectedDisposition: "BLOCKED",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "blocked",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2335,6 +2608,9 @@
             expected: {
               selectedEffect: "editor.monaco.mount",
               actionOutcome: "exception",
+              expectedDisposition: "EXCEPTION",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "exception",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2358,6 +2634,9 @@
             expected: {
               selectedEffect: "editor.monaco.change",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2391,6 +2670,9 @@
             expected: {
               selectedEffect: "editorDraft.created",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               draftProvenanceEventType: "created",
@@ -2425,6 +2707,9 @@
             expected: {
               selectedEffect: "editorDraft.changed",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               draftProvenanceEventType: "changed",
@@ -2460,6 +2745,9 @@
             expected: {
               selectedEffect: "editorDraft.committed",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               sourceWriteEffect: true,
               sourceMutationGate: "commitDraft",
               draftProvenanceEventType: "committed",
@@ -2493,6 +2781,9 @@
             expected: {
               selectedEffect: "editorDraft.discarded",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               draftProvenanceEventType: "discarded",
@@ -2525,6 +2816,9 @@
             expected: {
               selectedEffect: "editorDraft.restored",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               draftProvenanceEventType: "restored",
@@ -2550,6 +2844,9 @@
             expected: {
               selectedEffect: "commitDraft",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "pass",
               sourceWriteEffect: true,
               sourceMutationGate: "commitDraft",
@@ -2575,6 +2872,9 @@
             expected: {
               selectedEffect: "serializeCleanSource",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               checks: {runtimeChromeOmitted: true, sourceSerializationClean: true}
@@ -2607,6 +2907,9 @@
             expected: {
               selectedEffect: "layout.observe",
               actionOutcome: "pass",
+              expectedDisposition: "PASS",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
               layoutMeasured: true,
@@ -2640,6 +2943,9 @@
             expected: {
               selectedEffect: "layout.observe",
               actionOutcome: "blocked",
+              expectedDisposition: "BLOCKED",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
               externalStatus: "blocked",
               runtimeOnlyWrites: true,
               sourceUnchanged: true,
@@ -2664,6 +2970,52 @@
         const values = Array.isArray(actual) ? actual : [];
         const needles = Array.isArray(expected) ? expected : [];
         return needles.every((needle) => values.includes(needle));
+      }
+
+      function classifyScmReplayFixtureDisposition(vector = {}) {
+        const governanceOutcome = normalizeReceiptOutcome(vector.governanceOutcome, "pass");
+        const safetyOutcome = normalizeReceiptOutcome(vector.safetyOutcome, "pass");
+        const actionOutcome = normalizeReceiptOutcome(vector.actionOutcome || vector.externalOutcome?.status, "waiting");
+        if (governanceOutcome !== "pass" || safetyOutcome !== "pass") return "FAIL";
+        if (actionOutcome === "exception") return "EXCEPTION";
+        if (actionOutcome === "blocked") return "BLOCKED";
+        if (actionOutcome === "pass") return "PASS";
+        return "FAIL";
+      }
+
+      function buildScmReplayFixtureExpectationComparison(expected = {}, vector = {}, failures = []) {
+        const observedDisposition = classifyScmReplayFixtureDisposition(vector);
+        const expectedDisposition = expected.expectedDisposition || observedDisposition;
+        const mismatched = failures.length > 0 || expectedDisposition !== observedDisposition;
+        const disposition = mismatched ? "MISMATCH" : observedDisposition;
+        const mismatchReasons = [...failures];
+        if (expectedDisposition !== observedDisposition) {
+          mismatchReasons.push(`expectedDisposition expected ${expectedDisposition} but saw ${observedDisposition}`);
+        }
+        return jsonSafeClone({
+          expectedDisposition,
+          observedDisposition,
+          disposition,
+          ok: !mismatched,
+          mismatch: mismatched,
+          mismatchReasons,
+          expectedFields: {
+            selectedEffect: expected.selectedEffect || "",
+            actionOutcome: expected.actionOutcome || "",
+            externalStatus: expected.externalStatus || "",
+            governanceOutcome: expected.governanceOutcome || "",
+            safetyOutcome: expected.safetyOutcome || "",
+            nextAction: expected.nextAction || ""
+          },
+          observedFields: {
+            selectedEffect: vector.selectedEffect || "",
+            actionOutcome: vector.actionOutcome || "",
+            externalStatus: vector.externalOutcome?.status || "",
+            governanceOutcome: vector.governanceOutcome || "",
+            safetyOutcome: vector.safetyOutcome || "",
+            nextAction: vector.nextAction || ""
+          }
+        });
       }
 
       function summarizeScmReplayFixtureVector(vector = {}) {
@@ -2768,6 +3120,20 @@
         if (expected.txDraftNoSend === true && vector.txDraftBoundary?.noSend !== true) {
           failures.push("txDraftBoundary.noSend was not true");
         }
+        if (expected.txDraftProvenanceRecorded === true) {
+          const provenance = vector.txDraftBoundary?.provenance || {};
+          if (!provenance.sourceRequestHash || !provenance.walletAccountHash || !provenance.chainProof?.status) {
+            failures.push("txDraftBoundary provenance was not recorded");
+          }
+        }
+        if (expected.txDraftInvalidatedByContain) {
+          const invalidatedBy = (vector.txDraftBoundary?.provenance?.invalidatedBy || [])
+            .map((entry) => entry.reason || entry)
+            .filter(Boolean);
+          if (!listContainsAllScmFixtureValues(invalidatedBy, expected.txDraftInvalidatedByContain)) {
+            failures.push(`txDraft invalidation missing ${expected.txDraftInvalidatedByContain.filter((item) => !invalidatedBy.includes(item)).join(", ")}`);
+          }
+        }
         if (expected.draftProvenanceEventType && vector.draftProvenance?.eventType !== expected.draftProvenanceEventType) {
           failures.push(`draftProvenance.eventType expected ${expected.draftProvenanceEventType} but saw ${vector.draftProvenance?.eventType || "(empty)"}`);
         }
@@ -2798,13 +3164,20 @@
           });
         }
 
+        const comparison = buildScmReplayFixtureExpectationComparison(expected, vector, failures);
         return jsonSafeClone({
           id: fixture.id || "",
           family: fixture.family || "",
           label: fixture.label || "",
-          ok: failures.length === 0,
-          failures,
+          ok: comparison.ok,
+          disposition: comparison.disposition,
+          expectedDisposition: comparison.expectedDisposition,
+          observedDisposition: comparison.observedDisposition,
+          mismatch: comparison.mismatch,
+          mismatchReasons: comparison.mismatchReasons,
+          failures: comparison.mismatchReasons,
           expected,
+          comparison,
           vector: summarizeScmReplayFixtureVector(vector)
         });
       }
@@ -2813,12 +3186,26 @@
         const fixtures = buildGenericScmReplayFixtures(options);
         const results = fixtures.map((fixture) => assertGenericScmReplayFixtureVector(fixture));
         const failed = results.filter((result) => !result.ok);
+        const dispositionCounts = results.reduce((counts, result) => {
+          const disposition = result.disposition || "FAIL";
+          counts[disposition] = (counts[disposition] || 0) + 1;
+          return counts;
+        }, {PASS: 0, BLOCKED: 0, EXCEPTION: 0, FAIL: 0, MISMATCH: 0});
+        const mismatches = results
+          .filter((result) => result.disposition === "MISMATCH" || result.mismatch === true)
+          .map((result) => ({
+            id: result.id,
+            expectedDisposition: result.expectedDisposition,
+            observedDisposition: result.observedDisposition,
+            reasons: result.mismatchReasons || result.failures || []
+          }));
         const familyCounts = results.reduce((counts, result) => {
           const family = result.family || "unknown";
-          counts[family] = counts[family] || {total: 0, passed: 0, failed: 0};
+          counts[family] = counts[family] || {total: 0, passed: 0, failed: 0, mismatched: 0};
           counts[family].total += 1;
           if (result.ok) counts[family].passed += 1;
           else counts[family].failed += 1;
+          if (result.disposition === "MISMATCH") counts[family].mismatched += 1;
           return counts;
         }, {});
         return jsonSafeClone({
@@ -2826,9 +3213,13 @@
           fixtureHarnessVersion: SCM_REPLAY_FIXTURE_HARNESS_VERSION,
           family: options.family || "all",
           ok: failed.length === 0,
+          disposition: failed.length === 0 ? "PASS" : "MISMATCH",
           total: results.length,
           passed: results.length - failed.length,
           failed: failed.map((result) => result.id),
+          mismatchCount: mismatches.length,
+          mismatches,
+          dispositionCounts,
           familyCounts,
           results
         });
@@ -2848,12 +3239,26 @@
         }
         const after = buildScmRegressionSourceSnapshot(`${id}:after`);
         const sourceSafety = compareScmRegressionSourceSnapshots(before, after);
+        const safetyOk = sourceSafety.sourceUnchanged && sourceSafety.runtimeChromeStayedOutOfSource;
         const actionOk = !exception && detail?.ok !== false;
+        const ok = actionOk && safetyOk;
+        let disposition = "FAIL";
+        if (safetyOk && detail?.disposition === "MISMATCH") {
+          disposition = "MISMATCH";
+        } else if (safetyOk && exception) {
+          disposition = "EXCEPTION";
+        } else if (safetyOk && actionOk === false) {
+          disposition = "BLOCKED";
+        } else if (safetyOk && actionOk) {
+          disposition = "PASS";
+        }
         return jsonSafeClone({
           id,
           label,
-          ok: actionOk && sourceSafety.sourceUnchanged && sourceSafety.runtimeChromeStayedOutOfSource,
+          ok,
+          disposition,
           actionOk,
+          safetyOk,
           sourceSafety,
           before,
           after,
@@ -2916,6 +3321,9 @@
           const fixturePack = runGenericScmReplayFixturePack({family: "wallet"});
           return {
             ok: fixturePack.ok,
+            disposition: fixturePack.disposition,
+            mismatchCount: fixturePack.mismatchCount,
+            dispositionCounts: fixturePack.dispositionCounts,
             fixturePack
           };
         });
@@ -2924,6 +3332,9 @@
           const fixturePack = runGenericScmReplayFixturePack({family: "code-editor"});
           return {
             ok: fixturePack.ok,
+            disposition: fixturePack.disposition,
+            mismatchCount: fixturePack.mismatchCount,
+            dispositionCounts: fixturePack.dispositionCounts,
             fixturePack
           };
         });
@@ -2996,6 +3407,22 @@
         }
 
         const failed = results.filter((scenario) => !scenario.ok);
+        const dispositionCounts = results.reduce((counts, scenario) => {
+          const disposition = scenario.disposition || "FAIL";
+          counts[disposition] = (counts[disposition] || 0) + 1;
+          return counts;
+        }, {PASS: 0, BLOCKED: 0, EXCEPTION: 0, FAIL: 0, MISMATCH: 0});
+        const fixturePacks = results
+          .map((scenario) => scenario.detail?.fixturePack)
+          .filter(Boolean);
+        const fixtureMismatches = fixturePacks.flatMap((pack) => (pack.mismatches || [])
+          .map((mismatch) => ({
+            family: pack.family || "all",
+            id: mismatch.id,
+            expectedDisposition: mismatch.expectedDisposition,
+            observedDisposition: mismatch.observedDisposition,
+            reasons: mismatch.reasons || []
+          })));
         const harness = jsonSafeClone({
           kind: "mcel-code-studio-scm-regression-harness",
           harnessVersion: SCM_REGRESSION_HARNESS_VERSION,
@@ -3005,11 +3432,12 @@
           total: results.length,
           passed: results.length - failed.length,
           failed: failed.map((scenario) => scenario.id),
+          dispositionCounts,
+          mismatchCount: fixtureMismatches.length,
+          fixtureMismatches,
           sourceSafety: compareScmRegressionSourceSnapshots(results[0]?.before, buildScmRegressionSourceSnapshot("final")),
           scenarios: results,
-          fixturePacks: results
-            .map((scenario) => scenario.detail?.fixturePack)
-            .filter(Boolean),
+          fixturePacks,
           monaco: {
             mounted: studioState.monacoMounted,
             lastReceipt: studioState.lastMonacoRuntimeReceipt,
@@ -3025,11 +3453,14 @@
           ok: harness.ok,
           total: harness.total,
           passed: harness.passed,
-          failed: [...harness.failed]
+          failed: [...harness.failed],
+          dispositionCounts: harness.dispositionCounts,
+          mismatchCount: harness.mismatchCount,
+          fixtureMismatches: harness.fixtureMismatches
         };
         setStatus(harness.ok
-          ? `SCM regression harness passed ${harness.passed}/${harness.total}; source remained unchanged.`
-          : `SCM regression harness blocked ${harness.failed.length} scenario(s): ${harness.failed.join(", ")}.`);
+          ? `SCM regression harness passed ${harness.passed}/${harness.total}; fixture dispositions matched expected semantics.`
+          : `SCM regression harness found ${harness.failed.length} failing scenario(s), ${harness.mismatchCount || 0} fixture mismatch(es): ${harness.failed.join(", ")}.`);
         renderScmEvidencePanel(studioState.lastReport);
         return harness;
       }
@@ -3051,12 +3482,16 @@
           total: harness.total,
           passed: harness.passed,
           failed: harness.failed,
+          dispositionCounts: harness.dispositionCounts || {},
+          mismatchCount: harness.mismatchCount || 0,
+          fixtureMismatches: harness.fixtureMismatches || [],
           sourceSafety: harness.sourceSafety,
           monaco: harness.monaco,
           draftProvenance: harness.draftProvenance,
           fixturePacks: harness.fixturePacks || [],
           scenarios: harness.scenarios.map((scenario) => ({
             id: scenario.id,
+            disposition: scenario.disposition || (scenario.exception ? "EXCEPTION" : (scenario.ok ? "PASS" : (scenario.actionOk === false ? "BLOCKED" : "FAIL"))),
             ok: scenario.ok,
             actionOk: scenario.actionOk,
             sourceSafety: scenario.sourceSafety,
@@ -3771,6 +4206,162 @@
         return items.length ? items.join(", ") : fallback;
       }
 
+      function normalizeTxDraftInvalidationReasons(invalidatedBy = []) {
+        return (Array.isArray(invalidatedBy) ? invalidatedBy : [])
+          .map((entry) => entry?.reason || entry?.kind || entry?.event || entry)
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean);
+      }
+
+      function summarizeTxDraftProvenanceForWorkbench(receiptVector = studioState.lastScmReceiptVector) {
+        const vector = receiptVector || null;
+        const boundary = vector?.txDraftBoundary || {};
+        const provenance = boundary?.provenance || vector?.txDraftProvenance || {};
+        const invalidatedBy = normalizeTxDraftInvalidationReasons(provenance.invalidatedBy);
+        const externalOutcomeSequence = Array.isArray(provenance.externalOutcomeSequence) ? provenance.externalOutcomeSequence : [];
+        const networkGateSequence = Array.isArray(provenance.networkGateSequence) ? provenance.networkGateSequence : [];
+        const probeEnvelopeIds = Array.isArray(provenance.probeEnvelopeIds) ? provenance.probeEnvelopeIds : [];
+        const chainProofStatus = provenance.chainProof?.status || provenance.chainProof?.chainId || "";
+        const hasProvenance = Boolean(
+          provenance.provenanceVersion
+          || provenance.sourceRequestHash
+          || provenance.walletAccountHash
+          || chainProofStatus
+          || externalOutcomeSequence.length
+          || networkGateSequence.length
+          || probeEnvelopeIds.length
+        );
+        const observed = Boolean(vector && vector.sourceKind !== "not-ingested" && (
+          boundary.status
+          || boundary.boundary
+          || boundary.noSend === true
+          || hasProvenance
+        ));
+        let state = "not observed";
+        if (!observed) {
+          state = "not observed";
+        } else if (invalidatedBy.length) {
+          state = "invalidated";
+        } else if (boundary.noSend !== true) {
+          state = "needs inspection";
+        } else if (provenance.valid === true) {
+          state = "valid";
+        } else if (hasProvenance) {
+          state = "provenance present";
+        } else {
+          state = "missing provenance";
+        }
+        const label = state === "valid"
+          ? `valid · no-send · ${chainProofStatus || "chain proof pending"}`
+          : (state === "provenance present"
+            ? `provenance present · no-send · ${chainProofStatus || "chain proof pending"}`
+            : (state === "invalidated"
+              ? `invalidated · ${invalidatedBy.join(", ")}`
+              : (state === "needs inspection"
+                ? `needs inspection · ${boundary.boundary || "boundary unclear"}`
+                : state)));
+        return jsonSafeClone({
+          kind: "mcel-code-studio-tx-draft-provenance-workbench-summary",
+          state,
+          label,
+          boundaryStatus: boundary.status || "not-observed",
+          boundary: boundary.boundary || "",
+          noSend: boundary.noSend === true,
+          provenanceVersion: provenance.provenanceVersion || "",
+          sourceRequestHash: provenance.sourceRequestHash || "",
+          selectedRequestSnapshot: provenance.selectedRequestSnapshot || null,
+          walletAccountHash: provenance.walletAccountHash || "",
+          chainProofStatus,
+          calldataSource: provenance.calldataSource || "",
+          abiEncodingStatus: provenance.abiEncodingStatus || "",
+          externalOutcomeCount: externalOutcomeSequence.length,
+          networkGateCount: networkGateSequence.length,
+          probeEnvelopeCount: probeEnvelopeIds.length,
+          invalidatedBy,
+          valid: state === "valid",
+          provenancePresent: hasProvenance,
+          raw: {
+            boundary,
+            provenance
+          }
+        });
+      }
+
+      function summarizeScmRegressionStatusForWorkbench(harness = studioState.lastScmRegressionHarness) {
+        if (!harness) {
+          return {
+            label: "not run",
+            total: 0,
+            passed: 0,
+            failed: [],
+            blocked: [],
+            exceptions: [],
+            fixturePacks: []
+          };
+        }
+        const scenarios = Array.isArray(harness.scenarios) ? harness.scenarios : [];
+        const blocked = scenarios
+          .filter((scenario) => scenario.disposition === "BLOCKED")
+          .map((scenario) => scenario.id);
+        const exceptions = scenarios
+          .filter((scenario) => scenario.disposition === "EXCEPTION")
+          .map((scenario) => scenario.id);
+        return jsonSafeClone({
+          label: harness.ok ? `PASS ${harness.passed}/${harness.total}` : `FAIL ${(harness.failed || []).length}/${harness.total}`,
+          total: harness.total || scenarios.length,
+          passed: harness.passed || 0,
+          failed: harness.failed || [],
+          blocked,
+          exceptions,
+          fixturePacks: harness.fixturePacks || []
+        });
+      }
+
+      function formatNormalizedScmReceiptVectorDetail(receiptVector = collectScmReceiptVector(studioState.lastReport)) {
+        const vector = receiptVector || normalizeScmReceiptVector(null);
+        const receiptSource = summarizeScmReceiptSourceForWorkbench(vector);
+        const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(vector);
+        const regression = summarizeScmRegressionStatusForWorkbench();
+        return jsonSafeClone({
+          kind: "mcel-code-studio-normalized-scm-receipt-workbench-detail",
+          receiptVectorVersion: vector.vectorVersion || SCM_RECEIPT_VECTOR_VERSION,
+          sourceKind: vector.sourceKind || "not-ingested",
+          receiptSource,
+          receiptSourceAuthority: vector.receiptSource || {},
+          status: vector.status || "waiting",
+          selectedEffect: vector.selectedEffect || "",
+          actionOutcome: vector.actionOutcome || "waiting",
+          externalOutcome: vector.externalOutcome || {},
+          governanceOutcome: vector.governanceOutcome || "waiting",
+          safetyOutcome: vector.safetyOutcome || "waiting",
+          proofCompleteness: vector.proofCompleteness || "waiting",
+          declaredReads: vector.declaredReads || [],
+          declaredWrites: vector.declaredWrites || [],
+          runtimeConsequences: vector.runtimeConsequences || [],
+          nextAction: vector.nextAction || "",
+          repairPacket: vector.repairPacket || {},
+          txDraftProvenance,
+          layoutObservation: vector.layoutObservation || {},
+          replay: {
+            lastReplaySnapshotComparison: studioState.lastScmReplaySnapshotComparison || null,
+            lastReplayResult: studioState.lastScmReplayResult || null
+          },
+          regression,
+          actionableGaps: buildActionableScmGaps(
+            collectScmEvidenceSummary(studioState.lastReport),
+            collectGateStatus(studioState.lastReport?.scm || studioState.lastScmGates),
+            buildEffectGraphModel(
+              collectScmEvidenceSummary(studioState.lastReport),
+              collectGateStatus(studioState.lastReport?.scm || studioState.lastScmGates),
+              workspaceFields(),
+              null
+            ),
+            null
+          ),
+          rawReceiptVector: vector
+        });
+      }
+
       function compactSourceSnippet(value, limit = 72) {
         const text = String(value || "").replace(/\s+/g, " ").trim();
         if (!text) return "source element";
@@ -3956,6 +4547,7 @@
         const effectGraph = buildEffectGraphModel(summary, gates, fields, selectedEvidence);
         const selectedEffect = effectGraph.selected || {};
         const receiptVector = collectScmReceiptVector(studioState.lastReport, summary, selectedEvidence);
+        const receiptSource = summarizeScmReceiptSourceForWorkbench(receiptVector);
         const vectorEffect = receiptVector?.selectedEffect || "";
         const receiptVectorIngested = receiptVector?.sourceKind !== "not-ingested";
         const receiptMode = receiptVector?.mode && receiptVectorIngested
@@ -3967,7 +4559,19 @@
         const receiptLabel = receiptVectorIngested
           ? receiptVector.status
           : (receiptMode === "waiting" ? "not run" : receiptOk ? "pass" : `gap · ${summary.combined.violations} violation(s)`);
+        const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(receiptVector);
+        const regressionStatus = summarizeScmRegressionStatusForWorkbench();
         const gaps = buildActionableScmGaps(summary, gates, effectGraph, selectedEvidence);
+        if (receiptVectorIngested && receiptSource.current === false) {
+          gaps.unshift(`Receipt vector source is ${receiptSource.freshness}: ${receiptSource.reason || receiptSource.guidance || "refresh or select a current receipt source."}`);
+        }
+        if (receiptVectorIngested && txDraftProvenance.state === "invalidated") {
+          gaps.unshift(`txDraft provenance invalidated: ${txDraftProvenance.invalidatedBy.join(", ")}.`);
+        } else if (receiptVectorIngested && txDraftProvenance.state === "needs inspection") {
+          gaps.unshift("txDraft boundary needs inspection before any future send/sign work.");
+        } else if (receiptVectorIngested && txDraftProvenance.state === "missing provenance" && receiptVector?.selectedEffect === "release.draftTx") {
+          gaps.unshift("txDraft receipt is missing auditable provenance fields.");
+        }
         const activePane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "source";
         const selected = selectedFile(fields);
         return {
@@ -3979,6 +4583,8 @@
           receiptRows: [
             ["Mode", receiptMode],
             ["Receipt", receiptLabel],
+            ["Receipt source", receiptSource.label],
+            ["Receipt freshness", receiptSource.current ? "current" : receiptSource.freshness],
             ["Selected effect", vectorEffect || selectedEffect.name || "none"],
             ["Action outcome", receiptVector?.actionOutcome || "waiting"],
             ["External outcome", receiptVector?.externalOutcome?.status && receiptVector.externalOutcome.status !== "waiting"
@@ -3986,8 +4592,10 @@
               : "not ingested"],
             ["Governance / Safety", `${receiptVector?.governanceOutcome || "waiting"} / ${receiptVector?.safetyOutcome || "waiting"}`],
             ["Proof completeness", receiptVector?.proofCompleteness || "waiting"],
+            ["Tx draft boundary", receiptVector?.txDraftBoundary?.boundary || "not observed"],
+            ["Tx draft provenance", txDraftProvenance.label],
             ["Next action", receiptVector?.nextAction || "none"],
-            ["Raw payloads", "Bottom Proof Dock only"]
+            ["Raw payloads", "Receipt Vector in Bottom Proof Dock"]
           ],
           selectedEffectRows: [
             ["Effect", vectorEffect || selectedEffect.name || "none selected"],
@@ -3995,23 +4603,32 @@
             ["Trigger", selectedEffect.trigger || selectedEffect.kind || receiptVector?.selectedEffectCategory || "not declared"],
             ["Reads", formatScmSurfaceList(receiptVector?.declaredReads?.length ? receiptVector.declaredReads : selectedEffect.reads)],
             ["Writes", formatScmSurfaceList(receiptVector?.declaredWrites?.length ? receiptVector.declaredWrites : selectedEffect.writes)],
-            ["Source", `${selectedEffect.sourcePath || receiptVector?.sourceKind || "evidence"} · ${selectedEffect.sourceLabel || "receipt vector normalized"} `]
+            ["Runtime consequences", formatScmSurfaceList(receiptVector?.runtimeConsequences, "none recorded")],
+            ["Source", `${selectedEffect.sourcePath || receiptSource.authority || receiptVector?.sourceKind || "evidence"} · ${selectedEffect.sourceLabel || receiptSource.freshness || "receipt vector normalized"} `]
           ],
           currentRuntimeRows: [
             ["Active pane", activePane],
             ["Mounted", studioState.mounted ? "mounted" : "not mounted"],
             ["Dirty state", studioState.dirty ? "dirty" : "clean"],
             ["Selected file", selected?.path || studioState.selectedPath || "none"],
+            ["Tx draft provenance", txDraftProvenance.label],
+            ["Receipt source", receiptSource.label],
             ["Runtime chrome", "runtime preview, editor UI, evidence, assistant output"],
             ["Route key", currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())]
           ],
           proofHistoryRows: [
-            ["Replay", replayComparison ? (replayComparison.stable ? "stable" : "changed") : "not run"],
+            ["Receipt vector", receiptVectorIngested ? `${receiptVector.sourceKind || "ingested"} · ${receiptVector.vectorVersion || SCM_RECEIPT_VECTOR_VERSION}` : "not ingested"],
+            ["Receipt authority", `${receiptSource.authority} · ${receiptSource.current ? "current" : receiptSource.freshness}`],
+            ["Replay", replayComparison ? (replayComparison.stable ? "PASS stable" : "FAIL changed") : "not run"],
+            ["Regression harness", regressionStatus.label],
             ["Serialization", gates.serialization?.ok === false ? "fail" : studioState.lastSerializationGate ? "clean source checked" : "not run"],
             ["Repair", gates.repair?.ok === false ? "fail" : studioState.lastRepairGate ? "scoped repair checked" : "not run"],
             ["Persistence", `${persistence.status || "not saved"}${persistence.savedAt ? ` · ${persistence.savedAt}` : ""}`],
             ["Contract helper", contractAuthoring ? "generated" : "not generated"]
-          ]
+          ],
+          txDraftProvenance,
+          receiptSource,
+          regressionStatus
         };
       }
 
@@ -4080,7 +4697,8 @@
             ["Selected path", selected?.path || studioState.selectedPath || "none"],
             ["Files", `${fields.files.length}`],
             ["Dirty state", studioState.dirty ? "dirty" : "clean"],
-            ["Draft provenance", `${draftProvenance.totalEvents} event(s) · ${draftProvenance.invariants.sourceMutationsOnlyByCommitDraft ? "commit-gated" : "needs inspection"}`],
+            ["Editor draft provenance", `${draftProvenance.totalEvents} event(s) · ${draftProvenance.invariants.sourceMutationsOnlyByCommitDraft ? "commit-gated" : "needs inspection"}`],
+            ["txDraft provenance", receiptSurface.txDraftProvenance?.label || "not observed"],
             ["Mounted", studioState.mounted ? "mounted" : "not mounted"],
             ["Persistence", `${persistence.status || "not saved"}${persistence.savedAt ? ` · ${persistence.savedAt}` : ""}`],
             ["Route key", currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())],
@@ -4201,6 +4819,16 @@
         });
       }
 
+      function renderScmReceiptVectorInProofDock() {
+        const summary = collectScmEvidenceSummary(studioState.lastReport);
+        const selectedEntry = resolveSelectedScmEvidence(summary, studioState.scmEvidenceFilter || "all", visibleScmEvidenceEntries(summary, studioState.scmEvidenceFilter || "all"));
+        const vector = collectScmReceiptVector(studioState.lastReport, summary, selectedEntry);
+        return renderProofDockPayload("Normalized SCM receipt vector", formatNormalizedScmReceiptVectorDetail(vector), {
+          kind: "normalized-receipt-vector",
+          action: "copy-normalized-receipt-vector"
+        });
+      }
+
       function renderEditorDraftProvenanceInProofDock() {
         return renderProofDockPayload("Draft provenance", formatEditorDraftProvenanceDetail(), {
           kind: "draft-provenance",
@@ -4225,6 +4853,8 @@
         const filter = studioState.scmEvidenceFilter || "all";
         const entries = visibleScmEvidenceEntries(summary, filter);
         const selectedEntry = resolveSelectedScmEvidence(summary, filter, entries);
+        const receiptVector = collectScmReceiptVector(report, summary, selectedEntry);
+        const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(receiptVector);
         studioState.selectedScmEvidenceKey = selectedEntry.evidenceKey || "";
         const previewEntries = entries.slice(0, 8);
 
@@ -4255,9 +4885,10 @@
               <button type="button" id="code-studio-replay-scm-evidence">Replay selected gate</button>
               <button type="button" id="code-studio-run-scm-regression-harness">Run regression harness</button>
               <button type="button" id="code-studio-open-scm-evidence-detail">Open evidence detail in proof dock</button>
+              <button type="button" id="code-studio-open-scm-receipt-vector-detail">Open receipt vector in proof dock</button>
               <button type="button" id="code-studio-open-scm-replay-detail">Open replay in proof dock</button>
               <button type="button" id="code-studio-open-scm-regression-detail">Open regression in proof dock</button>
-              <button type="button" id="code-studio-open-draft-provenance-detail">Open draft provenance in proof dock</button>
+              <button type="button" id="code-studio-open-draft-provenance-detail">Open editor draft provenance in proof dock</button>
               <button type="button" id="code-studio-open-scm-contract-helper-detail">Open helper in proof dock</button>
               <button type="button" id="code-studio-export-scm-evidence-packet">Copy packet</button>
               <button type="button" id="code-studio-generate-scm-repair-prompt">Generate AI repair prompt</button>
@@ -4272,8 +4903,10 @@
             <span>visible <code>${entries.length}</code></span>
             <span>violations <code>${summary.combined.violations}</code></span>
             <span>blocking <code>${summary.combined.blocking}</code></span>
-            <span>regression <code>${studioState.lastScmRegressionHarness?.ok === false ? "fail" : studioState.lastScmRegressionHarness ? "ok" : "idle"}</code></span>
-            <span>draft provenance <code>${collectEditorDraftProvenanceSummary().invariants.sourceMutationsOnlyByCommitDraft ? "ok" : "fail"}</code></span>
+            <span>receipt vector <code>${receiptVector.sourceKind === "not-ingested" ? "idle" : "ingested"}</code></span>
+            <span>regression <code>${studioState.lastScmRegressionHarness?.mismatchCount ? "mismatch" : (studioState.lastScmRegressionHarness?.ok === false ? "fail" : studioState.lastScmRegressionHarness ? "ok" : "idle")}</code></span>
+            <span>txDraft provenance <code>${txDraftProvenance.state}</code></span>
+            <span>editor draft provenance <code>${collectEditorDraftProvenanceSummary().invariants.sourceMutationsOnlyByCommitDraft ? "ok" : "fail"}</code></span>
             <span>layout <code>${gates.layout?.ok === false ? "fail" : "ok"}</code></span>
             <span>style <code>${gates.style?.ok === false ? "fail" : "ok"}</code></span>
             <span>route <code>${gates.route?.ok === false ? "fail" : "ok"}</code></span>
@@ -4305,6 +4938,10 @@
 
         scmEvidencePanel.querySelector("#code-studio-open-scm-evidence-detail")?.addEventListener("click", () => {
           renderSelectedEvidenceInProofDock(summary, filter);
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-open-scm-receipt-vector-detail")?.addEventListener("click", () => {
+          renderScmReceiptVectorInProofDock();
         });
 
         scmEvidencePanel.querySelector("#code-studio-open-scm-replay-detail")?.addEventListener("click", () => {
@@ -5009,6 +5646,10 @@
         normalizeScmReceiptVector,
         ingestScmReceiptVector,
         collectScmReceiptVector,
+        summarizeScmReceiptSourceForWorkbench,
+        summarizeTxDraftProvenanceForWorkbench,
+        formatNormalizedScmReceiptVectorDetail,
+        renderScmReceiptVectorInProofDock,
         buildScmEvidenceDebugPacket,
         exportScmEvidenceDebugPacket,
         copyCurrentScmEvidenceDebugPacket,

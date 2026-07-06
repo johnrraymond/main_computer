@@ -38,6 +38,10 @@ def _json_events(stdout: str) -> list[dict]:
     return events
 
 
+def _path_text_endswith(path_text: str, suffix: str) -> bool:
+    return path_text.replace("\\", "/").endswith(suffix)
+
+
 def _sample_agent_report(*, agent_mode: str = "deterministic") -> dict:
     return {
         "ok": True,
@@ -60,6 +64,12 @@ def _sample_agent_report(*, agent_mode: str = "deterministic") -> dict:
         "commit": {"created": True, "sha": "final"},
         "changed_files": ["app.py"],
         "guidance_events": [{"type": "add_instruction", "text": "Do not modify README.md."}],
+        "active_constraints": {
+            "forbidden_files": ["README.md"],
+            "pinned_files": [],
+            "required_tests": [],
+            "freeform_instructions": ["Do not modify README.md."],
+        },
         "forbidden_paths": ["README.md"],
         "verification": {"ok": True, "checks": ["python_import_and_greet_contract"]},
         "contracts": {
@@ -73,6 +83,14 @@ def _sample_agent_report(*, agent_mode: str = "deterministic") -> dict:
             "forbidden_files_unchanged": True,
             "guidance_integrated_before_edit": True,
             "guidance_seen": True,
+            "guidance_compaction_boundary_written": True,
+            "avoid_file_command_added_forbidden_file": True,
+            "pin_file_command_added_pinned_file": True,
+            "request_test_command_added_required_test": True,
+            "plan_consumed_active_constraints": True,
+            "plan_respects_compacted_forbidden_files": True,
+            "plan_respects_compacted_pinned_files": True,
+            "required_tests_satisfied": True,
             "repo_clean_after_commit": True,
             "report_written": True,
             "verification_passed": True,
@@ -218,6 +236,8 @@ def test_live_plan_adapter_validates_plan_only_contract() -> None:
     assert plan["apply_mode"] == "deterministic_safe_applier"
     assert plan["allowed_write_paths"] == ["app.py"]
     assert plan["forbidden_paths"] == ["README.md"]
+    assert plan["active_constraints"]["forbidden_files"] == ["README.md"]
+    assert smoke.validate_plan_active_constraints(plan, plan["active_constraints"])["plan_consumed_active_constraints"] is True
 
 
 def test_replay_cycle_orchestrates_deterministic_then_replay(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -263,8 +283,8 @@ def test_replay_cycle_orchestrates_deterministic_then_replay(monkeypatch: pytest
     assert [call[0] for call in calls] == ["deterministic", "replay"]
     assert calls[0][2] == ""
     assert calls[0][3] == ""
-    assert calls[1][2].endswith("cycle-deterministic/report.json")
-    assert calls[1][3].endswith("cycle-deterministic/report.json")
+    assert _path_text_endswith(calls[1][2], "cycle-deterministic/report.json")
+    assert _path_text_endswith(calls[1][3], "cycle-deterministic/report.json")
 
     cycle_report = json.loads((tmp_path / "cycle" / "replay_cycle_report.json").read_text(encoding="utf-8"))
     assert cycle_report["ok"] is True
@@ -272,7 +292,7 @@ def test_replay_cycle_orchestrates_deterministic_then_replay(monkeypatch: pytest
     assert cycle_report["contracts"]["replay_self_check_passed"] is True
     assert cycle_report["contracts"]["replay_agent_mode"] is True
     assert cycle_report["contracts"]["report_contract_shape_matches_reference"] is True
-    assert cycle_report["replay"]["replay_source_report_path"].endswith("cycle-deterministic/report.json")
+    assert _path_text_endswith(cycle_report["replay"]["replay_source_report_path"], "cycle-deterministic/report.json")
 
 
 def test_live_plan_cycle_orchestrates_deterministic_then_live_plan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -327,7 +347,7 @@ def test_live_plan_cycle_orchestrates_deterministic_then_live_plan(monkeypatch: 
     assert smoke.run_live_plan_cycle(args) == 0
     assert [call[0] for call in calls] == ["deterministic", "live-plan"]
     assert calls[0][2] == ""
-    assert calls[1][2].endswith("cycle-deterministic/report.json")
+    assert _path_text_endswith(calls[1][2], "cycle-deterministic/report.json")
 
     cycle_report = json.loads((tmp_path / "cycle" / "live_plan_cycle_report.json").read_text(encoding="utf-8"))
     assert cycle_report["ok"] is True
@@ -540,6 +560,384 @@ def test_generated_editor_agent_uses_sandbox_proposal_then_host_apply(
 
 
 
+
+def test_generated_editor_structured_steering_constraints_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "structured-steering-agent"
+    run_dir.mkdir()
+    commands_path = run_dir / "commands.jsonl"
+    commands_path.write_text(
+        "\n".join(json.dumps(command) for command in smoke.guidance_commands_for_scenario(
+            smoke.scenario_spec("structured_steering_constraints"),
+            "Keep greeting punctuation unchanged.",
+        ))
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER", "1")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "none")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "readonly")
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--role",
+            "agent",
+            "--agent",
+            "generated-editor",
+            "--scenario",
+            "structured_steering_constraints",
+            "--run-id",
+            "structured-steering-test",
+            "--run-dir",
+            str(run_dir),
+            "--commands-path",
+            str(commands_path),
+            "--report-path",
+            str(run_dir / "report.json"),
+            "--guidance-window-seconds",
+            "0",
+            "--poll-seconds",
+            "0.01",
+        ]
+    )
+
+    assert smoke.run_agent(args) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    constraints = report["active_constraints"]
+    plan = report["edit_plan"]
+    generated_editor = report["edit_result"]["generated_editor"]
+    contracts = report["contracts"]
+
+    assert constraints == {
+        "forbidden_files": ["README.md"],
+        "pinned_files": ["app.py"],
+        "required_tests": ["python_import_and_greet_contract"],
+        "freeform_instructions": ["Keep greeting punctuation unchanged."],
+    }
+    assert report["guidance_events"] == [
+        {"index": 0, "id": "avoid-readme", "type": "avoid_file", "path": "README.md"},
+        {"index": 1, "id": "pin-app", "type": "pin_file", "path": "app.py"},
+        {"index": 2, "id": "test-greet", "type": "request_test", "name": "python_import_and_greet_contract"},
+        {
+            "index": 3,
+            "id": "freeform-001",
+            "type": "add_instruction",
+            "text": "Keep greeting punctuation unchanged.",
+        },
+    ]
+    assert report["rejected_guidance_events"] == []
+    assert constraints["freeform_instructions"] == ["Keep greeting punctuation unchanged."]
+    assert "Keep greeting punctuation unchanged." not in constraints["forbidden_files"]
+    assert "Keep greeting punctuation unchanged." not in constraints["pinned_files"]
+
+    assert plan["active_constraints"] == constraints
+    assert plan["selected_files"] == ["app.py"]
+    assert plan["allowed_write_paths"] == ["app.py"]
+    assert "README.md" not in plan["selected_files"]
+    assert "README.md" not in plan["allowed_write_paths"]
+
+    assert generated_editor["sandbox"]["allowed_paths"] == ["app.py"]
+    assert generated_editor["sandbox"]["changed_paths"] == ["app.py"]
+    assert generated_editor["host_apply"]["changed_files"] == ["app.py"]
+    assert generated_editor["host_apply"]["validations"]["host_apply_rechecked_active_constraints"] is True
+    assert report["verification"]["checks"] == ["python_import_and_greet_contract"]
+
+    for contract_name in [
+        "guidance_compaction_boundary_written",
+        "avoid_file_command_added_forbidden_file",
+        "pin_file_command_added_pinned_file",
+        "request_test_command_added_required_test",
+        "plan_consumed_active_constraints",
+        "plan_respects_compacted_forbidden_files",
+        "plan_respects_compacted_pinned_files",
+        "generated_editor_consumed_active_constraints",
+        "generated_editor_respects_compacted_constraints",
+        "host_apply_rechecked_active_constraints",
+        "required_tests_satisfied",
+    ]:
+        assert contracts[contract_name] is True
+
+
+def _write_fake_ai_command(tmp_path: Path) -> str:
+    script_path = tmp_path / "fake_ai_provider.py"
+    final_app_py = """def greet(name: str) -> str:
+    cleaned = name.strip()
+    return f"Hello, {cleaned}!"
+
+
+if __name__ == "__main__":
+    print(greet("world"))
+"""
+    script_path.write_text(
+        f"""
+import json
+import sys
+
+request = json.loads(sys.stdin.read())
+user = json.loads(request["user"])
+stage = user.get("stage")
+if stage == "planning":
+    active_constraints = user["active_constraints"]
+    response = {{
+        "selected_files": ["app.py"],
+        "allowed_write_paths": ["app.py"],
+        "active_constraints_ack": active_constraints,
+        "required_tests": active_constraints.get("required_tests", []),
+        "rationale": "fake command provider selected the pinned app.py file",
+    }}
+else:
+    response = {{
+        "final_app_py": {final_app_py!r},
+        "rationale": "fake command provider returned final app.py for " + str(stage),
+    }}
+print(json.dumps(response))
+""",
+        encoding="utf-8",
+    )
+    return subprocess.list2cmdline([sys.executable, str(script_path)])
+
+
+def _run_ai_restart_recovery(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    scripted_ai_smoke: bool,
+) -> dict[str, object]:
+    run_dir = tmp_path / ("scripted_ai_restart_run" if scripted_ai_smoke else "live_ai_restart_run")
+    run_dir.mkdir()
+    commands_path = run_dir / "commands.jsonl"
+    commands_path.write_text(
+        "\n".join(
+            json.dumps(command)
+            for command in smoke.guidance_commands_for_scenario(
+                smoke.scenario_spec(smoke.AI_RESTART_RECOVERY_SCENARIO),
+                "Keep greeting punctuation unchanged.",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER", "1")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "none")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "readonly")
+
+    first_argv = [
+        "--role",
+        "agent",
+        "--use-ai",
+        "--scenario",
+        smoke.AI_RESTART_RECOVERY_SCENARIO,
+        "--run-id",
+        "ai-restart-recovery-test",
+        "--run-dir",
+        str(run_dir),
+        "--commands-path",
+        str(commands_path),
+        "--report-path",
+        str(run_dir / "report.json"),
+        "--guidance-window-seconds",
+        "0",
+        "--poll-seconds",
+        "0.01",
+        "--stop-after",
+        "guidance_compaction",
+    ]
+    second_argv = [
+        "--role",
+        "agent",
+        "--use-ai",
+        "--restart",
+        "--scenario",
+        smoke.AI_RESTART_RECOVERY_SCENARIO,
+        "--run-id",
+        "ai-restart-recovery-test",
+        "--run-dir",
+        str(run_dir),
+        "--commands-path",
+        str(commands_path),
+        "--report-path",
+        str(run_dir / "report.json"),
+        "--guidance-window-seconds",
+        "0",
+        "--poll-seconds",
+        "0.01",
+        "--inject-bad-ai-result",
+        "forbidden_file_write",
+    ]
+    if scripted_ai_smoke:
+        first_argv.append("--scripted-ai-smoke")
+        second_argv.append("--scripted-ai-smoke")
+
+    first_args = smoke.build_parser().parse_args(first_argv)
+
+    assert smoke.run_agent(first_args) == 0
+    partial_report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    run_state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+    assert partial_report["partial"] is True
+    assert partial_report["stopped_after"] == "guidance_compaction"
+    assert run_state["next_stage"] == "edit_plan"
+    assert (run_dir / "boundaries" / "guidance_boundary.json").exists()
+    assert not (run_dir / "boundaries" / "edit_plan_boundary.json").exists()
+
+    second_args = smoke.build_parser().parse_args(second_argv)
+
+    assert smoke.run_agent(second_args) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    contracts = report["contracts"]
+    boundary_names = [boundary["name"] for boundary in report["boundaries"]]
+    recovery = report["edit_result"]["generated_editor"]["recovery"]
+
+    assert report["agent_mode"] == "ai-generated-editor"
+    assert report["restart"]["enabled"] is True
+    assert report["restart"]["resumed_from_stage"] == "edit_plan"
+    assert report["restart"]["reused_boundaries"] == ["bootstrap_boundary", "guidance_boundary"]
+    assert report["active_constraints"]["forbidden_files"] == ["README.md"]
+    assert report["changed_files"] == ["app.py"]
+    assert (Path(report["worktree"]) / "README.md").read_text(encoding="utf-8") == smoke.README_MD
+
+    assert "ai_generated_editor_attempt_1_boundary" in boundary_names
+    assert "ai_generated_editor_attempt_1_sandbox_boundary" in boundary_names
+    assert "host_apply_rejection_boundary" in boundary_names
+    assert "host_apply_boundary" in boundary_names
+    assert recovery["attempts"] == 2
+    assert recovery["injected_bad_result"] == "forbidden_file_write"
+    assert recovery["rejected_paths"] == ["README.md"]
+
+    for contract_name in [
+        "restart_loaded_existing_run_dir",
+        "restart_resumed_after_guidance_compaction",
+        "restart_preserved_active_constraints",
+        "restart_reused_completed_boundaries",
+        "ai_attempt_1_recorded",
+        "bad_ai_result_injected",
+        "host_apply_rejected_forbidden_file_from_ai_output",
+        "no_files_changed_after_rejected_ai_attempt",
+        "ai_retry_consumed_rejection_feedback",
+        "ai_attempt_2_recorded",
+        "ai_retry_removed_forbidden_file",
+        "host_apply_accepted_corrected_ai_output",
+        "host_apply_rechecked_active_constraints",
+        "verification_passed",
+        "commit_created",
+        "final_report_records_restart_and_recovery",
+    ]:
+        assert contracts[contract_name] is True
+
+    return report
+
+
+def test_scripted_ai_restart_recovery_harness_offline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _run_ai_restart_recovery(monkeypatch=monkeypatch, tmp_path=tmp_path, scripted_ai_smoke=True)
+
+    assert report["edit_plan"]["scripted_ai_smoke"] is True
+    assert report["edit_plan"]["uses_live_ai"] is False
+    assert report["contracts"]["ai_attempt_1_used_scripted_ai_smoke"] is True
+    assert report["contracts"]["ai_attempt_2_used_scripted_ai_smoke"] is True
+    assert "ai_attempt_1_used_live_ai" not in report["contracts"]
+    assert "ai_attempt_2_used_live_ai" not in report["contracts"]
+    assert report["edit_result"]["generated_editor"]["recovery"]["retry_ai_editor"]["metadata"]["uses_live_ai"] is False
+
+
+def test_ai_restart_recovery_smoke_script_has_simple_direct_surface(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "direct-ai-restart-recovery-smoke"
+
+    assert smoke.main([
+        "--ai-restart-recovery-smoke",
+        "--scripted-ai-smoke",
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "ai_restart_recovery_smoke_summary.json").read_text(encoding="utf-8"))
+
+    assert report["ok"] is True
+    assert summary["ok"] is True
+    assert summary["live_ai_call_count"] == 0
+    assert report["agent_mode"] == "ai-generated-editor"
+    assert report["scenario"] == smoke.AI_RESTART_RECOVERY_SCENARIO
+    assert report["commands_path"].endswith("commands.jsonl")
+    assert report["runtime"]["local_agent_smoke_allowed"] is True
+    assert report["runtime"]["containerized"] is False
+    assert report["contracts"]["local_agent_smoke_explicitly_allowed"] is True
+    assert report["contracts"]["local_agent_ai_network_exception_declared"] is True
+    assert report["contracts"]["bad_ai_result_injected"] is True
+    assert report["contracts"]["host_apply_rejected_forbidden_file_from_ai_output"] is True
+    assert report["contracts"]["host_apply_accepted_corrected_ai_output"] is True
+    assert report["changed_files"] == ["app.py"]
+    assert report["failed_contracts"] == []
+
+
+def test_ai_restart_recovery_smoke_live_command_surface_records_three_ai_calls(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "direct-live-ai-command-restart-recovery-smoke"
+    ai_command = _write_fake_ai_command(tmp_path)
+
+    assert smoke.main([
+        "--ai-restart-recovery-smoke",
+        "--ai-provider",
+        "command",
+        "--ai-command",
+        ai_command,
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "ai_restart_recovery_smoke_summary.json").read_text(encoding="utf-8"))
+    ai_calls = smoke.read_jsonl(run_dir / "ai_calls.jsonl")
+
+    assert report["ok"] is True
+    assert summary["ok"] is True
+    assert summary["live_ai_call_count"] == 3
+    assert summary["ai_call_summary"]["finished_live_stages"] == [
+        "planning",
+        "editor_generation",
+        "editor_generation_retry",
+    ]
+    assert [record["event"] for record in ai_calls].count("ai_call_started") == 3
+    assert [record["event"] for record in ai_calls].count("ai_call_finished") == 3
+    assert report["contracts"]["live_ai_call_count_at_least_3"] is True
+    assert report["contracts"]["live_ai_touched_planning_editor_and_retry"] is True
+    assert report["contracts"]["ai_attempt_1_used_live_ai"] is True
+    assert report["contracts"]["ai_attempt_2_used_live_ai"] is True
+    assert report["failed_contracts"] == []
+
+
+def test_ai_restart_recovers_from_bad_generated_editor_result_with_live_ai(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    if not smoke.live_ai_smoke_configured():
+        pytest.skip(
+            "set MAIN_COMPUTER_RUN_LIVE_AI_SMOKE=1 and configure "
+            "MAIN_COMPUTER_AI_SMOKE_PROVIDER=openai|ollama|command to run the live AI smoke"
+        )
+
+    report = _run_ai_restart_recovery(monkeypatch=monkeypatch, tmp_path=tmp_path, scripted_ai_smoke=False)
+
+    assert report["edit_plan"]["uses_live_ai"] is True
+    assert report["edit_plan"]["ai_backend"] != "scripted-local-smoke"
+    assert report["contracts"]["ai_attempt_1_used_live_ai"] is True
+    assert report["contracts"]["ai_attempt_2_used_live_ai"] is True
+    assert report["contracts"]["live_ai_call_count_at_least_3"] is True
+    assert report["contracts"]["live_ai_touched_planning_editor_and_retry"] is True
+    assert report["ai_call_summary"]["finished_live_call_count"] >= 3
+    recovery = report["edit_result"]["generated_editor"]["recovery"]
+    assert recovery["retry_ai_editor"]["metadata"]["uses_live_ai"] is True
+    assert recovery["retry_ai_editor"]["metadata"]["provider"] in {"openai", "ollama", "command"}
 
 def test_agent_commit_policy_never_blocks_commit_but_keeps_verified_edit(
     monkeypatch: pytest.MonkeyPatch,
@@ -873,7 +1271,7 @@ def test_generated_editor_cycle_orchestrates_deterministic_then_generated_editor
     assert smoke.run_generated_editor_cycle(args) == 0
     assert [call[0] for call in calls] == ["deterministic", "generated-editor"]
     assert calls[0][2] == ""
-    assert calls[1][2].endswith("cycle-deterministic/report.json")
+    assert _path_text_endswith(calls[1][2], "cycle-deterministic/report.json")
 
     cycle_report = json.loads((tmp_path / "cycle" / "generated_editor_cycle_report.json").read_text(encoding="utf-8"))
     assert cycle_report["ok"] is True
@@ -1102,6 +1500,7 @@ def test_scenario_matrix_orchestrates_initial_scenarios(
     assert matrix_report["contracts"]["scenario_matrix_all_passed"] is True
     assert matrix_report["contracts"]["single_file_python_edit_exercised"] is True
     assert matrix_report["contracts"]["forbidden_file_instruction_exercised"] is True
+    assert matrix_report["contracts"]["structured_steering_constraints_exercised"] is True
     assert matrix_report["contracts"]["verification_failure_blocks_commit_exercised"] is True
     failure_result = matrix_report["scenario_results"]["verification_failure_blocks_commit"]
     assert failure_result["contracts"]["verification_failed_as_expected"] is True

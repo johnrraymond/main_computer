@@ -22,13 +22,20 @@ guidance after it observes a realtime ``guidance_window_open`` event.  That keep
 the first smoke deterministic while still exercising the stdout/input contract as
 a real Docker security boundary.
 
-Run from the repository root:
+Run the default deterministic Docker-supervised smoke from the repository root:
 
     python -S main_computer/rag_code_edit_agent_guidance_smoke.py
 
+Run the direct live-AI restart/recovery smoke without pytest:
+
+    python -m main_computer.rag_code_edit_agent_guidance_smoke --ai-restart-recovery-smoke
+
 The deterministic agent is not a shortcut: it uses the same Docker boundary,
 fixture repo, clone, branch, guidance channel, verification, commit, and report
-path that future live agent adapters should use.
+path that future live agent adapters should use.  The direct live-AI restart
+smoke uses an explicit local-agent exception so it can call a developer AI
+backend such as Ollama or OpenAI while still preserving host-owned path
+validation, apply, verification, and reporting.
 """
 
 from __future__ import annotations
@@ -54,6 +61,29 @@ DEFAULT_SCENARIO = "single_file_python_edit"
 SCENARIO = DEFAULT_SCENARIO
 DEFAULT_TARGET_BRANCH = "ai/smoke-guided-edit"
 DEFAULT_GUIDANCE_TEXT = "Do not modify README.md; keep the greeting punctuation unchanged."
+STRUCTURED_STEERING_GUIDANCE_COMMANDS: tuple[dict[str, str], ...] = (
+    {"type": "avoid_file", "path": "README.md", "id": "avoid-readme"},
+    {"type": "pin_file", "path": "app.py", "id": "pin-app"},
+    {"type": "request_test", "name": "python_import_and_greet_contract", "id": "test-greet"},
+    {
+        "type": "add_instruction",
+        "text": "Keep greeting punctuation unchanged.",
+        "id": "freeform-001",
+    },
+)
+AI_RESTART_RECOVERY_SCENARIO = "ai_restart_recovers_from_bad_generated_editor"
+RESTARTABLE_STAGES = (
+    "bootstrap",
+    "guidance_compaction",
+    "edit_plan",
+    "generated_editor",
+    "host_apply",
+    "verification",
+    "commit_policy",
+    "commit",
+    "report",
+)
+STOP_AFTER_STAGES = ("bootstrap", "guidance_compaction", "edit_plan")
 DEFAULT_TASK = "Make greet(name) trim surrounding whitespace before greeting."
 DEFAULT_GUIDANCE_WINDOW_SECONDS = 3.0
 DEFAULT_POLL_SECONDS = 0.05
@@ -61,6 +91,12 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_COMMIT_POLICY = "auto-after-verification"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 10.0
 COMMIT_POLICIES = ("auto-after-verification", "require-approval", "never")
+AI_PROVIDERS = ("auto", "openai", "ollama", "command", "scripted")
+DEFAULT_AI_PROVIDER = "auto"
+DEFAULT_AI_TIMEOUT_SECONDS = 300.0
+MIN_LIVE_AI_RESTART_RECOVERY_CALLS = 3
+DEFAULT_OPENAI_AI_MODEL = "gpt-5.2"
+DEFAULT_OLLAMA_AI_MODEL = "gemma4:26b"
 DEFAULT_DOCKER_IMAGE = "main-computer-executor:latest"
 CONTAINER_RUN_DIR = "/smoke_run"
 CONTAINER_SOURCE_DIR = "/smoke_src"
@@ -159,6 +195,30 @@ SCENARIO_SPECS: dict[str, ScenarioSpec] = {
         final_app_py=APP_PY_DETERMINISTIC_FINAL,
         description="Proves user file-scope guidance becomes a scenario contract.",
     ),
+    "structured_steering_constraints": ScenarioSpec(
+        name="structured_steering_constraints",
+        task="Make greet(name) trim surrounding whitespace while obeying structured steering constraints.",
+        guidance_text="Keep greeting punctuation unchanged.",
+        expected_changed_files=("app.py",),
+        forbidden_files=(),
+        requires_commit=True,
+        requires_approval=False,
+        expects_verification_success=True,
+        final_app_py=APP_PY_DETERMINISTIC_FINAL,
+        description="Proves commands.jsonl compacts into active constraints consumed by plan, editor, host apply, and report.",
+    ),
+    AI_RESTART_RECOVERY_SCENARIO: ScenarioSpec(
+        name=AI_RESTART_RECOVERY_SCENARIO,
+        task="Use the AI-backed generated editor to trim whitespace, survive a bad proposal, and recover after restart.",
+        guidance_text="Keep greeting punctuation unchanged.",
+        expected_changed_files=("app.py",),
+        forbidden_files=(),
+        requires_commit=True,
+        requires_approval=False,
+        expects_verification_success=True,
+        final_app_py=APP_PY_DETERMINISTIC_FINAL,
+        description="Proves --use-ai --restart resumes from compacted guidance, rejects a bad AI result, retries, and reports recovery.",
+    ),
     "verification_failure_blocks_commit": ScenarioSpec(
         name="verification_failure_blocks_commit",
         task="Make an intentionally incomplete greeting edit so verification must block commit.",
@@ -177,6 +237,7 @@ SCENARIO_SPECS: dict[str, ScenarioSpec] = {
 SCENARIO_MATRIX = (
     "single_file_python_edit",
     "forbidden_file_instruction",
+    "structured_steering_constraints",
     "verification_failure_blocks_commit",
 )
 
@@ -279,6 +340,14 @@ class CommandResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class LiveAIResult:
+    provider: str
+    model: str
+    content: str
+    metadata: dict[str, Any]
 
 
 class SmokeFailure(RuntimeError):
@@ -452,6 +521,15 @@ def build_docker_agent_command(
     approval_timeout_seconds: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     replay_report_path: str = "",
     live_plan_path: str = "",
+    use_ai: bool = False,
+    ai_provider: str = DEFAULT_AI_PROVIDER,
+    ai_model: str = "",
+    ai_command: str = "",
+    ai_timeout_seconds: float = DEFAULT_AI_TIMEOUT_SECONDS,
+    scripted_ai_smoke: bool = False,
+    restart: bool = False,
+    stop_after: str = "",
+    inject_bad_ai_result: str = "",
 ) -> list[str]:
     command = [
         "docker",
@@ -515,6 +593,22 @@ def build_docker_agent_command(
         command.extend(["--replay-report", replay_report_path])
     if live_plan_path:
         command.extend(["--live-plan-path", live_plan_path])
+    if use_ai:
+        command.append("--use-ai")
+        command.extend(["--ai-provider", ai_provider])
+        if ai_model:
+            command.extend(["--ai-model", ai_model])
+        if ai_command:
+            command.extend(["--ai-command", ai_command])
+        command.extend(["--ai-timeout-seconds", str(ai_timeout_seconds)])
+        if scripted_ai_smoke:
+            command.append("--scripted-ai-smoke")
+    if restart:
+        command.append("--restart")
+    if stop_after:
+        command.extend(["--stop-after", stop_after])
+    if inject_bad_ai_result:
+        command.extend(["--inject-bad-ai-result", inject_bad_ai_result])
     return command
 
 
@@ -532,6 +626,11 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def write_text_lf(path: Path, text: str) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
 
 
 def safe_relative_path(value: str) -> str:
@@ -574,9 +673,9 @@ def git_stdout(cwd: Path, args: Sequence[str]) -> str:
 def create_fixture_origin(origin: Path) -> dict[str, Any]:
     origin.mkdir(parents=True, exist_ok=True)
     (origin / "tests").mkdir(parents=True, exist_ok=True)
-    (origin / "app.py").write_text(APP_PY_INITIAL, encoding="utf-8")
-    (origin / "tests" / "test_app.py").write_text(TEST_APP_PY, encoding="utf-8")
-    (origin / "README.md").write_text(README_MD, encoding="utf-8")
+    write_text_lf(origin / "app.py", APP_PY_INITIAL)
+    write_text_lf(origin / "tests" / "test_app.py", TEST_APP_PY)
+    write_text_lf(origin / "README.md", README_MD)
     init_git_repo(origin)
     configure_git_identity(origin)
     require_command_ok(git(origin, ["add", "."]), "git add fixture")
@@ -623,6 +722,127 @@ def write_boundary(run_dir: Path, name: str, payload: dict[str, Any]) -> dict[st
     }
 
 
+def boundary_path(run_dir: Path, name: str) -> Path:
+    return run_dir / "boundaries" / f"{name}.json"
+
+
+def load_boundary(run_dir: Path, name: str) -> dict[str, Any]:
+    path = boundary_path(run_dir, name)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise SmokeFailure(f"boundary must parse to an object: {path}")
+    return {
+        "name": name,
+        "path": str(path),
+        "sha256": file_sha256(path),
+        "payload": payload,
+    }
+
+
+def run_state_path(run_dir: Path) -> Path:
+    return run_dir / "run_state.json"
+
+
+def write_run_state(
+    run_dir: Path,
+    *,
+    run_id: str,
+    agent_mode: str,
+    scenario: str,
+    completed_stages: Sequence[str],
+    next_stage: str,
+    origin: Path,
+    worktree: Path,
+    commands_path: Path,
+    report_path: Path,
+    boundary_names: Sequence[str],
+    restart_count: int = 0,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    state = {
+        "schema_version": 1,
+        "mode": MODE,
+        "run_id": run_id,
+        "agent_mode": agent_mode,
+        "scenario": scenario,
+        "completed_stages": list(completed_stages),
+        "last_completed_stage": list(completed_stages)[-1] if completed_stages else "",
+        "next_stage": next_stage,
+        "origin_path": str(origin),
+        "worktree": str(worktree),
+        "commands_path": str(commands_path),
+        "report_path": str(report_path),
+        "boundary_names": list(boundary_names),
+        "restart_count": restart_count,
+        "updated_at": utc_now(),
+    }
+    if extra:
+        state.update(extra)
+    atomic_write_json(run_state_path(run_dir), state)
+    return state
+
+
+def load_run_state(run_dir: Path) -> dict[str, Any]:
+    path = run_state_path(run_dir)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SmokeFailure(f"--restart requires an existing run_state.json: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise SmokeFailure(f"run_state.json is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise SmokeFailure(f"run_state.json must parse to an object: {path}")
+    if payload.get("mode") != MODE:
+        raise SmokeFailure(f"run_state.json belongs to a different mode: {payload.get('mode')!r}")
+    return payload
+
+
+def normalize_agent_selection(args: argparse.Namespace) -> None:
+    if getattr(args, "use_ai", False):
+        args.agent = "ai-generated-editor"
+
+
+def maybe_stop_after_stage(
+    *,
+    args: argparse.Namespace,
+    run_dir: Path,
+    report_path: Path,
+    stage: str,
+    next_stage: str,
+    restart_info: dict[str, Any],
+    boundary_names: Sequence[str],
+) -> bool:
+    stop_after = str(getattr(args, "stop_after", "") or "")
+    if stop_after != stage:
+        return False
+    partial_report = {
+        "ok": True,
+        "partial": True,
+        "mode": MODE,
+        "run_id": args.run_id,
+        "agent_mode": args.agent,
+        "scenario": str(getattr(args, "scenario", DEFAULT_SCENARIO) or DEFAULT_SCENARIO),
+        "run_dir": str(run_dir),
+        "stopped_after": stage,
+        "next_stage": next_stage,
+        "restart": {
+            **restart_info,
+            "restartable": True,
+            "resume_command_hint": "--use-ai --restart" if getattr(args, "use_ai", False) else "--restart",
+        },
+        "boundaries": list(boundary_names),
+    }
+    atomic_write_json(report_path, partial_report)
+    emit_event(
+        "run_stopped_after_stage",
+        run_id=args.run_id,
+        stage=stage,
+        next_stage=next_stage,
+        report_path=str(report_path),
+    )
+    return True
+
+
 def load_new_commands(commands_path: Path, seen_count: int) -> tuple[list[dict[str, Any]], int]:
     records = read_jsonl(commands_path)
     if seen_count > len(records):
@@ -630,27 +850,223 @@ def load_new_commands(commands_path: Path, seen_count: int) -> tuple[list[dict[s
     return records[seen_count:], len(records)
 
 
+def empty_active_constraints() -> dict[str, list[str]]:
+    return {
+        "forbidden_files": [],
+        "pinned_files": [],
+        "required_tests": [],
+        "freeform_instructions": [],
+    }
+
+
+def normalized_active_constraints(value: Any) -> dict[str, list[str]]:
+    raw = value if isinstance(value, dict) else {}
+    forbidden_files = sorted({safe_relative_path(path) for path in raw.get("forbidden_files", [])})
+    pinned_files = [safe_relative_path(path) for path in raw.get("pinned_files", [])]
+    required_tests = sorted({str(name).strip() for name in raw.get("required_tests", []) if str(name).strip()})
+    freeform_instructions: list[str] = []
+    for instruction in raw.get("freeform_instructions", []):
+        text = str(instruction).strip()
+        if text and text not in freeform_instructions:
+            freeform_instructions.append(text)
+    return {
+        "forbidden_files": forbidden_files,
+        "pinned_files": pinned_files,
+        "required_tests": required_tests,
+        "freeform_instructions": freeform_instructions,
+    }
+
+
+def active_constraints_from_guidance_state(guidance_state: dict[str, Any]) -> dict[str, list[str]]:
+    if isinstance(guidance_state.get("active_constraints"), dict):
+        return normalized_active_constraints(guidance_state["active_constraints"])
+    constraints = empty_active_constraints()
+    constraints["forbidden_files"] = sorted(
+        {safe_relative_path(path) for path in guidance_state.get("forbidden_paths", [])}
+    )
+    constraints["freeform_instructions"] = [
+        str(text).strip()
+        for text in guidance_state.get("instructions", [])
+        if str(text).strip()
+    ]
+    return normalized_active_constraints(constraints)
+
+
+def merge_scenario_constraints(guidance_state: dict[str, Any], scenario: ScenarioSpec) -> dict[str, Any]:
+    constraints = active_constraints_from_guidance_state(guidance_state)
+    constraints["forbidden_files"] = sorted(
+        set(constraints["forbidden_files"]) | {safe_relative_path(path) for path in scenario.forbidden_files}
+    )
+    guidance_state = dict(guidance_state)
+    guidance_state["active_constraints"] = normalized_active_constraints(constraints)
+    guidance_state["forbidden_paths"] = list(guidance_state["active_constraints"]["forbidden_files"])
+    guidance_state["instructions"] = list(guidance_state["active_constraints"]["freeform_instructions"])
+    return guidance_state
+
+
+def command_id_for_record(record: dict[str, Any], index: int) -> str:
+    command_id = str(record.get("id", "")).strip()
+    return command_id or f"cmd-{index + 1:03d}"
+
+
 def derive_guidance_state(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
-    instructions: list[str] = []
-    forbidden_paths: set[str] = set()
+    constraints = empty_active_constraints()
+
+    def reject(index: int, record: dict[str, Any], reason: str) -> None:
+        rejected.append({"index": index, "record": record, "reason": reason})
+
     for index, record in enumerate(records):
-        command_type = str(record.get("type", "")).strip()
-        text = str(record.get("text", "")).strip()
-        if command_type != "add_instruction" or not text:
-            rejected.append({"index": index, "record": record, "reason": "unsupported_or_empty_command"})
+        if not isinstance(record, dict):
+            rejected.append({"index": index, "record": record, "reason": "command_must_be_object"})
             continue
-        accepted.append({"index": index, "type": command_type, "text": text})
-        instructions.append(text)
-        if re.search(r"\bREADME\.md\b", text, flags=re.IGNORECASE):
-            forbidden_paths.add("README.md")
+
+        command_type = str(record.get("type", "")).strip()
+        command_id = command_id_for_record(record, index)
+
+        try:
+            if command_type == "add_instruction":
+                instruction = str(record.get("text", "")).strip()
+                if not instruction:
+                    reject(index, record, "empty_instruction")
+                    continue
+                accepted.append({"index": index, "id": command_id, "type": command_type, "text": instruction})
+                if instruction not in constraints["freeform_instructions"]:
+                    constraints["freeform_instructions"].append(instruction)
+                # Preserve the existing freeform README guard as a compatibility bridge,
+                # while making explicit avoid_file commands the preferred machine contract.
+                if re.search(r"\bREADME\.md\b", instruction, flags=re.IGNORECASE):
+                    constraints["forbidden_files"].append("README.md")
+                continue
+
+            if command_type == "avoid_file":
+                path = safe_relative_path(str(record.get("path", "")))
+                accepted.append({"index": index, "id": command_id, "type": command_type, "path": path})
+                constraints["forbidden_files"].append(path)
+                continue
+
+            if command_type == "pin_file":
+                path = safe_relative_path(str(record.get("path", "")))
+                accepted.append({"index": index, "id": command_id, "type": command_type, "path": path})
+                if path not in constraints["pinned_files"]:
+                    constraints["pinned_files"].append(path)
+                continue
+
+            if command_type == "request_test":
+                name = str(record.get("name", "")).strip()
+                if not name:
+                    reject(index, record, "empty_requested_test")
+                    continue
+                accepted.append({"index": index, "id": command_id, "type": command_type, "name": name})
+                constraints["required_tests"].append(name)
+                continue
+
+            reject(index, record, "unsupported_command_type")
+        except SmokeFailure as exc:
+            reject(index, record, str(exc))
+
+    active_constraints = normalized_active_constraints(constraints)
     return {
         "accepted": accepted,
         "rejected": rejected,
-        "instructions": instructions,
-        "forbidden_paths": sorted(forbidden_paths),
+        "instructions": active_constraints["freeform_instructions"],
+        "forbidden_paths": active_constraints["forbidden_files"],
+        "active_constraints": active_constraints,
     }
+
+
+def expected_files_from_active_constraints(scenario: ScenarioSpec, active_constraints: dict[str, Any]) -> list[str]:
+    expected_files = list(scenario.expected_changed_files)
+    pinned_files = list(normalized_active_constraints(active_constraints)["pinned_files"])
+    if not pinned_files:
+        return expected_files
+    if pinned_files != expected_files:
+        raise SmokeFailure(
+            f"pinned files must match scenario {scenario.name!r} expected changed files: "
+            f"pinned={pinned_files!r}, expected={expected_files!r}"
+        )
+    return pinned_files
+
+
+def active_constraints_contracts(
+    *,
+    guidance_state: dict[str, Any],
+    active_constraints: dict[str, Any],
+    guidance_boundary_written: bool = False,
+) -> dict[str, bool]:
+    accepted = guidance_state.get("accepted", []) if isinstance(guidance_state.get("accepted"), list) else []
+    avoid_paths = [
+        safe_relative_path(str(item.get("path", "")))
+        for item in accepted
+        if isinstance(item, dict) and item.get("type") == "avoid_file"
+    ]
+    pinned_paths = [
+        safe_relative_path(str(item.get("path", "")))
+        for item in accepted
+        if isinstance(item, dict) and item.get("type") == "pin_file"
+    ]
+    requested_tests = [
+        str(item.get("name", "")).strip()
+        for item in accepted
+        if isinstance(item, dict) and item.get("type") == "request_test" and str(item.get("name", "")).strip()
+    ]
+    constraints = normalized_active_constraints(active_constraints)
+    return {
+        "guidance_compaction_boundary_written": guidance_boundary_written,
+        "avoid_file_command_added_forbidden_file": all(
+            path in constraints["forbidden_files"] for path in avoid_paths
+        ),
+        "pin_file_command_added_pinned_file": all(path in constraints["pinned_files"] for path in pinned_paths),
+        "request_test_command_added_required_test": all(
+            name in constraints["required_tests"] for name in requested_tests
+        ),
+    }
+
+
+def plan_active_constraint_contracts(
+    *,
+    plan: dict[str, Any],
+    active_constraints: dict[str, Any],
+) -> dict[str, bool]:
+    constraints = normalized_active_constraints(active_constraints)
+    selected_files = [safe_relative_path(path) for path in plan.get("selected_files", [])]
+    allowed_write_paths = [safe_relative_path(path) for path in plan.get("allowed_write_paths", [])]
+    forbidden_files = set(constraints["forbidden_files"])
+    pinned_files = list(constraints["pinned_files"])
+    plan_constraints = (
+        normalized_active_constraints(plan.get("active_constraints"))
+        if isinstance(plan.get("active_constraints"), dict)
+        else {}
+    )
+    return {
+        "plan_consumed_active_constraints": plan_constraints == constraints,
+        "plan_respects_compacted_forbidden_files": not (
+            set(selected_files) & forbidden_files or set(allowed_write_paths) & forbidden_files
+        ),
+        "plan_respects_compacted_pinned_files": not pinned_files
+        or (selected_files == pinned_files and set(pinned_files).issubset(set(allowed_write_paths))),
+    }
+
+
+def validate_plan_active_constraints(plan: dict[str, Any], active_constraints: dict[str, Any]) -> dict[str, bool]:
+    contracts = plan_active_constraint_contracts(plan=plan, active_constraints=active_constraints)
+    if not all(contracts.values()):
+        raise SmokeFailure(f"edit plan failed active-constraint validation: {contracts!r}")
+    return contracts
+
+
+def guidance_commands_for_scenario(scenario: ScenarioSpec, guidance_text: str) -> list[dict[str, Any]]:
+    if scenario.name in {"structured_steering_constraints", AI_RESTART_RECOVERY_SCENARIO}:
+        return [dict(command) for command in STRUCTURED_STEERING_GUIDANCE_COMMANDS]
+    return [
+        {
+            "type": "add_instruction",
+            "text": guidance_text,
+            "source": "deterministic_smoke_supervisor",
+            "id": "guidance-001",
+        }
+    ]
 
 
 class CodeEditAgentAdapter(Protocol):
@@ -689,14 +1105,18 @@ class DeterministicCodeEditAgent:
         }
 
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
-        selected_files = list(self.scenario.expected_changed_files)
+        active_constraints = active_constraints_from_guidance_state(guidance_state)
+        selected_files = expected_files_from_active_constraints(self.scenario, active_constraints)
         return {
             "agent_mode": self.agent_mode,
             "scenario": self.scenario.name,
             "task": task,
             "selected_files": selected_files,
             "allowed_write_paths": selected_files,
-            "forbidden_paths": guidance_state.get("forbidden_paths", []),
+            "forbidden_paths": active_constraints["forbidden_files"],
+            "active_constraints": active_constraints,
+            "required_tests": active_constraints["required_tests"],
+            "freeform_instructions": active_constraints["freeform_instructions"],
             "edit_strategy": "replace_app_py_with_scenario_fixture",
             "requires_verification_before_commit": True,
             "expected_verification_success": self.scenario.expects_verification_success,
@@ -712,7 +1132,7 @@ class DeterministicCodeEditAgent:
             raise SmokeFailure(f"scenario is not supported by this stage: {self.scenario.name!r}")
         target = worktree / "app.py"
         before = target.read_text(encoding="utf-8")
-        target.write_text(self.scenario.final_app_py, encoding="utf-8")
+        write_text_lf(target, self.scenario.final_app_py)
         after = target.read_text(encoding="utf-8")
         return {
             "changed_files": list(self.scenario.expected_changed_files),
@@ -749,8 +1169,9 @@ class ReplayCodeEditAgent:
         }
 
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        active_constraints = active_constraints_from_guidance_state(guidance_state)
         source_changed_files = [safe_relative_path(path) for path in self.replay_report.get("changed_files", ["app.py"])]
-        expected_files = list(self.scenario.expected_changed_files)
+        expected_files = expected_files_from_active_constraints(self.scenario, active_constraints)
         if source_changed_files != expected_files:
             raise SmokeFailure(
                 f"replay source changed files do not match scenario {self.scenario.name!r}: {source_changed_files!r}"
@@ -761,7 +1182,10 @@ class ReplayCodeEditAgent:
             "task": task,
             "selected_files": source_changed_files,
             "allowed_write_paths": source_changed_files,
-            "forbidden_paths": guidance_state.get("forbidden_paths", []),
+            "forbidden_paths": active_constraints["forbidden_files"],
+            "active_constraints": active_constraints,
+            "required_tests": active_constraints["required_tests"],
+            "freeform_instructions": active_constraints["freeform_instructions"],
             "edit_strategy": "replay_scenario_fixture",
             "replay_source": {
                 "path": str(self.replay_report_path),
@@ -824,7 +1248,17 @@ def validated_live_plan_payload(
         raise SmokeFailure(
             f"live plan allowed_write_paths must match scenario {scenario.name!r}: got {allowed_write_paths!r}"
         )
-    forbidden_paths = [safe_relative_path(path) for path in guidance_state.get("forbidden_paths", [])]
+    active_constraints = active_constraints_from_guidance_state(guidance_state)
+    expected_files = expected_files_from_active_constraints(scenario, active_constraints)
+    if selected_files != expected_files:
+        raise SmokeFailure(
+            f"live plan selected_files must match active constraints for scenario {scenario.name!r}: got {selected_files!r}"
+        )
+    if allowed_write_paths != expected_files:
+        raise SmokeFailure(
+            f"live plan allowed_write_paths must match active constraints for scenario {scenario.name!r}: got {allowed_write_paths!r}"
+        )
+    forbidden_paths = list(active_constraints["forbidden_files"])
     overlap = sorted(set(allowed_write_paths) & set(forbidden_paths))
     if overlap:
         raise SmokeFailure(f"live plan attempts to write forbidden paths: {overlap!r}")
@@ -840,6 +1274,9 @@ def validated_live_plan_payload(
         "selected_files": selected_files,
         "allowed_write_paths": allowed_write_paths,
         "forbidden_paths": forbidden_paths,
+        "active_constraints": active_constraints,
+        "required_tests": active_constraints["required_tests"],
+        "freeform_instructions": active_constraints["freeform_instructions"],
         "edit_strategy": strategy,
         "planner": str(raw_plan.get("planner") or "unspecified"),
         "planner_source": source,
@@ -897,6 +1334,466 @@ class LivePlanCodeEditAgent:
 
 
 
+
+def env_truthy(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def extract_json_object_from_ai_text(text: str) -> dict[str, Any]:
+    stripped = str(text or "").strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped).strip()
+    candidates = [stripped]
+    first = stripped.find("{")
+    last = stripped.rfind("}")
+    if first >= 0 and last > first:
+        candidates.append(stripped[first : last + 1])
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise SmokeFailure(f"AI response did not contain a JSON object: {stripped[:500]!r}")
+
+
+def resolve_ai_provider(*, requested_provider: str, ai_command: str, scripted_ai_smoke: bool) -> str:
+    if scripted_ai_smoke:
+        return "scripted"
+    env_provider = str(os.environ.get("MAIN_COMPUTER_AI_SMOKE_PROVIDER", "")).strip().lower()
+    provider = str(requested_provider or env_provider or DEFAULT_AI_PROVIDER).strip().lower()
+    if provider not in AI_PROVIDERS:
+        raise SmokeFailure(f"unsupported AI provider: {provider!r}")
+    if provider == "auto":
+        if ai_command or os.environ.get("MAIN_COMPUTER_AI_SMOKE_COMMAND"):
+            return "command"
+        if os.environ.get("OPENAI_API_KEY"):
+            return "openai"
+        return "ollama"
+    return provider
+
+
+def resolve_ai_model(provider: str, requested_model: str) -> str:
+    model = str(requested_model or os.environ.get("MAIN_COMPUTER_AI_SMOKE_MODEL", "")).strip()
+    if model:
+        return model
+    if provider == "openai":
+        return os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_AI_MODEL)
+    if provider == "ollama":
+        return os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_AI_MODEL)
+    return ""
+
+
+def live_ai_smoke_configured() -> bool:
+    """Return whether the opt-in live AI pytest smoke should run.
+
+    The normal unit smoke remains offline.  Set MAIN_COMPUTER_RUN_LIVE_AI_SMOKE=1
+    plus an AI provider configuration to exercise a real model.
+    """
+
+    if not env_truthy("MAIN_COMPUTER_RUN_LIVE_AI_SMOKE"):
+        return False
+    provider = str(os.environ.get("MAIN_COMPUTER_AI_SMOKE_PROVIDER", "auto")).strip().lower() or "auto"
+    if provider == "scripted":
+        return False
+    if provider == "command":
+        return bool(os.environ.get("MAIN_COMPUTER_AI_SMOKE_COMMAND"))
+    if provider == "openai":
+        return bool(os.environ.get("OPENAI_API_KEY"))
+    # Ollama/auto can be a local developer daemon; let the test fail loudly if
+    # the opt-in flag is set but the configured daemon is unavailable.
+    return True
+
+
+def _open_url_json(url: str, payload: dict[str, Any], *, headers: dict[str, str] | None = None, timeout_seconds: float) -> dict[str, Any]:
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SmokeFailure(f"AI provider HTTP {exc.code} from {url}: {detail[:1000]}") from exc
+    except OSError as exc:
+        raise SmokeFailure(f"AI provider request failed for {url}: {exc}") from exc
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SmokeFailure(f"AI provider response was not JSON from {url}: {raw[:1000]!r}") from exc
+    if not isinstance(parsed, dict):
+        raise SmokeFailure(f"AI provider response must be a JSON object from {url}")
+    return parsed
+
+
+def call_openai_ai_json(*, system_prompt: str, user_prompt: str, model: str, timeout_seconds: float) -> LiveAIResult:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise SmokeFailure("OPENAI_API_KEY is required for --ai-provider openai")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    resolved_model = model or DEFAULT_OPENAI_AI_MODEL
+    payload = {
+        "model": resolved_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    parsed = _open_url_json(
+        f"{base_url}/chat/completions",
+        payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout_seconds=timeout_seconds,
+    )
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise SmokeFailure(f"OpenAI response did not include choices: {parsed!r}")
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise SmokeFailure(f"OpenAI response did not include message.content: {parsed!r}")
+    return LiveAIResult(
+        provider="openai",
+        model=resolved_model,
+        content=content,
+        metadata={"response_id": parsed.get("id"), "finish_reason": choices[0].get("finish_reason")},
+    )
+
+
+def call_ollama_ai_json(*, system_prompt: str, user_prompt: str, model: str, timeout_seconds: float) -> LiveAIResult:
+    host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+    resolved_model = model or DEFAULT_OLLAMA_AI_MODEL
+    payload = {
+        "model": resolved_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "format": "json",
+        "keep_alive": "10m",
+        "options": {"temperature": 0, "num_predict": 1024},
+    }
+    parsed = _open_url_json(f"{host}/api/chat", payload, timeout_seconds=timeout_seconds)
+    message = parsed.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise SmokeFailure(f"Ollama response did not include message.content: {parsed!r}")
+    return LiveAIResult(
+        provider="ollama",
+        model=resolved_model,
+        content=content,
+        metadata={"done": parsed.get("done"), "total_duration": parsed.get("total_duration")},
+    )
+
+
+def call_command_ai_json(*, system_prompt: str, user_prompt: str, model: str, command: str, timeout_seconds: float) -> LiveAIResult:
+    command_text = command or os.environ.get("MAIN_COMPUTER_AI_SMOKE_COMMAND", "")
+    if not command_text:
+        raise SmokeFailure("--ai-provider command requires --ai-command or MAIN_COMPUTER_AI_SMOKE_COMMAND")
+    request_payload = {
+        "system": system_prompt,
+        "user": user_prompt,
+        "model": model,
+        "response_format": "json_object",
+    }
+    result = subprocess.run(
+        command_text,
+        input=json.dumps(request_payload),
+        text=True,
+        capture_output=True,
+        shell=True,
+        timeout=timeout_seconds,
+    )
+    if result.returncode != 0:
+        raise SmokeFailure(
+            f"AI command failed with exit {result.returncode}: stdout={result.stdout[:500]!r} stderr={result.stderr[:500]!r}"
+        )
+    content = result.stdout.strip()
+    if not content:
+        raise SmokeFailure("AI command returned empty stdout")
+    return LiveAIResult(
+        provider="command",
+        model=model,
+        content=content,
+        metadata={"command": command_text, "stderr_sha256": text_sha256(result.stderr)},
+    )
+
+
+def write_ai_trace_event(trace_path: str | Path, payload: dict[str, Any]) -> None:
+    if not trace_path:
+        return
+    append_jsonl(Path(trace_path), {"timestamp": utc_now(), **payload})
+
+
+def summarize_ai_trace(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    started = [record for record in records if record.get("event") == "ai_call_started"]
+    finished = [record for record in records if record.get("event") == "ai_call_finished"]
+    failed = [record for record in records if record.get("event") == "ai_call_failed"]
+    live_finished = [
+        record
+        for record in finished
+        if record.get("provider") not in {"", None, "scripted", "scripted-local-smoke"}
+    ]
+    return {
+        "started_call_count": len(started),
+        "finished_call_count": len(finished),
+        "failed_call_count": len(failed),
+        "finished_live_call_count": len(live_finished),
+        "started_stages": [str(record.get("ai_stage", "")) for record in started],
+        "finished_live_stages": [str(record.get("ai_stage", "")) for record in live_finished],
+        "failed_stages": [str(record.get("ai_stage", "")) for record in failed],
+        "providers": sorted({str(record.get("provider", "")) for record in finished if record.get("provider")}),
+        "models": sorted({str(record.get("model", "")) for record in finished if record.get("model")}),
+    }
+
+
+def call_live_ai_json(
+    *,
+    stage: str,
+    system_prompt: str,
+    user_prompt: str,
+    requested_provider: str,
+    requested_model: str,
+    ai_command: str,
+    timeout_seconds: float,
+    scripted_ai_smoke: bool,
+    run_id: str = "",
+    trace_path: str | Path = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    provider = resolve_ai_provider(
+        requested_provider=requested_provider,
+        ai_command=ai_command,
+        scripted_ai_smoke=scripted_ai_smoke,
+    )
+    if provider == "scripted":
+        raise SmokeFailure("scripted AI adapter should not call live AI")
+    model = resolve_ai_model(provider, requested_model)
+    call_id = f"{stage}-{int(time.time() * 1000)}"
+    started = time.monotonic()
+    started_payload = {
+        "event": "ai_call_started",
+        "run_id": run_id,
+        "call_id": call_id,
+        "ai_stage": stage,
+        "provider": provider,
+        "model": model,
+        "timeout_seconds": timeout_seconds,
+        "system_prompt_sha256": text_sha256(system_prompt),
+        "user_prompt_sha256": text_sha256(user_prompt),
+    }
+    emit_event("ai_call_started", **{key: value for key, value in started_payload.items() if key != "event"})
+    write_ai_trace_event(trace_path, started_payload)
+    try:
+        if provider == "openai":
+            result = call_openai_ai_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                timeout_seconds=timeout_seconds,
+            )
+        elif provider == "ollama":
+            result = call_ollama_ai_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                timeout_seconds=timeout_seconds,
+            )
+        elif provider == "command":
+            result = call_command_ai_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                command=ai_command,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            raise SmokeFailure(f"unsupported live AI provider: {provider!r}")
+        duration_ms = int((time.monotonic() - started) * 1000)
+        payload = extract_json_object_from_ai_text(result.content)
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        failed_payload = {
+            "event": "ai_call_failed",
+            "run_id": run_id,
+            "call_id": call_id,
+            "ai_stage": stage,
+            "provider": provider,
+            "model": model,
+            "duration_ms": duration_ms,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+        emit_event("ai_call_failed", **{key: value for key, value in failed_payload.items() if key != "event"})
+        write_ai_trace_event(trace_path, failed_payload)
+        raise
+    finished_payload = {
+        "event": "ai_call_finished",
+        "run_id": run_id,
+        "call_id": call_id,
+        "ai_stage": stage,
+        "provider": result.provider,
+        "model": result.model,
+        "duration_ms": duration_ms,
+        "content_sha256": text_sha256(result.content),
+        "payload_keys": sorted(str(key) for key in payload.keys()),
+    }
+    emit_event("ai_call_finished", **{key: value for key, value in finished_payload.items() if key != "event"})
+    write_ai_trace_event(trace_path, finished_payload)
+    metadata = {
+        "stage": stage,
+        "provider": result.provider,
+        "model": result.model,
+        "uses_live_ai": True,
+        "scripted_ai_smoke": False,
+        "duration_ms": duration_ms,
+        "content_sha256": text_sha256(result.content),
+        "payload_keys": sorted(str(key) for key in payload.keys()),
+        "call_id": call_id,
+        **result.metadata,
+    }
+    return payload, metadata
+
+
+def ai_plan_system_prompt() -> str:
+    return (
+        "You are the planning stage of a safety-harnessed code editing agent. "
+        "Return only one JSON object. Do not use markdown. "
+        "The host, not you, applies edits. You must acknowledge and obey active_constraints."
+    )
+
+
+def ai_plan_user_prompt(*, task: str, scenario: ScenarioSpec, active_constraints: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "stage": "planning",
+            "task": task,
+            "fixture_files": {
+                "app.py": APP_PY_INITIAL,
+                "tests/test_app.py": TEST_APP_PY,
+                "README.md": README_MD,
+            },
+            "active_constraints": active_constraints,
+            "scenario_contract": {
+                "expected_changed_files": list(scenario.expected_changed_files),
+                "forbidden_files": list(scenario.forbidden_files),
+                "required_test": "python_import_and_greet_contract",
+            },
+            "required_response": {
+                "selected_files": ["app.py"],
+                "allowed_write_paths": ["app.py"],
+                "active_constraints_ack": active_constraints,
+                "required_tests": active_constraints.get("required_tests", []),
+                "rationale": "brief string",
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def ai_editor_system_prompt() -> str:
+    return (
+        "You are the editor-generation stage of a safety-harnessed code editing agent. "
+        "Return only one JSON object. Do not use markdown. "
+        "Return the complete final text for app.py in final_app_py. "
+        "Do not propose edits to README.md or tests."
+    )
+
+
+def ai_editor_user_prompt(*, plan: dict[str, Any], rejection_feedback: dict[str, Any] | None = None) -> str:
+    return json.dumps(
+        {
+            "stage": "editor_generation",
+            "task": plan.get("task"),
+            "selected_files": plan.get("selected_files"),
+            "allowed_write_paths": plan.get("allowed_write_paths"),
+            "active_constraints": normalized_active_constraints(plan.get("active_constraints")),
+            "current_files": {
+                "app.py": APP_PY_INITIAL,
+                "tests/test_app.py": TEST_APP_PY,
+                "README.md": README_MD,
+            },
+            "verification_contract": {
+                "python_import_and_greet_contract": [
+                    "app.greet('  Ada  ') == 'Hello, Ada!'",
+                    "app.greet('Ada') == 'Hello, Ada!'",
+                    "app.greet('\\tGrace\\n') == 'Hello, Grace!'",
+                ]
+            },
+            "rejection_feedback": rejection_feedback or {},
+            "required_response": {
+                "final_app_py": "complete final app.py text only",
+                "rationale": "brief string",
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def validate_ai_plan_payload(*, payload: dict[str, Any], task: str, scenario: ScenarioSpec, active_constraints: dict[str, Any]) -> dict[str, Any]:
+    expected_files = expected_files_from_active_constraints(scenario, active_constraints)
+    selected_files = [safe_relative_path(path) for path in payload.get("selected_files", [])]
+    allowed_write_paths = [safe_relative_path(path) for path in payload.get("allowed_write_paths", selected_files)]
+    ack = normalized_active_constraints(payload.get("active_constraints_ack", active_constraints))
+    required_tests = sorted({str(name).strip() for name in payload.get("required_tests", active_constraints["required_tests"]) if str(name).strip()})
+    validations = {
+        "ai_plan_selected_expected_files": selected_files == expected_files,
+        "ai_plan_allowed_expected_files": allowed_write_paths == expected_files,
+        "ai_plan_acknowledged_active_constraints": ack == active_constraints,
+        "ai_plan_did_not_select_forbidden_files": not (set(selected_files) & set(active_constraints["forbidden_files"])),
+        "ai_plan_includes_required_tests": set(active_constraints["required_tests"]).issubset(set(required_tests)),
+    }
+    if not all(validations.values()):
+        raise SmokeFailure(f"live AI plan failed host validation: {validations!r}; payload={payload!r}")
+    return {
+        "agent_mode": "ai-generated-editor",
+        "scenario": scenario.name,
+        "task": task,
+        "selected_files": selected_files,
+        "allowed_write_paths": allowed_write_paths,
+        "forbidden_paths": active_constraints["forbidden_files"],
+        "active_constraints": active_constraints,
+        "required_tests": required_tests,
+        "freeform_instructions": active_constraints["freeform_instructions"],
+        "edit_strategy": "live_ai_generated_app_text_with_host_wrapped_sandbox_editor",
+        "requires_generated_editor": True,
+        "requires_verification_before_commit": True,
+        "expected_verification_success": scenario.expects_verification_success,
+        "apply_mode": "sandbox_proposal_host_apply",
+        "planner": "live_ai",
+        "uses_ai": True,
+        "uses_live_ai": True,
+        "ai_plan_generated": True,
+        "active_constraints_ack": ack,
+        "rationale": str(payload.get("rationale", "")).strip(),
+        "ai_plan_validations": validations,
+    }
+
+
+def validate_ai_final_app_py(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SmokeFailure("live AI editor response must include non-empty final_app_py")
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    if "def greet" not in text:
+        raise SmokeFailure("live AI final_app_py must define greet")
+    if "__main__" not in text:
+        raise SmokeFailure("live AI final_app_py must preserve the __main__ smoke entrypoint")
+    return text
+
 class GeneratedEditorCodeEditAgent:
     """Deterministic generated-editor adapter with no direct worktree mutation.
 
@@ -922,14 +1819,18 @@ class GeneratedEditorCodeEditAgent:
         }
 
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
-        selected_files = list(self.scenario.expected_changed_files)
+        active_constraints = active_constraints_from_guidance_state(guidance_state)
+        selected_files = expected_files_from_active_constraints(self.scenario, active_constraints)
         return {
             "agent_mode": self.agent_mode,
             "scenario": self.scenario.name,
             "task": task,
             "selected_files": selected_files,
             "allowed_write_paths": selected_files,
-            "forbidden_paths": guidance_state.get("forbidden_paths", []),
+            "forbidden_paths": active_constraints["forbidden_files"],
+            "active_constraints": active_constraints,
+            "required_tests": active_constraints["required_tests"],
+            "freeform_instructions": active_constraints["freeform_instructions"],
             "edit_strategy": "generated_editor_scenario_fixture_with_sandbox_proposal",
             "requires_generated_editor": True,
             "requires_verification_before_commit": True,
@@ -938,14 +1839,235 @@ class GeneratedEditorCodeEditAgent:
         }
 
     def generate_editor(self, plan: dict[str, Any]) -> str:
+        active_constraints = normalized_active_constraints(plan.get("active_constraints"))
         allowed = [safe_relative_path(path) for path in plan.get("allowed_write_paths", [])]
-        expected_files = list(self.scenario.expected_changed_files)
+        expected_files = expected_files_from_active_constraints(self.scenario, active_constraints)
         if allowed != expected_files or expected_files != ["app.py"]:
             raise SmokeFailure(f"generated-editor fixture only supports app.py at this stage; got {allowed!r}")
+        plan_contracts = validate_plan_active_constraints(plan, active_constraints)
+        if not all(plan_contracts.values()):
+            raise SmokeFailure(f"generated-editor plan did not consume active constraints: {plan_contracts!r}")
         return deterministic_generated_editor_source(self.scenario.final_app_py)
 
     def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
         raise SmokeFailure("generated-editor adapter must not directly mutate the worktree; use sandbox proposal flow")
+
+
+class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
+    """Live-AI generated-editor adapter for restart/recovery smoke testing.
+
+    The AI is allowed to plan and propose the final app.py text.  The host still
+    owns path safety, active-constraint validation, sandboxing, apply, verification,
+    commit policy, and reporting.  Tests may opt into ``--scripted-ai-smoke`` for
+    offline harness coverage, but ``--use-ai`` alone now means a live provider.
+    """
+
+    agent_mode = "ai-generated-editor"
+
+    def __init__(
+        self,
+        scenario: ScenarioSpec | None = None,
+        *,
+        ai_provider: str = DEFAULT_AI_PROVIDER,
+        ai_model: str = "",
+        ai_command: str = "",
+        ai_timeout_seconds: float = DEFAULT_AI_TIMEOUT_SECONDS,
+        scripted_ai_smoke: bool = False,
+        run_id: str = "",
+        ai_trace_path: str = "",
+    ) -> None:
+        super().__init__(scenario)
+        self.requested_ai_provider = ai_provider
+        self.requested_ai_model = ai_model
+        self.ai_command = ai_command
+        self.ai_timeout_seconds = ai_timeout_seconds
+        self.run_id = run_id
+        self.ai_trace_path = ai_trace_path
+        self.scripted_ai_smoke = scripted_ai_smoke or ai_provider == "scripted"
+        self.resolved_ai_provider = resolve_ai_provider(
+            requested_provider=ai_provider,
+            ai_command=ai_command,
+            scripted_ai_smoke=self.scripted_ai_smoke,
+        )
+        self.resolved_ai_model = resolve_ai_model(self.resolved_ai_provider, ai_model)
+        self.last_plan_ai_metadata: dict[str, Any] = {}
+        self.last_editor_ai_metadata: dict[str, Any] = {}
+        self.last_editor_ai_payload: dict[str, Any] = {}
+        self.editor_attempt_index = 0
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            **super().metadata(),
+            "agent_mode": self.agent_mode,
+            "editor_source": "live_ai_app_text_host_wrapped"
+            if not self.scripted_ai_smoke
+            else "scripted_ai_smoke_adapter",
+            "uses_ai": True,
+            "uses_live_ai": not self.scripted_ai_smoke,
+            "ai_backend": self.resolved_ai_provider,
+            "ai_model": self.resolved_ai_model,
+            "scripted_ai_smoke": self.scripted_ai_smoke,
+            "ai_trace_path": self.ai_trace_path,
+            "ai_direct_write_access": False,
+            "recovery_supported": True,
+        }
+
+    def _call_ai_json(self, *, stage: str, system_prompt: str, user_prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        return call_live_ai_json(
+            stage=stage,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            requested_provider=self.requested_ai_provider,
+            requested_model=self.requested_ai_model,
+            ai_command=self.ai_command,
+            timeout_seconds=self.ai_timeout_seconds,
+            scripted_ai_smoke=self.scripted_ai_smoke,
+            run_id=self.run_id,
+            trace_path=self.ai_trace_path,
+        )
+
+    def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        active_constraints = active_constraints_from_guidance_state(guidance_state)
+        if self.scripted_ai_smoke:
+            plan = super().plan(task, guidance_state)
+            active_constraints = normalized_active_constraints(plan.get("active_constraints"))
+            plan.update(
+                {
+                    "agent_mode": self.agent_mode,
+                    "planner": "scripted_ai_smoke_planner",
+                    "uses_ai": True,
+                    "uses_live_ai": False,
+                    "scripted_ai_smoke": True,
+                    "ai_backend": "scripted-local-smoke",
+                    "ai_model": "",
+                    "ai_plan_generated": True,
+                    "active_constraints_ack": active_constraints,
+                    "edit_strategy": "scripted_ai_generated_editor_with_host_validated_retry",
+                }
+            )
+            self.last_plan_ai_metadata = {
+                "provider": "scripted",
+                "model": "",
+                "uses_live_ai": False,
+                "scripted_ai_smoke": True,
+                "stage": "planning",
+            }
+            return plan
+
+        payload, metadata = self._call_ai_json(
+            stage="planning",
+            system_prompt=ai_plan_system_prompt(),
+            user_prompt=ai_plan_user_prompt(
+                task=task,
+                scenario=self.scenario,
+                active_constraints=active_constraints,
+            ),
+        )
+        plan = validate_ai_plan_payload(
+            payload=payload,
+            task=task,
+            scenario=self.scenario,
+            active_constraints=active_constraints,
+        )
+        plan.update(
+            {
+                "ai_backend": metadata["provider"],
+                "ai_model": metadata["model"],
+                "ai_plan_metadata": metadata,
+            }
+        )
+        self.last_plan_ai_metadata = metadata
+        return plan
+
+    def _editor_source_from_ai_payload(
+        self,
+        *,
+        plan: dict[str, Any],
+        payload: dict[str, Any],
+        metadata: dict[str, Any],
+        attempt: int,
+    ) -> str:
+        final_app_py = validate_ai_final_app_py(payload.get("final_app_py"))
+        self.last_editor_ai_payload = {
+            "attempt": attempt,
+            "payload": {
+                "final_app_py_sha256": text_sha256(final_app_py),
+                "rationale": str(payload.get("rationale", "")).strip(),
+            },
+            "metadata": metadata,
+        }
+        self.last_editor_ai_metadata = metadata
+        source = deterministic_generated_editor_source(final_app_py)
+        return (
+            "# Host-wrapped live AI editor output.\n"
+            f"# ai_provider = {metadata.get('provider', '')!r}\n"
+            f"# ai_model = {metadata.get('model', '')!r}\n"
+            f"# ai_content_sha256 = {metadata.get('content_sha256', '')!r}\n"
+            f"# ai_attempt = {attempt!r}\n"
+            + source
+        )
+
+    def generate_editor(self, plan: dict[str, Any]) -> str:
+        if self.scripted_ai_smoke:
+            self.last_editor_ai_metadata = {
+                "provider": "scripted",
+                "model": "",
+                "uses_live_ai": False,
+                "scripted_ai_smoke": True,
+                "stage": "editor_generation",
+                "attempt": 1,
+            }
+            self.last_editor_ai_payload = {
+                "attempt": 1,
+                "payload": {"final_app_py_sha256": text_sha256(self.scenario.final_app_py), "rationale": "scripted"},
+                "metadata": self.last_editor_ai_metadata,
+            }
+            return super().generate_editor(plan)
+
+        self.editor_attempt_index += 1
+        payload, metadata = self._call_ai_json(
+            stage="editor_generation",
+            system_prompt=ai_editor_system_prompt(),
+            user_prompt=ai_editor_user_prompt(plan=plan),
+        )
+        metadata = {**metadata, "attempt": self.editor_attempt_index}
+        return self._editor_source_from_ai_payload(
+            plan=plan,
+            payload=payload,
+            metadata=metadata,
+            attempt=self.editor_attempt_index,
+        )
+
+    def generate_editor_retry(self, plan: dict[str, Any], rejection_feedback: dict[str, Any]) -> str:
+        if self.scripted_ai_smoke:
+            self.last_editor_ai_metadata = {
+                "provider": "scripted",
+                "model": "",
+                "uses_live_ai": False,
+                "scripted_ai_smoke": True,
+                "stage": "editor_generation_retry",
+                "attempt": 2,
+            }
+            self.last_editor_ai_payload = {
+                "attempt": 2,
+                "payload": {"final_app_py_sha256": text_sha256(self.scenario.final_app_py), "rationale": "scripted retry"},
+                "metadata": self.last_editor_ai_metadata,
+            }
+            return deterministic_generated_editor_source(self.scenario.final_app_py)
+
+        self.editor_attempt_index += 1
+        payload, metadata = self._call_ai_json(
+            stage="editor_generation_retry",
+            system_prompt=ai_editor_system_prompt(),
+            user_prompt=ai_editor_user_prompt(plan=plan, rejection_feedback=rejection_feedback),
+        )
+        metadata = {**metadata, "attempt": self.editor_attempt_index}
+        return self._editor_source_from_ai_payload(
+            plan=plan,
+            payload=payload,
+            metadata=metadata,
+            attempt=self.editor_attempt_index,
+        )
 
 
 def deterministic_generated_editor_source(final_app_py: str = APP_PY_DETERMINISTIC_FINAL) -> str:
@@ -1115,13 +2237,16 @@ def execute_generated_editor_sandbox(editor_source: str, worktree: Path, allowed
 def validate_and_apply_sandbox_proposal(worktree: Path, plan: dict[str, Any], sandbox_result: dict[str, Any]) -> dict[str, Any]:
     allowed_paths = [safe_relative_path(path) for path in plan.get("allowed_write_paths", [])]
     selected_files = [safe_relative_path(path) for path in plan.get("selected_files", [])]
-    forbidden_paths = [safe_relative_path(path) for path in plan.get("forbidden_paths", [])]
+    active_constraints = normalized_active_constraints(plan.get("active_constraints"))
+    forbidden_paths = list(active_constraints["forbidden_files"])
+    pinned_files = list(active_constraints["pinned_files"])
     proposed_writes = sandbox_result.get("proposed_writes", {})
     if not isinstance(proposed_writes, dict):
         raise SmokeFailure("sandbox result proposed_writes must be an object")
 
     proposed_paths = sorted(safe_relative_path(path) for path in proposed_writes.keys())
     changed_paths = sorted(safe_relative_path(path) for path in sandbox_result.get("changed_paths", []))
+    plan_constraint_contracts = plan_active_constraint_contracts(plan=plan, active_constraints=active_constraints)
     validations = {
         "sandbox_status_done": sandbox_result.get("status") == "done",
         "sandbox_did_not_mutate_worktree": sandbox_result.get("worktree_unchanged_during_sandbox") is True,
@@ -1129,7 +2254,11 @@ def validate_and_apply_sandbox_proposal(worktree: Path, plan: dict[str, Any], sa
         "proposed_paths_within_allowed": set(proposed_paths).issubset(set(allowed_paths)),
         "changed_paths_match_selected_files": changed_paths == sorted(selected_files),
         "forbidden_paths_not_proposed": not (set(proposed_paths) & set(forbidden_paths)),
+        "pinned_files_match_changed_paths": not pinned_files or changed_paths == sorted(pinned_files),
         "requires_verification_before_commit": plan.get("requires_verification_before_commit") is True,
+        "host_apply_rechecked_active_constraints": all(plan_constraint_contracts.values())
+        and not (set(proposed_paths) & set(forbidden_paths))
+        and (not pinned_files or changed_paths == sorted(pinned_files)),
     }
     if not all(validations.values()):
         raise SmokeFailure(f"sandbox proposal failed host validation: {validations!r}")
@@ -1139,7 +2268,7 @@ def validate_and_apply_sandbox_proposal(worktree: Path, plan: dict[str, Any], sa
         for path in proposed_paths
     }
     for path in proposed_paths:
-        (worktree / path).write_text(str(proposed_writes[path]), encoding="utf-8")
+        write_text_lf(worktree / path, str(proposed_writes[path]))
     after_sha256 = {
         path: file_sha256(worktree / path)
         for path in proposed_paths
@@ -1156,6 +2285,209 @@ def validate_and_apply_sandbox_proposal(worktree: Path, plan: dict[str, Any], sa
         "before_sha256_by_path": before_sha256,
         "after_sha256_by_path": after_sha256,
     }
+
+
+def inject_bad_ai_sandbox_result(sandbox_result: dict[str, Any], injection: str) -> dict[str, Any]:
+    if not injection:
+        return sandbox_result
+    if injection != "forbidden_file_write":
+        raise SmokeFailure(f"unsupported bad AI result injection: {injection!r}")
+    mutated = json.loads(json.dumps(sandbox_result))
+    proposed_writes = dict(mutated.get("proposed_writes", {}))
+    proposed_writes["README.md"] = README_MD + "\nUnauthorized AI edit that host apply must reject.\n"
+    mutated["proposed_writes"] = proposed_writes
+    mutated["changed_paths"] = sorted(set(mutated.get("changed_paths", [])) | {"README.md"})
+    mutated["proposed_write_sha256"] = {
+        path: text_sha256(text)
+        for path, text in proposed_writes.items()
+    }
+    mutated["fault_injection"] = {
+        "enabled": True,
+        "type": injection,
+        "reason": "prove host apply rejects a forbidden AI/editor proposal before any worktree mutation",
+    }
+    return mutated
+
+
+def run_ai_generated_editor_recovery_apply(
+    *,
+    run_dir: Path,
+    worktree: Path,
+    plan: dict[str, Any],
+    editor_source: str,
+    edit_plan_boundary: dict[str, Any],
+    inject_bad_ai_result: str,
+    agent_adapter: AiGeneratedEditorCodeEditAgent,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not inject_bad_ai_result:
+        return run_generated_editor_sandbox_apply(
+            run_dir=run_dir,
+            worktree=worktree,
+            plan=plan,
+            editor_source=editor_source,
+            edit_plan_boundary=edit_plan_boundary,
+        )
+
+    editor_dir = run_dir / "generated_editor"
+    editor_dir.mkdir(parents=True, exist_ok=True)
+    attempt_1_source_path = editor_dir / "ai_attempt_1_editor.py"
+    attempt_1_source_path.write_text(editor_source, encoding="utf-8")
+    attempt_1_preflight = generated_editor_static_preflight(editor_source)
+    attempt_1_boundary = write_boundary(
+        run_dir,
+        "ai_generated_editor_attempt_1_boundary",
+        {
+            "boundary_type": "ai_generated_editor_attempt",
+            "attempt": 1,
+            "editor_source_path": str(attempt_1_source_path),
+            "editor_source_sha256": text_sha256(editor_source),
+            "active_constraints": normalized_active_constraints(plan.get("active_constraints")),
+            "ai_editor": dict(getattr(agent_adapter, "last_editor_ai_payload", {}) or {}),
+            "preflight": attempt_1_preflight,
+            "contracts": {
+                "ai_attempt_1_recorded": True,
+                "generated_editor_static_preflight_passed": attempt_1_preflight["ok"],
+            },
+            "parent_boundaries": [edit_plan_boundary["sha256"]],
+            "next_stage": "generated_editor_sandbox",
+        },
+    )
+    if not attempt_1_preflight["ok"]:
+        raise SmokeFailure(f"AI generated editor attempt 1 static preflight failed: {attempt_1_preflight['issues']!r}")
+
+    attempt_1_sandbox = execute_generated_editor_sandbox(editor_source, worktree, plan.get("allowed_write_paths", []))
+    bad_sandbox = inject_bad_ai_sandbox_result(attempt_1_sandbox, inject_bad_ai_result)
+    attempt_1_sandbox_boundary = write_boundary(
+        run_dir,
+        "ai_generated_editor_attempt_1_sandbox_boundary",
+        {
+            "boundary_type": "ai_generated_editor_sandbox_result",
+            "attempt": 1,
+            "sandbox": {
+                key: value
+                for key, value in bad_sandbox.items()
+                if key != "proposed_writes"
+            },
+            "proposed_write_paths": sorted(bad_sandbox.get("proposed_writes", {}).keys()),
+            "fault_injection": bad_sandbox.get("fault_injection", {}),
+            "contracts": {
+                "ai_attempt_1_recorded": True,
+                "bad_ai_result_injected": bool(bad_sandbox.get("fault_injection", {}).get("enabled")),
+                "generated_editor_worktree_unchanged_during_sandbox": bad_sandbox[
+                    "worktree_unchanged_during_sandbox"
+                ],
+            },
+            "parent_boundaries": [attempt_1_boundary["sha256"]],
+            "next_stage": "host_apply_rejection",
+        },
+    )
+
+    status_before_rejection = status_porcelain(worktree)
+    sha_before_rejection = {
+        "app.py": file_sha256(worktree / "app.py"),
+        "README.md": file_sha256(worktree / "README.md"),
+    }
+    rejection_error = ""
+    try:
+        validate_and_apply_sandbox_proposal(worktree, plan, bad_sandbox)
+    except SmokeFailure as exc:
+        rejection_error = str(exc)
+    else:
+        raise SmokeFailure("bad AI result was unexpectedly accepted by host apply")
+
+    status_after_rejection = status_porcelain(worktree)
+    sha_after_rejection = {
+        "app.py": file_sha256(worktree / "app.py"),
+        "README.md": file_sha256(worktree / "README.md"),
+    }
+    active_constraints = normalized_active_constraints(plan.get("active_constraints"))
+    rejected_paths = sorted(set(bad_sandbox.get("proposed_writes", {})) & set(active_constraints["forbidden_files"]))
+    attempt_1_ai_metadata = dict(getattr(agent_adapter, "last_editor_ai_metadata", {}) or {})
+    recovery_contracts = {
+        "ai_attempt_1_recorded": True,
+        "bad_ai_result_injected": True,
+        "host_apply_rejected_forbidden_file_from_ai_output": "README.md" in rejected_paths,
+        "no_files_changed_after_rejected_ai_attempt": status_before_rejection == status_after_rejection
+        and sha_before_rejection == sha_after_rejection,
+        "ai_retry_consumed_rejection_feedback": True,
+    }
+    if getattr(agent_adapter, "scripted_ai_smoke", False):
+        recovery_contracts["ai_attempt_1_used_scripted_ai_smoke"] = True
+    else:
+        recovery_contracts["ai_attempt_1_used_live_ai"] = bool(attempt_1_ai_metadata.get("uses_live_ai"))
+    host_apply_rejection_boundary = write_boundary(
+        run_dir,
+        "host_apply_rejection_boundary",
+        {
+            "boundary_type": "host_apply_rejection",
+            "reason": "forbidden_file_write",
+            "error": rejection_error,
+            "attempt": 1,
+            "rejected_paths": rejected_paths,
+            "status_before_rejection": status_before_rejection,
+            "status_after_rejection": status_after_rejection,
+            "sha_before_rejection": sha_before_rejection,
+            "sha_after_rejection": sha_after_rejection,
+            "active_constraints": active_constraints,
+            "ai_editor": dict(getattr(agent_adapter, "last_editor_ai_payload", {}) or {}),
+            "contracts": recovery_contracts,
+            "parent_boundaries": [attempt_1_sandbox_boundary["sha256"]],
+            "next_stage": "generated_editor_retry",
+        },
+    )
+    if not all(recovery_contracts.values()):
+        raise SmokeFailure(f"bad AI result recovery preconditions failed: {recovery_contracts!r}")
+
+    retry_feedback = {
+        "reason": "forbidden_file_write",
+        "rejected_paths": rejected_paths,
+        "host_apply_error": rejection_error,
+        "instruction": "Regenerate a corrected app.py-only proposal. Do not touch README.md.",
+    }
+    retry_source = agent_adapter.generate_editor_retry(plan, retry_feedback)
+    edit_result, retry_boundaries = run_generated_editor_sandbox_apply(
+        run_dir=run_dir,
+        worktree=worktree,
+        plan=plan,
+        editor_source=retry_source,
+        edit_plan_boundary=host_apply_rejection_boundary,
+    )
+    retry_sandbox = edit_result.get("generated_editor", {}).get("sandbox", {})
+    attempt_2_ai_metadata = dict(getattr(agent_adapter, "last_editor_ai_metadata", {}) or {})
+    retry_contracts = {
+        **recovery_contracts,
+        "ai_attempt_2_recorded": True,
+        "ai_retry_removed_forbidden_file": "README.md" not in set(retry_sandbox.get("proposed_write_sha256", {})),
+        "host_apply_accepted_corrected_ai_output": edit_result.get("changed_files") == sorted(plan.get("selected_files", [])),
+    }
+    if getattr(agent_adapter, "scripted_ai_smoke", False):
+        retry_contracts["ai_attempt_2_used_scripted_ai_smoke"] = True
+    else:
+        retry_contracts["ai_attempt_2_used_live_ai"] = bool(attempt_2_ai_metadata.get("uses_live_ai"))
+    if isinstance(edit_result.get("generated_editor"), dict):
+        generated = edit_result["generated_editor"]
+        generated["recovery"] = {
+            "attempts": 2,
+            "injected_bad_result": inject_bad_ai_result,
+            "rejected_paths": rejected_paths,
+            "rejection_boundary": host_apply_rejection_boundary["name"],
+            "retry_boundary_names": [boundary["name"] for boundary in retry_boundaries],
+            "retry_ai_editor": dict(getattr(agent_adapter, "last_editor_ai_payload", {}) or {}),
+        }
+        if isinstance(generated.get("contracts"), dict):
+            generated["contracts"].update(retry_contracts)
+    return (
+        {
+            **edit_result,
+            "planned_by": "ai-generated-editor",
+        },
+        [
+            attempt_1_boundary,
+            attempt_1_sandbox_boundary,
+            host_apply_rejection_boundary,
+            *retry_boundaries,
+        ],
+    )
 
 
 def run_generated_editor_sandbox_apply(
@@ -1178,6 +2510,7 @@ def run_generated_editor_sandbox_apply(
             "editor_source_path": str(editor_source_path),
             "editor_source_sha256": text_sha256(editor_source),
             "generated_editor_present": bool(editor_source.strip()),
+            "active_constraints": normalized_active_constraints(plan.get("active_constraints")),
             "direct_worktree_mutation_allowed": False,
             "parent_boundaries": [edit_plan_boundary["sha256"]],
             "next_stage": "generated_editor_static_preflight",
@@ -1225,8 +2558,20 @@ def run_generated_editor_sandbox_apply(
                 ),
                 "generated_editor_output_matches_plan": sorted(sandbox_result["changed_paths"])
                 == sorted(plan.get("selected_files", [])),
+                "generated_editor_consumed_active_constraints": isinstance(plan.get("active_constraints"), dict),
+                "generated_editor_respects_compacted_constraints": all(
+                    plan_active_constraint_contracts(
+                        plan=plan,
+                        active_constraints=normalized_active_constraints(plan.get("active_constraints")),
+                    ).values()
+                )
+                and not (
+                    set(sandbox_result["proposed_writes"])
+                    & set(normalized_active_constraints(plan.get("active_constraints"))["forbidden_files"])
+                ),
                 "generated_editor_did_not_touch_forbidden_files": not (
-                    set(sandbox_result["proposed_writes"]) & set(plan.get("forbidden_paths", []))
+                    set(sandbox_result["proposed_writes"])
+                    & set(normalized_active_constraints(plan.get("active_constraints"))["forbidden_files"])
                 ),
                 "generated_editor_worktree_unchanged_during_sandbox": sandbox_result[
                     "worktree_unchanged_during_sandbox"
@@ -1246,6 +2591,9 @@ def run_generated_editor_sandbox_apply(
     host_apply_contracts = {
         "host_validated_sandbox_proposal": host_apply["ok"],
         "host_applied_sandbox_proposal": host_apply["changed_files"] == sorted(plan.get("selected_files", [])),
+        "host_apply_rechecked_active_constraints": bool(
+            host_apply.get("validations", {}).get("host_apply_rechecked_active_constraints")
+        ),
         "generated_editor_output_matches_scenario_contract": host_apply["changed_files"] == list(scenario.expected_changed_files)
         and host_apply["after_sha256_by_path"].get("app.py") == scenario_expected_sha,
     }
@@ -1280,8 +2628,20 @@ def run_generated_editor_sandbox_apply(
         ),
         "generated_editor_output_matches_plan": sorted(sandbox_result["changed_paths"])
         == sorted(plan.get("selected_files", [])),
+        "generated_editor_consumed_active_constraints": isinstance(plan.get("active_constraints"), dict),
+        "generated_editor_respects_compacted_constraints": all(
+            plan_active_constraint_contracts(
+                plan=plan,
+                active_constraints=normalized_active_constraints(plan.get("active_constraints")),
+            ).values()
+        )
+        and not (
+            set(sandbox_result["proposed_writes"])
+            & set(normalized_active_constraints(plan.get("active_constraints"))["forbidden_files"])
+        ),
         "generated_editor_did_not_touch_forbidden_files": not (
-            set(sandbox_result["proposed_writes"]) & set(plan.get("forbidden_paths", []))
+            set(sandbox_result["proposed_writes"])
+            & set(normalized_active_constraints(plan.get("active_constraints"))["forbidden_files"])
         ),
         "generated_editor_worktree_unchanged_during_sandbox": sandbox_result["worktree_unchanged_during_sandbox"],
         **host_apply_contracts,
@@ -1329,6 +2689,7 @@ def load_report(path: Path) -> dict[str, Any]:
 
 
 def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
+    normalize_agent_selection(args)
     scenario = scenario_from_args(args)
     if args.agent == "deterministic":
         return DeterministicCodeEditAgent(scenario)
@@ -1346,6 +2707,20 @@ def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
         return LivePlanCodeEditAgent(raw_plan, plan_source, scenario)
     if args.agent == "generated-editor":
         return GeneratedEditorCodeEditAgent(scenario)
+    if args.agent == "ai-generated-editor":
+        return AiGeneratedEditorCodeEditAgent(
+            scenario,
+            ai_provider=str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
+            ai_model=str(getattr(args, "ai_model", "") or ""),
+            ai_command=str(getattr(args, "ai_command", "") or ""),
+            ai_timeout_seconds=float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS)),
+            scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
+            run_id=str(getattr(args, "run_id", "") or ""),
+            ai_trace_path=str(
+                getattr(args, "ai_trace_path", "")
+                or (str(Path(getattr(args, "run_dir", "")) / "ai_calls.jsonl") if getattr(args, "run_dir", "") else "")
+            ),
+        )
     raise SmokeFailure(f"unsupported agent mode for this smoke stage: {args.agent!r}")
 
 
@@ -1786,6 +3161,7 @@ def resolve_commit_policy(
 
 
 def run_agent(args: argparse.Namespace) -> int:
+    normalize_agent_selection(args)
     run_dir = Path(args.run_dir).resolve()
     commands_path = Path(args.commands_path).resolve() if args.commands_path else run_dir / "commands.jsonl"
     report_path = Path(args.report_path).resolve() if args.report_path else run_dir / "report.json"
@@ -1811,6 +3187,7 @@ def run_agent(args: argparse.Namespace) -> int:
         agent_containerized = os.environ.get("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER") == "1"
         agent_docker_network = os.environ.get("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "")
         agent_source_mount = os.environ.get("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "")
+        local_agent_smoke_allowed = bool(getattr(args, "allow_local_agent_smoke", False))
         event(
             "run_started",
             role="agent",
@@ -1821,6 +3198,9 @@ def run_agent(args: argparse.Namespace) -> int:
             containerized=agent_containerized,
             docker_network=agent_docker_network,
             source_mount=agent_source_mount,
+            restart=bool(getattr(args, "restart", False)),
+            use_ai=bool(getattr(args, "use_ai", False)),
+            local_agent_smoke_allowed=bool(getattr(args, "allow_local_agent_smoke", False)),
         )
 
         agent_adapter = build_agent_adapter(args)
@@ -1829,112 +3209,244 @@ def run_agent(args: argparse.Namespace) -> int:
 
         origin = run_dir / "origin"
         worktree = run_dir / "worktree"
+        restart_enabled = bool(getattr(args, "restart", False))
+        restart_info: dict[str, Any] = {
+            "enabled": restart_enabled,
+            "resumed_from_stage": "",
+            "reused_boundaries": [],
+            "new_boundaries": [],
+            "loaded_existing_run_dir": False,
+            "preserved_active_constraints": False,
+        }
+        boundary_names: list[str] = []
+        restart_count = 0
 
-        event("stage_started", stage="fixture_origin")
-        fixture = create_fixture_origin(origin)
-        event("stage_completed", stage="fixture_origin", base_head=fixture["base_head"])
+        if restart_enabled:
+            run_state = load_run_state(run_dir)
+            completed_stages = [str(stage) for stage in run_state.get("completed_stages", [])]
+            if "guidance_compaction" not in completed_stages:
+                raise SmokeFailure("--restart currently requires a completed guidance_compaction stage")
+            if not origin.exists() or not worktree.exists():
+                raise SmokeFailure("--restart run directory is missing origin/worktree state")
+            bootstrap_boundary = load_boundary(run_dir, "bootstrap_boundary")
+            guidance_boundary = load_boundary(run_dir, "guidance_boundary")
+            boundary_names = ["bootstrap_boundary", "guidance_boundary"]
+            bootstrap_repo = bootstrap_boundary["payload"].get("repo", {})
+            if not isinstance(bootstrap_repo, dict):
+                raise SmokeFailure("bootstrap boundary is missing repo state")
+            base_head = str(bootstrap_repo.get("base_head", ""))
+            if not base_head:
+                raise SmokeFailure("bootstrap boundary is missing base_head")
+            readme_before_sha = file_sha256(worktree / "README.md")
+            guidance_payload = guidance_boundary["payload"]
+            guidance_state = {
+                "accepted": list(guidance_payload.get("accepted_guidance", [])),
+                "rejected": list(guidance_payload.get("rejected_guidance", [])),
+                "instructions": list(guidance_payload.get("instructions", [])),
+                "forbidden_paths": list(guidance_payload.get("forbidden_paths", [])),
+                "active_constraints": normalized_active_constraints(guidance_payload.get("active_constraints")),
+            }
+            active_constraints = active_constraints_from_guidance_state(guidance_state)
+            seen_count = len(read_jsonl(commands_path))
+            restart_count = int(run_state.get("restart_count", 0) or 0) + 1
+            restart_info.update(
+                {
+                    "loaded_existing_run_dir": True,
+                    "resumed_from_stage": str(run_state.get("next_stage") or "edit_plan"),
+                    "reused_boundaries": list(boundary_names),
+                    "restart_count": restart_count,
+                    "preserved_active_constraints": active_constraints
+                    == normalized_active_constraints(guidance_payload.get("active_constraints")),
+                }
+            )
+            event(
+                "restart_loaded_existing_run_dir",
+                resumed_from_stage=restart_info["resumed_from_stage"],
+                reused_boundaries=restart_info["reused_boundaries"],
+                restart_count=restart_count,
+            )
+        else:
+            event("stage_started", stage="fixture_origin")
+            fixture = create_fixture_origin(origin)
+            event("stage_completed", stage="fixture_origin", base_head=fixture["base_head"])
 
-        event("stage_started", stage="clone_and_branch")
-        clone = clone_fixture(origin, worktree, target_branch)
-        base_head = clone["base_head"]
-        readme_before_sha = file_sha256(worktree / "README.md")
-        event("stage_completed", stage="clone_and_branch", branch=target_branch, base_head=base_head)
+            event("stage_started", stage="clone_and_branch")
+            clone = clone_fixture(origin, worktree, target_branch)
+            base_head = clone["base_head"]
+            readme_before_sha = file_sha256(worktree / "README.md")
+            event("stage_completed", stage="clone_and_branch", branch=target_branch, base_head=base_head)
 
-        bootstrap_boundary = write_boundary(
-            run_dir,
-            "bootstrap_boundary",
-            {
-                "boundary_type": "agent_bootstrap",
-                "agent_mode": args.agent,
-                "adapter": agent_adapter.agent_mode,
-                "task": task,
-                "scenario": scenario.name,
-                "scenario_contracts": scenario_contracts,
-                "repo": {
-                    "origin_path": str(origin),
-                    "worktree": str(worktree),
-                    "base_head": base_head,
-                    "target_branch": target_branch,
+            bootstrap_boundary = write_boundary(
+                run_dir,
+                "bootstrap_boundary",
+                {
+                    "boundary_type": "agent_bootstrap",
+                    "agent_mode": args.agent,
+                    "adapter": agent_adapter.agent_mode,
+                    "task": task,
+                    "scenario": scenario.name,
+                    "scenario_contracts": scenario_contracts,
+                    "repo": {
+                        "origin_path": str(origin),
+                        "worktree": str(worktree),
+                        "base_head": base_head,
+                        "target_branch": target_branch,
+                    },
+                    "scope": {
+                        "allowed_roots": ["repo-root"],
+                        "allowed_write_paths": list(scenario.expected_changed_files),
+                        "forbidden_paths": list(scenario.forbidden_files),
+                        "forbidden_path_patterns": ["absolute paths", ".. traversal"],
+                    },
+                    "next_stage": "guidance_window",
                 },
-                "scope": {
-                    "allowed_roots": ["repo-root"],
-                    "allowed_write_paths": list(scenario.expected_changed_files),
-                    "forbidden_paths": list(scenario.forbidden_files),
-                    "forbidden_path_patterns": ["absolute paths", ".. traversal"],
-                },
-                "next_stage": "guidance_window",
-            },
-        )
-        event("boundary_committed", boundary="bootstrap_boundary", sha256=bootstrap_boundary["sha256"])
+            )
+            boundary_names.append("bootstrap_boundary")
+            event("boundary_committed", boundary="bootstrap_boundary", sha256=bootstrap_boundary["sha256"])
+            write_run_state(
+                run_dir,
+                run_id=args.run_id,
+                agent_mode=args.agent,
+                scenario=scenario.name,
+                completed_stages=["bootstrap"],
+                next_stage="guidance_compaction",
+                origin=origin,
+                worktree=worktree,
+                commands_path=commands_path,
+                report_path=report_path,
+                boundary_names=boundary_names,
+            )
+            if maybe_stop_after_stage(
+                args=args,
+                run_dir=run_dir,
+                report_path=report_path,
+                stage="bootstrap",
+                next_stage="guidance_compaction",
+                restart_info=restart_info,
+                boundary_names=boundary_names,
+            ):
+                return 0
 
-        event(
-            "guidance_window_open",
-            commands_path=str(commands_path),
-            guidance_window_seconds=args.guidance_window_seconds,
-            poll_seconds=args.poll_seconds,
-        )
+            event(
+                "guidance_window_open",
+                commands_path=str(commands_path),
+                guidance_window_seconds=args.guidance_window_seconds,
+                poll_seconds=args.poll_seconds,
+            )
 
-        seen_count = 0
-        all_guidance_records: list[dict[str, Any]] = []
-        guidance_deadline = time.monotonic() + args.guidance_window_seconds
-        while time.monotonic() < guidance_deadline:
+            seen_count = 0
+            all_guidance_records: list[dict[str, Any]] = []
+            guidance_deadline = time.monotonic() + args.guidance_window_seconds
+            while time.monotonic() < guidance_deadline:
+                new_records, seen_count = load_new_commands(commands_path, seen_count)
+                if new_records:
+                    all_guidance_records.extend(new_records)
+                    event("guidance_received", new_records=len(new_records), total_records=len(all_guidance_records))
+                    break
+                time.sleep(args.poll_seconds)
+
+            # Poll once more at the boundary so commands written before launch or just
+            # after the window closes are still represented deterministically.
             new_records, seen_count = load_new_commands(commands_path, seen_count)
             if new_records:
                 all_guidance_records.extend(new_records)
                 event("guidance_received", new_records=len(new_records), total_records=len(all_guidance_records))
-                break
-            time.sleep(args.poll_seconds)
 
-        # Poll once more at the boundary so commands written before launch or just
-        # after the window closes are still represented deterministically.
-        new_records, seen_count = load_new_commands(commands_path, seen_count)
-        if new_records:
-            all_guidance_records.extend(new_records)
-            event("guidance_received", new_records=len(new_records), total_records=len(all_guidance_records))
-
-        guidance_state = derive_guidance_state(all_guidance_records)
-        guidance_state["forbidden_paths"] = sorted(
-            set(guidance_state.get("forbidden_paths", [])) | set(scenario.forbidden_files)
-        )
-        guidance_boundary = write_boundary(
-            run_dir,
-            "guidance_boundary",
-            {
-                "boundary_type": "guidance_compaction",
-                "commands_path": str(commands_path),
-                "accepted_guidance": guidance_state["accepted"],
-                "rejected_guidance": guidance_state["rejected"],
-                "instructions": guidance_state["instructions"],
-                "forbidden_paths": guidance_state["forbidden_paths"],
-                "active_constraints": {
-                    "forbidden_files": guidance_state["forbidden_paths"],
-                    "expected_changed_files": list(scenario.expected_changed_files),
-                    "requires_commit": scenario.requires_commit,
-                    "requires_approval": scenario.requires_approval,
+            guidance_state = merge_scenario_constraints(derive_guidance_state(all_guidance_records), scenario)
+            active_constraints = active_constraints_from_guidance_state(guidance_state)
+            guidance_boundary = write_boundary(
+                run_dir,
+                "guidance_boundary",
+                {
+                    "boundary_type": "guidance_compaction",
+                    "commands_path": str(commands_path),
+                    "accepted_guidance": guidance_state["accepted"],
+                    "rejected_guidance": guidance_state["rejected"],
+                    "instructions": guidance_state["instructions"],
+                    "forbidden_paths": guidance_state["forbidden_paths"],
+                    "active_constraints": active_constraints,
+                    "contracts": active_constraints_contracts(
+                        guidance_state=guidance_state,
+                        active_constraints=active_constraints,
+                        guidance_boundary_written=True,
+                    ),
+                    "parent_boundaries": [bootstrap_boundary["sha256"]],
+                    "next_stage": "edit_plan",
                 },
-                "next_stage": "edit_plan",
-            },
-        )
-        event(
-            "boundary_committed",
-            boundary="guidance_boundary",
-            sha256=guidance_boundary["sha256"],
-            accepted_guidance_count=len(guidance_state["accepted"]),
-        )
+            )
+            boundary_names.append("guidance_boundary")
+            event(
+                "boundary_committed",
+                boundary="guidance_boundary",
+                sha256=guidance_boundary["sha256"],
+                accepted_guidance_count=len(guidance_state["accepted"]),
+            )
+            write_run_state(
+                run_dir,
+                run_id=args.run_id,
+                agent_mode=args.agent,
+                scenario=scenario.name,
+                completed_stages=["bootstrap", "guidance_compaction"],
+                next_stage="edit_plan",
+                origin=origin,
+                worktree=worktree,
+                commands_path=commands_path,
+                report_path=report_path,
+                boundary_names=boundary_names,
+            )
+            if maybe_stop_after_stage(
+                args=args,
+                run_dir=run_dir,
+                report_path=report_path,
+                stage="guidance_compaction",
+                next_stage="edit_plan",
+                restart_info=restart_info,
+                boundary_names=boundary_names,
+            ):
+                return 0
 
         plan = agent_adapter.plan(task, guidance_state)
-        generated_editor_mode = agent_adapter.agent_mode == "generated-editor"
+        plan_constraint_contracts = validate_plan_active_constraints(plan, active_constraints)
+        generated_editor_mode = agent_adapter.agent_mode in {"generated-editor", "ai-generated-editor"}
         edit_plan_boundary = write_boundary(
             run_dir,
             "edit_plan_boundary",
             {
                 "boundary_type": "edit_plan",
                 "plan": plan,
+                "active_constraints": active_constraints,
+                "contracts": plan_constraint_contracts,
                 "parent_boundaries": [bootstrap_boundary["sha256"], guidance_boundary["sha256"]],
                 "next_stage": "generated_editor" if generated_editor_mode else "apply_edit",
             },
         )
+        boundary_names.append("edit_plan_boundary")
+        restart_info["new_boundaries"].append("edit_plan_boundary") if restart_enabled else None
         event("boundary_committed", boundary="edit_plan_boundary", sha256=edit_plan_boundary["sha256"])
+        write_run_state(
+            run_dir,
+            run_id=args.run_id,
+            agent_mode=args.agent,
+            scenario=scenario.name,
+            completed_stages=["bootstrap", "guidance_compaction", "edit_plan"],
+            next_stage="generated_editor" if generated_editor_mode else "apply_edit",
+            origin=origin,
+            worktree=worktree,
+            commands_path=commands_path,
+            report_path=report_path,
+            boundary_names=boundary_names,
+            restart_count=restart_count,
+        )
+        if maybe_stop_after_stage(
+            args=args,
+            run_dir=run_dir,
+            report_path=report_path,
+            stage="edit_plan",
+            next_stage="generated_editor" if generated_editor_mode else "apply_edit",
+            restart_info=restart_info,
+            boundary_names=boundary_names,
+        ):
+            return 0
 
         generated_editor_boundaries: list[dict[str, Any]] = []
         if generated_editor_mode:
@@ -1942,14 +3454,28 @@ def run_agent(args: argparse.Namespace) -> int:
                 raise SmokeFailure("generated-editor mode selected a non-generated-editor adapter")
             editor_source = agent_adapter.generate_editor(plan)
             event("stage_started", stage="generated_editor_static_preflight", files=plan["allowed_write_paths"])
-            edit_result, generated_editor_boundaries = run_generated_editor_sandbox_apply(
-                run_dir=run_dir,
-                worktree=worktree,
-                plan=plan,
-                editor_source=editor_source,
-                edit_plan_boundary=edit_plan_boundary,
-            )
+            if agent_adapter.agent_mode == "ai-generated-editor":
+                edit_result, generated_editor_boundaries = run_ai_generated_editor_recovery_apply(
+                    run_dir=run_dir,
+                    worktree=worktree,
+                    plan=plan,
+                    editor_source=editor_source,
+                    edit_plan_boundary=edit_plan_boundary,
+                    inject_bad_ai_result=str(getattr(args, "inject_bad_ai_result", "") or ""),
+                    agent_adapter=agent_adapter,
+                )
+            else:
+                edit_result, generated_editor_boundaries = run_generated_editor_sandbox_apply(
+                    run_dir=run_dir,
+                    worktree=worktree,
+                    plan=plan,
+                    editor_source=editor_source,
+                    edit_plan_boundary=edit_plan_boundary,
+                )
             for boundary in generated_editor_boundaries:
+                boundary_names.append(boundary["name"])
+                if restart_enabled:
+                    restart_info["new_boundaries"].append(boundary["name"])
                 event("boundary_committed", boundary=boundary["name"], sha256=boundary["sha256"])
             event(
                 "edit_applied",
@@ -1980,6 +3506,9 @@ def run_agent(args: argparse.Namespace) -> int:
             {
                 "boundary_type": "verification_result",
                 "verification": verification,
+                "active_constraints": active_constraints,
+                "required_tests": active_constraints["required_tests"],
+                "required_tests_satisfied": set(active_constraints["required_tests"]).issubset(set(verification["checks"])),
                 "expected_verification_success": scenario.expects_verification_success,
                 "verification_outcome_expected": verification["ok"] == scenario.expects_verification_success,
                 "changed_files_before_commit": changed_files_before_commit,
@@ -1988,7 +3517,24 @@ def run_agent(args: argparse.Namespace) -> int:
                 "next_stage": "commit" if verification["ok"] else "commit_blocked",
             },
         )
+        boundary_names.append("verification_boundary")
+        if restart_enabled:
+            restart_info["new_boundaries"].append("verification_boundary")
         event("boundary_committed", boundary="verification_boundary", sha256=verification_boundary["sha256"])
+        write_run_state(
+            run_dir,
+            run_id=args.run_id,
+            agent_mode=args.agent,
+            scenario=scenario.name,
+            completed_stages=["bootstrap", "guidance_compaction", "edit_plan", "verification"],
+            next_stage="commit_policy" if verification["ok"] else "commit_blocked",
+            origin=origin,
+            worktree=worktree,
+            commands_path=commands_path,
+            report_path=report_path,
+            boundary_names=boundary_names,
+            restart_count=restart_count,
+        )
 
         if forbidden_changed:
             raise SmokeFailure(f"forbidden files changed before commit: {forbidden_changed!r}")
@@ -2010,12 +3556,29 @@ def run_agent(args: argparse.Namespace) -> int:
                 verification_boundary=verification_boundary,
                 event=event,
             )
+            boundary_names.append("commit_policy_boundary")
+            if restart_enabled:
+                restart_info["new_boundaries"].append("commit_policy_boundary")
             event(
                 "boundary_committed",
                 boundary="commit_policy_boundary",
                 sha256=commit_policy_boundary["sha256"],
                 commit_policy=commit_decision["policy"],
                 decision=commit_decision["decision"],
+            )
+            write_run_state(
+                run_dir,
+                run_id=args.run_id,
+                agent_mode=args.agent,
+                scenario=scenario.name,
+                completed_stages=["bootstrap", "guidance_compaction", "edit_plan", "verification", "commit_policy"],
+                next_stage="commit" if commit_decision["action"] == "commit" else "report_without_commit",
+                origin=origin,
+                worktree=worktree,
+                commands_path=commands_path,
+                report_path=report_path,
+                boundary_names=boundary_names,
+                restart_count=restart_count,
             )
             if not commit_decision["ok"]:
                 raise SmokeFailure(f"commit policy was not satisfied: {commit_decision['decision']}")
@@ -2085,12 +3648,29 @@ def run_agent(args: argparse.Namespace) -> int:
                     "next_stage": "commit_result",
                 },
             )
+            boundary_names.append("commit_policy_boundary")
+            if restart_enabled:
+                restart_info["new_boundaries"].append("commit_policy_boundary")
             event(
                 "boundary_committed",
                 boundary="commit_policy_boundary",
                 sha256=commit_policy_boundary["sha256"],
                 commit_policy=commit_decision["policy"],
                 decision=commit_decision["decision"],
+            )
+            write_run_state(
+                run_dir,
+                run_id=args.run_id,
+                agent_mode=args.agent,
+                scenario=scenario.name,
+                completed_stages=["bootstrap", "guidance_compaction", "edit_plan", "verification", "commit_policy"],
+                next_stage="report_without_commit",
+                origin=origin,
+                worktree=worktree,
+                commands_path=commands_path,
+                report_path=report_path,
+                boundary_names=boundary_names,
+                restart_count=restart_count,
             )
             event(
                 "commit_blocked_by_verification_failure",
@@ -2120,14 +3700,62 @@ def run_agent(args: argparse.Namespace) -> int:
         scoped_changed_files = changed_files if commit.get("created") else changed_files_before_commit
         expected_changed_files = list(scenario.expected_changed_files)
         effective_requires_commit = scenario.requires_commit and args.commit_policy != "never" and verification["ok"]
+        guidance_constraint_contracts = active_constraints_contracts(
+            guidance_state=guidance_state,
+            active_constraints=active_constraints,
+            guidance_boundary_written=guidance_boundary["name"] == "guidance_boundary"
+            and guidance_boundary["payload"].get("boundary_type") == "guidance_compaction",
+        )
+        required_tests_satisfied = set(active_constraints["required_tests"]).issubset(set(verification["checks"]))
+        restart_contracts = {}
+        if restart_enabled:
+            restart_contracts = {
+                "restart_loaded_existing_run_dir": bool(restart_info.get("loaded_existing_run_dir")),
+                "restart_resumed_after_guidance_compaction": restart_info.get("resumed_from_stage") == "edit_plan",
+                "restart_preserved_active_constraints": bool(restart_info.get("preserved_active_constraints")),
+                "restart_reused_completed_boundaries": set(restart_info.get("reused_boundaries", []))
+                >= {"bootstrap_boundary", "guidance_boundary"},
+                "final_report_records_restart_and_recovery": True,
+            }
+        ai_trace_path = Path(str(getattr(args, "ai_trace_path", "") or run_dir / "ai_calls.jsonl"))
+        ai_call_summary = summarize_ai_trace(read_jsonl(ai_trace_path))
+        ai_contracts: dict[str, bool] = {}
+        if isinstance(agent_adapter, AiGeneratedEditorCodeEditAgent) and not agent_adapter.scripted_ai_smoke:
+            finished_stages = set(ai_call_summary["finished_live_stages"])
+            ai_contracts = {
+                "live_ai_call_count_at_least_3": ai_call_summary["finished_live_call_count"] >= MIN_LIVE_AI_RESTART_RECOVERY_CALLS,
+                "live_ai_touched_planning_editor_and_retry": finished_stages
+                >= {"planning", "editor_generation", "editor_generation_retry"},
+            }
+
+        runtime_contracts = {
+            # Default supervisor runs inside the Docker executor with network disabled
+            # and a readonly source mount.  The direct live-AI restart smoke is an
+            # explicit local-agent exception because it must be able to reach a
+            # developer AI backend such as Ollama/OpenAI.  Keep the exception
+            # visible in the report instead of faking Docker environment variables.
+            "agent_containerized": agent_containerized or local_agent_smoke_allowed,
+            "docker_network_none": agent_docker_network == "none" or local_agent_smoke_allowed,
+            "docker_source_mount_read_only": agent_source_mount == "readonly" or local_agent_smoke_allowed,
+        }
+        if local_agent_smoke_allowed and not agent_containerized:
+            runtime_contracts.update(
+                {
+                    "local_agent_smoke_explicitly_allowed": True,
+                    "local_agent_smoke_not_containerized": True,
+                    "local_agent_ai_network_exception_declared": True,
+                }
+            )
+
         contracts = {
             "agent_adapter_selected": agent_adapter.agent_mode == args.agent,
-            "agent_containerized": agent_containerized,
-            "docker_network_none": agent_docker_network == "none",
-            "docker_source_mount_read_only": agent_source_mount == "readonly",
+            **runtime_contracts,
             "guidance_seen": len(guidance_state["accepted"]) > 0,
             "guidance_integrated_before_edit": len(guidance_state["accepted"]) > 0
             and edit_plan_boundary["payload"]["timestamp"] >= guidance_boundary["payload"]["timestamp"],
+            **guidance_constraint_contracts,
+            **plan_constraint_contracts,
+            "required_tests_satisfied": required_tests_satisfied,
             "branch_isolated": branch == target_branch and main_head == base_head,
             "changed_files_scoped": scoped_changed_files == expected_changed_files,
             "forbidden_files_unchanged": all(
@@ -2143,6 +3771,8 @@ def run_agent(args: argparse.Namespace) -> int:
             "report_written": True,
             **policy_contracts,
             **generated_editor_contracts,
+            **restart_contracts,
+            **ai_contracts,
         }
         if verification["ok"]:
             contracts["verification_passed"] = True
@@ -2193,7 +3823,31 @@ def run_agent(args: argparse.Namespace) -> int:
                 "failed_contracts": failed_contracts,
             },
         )
+        boundary_names.append("commit_boundary")
+        if restart_enabled:
+            restart_info["new_boundaries"].append("commit_boundary")
         event("boundary_committed", boundary="commit_boundary", sha256=commit_boundary["sha256"])
+        write_run_state(
+            run_dir,
+            run_id=args.run_id,
+            agent_mode=args.agent,
+            scenario=scenario.name,
+            completed_stages=[
+                "bootstrap",
+                "guidance_compaction",
+                "edit_plan",
+                "verification",
+                "commit_policy",
+                "commit",
+            ],
+            next_stage="report",
+            origin=origin,
+            worktree=worktree,
+            commands_path=commands_path,
+            report_path=report_path,
+            boundary_names=boundary_names,
+            restart_count=restart_count,
+        )
 
         report = {
             "ok": not failed_contracts,
@@ -2202,10 +3856,17 @@ def run_agent(args: argparse.Namespace) -> int:
             "scenario_contracts": scenario_contracts,
             "agent_mode": args.agent,
             "agent_adapter": agent_adapter_metadata,
+            "runtime": {
+                "containerized": agent_containerized,
+                "docker_network": agent_docker_network,
+                "source_mount": agent_source_mount,
+                "local_agent_smoke_allowed": local_agent_smoke_allowed,
+            },
             "edit_plan": plan,
             "edit_result": edit_result,
             "run_id": args.run_id,
             "run_dir": str(run_dir),
+            "restart": restart_info,
             "commands_path": str(commands_path),
             "report_path": str(report_path),
             "origin_path": str(origin),
@@ -2219,7 +3880,10 @@ def run_agent(args: argparse.Namespace) -> int:
             "changed_files": changed_files,
             "guidance_events": guidance_state["accepted"],
             "rejected_guidance_events": guidance_state["rejected"],
+            "active_constraints": active_constraints,
             "forbidden_paths": guidance_state["forbidden_paths"],
+            "ai_trace_path": str(ai_trace_path),
+            "ai_call_summary": ai_call_summary,
             "verification": verification,
             "contracts": contracts,
             "failed_contracts": failed_contracts,
@@ -2237,6 +3901,28 @@ def run_agent(args: argparse.Namespace) -> int:
             ],
         }
         atomic_write_json(report_path, report)
+        write_run_state(
+            run_dir,
+            run_id=args.run_id,
+            agent_mode=args.agent,
+            scenario=scenario.name,
+            completed_stages=[
+                "bootstrap",
+                "guidance_compaction",
+                "edit_plan",
+                "verification",
+                "commit_policy",
+                "commit",
+                "report",
+            ],
+            next_stage="done",
+            origin=origin,
+            worktree=worktree,
+            commands_path=commands_path,
+            report_path=report_path,
+            boundary_names=boundary_names,
+            restart_count=restart_count,
+        )
         event("report_written", report_path=str(report_path), ok=report["ok"])
         if failed_contracts:
             event("run_finished", status="failed", failed_contracts=failed_contracts)
@@ -2244,6 +3930,8 @@ def run_agent(args: argparse.Namespace) -> int:
         event("run_finished", status="ok", final_head=final_head)
         return 0
     except Exception as exc:
+        ai_trace_path = Path(str(getattr(args, "ai_trace_path", "") or run_dir / "ai_calls.jsonl"))
+        ai_call_summary = summarize_ai_trace(read_jsonl(ai_trace_path))
         error_report = {
             "ok": False,
             "mode": MODE,
@@ -2252,8 +3940,11 @@ def run_agent(args: argparse.Namespace) -> int:
             "agent_mode": args.agent,
             "run_id": args.run_id,
             "run_dir": str(run_dir),
+            "restart": restart_info,
             "commands_path": str(commands_path),
             "report_path": str(report_path),
+            "ai_trace_path": str(ai_trace_path),
+            "ai_call_summary": ai_call_summary,
             "error": str(exc),
             "error_type": type(exc).__name__,
         }
@@ -2261,6 +3952,154 @@ def run_agent(args: argparse.Namespace) -> int:
         event("run_finished", status="error", error=str(exc), error_type=type(exc).__name__)
         return 1
 
+
+
+def write_guidance_commands_jsonl(commands_path: Path, commands: Sequence[dict[str, Any]]) -> None:
+    commands_path.parent.mkdir(parents=True, exist_ok=True)
+    write_text_lf(commands_path, "\n".join(json.dumps(command, ensure_ascii=False, sort_keys=True) for command in commands) + "\n")
+
+
+def ai_restart_recovery_agent_args(
+    args: argparse.Namespace,
+    *,
+    run_id: str,
+    run_dir: Path,
+    commands_path: Path,
+    report_path: Path,
+    restart: bool,
+    stop_after: str,
+    inject_bad_ai_result: str,
+) -> argparse.Namespace:
+    values = dict(vars(args))
+    values.update(
+        {
+            "role": "agent",
+            "agent": "ai-generated-editor",
+            "use_ai": True,
+            "allow_local_agent_smoke": True,
+            "scenario": AI_RESTART_RECOVERY_SCENARIO,
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "commands_path": str(commands_path),
+            "report_path": str(report_path),
+            "guidance_window_seconds": 0.0,
+            "poll_seconds": min(float(getattr(args, "poll_seconds", DEFAULT_POLL_SECONDS) or DEFAULT_POLL_SECONDS), 0.01),
+            "ai_timeout_seconds": float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS) or DEFAULT_AI_TIMEOUT_SECONDS),
+            "ai_trace_path": str(run_dir / "ai_calls.jsonl"),
+            "restart": restart,
+            "stop_after": stop_after,
+            "inject_bad_ai_result": inject_bad_ai_result,
+        }
+    )
+    return argparse.Namespace(**values)
+
+
+def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
+    """Run the two-phase live-AI restart/recovery smoke behind one CLI flag.
+
+    This is intentionally the user-facing surface for the smoke.  It creates a
+    temp run directory when --run-dir is not supplied, writes the structured
+    commands.jsonl, stops after guidance compaction, restarts from persisted
+    run_state.json, injects one forbidden-file AI/editor result, verifies host
+    rejection, retries through the AI adapter, and prints the final report path.
+    """
+
+    run_id = args.run_id or f"ai-restart-recovery-{run_id_from_now()}"
+    if getattr(args, "run_dir", ""):
+        run_dir = Path(args.run_dir).resolve()
+    else:
+        root = Path(args.work_root).resolve() if getattr(args, "work_root", "") else default_work_root()
+        run_dir = root / run_id
+    commands_path = Path(args.commands_path).resolve() if getattr(args, "commands_path", "") else run_dir / "commands.jsonl"
+    report_path = Path(args.report_path).resolve() if getattr(args, "report_path", "") else run_dir / "report.json"
+    scenario = scenario_spec(AI_RESTART_RECOVERY_SCENARIO)
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    write_guidance_commands_jsonl(
+        commands_path,
+        guidance_commands_for_scenario(scenario, guidance_text_for_scenario(args, scenario)),
+    )
+
+    emit_event(
+        "ai_restart_recovery_smoke_started",
+        run_id=run_id,
+        run_dir=str(run_dir),
+        commands_path=str(commands_path),
+        report_path=str(report_path),
+        ai_provider=str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
+        ai_model=str(getattr(args, "ai_model", "") or ""),
+        scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
+        local_agent_smoke_allowed=True,
+    )
+
+    first_args = ai_restart_recovery_agent_args(
+        args,
+        run_id=run_id,
+        run_dir=run_dir,
+        commands_path=commands_path,
+        report_path=report_path,
+        restart=False,
+        stop_after="guidance_compaction",
+        inject_bad_ai_result="",
+    )
+    first_code = run_agent(first_args)
+    if first_code != 0:
+        emit_event(
+            "ai_restart_recovery_smoke_finished",
+            run_id=run_id,
+            status="failed_before_restart",
+            returncode=first_code,
+            report_path=str(report_path),
+        )
+        return first_code
+
+    second_args = ai_restart_recovery_agent_args(
+        args,
+        run_id=run_id,
+        run_dir=run_dir,
+        commands_path=commands_path,
+        report_path=report_path,
+        restart=True,
+        stop_after="",
+        inject_bad_ai_result="forbidden_file_write",
+    )
+    second_code = run_agent(second_args)
+    report: dict[str, Any] = {}
+    if report_path.exists():
+        try:
+            report = load_report(report_path)
+        except Exception as exc:
+            report = {"ok": False, "error": f"could not load final report: {exc}"}
+    ai_trace_path = run_dir / "ai_calls.jsonl"
+    ai_trace = read_jsonl(ai_trace_path)
+    ai_call_summary = summarize_ai_trace(ai_trace)
+
+    summary = {
+        "ok": second_code == 0 and bool(report.get("ok")),
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "report_path": str(report_path),
+        "ai_trace_path": str(ai_trace_path),
+        "ai_call_summary": ai_call_summary,
+        "live_ai_call_count": ai_call_summary["finished_live_call_count"],
+        "returncode": second_code,
+        "agent_mode": report.get("agent_mode"),
+        "ai_backend": (report.get("edit_plan") or {}).get("ai_backend") if isinstance(report.get("edit_plan"), dict) else None,
+        "ai_model": (report.get("edit_plan") or {}).get("ai_model") if isinstance(report.get("edit_plan"), dict) else None,
+        "changed_files": report.get("changed_files", []),
+        "failed_contracts": report.get("failed_contracts", []),
+        "recovery": (
+            ((report.get("edit_result") or {}).get("generated_editor") or {}).get("recovery")
+            if isinstance(report.get("edit_result"), dict)
+            else None
+        ),
+    }
+    atomic_write_json(run_dir / "ai_restart_recovery_smoke_summary.json", summary)
+    emit_event(
+        "ai_restart_recovery_smoke_finished",
+        **summary,
+    )
+    return 0 if summary["ok"] else 1
 
 def parse_child_event(line: str) -> dict[str, Any]:
     try:
@@ -2276,7 +4115,7 @@ def run_supervisor(args: argparse.Namespace) -> int:
     require_docker_image(args.docker_image)
     run_id = args.run_id or run_id_from_now()
     work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
-    run_dir = work_root / run_id
+    run_dir = Path(args.run_dir).resolve() if getattr(args, "run_dir", "") else work_root / run_id
     commands_path = run_dir / "commands.jsonl"
     report_path = run_dir / "report.json"
     supervisor_report_path = run_dir / "supervisor_report.json"
@@ -2285,7 +4124,10 @@ def run_supervisor(args: argparse.Namespace) -> int:
     task = task_for_scenario(args, scenario)
     guidance_text = guidance_text_for_scenario(args, scenario)
     run_dir.mkdir(parents=True, exist_ok=True)
-    commands_path.write_text("", encoding="utf-8")
+    if not getattr(args, "restart", False):
+        commands_path.write_text("", encoding="utf-8")
+    elif not commands_path.exists():
+        raise SmokeFailure("--restart requires the existing commands.jsonl in --run-dir")
 
     child_args = build_docker_agent_command(
         image=args.docker_image,
@@ -2304,6 +4146,15 @@ def run_supervisor(args: argparse.Namespace) -> int:
         approval_timeout_seconds=args.approval_timeout_seconds,
         replay_report_path=CONTAINER_REPLAY_REPORT_PATH if args.agent == "replay" else "",
         live_plan_path=CONTAINER_LIVE_PLAN_PATH if args.agent == "live-plan" else "",
+        use_ai=bool(getattr(args, "use_ai", False)),
+        ai_provider=str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
+        ai_model=str(getattr(args, "ai_model", "") or ""),
+        ai_command=str(getattr(args, "ai_command", "") or ""),
+        ai_timeout_seconds=float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS)),
+        scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
+        restart=bool(getattr(args, "restart", False)),
+        stop_after=str(getattr(args, "stop_after", "") or ""),
+        inject_bad_ai_result=str(getattr(args, "inject_bad_ai_result", "") or ""),
     )
 
     if args.agent == "replay":
@@ -2367,13 +4218,25 @@ def run_supervisor(args: argparse.Namespace) -> int:
     guidance_injected = False
     guidance_window_seen_while_running = False
     guidance_received_seen_while_running = False
-    guidance_payload = {
-        "type": "add_instruction",
-        "text": guidance_text,
-        "source": "deterministic_smoke_supervisor",
-        "id": "guidance-001",
-        "timestamp": utc_now(),
-    }
+    guidance_payloads = [
+        {
+            **payload,
+            "source": payload.get("source", "deterministic_smoke_supervisor"),
+            "timestamp": utc_now(),
+        }
+        for payload in guidance_commands_for_scenario(scenario, guidance_text)
+    ]
+    guidance_payload = (
+        guidance_payloads[0]
+        if len(guidance_payloads) == 1
+        else {
+            "type": "structured_guidance_batch",
+            "commands": guidance_payloads,
+            "source": "deterministic_smoke_supervisor",
+            "id": f"{scenario.name}-guidance-batch",
+            "timestamp": utc_now(),
+        }
+    )
     approval_injected = False
     commit_approval_waiting_seen_while_running = False
     commit_approval_received_seen_while_running = False
@@ -2397,7 +4260,8 @@ def run_supervisor(args: argparse.Namespace) -> int:
 
         if payload.get("event") == "guidance_window_open" and not guidance_injected:
             guidance_window_seen_while_running = proc.poll() is None
-            append_jsonl(commands_path, guidance_payload)
+            for command in guidance_payloads:
+                append_jsonl(commands_path, command)
             guidance_injected = True
             emit_event(
                 "supervisor_guidance_injected",
@@ -2405,6 +4269,7 @@ def run_supervisor(args: argparse.Namespace) -> int:
                 commands_path=str(commands_path),
                 child_running=proc.poll() is None,
                 guidance=guidance_payload,
+                guidance_commands=guidance_payloads,
             )
         if payload.get("event") == "guidance_received":
             guidance_received_seen_while_running = proc.poll() is None
@@ -2563,6 +4428,7 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "child_stderr": stderr,
         "child_event_names": event_names,
         "guidance_payload": guidance_payload,
+        "guidance_payloads": guidance_payloads,
         "approval_payload": approval_payload if args.commit_policy == "require-approval" else None,
         "commit_created": actual_commit_created,
         "commit_expected": commit_expected,
@@ -3259,6 +5125,7 @@ def run_scenario_matrix(args: argparse.Namespace) -> int:
         "scenario_matrix_scenarios_exercised": sorted(scenario_results) == sorted(SCENARIO_MATRIX),
         "single_file_python_edit_exercised": "single_file_python_edit" in scenario_results,
         "forbidden_file_instruction_exercised": "forbidden_file_instruction" in scenario_results,
+        "structured_steering_constraints_exercised": "structured_steering_constraints" in scenario_results,
         "verification_failure_blocks_commit_exercised": "verification_failure_blocks_commit" in scenario_results,
     }
     if not matrix_contracts["scenario_matrix_all_passed"]:
@@ -3300,8 +5167,61 @@ def run_scenario_matrix(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic code-editing agent guidance smoke.")
     parser.add_argument("--role", choices=["supervisor", "agent"], default="supervisor")
-    parser.add_argument("--agent", choices=["deterministic", "replay", "live-plan", "generated-editor"], default="deterministic")
+    parser.add_argument(
+        "--agent",
+        choices=["deterministic", "replay", "live-plan", "generated-editor", "ai-generated-editor"],
+        default="deterministic",
+    )
     parser.add_argument("--scenario", choices=tuple(SCENARIO_SPECS), default=DEFAULT_SCENARIO)
+    parser.add_argument(
+        "--use-ai",
+        "--use-AI",
+        dest="use_ai",
+        action="store_true",
+        help="Use the live-AI generated-editor adapter unless --scripted-ai-smoke is also set.",
+    )
+    parser.add_argument("--ai-provider", choices=AI_PROVIDERS, default=DEFAULT_AI_PROVIDER)
+    parser.add_argument("--ai-model", default="", help="Model name for --use-ai; defaults by provider.")
+    parser.add_argument(
+        "--ai-command",
+        default="",
+        help="Shell command for --ai-provider command. It receives JSON on stdin and must print JSON on stdout.",
+    )
+    parser.add_argument("--ai-timeout-seconds", type=float, default=DEFAULT_AI_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--ai-trace-path",
+        default="",
+        help="Internal trace file for live AI call start/finish/failure events; defaults under --run-dir.",
+    )
+    parser.add_argument(
+        "--scripted-ai-smoke",
+        action="store_true",
+        help="Offline harness mode: keep the AI surfaces but do not call a live model.",
+    )
+    parser.add_argument("--restart", action="store_true", help="Resume from a persisted run_state.json in --run-dir.")
+    parser.add_argument(
+        "--ai-restart-recovery-smoke",
+        "--exercise-ai-restart-recovery",
+        dest="exercise_ai_restart_recovery",
+        action="store_true",
+        help=(
+            "Run the two-phase AI restart/recovery smoke directly: create a temp run dir, "
+            "write structured guidance, stop after guidance compaction, restart, inject one "
+            "bad AI/editor result, retry, verify, commit, and print the final report path."
+        ),
+    )
+    parser.add_argument(
+        "--allow-local-agent-smoke",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--stop-after", choices=STOP_AFTER_STAGES, default="", help="Stop after a completed stage for restart testing.")
+    parser.add_argument(
+        "--inject-bad-ai-result",
+        choices=["", "forbidden_file_write"],
+        default="",
+        help="Test-only AI fault injection used to prove host rejection and retry recovery.",
+    )
     parser.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
     parser.add_argument("--replay-report", default="", help="Prior agent report to replay through the same harness.")
     parser.add_argument("--live-plan-path", default="", help="JSON live-planning artifact for --agent live-plan.")
@@ -3356,6 +5276,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    normalize_agent_selection(args)
+    if getattr(args, "exercise_ai_restart_recovery", False):
+        return run_ai_restart_recovery_smoke(args)
     if args.role == "agent":
         if not args.run_id:
             args.run_id = run_id_from_now()

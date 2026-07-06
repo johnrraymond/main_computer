@@ -354,6 +354,42 @@ def test_instances_selection_infers_single_coolify_host_from_private_state(tmp_p
         {"url": "http://198.51.100.10:30010", "source": "direct-host-port"},
         {"url": "https://testnet-rpc.greatlibrary.io", "source": "configured-network-rpc"},
     ]
+    assert module.contract_deployment_rpc_candidates(plan, args) == [
+        {"url": "http://198.51.100.10:30010", "source": "direct-host-port"},
+        {"url": "https://testnet-rpc.greatlibrary.io:443", "source": "configured-network-rpc"},
+    ]
+
+
+def test_contract_deployment_rpc_selection_falls_back_to_canonical_port(tmp_path: Path, monkeypatch: Any) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+
+    args = module.parse_args(
+        [
+            "deploy-contracts",
+            "testnet",
+            "--private-state",
+            str(state_path),
+            "--instances",
+            "validator-rpc-1",
+        ]
+    )
+    plan = module.build_plan_from_args(args)
+    calls: list[str] = []
+
+    def fake_json_rpc(url: str, method: str, *args: Any, **kwargs: Any) -> str:
+        assert method == "eth_chainId"
+        calls.append(url)
+        if url == "http://198.51.100.10:30010":
+            raise RuntimeError("blocked direct host-port")
+        if url == "https://testnet-rpc.greatlibrary.io:443":
+            return hex(plan.chain_id)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
+
+    assert module.select_contract_deployment_rpc_url(plan, args) == "https://testnet-rpc.greatlibrary.io:443"
+    assert calls == ["http://198.51.100.10:30010", "https://testnet-rpc.greatlibrary.io:443"]
 
 
 def test_private_state_external_rpc_publishes_selected_rpc_host_port_by_default(tmp_path: Path) -> None:

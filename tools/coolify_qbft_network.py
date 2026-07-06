@@ -55,7 +55,10 @@ DEFAULT_RPC_WAIT_TIMEOUT_S = 0.0
 DEFAULT_RPC_POLL_INTERVAL_S = 2.0
 DEFAULT_RPC_MIN_PEERS_AUTO = -1
 DEFAULT_CHAIN_OBSERVATION_TIMEOUT_S = 8.0
+DEFAULT_QBFT_JSON_RPC_TIMEOUT_S = 8.0
 DEFAULT_MUTATE_RPC_WAIT_TIMEOUT_S = 300.0
+DEFAULT_VALIDATOR_RETIRE_MEMBERSHIP_TIMEOUT_S = 300.0
+DEFAULT_MUTATE_STABLE_CHAIN_SUCCESSES = 2
 DEFAULT_JSON_RPC_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "MainComputerQbftDeployer/1.0"
@@ -63,6 +66,14 @@ DEFAULT_JSON_RPC_USER_AGENT = (
 TRAEFIK_DYNAMIC_CONFIG_DIR = "/data/coolify/proxy/dynamic"
 TRAEFIK_DYNAMIC_CONFIG_IMAGE = "alpine:3.20"
 RETIRED_QBFT_CLEANUP_IMAGE = "docker:27-cli"
+QBFT_HELPER_PARK_IMAGE = TRAEFIK_DYNAMIC_CONFIG_IMAGE
+QBFT_HELPER_PARK_SERVICE_KEYS = (
+    "qbft-bootstrap",
+    "qbft-runtime-import",
+    "qbft-validator-key-init",
+    "qbft-validator-vote",
+    "qbft-retire-orphan-cleanup",
+)
 TRAEFIK_DYNAMIC_CONFIG_REFRESH_S = 300
 QBFT_CONFIG_TRANSFER_IMAGE = "python:3.12-alpine"
 QBFT_CONFIG_EXPORT_IMAGE = "python:3.12-alpine"
@@ -297,6 +308,7 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
 
 
 SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
+VALIDATOR_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
 class PlanError(ValueError):
@@ -429,6 +441,30 @@ def split_selected_ids(value: object, *, kind: str) -> tuple[str, ...]:
         seen.add(clean)
         selected.append(clean)
     return tuple(selected)
+
+
+def normalize_validator_address(value: object, *, field: str = "validator address") -> str:
+    text = str(value or "").strip()
+    if text and not text.startswith("0x"):
+        text = f"0x{text}"
+    if not VALIDATOR_ADDRESS_RE.match(text):
+        raise PlanError(f"Invalid {field}: {value!r}")
+    return text.lower()
+
+
+def normalize_validator_address_map(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for raw_key, raw_address in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        try:
+            result[safe_id(key, kind="runtime_dir")] = normalize_validator_address(raw_address, field=f"validator address for {key}")
+        except PlanError:
+            continue
+    return result
 
 
 def require_int(value: object, *, name: str, minimum: int = 1, maximum: int = 65535) -> int:
@@ -1635,6 +1671,42 @@ def plan_for_host_without_services(plan: NetworkPlan, host_id: str, retired_serv
     return replace(plan, hosts=(hosts[host_id],), services=selected_services)
 
 
+def validator_add_execution_service_ids(
+    plan: NetworkPlan,
+    target_service: PlannedService,
+    discovery: Mapping[str, Any],
+) -> list[str]:
+    """Return the host-scoped compose service set for a validator-only add.
+
+    Coolify stores one compose service per QBFT host.  Deploying only the new
+    validator on a host that already runs the current validator-RPC would omit
+    that existing node from the replacement compose and can temporarily break the
+    very RPC surface needed to submit the QBFT vote.  Preserve same-host services
+    when the selected config source is the target host, because the source host is
+    known to contain usable live runtime.  Also preserve a single unambiguous
+    same-host RPC service, which covers the common "add a validator next to the
+    existing RPC node" path without starting unrelated future declarations.
+    """
+
+    target_host = target_service.host
+    same_host_services = [service for service in services_for_host(plan, target_host)]
+    same_host_ids = [service.id for service in same_host_services]
+    selected_source_host = safe_id(str(discovery.get("selected_source_host") or discovery.get("source_host") or ""), kind="host") if str(discovery.get("selected_source_host") or discovery.get("source_host") or "").strip() else ""
+
+    if selected_source_host == target_host:
+        return same_host_ids
+
+    preserved_rpc_services = [
+        service
+        for service in same_host_services
+        if service.id != target_service.id and "rpc" in service.roles
+    ]
+    if len(preserved_rpc_services) == 1:
+        return [preserved_rpc_services[0].id, target_service.id]
+
+    return [target_service.id]
+
+
 def services_by_host(services: list[PlannedService] | tuple[PlannedService, ...]) -> dict[str, list[PlannedService]]:
     grouped: dict[str, list[PlannedService]] = {}
     for service in services:
@@ -1658,6 +1730,26 @@ def mutation_apply_is_supported_rpc_retire(packet: dict[str, Any], services: lis
     if intent.get("action") != "retire":
         return False
     return bool(services) and all("rpc" in service.roles and "validator" not in service.roles for service in services)
+
+
+def mutation_apply_is_supported_validator_add(packet: dict[str, Any], services: list[PlannedService]) -> bool:
+    intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
+    if intent.get("action") != "add":
+        return False
+    return bool(services) and all("validator" in service.roles and "rpc" not in service.roles for service in services)
+
+
+def mutation_apply_is_supported_validator_retire(packet: dict[str, Any], services: list[PlannedService]) -> bool:
+    intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
+    if intent.get("action") != "retire":
+        return False
+    return bool(services) and all("validator" in service.roles and "rpc" not in service.roles for service in services)
+
+
+def mutation_consensus_acknowledged(packet: dict[str, Any]) -> bool:
+    required = [str(item) for item in packet.get("requires_ack") or []]
+    acknowledged = {str(item) for item in packet.get("acknowledged") or []}
+    return all(item in acknowledged for item in required)
 
 
 def mutate_rpc_wait_args(args: argparse.Namespace, *, rpc_url: str) -> argparse.Namespace:
@@ -1855,6 +1947,168 @@ def observe_chain_state(plan: NetworkPlan, args: argparse.Namespace) -> dict[str
     }
 
 
+def mutate_stable_chain_timeout_s(args: argparse.Namespace) -> float:
+    """Return a bounded post-mutation stability timeout.
+
+    Mutation apply paths call this after asynchronous Coolify deploy/redeploy
+    requests.  ``--rpc-timeout-s 0`` is the existing automatic sentinel; for
+    post-mutation stability checks it means "use the mutate timeout", not "probe
+    once and return immediately".
+    """
+
+    value = float(getattr(args, "rpc_timeout_s", DEFAULT_RPC_WAIT_TIMEOUT_S))
+    return DEFAULT_MUTATE_RPC_WAIT_TIMEOUT_S if value <= 0 else value
+
+
+def wait_for_stable_observable_chain(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    *,
+    expected_validator_count: int | None = None,
+    required_validators_present: tuple[str, ...] = (),
+    required_validators_absent: tuple[str, ...] = (),
+    require_block_advance: bool = True,
+    stable_successes: int = DEFAULT_MUTATE_STABLE_CHAIN_SUCCESSES,
+    label: str = "stable-observable-chain",
+) -> dict[str, Any]:
+    """Wait until the canonical observable chain is healthy for consecutive probes.
+
+    A Coolify deploy API success only means the deploy was accepted.  Traefik,
+    Besu, and one-shot sidecars can still be restarting for a short window after
+    the API returns.  This helper prevents mutation executors from returning
+    success on a single lucky probe while the public RPC route is still flapping.
+    """
+
+    timeout_s = mutate_stable_chain_timeout_s(args)
+    poll_s = float(getattr(args, "rpc_poll_interval_s", DEFAULT_RPC_POLL_INTERVAL_S) or DEFAULT_RPC_POLL_INTERVAL_S)
+    if poll_s <= 0:
+        poll_s = DEFAULT_RPC_POLL_INTERVAL_S
+    stable_successes = max(1, int(stable_successes))
+    deadline = None if timeout_s <= 0 else time.monotonic() + timeout_s
+    observe_args = args_copy_with(args, rpc_url="")
+    observations: list[dict[str, Any]] = []
+    first_acceptable_block: int | None = None
+    consecutive = 0
+    attempt = 0
+    last_errors: list[str] = []
+    required_present = {address.lower() for address in required_validators_present}
+    required_absent = {address.lower() for address in required_validators_absent}
+
+    operator_log(
+        args,
+        f"{label} start",
+        timeout_s=timeout_s,
+        stable_successes=stable_successes,
+        expected_validator_count=expected_validator_count,
+        require_block_advance=require_block_advance,
+    )
+
+    while deadline is None or time.monotonic() < deadline:
+        attempt += 1
+        observation = observe_chain_state(plan, observe_args)
+        observations.append(observation)
+        if len(observations) > 8:
+            observations = observations[-8:]
+
+        errors: list[str] = []
+        chain = observation.get("chain") if isinstance(observation.get("chain"), dict) else {}
+        if not observation.get("ok", False):
+            errors.append(str(observation.get("errors") or observation.get("error") or "chain observation failed"))
+
+        block_number: int | None = None
+        validators: list[str] = []
+        if isinstance(chain, dict):
+            try:
+                block_number = int(chain.get("block_number"))
+            except (TypeError, ValueError):
+                block_number = None
+            validators = [str(item) for item in chain.get("validators") or []]
+
+        if block_number is None:
+            errors.append("block number was not available")
+        elif block_number < 1:
+            errors.append(f"block_number {block_number} < 1")
+
+        validator_set = {address.lower() for address in validators}
+        if expected_validator_count is not None and len(validators) != expected_validator_count:
+            errors.append(f"validator_count {len(validators)} != expected {expected_validator_count}")
+        missing_validators = sorted(required_present - validator_set)
+        if missing_validators:
+            errors.append(f"required validator(s) missing: {', '.join(missing_validators)}")
+        still_present = sorted(required_absent & validator_set)
+        if still_present:
+            errors.append(f"retired validator(s) still present: {', '.join(still_present)}")
+
+        block_advanced = False
+        if block_number is not None:
+            if first_acceptable_block is None and not errors:
+                first_acceptable_block = block_number
+            if first_acceptable_block is not None:
+                block_advanced = block_number > first_acceptable_block
+            if require_block_advance and not block_advanced:
+                errors.append(
+                    f"block has not advanced beyond first acceptable block {first_acceptable_block}"
+                )
+
+        if errors:
+            consecutive = 0
+            last_errors = errors
+            operator_log(
+                args,
+                f"{label} retry",
+                attempt=attempt,
+                consecutive=consecutive,
+                block_number=block_number,
+                error="; ".join(errors),
+            )
+        else:
+            consecutive += 1
+            last_errors = []
+            operator_log(
+                args,
+                f"{label} probe",
+                attempt=attempt,
+                consecutive=consecutive,
+                block_number=block_number,
+                validator_count=len(validators),
+                block_advanced=block_advanced,
+            )
+            if consecutive >= stable_successes:
+                operator_log(
+                    args,
+                    f"{label} done",
+                    attempt=attempt,
+                    block_number=block_number,
+                    validator_count=len(validators),
+                    stable_successes=consecutive,
+                )
+                return {
+                    "ok": True,
+                    "label": label,
+                    "attempts": attempt,
+                    "stable_successes": consecutive,
+                    "required_stable_successes": stable_successes,
+                    "first_acceptable_block": first_acceptable_block,
+                    "block_advanced": block_advanced,
+                    "chain": chain,
+                    "observation": observation,
+                    "observations": observations,
+                }
+
+        time.sleep(poll_s)
+
+    return {
+        "ok": False,
+        "label": label,
+        "attempts": attempt,
+        "stable_successes": consecutive,
+        "required_stable_successes": stable_successes,
+        "first_acceptable_block": first_acceptable_block,
+        "error": "; ".join(last_errors) if last_errors else "stable observable chain state was not reached before timeout",
+        "observations": observations,
+    }
+
+
 def build_mutation_observed_state(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
     if not bool(getattr(args, "observe_chain", False)):
         return default_mutation_observed_state()
@@ -1884,8 +2138,14 @@ def candidate_qbft_config_source_hosts(plan: NetworkPlan, target_services: list[
 
     # Prefer hosts that are not being mutated.  A newly introduced host can have
     # planned services in private state before it has any live QBFT runtime
-    # material, so it should not be treated as a config source merely because it
-    # appears in the future topology.
+    # material, so it should not be treated as the *first* config source merely
+    # because it appears in the future topology.
+    #
+    # Still return the remaining known hosts as fallbacks.  A mutation can target
+    # a host that already has a live service, for example adding validator-1 on
+    # host A while validator-rpc-1 on the same host is the only reliable runtime
+    # config source.  Returning only non-target hosts makes a transient/export
+    # failure on another host fatal even though a usable same-host source exists.
     preferred: list[str] = []
     fallback: list[str] = []
     for service in plan.services:
@@ -1895,7 +2155,12 @@ def candidate_qbft_config_source_hosts(plan: NetworkPlan, target_services: list[
             fallback.append(service.host)
         if service.host not in target_hosts and service.host not in preferred:
             preferred.append(service.host)
-    return preferred or fallback
+
+    ordered: list[str] = []
+    for host_id in [*preferred, *fallback]:
+        if host_id not in ordered:
+            ordered.append(host_id)
+    return ordered
 
 
 def qbft_config_export_source_service_lookup(plan: NetworkPlan, args: argparse.Namespace, host_id: str) -> dict[str, Any]:
@@ -2263,6 +2528,556 @@ def discover_qbft_config_bundle(
     }
 
 
+
+def operator_reachable_rpc_services(plan: NetworkPlan) -> list[PlannedService]:
+    """Return services whose RPC host port should be reachable from the operator machine."""
+
+    hosts = host_by_id(plan)
+    services: list[PlannedService] = []
+    for service in plan.services:
+        if service.rpc_host_port is None or not service.rpc_url_on_host:
+            continue
+        if is_local_coolify_plan(plan):
+            services.append(service)
+            continue
+        host = hosts.get(service.host)
+        if service.rpc_bind_host == "0.0.0.0" and host is not None and host.address:
+            services.append(service)
+    return services
+
+
+def qbft_consensus_rpc_candidates(plan: NetworkPlan, args: argparse.Namespace) -> list[dict[str, str]]:
+    """Return RPC endpoints suitable for QBFT consensus JSON-RPC calls.
+
+    Consensus votes should be sent to a validator RPC when the topology exposes
+    one.  The public RPC hostname is still a good read surface, but it can be a
+    Traefik/public-entry route that is being updated during mutations.  For
+    apply-time QBFT work, prefer direct validator-RPC host ports and keep the
+    configured public RPC only as an automatic fallback.  An explicit
+    ``--rpc-url`` remains an operator override and is tried by itself.
+    """
+
+    explicit = str(getattr(args, "rpc_url", "") or "").strip()
+    if explicit:
+        return [{"url": explicit, "source": "explicit"}]
+
+    candidates: list[dict[str, str]] = []
+    reachable_services = operator_reachable_rpc_services(plan)
+
+    for service in reachable_services:
+        if "validator" in service.roles and "rpc" in service.roles:
+            candidates.append(
+                {
+                    "url": service.rpc_url_on_host,
+                    "source": "direct-validator-rpc",
+                    "service": service.id,
+                    "host": service.host,
+                }
+            )
+
+    for service in reachable_services:
+        if "validator" in service.roles and "rpc" not in service.roles:
+            candidates.append(
+                {
+                    "url": service.rpc_url_on_host,
+                    "source": "direct-validator",
+                    "service": service.id,
+                    "host": service.host,
+                }
+            )
+
+    for service in reachable_services:
+        if "rpc" in service.roles and "validator" not in service.roles:
+            candidates.append(
+                {
+                    "url": service.rpc_url_on_host,
+                    "source": "direct-rpc",
+                    "service": service.id,
+                    "host": service.host,
+                }
+            )
+
+    configured = str(getattr(plan, "external_rpc_url", "") or "").strip()
+    if configured:
+        candidates.append({"url": configured, "source": "configured-network-rpc"})
+
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for candidate in candidates:
+        url = str(candidate.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        unique.append({key: str(value) for key, value in candidate.items() if str(value or "").strip()})
+    if not unique:
+        raise PlanError("QBFT validator voting requires --rpc-url, networks.<network>.rpc, or an operator-reachable validator RPC port.")
+    return unique
+
+
+
+def qbft_validator_vote_rpc_candidates(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    *,
+    exclude_services: set[str] | list[str] | tuple[str, ...] = (),
+) -> list[dict[str, str]]:
+    """Return RPC endpoints eligible to publish QBFT validator votes.
+
+    Read-only QBFT methods can safely fall back to public RPC or RPC-only nodes.
+    Validator-set proposals cannot: a vote only counts when it is proposed by an
+    active validator node.  In automatic mode, keep the list to operator-reachable
+    validator services and never fall back to rpc-only services or the public
+    Traefik route.  ``--rpc-url`` remains an explicit operator override.
+    """
+
+    explicit = str(getattr(args, "rpc_url", "") or "").strip()
+    if explicit:
+        return [{"url": explicit, "source": "explicit"}]
+
+    excluded = {safe_id(item, kind="service") for item in exclude_services if str(item or "").strip()}
+    candidates: list[dict[str, str]] = []
+    for service in operator_reachable_rpc_services(plan):
+        if service.id in excluded:
+            continue
+        if "validator" not in service.roles:
+            continue
+        candidates.append(
+            {
+                "url": service.rpc_url_on_host,
+                "source": "direct-validator-rpc" if "rpc" in service.roles else "direct-validator",
+                "service": service.id,
+                "host": service.host,
+            }
+        )
+
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for candidate in candidates:
+        url = str(candidate.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        unique.append({key: str(value) for key, value in candidate.items() if str(value or "").strip()})
+    if not unique:
+        raise PlanError(
+            "QBFT validator voting requires an operator-reachable validator RPC endpoint. "
+            "Automatic voting will not use rpc-only nodes or public RPC because those proposals do not represent validator votes."
+        )
+    return unique
+
+
+def qbft_vote_rpc_url(plan: NetworkPlan, args: argparse.Namespace) -> str:
+    """Return the first automatic QBFT RPC candidate.
+
+    Kept for callers/tests that need the selected URL only; consensus reads and
+    votes should use qbft_json_rpc_candidates so they can fall back cleanly.
+    """
+
+    return qbft_consensus_rpc_candidates(plan, args)[0]["url"]
+
+
+def qbft_rpc_timeout_s(args: argparse.Namespace) -> float:
+    """Return a positive per-call timeout for QBFT consensus JSON-RPC operations.
+
+    ``--rpc-timeout-s`` uses ``0`` as an automatic sentinel for the broader
+    wait-rpc flow.  Passing that sentinel directly to ``urllib`` means a
+    non-blocking socket timeout on Windows, which can fail immediately with
+    ``WinError 10035`` before a healthy RPC endpoint has a chance to answer.
+    Consensus reads/votes are one-shot JSON-RPC calls, so they must always use a
+    real positive timeout unless the operator provided a stricter explicit one.
+    """
+
+    value = float(getattr(args, "rpc_timeout_s", DEFAULT_RPC_WAIT_TIMEOUT_S))
+    return DEFAULT_QBFT_JSON_RPC_TIMEOUT_S if value <= 0 else value
+
+
+def qbft_json_rpc_candidates(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    method: str,
+    params: list[Any] | None = None,
+    *,
+    candidates: list[dict[str, str]] | tuple[dict[str, str], ...] | None = None,
+) -> dict[str, Any]:
+    rpc_candidates = list(candidates) if candidates is not None else qbft_consensus_rpc_candidates(plan, args)
+    timeout_s = qbft_rpc_timeout_s(args)
+    user_agent = str(getattr(args, "rpc_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or DEFAULT_JSON_RPC_USER_AGENT)
+    attempts: list[dict[str, str]] = []
+    for candidate in rpc_candidates:
+        url = str(candidate.get("url") or "").strip()
+        source = str(candidate.get("source") or "unknown").strip() or "unknown"
+        try:
+            result = json_rpc(
+                url,
+                method,
+                params,
+                timeout_s=timeout_s,
+                user_agent=user_agent,
+            )
+            return {
+                "ok": True,
+                "result": result,
+                "rpc_url": url,
+                "source": source,
+                "candidate": candidate,
+                "attempts": attempts + [{"ok": True, **candidate}],
+            }
+        except Exception as exc:  # noqa: BLE001 - preserve fallback diagnostics for operator output.
+            attempts.append(
+                {
+                    "ok": False,
+                    **candidate,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    summary = "; ".join(f"{item.get('source')} {item.get('url')}: {item.get('error')}" for item in attempts)
+    return {
+        "ok": False,
+        "error": f"JSON-RPC {method} failed for all QBFT RPC candidates: {summary}",
+        "attempts": attempts,
+    }
+
+
+def current_qbft_validators(plan: NetworkPlan, args: argparse.Namespace, *, block: str = "latest") -> list[str]:
+    response = qbft_json_rpc_candidates(plan, args, "qbft_getValidatorsByBlockNumber", [block])
+    if not response.get("ok"):
+        raise RuntimeError(str(response.get("error") or "qbft_getValidatorsByBlockNumber failed"))
+    validators = response.get("result")
+    if not isinstance(validators, list):
+        raise RuntimeError(f"qbft_getValidatorsByBlockNumber returned {type(validators).__name__}, expected list")
+    return [normalize_validator_address(item, field="qbft validator") for item in validators]
+
+
+def propose_qbft_validator_vote(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    validator_address: str,
+    proposal: bool,
+    *,
+    exclude_services: set[str] | list[str] | tuple[str, ...] = (),
+    candidates: list[dict[str, str]] | tuple[dict[str, str], ...] | None = None,
+) -> dict[str, Any]:
+    address = normalize_validator_address(validator_address)
+    vote_candidates = list(candidates) if candidates is not None else qbft_validator_vote_rpc_candidates(
+        plan,
+        args,
+        exclude_services=exclude_services,
+    )
+    response = qbft_json_rpc_candidates(
+        plan,
+        args,
+        "qbft_proposeValidatorVote",
+        [address, bool(proposal)],
+        candidates=vote_candidates,
+    )
+    if not response.get("ok"):
+        return {
+            "ok": False,
+            "validator_address": address,
+            "proposal": bool(proposal),
+            "error": str(response.get("error") or "qbft_proposeValidatorVote failed"),
+            "attempts": response.get("attempts") or [],
+        }
+    result = response.get("result")
+    return {
+        "ok": bool(result is True),
+        "rpc_url": response.get("rpc_url"),
+        "source": response.get("source"),
+        "candidate": response.get("candidate"),
+        "attempts": response.get("attempts") or [],
+        "validator_address": address,
+        "proposal": bool(proposal),
+        "result": result,
+    }
+
+
+def validator_mutation_membership_wait_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Use mutation-scale membership waits for add/retire consensus changes."""
+
+    timeout_s = max(chain_observation_timeout_from_args(args), DEFAULT_MUTATE_RPC_WAIT_TIMEOUT_S)
+    return args_copy_with(args, chain_observation_timeout_s=timeout_s)
+
+
+def qbft_vote_retry_timeout_s(args: argparse.Namespace) -> float:
+    """Return the total retry window for apply-time QBFT validator votes."""
+
+    return max(mutate_stable_chain_timeout_s(args), chain_observation_timeout_from_args(args))
+
+
+def propose_qbft_validator_vote_until_ok(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    validator_address: str,
+    proposal: bool,
+    *,
+    exclude_services: set[str] | list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Retry QBFT validator votes while Coolify/Besu RPC surfaces are settling.
+
+    Starting or changing a Coolify compose can briefly interrupt the direct
+    validator RPC port even when the node comes back healthy a few moments later.
+    A single immediate ``qbft_proposeValidatorVote`` attempt makes add-validator
+    brittle, so keep retrying until the vote is accepted or the validator set is
+    already in the requested state.
+    """
+
+    address = normalize_validator_address(validator_address)
+    timeout_s = qbft_vote_retry_timeout_s(args)
+    poll_s = float(getattr(args, "rpc_poll_interval_s", DEFAULT_RPC_POLL_INTERVAL_S) or DEFAULT_RPC_POLL_INTERVAL_S)
+    if poll_s <= 0:
+        poll_s = DEFAULT_RPC_POLL_INTERVAL_S
+    deadline = time.monotonic() + timeout_s
+    attempt = 0
+    attempts: list[dict[str, Any]] = []
+    last_error = ""
+
+    try:
+        candidates = qbft_validator_vote_rpc_candidates(plan, args, exclude_services=exclude_services)
+    except Exception as exc:  # noqa: BLE001 - return structured operator diagnostics.
+        return {
+            "ok": False,
+            "validator_address": address,
+            "proposal": bool(proposal),
+            "error": f"{type(exc).__name__}: {exc}",
+            "attempts": [],
+            "vote_retry_timeout_s": timeout_s,
+        }
+
+    operator_log(
+        args,
+        "qbft vote retry start",
+        validator_address=address,
+        proposal=bool(proposal),
+        timeout_s=timeout_s,
+        candidates=",".join(str(candidate.get("url") or "") for candidate in candidates),
+    )
+
+    while time.monotonic() <= deadline:
+        attempt += 1
+
+        try:
+            validators = current_qbft_validators(plan, args)
+            present = address in validators
+            if present == bool(proposal):
+                return {
+                    "ok": True,
+                    "validator_address": address,
+                    "proposal": bool(proposal),
+                    "skipped": True,
+                    "reason": "validator-set-already-at-requested-state",
+                    "validators": validators,
+                    "validator_count": len(validators),
+                    "attempts": attempts,
+                    "vote_retry_attempts": attempt,
+                    "vote_retry_timeout_s": timeout_s,
+                }
+        except Exception as exc:  # noqa: BLE001 - readiness may flap during redeploy.
+            last_error = f"{type(exc).__name__}: {exc}"
+            attempts.append({"attempt": attempt, "stage": "read-validator-set", "ok": False, "error": last_error})
+
+        vote_result = propose_qbft_validator_vote(
+            plan,
+            args,
+            address,
+            bool(proposal),
+            exclude_services=exclude_services,
+            candidates=candidates,
+        )
+        attempts.append({"attempt": attempt, "stage": "propose-validator-vote", **vote_result})
+        if vote_result.get("ok"):
+            return {
+                **vote_result,
+                "attempts": attempts,
+                "vote_retry_attempts": attempt,
+                "vote_retry_timeout_s": timeout_s,
+            }
+
+        last_error = str(vote_result.get("error") or "qbft_proposeValidatorVote did not return ok")
+        operator_log(
+            args,
+            "qbft vote retry",
+            attempt=attempt,
+            validator_address=address,
+            proposal=bool(proposal),
+            error=last_error,
+        )
+        time.sleep(poll_s)
+
+    return {
+        "ok": False,
+        "validator_address": address,
+        "proposal": bool(proposal),
+        "error": last_error or "QBFT validator vote was not accepted before retry timeout",
+        "attempts": attempts,
+        "vote_retry_attempts": attempt,
+        "vote_retry_timeout_s": timeout_s,
+    }
+
+
+def propose_qbft_validator_vote_to_all(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    validator_address: str,
+    proposal: bool,
+    *,
+    exclude_services: set[str] | list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Submit the same QBFT vote to every automatic validator RPC candidate."""
+
+    address = normalize_validator_address(validator_address)
+    try:
+        candidates = qbft_validator_vote_rpc_candidates(plan, args, exclude_services=exclude_services)
+    except Exception as exc:  # noqa: BLE001 - return structured operator diagnostics.
+        return {
+            "ok": False,
+            "validator_address": address,
+            "proposal": bool(proposal),
+            "error": f"{type(exc).__name__}: {exc}",
+            "attempts": [],
+            "votes_submitted": 0,
+        }
+
+    attempts: list[dict[str, Any]] = []
+    votes_submitted = 0
+    for candidate in candidates:
+        response = qbft_json_rpc_candidates(
+            plan,
+            args,
+            "qbft_proposeValidatorVote",
+            [address, bool(proposal)],
+            candidates=[candidate],
+        )
+        attempt = {
+            "candidate": candidate,
+            "ok": bool(response.get("ok") and response.get("result") is True),
+            "result": response.get("result"),
+            "rpc_url": response.get("rpc_url") or candidate.get("url"),
+            "source": response.get("source") or candidate.get("source"),
+        }
+        if response.get("ok") and response.get("result") is True:
+            votes_submitted += 1
+        else:
+            attempt["error"] = str(response.get("error") or "qbft_proposeValidatorVote did not return true")
+            attempt["attempts"] = response.get("attempts") or []
+        attempts.append(attempt)
+
+    return {
+        "ok": votes_submitted > 0,
+        "validator_address": address,
+        "proposal": bool(proposal),
+        "votes_submitted": votes_submitted,
+        "candidate_count": len(candidates),
+        "attempts": attempts,
+    }
+
+
+
+def wait_for_qbft_validator_membership(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    validator_address: str,
+    *,
+    should_contain: bool,
+) -> dict[str, Any]:
+    address = normalize_validator_address(validator_address)
+    timeout_s = chain_observation_timeout_from_args(args)
+    poll_s = float(getattr(args, "rpc_poll_interval_s", DEFAULT_RPC_POLL_INTERVAL_S))
+    if poll_s <= 0:
+        poll_s = DEFAULT_RPC_POLL_INTERVAL_S
+    deadline = time.time() + timeout_s
+    last_validators: list[str] = []
+    last_error = ""
+    while time.time() <= deadline:
+        try:
+            validators = current_qbft_validators(plan, args, block="latest")
+            last_validators = validators
+            present = address in validators
+            if present == should_contain:
+                return {
+                    "ok": True,
+                    "validator_address": address,
+                    "should_contain": should_contain,
+                    "validators": validators,
+                    "validator_count": len(validators),
+                }
+        except Exception as exc:  # noqa: BLE001 - return operator-facing diagnostics.
+            last_error = f"{type(exc).__name__}: {exc}"
+        time.sleep(poll_s)
+    return {
+        "ok": False,
+        "validator_address": address,
+        "should_contain": should_contain,
+        "validators": last_validators,
+        "validator_count": len(last_validators),
+        "error": last_error or "validator set membership did not reach the requested state before timeout",
+    }
+
+
+def validator_retire_membership_wait_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Use a retire-specific membership timeout long enough for async Coolify deploys.
+
+    ``coolify_sync(... deploy=True)`` only proves Coolify accepted the deploy request.
+    The temporary QBFT vote sidecar may still need to pull/start and then poll each
+    internal validator RPC for up to its own 180 second window.  The generic
+    observe-chain timeout defaults to 8 seconds, which is too short for this
+    consensus-changing executor and can leave the service compose in its temporary
+    sidecar state after a false timeout.
+    """
+
+    timeout_s = max(chain_observation_timeout_from_args(args), DEFAULT_VALIDATOR_RETIRE_MEMBERSHIP_TIMEOUT_S)
+    return args_copy_with(args, chain_observation_timeout_s=timeout_s)
+
+
+def restore_validator_retire_vote_topology(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    target_service: PlannedService,
+) -> dict[str, Any]:
+    """Redeploy the pre-retire host compose after a failed temporary vote phase."""
+
+    restore_plan = plan_for_host_without_services(plan, target_service.host, set())
+    restore_args = args_copy_with(
+        args,
+        host=target_service.host,
+        no_bootstrap=True,
+        _include_rpc_public_entry=True,
+        _validator_vote=None,
+        _retire_cleanup_services=(),
+    )
+    return coolify_sync(restore_plan, restore_args, deploy=True)
+
+
+def validator_address_from_export(export: Mapping[str, Any], service: PlannedService) -> str:
+    addresses = normalize_validator_address_map(export.get("validator_addresses"))
+    runtime_dir = service_runtime_dir(service)
+    for key in (runtime_dir, service.id):
+        if key in addresses:
+            return addresses[key]
+    available = ", ".join(sorted(addresses)) or "<none>"
+    raise PlanError(f"Config export did not include a validator address for {service.id!r}; available address files: {available}")
+
+
+def fetch_validator_address_from_host(plan: NetworkPlan, args: argparse.Namespace, host_id: str, service: PlannedService) -> tuple[str, dict[str, Any]]:
+    deadline = time.time() + qbft_config_export_timeout_s(args)
+    last_export: dict[str, Any] = {}
+    last_error = ""
+    while True:
+        export = export_qbft_config_from_host(plan, args, host_id)
+        last_export = export
+        try:
+            if export.get("ok"):
+                return validator_address_from_export(export, service), export
+            last_error = str(export.get("error") or export.get("missing_files") or "config export not ok")
+        except Exception as exc:  # noqa: BLE001 - keep retrying until the address sidecar has written the file.
+            last_error = f"{type(exc).__name__}: {exc}"
+        if bool(getattr(args, "dry_run", False)) or bool(getattr(args, "no_deploy", False)) or time.time() >= deadline:
+            break
+        time.sleep(2.0)
+    raise PlanError(f"Unable to fetch validator address for {service.id!r} from host {host_id!r}: {last_error}; export={json.dumps({k: v for k, v in last_export.items() if k != 'files'}, sort_keys=True)}")
+
+
+
+
 def apply_rpc_add_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: dict[str, Any]) -> dict[str, Any]:
     """Execute the safe subset of mutate: adding rpc-only instances.
 
@@ -2429,7 +3244,11 @@ def apply_rpc_add_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: 
         if dry_run:
             phases.append({"phase": "verify-public-rpc", "result": {"ok": True, "dry_run": True}})
         else:
-            public_result = observe_chain_state(plan, args_copy_with(args, rpc_url=""))
+            public_result = wait_for_stable_observable_chain(
+                plan,
+                args,
+                label="verify-public-rpc",
+            )
             phases.append({"phase": "verify-public-rpc", "result": public_result})
             if not public_result.get("ok", False):
                 return {
@@ -2614,7 +3433,11 @@ def apply_rpc_retire_mutation(plan: NetworkPlan, args: argparse.Namespace, packe
         else:
             try:
                 public_wait_args = mutate_rpc_retire_public_wait_args(args, rpc_url=str(plan.external_rpc_url or ""))
-                public_result = wait_for_rpc(plan, public_wait_args)
+                public_result = wait_for_stable_observable_chain(
+                    plan,
+                    public_wait_args,
+                    label="verify-public-rpc",
+                )
             except Exception as exc:  # noqa: BLE001 - capture operator-facing failure in packet.
                 public_result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
             phases.append({"phase": "verify-public-rpc", "result": public_result})
@@ -2705,8 +3528,761 @@ def apply_rpc_retire_mutation(plan: NetworkPlan, args: argparse.Namespace, packe
     }
 
 
+
+
+def apply_validator_retire_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: dict[str, Any]) -> dict[str, Any]:
+    """Retire one validator-only node without touching validator-RPC services.
+
+    The safe sequence is vote first, wait until QBFT removes the validator from
+    the validator set, and only then redeploy the affected Coolify host with the
+    retired service omitted.  With two validators, the target validator must also
+    vote for its own removal, so this executor deploys a temporary host-local
+    vote sidecar before removing the service.
+    """
+
+    service_catalog = planned_service_by_id(plan)
+    target_ids = [str(item) for item in packet.get("affected_instances") or []]
+    target_services = [service_catalog[service_id] for service_id in target_ids if service_id in service_catalog]
+    if not mutation_apply_is_supported_validator_retire(packet, target_services):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": (
+                "mutate --apply validator retire currently supports only validator-only targets. "
+                "Validator-RPC and mixed consensus changes remain planner-only."
+            ),
+            "execution": {
+                "implemented": False,
+                "no_mutation_performed": True,
+                "message": "Unsupported validator retire executor path.",
+            },
+        }
+    if len(target_services) != 1:
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": "validator retire apply currently supports exactly one validator-only instance per mutation.",
+            "execution": {"implemented": True, "no_mutation_performed": True, "message": "Refused multi-validator retire."},
+        }
+    if not mutation_consensus_acknowledged(packet):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": "Consensus-changing mutate --apply requires --ack-consensus-change.",
+            "execution": {"implemented": True, "no_mutation_performed": True, "message": "Missing consensus acknowledgement."},
+        }
+
+    target_service = target_services[0]
+    dry_run = bool(getattr(args, "dry_run", False))
+    no_deploy = bool(getattr(args, "no_deploy", False))
+    phases: list[dict[str, Any]] = []
+    retired_ids = {target_service.id}
+
+    if dry_run or no_deploy:
+        current_validators: list[str] = []
+        target_address = "0x0000000000000000000000000000000000000000"
+        phases.append(
+            {
+                "phase": "verify-current-validator-set",
+                "result": {"ok": True, "dry_run": dry_run, "skipped": True, "reason": "dry-run" if dry_run else "no-deploy"},
+            }
+        )
+        phases.append(
+            {
+                "phase": "verify-node-identity",
+                "host": target_service.host,
+                "instance": target_service.id,
+                "result": {"ok": True, "dry_run": dry_run, "skipped": True, "validator_address": target_address},
+            }
+        )
+    else:
+        try:
+            current_validators = current_qbft_validators(plan, args)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "error": f"Unable to read current QBFT validator set: {type(exc).__name__}: {exc}",
+                "execution": {"implemented": True, "dry_run": dry_run, "no_mutation_performed": True, "message": "Validator retire preflight failed."},
+                "apply_phases": phases,
+            }
+        phases.append(
+            {
+                "phase": "verify-current-validator-set",
+                "result": {"ok": True, "validators": current_validators, "validator_count": len(current_validators)},
+            }
+        )
+        try:
+            target_address, address_export = fetch_validator_address_from_host(plan, args, target_service.host, target_service)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "error": f"Unable to fetch retired validator address: {type(exc).__name__}: {exc}",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": True,
+                    "message": "Validator retire refused because the target validator address could not be verified.",
+                },
+                "apply_phases": phases,
+            }
+        phases.append(
+            {
+                "phase": "verify-node-identity",
+                "host": target_service.host,
+                "instance": target_service.id,
+                "result": {
+                    "ok": True,
+                    "validator_address": target_address,
+                    "export": {key: value for key, value in address_export.items() if key not in {"files", "sync"}},
+                },
+            }
+        )
+
+        if target_address in current_validators:
+            remaining_validators = [address for address in current_validators if address != target_address]
+            minimum_validators = int(plan.topology_policy.minimum_validators)
+            if len(remaining_validators) < minimum_validators:
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "error": (
+                        f"Refusing validator retire because it would leave {len(remaining_validators)} validator(s), "
+                        f"below topology_policy.minimum_validators={minimum_validators}."
+                    ),
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": True,
+                        "message": "Validator retire refused before voting because quorum policy would be violated.",
+                    },
+                    "apply_phases": phases,
+                }
+            if not remaining_validators:
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "error": "Refusing validator retire because it would leave zero validators.",
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": True,
+                        "message": "Validator retire refused before voting because it would halt consensus.",
+                    },
+                    "apply_phases": phases,
+                }
+
+            direct_vote_result = propose_qbft_validator_vote_to_all(
+                plan,
+                args,
+                target_address,
+                False,
+                exclude_services={target_service.id},
+            )
+            phases.append({"phase": "propose-validator-vote", "result": direct_vote_result})
+
+            vote_services = validator_retire_vote_services_for_host(plan, target_service.host, target_service)
+            vote_service_ids = [service.id for service in vote_services]
+            vote_plan = plan_with_only_services(plan, vote_service_ids)
+            vote_payload = {
+                "validator_address": target_address,
+                "proposal": False,
+                "services": [{"id": service.id} for service in vote_services],
+            }
+            vote_args = args_copy_with(
+                args,
+                host=target_service.host,
+                no_bootstrap=True,
+                _include_rpc_public_entry=True,
+                _validator_vote=vote_payload,
+            )
+            sidecar_result = coolify_sync(vote_plan, vote_args, deploy=not no_deploy)
+            phases.append(
+                {
+                    "phase": "propose-validator-vote-sidecar",
+                    "host": target_service.host,
+                    "services": vote_service_ids,
+                    "result": sidecar_result,
+                }
+            )
+            if not sidecar_result.get("ok"):
+                restore_result = restore_validator_retire_vote_topology(plan, args, target_service)
+                phases.append(
+                    {
+                        "phase": "restore-pre-retire-topology",
+                        "host": target_service.host,
+                        "reason": "vote-sidecar-deploy-failed",
+                        "result": restore_result,
+                    }
+                )
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": False,
+                        "message": (
+                            "Validator retire failed while deploying the host-local QBFT vote sidecar; "
+                            "the pre-retire topology restore was attempted."
+                        ),
+                    },
+                    "apply_phases": phases,
+                }
+
+            membership_wait_args = validator_retire_membership_wait_args(args)
+            membership_result = wait_for_qbft_validator_membership(
+                plan,
+                membership_wait_args,
+                target_address,
+                should_contain=False,
+            )
+            phases.append({"phase": "wait-validator-set-removal", "result": membership_result})
+            if not membership_result.get("ok"):
+                restore_result = restore_validator_retire_vote_topology(plan, args, target_service)
+                phases.append(
+                    {
+                        "phase": "restore-pre-retire-topology",
+                        "host": target_service.host,
+                        "reason": "validator-set-removal-timeout",
+                        "result": restore_result,
+                    }
+                )
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": False,
+                        "message": (
+                            "Validator retire votes were submitted but the validator set still contained the target "
+                            "before the retire timeout; the pre-retire topology restore was attempted."
+                        ),
+                    },
+                    "apply_phases": phases,
+                }
+        else:
+            phases.append(
+                {
+                    "phase": "propose-validator-vote",
+                    "result": {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "target-validator-address-not-in-current-validator-set",
+                        "validator_address": target_address,
+                        "proposal": False,
+                    },
+                }
+            )
+            phases.append(
+                {
+                    "phase": "wait-validator-set-removal",
+                    "result": {
+                        "ok": True,
+                        "skipped": True,
+                        "validator_address": target_address,
+                        "validators": current_validators,
+                        "validator_count": len(current_validators),
+                    },
+                }
+            )
+
+    host_plan = plan_for_host_without_services(plan, target_service.host, retired_ids)
+    remaining_service_ids = [service.id for service in host_plan.services]
+    deploy_args = args_copy_with(
+        args,
+        host=target_service.host,
+        no_bootstrap=True,
+        _include_rpc_public_entry=True,
+        _retire_cleanup_services=tuple(target_services),
+        _validator_vote=None,
+    )
+    if dry_run or no_deploy:
+        sync_result = {
+            "ok": True,
+            "dry_run": dry_run,
+            "skipped": True,
+            "reason": "dry-run" if dry_run else "no-deploy",
+            "remaining_instances": remaining_service_ids,
+        }
+    elif remaining_service_ids:
+        sync_result = coolify_sync(host_plan, deploy_args, deploy=True)
+    else:
+        cleanup_compose = render_retire_cleanup_compose_for_host(plan, target_service.host, target_services)
+        cleanup_args = args_copy_with(deploy_args, _compose_override=cleanup_compose)
+        sync_result = coolify_sync(host_plan, cleanup_args, deploy=True)
+        sync_result = {
+            **sync_result,
+            "cleanup_only_compose": True,
+            "remaining_instances": [],
+        }
+
+    phases.append(
+        {
+            "phase": "stop-coolify-service",
+            "host": target_service.host,
+            "retired_instances": [target_service.id],
+            "remaining_instances": remaining_service_ids,
+            "result": {
+                "ok": bool(sync_result.get("ok")),
+                "method": "redeploy-without-target-and-docker-label-cleanup-sidecar",
+                "sync": sync_result,
+            },
+        }
+    )
+    if not sync_result.get("ok"):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "execution": {
+                "implemented": True,
+                "dry_run": dry_run,
+                "no_mutation_performed": dry_run,
+                "message": f"Validator retire removed the target from QBFT but failed while redeploying host {target_service.host} without the retired service.",
+            },
+            "apply_phases": phases,
+        }
+
+    if dry_run or no_deploy:
+        block_result = {"ok": True, "dry_run": dry_run, "skipped": True}
+    else:
+        block_result = wait_for_stable_observable_chain(
+            plan,
+            args,
+            expected_validator_count=len(remaining_validators) if "remaining_validators" in locals() else None,
+            required_validators_absent=(target_address,),
+            label="verify-block-production",
+        )
+    phases.append({"phase": "verify-block-production", "result": block_result})
+    if not block_result.get("ok", False):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "execution": {
+                "implemented": True,
+                "dry_run": dry_run,
+                "no_mutation_performed": False,
+                "message": "Validator retire removed the target but canonical chain verification failed afterward.",
+            },
+            "apply_phases": phases,
+        }
+
+    if dry_run or no_deploy or bool(getattr(args, "skip_wait_rpc", False)) or target_service.rpc_host_port is None:
+        phases.append(
+            {
+                "phase": "verify-retired-direct-rpc-unreachable",
+                "result": {
+                    "ok": True,
+                    "dry_run": dry_run,
+                    "skipped": True,
+                    "reason": (
+                        "no-retired-rpc-host-port"
+                        if target_service.rpc_host_port is None
+                        else "dry-run"
+                        if dry_run
+                        else "no-deploy"
+                        if no_deploy
+                        else "skip-wait-rpc"
+                    ),
+                },
+            }
+        )
+    else:
+        retired_result = verify_retired_rpc_unreachable(plan, args, target_services)
+        phases.append({"phase": "verify-retired-direct-rpc-unreachable", "result": retired_result})
+        if not retired_result.get("ok", False):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator retire completed consensus removal, but the retired direct RPC backend still answered.",
+                },
+                "apply_phases": phases,
+            }
+
+    phases.append(
+        {
+            "phase": "commit-topology",
+            "result": {
+                "ok": True,
+                "retired_instances": [target_service.id],
+                "validator_address": target_address,
+                "state_note": (
+                    "This executor votes the validator out and redeploys the host without the service; "
+                    "it does not edit private state, so the same instance can be re-added by running mutate --add."
+                ),
+            },
+        }
+    )
+    return {
+        **packet,
+        "ok": True,
+        "mode": "apply",
+        "execution": {
+            "implemented": True,
+            "dry_run": dry_run,
+            "no_mutation_performed": dry_run,
+            "message": (
+                "Validator retire dry-run completed without mutating Coolify or QBFT."
+                if dry_run
+                else "Validator retire applied: QBFT removal verified, host redeployed without the validator, and block production checked."
+            ),
+        },
+        "apply_phases": phases,
+    }
+
+
+
+def apply_validator_add_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: dict[str, Any]) -> dict[str, Any]:
+    """Execute the first consensus-changing mutate subset: adding one validator-only node.
+
+    This intentionally handles only the one-validator bring-up topology first.
+    With one current validator, one successful QBFT vote is enough to add the new
+    validator.  The vote must come from an existing validator endpoint; automatic
+    consensus votes never fall back to rpc-only nodes or public RPC.
+    """
+
+    service_catalog = planned_service_by_id(plan)
+    target_ids = [str(item) for item in packet.get("affected_instances") or []]
+    target_services = [service_catalog[service_id] for service_id in target_ids if service_id in service_catalog]
+    if not mutation_apply_is_supported_validator_add(packet, target_services):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": (
+                "mutate --apply validator add currently supports only validator-only targets. "
+                "Validator-RPC and mixed consensus changes remain planner-only until their executor lands."
+            ),
+            "execution": {
+                "implemented": False,
+                "no_mutation_performed": True,
+                "message": "Unsupported validator mutation executor path.",
+            },
+        }
+    if len(target_services) != 1:
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": "validator add apply currently supports exactly one validator-only instance per mutation.",
+            "execution": {"implemented": True, "no_mutation_performed": True, "message": "Refused multi-validator add."},
+        }
+    if not mutation_consensus_acknowledged(packet):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": "Consensus-changing mutate --apply requires --ack-consensus-change.",
+            "execution": {"implemented": True, "no_mutation_performed": True, "message": "Missing consensus acknowledgement."},
+        }
+
+    target_service = target_services[0]
+    dry_run = bool(getattr(args, "dry_run", False))
+    no_deploy = bool(getattr(args, "no_deploy", False))
+    phases: list[dict[str, Any]] = []
+
+    try:
+        runtime_bundle, discovery = discover_qbft_config_bundle(plan, args, target_services)
+    except PlanError as exc:
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": str(exc),
+            "execution": {
+                "implemented": True,
+                "dry_run": dry_run,
+                "no_mutation_performed": True,
+                "message": "Validator add refused while selecting/slurping the current QBFT config source.",
+            },
+            "apply_phases": phases,
+        }
+    phases.append({"phase": "slurp-current-config", "result": discovery})
+    if not discovery.get("ok"):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "execution": {
+                "implemented": True,
+                "dry_run": dry_run,
+                "no_mutation_performed": True,
+                "message": "Validator add failed while slurping current QBFT config.",
+            },
+            "apply_phases": phases,
+        }
+
+    if dry_run or no_deploy:
+        current_validators = []
+        phases.append(
+            {
+                "phase": "verify-current-validator-set",
+                "result": {"ok": True, "dry_run": dry_run, "skipped": True, "reason": "dry-run" if dry_run else "no-deploy"},
+            }
+        )
+    else:
+        try:
+            current_validators = current_qbft_validators(plan, args)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "error": f"Unable to read current QBFT validator set: {type(exc).__name__}: {exc}",
+                "execution": {"implemented": True, "dry_run": dry_run, "no_mutation_performed": True, "message": "Validator add preflight failed."},
+                "apply_phases": phases,
+            }
+        phases.append(
+            {
+                "phase": "verify-current-validator-set",
+                "result": {"ok": True, "validators": current_validators, "validator_count": len(current_validators)},
+            }
+        )
+        if len(current_validators) != 1:
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "error": (
+                    "validator add apply currently supports only the one-current-validator bootstrap case. "
+                    f"Current validator count is {len(current_validators)}; multi-validator vote fanout is not implemented yet."
+                ),
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": True,
+                    "message": "Validator add refused because one canonical RPC vote would not be enough.",
+                },
+                "apply_phases": phases,
+            }
+
+    host_id = target_service.host
+    deploy_service_ids = validator_add_execution_service_ids(plan, target_service, discovery)
+    host_plan = plan_with_only_services(plan, deploy_service_ids)
+    phases.append(
+        {
+            "phase": "select-deploy-service-set",
+            "host": host_id,
+            "result": {
+                "ok": True,
+                "services": deploy_service_ids,
+                "target": target_service.id,
+                "selected_source_host": discovery.get("selected_source_host") or discovery.get("source_host") or "",
+            },
+        }
+    )
+    deploy_args = args_copy_with(
+        args,
+        host=host_id,
+        no_bootstrap=True,
+        _runtime_import_bundle=runtime_bundle,
+        _include_rpc_public_entry=False,
+    )
+    sync_result = coolify_sync(host_plan, deploy_args, deploy=not no_deploy)
+    phases.append({"phase": "seed-new-node-bootstrap", "host": host_id, "result": sync_result})
+    phases.append({"phase": "deploy-service", "host": host_id, "result": sync_result})
+    if not sync_result.get("ok"):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "execution": {
+                "implemented": True,
+                "dry_run": dry_run,
+                "no_mutation_performed": dry_run,
+                "message": f"Validator add failed while updating Coolify service on host {host_id}.",
+            },
+            "apply_phases": phases,
+        }
+
+    if dry_run or no_deploy:
+        validator_address = "0x0000000000000000000000000000000000000000"
+        phases.append(
+            {
+                "phase": "verify-node-identity",
+                "host": host_id,
+                "instance": target_service.id,
+                "result": {
+                    "ok": True,
+                    "dry_run": dry_run,
+                    "skipped": True,
+                    "reason": "dry-run" if dry_run else "no-deploy",
+                    "message": "Validator address export not fetched during dry-run/no-deploy.",
+                },
+            }
+        )
+    else:
+        try:
+            validator_address, address_export = fetch_validator_address_from_host(plan, args, host_id, target_service)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "error": f"Unable to fetch new validator address: {type(exc).__name__}: {exc}",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator service was deployed but validator address export failed; consensus vote was not submitted.",
+                },
+                "apply_phases": phases,
+            }
+        phases.append(
+            {
+                "phase": "verify-node-identity",
+                "host": host_id,
+                "instance": target_service.id,
+                "result": {
+                    "ok": True,
+                    "validator_address": validator_address,
+                    "export": {key: value for key, value in address_export.items() if key not in {"files", "sync"}},
+                },
+            }
+        )
+
+    if dry_run or no_deploy:
+        phases.append(
+            {
+                "phase": "propose-validator-vote",
+                "result": {"ok": True, "dry_run": dry_run, "skipped": True, "proposal": True, "validator_address": validator_address},
+            }
+        )
+        phases.append(
+            {
+                "phase": "wait-validator-set",
+                "result": {"ok": True, "dry_run": dry_run, "skipped": True, "validator_address": validator_address},
+            }
+        )
+    else:
+        vote_result = propose_qbft_validator_vote_until_ok(
+            plan,
+            args,
+            validator_address,
+            True,
+            exclude_services={target_service.id},
+        )
+        phases.append({"phase": "propose-validator-vote", "result": vote_result})
+        if not vote_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator add deployed the node but QBFT add-validator vote failed.",
+                },
+                "apply_phases": phases,
+            }
+        membership_result = wait_for_qbft_validator_membership(
+            plan,
+            validator_mutation_membership_wait_args(args),
+            validator_address,
+            should_contain=True,
+        )
+        phases.append({"phase": "wait-validator-set", "result": membership_result})
+        if not membership_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator add vote was submitted but the validator set did not include the new validator before timeout.",
+                },
+                "apply_phases": phases,
+            }
+
+    if dry_run or no_deploy:
+        phases.append({"phase": "verify-block-production", "result": {"ok": True, "dry_run": dry_run, "skipped": True}})
+    else:
+        block_result = wait_for_stable_observable_chain(
+            plan,
+            args,
+            expected_validator_count=len(current_validators) + 1 if "current_validators" in locals() else None,
+            required_validators_present=(validator_address,),
+            label="verify-block-production",
+        )
+        phases.append({"phase": "verify-block-production", "result": block_result})
+        if not block_result.get("ok", False):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator add reached the validator set but canonical chain verification failed afterward.",
+                },
+                "apply_phases": phases,
+            }
+
+    phases.append(
+        {
+            "phase": "commit-topology",
+            "result": {
+                "ok": True,
+                "added_instances": [target_service.id],
+                "validator_address": validator_address,
+                "state_note": (
+                    "This executor deploys the validator declared in private state and votes it into QBFT; "
+                    "it does not edit private state."
+                ),
+            },
+        }
+    )
+    return {
+        **packet,
+        "ok": True,
+        "mode": "apply",
+        "execution": {
+            "implemented": True,
+            "dry_run": dry_run,
+            "no_mutation_performed": dry_run,
+            "message": (
+                "Validator add dry-run completed without mutating Coolify or QBFT."
+                if dry_run
+                else "Validator add applied: runtime config imported, validator key/address initialized, QBFT add vote submitted, validator set verified, and block production checked."
+            ),
+        },
+        "apply_phases": phases,
+    }
+
+
+
+
 def apply_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: dict[str, Any]) -> dict[str, Any]:
     intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
+    service_catalog = planned_service_by_id(plan)
+    target_ids = [str(item) for item in packet.get("affected_instances") or []]
+    target_services = [service_catalog[service_id] for service_id in target_ids if service_id in service_catalog]
+    if intent.get("action") == "add" and mutation_apply_is_supported_validator_add(packet, target_services):
+        return apply_validator_add_mutation(plan, args, packet)
+    if intent.get("action") == "retire" and mutation_apply_is_supported_validator_retire(packet, target_services):
+        return apply_validator_retire_mutation(plan, args, packet)
     if intent.get("action") == "retire":
         return apply_rpc_retire_mutation(plan, args, packet)
     return apply_rpc_add_mutation(plan, args, packet)
@@ -3150,6 +4726,9 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
                 f"mkdir -p /smoke/{service.id}/data",
                 f"cp \"$KEY_DIR_{index}/key\" /smoke/{service.id}/data/key",
                 f"cp \"$KEY_DIR_{index}/key.pub\" /smoke/{service.id}/data/key.pub",
+                f"\"$BESU\" --data-path=/smoke/{service.id}/data public-key export-address --to=/smoke/{service.id}/validator-address.tmp",
+                f"tr -d '\\r\\n ' < /smoke/{service.id}/validator-address.tmp > /smoke/{service.id}/validator-address",
+                f"rm -f /smoke/{service.id}/validator-address.tmp",
             ]
         )
 
@@ -3521,6 +5100,7 @@ def render_qbft_config_exporter_shell(
             "GENESIS_SHA=",
             "STATIC_SHA=",
             "METADATA_SHA=",
+            "VALIDATOR_ADDRESSES_JSON=",
             "i=0",
             "while [ \"$i\" -lt \"$SOURCE_COUNT\" ]; do",
             "  eval label=\"\\${SRC_LABEL_$i}\"",
@@ -3538,6 +5118,18 @@ def render_qbft_config_exporter_shell(
             "    GENESIS_SHA=$(file_sha256 \"$root/genesis.json\")",
             "    STATIC_SHA=$(file_sha256 \"$root/static-nodes-all.json\")",
             "    METADATA_SHA=$(file_sha256 \"$root/network-metadata.json\")",
+            "    VALIDATOR_ADDRESSES_JSON=",
+            "    for addr_file in \"$root\"/*/validator-address; do",
+            "      [ -f \"$addr_file\" ] || continue",
+            "      runtime_dir=$(basename \"$(dirname \"$addr_file\")\")",
+            "      addr=$(tr -d '\\r\\n ' < \"$addr_file\")",
+            "      case \"$addr\" in 0x*) ;; *) addr=\"0x$addr\" ;; esac",
+            "      if printf '%s' \"$addr\" | grep -Eq '^0x[0-9a-fA-F]{40}$'; then",
+            "        key_esc=$(json_string \"$runtime_dir\")",
+            "        addr_esc=$(json_string \"$addr\")",
+            "        if [ -z \"$VALIDATOR_ADDRESSES_JSON\" ]; then VALIDATOR_ADDRESSES_JSON=\"\\\"$key_esc\\\":\\\"$addr_esc\\\"\"; else VALIDATOR_ADDRESSES_JSON=\"$VALIDATOR_ADDRESSES_JSON,\\\"$key_esc\\\":\\\"$addr_esc\\\"\"; fi",
+            "      fi",
+            "    done",
             "    break",
             "  fi",
             "  for item in $missing; do",
@@ -3566,7 +5158,8 @@ def render_qbft_config_exporter_shell(
             "    \"genesis_json\": \"$GENESIS_SHA\",",
             "    \"static_nodes_all_json\": \"$STATIC_SHA\",",
             "    \"network_metadata_json\": \"$METADATA_SHA\"",
-            "  }",
+            "  },",
+            "  \"validator_addresses\": {$VALIDATOR_ADDRESSES_JSON}",
             "}",
             "JSON",
             "mkdir -p \"$(dirname \"$PUBLIC_EXPORT_FILE\")\"",
@@ -3670,6 +5263,7 @@ def render_qbft_config_exporter_compose(
             "GENESIS_SHA=",
             "STATIC_SHA=",
             "METADATA_SHA=",
+            "VALIDATOR_ADDRESSES_JSON=",
             "i=0",
             "while [ \"$i\" -lt \"$SOURCE_COUNT\" ]; do",
             "  eval label=\"\\${SRC_LABEL_$i}\"",
@@ -3687,6 +5281,18 @@ def render_qbft_config_exporter_compose(
             "    GENESIS_SHA=$(file_sha256 \"$root/genesis.json\")",
             "    STATIC_SHA=$(file_sha256 \"$root/static-nodes-all.json\")",
             "    METADATA_SHA=$(file_sha256 \"$root/network-metadata.json\")",
+            "    VALIDATOR_ADDRESSES_JSON=",
+            "    for addr_file in \"$root\"/*/validator-address; do",
+            "      [ -f \"$addr_file\" ] || continue",
+            "      runtime_dir=$(basename \"$(dirname \"$addr_file\")\")",
+            "      addr=$(tr -d '\\r\\n ' < \"$addr_file\")",
+            "      case \"$addr\" in 0x*) ;; *) addr=\"0x$addr\" ;; esac",
+            "      if printf '%s' \"$addr\" | grep -Eq '^0x[0-9a-fA-F]{40}$'; then",
+            "        key_esc=$(json_string \"$runtime_dir\")",
+            "        addr_esc=$(json_string \"$addr\")",
+            "        if [ -z \"$VALIDATOR_ADDRESSES_JSON\" ]; then VALIDATOR_ADDRESSES_JSON=\"\\\"$key_esc\\\":\\\"$addr_esc\\\"\"; else VALIDATOR_ADDRESSES_JSON=\"$VALIDATOR_ADDRESSES_JSON,\\\"$key_esc\\\":\\\"$addr_esc\\\"\"; fi",
+            "      fi",
+            "    done",
             "    break",
             "  fi",
             "  for item in $missing; do",
@@ -3715,7 +5321,8 @@ def render_qbft_config_exporter_compose(
             "    \"genesis_json\": \"$GENESIS_SHA\",",
             "    \"static_nodes_all_json\": \"$STATIC_SHA\",",
             "    \"network_metadata_json\": \"$METADATA_SHA\"",
-            "  }",
+            "  },",
+            "  \"validator_addresses\": {$VALIDATOR_ADDRESSES_JSON}",
             "}",
             "JSON",
             "mkdir -p \"$(dirname \"$PUBLIC_EXPORT_FILE\")\"",
@@ -3844,6 +5451,7 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
                 decoded_files[str(key)] = ""
         files = decoded_files
     sha256 = payload.get("sha256") if isinstance(payload.get("sha256"), Mapping) else {}
+    validator_addresses = normalize_validator_address_map(payload.get("validator_addresses"))
     missing = [str(item) for item in payload.get("missing_files") or []]
     source_mount = str(payload.get("source_mount") or "")
     raw_candidates = payload.get("source_candidates") if isinstance(payload.get("source_candidates"), list) else []
@@ -3857,6 +5465,7 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
             "source_candidates": source_candidates,
             "missing_files": missing,
             "sha256": {str(key): str(value) for key, value in sha256.items()},
+            "validator_addresses": validator_addresses,
         }
     required = sorted(QBFT_RUNTIME_CONFIG_FILES)
     missing_keys = [key for key in required if not str(files.get(key) or "").strip()]
@@ -3869,6 +5478,7 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
             "source_candidates": source_candidates,
             "missing_files": missing + missing_keys,
             "sha256": {str(key): str(value) for key, value in sha256.items()},
+            "validator_addresses": validator_addresses,
         }
     return {
         "ok": True,
@@ -3879,6 +5489,7 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
         "files": {key: str(files.get(key) or "") for key in required},
         "sha256": {str(key): str(value) for key, value in sha256.items()},
         "lineage_hash": str(sha256.get("genesis_json") or ""),
+        "validator_addresses": validator_addresses,
     }
 
 
@@ -3987,6 +5598,61 @@ def render_qbft_runtime_import_shell(
     )
 
 
+
+def render_validator_key_init_shell(plan: NetworkPlan, services: list[PlannedService] | tuple[PlannedService, ...]) -> str:
+    """Return a one-shot Besu script that creates validator node keys and address files.
+
+    Live validator adds import the existing genesis/static-node material instead of
+    running the full bootstrap path.  Validator nodes still need stable node keys
+    before Besu starts so the executor can propose the corresponding QBFT validator
+    address.  This sidecar uses Besu's operator key generation path, writes
+    ``validator-address`` next to the runtime directory, and leaves existing keys
+    untouched on re-runs.
+    """
+
+    validators = [service for service in services if service.role == "validator"]
+    if not validators:
+        return "set -eu\necho 'No validator key initialization required.'"
+    one_validator_plan = replace(plan, services=(validators[0],))
+    config = render_json_heredoc(qbft_config(one_validator_plan))
+    lines: list[str] = [
+        "set -eu",
+        "if command -v besu >/dev/null 2>&1; then BESU=besu; else BESU=/opt/besu/bin/besu; fi",
+        "mkdir -p /tmp/qbft-validator-key-init",
+        "cat > /tmp/qbft-validator-key-init/qbftConfigFile.json <<'JSON'",
+        config,
+        "JSON",
+    ]
+    for service in validators:
+        runtime_dir = service_runtime_dir(service)
+        safe_runtime = shlex.quote(runtime_dir)
+        key_tmp = f"/tmp/qbft-validator-key-init/{service.id}"
+        lines.extend(
+            [
+                f"mkdir -p /smoke/{safe_runtime}/data",
+                f"if [ ! -f /smoke/{safe_runtime}/data/key ]; then",
+                f"  rm -rf {shlex.quote(key_tmp)}",
+                f"  \"$BESU\" operator generate-blockchain-config --config-file=/tmp/qbft-validator-key-init/qbftConfigFile.json --to={shlex.quote(key_tmp)} --private-key-file-name=key --public-key-file-name=key.pub",
+                f"  key_dir=$(find {shlex.quote(key_tmp)}/keys -mindepth 1 -maxdepth 1 -type d | sort | head -n 1)",
+                "  [ -n \"$key_dir\" ] || { echo 'validator key generation produced no key directory' >&2; exit 41; }",
+                f"  cp \"$key_dir/key\" /smoke/{safe_runtime}/data/key",
+                f"  cp \"$key_dir/key.pub\" /smoke/{safe_runtime}/data/key.pub",
+                "else",
+                f"  \"$BESU\" --data-path=/smoke/{safe_runtime}/data public-key export --to=/smoke/{safe_runtime}/data/key.pub",
+                "fi",
+                f"\"$BESU\" --data-path=/smoke/{safe_runtime}/data public-key export-address --to=/smoke/{safe_runtime}/validator-address.tmp",
+                f"tr -d '\\r\\n ' < /smoke/{safe_runtime}/validator-address.tmp > /smoke/{safe_runtime}/validator-address",
+                f"rm -f /smoke/{safe_runtime}/validator-address.tmp",
+                f"addr=$(cat /smoke/{safe_runtime}/validator-address)",
+                f"case \"$addr\" in 0x*) ;; *) addr=\"0x$addr\"; printf '%s' \"$addr\" > /smoke/{safe_runtime}/validator-address ;; esac",
+                f"echo \"Validator address for {service.id}: $(cat /smoke/{safe_runtime}/validator-address)\"",
+            ]
+        )
+    lines.append("echo 'QBFT validator key initialization complete.'")
+    return "\n".join(lines)
+
+
+
 def render_besu_service_shell(plan: NetworkPlan, service: PlannedService) -> str:
     runtime_dir = service_runtime_dir(service)
     required_files = [
@@ -4040,6 +5706,200 @@ def render_besu_service_shell(plan: NetworkPlan, service: PlannedService) -> str
     return "\n".join(lines)
 
 
+
+def validator_retire_vote_services_for_host(
+    plan: NetworkPlan,
+    host_id: str,
+    target_service: PlannedService,
+) -> list[PlannedService]:
+    """Return the narrow host-local service set needed to vote out a validator.
+
+    Keep the target validator running long enough to publish its own removal vote,
+    and preserve host-local validator/RPC services that can also vote.  Avoid
+    pulling in unrelated future validator-only declarations.
+    """
+
+    host_id = safe_id(host_id, kind="host")
+    services: list[PlannedService] = [
+        service
+        for service in services_for_host(plan, host_id)
+        if service.id != target_service.id and "validator" in service.roles and "rpc" in service.roles
+    ]
+    services.append(target_service)
+    return services
+
+
+def render_qbft_validator_vote_sidecar_shell(vote: Mapping[str, Any]) -> str:
+    address = normalize_validator_address(vote.get("validator_address"))
+    proposal = bool(vote.get("proposal"))
+    raw_services = vote.get("services") if isinstance(vote.get("services"), list) else []
+    urls: list[str] = []
+    for item in raw_services:
+        if not isinstance(item, Mapping):
+            continue
+        service_name = str(item.get("service_name") or "").strip()
+        if not service_name:
+            continue
+        urls.append(f"http://{service_name}:{RPC_CONTAINER_PORT}")
+    urls = list(dict.fromkeys(urls))
+    if not urls:
+        raise PlanError("validator vote sidecar requires at least one internal validator RPC service URL")
+    payload = {
+        "validator_address": address,
+        "proposal": proposal,
+        "urls": urls,
+        "timeout_s": 180.0,
+        "poll_s": 2.0,
+    }
+    payload_json = json.dumps(payload, sort_keys=True)
+    return "\n".join(
+        [
+            "set -eu",
+            "cat > /tmp/qbft-validator-vote.json <<'JSON_QBFT_VALIDATOR_VOTE'",
+            payload_json,
+            "JSON_QBFT_VALIDATOR_VOTE",
+            "python3 - <<'PY_QBFT_VALIDATOR_VOTE'",
+            "import json",
+            "import time",
+            "import urllib.request",
+            "",
+            "with open('/tmp/qbft-validator-vote.json', 'r', encoding='utf-8') as fh:",
+            "    cfg = json.load(fh)",
+            "address = cfg['validator_address']",
+            "proposal = bool(cfg['proposal'])",
+            "deadline = time.time() + float(cfg.get('timeout_s') or 180.0)",
+            "poll_s = float(cfg.get('poll_s') or 2.0)",
+            "failed = []",
+            "for url in cfg['urls']:",
+            "    last_error = ''",
+            "    ok = False",
+            "    while time.time() <= deadline:",
+            "        body = json.dumps({",
+            "            'jsonrpc': '2.0',",
+            "            'id': 1,",
+            "            'method': 'qbft_proposeValidatorVote',",
+            "            'params': [address, proposal],",
+            "        }).encode('utf-8')",
+            "        request = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})",
+            "        try:",
+            "            with urllib.request.urlopen(request, timeout=8.0) as response:",
+            "                payload = json.loads(response.read().decode('utf-8'))",
+            "            if payload.get('result') is True:",
+            "                print(f'qbft vote ok url={url} address={address} proposal={proposal}')",
+            "                ok = True",
+            "                break",
+            "            last_error = f'unexpected response {payload!r}'",
+            "        except Exception as exc:",
+            "            last_error = f'{type(exc).__name__}: {exc}'",
+            "        time.sleep(poll_s)",
+            "    if not ok:",
+            "        failed.append({'url': url, 'error': last_error})",
+            "if failed:",
+            "    raise SystemExit('qbft validator vote sidecar failed: ' + json.dumps(failed, sort_keys=True))",
+            "print('qbft validator vote sidecar complete')",
+            "PY_QBFT_VALIDATOR_VOTE",
+            "echo 'qbft validator vote sidecar complete; parking healthy until next compose repush'",
+            "while true; do sleep 3600; done",
+        ]
+    )
+
+
+def append_qbft_validator_vote_sidecar(
+    lines: list[str],
+    plan: NetworkPlan,
+    host_id: str,
+    vote: Mapping[str, Any] | None,
+) -> None:
+    if not vote:
+        return
+    raw_services = vote.get("services") if isinstance(vote.get("services"), list) else []
+    services: list[dict[str, str]] = []
+    for item in raw_services:
+        if not isinstance(item, Mapping):
+            continue
+        service_id = safe_id(item.get("id"), kind="service")
+        services.append({"id": service_id, "service_name": service_id.replace("_", "-")})
+    vote_payload = {**dict(vote), "services": services}
+    vote_script = escape_compose_interpolation(render_qbft_validator_vote_sidecar_shell(vote_payload))
+    lines.extend(
+        [
+            "  qbft-validator-vote:",
+            f"    image: {yaml_quote(QBFT_CONFIG_TRANSFER_IMAGE)}",
+            "    restart: \"no\"",
+            "    exclude_from_hc: true",
+            "    healthcheck:",
+            "      test: [\"CMD-SHELL\", \"true\"]",
+            "      interval: 30s",
+            "      timeout: 5s",
+            "      start_period: 5s",
+            "      retries: 3",
+        ]
+    )
+    if services:
+        lines.append("    depends_on:")
+        for item in services:
+            lines.extend(
+                [
+                    f"      {item['service_name']}:",
+                    "        condition: service_started",
+                ]
+            )
+    lines.extend(
+        [
+            "    entrypoint:",
+            "      - /bin/sh",
+            "      - -ec",
+            "      - |-",
+        ]
+    )
+    lines.extend([f"        {line}" if line else "" for line in vote_script.splitlines()])
+    lines.extend(
+        [
+            "    networks:",
+            "      - qbft",
+            "",
+        ]
+    )
+
+
+def append_parked_qbft_helper_services(lines: list[str], active_helper_service_keys: set[str]) -> None:
+    """Keep inactive helper service names running so Coolify steady-state stays healthy.
+
+    Coolify can keep previously generated compose service keys visible in the stack
+    after mutation repushes.  Instead of leaving old one-shot helper containers in
+    an exited state, steady-state compose includes harmless parked replacements.
+    Real helper work still gets repushed with the same service name when needed.
+    """
+
+    for service_key in QBFT_HELPER_PARK_SERVICE_KEYS:
+        if service_key in active_helper_service_keys:
+            continue
+        lines.extend(
+            [
+                f"  {service_key}:",
+                f"    image: {yaml_quote(QBFT_HELPER_PARK_IMAGE)}",
+                "    restart: unless-stopped",
+                "    exclude_from_hc: true",
+                "    labels:",
+                "      - \"traefik.enable=false\"",
+                "    command:",
+                "      - /bin/sh",
+                "      - -ec",
+                "      - |-",
+                f"        echo {shell_single_quote(f'{service_key} parked healthy; repush compose to run this helper when needed')}",
+                "        while true; do sleep 3600; done",
+                "    healthcheck:",
+                "      test: [\"CMD-SHELL\", \"true\"]",
+                "      interval: 30s",
+                "      timeout: 5s",
+                "      start_period: 5s",
+                "      retries: 3",
+                "",
+            ]
+        )
+
+
+
 def render_compose_for_host(
     plan: NetworkPlan,
     host_id: str,
@@ -4050,6 +5910,7 @@ def render_compose_for_host(
     include_rpc_public_entry: bool = True,
     config_export: Mapping[str, Any] | None = None,
     retire_cleanup_services: list[PlannedService] | tuple[PlannedService, ...] = (),
+    validator_vote: Mapping[str, Any] | None = None,
 ) -> str:
     host_id = safe_id(host_id, kind="host")
     hosts = host_by_id(plan)
@@ -4068,6 +5929,7 @@ def render_compose_for_host(
         "",
         "services:",
     ]
+    active_helper_service_keys: set[str] = set()
 
     volume_name, volume_lines = render_volume_mount(plan, host, managed_volume=managed_volume)
     try:
@@ -4121,7 +5983,9 @@ def render_compose_for_host(
         lines.extend([f"        {line}" if line else "" for line in export_script.splitlines()])
         lines.append("")
     include_runtime_import = runtime_import_bundle is not None
+    include_validator_key_init = include_runtime_import and any(service.role == "validator" for service in services)
     if include_runtime_import:
+        active_helper_service_keys.add("qbft-runtime-import")
         import_script = escape_compose_interpolation(render_qbft_runtime_import_shell(plan, services, runtime_import_bundle or {}))
         lines.extend(
             [
@@ -4143,7 +6007,35 @@ def render_compose_for_host(
                 "",
             ]
         )
+    if include_validator_key_init:
+        active_helper_service_keys.add("qbft-validator-key-init")
+        key_init_script = escape_compose_interpolation(render_validator_key_init_shell(plan, services))
+        lines.extend(
+            [
+                "  qbft-validator-key-init:",
+                f"    image: {yaml_quote(plan.besu_image)}",
+                "    restart: \"no\"",
+                "    exclude_from_hc: true",
+                "    depends_on:",
+                "      qbft-runtime-import:",
+                "        condition: service_completed_successfully",
+                "    entrypoint:",
+                "      - /bin/sh",
+                "      - -ec",
+                "      - |-",
+            ]
+        )
+        lines.extend([f"        {line}" if line else "" for line in key_init_script.splitlines()])
+        lines.extend(
+            [
+                "    volumes:",
+                *volume_lines,
+                "",
+            ]
+        )
+
     if include_bootstrap:
+        active_helper_service_keys.add("qbft-bootstrap")
         bootstrap_script = escape_compose_interpolation(render_bootstrap_shell(plan))
         lines.extend(
             [
@@ -4186,7 +6078,7 @@ def render_compose_for_host(
         if port_lines:
             lines.append("    ports:")
             lines.extend(port_lines)
-        if include_bootstrap or include_runtime_import:
+        if include_bootstrap or include_runtime_import or include_validator_key_init:
             lines.append("    depends_on:")
             if include_bootstrap:
                 lines.extend(
@@ -4199,6 +6091,13 @@ def render_compose_for_host(
                 lines.extend(
                     [
                         "      qbft-runtime-import:",
+                        "        condition: service_completed_successfully",
+                    ]
+                )
+            if include_validator_key_init:
+                lines.extend(
+                    [
+                        "      qbft-validator-key-init:",
                         "        condition: service_completed_successfully",
                     ]
                 )
@@ -4230,7 +6129,15 @@ def render_compose_for_host(
             )
         lines.append("")
 
+    if validator_vote:
+        active_helper_service_keys.add("qbft-validator-vote")
+    append_qbft_validator_vote_sidecar(lines, plan, host_id, validator_vote)
+
+    if retire_cleanup_services:
+        active_helper_service_keys.add("qbft-retire-orphan-cleanup")
     append_retired_qbft_service_cleanup(lines, retire_cleanup_services)
+
+    append_parked_qbft_helper_services(lines, active_helper_service_keys)
 
     if include_rpc_public_entry:
         append_rpc_public_entry_sidecar(lines, plan, host_id, config_export=config_export)
@@ -4316,6 +6223,8 @@ def render_retired_qbft_service_cleanup_shell(retired_services: list[PlannedServ
             "  done",
             "done < /tmp/retired-qbft-services.txt",
             "echo 'QBFT retire orphan cleanup complete.'",
+            "echo 'QBFT retire orphan cleanup parked healthy until next compose repush.'",
+            "while true; do sleep 3600; done",
         ]
     )
 
@@ -4335,6 +6244,12 @@ def append_retired_qbft_service_cleanup(
             f"    image: {yaml_quote(RETIRED_QBFT_CLEANUP_IMAGE)}",
             "    restart: \"no\"",
             "    exclude_from_hc: true",
+            "    healthcheck:",
+            "      test: [\"CMD-SHELL\", \"true\"]",
+            "      interval: 30s",
+            "      timeout: 5s",
+            "      start_period: 5s",
+            "      retries: 3",
             "    labels:",
             "      - \"traefik.enable=false\"",
             "    volumes:",
@@ -6041,6 +7956,104 @@ def infer_external_rpc_url(plan: NetworkPlan, args: argparse.Namespace) -> str:
     )
 
 
+def rpc_url_with_default_port(url: str) -> str:
+    """Return an http(s) RPC URL with an explicit port for dev-chain-reset.py.
+
+    The contract deployment helper validates that --host-rpc-url includes a port.
+    User-facing HTTPS URLs commonly omit :443, so normalize those only for the
+    deployment subprocess while preserving the operator-facing configured RPC URL.
+    """
+
+    clean = str(url or "").strip()
+    parsed = urllib.parse.urlsplit(clean)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.port is not None:
+        return clean
+
+    port = 443 if parsed.scheme == "https" else 80
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth += f":{parsed.password}"
+        netloc = f"{auth}@{netloc}"
+    netloc = f"{netloc}:{port}"
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path or "", parsed.query, parsed.fragment))
+
+
+def contract_deployment_rpc_candidates(plan: NetworkPlan, args: argparse.Namespace) -> list[dict[str, str]]:
+    """Return ordered RPC candidates for hosted contract deployment.
+
+    Direct host-port RPC is fastest when the operator machine can reach it, but
+    hosted firewalls may expose only the canonical HTTPS RPC.  Keep direct first,
+    then fall back to the configured public RPC with an explicit default port.
+    """
+
+    explicit = str(getattr(args, "rpc_url", "") or "").strip()
+    if explicit:
+        return [{"url": rpc_url_with_default_port(explicit), "source": "explicit"}]
+
+    candidates: list[dict[str, str]] = []
+    for url in rpc_direct_url_candidates(plan):
+        candidates.append({"url": rpc_url_with_default_port(url), "source": "direct-host-port"})
+    configured = str(getattr(plan, "external_rpc_url", "") or "").strip()
+    if configured:
+        candidates.append({"url": rpc_url_with_default_port(configured), "source": "configured-network-rpc"})
+
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for candidate in candidates:
+        url = str(candidate.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        unique.append({"url": url, "source": str(candidate.get("source") or "unknown")})
+    return unique
+
+
+def select_contract_deployment_rpc_url(plan: NetworkPlan, args: argparse.Namespace) -> str:
+    """Select a reachable RPC URL for deploy-contracts.
+
+    For non-dry-run deployments, probe inferred candidates before handing one to
+    dev-chain-reset.py.  This prevents a blocked direct host-port URL from causing
+    a long downstream wait when the canonical HTTPS endpoint is already healthy.
+    """
+
+    candidates = contract_deployment_rpc_candidates(plan, args)
+    if not candidates:
+        # Reuse the operator-facing error from the legacy single-URL helper.
+        return rpc_url_with_default_port(infer_external_rpc_url(plan, args))
+
+    explicit = str(getattr(args, "rpc_url", "") or "").strip()
+    if explicit or bool(getattr(args, "dry_run", False)):
+        return candidates[0]["url"]
+
+    expected_chain_id = hex(plan.chain_id).lower()
+    rpc_user_agent = str(getattr(args, "rpc_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
+    probe_timeout_s = min(5.0, max(0.5, chain_observation_timeout_from_args(args)))
+    errors: list[str] = []
+    for candidate in candidates:
+        url = str(candidate.get("url") or "").strip()
+        source = str(candidate.get("source") or "unknown").strip() or "unknown"
+        try:
+            chain_id = str(json_rpc(url, "eth_chainId", timeout_s=probe_timeout_s, user_agent=rpc_user_agent))
+            if chain_id.lower() != expected_chain_id:
+                raise RuntimeError(f"expected chain id {expected_chain_id}, got {chain_id}")
+            operator_log(args, "deploy-contracts rpc selected", rpc_url=url, rpc_url_source=source)
+            return url
+        except Exception as exc:  # noqa: BLE001 - capture every candidate failure for the operator.
+            errors.append(f"{source} {url}: {type(exc).__name__}: {exc}")
+            operator_log(args, "deploy-contracts rpc candidate failed", rpc_url=url, rpc_url_source=source, error=exc)
+
+    raise PlanError(
+        "No inferred deploy-contracts RPC URL is reachable from the operator machine. "
+        "Pass --rpc-url explicitly or fix the public/direct RPC surface. "
+        f"Candidate errors: {' | '.join(errors)}"
+    )
+
+
 def json_rpc(
     url: str,
     method: str,
@@ -6329,7 +8342,7 @@ def validate_hosted_contract_deployment_authority(
 
 def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
     configure_local_coolify_defaults(plan, args)
-    rpc_url = infer_external_rpc_url(plan, args)
+    rpc_url = select_contract_deployment_rpc_url(plan, args)
     container_rpc_url = infer_container_rpc_url(plan, args, rpc_url)
     operator_log(args, "deploy-contracts start", rpc_url=rpc_url, container_rpc_url=container_rpc_url)
     run_id = str(getattr(args, "deployment_run_id", "") or f"coolify-qbft-{plan.name}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%d%H%M%S')}")
@@ -6415,6 +8428,7 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
             include_rpc_public_entry=bool(getattr(args, "_include_rpc_public_entry", True)),
             config_export=getattr(args, "_config_export", None),
             retire_cleanup_services=tuple(getattr(args, "_retire_cleanup_services", ()) or ()),
+            validator_vote=getattr(args, "_validator_vote", None),
         )
     compose_b64 = base64_compose(compose)
     service_name = str(getattr(args, "coolify_service_name", "") or project_service_name(plan, host_id))
