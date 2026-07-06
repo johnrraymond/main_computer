@@ -319,12 +319,13 @@ def test_qbft_config_exporter_scans_prefixed_host_volume_legacy_volume_and_bind_
         volume_prefixes=["pr243zs9jmd4des9tlonk7dq"],
     )
 
-    assert "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime:/sources/coolify-prefixed-managed-host-volume-1:ro" in compose
-    assert "main-computer-qbft-testnet-a-runtime:/sources/managed-host-volume:ro" in compose
-    assert "main-computer-qbft-testnet-runtime:/sources/legacy-network-volume:ro" in compose
+    assert "source: coolify-prefixed-managed-host-volume-1" in compose
+    assert "target: /sources/coolify-prefixed-managed-host-volume-1" in compose
+    assert "external: true" in compose
+    assert "name: pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime" in compose
+    assert "kxvx3i5wuiyu2nfiqmhx7cqd_pr243zs9jmd4des9tlonk7dq-main-computer-qbft-testnet-a-runtime" not in compose
     assert 'source: "/srv/main-computer/qbft-testnet/runtime"' in compose
     assert "target: /sources/host-runtime-root" in compose
-    assert "external: true" not in compose
     assert "python:3.12-alpine" in compose
     assert "python3 -m http.server 8080 --bind 0.0.0.0" in compose
     assert "busybox httpd" not in compose
@@ -343,8 +344,10 @@ def test_qbft_config_export_mount_sources_prefers_coolify_service_uuid_prefix(tm
 
     assert sources[0]["source"] == "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime"
     assert sources[0]["target"] == "/sources/coolify-prefixed-managed-host-volume-1"
-    assert sources[1]["source"] == "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-runtime"
-    assert any(source["source"] == "main-computer-qbft-testnet-a-runtime" for source in sources)
+    assert sources[0]["compose_source"] == "coolify-prefixed-managed-host-volume-1"
+    assert sources[0]["external_volume"] == "true"
+    assert not any(source["source"] == "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-runtime" for source in sources)
+    assert not any(source["source"] == "main-computer-qbft-testnet-a-runtime" for source in sources)
 
 
 def test_candidate_config_source_hosts_prefer_non_mutated_hosts(tmp_path: Path) -> None:
@@ -487,6 +490,52 @@ def test_export_qbft_config_from_host_via_public_entry_redeploys_source_and_clea
     assert len(sync_calls) == 2
     assert "qbft-config-export-public-entry:" in sync_calls[0][1]._compose_override
     assert "qbft-config-export-public-entry-cleanup:" in sync_calls[1][1]._compose_override
+
+
+def test_export_qbft_config_from_host_via_public_entry_keeps_exporter_on_bad_bundle(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+    sync_calls: list[Any] = []
+
+    def fake_token() -> str:
+        return "tok"
+
+    def fake_coolify_sync(sync_plan: Any, sync_args: Any, *, deploy: bool = False) -> dict[str, Any]:
+        sync_calls.append((sync_plan, sync_args, deploy))
+        assert sync_plan is plan
+        assert sync_args.coolify_service_name == "main-computer-qbft-testnet-a-config-export"
+        assert deploy is True
+        return {"ok": True, "service_name": sync_args.coolify_service_name}
+
+    def fake_fetch_json_url(
+        url: str,
+        *,
+        timeout_s: float,
+        headers: dict[str, str] | None = None,
+        insecure_https: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "source_mount": "",
+            "missing_files": ["coolify-prefixed-managed-host-volume-1:/smoke/genesis.json"],
+            "sha256": {},
+        }
+
+    monkeypatch.setattr(module, "qbft_config_export_token", fake_token)
+    monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
+    monkeypatch.setattr(module, "fetch_json_url", fake_fetch_json_url)
+
+    result = module.export_qbft_config_from_host_via_public_entry(plan, _args(), "a")
+
+    assert result["ok"] is False
+    assert result["cleanup"]["skipped"] is True
+    assert "leaving exporter deployed" in result["cleanup"]["reason"]
+    assert result["inspection"]["direct_local_url"] == "http://127.0.0.1:38173/tok.json"
+    assert len(sync_calls) == 1
+    assert "qbft-config-export-public-entry:" in sync_calls[0][1]._compose_override
+    assert "qbft-config-export-public-entry-cleanup:" not in sync_calls[0][1]._compose_override
 
 
 def test_normalize_qbft_config_bundle_preserves_export_source_diagnostics(tmp_path: Path) -> None:

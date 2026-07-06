@@ -14,6 +14,8 @@ param(
     [switch]$AgentSmoke,
     [switch]$FullSmoke,
     [switch]$SkipRestartProof,
+    [switch]$ExtractMemory,
+    [string]$ExtractOutDir,
     [switch]$Down,
     [switch]$NoSmoke
 )
@@ -171,6 +173,40 @@ console.log(found);
     if ($LASTEXITCODE -ne 0) {
         throw "OpenClaw container could not read the direct memory marker during $Label."
     }
+}
+
+
+function Invoke-HighFidelityMemoryExtract([string]$ExtractPath, [string]$WorkspaceDir, [string]$OutputDir) {
+    if (-not (Test-Path $ExtractPath)) {
+        throw "OpenClaw persistence extractor not found: $ExtractPath"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+        $OutputDir = Join-Path $StateRoot "exports"
+    }
+    New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+
+    $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+    $jsonOut = Join-Path $OutputDir "openclaw-persistence-$stamp.json"
+    $jsonlOut = Join-Path $OutputDir "openclaw-persistence-$stamp.jsonl"
+    $markdownOut = Join-Path $OutputDir "openclaw-persistence-$stamp.md"
+
+    Write-Info "extracting high-fidelity OpenClaw Markdown persistence"
+    $extractArgs = @(
+        $ExtractPath,
+        "--memory-root", $WorkspaceDir,
+        "--out", $jsonOut,
+        "--jsonl-out", $jsonlOut,
+        "--markdown-out", $markdownOut,
+        "--summary-json"
+    )
+    & python @extractArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenClaw persistence extraction failed with exit code $LASTEXITCODE"
+    }
+
+    Write-Info "high-fidelity OpenClaw persistence export written to $OutputDir"
+    return $jsonOut
 }
 
 function ConvertTo-OpenClawModelEntries($OllamaTags, [int]$ContextWindow, [int]$MaxTokens, [int]$OllamaNumPredict) {
@@ -472,6 +508,11 @@ if ((-not $NoSmoke) -and (Test-Path $smokePath)) {
     Write-Info "persistence smoke script not found; skipping optional smoke: $smokePath"
 }
 
+$extractPath = Join-Path $repoRoot "scripts\extract_openclaw_persistence.py"
+if ($ExtractMemory) {
+    [void](Invoke-HighFidelityMemoryExtract $extractPath $workspaceDir $ExtractOutDir)
+}
+
 Write-Host ""
 Write-Host "Docker OpenClaw is ready for Main Computer persistence work."
 Write-Host "Gateway URL: $baseUrl"
@@ -483,6 +524,12 @@ Write-Host "For this PowerShell session:"
 Write-Host "`$env:MAIN_COMPUTER_OPENCLAW_BASE_URL = `"$baseUrl`""
 Write-Host "`$env:MAIN_COMPUTER_OPENCLAW_TOKEN = `"$GatewayToken`""
 Write-Host "python scripts\smoke_openclaw_persistence.py --direct-memory --memory-root `"$workspaceDir`" --json"
+Write-Host ""
+Write-Host "High-fidelity persistence extraction:"
+Write-Host "python scripts\extract_openclaw_persistence.py --memory-root `"$workspaceDir`" --out `"$StateRoot\exports\openclaw-persistence.json`" --jsonl-out `"$StateRoot\exports\openclaw-persistence.jsonl`" --markdown-out `"$StateRoot\exports\openclaw-persistence.md`" --summary-json"
+Write-Host ""
+Write-Host "Optional one-shot extraction from the helper:"
+Write-Host ".\scripts\start_openclaw_docker_for_ollama.ps1 -Model $Model -Port $Port -NoSmoke -ExtractMemory"
 Write-Host ""
 Write-Host "Optional agent smoke, after direct memory is proven:"
 Write-Host ".\scripts\start_openclaw_docker_for_ollama.ps1 -Model $Model -Port $Port -AgentSmoke"

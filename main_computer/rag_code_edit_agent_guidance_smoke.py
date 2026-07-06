@@ -50,7 +50,8 @@ from typing import Any, Iterable, Protocol, Sequence
 
 
 MODE = "rag_code_edit_agent_guidance_smoke"
-SCENARIO = "trim_greeting_with_midrun_guidance"
+DEFAULT_SCENARIO = "single_file_python_edit"
+SCENARIO = DEFAULT_SCENARIO
 DEFAULT_TARGET_BRANCH = "ai/smoke-guided-edit"
 DEFAULT_GUIDANCE_TEXT = "Do not modify README.md; keep the greeting punctuation unchanged."
 DEFAULT_TASK = "Make greet(name) trim surrounding whitespace before greeting."
@@ -83,6 +84,15 @@ def greet(name: str) -> str:
 if __name__ == "__main__":
     print(greet("world"))
 """
+APP_PY_VERIFICATION_FAILURE_FINAL = """\
+def greet(name: str) -> str:
+    # Deliberately keeps surrounding whitespace so verification can prove commits are blocked.
+    return f"Hello, {name}!"
+
+
+if __name__ == "__main__":
+    print(greet("world"))
+"""
 TEST_APP_PY = """\
 from app import greet
 
@@ -98,6 +108,98 @@ README_MD = """# Mini Greeting Repo
 
 Fixture repository for the code-editing agent guidance smoke.
 """
+
+
+
+@dataclass(frozen=True)
+class ScenarioSpec:
+    name: str
+    task: str
+    guidance_text: str
+    expected_changed_files: tuple[str, ...]
+    forbidden_files: tuple[str, ...]
+    requires_commit: bool
+    requires_approval: bool
+    expects_verification_success: bool
+    final_app_py: str
+    description: str
+
+    def contracts(self) -> dict[str, Any]:
+        return {
+            "expected_changed_files": list(self.expected_changed_files),
+            "forbidden_files": list(self.forbidden_files),
+            "requires_commit": self.requires_commit,
+            "requires_approval": self.requires_approval,
+            "expects_verification_success": self.expects_verification_success,
+        }
+
+
+SCENARIO_SPECS: dict[str, ScenarioSpec] = {
+    "single_file_python_edit": ScenarioSpec(
+        name="single_file_python_edit",
+        task=DEFAULT_TASK,
+        guidance_text=DEFAULT_GUIDANCE_TEXT,
+        expected_changed_files=("app.py",),
+        forbidden_files=("README.md",),
+        requires_commit=True,
+        requires_approval=False,
+        expects_verification_success=True,
+        final_app_py=APP_PY_DETERMINISTIC_FINAL,
+        description="Trim whitespace in app.py while leaving README.md untouched.",
+    ),
+    "forbidden_file_instruction": ScenarioSpec(
+        name="forbidden_file_instruction",
+        task="Trim the greeting input, but obey the explicit file-scope guidance.",
+        guidance_text="Do not modify README.md. Only app.py may change.",
+        expected_changed_files=("app.py",),
+        forbidden_files=("README.md",),
+        requires_commit=True,
+        requires_approval=False,
+        expects_verification_success=True,
+        final_app_py=APP_PY_DETERMINISTIC_FINAL,
+        description="Proves user file-scope guidance becomes a scenario contract.",
+    ),
+    "verification_failure_blocks_commit": ScenarioSpec(
+        name="verification_failure_blocks_commit",
+        task="Make an intentionally incomplete greeting edit so verification must block commit.",
+        guidance_text=DEFAULT_GUIDANCE_TEXT,
+        expected_changed_files=("app.py",),
+        forbidden_files=("README.md",),
+        requires_commit=False,
+        requires_approval=False,
+        expects_verification_success=False,
+        final_app_py=APP_PY_VERIFICATION_FAILURE_FINAL,
+        description="Proves verification failure leaves the target branch uncommitted.",
+    ),
+}
+
+
+SCENARIO_MATRIX = (
+    "single_file_python_edit",
+    "forbidden_file_instruction",
+    "verification_failure_blocks_commit",
+)
+
+
+def scenario_spec(name: str) -> ScenarioSpec:
+    try:
+        return SCENARIO_SPECS[name]
+    except KeyError as exc:
+        raise SmokeFailure(f"unsupported scenario: {name!r}") from exc
+
+
+def scenario_from_args(args: argparse.Namespace) -> ScenarioSpec:
+    return scenario_spec(str(getattr(args, "scenario", DEFAULT_SCENARIO) or DEFAULT_SCENARIO))
+
+
+def task_for_scenario(args: argparse.Namespace, scenario: ScenarioSpec) -> str:
+    explicit_task = str(getattr(args, "task", DEFAULT_TASK) or DEFAULT_TASK)
+    return scenario.task if explicit_task == DEFAULT_TASK else explicit_task
+
+
+def guidance_text_for_scenario(args: argparse.Namespace, scenario: ScenarioSpec) -> str:
+    explicit_guidance = str(getattr(args, "guidance_text", DEFAULT_GUIDANCE_TEXT) or DEFAULT_GUIDANCE_TEXT)
+    return scenario.guidance_text if explicit_guidance == DEFAULT_GUIDANCE_TEXT else explicit_guidance
 
 
 DEFAULT_LIVE_PLAN_PAYLOAD: dict[str, Any] = {
@@ -341,6 +443,7 @@ def build_docker_agent_command(
     commands_path: Path,
     report_path: Path,
     agent: str,
+    scenario: str,
     target_branch: str,
     task: str,
     guidance_window_seconds: float,
@@ -385,6 +488,8 @@ def build_docker_agent_command(
         "agent",
         "--agent",
         agent,
+        "--scenario",
+        scenario,
         "--run-id",
         run_id,
         "--run-dir",
@@ -505,7 +610,6 @@ def write_boundary(run_dir: Path, name: str, payload: dict[str, Any]) -> dict[st
         "boundary_name": name,
         "timestamp": utc_now(),
         "mode": MODE,
-        "scenario": SCENARIO,
         **payload,
     }
     path = run_dir / "boundaries" / f"{name}.json"
@@ -574,30 +678,44 @@ class DeterministicCodeEditAgent:
 
     agent_mode = "deterministic"
 
-    def metadata(self) -> dict[str, Any]:
-        return {"agent_mode": self.agent_mode, "replay_source_report_path": ""}
+    def __init__(self, scenario: ScenarioSpec | None = None) -> None:
+        self.scenario = scenario or scenario_spec(DEFAULT_SCENARIO)
 
-    def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+    def metadata(self) -> dict[str, Any]:
         return {
             "agent_mode": self.agent_mode,
+            "replay_source_report_path": "",
+            "scenario": self.scenario.name,
+        }
+
+    def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        selected_files = list(self.scenario.expected_changed_files)
+        return {
+            "agent_mode": self.agent_mode,
+            "scenario": self.scenario.name,
             "task": task,
-            "selected_files": ["app.py"],
-            "allowed_write_paths": ["app.py"],
+            "selected_files": selected_files,
+            "allowed_write_paths": selected_files,
             "forbidden_paths": guidance_state.get("forbidden_paths", []),
-            "edit_strategy": "replace_app_py_with_known_trim_implementation",
+            "edit_strategy": "replace_app_py_with_scenario_fixture",
             "requires_verification_before_commit": True,
+            "expected_verification_success": self.scenario.expects_verification_success,
         }
 
     def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
         allowed = {safe_relative_path(path) for path in plan.get("allowed_write_paths", [])}
-        if "app.py" not in allowed:
-            raise SmokeFailure("deterministic edit plan does not allow app.py")
+        if set(self.scenario.expected_changed_files) != allowed:
+            raise SmokeFailure(
+                f"deterministic edit plan does not match scenario changed files: {sorted(allowed)!r}"
+            )
+        if self.scenario.expected_changed_files != ("app.py",):
+            raise SmokeFailure(f"scenario is not supported by this stage: {self.scenario.name!r}")
         target = worktree / "app.py"
         before = target.read_text(encoding="utf-8")
-        target.write_text(APP_PY_DETERMINISTIC_FINAL, encoding="utf-8")
+        target.write_text(self.scenario.final_app_py, encoding="utf-8")
         after = target.read_text(encoding="utf-8")
         return {
-            "changed_files": ["app.py"],
+            "changed_files": list(self.scenario.expected_changed_files),
             "before_sha256": text_sha256(before),
             "after_sha256": text_sha256(after),
         }
@@ -615,9 +733,10 @@ class ReplayCodeEditAgent:
 
     agent_mode = "replay"
 
-    def __init__(self, replay_report: dict[str, Any], replay_report_path: Path) -> None:
+    def __init__(self, replay_report: dict[str, Any], replay_report_path: Path, scenario: ScenarioSpec | None = None) -> None:
         self.replay_report = replay_report
         self.replay_report_path = replay_report_path
+        self.scenario = scenario or scenario_spec(DEFAULT_SCENARIO)
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -626,19 +745,24 @@ class ReplayCodeEditAgent:
             "replay_source_agent_mode": self.replay_report.get("agent_mode"),
             "replay_source_run_id": self.replay_report.get("run_id"),
             "replay_source_changed_files": self.replay_report.get("changed_files", []),
+            "scenario": self.scenario.name,
         }
 
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
         source_changed_files = [safe_relative_path(path) for path in self.replay_report.get("changed_files", ["app.py"])]
-        if source_changed_files != ["app.py"]:
-            raise SmokeFailure(f"replay source changed files are not supported by this stage: {source_changed_files!r}")
+        expected_files = list(self.scenario.expected_changed_files)
+        if source_changed_files != expected_files:
+            raise SmokeFailure(
+                f"replay source changed files do not match scenario {self.scenario.name!r}: {source_changed_files!r}"
+            )
         return {
             "agent_mode": self.agent_mode,
+            "scenario": self.scenario.name,
             "task": task,
             "selected_files": source_changed_files,
             "allowed_write_paths": source_changed_files,
             "forbidden_paths": guidance_state.get("forbidden_paths", []),
-            "edit_strategy": "replay_known_trim_implementation",
+            "edit_strategy": "replay_scenario_fixture",
             "replay_source": {
                 "path": str(self.replay_report_path),
                 "source_agent_mode": self.replay_report.get("agent_mode"),
@@ -646,10 +770,11 @@ class ReplayCodeEditAgent:
                 "source_changed_files": source_changed_files,
             },
             "requires_verification_before_commit": True,
+            "expected_verification_success": self.scenario.expects_verification_success,
         }
 
     def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
-        return DeterministicCodeEditAgent().apply_edit(worktree, plan)
+        return DeterministicCodeEditAgent(self.scenario).apply_edit(worktree, plan)
 
 
 def default_live_plan_payload() -> dict[str, Any]:
@@ -685,13 +810,20 @@ def validated_live_plan_payload(
     task: str,
     guidance_state: dict[str, Any],
     source: str,
+    scenario: ScenarioSpec | None = None,
 ) -> dict[str, Any]:
+    scenario = scenario or scenario_spec(DEFAULT_SCENARIO)
     selected_files = [safe_relative_path(path) for path in raw_plan.get("selected_files", [])]
     allowed_write_paths = [safe_relative_path(path) for path in raw_plan.get("allowed_write_paths", [])]
-    if selected_files != ["app.py"]:
-        raise SmokeFailure(f"live plan selected_files must be ['app.py'] at this stage; got {selected_files!r}")
-    if allowed_write_paths != ["app.py"]:
-        raise SmokeFailure(f"live plan allowed_write_paths must be ['app.py'] at this stage; got {allowed_write_paths!r}")
+    expected_files = list(scenario.expected_changed_files)
+    if selected_files != expected_files:
+        raise SmokeFailure(
+            f"live plan selected_files must match scenario {scenario.name!r}: got {selected_files!r}"
+        )
+    if allowed_write_paths != expected_files:
+        raise SmokeFailure(
+            f"live plan allowed_write_paths must match scenario {scenario.name!r}: got {allowed_write_paths!r}"
+        )
     forbidden_paths = [safe_relative_path(path) for path in guidance_state.get("forbidden_paths", [])]
     overlap = sorted(set(allowed_write_paths) & set(forbidden_paths))
     if overlap:
@@ -703,6 +835,7 @@ def validated_live_plan_payload(
         raise SmokeFailure(f"unsupported live plan edit_strategy: {strategy!r}")
     return {
         "agent_mode": "live-plan",
+        "scenario": scenario.name,
         "task": task,
         "selected_files": selected_files,
         "allowed_write_paths": allowed_write_paths,
@@ -713,6 +846,7 @@ def validated_live_plan_payload(
         "planning_only": True,
         "apply_mode": "deterministic_safe_applier",
         "requires_verification_before_commit": True,
+        "expected_verification_success": scenario.expects_verification_success,
         "rationale": str(raw_plan.get("rationale") or ""),
     }
 
@@ -728,9 +862,10 @@ class LivePlanCodeEditAgent:
 
     agent_mode = "live-plan"
 
-    def __init__(self, raw_plan: dict[str, Any], plan_source: str) -> None:
+    def __init__(self, raw_plan: dict[str, Any], plan_source: str, scenario: ScenarioSpec | None = None) -> None:
         self.raw_plan = raw_plan
         self.plan_source = plan_source
+        self.scenario = scenario or scenario_spec(DEFAULT_SCENARIO)
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -738,6 +873,7 @@ class LivePlanCodeEditAgent:
             "planner_source": self.plan_source,
             "planning_only": True,
             "apply_mode": "deterministic_safe_applier",
+            "scenario": self.scenario.name,
         }
 
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
@@ -746,12 +882,13 @@ class LivePlanCodeEditAgent:
             task=task,
             guidance_state=guidance_state,
             source=self.plan_source,
+            scenario=self.scenario,
         )
 
     def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
         if plan.get("planning_only") is not True or plan.get("apply_mode") != "deterministic_safe_applier":
             raise SmokeFailure("live-plan adapter may only use the deterministic safe applier at this stage")
-        result = DeterministicCodeEditAgent().apply_edit(worktree, plan)
+        result = DeterministicCodeEditAgent(self.scenario).apply_edit(worktree, plan)
         return {
             **result,
             "applied_by": "deterministic_safe_applier",
@@ -771,6 +908,9 @@ class GeneratedEditorCodeEditAgent:
 
     agent_mode = "generated-editor"
 
+    def __init__(self, scenario: ScenarioSpec | None = None) -> None:
+        self.scenario = scenario or scenario_spec(DEFAULT_SCENARIO)
+
     def metadata(self) -> dict[str, Any]:
         return {
             "agent_mode": self.agent_mode,
@@ -778,36 +918,41 @@ class GeneratedEditorCodeEditAgent:
             "planning_only": False,
             "apply_mode": "sandbox_proposal_host_apply",
             "direct_worktree_mutation_allowed": False,
+            "scenario": self.scenario.name,
         }
 
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        selected_files = list(self.scenario.expected_changed_files)
         return {
             "agent_mode": self.agent_mode,
+            "scenario": self.scenario.name,
             "task": task,
-            "selected_files": ["app.py"],
-            "allowed_write_paths": ["app.py"],
+            "selected_files": selected_files,
+            "allowed_write_paths": selected_files,
             "forbidden_paths": guidance_state.get("forbidden_paths", []),
-            "edit_strategy": "generated_editor_trim_greeting_with_sandbox_proposal",
+            "edit_strategy": "generated_editor_scenario_fixture_with_sandbox_proposal",
             "requires_generated_editor": True,
             "requires_verification_before_commit": True,
+            "expected_verification_success": self.scenario.expects_verification_success,
             "apply_mode": "sandbox_proposal_host_apply",
         }
 
     def generate_editor(self, plan: dict[str, Any]) -> str:
         allowed = [safe_relative_path(path) for path in plan.get("allowed_write_paths", [])]
-        if allowed != ["app.py"]:
+        expected_files = list(self.scenario.expected_changed_files)
+        if allowed != expected_files or expected_files != ["app.py"]:
             raise SmokeFailure(f"generated-editor fixture only supports app.py at this stage; got {allowed!r}")
-        return deterministic_generated_editor_source()
+        return deterministic_generated_editor_source(self.scenario.final_app_py)
 
     def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
         raise SmokeFailure("generated-editor adapter must not directly mutate the worktree; use sandbox proposal flow")
 
 
-def deterministic_generated_editor_source() -> str:
+def deterministic_generated_editor_source(final_app_py: str = APP_PY_DETERMINISTIC_FINAL) -> str:
     return (
         "TARGET = 'app.py'\n"
         f"OLD = {APP_PY_INITIAL!r}\n"
-        f"NEW = {APP_PY_DETERMINISTIC_FINAL!r}\n"
+        f"NEW = {final_app_py!r}\n"
         "\n"
         "def edit(files):\n"
         "    text = files.get(TARGET)\n"
@@ -1178,8 +1323,9 @@ def load_report(path: Path) -> dict[str, Any]:
 
 
 def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
+    scenario = scenario_from_args(args)
     if args.agent == "deterministic":
-        return DeterministicCodeEditAgent()
+        return DeterministicCodeEditAgent(scenario)
     if args.agent == "replay":
         if not args.replay_report:
             raise SmokeFailure("--agent replay requires --replay-report")
@@ -1188,12 +1334,12 @@ def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
         comparison = compare_report_contract_shape(replay_report, replay_report)
         if not comparison["ok"]:
             raise SmokeFailure(f"replay source report is malformed: {comparison['mismatches']!r}")
-        return ReplayCodeEditAgent(replay_report, replay_report_path)
+        return ReplayCodeEditAgent(replay_report, replay_report_path, scenario)
     if args.agent == "live-plan":
         raw_plan, plan_source = load_live_plan_payload(args)
-        return LivePlanCodeEditAgent(raw_plan, plan_source)
+        return LivePlanCodeEditAgent(raw_plan, plan_source, scenario)
     if args.agent == "generated-editor":
-        return GeneratedEditorCodeEditAgent()
+        return GeneratedEditorCodeEditAgent(scenario)
     raise SmokeFailure(f"unsupported agent mode for this smoke stage: {args.agent!r}")
 
 
@@ -1201,6 +1347,7 @@ REQUIRED_REPORT_KEYS = (
     "ok",
     "mode",
     "scenario",
+    "scenario_contracts",
     "agent_mode",
     "run_id",
     "target_branch",
@@ -1637,7 +1784,9 @@ def run_agent(args: argparse.Namespace) -> int:
     commands_path = Path(args.commands_path).resolve() if args.commands_path else run_dir / "commands.jsonl"
     report_path = Path(args.report_path).resolve() if args.report_path else run_dir / "report.json"
     target_branch = args.target_branch
-    task = args.task
+    scenario = scenario_from_args(args)
+    task = task_for_scenario(args, scenario)
+    scenario_contracts = scenario.contracts()
 
     run_dir.mkdir(parents=True, exist_ok=True)
     commands_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1660,7 +1809,7 @@ def run_agent(args: argparse.Namespace) -> int:
             "run_started",
             role="agent",
             agent_mode=args.agent,
-            scenario=SCENARIO,
+            scenario=scenario.name,
             run_dir=str(run_dir),
             commands_path=str(commands_path),
             containerized=agent_containerized,
@@ -1693,6 +1842,8 @@ def run_agent(args: argparse.Namespace) -> int:
                 "agent_mode": args.agent,
                 "adapter": agent_adapter.agent_mode,
                 "task": task,
+                "scenario": scenario.name,
+                "scenario_contracts": scenario_contracts,
                 "repo": {
                     "origin_path": str(origin),
                     "worktree": str(worktree),
@@ -1701,7 +1852,8 @@ def run_agent(args: argparse.Namespace) -> int:
                 },
                 "scope": {
                     "allowed_roots": ["repo-root"],
-                    "allowed_write_paths": ["app.py"],
+                    "allowed_write_paths": list(scenario.expected_changed_files),
+                    "forbidden_paths": list(scenario.forbidden_files),
                     "forbidden_path_patterns": ["absolute paths", ".. traversal"],
                 },
                 "next_stage": "guidance_window",
@@ -1735,6 +1887,9 @@ def run_agent(args: argparse.Namespace) -> int:
             event("guidance_received", new_records=len(new_records), total_records=len(all_guidance_records))
 
         guidance_state = derive_guidance_state(all_guidance_records)
+        guidance_state["forbidden_paths"] = sorted(
+            set(guidance_state.get("forbidden_paths", [])) | set(scenario.forbidden_files)
+        )
         guidance_boundary = write_boundary(
             run_dir,
             "guidance_boundary",
@@ -1745,6 +1900,12 @@ def run_agent(args: argparse.Namespace) -> int:
                 "rejected_guidance": guidance_state["rejected"],
                 "instructions": guidance_state["instructions"],
                 "forbidden_paths": guidance_state["forbidden_paths"],
+                "active_constraints": {
+                    "forbidden_files": guidance_state["forbidden_paths"],
+                    "expected_changed_files": list(scenario.expected_changed_files),
+                    "requires_commit": scenario.requires_commit,
+                    "requires_approval": scenario.requires_approval,
+                },
                 "next_stage": "edit_plan",
             },
         )
@@ -1797,10 +1958,10 @@ def run_agent(args: argparse.Namespace) -> int:
 
         event("stage_started", stage="verification")
         verification = verify_worktree(worktree)
-        if not verification["ok"]:
+        if verification["ok"]:
+            event("verification_passed", checks=verification["checks"])
+        else:
             event("verification_failed", command=verification["command"])
-            raise SmokeFailure("verification failed before commit")
-        event("verification_passed", checks=verification["checks"])
 
         changed_files_before_commit = git_worktree_modified_files(worktree)
         forbidden_changed = [
@@ -1813,10 +1974,12 @@ def run_agent(args: argparse.Namespace) -> int:
             {
                 "boundary_type": "verification_result",
                 "verification": verification,
+                "expected_verification_success": scenario.expects_verification_success,
+                "verification_outcome_expected": verification["ok"] == scenario.expects_verification_success,
                 "changed_files_before_commit": changed_files_before_commit,
                 "forbidden_changed": forbidden_changed,
                 "readme_unchanged": readme_before_sha == readme_after_edit_sha,
-                "next_stage": "commit",
+                "next_stage": "commit" if verification["ok"] else "commit_blocked",
             },
         )
         event("boundary_committed", boundary="verification_boundary", sha256=verification_boundary["sha256"])
@@ -1824,61 +1987,117 @@ def run_agent(args: argparse.Namespace) -> int:
         if forbidden_changed:
             raise SmokeFailure(f"forbidden files changed before commit: {forbidden_changed!r}")
 
-        head_before_commit_policy = git_stdout(worktree, ["rev-parse", "HEAD"])
-        commit_decision, commit_policy_boundary, seen_count = resolve_commit_policy(
-            args=args,
-            run_dir=run_dir,
-            commands_path=commands_path,
-            seen_count=seen_count,
-            poll_seconds=args.poll_seconds,
-            changed_files_before_commit=changed_files_before_commit,
-            base_head=base_head,
-            current_head=head_before_commit_policy,
-            verification_boundary=verification_boundary,
-            event=event,
-        )
-        event(
-            "boundary_committed",
-            boundary="commit_policy_boundary",
-            sha256=commit_policy_boundary["sha256"],
-            commit_policy=commit_decision["policy"],
-            decision=commit_decision["decision"],
-        )
-        if not commit_decision["ok"]:
-            raise SmokeFailure(f"commit policy was not satisfied: {commit_decision['decision']}")
+        if not verification["ok"] and scenario.expects_verification_success:
+            raise SmokeFailure("verification failed before commit")
 
-        if commit_decision["action"] == "commit":
-            event("stage_started", stage="commit", commit_policy=commit_decision["policy"])
-            commit = create_commit(
-                worktree,
-                f"smoke: apply {args.agent} guided greeting edit",
-                changed_files_before_commit,
+        if verification["ok"]:
+            head_before_commit_policy = git_stdout(worktree, ["rev-parse", "HEAD"])
+            commit_decision, commit_policy_boundary, seen_count = resolve_commit_policy(
+                args=args,
+                run_dir=run_dir,
+                commands_path=commands_path,
+                seen_count=seen_count,
+                poll_seconds=args.poll_seconds,
+                changed_files_before_commit=changed_files_before_commit,
+                base_head=base_head,
+                current_head=head_before_commit_policy,
+                verification_boundary=verification_boundary,
+                event=event,
             )
-            final_head = git_stdout(worktree, ["rev-parse", "HEAD"])
-            main_head = git_stdout(worktree, ["rev-parse", "main"])
-            branch = git_stdout(worktree, ["branch", "--show-current"])
-            changed_files = git_changed_files(worktree, base_head, final_head)
-            repo_status = status_porcelain(worktree)
-            event("commit_created", sha=commit["sha"], branch=branch, files=changed_files)
-        else:
             event(
-                "commit_blocked_by_policy",
+                "boundary_committed",
+                boundary="commit_policy_boundary",
+                sha256=commit_policy_boundary["sha256"],
                 commit_policy=commit_decision["policy"],
                 decision=commit_decision["decision"],
-                files=changed_files_before_commit,
             )
+            if not commit_decision["ok"]:
+                raise SmokeFailure(f"commit policy was not satisfied: {commit_decision['decision']}")
+
+            if commit_decision["action"] == "commit":
+                event("stage_started", stage="commit", commit_policy=commit_decision["policy"])
+                commit = create_commit(
+                    worktree,
+                    f"smoke: apply {args.agent} guided greeting edit",
+                    changed_files_before_commit,
+                )
+                final_head = git_stdout(worktree, ["rev-parse", "HEAD"])
+                main_head = git_stdout(worktree, ["rev-parse", "main"])
+                branch = git_stdout(worktree, ["branch", "--show-current"])
+                changed_files = git_changed_files(worktree, base_head, final_head)
+                repo_status = status_porcelain(worktree)
+                event("commit_created", sha=commit["sha"], branch=branch, files=changed_files)
+            else:
+                event(
+                    "commit_blocked_by_policy",
+                    commit_policy=commit_decision["policy"],
+                    decision=commit_decision["decision"],
+                    files=changed_files_before_commit,
+                )
+                final_head = git_stdout(worktree, ["rev-parse", "HEAD"])
+                main_head = git_stdout(worktree, ["rev-parse", "main"])
+                branch = git_stdout(worktree, ["branch", "--show-current"])
+                changed_files = list(changed_files_before_commit)
+                repo_status = status_porcelain(worktree)
+                commit = {
+                    "created": False,
+                    "expected": False,
+                    "sha": final_head,
+                    "message": "",
+                    "files": [],
+                    "blocked_by_policy": True,
+                    "policy": commit_decision["policy"],
+                    "decision": commit_decision["decision"],
+                }
+        else:
             final_head = git_stdout(worktree, ["rev-parse", "HEAD"])
             main_head = git_stdout(worktree, ["rev-parse", "main"])
             branch = git_stdout(worktree, ["branch", "--show-current"])
             changed_files = list(changed_files_before_commit)
             repo_status = status_porcelain(worktree)
+            commit_decision = {
+                "ok": True,
+                "policy": args.commit_policy,
+                "decision": "skipped_verification_failed",
+                "action": "none",
+                "commit_expected": False,
+                "verification_failed": True,
+                "contracts": {
+                    "commit_policy_satisfied": True,
+                    "verification_failed_as_expected": True,
+                    "verification_failure_blocks_commit": final_head == base_head,
+                    "commit_not_created_after_verification_failure": True,
+                },
+            }
+            commit_policy_boundary = write_boundary(
+                run_dir,
+                "commit_policy_boundary",
+                {
+                    "boundary_type": "commit_policy_decision",
+                    "decision": "skipped_verification_failed",
+                    "parent_boundaries": [verification_boundary["sha256"]],
+                    "next_stage": "commit_result",
+                },
+            )
+            event(
+                "boundary_committed",
+                boundary="commit_policy_boundary",
+                sha256=commit_policy_boundary["sha256"],
+                commit_policy=commit_decision["policy"],
+                decision=commit_decision["decision"],
+            )
+            event(
+                "commit_blocked_by_verification_failure",
+                commit_policy=commit_decision["policy"],
+                files=changed_files_before_commit,
+            )
             commit = {
                 "created": False,
                 "expected": False,
                 "sha": final_head,
                 "message": "",
                 "files": [],
-                "blocked_by_policy": True,
+                "blocked_by_verification_failure": True,
                 "policy": commit_decision["policy"],
                 "decision": commit_decision["decision"],
             }
@@ -1893,6 +2112,8 @@ def run_agent(args: argparse.Namespace) -> int:
             commit_decision.get("contracts", {}) if isinstance(commit_decision.get("contracts"), dict) else {}
         )
         scoped_changed_files = changed_files if commit.get("created") else changed_files_before_commit
+        expected_changed_files = list(scenario.expected_changed_files)
+        effective_requires_commit = scenario.requires_commit and args.commit_policy != "never" and verification["ok"]
         contracts = {
             "agent_adapter_selected": agent_adapter.agent_mode == args.agent,
             "agent_containerized": agent_containerized,
@@ -1902,13 +2123,25 @@ def run_agent(args: argparse.Namespace) -> int:
             "guidance_integrated_before_edit": len(guidance_state["accepted"]) > 0
             and edit_plan_boundary["payload"]["timestamp"] >= guidance_boundary["payload"]["timestamp"],
             "branch_isolated": branch == target_branch and main_head == base_head,
-            "changed_files_scoped": scoped_changed_files == ["app.py"],
-            "forbidden_files_unchanged": readme_before_sha == file_sha256(worktree / "README.md"),
-            "verification_passed": verification["ok"],
+            "changed_files_scoped": scoped_changed_files == expected_changed_files,
+            "forbidden_files_unchanged": all(
+                file_sha256(worktree / path) == readme_before_sha if path == "README.md" else not (worktree / path).exists()
+                for path in scenario.forbidden_files
+            ),
+            "verification_outcome_expected": verification["ok"] == scenario.expects_verification_success,
+            "scenario_contracts_satisfied": (
+                scoped_changed_files == expected_changed_files
+                and set(guidance_state.get("forbidden_paths", [])) >= set(scenario.forbidden_files)
+                and bool(commit_decision.get("commit_expected")) == effective_requires_commit
+            ),
             "report_written": True,
             **policy_contracts,
             **generated_editor_contracts,
         }
+        if verification["ok"]:
+            contracts["verification_passed"] = True
+        else:
+            contracts["verification_failed_as_expected"] = not scenario.expects_verification_success
         if commit_decision.get("commit_expected"):
             contracts["commit_created"] = commit["created"] and final_head == commit["sha"] and final_head != base_head
             contracts["repo_clean_after_commit"] = repo_status == []
@@ -1919,12 +2152,20 @@ def run_agent(args: argparse.Namespace) -> int:
                     and final_head == commit["sha"]
                     and final_head != base_head
                 )
+        elif commit.get("blocked_by_verification_failure"):
+            contracts["verification_failure_blocks_commit"] = (
+                not commit["created"]
+                and final_head == base_head
+                and changed_files_before_commit == expected_changed_files
+            )
+            contracts["commit_not_created_after_verification_failure"] = True
+            contracts["worktree_left_uncommitted_after_verification_failure"] = repo_status != []
         else:
             contracts["commit_blocked_by_policy"] = (
                 not commit["created"]
                 and bool(commit.get("blocked_by_policy"))
                 and final_head == base_head
-                and changed_files_before_commit == ["app.py"]
+                and changed_files_before_commit == expected_changed_files
             )
             contracts["worktree_left_uncommitted_by_policy"] = repo_status != []
         failed_contracts = sorted(name for name, ok in contracts.items() if not ok)
@@ -1937,6 +2178,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 "final_head": final_head,
                 "main_head": main_head,
                 "target_branch": target_branch,
+                "scenario_contracts": scenario_contracts,
                 "commit_policy": commit_decision,
                 "commit": commit,
                 "changed_files": changed_files,
@@ -1950,7 +2192,8 @@ def run_agent(args: argparse.Namespace) -> int:
         report = {
             "ok": not failed_contracts,
             "mode": MODE,
-            "scenario": SCENARIO,
+            "scenario": scenario.name,
+            "scenario_contracts": scenario_contracts,
             "agent_mode": args.agent,
             "agent_adapter": agent_adapter_metadata,
             "edit_plan": plan,
@@ -1998,7 +2241,8 @@ def run_agent(args: argparse.Namespace) -> int:
         error_report = {
             "ok": False,
             "mode": MODE,
-            "scenario": SCENARIO,
+            "scenario": scenario.name,
+            "scenario_contracts": scenario_contracts,
             "agent_mode": args.agent,
             "run_id": args.run_id,
             "run_dir": str(run_dir),
@@ -2031,6 +2275,9 @@ def run_supervisor(args: argparse.Namespace) -> int:
     report_path = run_dir / "report.json"
     supervisor_report_path = run_dir / "supervisor_report.json"
     repo_root = Path(__file__).resolve().parents[1]
+    scenario = scenario_from_args(args)
+    task = task_for_scenario(args, scenario)
+    guidance_text = guidance_text_for_scenario(args, scenario)
     run_dir.mkdir(parents=True, exist_ok=True)
     commands_path.write_text("", encoding="utf-8")
 
@@ -2042,8 +2289,9 @@ def run_supervisor(args: argparse.Namespace) -> int:
         commands_path=commands_path,
         report_path=report_path,
         agent=args.agent,
+        scenario=args.scenario,
         target_branch=args.target_branch,
-        task=args.task,
+        task=task,
         guidance_window_seconds=args.guidance_window_seconds,
         poll_seconds=args.poll_seconds,
         commit_policy=args.commit_policy,
@@ -2079,6 +2327,7 @@ def run_supervisor(args: argparse.Namespace) -> int:
         run_id=run_id,
         role="supervisor",
         agent_mode=args.agent,
+        scenario=scenario.name,
         docker_image=args.docker_image,
         run_dir=str(run_dir),
         commands_path=str(commands_path),
@@ -2114,7 +2363,7 @@ def run_supervisor(args: argparse.Namespace) -> int:
     guidance_received_seen_while_running = False
     guidance_payload = {
         "type": "add_instruction",
-        "text": args.guidance_text,
+        "text": guidance_text,
         "source": "deterministic_smoke_supervisor",
         "id": "guidance-001",
         "timestamp": utc_now(),
@@ -2177,6 +2426,9 @@ def run_supervisor(args: argparse.Namespace) -> int:
     run_started_events = [event for event in received_events if event.get("event") == "run_started"]
     agent_run_started = run_started_events[-1] if run_started_events else {}
     agent_contracts = agent_report.get("contracts", {}) if isinstance(agent_report.get("contracts"), dict) else {}
+    agent_scenario_contracts = (
+        agent_report.get("scenario_contracts", {}) if isinstance(agent_report.get("scenario_contracts"), dict) else {}
+    )
     agent_adapter_report = agent_report.get("agent_adapter", {}) if isinstance(agent_report.get("agent_adapter"), dict) else {}
     commit_report = agent_report.get("commit", {}) if isinstance(agent_report.get("commit"), dict) else {}
     commit_expected = bool(commit_report.get("expected", True))
@@ -2193,6 +2445,12 @@ def run_supervisor(args: argparse.Namespace) -> int:
         not commit_expected
         and not actual_commit_created
         and bool(agent_contracts.get("commit_blocked_by_policy"))
+    )
+    commit_blocked_by_verification_failure = (
+        not commit_expected
+        and not actual_commit_created
+        and bool(agent_contracts.get("verification_failure_blocks_commit"))
+        and bool(commit_report.get("blocked_by_verification_failure"))
     )
     comparison_report_path = args.compare_report or (args.replay_report if args.agent == "replay" else "")
     report_shape_comparison: dict[str, Any] | None = None
@@ -2224,7 +2482,11 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "branch_isolated": bool(agent_contracts.get("branch_isolated")),
         "changed_files_scoped": bool(agent_contracts.get("changed_files_scoped")),
         "forbidden_files_unchanged": bool(agent_contracts.get("forbidden_files_unchanged")),
-        "verification_passed": bool(agent_contracts.get("verification_passed")),
+        "verification_outcome_expected": bool(
+            agent_contracts.get("verification_outcome_expected", agent_contracts.get("verification_passed"))
+        ),
+        "scenario_contracts_present": agent_scenario_contracts == scenario.contracts(),
+        "scenario_contracts_satisfied": bool(agent_contracts.get("scenario_contracts_satisfied", True)),
         "commit_policy_boundary_written": commit_policy_boundary_written,
         "commit_boundary_written": commit_boundary_written,
         "commit_policy_satisfied": bool(agent_contracts.get("commit_policy_satisfied")),
@@ -2257,6 +2519,11 @@ def run_supervisor(args: argparse.Namespace) -> int:
         if "guidance_window_open" in event_names and "edit_applied" in event_names
         else False,
     }
+    if scenario.expects_verification_success:
+        contracts["verification_passed"] = bool(agent_contracts.get("verification_passed"))
+    else:
+        contracts["verification_failed_as_expected"] = bool(agent_contracts.get("verification_failed_as_expected"))
+        contracts["verification_failure_blocks_commit"] = commit_blocked_by_verification_failure
     if commit_expected:
         contracts["commit_created"] = (
             actual_commit_created
@@ -2264,6 +2531,8 @@ def run_supervisor(args: argparse.Namespace) -> int:
             and agent_report.get("final_head") == commit_report.get("sha")
             and agent_report.get("final_head") != agent_report.get("base_head")
         )
+    elif commit_blocked_by_verification_failure:
+        contracts["commit_not_created_after_verification_failure"] = True
     else:
         contracts["commit_not_created_by_policy"] = commit_blocked_by_policy
     if report_shape_comparison is not None:
@@ -2273,7 +2542,8 @@ def run_supervisor(args: argparse.Namespace) -> int:
     supervisor_report = {
         "ok": returncode == 0 and not failed_contracts,
         "mode": MODE,
-        "scenario": SCENARIO,
+        "scenario": scenario.name,
+        "scenario_contracts": scenario.contracts(),
         "agent_mode": args.agent,
         "agent_boundary": "docker",
         "docker_image": args.docker_image,
@@ -2291,6 +2561,7 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "commit_created": actual_commit_created,
         "commit_expected": commit_expected,
         "commit_blocked_by_policy": commit_blocked_by_policy,
+        "commit_blocked_by_verification_failure": commit_blocked_by_verification_failure,
         "commit_policy_boundary_written": commit_policy_boundary_written,
         "commit_boundary_written": commit_boundary_written,
         "contracts": contracts,
@@ -2336,6 +2607,8 @@ def namespace_with(args: argparse.Namespace, **updates: Any) -> argparse.Namespa
 def run_replay_cycle(args: argparse.Namespace) -> int:
     """Run deterministic first, then replay its report through the same Docker harness."""
 
+    scenario = scenario_from_args(args)
+
     cycle_id = args.run_id or run_id_from_now()
     parent_work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
     cycle_dir = parent_work_root / cycle_id
@@ -2373,7 +2646,7 @@ def run_replay_cycle(args: argparse.Namespace) -> int:
         cycle_report = {
             "ok": False,
             "mode": MODE,
-            "scenario": SCENARIO,
+            "scenario": scenario.name,
             "cycle_id": cycle_id,
             "failed_stage": "deterministic_baseline",
             "deterministic_returncode": deterministic_rc,
@@ -2454,7 +2727,7 @@ def run_replay_cycle(args: argparse.Namespace) -> int:
     cycle_report = {
         "ok": not failed_contracts,
         "mode": MODE,
-        "scenario": SCENARIO,
+        "scenario": scenario.name,
         "cycle_id": cycle_id,
         "run_dir": str(cycle_dir),
         "deterministic": {
@@ -2499,6 +2772,8 @@ def run_replay_cycle(args: argparse.Namespace) -> int:
 def run_live_plan_cycle(args: argparse.Namespace) -> int:
     """Run deterministic first, then plan-only live adapter with deterministic apply."""
 
+    scenario = scenario_from_args(args)
+
     cycle_id = args.run_id or run_id_from_now()
     parent_work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
     cycle_dir = parent_work_root / cycle_id
@@ -2539,7 +2814,7 @@ def run_live_plan_cycle(args: argparse.Namespace) -> int:
         cycle_report = {
             "ok": False,
             "mode": MODE,
-            "scenario": SCENARIO,
+            "scenario": scenario.name,
             "cycle_id": cycle_id,
             "failed_stage": "deterministic_baseline",
             "deterministic_returncode": deterministic_rc,
@@ -2626,7 +2901,7 @@ def run_live_plan_cycle(args: argparse.Namespace) -> int:
     cycle_report = {
         "ok": not failed_contracts,
         "mode": MODE,
-        "scenario": SCENARIO,
+        "scenario": scenario.name,
         "cycle_id": cycle_id,
         "run_dir": str(cycle_dir),
         "deterministic": {
@@ -2669,6 +2944,8 @@ def run_live_plan_cycle(args: argparse.Namespace) -> int:
 def run_generated_editor_cycle(args: argparse.Namespace) -> int:
     """Run deterministic first, then deterministic generated-editor sandbox apply."""
 
+    scenario = scenario_from_args(args)
+
     cycle_id = args.run_id or run_id_from_now()
     parent_work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
     cycle_dir = parent_work_root / cycle_id
@@ -2710,7 +2987,7 @@ def run_generated_editor_cycle(args: argparse.Namespace) -> int:
         cycle_report = {
             "ok": False,
             "mode": MODE,
-            "scenario": SCENARIO,
+            "scenario": scenario.name,
             "cycle_id": cycle_id,
             "failed_stage": "deterministic_baseline",
             "deterministic_returncode": deterministic_rc,
@@ -2830,7 +3107,7 @@ def run_generated_editor_cycle(args: argparse.Namespace) -> int:
     cycle_report = {
         "ok": not failed_contracts,
         "mode": MODE,
-        "scenario": SCENARIO,
+        "scenario": scenario.name,
         "cycle_id": cycle_id,
         "run_dir": str(cycle_dir),
         "deterministic": {
@@ -2874,10 +3151,151 @@ def run_generated_editor_cycle(args: argparse.Namespace) -> int:
 
 
 
+
+
+def run_scenario_matrix(args: argparse.Namespace) -> int:
+    """Run a small deterministic scenario matrix through the Docker-contained harness."""
+
+    matrix_id = args.run_id or run_id_from_now()
+    parent_work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
+    matrix_dir = parent_work_root / matrix_id
+    matrix_dir.mkdir(parents=True, exist_ok=True)
+    matrix_report_path = matrix_dir / "scenario_matrix_report.json"
+
+    emit_event(
+        "scenario_matrix_started",
+        run_id=matrix_id,
+        role="supervisor",
+        agent_boundary="docker",
+        scenarios=list(SCENARIO_MATRIX),
+        matrix_dir=str(matrix_dir),
+    )
+
+    scenario_results: dict[str, Any] = {}
+    failed_contracts: list[str] = []
+    for scenario_name in SCENARIO_MATRIX:
+        scenario = scenario_spec(scenario_name)
+        scenario_run_id = f"{matrix_id}-{scenario_name}"
+        scenario_args = namespace_with(
+            args,
+            exercise_replay=False,
+            exercise_live_plan=False,
+            exercise_generated_editor=False,
+            exercise_scenario_matrix=False,
+            agent="deterministic",
+            scenario=scenario_name,
+            run_id=scenario_run_id,
+            work_root=str(matrix_dir),
+            replay_report="",
+            compare_report="",
+            live_plan_path="",
+            live_plan_json="",
+            commit_policy=DEFAULT_COMMIT_POLICY,
+        )
+        emit_event(
+            "scenario_matrix_stage_started",
+            run_id=matrix_id,
+            scenario=scenario_name,
+            scenario_run_id=scenario_run_id,
+            expected_contracts=scenario.contracts(),
+        )
+        returncode = run_supervisor(scenario_args)
+        scenario_run_dir = matrix_dir / scenario_run_id
+        agent_report_path = scenario_run_dir / "report.json"
+        supervisor_report_path = scenario_run_dir / "supervisor_report.json"
+        agent_report = load_report(agent_report_path) if agent_report_path.exists() else {}
+        supervisor_report = load_report(supervisor_report_path) if supervisor_report_path.exists() else {}
+        agent_contracts = agent_report.get("contracts", {}) if isinstance(agent_report.get("contracts"), dict) else {}
+        commit_report = agent_report.get("commit", {}) if isinstance(agent_report.get("commit"), dict) else {}
+        verification_report = agent_report.get("verification", {}) if isinstance(agent_report.get("verification"), dict) else {}
+
+        contracts = {
+            "self_check_passed": returncode == 0 and bool(supervisor_report.get("ok")),
+            "scenario_name_recorded": agent_report.get("scenario") == scenario_name,
+            "scenario_contracts_recorded": agent_report.get("scenario_contracts") == scenario.contracts(),
+            "scenario_contracts_satisfied": bool(agent_contracts.get("scenario_contracts_satisfied")),
+            "expected_changed_files": agent_report.get("changed_files") == list(scenario.expected_changed_files),
+            "forbidden_files_unchanged": bool(agent_contracts.get("forbidden_files_unchanged")),
+            "verification_outcome_expected": bool(agent_contracts.get("verification_outcome_expected")),
+            "commit_expectation_matched": bool(commit_report.get("expected")) == scenario.requires_commit,
+        }
+        if scenario.expects_verification_success:
+            contracts["verification_passed"] = bool(verification_report.get("ok")) and bool(
+                agent_contracts.get("verification_passed")
+            )
+            contracts["commit_created"] = bool(commit_report.get("created")) == scenario.requires_commit
+        else:
+            contracts["verification_failed_as_expected"] = not bool(verification_report.get("ok")) and bool(
+                agent_contracts.get("verification_failed_as_expected")
+            )
+            contracts["verification_failure_blocks_commit"] = bool(agent_contracts.get("verification_failure_blocks_commit"))
+            contracts["commit_not_created_after_verification_failure"] = (
+                not bool(commit_report.get("created"))
+                and agent_report.get("final_head") == agent_report.get("base_head")
+            )
+
+        scenario_failed = sorted(name for name, ok in contracts.items() if not ok)
+        if scenario_failed:
+            failed_contracts.extend(f"{scenario_name}.{name}" for name in scenario_failed)
+        scenario_results[scenario_name] = {
+            "run_id": scenario_run_id,
+            "returncode": returncode,
+            "agent_report_path": str(agent_report_path),
+            "supervisor_report_path": str(supervisor_report_path),
+            "scenario_contracts": scenario.contracts(),
+            "contracts": contracts,
+            "failed_contracts": scenario_failed,
+            "agent_report": agent_report,
+        }
+
+    matrix_contracts = {
+        "scenario_matrix_all_passed": not failed_contracts,
+        "scenario_matrix_scenarios_exercised": sorted(scenario_results) == sorted(SCENARIO_MATRIX),
+        "single_file_python_edit_exercised": "single_file_python_edit" in scenario_results,
+        "forbidden_file_instruction_exercised": "forbidden_file_instruction" in scenario_results,
+        "verification_failure_blocks_commit_exercised": "verification_failure_blocks_commit" in scenario_results,
+    }
+    if not matrix_contracts["scenario_matrix_all_passed"]:
+        failed_contracts.append("scenario_matrix_all_passed")
+    for name, ok in matrix_contracts.items():
+        if not ok and name not in failed_contracts:
+            failed_contracts.append(name)
+
+    matrix_report = {
+        "ok": not failed_contracts,
+        "mode": MODE,
+        "matrix_id": matrix_id,
+        "run_dir": str(matrix_dir),
+        "scenarios": list(SCENARIO_MATRIX),
+        "scenario_results": scenario_results,
+        "contracts": matrix_contracts,
+        "failed_contracts": sorted(failed_contracts),
+    }
+    atomic_write_json(matrix_report_path, matrix_report)
+    if failed_contracts:
+        emit_event(
+            "scenario_matrix_failed",
+            run_id=matrix_id,
+            failed_contracts=sorted(failed_contracts),
+            report_path=str(matrix_report_path),
+        )
+        return 1
+
+    emit_event(
+        "scenario_matrix_passed",
+        run_id=matrix_id,
+        report_path=str(matrix_report_path),
+        contracts=matrix_contracts,
+    )
+    return 0
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic code-editing agent guidance smoke.")
     parser.add_argument("--role", choices=["supervisor", "agent"], default="supervisor")
     parser.add_argument("--agent", choices=["deterministic", "replay", "live-plan", "generated-editor"], default="deterministic")
+    parser.add_argument("--scenario", choices=tuple(SCENARIO_SPECS), default=DEFAULT_SCENARIO)
     parser.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
     parser.add_argument("--replay-report", default="", help="Prior agent report to replay through the same harness.")
     parser.add_argument("--live-plan-path", default="", help="JSON live-planning artifact for --agent live-plan.")
@@ -2921,6 +3339,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run deterministic first, then generated-editor sandbox proposal with host apply.",
     )
+    parser.add_argument(
+        "--exercise-scenario-matrix",
+        action="store_true",
+        help="Run the first deterministic fixture scenario matrix through the same Docker-contained harness.",
+    )
     return parser
 
 
@@ -2933,6 +3356,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.run_dir:
             args.run_dir = str(default_work_root() / args.run_id)
         return run_agent(args)
+    if args.exercise_scenario_matrix:
+        return run_scenario_matrix(args)
     if args.exercise_replay:
         return run_replay_cycle(args)
     if args.exercise_live_plan:

@@ -42,7 +42,8 @@ def _sample_agent_report(*, agent_mode: str = "deterministic") -> dict:
     return {
         "ok": True,
         "mode": "rag_code_edit_agent_guidance_smoke",
-        "scenario": "trim_greeting_with_midrun_guidance",
+        "scenario": "single_file_python_edit",
+        "scenario_contracts": smoke.scenario_spec("single_file_python_edit").contracts(),
         "agent_mode": agent_mode,
         "agent_adapter": {
             "agent_mode": agent_mode,
@@ -75,6 +76,8 @@ def _sample_agent_report(*, agent_mode: str = "deterministic") -> dict:
             "repo_clean_after_commit": True,
             "report_written": True,
             "verification_passed": True,
+            "verification_outcome_expected": True,
+            "scenario_contracts_satisfied": True,
         },
         "failed_contracts": [],
         "boundaries": [
@@ -99,6 +102,7 @@ def test_docker_agent_command_shape_contract(tmp_path: Path) -> None:
         commands_path=run_dir / "commands.jsonl",
         report_path=run_dir / "report.json",
         agent="deterministic",
+        scenario=smoke.DEFAULT_SCENARIO,
         target_branch="ai/smoke-guided-edit",
         task="Make greet trim whitespace.",
         guidance_window_seconds=1.0,
@@ -152,6 +156,7 @@ def test_replay_agent_command_shape_passes_replay_report_inside_container(tmp_pa
         commands_path=run_dir / "commands.jsonl",
         report_path=run_dir / "report.json",
         agent="replay",
+        scenario=smoke.DEFAULT_SCENARIO,
         target_branch="ai/smoke-guided-edit",
         task="Make greet trim whitespace.",
         guidance_window_seconds=1.0,
@@ -177,6 +182,7 @@ def test_live_plan_agent_command_shape_passes_plan_inside_container(tmp_path: Pa
         commands_path=run_dir / "commands.jsonl",
         report_path=run_dir / "report.json",
         agent="live-plan",
+        scenario=smoke.DEFAULT_SCENARIO,
         target_branch="ai/smoke-guided-edit",
         task="Make greet trim whitespace.",
         guidance_window_seconds=1.0,
@@ -881,3 +887,154 @@ def test_generated_editor_cycle_orchestrates_deterministic_then_generated_editor
     assert cycle_report["contracts"]["host_applied_sandbox_proposal"] is True
     assert cycle_report["contracts"]["deterministic_safe_apply_can_be_replaced_by_sandbox_apply"] is True
     assert cycle_report["contracts"]["report_contract_shape_matches_reference"] is True
+
+
+
+def test_agent_verification_failure_scenario_blocks_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "verification-failure-agent"
+    run_dir.mkdir()
+    commands_path = run_dir / "commands.jsonl"
+    commands_path.write_text(
+        json.dumps({"type": "add_instruction", "text": "Do not modify README.md.", "id": "guidance-001"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER", "1")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "none")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "readonly")
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--role",
+            "agent",
+            "--agent",
+            "deterministic",
+            "--scenario",
+            "verification_failure_blocks_commit",
+            "--run-id",
+            "verification-failure-test",
+            "--run-dir",
+            str(run_dir),
+            "--commands-path",
+            str(commands_path),
+            "--report-path",
+            str(run_dir / "report.json"),
+            "--guidance-window-seconds",
+            "0",
+            "--poll-seconds",
+            "0.01",
+        ]
+    )
+
+    assert smoke.run_agent(args) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    boundary_names = [boundary["name"] for boundary in report["boundaries"]]
+    assert report["scenario"] == "verification_failure_blocks_commit"
+    assert report["scenario_contracts"] == smoke.scenario_spec("verification_failure_blocks_commit").contracts()
+    assert report["verification"]["ok"] is False
+    assert report["commit"]["created"] is False
+    assert report["commit"]["blocked_by_verification_failure"] is True
+    assert report["final_head"] == report["base_head"]
+    assert report["changed_files"] == ["app.py"]
+    assert "verification_boundary" in boundary_names
+    assert "commit_policy_boundary" in boundary_names
+    assert "commit_boundary" in boundary_names
+    assert report["contracts"]["verification_failed_as_expected"] is True
+    assert report["contracts"]["verification_failure_blocks_commit"] is True
+    assert report["contracts"]["commit_not_created_after_verification_failure"] is True
+    assert report["contracts"]["scenario_contracts_satisfied"] is True
+    assert "commit_created" not in report["contracts"]
+
+
+def test_scenario_matrix_orchestrates_initial_scenarios(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_run_supervisor(args) -> int:
+        calls.append((args.scenario, args.run_id))
+        scenario = smoke.scenario_spec(args.scenario)
+        run_dir = Path(args.work_root) / args.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        base_head = "base"
+        final_head = "final" if scenario.requires_commit else base_head
+        report = _sample_agent_report(agent_mode="deterministic")
+        report["run_id"] = args.run_id
+        report["scenario"] = scenario.name
+        report["scenario_contracts"] = scenario.contracts()
+        report["changed_files"] = list(scenario.expected_changed_files)
+        report["forbidden_paths"] = list(scenario.forbidden_files)
+        report["base_head"] = base_head
+        report["final_head"] = final_head
+        report["main_head"] = base_head
+        report["verification"] = {
+            "ok": scenario.expects_verification_success,
+            "checks": ["python_import_and_greet_contract"],
+        }
+        report["commit"] = {
+            "created": scenario.requires_commit,
+            "expected": scenario.requires_commit,
+            "sha": final_head,
+            "files": list(scenario.expected_changed_files) if scenario.requires_commit else [],
+        }
+        report["contracts"].update(
+            {
+                "scenario_contracts_satisfied": True,
+                "verification_outcome_expected": True,
+                "forbidden_files_unchanged": True,
+            }
+        )
+        if scenario.expects_verification_success:
+            report["contracts"]["verification_passed"] = True
+            report["contracts"]["commit_created"] = scenario.requires_commit
+        else:
+            report["contracts"].pop("verification_passed", None)
+            report["contracts"].pop("commit_created", None)
+            report["contracts"].pop("repo_clean_after_commit", None)
+            report["contracts"].update(
+                {
+                    "verification_failed_as_expected": True,
+                    "verification_failure_blocks_commit": True,
+                    "commit_not_created_after_verification_failure": True,
+                }
+            )
+            report["commit"]["blocked_by_verification_failure"] = True
+        (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        (run_dir / "supervisor_report.json").write_text(
+            json.dumps({"ok": True, "contracts": {"scenario_contracts_satisfied": True}}),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(smoke, "run_supervisor", fake_run_supervisor)
+    args = smoke.build_parser().parse_args(
+        [
+            "--exercise-scenario-matrix",
+            "--work-root",
+            str(tmp_path),
+            "--run-id",
+            "matrix",
+            "--guidance-window-seconds",
+            "0.1",
+            "--poll-seconds",
+            "0.01",
+        ]
+    )
+
+    assert smoke.run_scenario_matrix(args) == 0
+
+    assert [scenario for scenario, _run_id in calls] == list(smoke.SCENARIO_MATRIX)
+    matrix_report = json.loads((tmp_path / "matrix" / "scenario_matrix_report.json").read_text(encoding="utf-8"))
+    assert matrix_report["ok"] is True
+    assert matrix_report["contracts"]["scenario_matrix_all_passed"] is True
+    assert matrix_report["contracts"]["single_file_python_edit_exercised"] is True
+    assert matrix_report["contracts"]["forbidden_file_instruction_exercised"] is True
+    assert matrix_report["contracts"]["verification_failure_blocks_commit_exercised"] is True
+    failure_result = matrix_report["scenario_results"]["verification_failure_blocks_commit"]
+    assert failure_result["contracts"]["verification_failed_as_expected"] is True
+    assert failure_result["contracts"]["verification_failure_blocks_commit"] is True

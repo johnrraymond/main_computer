@@ -12,6 +12,7 @@ def test_openclaw_docker_ollama_artifacts_exist() -> None:
         "deploy/openclaw-docker/docker-compose.yml",
         "deploy/openclaw-docker/README.md",
         "scripts/start_openclaw_docker_for_ollama.ps1",
+        "scripts/extract_openclaw_persistence.py",
     ]
     for relative in expected:
         assert (REPO_ROOT / relative).is_file(), relative
@@ -75,6 +76,13 @@ def test_openclaw_docker_runner_writes_gateway_config_for_host_ollama() -> None:
     assert "[switch]$AgentSmoke" in script
     assert "[switch]$FullSmoke" in script
     assert "[switch]$SkipRestartProof" in script
+    assert "[switch]$ExtractMemory" in script
+    assert "[string]$ExtractOutDir" in script
+    assert "Invoke-HighFidelityMemoryExtract" in script
+    assert "extract_openclaw_persistence.py" in script
+    assert '"--jsonl-out", $jsonlOut' in script
+    assert '"--markdown-out", $markdownOut' in script
+    assert '"--memory-root", $WorkspaceDir' in script
     assert '"--memory-root", $workspaceDir' in script
     assert '"--timeout", ([string]$SmokeTimeoutSeconds)' in script
     assert '"--max-output-tokens", ([string]$OllamaNumPredict)' in script
@@ -129,6 +137,9 @@ def test_openclaw_docker_readme_documents_generated_state_outside_repo() -> None
     assert "container OpenClaw still listens on `18789`" in readme
     assert "direct memory smoke" in readme
     assert "-AgentSmoke" in readme
+    assert "High-fidelity memory extraction" in readme
+    assert "extract_openclaw_persistence.py" in readme
+    assert "SHA-256 hashes" in readme
 
 def test_openclaw_persistence_smoke_can_run_single_write_turn() -> None:
     smoke = (REPO_ROOT / "scripts/smoke_openclaw_persistence.py").read_text(encoding="utf-8")

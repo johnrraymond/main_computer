@@ -70,3 +70,22 @@ Stop the stack with:
 ```powershell
 .\scripts\start_openclaw_docker_for_ollama.ps1 -Down
 ```
+
+## High-fidelity memory extraction
+
+After the direct memory smoke passes, export the OpenClaw Markdown persistence
+surface without summarizing it:
+
+```powershell
+python scripts\extract_openclaw_persistence.py --memory-root "%LOCALAPPDATA%\MainComputer\openclaw-docker\workspace" --out "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json" --jsonl-out "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.jsonl" --markdown-out "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.md" --summary-json
+```
+
+The exporter preserves exact source text, SHA-256 hashes, line spans, heading
+paths, and section records. This gives Main Computer a deterministic persistence
+ingest surface before any `/v1/responses` agent integration is added.
+
+You can also ask the helper to run the extraction:
+
+```powershell
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -NoSmoke -ExtractMemory
+```

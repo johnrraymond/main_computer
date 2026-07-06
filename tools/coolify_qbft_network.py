@@ -1988,6 +1988,22 @@ def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argpar
     }
 
 
+
+
+def qbft_config_export_failure_inspection_hint(plan: NetworkPlan, host_id: str, *, token: str, port: int) -> dict[str, Any]:
+    """Return a small host-side inspection hint for a preserved config exporter."""
+
+    host_id = safe_id(host_id, kind="host")
+    service_name = qbft_config_export_service_name(plan, host_id)
+    return {
+        "service_name": service_name,
+        "container_name": f"qbft-config-export-<coolify-service-uuid-for-{service_name}>",
+        "token": token,
+        "direct_local_url": f"http://127.0.0.1:{port}/{token}.json",
+        "dynamic_config_path": qbft_config_export_dynamic_config_path(plan, host_id),
+        "note": "Config exporter cleanup was skipped so the Coolify host can be inspected before manual cleanup.",
+    }
+
 def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argparse.Namespace, host_id: str) -> dict[str, Any]:
     """Slurp QBFT config through a Coolify-managed temporary public-entry tool.
 
@@ -2119,10 +2135,18 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
             break
         time.sleep(2.0)
 
-    cleanup_result = coolify_sync(plan, cleanup_args, deploy=True)
     if result is not None:
-        result["cleanup"] = cleanup_result
         result["fetch_attempts"] = attempts[-8:]
+        if result.get("ok"):
+            result["cleanup"] = coolify_sync(plan, cleanup_args, deploy=True)
+        else:
+            result["cleanup"] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "config export returned an unusable bundle; leaving exporter deployed for inspection",
+                "service_name": service_name,
+            }
+            result["inspection"] = qbft_config_export_failure_inspection_hint(plan, host_id, token=token, port=port)
         return result
     return {
         "ok": False,
@@ -2134,7 +2158,13 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
         "source_service_lookup": source_service_lookup,
         "volume_prefixes": volume_prefixes,
         "sync": sync_result,
-        "cleanup": cleanup_result,
+        "cleanup": {
+            "ok": True,
+            "skipped": True,
+            "reason": "config export fetch timed out; leaving exporter deployed for inspection",
+            "service_name": service_name,
+        },
+        "inspection": qbft_config_export_failure_inspection_hint(plan, host_id, token=token, port=port),
         "fetch_candidates": [
             {key: value for key, value in candidate.items() if key != "headers"}
             for candidate in fetch_candidates
@@ -3014,15 +3044,31 @@ def qbft_config_export_mount_sources(
     candidates: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(kind: str, label: str, source: str, target: str) -> None:
+    def add(
+        kind: str,
+        label: str,
+        source: str,
+        target: str,
+        *,
+        external_volume: bool = False,
+        compose_source: str = "",
+    ) -> None:
         source = str(source or "").strip()
         if not source:
             return
-        key = (kind, source)
+        key = (kind, source, target)
         if key in seen:
             return
         seen.add(key)
-        candidates.append({"kind": kind, "label": label, "source": source, "target": target})
+        item = {"kind": kind, "label": label, "source": source, "target": target}
+        if kind == "volume":
+            # Compose service mounts must use a local alias when the actual
+            # Docker volume is external.  Mounting the raw Coolify-prefixed
+            # name directly lets Coolify/Compose create an empty shadow volume
+            # under the config-export service project.
+            item["compose_source"] = compose_source or source
+            item["external_volume"] = "true" if external_volume else "false"
+        candidates.append(item)
 
     managed = managed_volume_name(plan, host_id)
     legacy = legacy_managed_volume_name(plan)
@@ -3036,21 +3082,19 @@ def qbft_config_export_mount_sources(
         prefixes.append(prefix)
 
     for index, prefix in enumerate(prefixes, start=1):
+        label = f"coolify-prefixed-managed-host-volume-{index}"
         add(
             "volume",
-            f"coolify-prefixed-managed-host-volume-{index}",
+            label,
             coolify_prefixed_volume_name(prefix, managed),
-            f"/sources/coolify-prefixed-managed-host-volume-{index}",
-        )
-        add(
-            "volume",
-            f"coolify-prefixed-legacy-network-volume-{index}",
-            coolify_prefixed_volume_name(prefix, legacy),
-            f"/sources/coolify-prefixed-legacy-network-volume-{index}",
+            f"/sources/{label}",
+            external_volume=True,
+            compose_source=label,
         )
 
-    add("volume", "managed-host-volume", managed, "/sources/managed-host-volume")
-    add("volume", "legacy-network-volume", legacy, "/sources/legacy-network-volume")
+    if not prefixes:
+        add("volume", "managed-host-volume", managed, "/sources/managed-host-volume")
+        add("volume", "legacy-network-volume", legacy, "/sources/legacy-network-volume")
     add("bind", "host-runtime-root", host.runtime_root, "/sources/host-runtime-root")
     return candidates
 
@@ -3408,7 +3452,17 @@ def render_qbft_config_exporter_compose(
     ]
     for source in sources:
         if source["kind"] == "volume":
-            lines.append(f"      - {yaml_quote(f'{source['source']}:{source['target']}:ro')}")
+            if source.get("external_volume") == "true":
+                lines.extend(
+                    [
+                        "      - type: volume",
+                        f"        source: {source['compose_source']}",
+                        f"        target: {source['target']}",
+                        "        read_only: true",
+                    ]
+                )
+            else:
+                lines.append(f"      - {yaml_quote(f'{source['compose_source']}:{source['target']}:ro')}")
         elif source["kind"] == "bind":
             lines.extend(
                 [
@@ -3460,16 +3514,22 @@ def render_qbft_config_exporter_compose(
                 "",
             ]
         )
-    volume_sources = [source["source"] for source in sources if source["kind"] == "volume"]
-    if volume_sources:
+    volume_defs: dict[str, dict[str, str]] = {}
+    for source in sources:
+        if source["kind"] != "volume":
+            continue
+        compose_source = source["compose_source"]
+        volume_defs[compose_source] = {
+            "name": source["source"],
+            "external_volume": source.get("external_volume", "false"),
+        }
+    if volume_defs:
         lines.append("volumes:")
-        for volume_name in volume_sources:
-            lines.extend(
-                [
-                    f"  {volume_name}:",
-                    f"    name: {volume_name}",
-                ]
-            )
+        for compose_source, volume_def in volume_defs.items():
+            lines.append(f"  {compose_source}:")
+            if volume_def.get("external_volume") == "true":
+                lines.append("    external: true")
+            lines.append(f"    name: {volume_def['name']}")
         lines.append("")
     return "\n".join(lines)
 
