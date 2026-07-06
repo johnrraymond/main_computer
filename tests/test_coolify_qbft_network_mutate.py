@@ -339,6 +339,196 @@ def test_mutate_apply_rpc_add_dry_run_does_not_wait_or_probe(tmp_path: Path, mon
 
 
 
+
+def write_rpc_retire_private_state(tmp_path: Path) -> Path:
+    state_path = tmp_path / "main_computer.retire.private.yaml"
+    state_path.write_text(
+        """
+coolify:
+  project_name: Main Computer
+  hosts:
+    A:
+      name: coolify-a
+      public_ip: 198.51.100.10
+      url: http://198.51.100.10:8000/
+      api_token: secret-a
+      server_uuid: server-a
+      destination_uuid: destination-a
+    B:
+      name: coolify-b
+      public_ip: 198.51.100.11
+      url: http://198.51.100.11:8000/
+      api_token: secret-b
+      server_uuid: server-b
+      destination_uuid: destination-b
+
+networks:
+  testnet:
+    display_name: Main Computer Testnet
+    kind: testnet
+    chain_id: 42424241
+    rpc: https://testnet-rpc.greatlibrary.io
+    qbft:
+      instances:
+        validator-rpc-1:
+          coolify_host: A
+          roles: [rpc, validator]
+          rpc_host_port: 30010
+          p2p_host_port: 30321
+        rpc-1:
+          coolify_host: B
+          roles: [rpc]
+          rpc_host_port: 30013
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return state_path
+
+
+def test_retire_cleanup_compose_removes_public_entry_when_host_has_no_remaining_nodes(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_rpc_retire_private_state(tmp_path))
+
+    compose = module.render_retire_cleanup_compose_for_host(plan, "b")
+
+    assert "testnet-rpc-public-entry-config-b:" in compose
+    assert "Removed stale RPC Traefik dynamic config" in compose
+    assert "rpc-1:" not in compose
+    assert "validator-rpc-1:" not in compose
+    assert "/data/coolify/proxy/dynamic" in compose
+
+
+def test_mutate_apply_rpc_retire_redeploys_cleanup_compose_and_verifies_public_rpc(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_rpc_retire_private_state(tmp_path))
+    calls: list[tuple[str, Any]] = []
+
+    def fake_observe_chain_state(observe_plan: Any, observe_args: Any) -> dict[str, Any]:
+        calls.append(("observe-chain", observe_plan, observe_args))
+        assert observe_plan is plan
+        assert observe_args.rpc_url == ""
+        return {
+            "ok": True,
+            "canonical_rpc": "ok",
+            "consensus": "ok",
+            "chain": {"chain_id": hex(plan.chain_id), "block_number": 123, "peer_count": 1},
+            "probes": [],
+        }
+
+    def fake_coolify_sync(sync_plan: Any, sync_args: Any, *, deploy: bool = False) -> dict[str, Any]:
+        calls.append(("coolify-sync", sync_plan, sync_args, deploy))
+        assert [host.id for host in sync_plan.hosts] == ["b"]
+        assert list(sync_plan.services) == []
+        assert sync_args.host == "b"
+        assert sync_args.no_bootstrap is True
+        assert sync_args._compose_override
+        assert "testnet-rpc-public-entry-config-b:" in sync_args._compose_override
+        assert "rpc-1:" not in sync_args._compose_override
+        assert deploy is True
+        return {"ok": True, "service_uuid": "svc-b", "service_name": "main-computer-qbft-testnet-b"}
+
+    def fake_wait_for_rpc(wait_plan: Any, wait_args: Any) -> dict[str, Any]:
+        calls.append(("wait-rpc", wait_plan, wait_args))
+        assert wait_plan is plan
+        assert wait_args.rpc_url == "https://testnet-rpc.greatlibrary.io"
+        return {
+            "ok": True,
+            "rpc_url": wait_args.rpc_url,
+            "chain_id": hex(plan.chain_id),
+            "block_number": 124,
+            "peer_count": 1,
+            "block_advanced": True,
+        }
+
+    def fake_verify_retired_rpc_unreachable(verify_plan: Any, verify_args: Any, services: Any) -> dict[str, Any]:
+        calls.append(("verify-retired", verify_plan, verify_args, services))
+        assert verify_plan is plan
+        assert [service.id for service in services] == ["rpc-1"]
+        return {"ok": True, "checks": [{"ok": True, "instance": "rpc-1", "unreachable": True}]}
+
+    monkeypatch.setattr(module, "observe_chain_state", fake_observe_chain_state)
+    monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
+    monkeypatch.setattr(module, "wait_for_rpc", fake_wait_for_rpc)
+    monkeypatch.setattr(module, "verify_retired_rpc_unreachable", fake_verify_retired_rpc_unreachable)
+
+    packet = module.mutate_network(plan, _args(retire="rpc-1", apply=True))
+
+    assert packet["ok"] is True
+    assert packet["mode"] == "apply"
+    assert packet["mutation"] == "retire-rpc"
+    assert packet["execution"]["implemented"] is True
+    assert packet["execution"]["no_mutation_performed"] is False
+    assert [call[0] for call in calls] == [
+        "observe-chain",
+        "coolify-sync",
+        "wait-rpc",
+        "verify-retired",
+    ]
+    assert [phase["phase"] for phase in packet["apply_phases"]] == [
+        "observe-chain",
+        "remove-public-rpc-entry",
+        "redeploy-service-without-target",
+        "stop-coolify-service",
+        "verify-public-rpc",
+        "verify-retired-direct-rpc-unreachable",
+        "commit-topology",
+    ]
+
+
+def test_mutate_apply_rpc_retire_refuses_validator_retire(tmp_path: Path, monkeypatch: Any) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_rpc_retire_private_state(tmp_path))
+
+    def fail_coolify_sync(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("validator retire must not deploy")
+
+    monkeypatch.setattr(module, "coolify_sync", fail_coolify_sync)
+
+    packet = module.mutate_network(plan, _args(retire="validator-rpc-1", apply=True))
+
+    assert packet["ok"] is False
+    assert packet["mode"] == "apply"
+    assert "rpc-only adds" in packet["error"]
+    assert packet["execution"]["no_mutation_performed"] is True
+
+
+def test_mutate_apply_rpc_retire_dry_run_skips_live_probes(tmp_path: Path, monkeypatch: Any) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_rpc_retire_private_state(tmp_path))
+    calls: list[str] = []
+
+    def fake_coolify_sync(sync_plan: Any, sync_args: Any, *, deploy: bool = False) -> dict[str, Any]:
+        calls.append("coolify-sync")
+        assert list(sync_plan.services) == []
+        assert sync_args._compose_override
+        assert deploy is True
+        return {"ok": True, "dry_run": True, "compose": sync_args._compose_override}
+
+    def fail_observe_chain_state(observe_plan: Any, observe_args: Any) -> dict[str, Any]:
+        raise AssertionError("dry-run retire must not probe canonical RPC")
+
+    def fail_wait_for_rpc(wait_plan: Any, wait_args: Any) -> dict[str, Any]:
+        raise AssertionError("dry-run retire must not wait on public RPC")
+
+    def fail_verify_retired_rpc_unreachable(verify_plan: Any, verify_args: Any, services: Any) -> dict[str, Any]:
+        raise AssertionError("dry-run retire must not probe retired direct RPC")
+
+    monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
+    monkeypatch.setattr(module, "observe_chain_state", fail_observe_chain_state)
+    monkeypatch.setattr(module, "wait_for_rpc", fail_wait_for_rpc)
+    monkeypatch.setattr(module, "verify_retired_rpc_unreachable", fail_verify_retired_rpc_unreachable)
+
+    packet = module.mutate_network(plan, _args(retire="rpc-1", apply=True, dry_run=True))
+
+    assert packet["ok"] is True
+    assert packet["execution"]["dry_run"] is True
+    assert packet["execution"]["no_mutation_performed"] is True
+    assert calls == ["coolify-sync"]
+    assert packet["apply_phases"][0]["result"]["reason"] == "dry-run"
+
+
 def test_qbft_config_exporter_scans_prefixed_host_volume_legacy_volume_and_bind_root(tmp_path: Path) -> None:
     module = _load_module()
     plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))

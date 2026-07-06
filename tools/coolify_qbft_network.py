@@ -1612,6 +1612,28 @@ def plan_with_only_services(plan: NetworkPlan, service_ids: list[str] | tuple[st
     return replace(plan, hosts=selected_hosts, services=selected_services)
 
 
+def plan_for_host_without_services(plan: NetworkPlan, host_id: str, retired_service_ids: set[str]) -> NetworkPlan:
+    """Return a host-scoped target-state plan with retired services omitted.
+
+    This is the retire-side sibling of ``plan_with_only_services``.  It never
+    widens execution beyond the affected Coolify host, and it allows an empty
+    service set so a host that only contained the retired RPC node can be
+    redeployed with a cleanup-only compose.
+    """
+
+    host_id = safe_id(host_id, kind="host")
+    retired = {safe_id(service_id, kind="service") for service_id in retired_service_ids}
+    hosts = host_by_id(plan)
+    if host_id not in hosts:
+        raise PlanError(f"Cannot build retire target plan for unknown host: {host_id}")
+    selected_services = tuple(
+        service
+        for service in plan.services
+        if service.host == host_id and service.id not in retired
+    )
+    return replace(plan, hosts=(hosts[host_id],), services=selected_services)
+
+
 def services_by_host(services: list[PlannedService] | tuple[PlannedService, ...]) -> dict[str, list[PlannedService]]:
     grouped: dict[str, list[PlannedService]] = {}
     for service in services:
@@ -1624,6 +1646,15 @@ def mutation_apply_is_supported_rpc_add(packet: dict[str, Any], services: list[P
         return False
     intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
     if intent.get("action") != "add":
+        return False
+    return bool(services) and all("rpc" in service.roles and "validator" not in service.roles for service in services)
+
+
+def mutation_apply_is_supported_rpc_retire(packet: dict[str, Any], services: list[PlannedService]) -> bool:
+    if packet.get("requires_consensus_change"):
+        return False
+    intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
+    if intent.get("action") != "retire":
         return False
     return bool(services) and all("rpc" in service.roles and "validator" not in service.roles for service in services)
 
@@ -2416,11 +2447,257 @@ def apply_rpc_add_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: 
     }
 
 
+def apply_rpc_retire_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: dict[str, Any]) -> dict[str, Any]:
+    """Execute the safe subset of mutate: retiring rpc-only instances.
+
+    This refuses all validator/consensus changes.  The executor redeploys each
+    affected Coolify host with the retired RPC instance omitted from the host
+    target-state, verifies the canonical public RPC surface, and checks that the
+    retired direct RPC backend no longer answers.
+    """
+
+    service_catalog = planned_service_by_id(plan)
+    target_ids = [str(item) for item in packet.get("affected_instances") or []]
+    target_services = [service_catalog[service_id] for service_id in target_ids if service_id in service_catalog]
+    if not mutation_apply_is_supported_rpc_retire(packet, target_services):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": (
+                "mutate --apply currently supports only rpc-only adds and rpc-only retires. "
+                "Validator changes remain planner-only until the consensus executor lands."
+            ),
+            "execution": {
+                "implemented": False,
+                "no_mutation_performed": True,
+                "message": "Unsupported mutation executor path.",
+            },
+        }
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    no_deploy = bool(getattr(args, "no_deploy", False))
+    phases: list[dict[str, Any]] = []
+    retired_ids = {service.id for service in target_services}
+
+    if dry_run or no_deploy:
+        phases.append(
+            {
+                "phase": "observe-chain",
+                "result": {
+                    "ok": True,
+                    "dry_run": dry_run,
+                    "skipped": True,
+                    "reason": "dry-run" if dry_run else "no-deploy",
+                },
+            }
+        )
+    else:
+        preflight_result = observe_chain_state(plan, args_copy_with(args, rpc_url=""))
+        phases.append({"phase": "observe-chain", "result": preflight_result})
+        if not preflight_result.get("ok", False):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "error": "preflight canonical chain observation failed; refusing to retire RPC node.",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": True,
+                    "message": "RPC-only retire executor refused because canonical public RPC preflight failed.",
+                },
+                "apply_phases": phases,
+            }
+
+    for host_id, retiring_host_services in services_by_host(target_services).items():
+        host_plan = plan_for_host_without_services(plan, host_id, retired_ids)
+        remaining_service_ids = [service.id for service in host_plan.services]
+        deploy_args = args_copy_with(
+            args,
+            host=host_id,
+            no_bootstrap=True,
+            _include_rpc_public_entry=True,
+        )
+        if remaining_service_ids:
+            sync_result = coolify_sync(host_plan, deploy_args, deploy=not no_deploy)
+        else:
+            cleanup_compose = render_retire_cleanup_compose_for_host(plan, host_id)
+            cleanup_args = args_copy_with(deploy_args, _compose_override=cleanup_compose)
+            sync_result = coolify_sync(host_plan, cleanup_args, deploy=not no_deploy)
+            sync_result = {
+                **sync_result,
+                "cleanup_only_compose": True,
+                "remaining_instances": [],
+            }
+
+        phases.append(
+            {
+                "phase": "remove-public-rpc-entry",
+                "host": host_id,
+                "retired_instances": [service.id for service in retiring_host_services],
+                "remaining_instances": remaining_service_ids,
+                "result": sync_result,
+            }
+        )
+        phases.append(
+            {
+                "phase": "redeploy-service-without-target",
+                "host": host_id,
+                "retired_instances": [service.id for service in retiring_host_services],
+                "remaining_instances": remaining_service_ids,
+                "result": sync_result,
+            }
+        )
+        phases.append(
+            {
+                "phase": "stop-coolify-service",
+                "host": host_id,
+                "retired_instances": [service.id for service in retiring_host_services],
+                "result": {
+                    "ok": bool(sync_result.get("ok")),
+                    "method": "compose-omission",
+                    "message": (
+                        "Retired instance is omitted from the redeployed host compose. "
+                        "If Coolify leaves orphan containers, the retired direct RPC verification will fail."
+                    ),
+                },
+            }
+        )
+        if not sync_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": dry_run,
+                    "message": f"RPC-only retire failed while redeploying host {host_id} without the retired instance.",
+                },
+                "apply_phases": phases,
+            }
+
+    if rpc_public_entry_enabled(plan):
+        if dry_run or no_deploy:
+            phases.append(
+                {
+                    "phase": "verify-public-rpc",
+                    "result": {
+                        "ok": True,
+                        "dry_run": dry_run,
+                        "skipped": True,
+                        "reason": "dry-run" if dry_run else "no-deploy",
+                    },
+                }
+            )
+        else:
+            try:
+                public_wait_args = mutate_rpc_wait_args(args, rpc_url=str(plan.external_rpc_url or ""))
+                public_result = wait_for_rpc(plan, public_wait_args)
+            except Exception as exc:  # noqa: BLE001 - capture operator-facing failure in packet.
+                public_result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            phases.append({"phase": "verify-public-rpc", "result": public_result})
+            if not public_result.get("ok", False):
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": dry_run,
+                        "message": "RPC-only retire redeployed the target host but canonical public RPC verification failed.",
+                    },
+                    "apply_phases": phases,
+                }
+
+    if dry_run or no_deploy or bool(getattr(args, "skip_wait_rpc", False)):
+        phases.append(
+            {
+                "phase": "verify-retired-direct-rpc-unreachable",
+                "result": {
+                    "ok": True,
+                    "dry_run": dry_run,
+                    "skipped": True,
+                    "reason": (
+                        "dry-run"
+                        if dry_run
+                        else "no-deploy"
+                        if no_deploy
+                        else "skip-wait-rpc"
+                    ),
+                },
+            }
+        )
+    else:
+        retired_result = verify_retired_rpc_unreachable(plan, args, target_services)
+        phases.append({"phase": "verify-retired-direct-rpc-unreachable", "result": retired_result})
+        if not retired_result.get("ok", False):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": dry_run,
+                    "message": (
+                        "RPC-only retire updated host compose and canonical RPC stayed healthy, "
+                        "but the retired direct RPC backend still answered."
+                    ),
+                },
+                "apply_phases": phases,
+            }
+
+    phases.append(
+        {
+            "phase": "commit-topology",
+            "result": {
+                "ok": True,
+                "retired_instances": sorted(retired_ids),
+                "state_note": (
+                    "This executor redeploys Coolify target compose with retired instances omitted; "
+                    "it does not edit private state or encode file deletion semantics."
+                ),
+            },
+        }
+    )
+
+    return {
+        **packet,
+        "ok": True,
+        "mode": "apply",
+        "execution": {
+            "implemented": True,
+            "dry_run": dry_run,
+            "no_mutation_performed": dry_run,
+            "message": (
+                "RPC-only retire dry-run completed without mutating Coolify."
+                if dry_run
+                else (
+                    "RPC-only retire applied: retired RPC omitted from host compose, public RPC verified, "
+                    "and retired direct RPC checked as unreachable."
+                )
+            ),
+        },
+        "apply_phases": phases,
+    }
+
+
+def apply_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: dict[str, Any]) -> dict[str, Any]:
+    intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
+    if intent.get("action") == "retire":
+        return apply_rpc_retire_mutation(plan, args, packet)
+    return apply_rpc_add_mutation(plan, args, packet)
+
+
+
 def mutate_network(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
     packet = build_mutation_packet(plan, args)
     write_mutation_packet_if_requested(packet, args)
     if bool(getattr(args, "apply", False)):
-        return apply_rpc_add_mutation(plan, args, packet)
+        return apply_mutation(plan, args, packet)
     return packet
 
 
@@ -3772,7 +4049,10 @@ def render_compose_for_host(
     ]
 
     volume_name, volume_lines = render_volume_mount(plan, host, managed_volume=managed_volume)
-    rpc_target = rpc_target_service(plan)
+    try:
+        rpc_target = rpc_target_service(plan)
+    except PlanError:
+        rpc_target = None
     config_export = config_export or None
     config_export_volume_names: list[str] = []
     if config_export is not None:
@@ -3920,7 +4200,7 @@ def render_compose_for_host(
                 f"        ipv4_address: {service.container_ip}",
             ]
         )
-        if service.id == rpc_target.id:
+        if rpc_target is not None and service.id == rpc_target.id:
             lines.extend(
                 [
                     "        aliases:",
@@ -3956,6 +4236,99 @@ def render_compose_for_host(
             )
         lines.append("")
     return "\n".join(lines)
+
+
+def render_retire_cleanup_compose_for_host(plan: NetworkPlan, host_id: str) -> str:
+    """Render a cleanup-only compose for an affected host with no remaining QBFT nodes.
+
+    Raw snapshot/new_patch delivery cannot encode deletions by omission, and
+    Coolify itself may or may not remove orphan containers during redeploy.  This
+    compose gives the host-scoped Coolify service a concrete target state after
+    retiring its last QBFT node: keep only a tiny sidecar that removes this host's
+    Traefik RPC dynamic config.  The old node is intentionally absent from the
+    rendered service list.
+    """
+
+    host_id = safe_id(host_id, kind="host")
+    hosts = host_by_id(plan)
+    if host_id not in hosts:
+        raise PlanError(f"Unknown host for retire cleanup rendering: {host_id}")
+
+    cleanup_plan = replace(plan, hosts=(hosts[host_id],), services=())
+    lines: list[str] = [
+        f"name: {plan.compose_project}-{host_id}",
+        "",
+        "services:",
+    ]
+    before_len = len(lines)
+    append_rpc_public_entry_sidecar(lines, cleanup_plan, host_id)
+    if len(lines) == before_len:
+        # Compose requires at least one service.  When there is no public RPC
+        # sidecar to clean up, keep a tiny inert service so updating the Coolify
+        # Docker Compose resource still replaces the old target-state.
+        lines.extend(
+            [
+                "  qbft-retire-cleanup:",
+                f"    image: {yaml_quote(TRAEFIK_DYNAMIC_CONFIG_IMAGE)}",
+                "    init: true",
+                "    restart: unless-stopped",
+                "    labels:",
+                "      - \"traefik.enable=false\"",
+                "    command:",
+                "      - /bin/sh",
+                "      - -euc",
+                "      - |-",
+                "        echo 'QBFT retire cleanup target state installed; no public-entry config was enabled.'",
+                "        while true; do sleep 300; done",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def verify_retired_rpc_unreachable(plan: NetworkPlan, args: argparse.Namespace, services: list[PlannedService]) -> dict[str, Any]:
+    """Return ok only when every retired RPC backend no longer answers JSON-RPC."""
+
+    hosts = host_by_id(plan)
+    rpc_user_agent = str(getattr(args, "rpc_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
+    timeout_s = min(8.0, max(2.0, float(getattr(args, "chain_observation_timeout_s", DEFAULT_CHAIN_OBSERVATION_TIMEOUT_S))))
+    checks: list[dict[str, Any]] = []
+    for service in services:
+        host = hosts.get(service.host)
+        if host is None:
+            checks.append(
+                {
+                    "ok": False,
+                    "instance": service.id,
+                    "error": f"unknown host {service.host!r}",
+                }
+            )
+            continue
+        try:
+            url = rpc_public_entry_backend_url(plan, host, service)
+            chain_id = json_rpc(url, "eth_chainId", timeout_s=timeout_s, user_agent=rpc_user_agent)
+            checks.append(
+                {
+                    "ok": False,
+                    "instance": service.id,
+                    "url": url,
+                    "error": "retired RPC backend still responds to eth_chainId",
+                    "chain_id": chain_id,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - unreachable is the expected retired state.
+            checks.append(
+                {
+                    "ok": True,
+                    "instance": service.id,
+                    "url": rpc_public_entry_backend_url(plan, host, service) if host is not None else "",
+                    "unreachable": True,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    return {"ok": all(bool(item.get("ok")) for item in checks), "checks": checks}
+
+
 
 
 def operator_checks(plan: NetworkPlan) -> dict[str, Any]:

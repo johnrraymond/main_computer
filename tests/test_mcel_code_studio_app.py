@@ -609,6 +609,11 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "code-editor.monaco.mount.blocked",
             "code-editor.monaco.mount.exception",
             "code-editor.monaco.change.draft-only",
+            "code-editor.editorDraft.created.provenance",
+            "code-editor.editorDraft.changed.provenance",
+            "code-editor.editorDraft.committed.provenance",
+            "code-editor.editorDraft.discarded.provenance",
+            "code-editor.editorDraft.restored.provenance",
             "code-editor.commitDraft.source-gate",
             "code-editor.serialization.clean-source",
             "code-editor.layout.observe.pass",
@@ -617,6 +622,9 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "sourceUnchanged",
             "sourceWriteEffect",
             "sourceMutationGate",
+            "draftProvenanceEventType",
+            "draftRuntimeOnlyUntilCommit",
+            "sourceMutationsOnlyByCommitDraft",
             "txDraftNoSend",
             "repairBoundaryBlocked",
             "layoutViolationCount",
@@ -639,10 +647,54 @@ class McelCodeStudioAppTests(unittest.TestCase):
         harness_start = script.index("function runScmRegressionHarness")
         wallet_scenario = script.index("generic.wallet-fixtures", harness_start)
         editor_scenario = script.index("generic.code-editor-fixtures", harness_start)
+        provenance_scenario = script.index("editorDraft.provenance-boundary", harness_start)
         replay_scenario = script.index("replay.snapshot-comparison", harness_start)
         self.assertLess(wallet_scenario, editor_scenario)
-        self.assertLess(editor_scenario, replay_scenario)
+        self.assertLess(editor_scenario, provenance_scenario)
+        self.assertLess(provenance_scenario, replay_scenario)
 
+
+    def test_code_studio_editor_draft_provenance_is_visible_and_commit_gated(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            "Draft Provenance",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_script = [
+            "SCM_DRAFT_PROVENANCE_VERSION",
+            "EDITOR_DRAFT_PROVENANCE_EFFECTS",
+            "function recordEditorDraftProvenance",
+            "function collectEditorDraftProvenanceSummary",
+            "function formatEditorDraftProvenanceDetail",
+            "function renderEditorDraftProvenanceInProofDock",
+            "code-studio-open-draft-provenance-detail",
+            "editorDraft.created",
+            "editorDraft.changed",
+            "editorDraft.restored",
+            "editorDraft.committed",
+            "editorDraft.discarded",
+            "sourceMutationGate: \"commitDraft\"",
+            "runtimeOnlyUntilCommit",
+            "serializationExcludedUntilCommit",
+            "sourceMutationsOnlyByCommitDraft",
+            "Draft provenance",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        record_fn = script.index("function recordEditorDraftProvenance")
+        update_fn = script.index("function updateRuntimeDraftFromEditor")
+        commit_fn = script.index("function commitRuntimeDraft")
+        self.assertLess(record_fn, update_fn)
+        self.assertLess(update_fn, commit_fn)
+        self.assertIn('recordEditorDraftProvenance("changed"', script[update_fn:commit_fn])
+        self.assertIn('recordEditorDraftProvenance("committed"', script[commit_fn:])
 
     def test_code_studio_layout_gate_uses_component_owned_viewport_metrics(self) -> None:
         script = SCRIPT_PATH.read_text(encoding="utf-8")
@@ -880,7 +932,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'data-code-studio-scm-ai-action="copy-helper"',
             'data-code-studio-scm-ai-action="copy-packet"',
             "Bottom Proof Dock",
-            "Diagnostics · Evidence Detail · Replay · Serialization · Persistence · Logs",
+            "Diagnostics · Evidence Detail · Replay · Draft Provenance · Serialization · Persistence · Logs",
         ]
         for text in expected_markup:
             with self.subTest(markup=text):

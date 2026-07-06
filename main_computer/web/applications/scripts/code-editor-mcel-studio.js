@@ -49,6 +49,7 @@
       const SCM_REPLAY_SNAPSHOT_VERSION = "1.0.0";
       const SCM_REGRESSION_HARNESS_VERSION = "1.0.0";
       const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.0.0";
+      const SCM_DRAFT_PROVENANCE_VERSION = "1.0.0";
       const SCM_CONTRACT_AUTHORING_HELPER_VERSION = "1.0.0";
       const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
       const MONACO_RUNTIME_EFFECTS = [
@@ -57,6 +58,13 @@
         "editor.monaco.change",
         "editor.monaco.layoutObserved",
         "editor.monaco.dispose"
+      ];
+      const EDITOR_DRAFT_PROVENANCE_EFFECTS = [
+        "editorDraft.created",
+        "editorDraft.changed",
+        "editorDraft.restored",
+        "editorDraft.committed",
+        "editorDraft.discarded"
       ];
       const LIVE_WORKSPACE_PERSISTENCE_KEY = "main-computer-code-studio-live-workspace-v1";
       const MCEL_RUNTIME_PACKAGE_VERSION = "mcel-runtime.v0.1.15";
@@ -166,6 +174,14 @@
         monacoRuntimeReceipts: [],
         lastMonacoRuntimeReceipt: null,
         lastMonacoRuntimeEffectGate: null,
+        editorDraftProvenance: {
+          currentDraftId: "",
+          currentDraftKey: "",
+          sequence: 0,
+          events: []
+        },
+        lastEditorDraftProvenanceReceipt: null,
+        lastEditorDraftProvenanceEffectGate: null,
       };
 
       let scmInstance = null;
@@ -1433,6 +1449,15 @@
             probeStatus: {nonce: "", gasEstimate: "", ethCall: ""},
             raw: null
           },
+          draftProvenance: {
+            status: "not-observed",
+            activeDraftId: "",
+            eventType: "",
+            sourceMutationGate: "commitDraft",
+            runtimeOnlyUntilCommit: true,
+            sourceMutationsOnlyByCommitDraft: true,
+            events: []
+          },
           layoutObservation: {
             kind: "",
             source: "",
@@ -1770,6 +1795,144 @@
         };
       }
 
+      function editorDraftProvenanceEffectName(eventType = "changed") {
+        const normalized = String(eventType || "changed").trim();
+        const effectName = `editorDraft.${normalized}`;
+        return EDITOR_DRAFT_PROVENANCE_EFFECTS.includes(effectName) ? effectName : "editorDraft.changed";
+      }
+
+      function selectedEditorDraftSourceSnapshot(fields = workspaceFields()) {
+        const file = selectedFile(fields);
+        const sourceText = file?.value || "";
+        return {
+          selectedPath: file?.path || studioState.selectedPath || "",
+          selectedFileId: selectedScmFileId(fields),
+          language: file?.language || "plaintext",
+          sourceHash: hashRegressionString(sourceText),
+          sourceLength: sourceText.length
+        };
+      }
+
+      function runEditorDraftProvenanceScmEffect(receipt) {
+        const effectName = receipt?.effect || editorDraftProvenanceEffectName(receipt?.eventType);
+        return runScmGate(`effect:${effectName}`, (mcel, instance) => mcel.runEffect(instance, effectName, receipt));
+      }
+
+      function recordEditorDraftProvenance(eventType = "changed", context = {}) {
+        const fields = workspaceFields();
+        const sourceSnapshot = selectedEditorDraftSourceSnapshot(fields);
+        const text = String(context.text ?? runtimePreview.querySelector("#code-studio-runtime-draft")?.value ?? "");
+        const effect = editorDraftProvenanceEffectName(eventType);
+        const sequence = (studioState.editorDraftProvenance.sequence || 0) + 1;
+        const baseSourceHash = context.baseSourceHash || sourceSnapshot.sourceHash;
+        const draftKey = context.draftKey || `${sourceSnapshot.selectedPath || "unknown"}@${baseSourceHash}`;
+        const draftId = context.draftId
+          || studioState.editorDraftProvenance.currentDraftId
+          || `editor-draft:${draftKey}`;
+        const sourceChanged = context.sourceChanged === true;
+        const receipt = jsonSafeClone({
+          kind: "mcel-code-studio-editor-draft-provenance-receipt",
+          provenanceVersion: SCM_DRAFT_PROVENANCE_VERSION,
+          eventId: `editor-draft-provenance-${String(sequence).padStart(4, "0")}`,
+          eventType: String(eventType || "changed"),
+          effect,
+          actionOutcome: "pass",
+          governanceOutcome: "pass",
+          safetyOutcome: "pass",
+          origin: context.origin || "runtime-editor",
+          draftId,
+          draftKey,
+          selectedPath: sourceSnapshot.selectedPath,
+          selectedFileId: sourceSnapshot.selectedFileId,
+          language: sourceSnapshot.language,
+          sourceSnapshotHash: baseSourceHash,
+          sourceSnapshotLength: sourceSnapshot.sourceLength,
+          beforeSourceHash: context.beforeSourceHash || baseSourceHash,
+          afterSourceHash: context.afterSourceHash || (sourceChanged ? hashRegressionString(sourceEditor.value || "") : baseSourceHash),
+          draftHash: hashRegressionString(text),
+          textLength: text.length,
+          sourceChanged,
+          sourceMutationGate: "commitDraft",
+          runtimeOnlyUntilCommit: effect !== "editorDraft.committed",
+          serializationExcludedUntilCommit: effect !== "editorDraft.committed",
+          declaredReads: context.declaredReads || [
+            "source.workspace.files",
+            "state.activeFileId",
+            "runtime.editorDraft",
+            "runtime.evidenceStrip"
+          ],
+          declaredWrites: context.declaredWrites || (effect === "editorDraft.committed"
+            ? ["source.workspace.files", "state.drafts", "state.dirty", "runtime.editorDraftProvenance", "runtime.evidenceStrip"]
+            : ["runtime.editorDraft", "runtime.editorDraftProvenance", "state.drafts", "state.dirty", "runtime.evidenceStrip"]),
+          forbiddenWrites: effect === "editorDraft.committed" ? [] : ["source.workspace.files"],
+          nextAction: context.nextAction || (effect === "editorDraft.committed" ? "render committed source" : "commit draft or discard draft")
+        });
+
+        studioState.editorDraftProvenance.sequence = sequence;
+        studioState.editorDraftProvenance.currentDraftId = effect === "editorDraft.committed" || effect === "editorDraft.discarded" ? "" : draftId;
+        studioState.editorDraftProvenance.currentDraftKey = effect === "editorDraft.committed" || effect === "editorDraft.discarded" ? "" : draftKey;
+        studioState.editorDraftProvenance.events = [
+          ...studioState.editorDraftProvenance.events.slice(-31),
+          receipt
+        ];
+        studioState.lastEditorDraftProvenanceReceipt = receipt;
+        studioState.lastEditorDraftProvenanceEffectGate = runEditorDraftProvenanceScmEffect(receipt);
+        return receipt;
+      }
+
+      function ensureEditorDraftProvenanceCreated(file, draft, context = {}) {
+        if (!file || !draft) return null;
+        const sourceHash = hashRegressionString(file.value || "");
+        const draftKey = `${file.path || studioState.selectedPath || "unknown"}@${sourceHash}`;
+        if (studioState.editorDraftProvenance.currentDraftKey === draftKey && studioState.lastEditorDraftProvenanceReceipt?.eventType !== "discarded") {
+          return studioState.lastEditorDraftProvenanceReceipt;
+        }
+        return recordEditorDraftProvenance("created", {
+          origin: context.origin || "runtime-render",
+          text: draft.value,
+          baseSourceHash: sourceHash,
+          draftKey,
+          declaredWrites: ["runtime.editorDraft", "runtime.editorDraftProvenance", "runtime.evidenceStrip"],
+          nextAction: "edit runtime draft"
+        });
+      }
+
+      function collectEditorDraftProvenanceSummary() {
+        const events = studioState.editorDraftProvenance.events || [];
+        const sourceMutationsOnlyByCommitDraft = events.every((event) => !event.sourceChanged || event.effect === "editorDraft.committed" && event.sourceMutationGate === "commitDraft");
+        const uncommittedDraftsRuntimeOnly = events.every((event) => event.effect === "editorDraft.committed" || event.runtimeOnlyUntilCommit !== false);
+        return jsonSafeClone({
+          kind: "mcel-code-studio-editor-draft-provenance-summary",
+          provenanceVersion: SCM_DRAFT_PROVENANCE_VERSION,
+          activeDraftId: studioState.editorDraftProvenance.currentDraftId || "",
+          activeDraftKey: studioState.editorDraftProvenance.currentDraftKey || "",
+          totalEvents: events.length,
+          lastEvent: studioState.lastEditorDraftProvenanceReceipt,
+          recentEvents: events.slice(-8),
+          declaredEffects: [...EDITOR_DRAFT_PROVENANCE_EFFECTS],
+          sourceMutationGate: "commitDraft",
+          invariants: {
+            sourceMutationsOnlyByCommitDraft,
+            uncommittedDraftsRuntimeOnly,
+            serializationExcludedUntilCommit: events.every((event) => event.effect === "editorDraft.committed" || event.serializationExcludedUntilCommit !== false)
+          }
+        });
+      }
+
+      function formatEditorDraftProvenanceDetail(summary = collectEditorDraftProvenanceSummary()) {
+        return {
+          kind: summary.kind,
+          provenanceVersion: summary.provenanceVersion,
+          sourceMutationGate: summary.sourceMutationGate,
+          activeDraftId: summary.activeDraftId,
+          totalEvents: summary.totalEvents,
+          invariants: summary.invariants,
+          declaredEffects: summary.declaredEffects,
+          lastEvent: summary.lastEvent,
+          recentEvents: summary.recentEvents
+        };
+      }
+
       function buildGenericScmReplayFixtureVector(fields = {}) {
         const actionOutcome = normalizeReceiptOutcome(fields.actionOutcome, "waiting");
         const externalOutcome = normalizeReceiptExternalOutcome(fields.externalOutcome || {status: actionOutcome});
@@ -1806,6 +1969,15 @@
             noSend: false,
             probeStatus: {nonce: "", gasEstimate: "", ethCall: ""},
             raw: null
+          },
+          draftProvenance: fields.draftProvenance || {
+            status: "not-observed",
+            activeDraftId: "",
+            eventType: "",
+            sourceMutationGate: "commitDraft",
+            runtimeOnlyUntilCommit: true,
+            sourceMutationsOnlyByCommitDraft: true,
+            events: []
           },
           layoutObservation: fields.layoutObservation || {
             kind: "",
@@ -2194,6 +2366,173 @@
             }
           },
           {
+            id: "code-editor.editorDraft.created.provenance",
+            family: "code-editor",
+            label: "editorDraft created provenance records source snapshot hash and remains runtime-only",
+            receipt: vector({
+              selectedEffect: "editorDraft.created",
+              selectedEffectCategory: "draft-provenance",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "runtime-draft-created", provider: "code-studio"},
+              declaredReads: ["source.workspace.files", "state.activeFileId"],
+              declaredWrites: ["runtime.editorDraft", "runtime.editorDraftProvenance", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.editorDraft provenance created", "source unchanged"],
+              nextAction: "edit runtime draft",
+              draftProvenance: {
+                status: "created",
+                activeDraftId: "editor-draft:src/app.js@fnv1a-fixture",
+                eventType: "created",
+                sourceMutationGate: "commitDraft",
+                runtimeOnlyUntilCommit: true,
+                sourceMutationsOnlyByCommitDraft: true,
+                events: ["created"]
+              }
+            }),
+            expected: {
+              selectedEffect: "editorDraft.created",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              draftProvenanceEventType: "created",
+              draftRuntimeOnlyUntilCommit: true,
+              sourceMutationsOnlyByCommitDraft: true,
+              declaredWritesContain: ["runtime.editorDraftProvenance", "runtime.evidenceStrip"]
+            }
+          },
+          {
+            id: "code-editor.editorDraft.changed.provenance",
+            family: "code-editor",
+            label: "editorDraft changed provenance proves Monaco/fallback edits remain runtime-only",
+            receipt: vector({
+              selectedEffect: "editorDraft.changed",
+              selectedEffectCategory: "draft-provenance",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "runtime-draft-changed", provider: "code-studio"},
+              declaredReads: ["runtime.editorDraft", "state.activeFileId"],
+              declaredWrites: ["runtime.editorDraft", "runtime.editorDraftProvenance", "state.drafts", "state.dirty", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.editorDraft updated", "state.dirty updated", "source unchanged"],
+              nextAction: "commit draft",
+              draftProvenance: {
+                status: "changed",
+                activeDraftId: "editor-draft:src/app.js@fnv1a-fixture",
+                eventType: "changed",
+                sourceMutationGate: "commitDraft",
+                runtimeOnlyUntilCommit: true,
+                sourceMutationsOnlyByCommitDraft: true,
+                events: ["created", "changed"]
+              }
+            }),
+            expected: {
+              selectedEffect: "editorDraft.changed",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              draftProvenanceEventType: "changed",
+              draftRuntimeOnlyUntilCommit: true,
+              sourceMutationsOnlyByCommitDraft: true,
+              declaredWritesContain: ["runtime.editorDraftProvenance", "state.dirty"]
+            }
+          },
+          {
+            id: "code-editor.editorDraft.committed.provenance",
+            family: "code-editor",
+            label: "editorDraft committed provenance allows the only source mutation through commitDraft",
+            receipt: vector({
+              selectedEffect: "editorDraft.committed",
+              selectedEffectCategory: "draft-provenance",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "commit-draft-source-gate", provider: "code-studio"},
+              declaredReads: ["source.workspace.files", "state.drafts", "state.activeFileId", "runtime.editorDraftProvenance"],
+              declaredWrites: ["source.workspace.files", "state.drafts", "state.dirty", "runtime.editorDraftProvenance", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.editorDraft committed", "source changed through commitDraft"],
+              nextAction: "render committed source",
+              draftProvenance: {
+                status: "committed",
+                activeDraftId: "",
+                eventType: "committed",
+                sourceMutationGate: "commitDraft",
+                runtimeOnlyUntilCommit: false,
+                sourceMutationsOnlyByCommitDraft: true,
+                events: ["created", "changed", "committed"]
+              },
+              checks: {sourceMutationGate: "commitDraft"}
+            }),
+            expected: {
+              selectedEffect: "editorDraft.committed",
+              actionOutcome: "pass",
+              sourceWriteEffect: true,
+              sourceMutationGate: "commitDraft",
+              draftProvenanceEventType: "committed",
+              sourceMutationsOnlyByCommitDraft: true,
+              declaredWritesContain: ["source.workspace.files", "runtime.editorDraftProvenance"]
+            }
+          },
+          {
+            id: "code-editor.editorDraft.discarded.provenance",
+            family: "code-editor",
+            label: "editorDraft discarded provenance closes the runtime draft without mutating source",
+            receipt: vector({
+              selectedEffect: "editorDraft.discarded",
+              selectedEffectCategory: "draft-provenance",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "draft-discarded", provider: "code-studio"},
+              declaredReads: ["runtime.editorDraft", "runtime.editorDraftProvenance"],
+              declaredWrites: ["runtime.editorDraft", "runtime.editorDraftProvenance", "state.drafts", "state.dirty", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.editorDraft discarded", "state.dirty cleared", "source unchanged"],
+              nextAction: "render source draft",
+              draftProvenance: {
+                status: "discarded",
+                activeDraftId: "",
+                eventType: "discarded",
+                sourceMutationGate: "commitDraft",
+                runtimeOnlyUntilCommit: true,
+                sourceMutationsOnlyByCommitDraft: true,
+                events: ["created", "changed", "discarded"]
+              }
+            }),
+            expected: {
+              selectedEffect: "editorDraft.discarded",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              draftProvenanceEventType: "discarded",
+              sourceMutationsOnlyByCommitDraft: true
+            }
+          },
+          {
+            id: "code-editor.editorDraft.restored.provenance",
+            family: "code-editor",
+            label: "editorDraft restored provenance marks replay/restore origin without making source durable",
+            receipt: vector({
+              selectedEffect: "editorDraft.restored",
+              selectedEffectCategory: "draft-provenance",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "draft-restored-from-replay", provider: "code-studio"},
+              declaredReads: ["runtime.editorDraftProvenance", "runtime.replaySnapshot"],
+              declaredWrites: ["runtime.editorDraft", "runtime.editorDraftProvenance", "state.drafts", "state.dirty", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.editorDraft restored", "source unchanged"],
+              nextAction: "inspect restored draft",
+              draftProvenance: {
+                status: "restored",
+                activeDraftId: "editor-draft:src/app.js@fnv1a-fixture",
+                eventType: "restored",
+                sourceMutationGate: "commitDraft",
+                runtimeOnlyUntilCommit: true,
+                sourceMutationsOnlyByCommitDraft: true,
+                events: ["restored"]
+              }
+            }),
+            expected: {
+              selectedEffect: "editorDraft.restored",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              draftProvenanceEventType: "restored",
+              draftRuntimeOnlyUntilCommit: true,
+              sourceMutationsOnlyByCommitDraft: true
+            }
+          },
+          {
             id: "code-editor.commitDraft.source-gate",
             family: "code-editor",
             label: "commitDraft is the only fixture that may write source.workspace.files",
@@ -2353,6 +2692,14 @@
             boundary: vector.txDraftBoundary?.boundary || "",
             noSend: vector.txDraftBoundary?.noSend === true
           },
+          draftProvenance: {
+            status: vector.draftProvenance?.status || "",
+            eventType: vector.draftProvenance?.eventType || "",
+            sourceMutationGate: vector.draftProvenance?.sourceMutationGate || "",
+            runtimeOnlyUntilCommit: vector.draftProvenance?.runtimeOnlyUntilCommit !== false,
+            sourceMutationsOnlyByCommitDraft: vector.draftProvenance?.sourceMutationsOnlyByCommitDraft !== false,
+            events: vector.draftProvenance?.events || []
+          },
           layoutObservation: {
             measured: vector.layoutObservation?.measured === true,
             violations: vector.layoutObservation?.violations || [],
@@ -2420,6 +2767,15 @@
         }
         if (expected.txDraftNoSend === true && vector.txDraftBoundary?.noSend !== true) {
           failures.push("txDraftBoundary.noSend was not true");
+        }
+        if (expected.draftProvenanceEventType && vector.draftProvenance?.eventType !== expected.draftProvenanceEventType) {
+          failures.push(`draftProvenance.eventType expected ${expected.draftProvenanceEventType} but saw ${vector.draftProvenance?.eventType || "(empty)"}`);
+        }
+        if (expected.draftRuntimeOnlyUntilCommit === true && vector.draftProvenance?.runtimeOnlyUntilCommit === false) {
+          failures.push("draft provenance was not runtime-only until commit");
+        }
+        if (expected.sourceMutationsOnlyByCommitDraft === true && vector.draftProvenance?.sourceMutationsOnlyByCommitDraft === false) {
+          failures.push("draft provenance allowed a source mutation outside commitDraft");
         }
         if (expected.repairPacketGenerated === true && vector.repairPacket?.generated !== true) {
           failures.push("repair packet was not marked generated");
@@ -2564,11 +2920,39 @@
           };
         });
 
-        add("generic.code-editor-fixtures", "Replay deterministic Code Studio and Monaco receipt fixtures through the generic vector contract", () => {
+        add("generic.code-editor-fixtures", "Replay deterministic Code Studio, Monaco, and editorDraft provenance fixtures through the generic vector contract", () => {
           const fixturePack = runGenericScmReplayFixturePack({family: "code-editor"});
           return {
             ok: fixturePack.ok,
             fixturePack
+          };
+        });
+
+        add("editorDraft.provenance-boundary", "Record draft provenance without allowing an uncommitted draft to mutate source", () => {
+          const fields = workspaceFields();
+          const file = selectedFile(fields);
+          renderRuntime();
+          const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
+          const baseline = collectEditorDraftProvenanceSummary();
+          const changed = recordEditorDraftProvenance("changed", {
+            origin: "regression-harness",
+            text: `${draft?.value || file?.value || ""}\n// draft provenance probe`,
+            nextAction: "discard probe draft"
+          });
+          const discarded = recordEditorDraftProvenance("discarded", {
+            origin: "regression-harness",
+            text: `${draft?.value || file?.value || ""}\n// draft provenance probe`,
+            nextAction: "restore clean source draft"
+          });
+          const summary = collectEditorDraftProvenanceSummary();
+          return {
+            ok: summary.invariants.sourceMutationsOnlyByCommitDraft
+              && summary.invariants.uncommittedDraftsRuntimeOnly
+              && changed.effect === "editorDraft.changed"
+              && discarded.effect === "editorDraft.discarded",
+            beforeEvents: baseline.totalEvents,
+            afterEvents: summary.totalEvents,
+            summary
           };
         });
 
@@ -2631,7 +3015,8 @@
             lastReceipt: studioState.lastMonacoRuntimeReceipt,
             recentReceipts: studioState.monacoRuntimeReceipts.slice(-5),
             declaredEffects: [...MONACO_RUNTIME_EFFECTS]
-          }
+          },
+          draftProvenance: collectEditorDraftProvenanceSummary()
         });
 
         studioState.lastScmRegressionHarness = harness;
@@ -2668,6 +3053,7 @@
           failed: harness.failed,
           sourceSafety: harness.sourceSafety,
           monaco: harness.monaco,
+          draftProvenance: harness.draftProvenance,
           fixturePacks: harness.fixturePacks || [],
           scenarios: harness.scenarios.map((scenario) => ({
             id: scenario.id,
@@ -3658,6 +4044,7 @@
         const selectedEvidence = resolveSelectedScmEvidence(summary, filter, entries);
         const contractAuthoring = studioState.lastScmContractAuthoringExport || studioState.lastScmContractAuthoringHelper || null;
         const replayComparison = studioState.lastScmReplaySnapshotComparison;
+        const draftProvenance = collectEditorDraftProvenanceSummary();
         const receiptSurface = buildScmReceiptSurfaceModel(summary, gates, fields, selectedEvidence, persistence, replayComparison, contractAuthoring);
 
         return {
@@ -3693,6 +4080,7 @@
             ["Selected path", selected?.path || studioState.selectedPath || "none"],
             ["Files", `${fields.files.length}`],
             ["Dirty state", studioState.dirty ? "dirty" : "clean"],
+            ["Draft provenance", `${draftProvenance.totalEvents} event(s) · ${draftProvenance.invariants.sourceMutationsOnlyByCommitDraft ? "commit-gated" : "needs inspection"}`],
             ["Mounted", studioState.mounted ? "mounted" : "not mounted"],
             ["Persistence", `${persistence.status || "not saved"}${persistence.savedAt ? ` · ${persistence.savedAt}` : ""}`],
             ["Route key", currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())],
@@ -3813,6 +4201,13 @@
         });
       }
 
+      function renderEditorDraftProvenanceInProofDock() {
+        return renderProofDockPayload("Draft provenance", formatEditorDraftProvenanceDetail(), {
+          kind: "draft-provenance",
+          action: "copy-draft-provenance"
+        });
+      }
+
       function renderContractHelperInProofDock() {
         const detail = studioState.lastScmContractAuthoringHelper
           ? formatScmContractAuthoringHelperDetail(studioState.lastScmContractAuthoringHelper)
@@ -3862,6 +4257,7 @@
               <button type="button" id="code-studio-open-scm-evidence-detail">Open evidence detail in proof dock</button>
               <button type="button" id="code-studio-open-scm-replay-detail">Open replay in proof dock</button>
               <button type="button" id="code-studio-open-scm-regression-detail">Open regression in proof dock</button>
+              <button type="button" id="code-studio-open-draft-provenance-detail">Open draft provenance in proof dock</button>
               <button type="button" id="code-studio-open-scm-contract-helper-detail">Open helper in proof dock</button>
               <button type="button" id="code-studio-export-scm-evidence-packet">Copy packet</button>
               <button type="button" id="code-studio-generate-scm-repair-prompt">Generate AI repair prompt</button>
@@ -3877,6 +4273,7 @@
             <span>violations <code>${summary.combined.violations}</code></span>
             <span>blocking <code>${summary.combined.blocking}</code></span>
             <span>regression <code>${studioState.lastScmRegressionHarness?.ok === false ? "fail" : studioState.lastScmRegressionHarness ? "ok" : "idle"}</code></span>
+            <span>draft provenance <code>${collectEditorDraftProvenanceSummary().invariants.sourceMutationsOnlyByCommitDraft ? "ok" : "fail"}</code></span>
             <span>layout <code>${gates.layout?.ok === false ? "fail" : "ok"}</code></span>
             <span>style <code>${gates.style?.ok === false ? "fail" : "ok"}</code></span>
             <span>route <code>${gates.route?.ok === false ? "fail" : "ok"}</code></span>
@@ -3920,6 +4317,10 @@
 
         scmEvidencePanel.querySelector("#code-studio-open-scm-contract-helper-detail")?.addEventListener("click", () => {
           renderContractHelperInProofDock();
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-open-draft-provenance-detail")?.addEventListener("click", () => {
+          renderEditorDraftProvenanceInProofDock();
         });
 
         scmEvidencePanel.querySelector("#code-studio-replay-scm-evidence")?.addEventListener("click", () => {
@@ -4089,6 +4490,11 @@
         studioState.dirty = true;
         studioState.damaged = false;
         runScmTransition("editDraft", {text: draft.value});
+        recordEditorDraftProvenance("changed", {
+          origin: context.origin === "monaco" ? "monaco" : "fallback",
+          text: draft.value,
+          nextAction: "commit draft"
+        });
         if (context.origin === "monaco") {
           recordMonacoRuntimeReceipt({
             effect: "editor.monaco.change",
@@ -4101,8 +4507,8 @@
         }
         setRuntimeLabel();
         setStatus(context.origin === "monaco"
-          ? "Monaco draft changed through SCM editDraft. Source is still unchanged until Commit editor draft."
-          : "Runtime draft changed through SCM editDraft. Source is still unchanged until Commit editor draft.");
+          ? "Monaco draft changed through SCM editDraft and draft provenance. Source is still unchanged until Commit editor draft."
+          : "Runtime draft changed through SCM editDraft and draft provenance. Source is still unchanged until Commit editor draft.");
       }
 
       function mountRuntimeMonaco(file, draft) {
@@ -4244,6 +4650,7 @@
         });
         const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
         if (draft) {
+          ensureEditorDraftProvenanceCreated(file, draft, {origin: "runtime-render"});
           draft.addEventListener("input", () => updateRuntimeDraftFromEditor(draft, draft.value, {
             origin: "fallback",
             path: file?.path || studioState.selectedPath || "",
@@ -4431,6 +4838,7 @@
         const adapter = resolveMonacoAdapter();
         const monacoValue = adapter && typeof adapter.getValue === "function" ? adapter.getValue() : null;
         if (typeof monacoValue === "string") draft.value = monacoValue;
+        const beforeSourceHash = hashRegressionString(sourceEditor.value || "");
         const {doc, workspace} = parseSource();
         const file = selectedFile();
         if (!workspace || !file) {
@@ -4457,6 +4865,14 @@
         }
         target.textContent = draft.value;
         sourceEditor.value = workspace.outerHTML.trim();
+        recordEditorDraftProvenance("committed", {
+          origin: "commitDraft",
+          text: draft.value,
+          sourceChanged: true,
+          beforeSourceHash,
+          afterSourceHash: hashRegressionString(sourceEditor.value || ""),
+          nextAction: "render committed source"
+        });
         studioState.dirty = false;
         syncLineGutter();
         syncScmInstance();

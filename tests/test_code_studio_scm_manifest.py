@@ -126,7 +126,7 @@ process.stdout.write(JSON.stringify({{
     assert data["registered"] is True
     assert data["componentName"] == "CodeStudio"
     assert data["definitionName"] == "CodeStudio"
-    assert data["version"] == "2.10.0"
+    assert data["version"] == "2.11.0"
     assert data["contract"] == "mcel.scm.code-studio.v1"
     assert data["validation"]["ok"] is True
     assert data["owns"]["source"] == ["workspace.manifest", "workspace.files"]
@@ -142,6 +142,11 @@ process.stdout.write(JSON.stringify({{
         "editor.monaco.change",
         "editor.monaco.layoutObserved",
         "editor.monaco.dispose",
+        "editorDraft.created",
+        "editorDraft.changed",
+        "editorDraft.restored",
+        "editorDraft.committed",
+        "editorDraft.discarded",
     ]
     assert data["transitions"] == [
         "openFile",
@@ -157,6 +162,11 @@ process.stdout.write(JSON.stringify({{
         "editor.monaco.change",
         "editor.monaco.layoutObserved",
         "editor.monaco.dispose",
+        "editorDraft.created",
+        "editorDraft.changed",
+        "editorDraft.restored",
+        "editorDraft.committed",
+        "editorDraft.discarded",
         "loadWorkspace",
         "loadFile",
         "saveFile",
@@ -555,6 +565,75 @@ process.stdout.write(JSON.stringify({{
         assert all(not path.startswith("source.") for path in declared_writes), effect_name
 
 
+def test_code_studio_scm_editor_draft_provenance_effects_are_runtime_only_until_commit(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const instance = McelCodeStudioScm.createDefaultInstance({{mcel: MCEL}});
+const created = MCEL.runEffect(instance, "editorDraft.created", {{
+  eventType: "created",
+  origin: "runtime-render",
+  draftId: "draft-1",
+  selectedPath: "src/app.js",
+  selectedFileId: "src-app",
+  sourceSnapshotHash: "fnv1a-source",
+  draftHash: "fnv1a-draft",
+  textLength: 10
+}});
+const changed = MCEL.runEffect(instance, "editorDraft.changed", {{
+  eventType: "changed",
+  origin: "monaco",
+  draftId: "draft-1",
+  selectedPath: "src/app.js",
+  selectedFileId: "src-app",
+  sourceSnapshotHash: "fnv1a-source",
+  draftHash: "fnv1a-draft2",
+  textLength: 12
+}});
+const committed = MCEL.runEffect(instance, "editorDraft.committed", {{
+  eventType: "committed",
+  origin: "commitDraft",
+  draftId: "draft-1",
+  selectedPath: "src/app.js",
+  selectedFileId: "src-app",
+  sourceSnapshotHash: "fnv1a-source",
+  draftHash: "fnv1a-draft2",
+  textLength: 12,
+  sourceChanged: true,
+  sourceMutationGate: "commitDraft",
+  runtimeOnlyUntilCommit: false
+}});
+
+const packet = MCEL.exportScmEvidence(instance);
+
+process.stdout.write(JSON.stringify({{
+  results: [created.ok, changed.ok, committed.ok],
+  provenance: instance.runtime.editorDraftProvenance,
+  editorDraft: instance.runtime.editorDraft,
+  evidenceStrip: instance.runtime.evidenceStrip.map((entry) => entry.effect),
+  sourceFiles: instance.source.workspace.files.map((file) => file.text),
+  writeSets: packet.evidence
+    .filter((entry) => entry.phase === "effect-start" && String(entry.effectName).startsWith("editorDraft."))
+    .map((entry) => [entry.effectName, entry.declaredWrites])
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["results"] == [True, True, True]
+    assert data["provenance"]["activeDraftId"] == ""
+    assert data["provenance"]["sourceMutationGate"] == "commitDraft"
+    assert [entry for entry in data["evidenceStrip"] if entry.startswith("editorDraft.")] == [
+        "editorDraft.created",
+        "editorDraft.changed",
+        "editorDraft.committed",
+    ]
+    assert "console.log('hello from MCEL Code Studio');" in data["sourceFiles"]
+    for effect_name, declared_writes in data["writeSets"]:
+        if effect_name != "editorDraft.committed":
+            assert all(not path.startswith("source.") for path in declared_writes), effect_name
+
+
 def test_code_studio_scm_manifest_does_not_rewrite_existing_studio_behavior() -> None:
     script = _script("code-editor-scm-manifest.js")
 
@@ -581,7 +660,7 @@ process.stdout.write(JSON.stringify({{
 
     data = _run_node_json(tmp_path, script)
 
-    assert data["version"] == "2.10.0"
+    assert data["version"] == "2.11.0"
     assert data["layoutRoot"] == "#code-editor-app"
     assert data["layoutSlots"] == [
         "activitybar",
@@ -712,7 +791,7 @@ process.stdout.write(JSON.stringify({{
 
     data = _run_node_json(tmp_path, script)
 
-    assert data["version"] == "2.10.0"
+    assert data["version"] == "2.11.0"
     assert data["serializationSourceOwns"] == [
         "source.workspace.manifest",
         "source.workspace.files",

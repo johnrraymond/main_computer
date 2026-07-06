@@ -1,6 +1,6 @@
 var McelCodeStudioScm = (() => {
       const COMPONENT_NAME = "CodeStudio";
-      const COMPONENT_VERSION = "2.10.0";
+      const COMPONENT_VERSION = "2.11.0";
       const COMPONENT_CONTRACT = "mcel.scm.code-studio.v1";
       const ROUTE_NAME = "workspace.file";
       const ROUTE_VERSION = "1.1.0";
@@ -74,6 +74,12 @@ var McelCodeStudioScm = (() => {
             }
           },
           editorDraft: "",
+          editorDraftProvenance: {
+            activeDraftId: "",
+            events: [],
+            lastReceipt: null,
+            sourceMutationGate: "commitDraft"
+          },
           loadedFile: null,
           serializedOutput: "",
           validationReport: null,
@@ -119,6 +125,31 @@ var McelCodeStudioScm = (() => {
         };
       }
 
+      function normalizeEditorDraftProvenanceOutcome(event = {}, effectName = "editorDraft.changed") {
+        const actionOutcome = event.actionOutcome || (event.ok === false ? "blocked" : "pass");
+        return {
+          kind: event.kind || "mcel-code-studio-editor-draft-provenance-receipt",
+          effect: event.effect || effectName,
+          ok: event.ok !== false && actionOutcome !== "exception" && actionOutcome !== "blocked",
+          actionOutcome,
+          eventType: event.eventType || effectName.replace("editorDraft.", ""),
+          origin: event.origin || "runtime-editor",
+          draftId: event.draftId || "",
+          selectedPath: event.selectedPath || event.path || "",
+          selectedFileId: event.selectedFileId || "",
+          sourceSnapshotHash: event.sourceSnapshotHash || "",
+          draftHash: event.draftHash || "",
+          textLength: Number(event.textLength || 0),
+          sourceChanged: event.sourceChanged === true,
+          sourceMutationGate: event.sourceMutationGate || "commitDraft",
+          runtimeOnlyUntilCommit: event.runtimeOnlyUntilCommit !== false,
+          serializationExcludedUntilCommit: event.serializationExcludedUntilCommit !== false,
+          governanceOutcome: event.governanceOutcome || "pass",
+          safetyOutcome: event.safetyOutcome || "pass",
+          nextAction: event.nextAction || "inspect draft provenance"
+        };
+      }
+
       function appendEvidenceStrip(ctx, receipt) {
         const existing = ctx.get("runtime.evidenceStrip");
         const next = Array.isArray(existing) ? existing.slice(-11) : [];
@@ -142,6 +173,7 @@ var McelCodeStudioScm = (() => {
             "editor.chrome",
             "editor.monaco",
             "editorDraft",
+            "editorDraftProvenance",
             "loadedFile",
             "serializedOutput",
             "validationReport",
@@ -184,7 +216,12 @@ var McelCodeStudioScm = (() => {
             "editor.monaco.mount",
             "editor.monaco.change",
             "editor.monaco.layoutObserved",
-            "editor.monaco.dispose"
+            "editor.monaco.dispose",
+            "editorDraft.created",
+            "editorDraft.changed",
+            "editorDraft.restored",
+            "editorDraft.committed",
+            "editorDraft.discarded"
           ]
         },
 
@@ -203,7 +240,8 @@ var McelCodeStudioScm = (() => {
           "monacoMounted",
           "monacoDraftChanged",
           "monacoLayoutObserved",
-          "monacoDisposed"
+          "monacoDisposed",
+          "editorDraftProvenanceRecorded"
         ],
 
         children: {
@@ -387,6 +425,7 @@ var McelCodeStudioScm = (() => {
             "runtime.editor.chrome",
             "runtime.editor.monaco",
             "runtime.editorDraft",
+            "runtime.editorDraftProvenance",
             "runtime.loadedFile",
             "runtime.serializedOutput",
             "runtime.validationReport",
@@ -869,6 +908,247 @@ var McelCodeStudioScm = (() => {
               ctx.set("runtime.editor.monaco.mounted", false);
               ctx.set("runtime.editor.monaco.lastOutcome", result);
               ctx.set("runtime.externalOutcome", result);
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editorDraft.created": {
+            kind: "runtime-provenance",
+            triggers: [
+              "runtime.editorDraft"
+            ],
+            reads: [
+              "source.workspace.files",
+              "state.activeFileId",
+              "runtime.editorDraft",
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editorDraft",
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "code-studio-editor-draft",
+              operation: "created"
+            },
+            cancellation: "none",
+            racePolicy: "append-only",
+            errorPolicy: {
+              onFailure: "record-provenance-error",
+              retry: "manual"
+            },
+            run(_ctx, event) {
+              return normalizeEditorDraftProvenanceOutcome(event, "editorDraft.created");
+            },
+            commit(ctx, result) {
+              const current = ctx.get("runtime.editorDraftProvenance") || {};
+              const events = Array.isArray(current.events) ? current.events.slice(-11) : [];
+              events.push(cloneValue(result));
+              ctx.set("runtime.editorDraftProvenance", {
+                activeDraftId: result.draftId || "",
+                events,
+                lastReceipt: result,
+                sourceMutationGate: "commitDraft"
+              });
+              ctx.set("runtime.editorDraft", {
+                fileId: result.selectedFileId || null,
+                path: result.selectedPath || "",
+                textLength: result.textLength,
+                source: result.origin || "runtime-editor",
+                provenanceEvent: result.eventType
+              });
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editorDraft.changed": {
+            kind: "runtime-provenance",
+            triggers: [
+              "runtime.editorDraft"
+            ],
+            reads: [
+              "state.activeFileId",
+              "runtime.editorDraft",
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editorDraft",
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "code-studio-editor-draft",
+              operation: "changed"
+            },
+            cancellation: "none",
+            racePolicy: "same-draft-order",
+            errorPolicy: {
+              onFailure: "record-provenance-error",
+              retry: "manual"
+            },
+            run(_ctx, event) {
+              return normalizeEditorDraftProvenanceOutcome(event, "editorDraft.changed");
+            },
+            commit(ctx, result) {
+              const current = ctx.get("runtime.editorDraftProvenance") || {};
+              const events = Array.isArray(current.events) ? current.events.slice(-11) : [];
+              events.push(cloneValue(result));
+              ctx.set("runtime.editorDraftProvenance", {
+                activeDraftId: result.draftId || current.activeDraftId || "",
+                events,
+                lastReceipt: result,
+                sourceMutationGate: "commitDraft"
+              });
+              ctx.set("runtime.editorDraft", {
+                fileId: result.selectedFileId || null,
+                path: result.selectedPath || "",
+                textLength: result.textLength,
+                source: result.origin || "runtime-editor",
+                provenanceEvent: result.eventType
+              });
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editorDraft.restored": {
+            kind: "runtime-provenance",
+            triggers: [
+              "runtime.replaySnapshot"
+            ],
+            reads: [
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editorDraft",
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "code-studio-editor-draft",
+              operation: "restored"
+            },
+            cancellation: "none",
+            racePolicy: "explicit-restore",
+            errorPolicy: {
+              onFailure: "record-provenance-error",
+              retry: "manual"
+            },
+            run(_ctx, event) {
+              return normalizeEditorDraftProvenanceOutcome(event, "editorDraft.restored");
+            },
+            commit(ctx, result) {
+              const current = ctx.get("runtime.editorDraftProvenance") || {};
+              const events = Array.isArray(current.events) ? current.events.slice(-11) : [];
+              events.push(cloneValue(result));
+              ctx.set("runtime.editorDraftProvenance", {
+                activeDraftId: result.draftId || "",
+                events,
+                lastReceipt: result,
+                sourceMutationGate: "commitDraft"
+              });
+              ctx.set("runtime.editorDraft", {
+                fileId: result.selectedFileId || null,
+                path: result.selectedPath || "",
+                textLength: result.textLength,
+                source: result.origin || "restore",
+                provenanceEvent: result.eventType
+              });
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editorDraft.committed": {
+            kind: "runtime-provenance",
+            triggers: [
+              "state.drafts",
+              "state.dirty"
+            ],
+            reads: [
+              "source.workspace.files",
+              "state.drafts",
+              "state.activeFileId",
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "code-studio-editor-draft",
+              operation: "committed"
+            },
+            cancellation: "none",
+            racePolicy: "single-writer",
+            errorPolicy: {
+              onFailure: "record-provenance-error",
+              retry: "manual"
+            },
+            run(_ctx, event) {
+              return normalizeEditorDraftProvenanceOutcome(event, "editorDraft.committed");
+            },
+            commit(ctx, result) {
+              const current = ctx.get("runtime.editorDraftProvenance") || {};
+              const events = Array.isArray(current.events) ? current.events.slice(-11) : [];
+              events.push(cloneValue(result));
+              ctx.set("runtime.editorDraftProvenance", {
+                activeDraftId: "",
+                events,
+                lastReceipt: result,
+                sourceMutationGate: "commitDraft"
+              });
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editorDraft.discarded": {
+            kind: "runtime-provenance",
+            triggers: [
+              "runtime.editorDraft"
+            ],
+            reads: [
+              "runtime.editorDraft",
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editorDraft",
+              "runtime.editorDraftProvenance",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "code-studio-editor-draft",
+              operation: "discarded"
+            },
+            cancellation: "none",
+            racePolicy: "explicit-discard",
+            errorPolicy: {
+              onFailure: "record-provenance-error",
+              retry: "manual"
+            },
+            run(_ctx, event) {
+              return normalizeEditorDraftProvenanceOutcome(event, "editorDraft.discarded");
+            },
+            commit(ctx, result) {
+              const current = ctx.get("runtime.editorDraftProvenance") || {};
+              const events = Array.isArray(current.events) ? current.events.slice(-11) : [];
+              events.push(cloneValue(result));
+              ctx.set("runtime.editorDraftProvenance", {
+                activeDraftId: "",
+                events,
+                lastReceipt: result,
+                sourceMutationGate: "commitDraft"
+              });
+              ctx.set("runtime.editorDraft", "");
               appendEvidenceStrip(ctx, result);
               return result;
             }
