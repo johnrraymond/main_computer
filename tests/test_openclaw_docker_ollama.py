@@ -13,6 +13,8 @@ def test_openclaw_docker_ollama_artifacts_exist() -> None:
         "deploy/openclaw-docker/README.md",
         "scripts/start_openclaw_docker_for_ollama.ps1",
         "scripts/extract_openclaw_persistence.py",
+        "scripts/apply_openclaw_persistence.py",
+        "scripts/smoke_openclaw_persistence_pushback.py",
     ]
     for relative in expected:
         assert (REPO_ROOT / relative).is_file(), relative
@@ -78,10 +80,25 @@ def test_openclaw_docker_runner_writes_gateway_config_for_host_ollama() -> None:
     assert "[switch]$SkipRestartProof" in script
     assert "[switch]$ExtractMemory" in script
     assert "[string]$ExtractOutDir" in script
+    assert "[string]$ApplyMemoryExport" in script
+    assert "[switch]$ApplyMemoryDryRun" in script
+    assert "[switch]$ApplyMemoryForce" in script
+    assert "[string]$ApplyMemoryBackupDir" in script
+    assert "[switch]$PushbackSmoke" in script
+    assert "[string]$PushbackSmokeOutDir" in script
     assert "Invoke-HighFidelityMemoryExtract" in script
     assert "extract_openclaw_persistence.py" in script
+    assert "Invoke-OpenClawMemoryApply" in script
+    assert "Invoke-OpenClawPushbackSmoke" in script
+    assert "apply_openclaw_persistence.py" in script
+    assert "smoke_openclaw_persistence_pushback.py" in script
+    assert '"--restart-container"' in script
+    assert '"--container", "main-computer-openclaw-gateway"' in script
     assert '"--jsonl-out", $jsonlOut' in script
     assert '"--markdown-out", $markdownOut' in script
+    assert '"--verify-after"' in script
+    assert '"--skip-current-sha-check"' in script
+    assert "restarting OpenClaw container so the runtime sees the pushed-back memory files" in script
     assert '"--memory-root", $WorkspaceDir' in script
     assert '"--memory-root", $workspaceDir' in script
     assert '"--timeout", ([string]$SmokeTimeoutSeconds)' in script
@@ -140,6 +157,13 @@ def test_openclaw_docker_readme_documents_generated_state_outside_repo() -> None
     assert "High-fidelity memory extraction" in readme
     assert "extract_openclaw_persistence.py" in readme
     assert "SHA-256 hashes" in readme
+    assert "High-fidelity memory pushback" in readme
+    assert "Automated pushback smoke" in readme
+    assert "smoke_openclaw_persistence_pushback.py" in readme
+    assert "-PushbackSmoke" in readme
+    assert "apply_openclaw_persistence.py" in readme
+    assert "-ApplyMemoryExport" in readme
+    assert "expected-current" in readme
 
 def test_openclaw_persistence_smoke_can_run_single_write_turn() -> None:
     smoke = (REPO_ROOT / "scripts/smoke_openclaw_persistence.py").read_text(encoding="utf-8")

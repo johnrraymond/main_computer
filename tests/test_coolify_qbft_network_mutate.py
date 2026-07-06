@@ -111,6 +111,38 @@ def test_private_state_rpc_only_instance_does_not_require_p2p_host_port(tmp_path
     assert packet["affected_public_rpc_entry_hosts"] == ["b"]
 
 
+def test_validator_static_enodes_use_published_host_p2p_address(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan(
+        "testnet",
+        private_state_path=write_mutation_private_state(tmp_path),
+        instances=["validator-rpc-1"],
+    )
+    validator = module.planned_service_by_id(plan)["validator-rpc-1"]
+
+    assert module.validator_static_enode_endpoint(validator) == "198.51.100.10:30321"
+
+    bootstrap = module.render_bootstrap_shell(plan)
+
+    assert "@198.51.100.10:30321" in bootstrap
+    assert "@172.28.241.11:30303" not in bootstrap
+    assert "refresh_static_runtime_config" in bootstrap
+    assert "refreshing static enodes" in bootstrap
+
+
+def test_validator_p2p_port_is_published_even_single_selected_source_instance(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan(
+        "testnet",
+        private_state_path=write_mutation_private_state(tmp_path),
+        instances=["validator-rpc-1"],
+    )
+
+    compose = module.render_compose_for_host(plan, "a")
+
+    assert '"0.0.0.0:30321:30303"' in compose
+
+
 def test_mutate_add_validator_plan_is_read_only_and_names_host_service(tmp_path: Path) -> None:
     module = _load_module()
     plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
@@ -319,15 +351,16 @@ def test_qbft_config_exporter_scans_prefixed_host_volume_legacy_volume_and_bind_
         volume_prefixes=["pr243zs9jmd4des9tlonk7dq"],
     )
 
-    assert "source: coolify-prefixed-managed-host-volume-1" in compose
+    assert "/var/lib/docker/volumes/pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime/_data" in compose
     assert "target: /sources/coolify-prefixed-managed-host-volume-1" in compose
-    assert "external: true" in compose
-    assert "name: pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime" in compose
-    assert "kxvx3i5wuiyu2nfiqmhx7cqd_pr243zs9jmd4des9tlonk7dq-main-computer-qbft-testnet-a-runtime" not in compose
+    assert "create_host_path: false" in compose
+    assert "main-computer-qbft-testnet-a-runtime:/sources/managed-host-volume:ro" not in compose
+    assert "kxvx3i5wuiyu2nfiqmhx7cqd_coolify-prefixed-managed-host-volume-1" not in compose
     assert 'source: "/srv/main-computer/qbft-testnet/runtime"' in compose
     assert "target: /sources/host-runtime-root" in compose
     assert "python:3.12-alpine" in compose
     assert "python3 -m http.server 8080 --bind 0.0.0.0" in compose
+    assert "/serve$$PUBLIC_EXPORT_PATH" in compose
     assert "busybox httpd" not in compose
     assert "files_b64" in compose
 
@@ -342,12 +375,12 @@ def test_qbft_config_export_mount_sources_prefers_coolify_service_uuid_prefix(tm
         volume_prefixes=["pr243zs9jmd4des9tlonk7dq"],
     )
 
-    assert sources[0]["source"] == "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime"
+    assert sources[0]["source"] == "/var/lib/docker/volumes/pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime/_data"
+    assert sources[0]["display_source"] == "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime"
+    assert sources[0]["kind"] == "bind-existing"
     assert sources[0]["target"] == "/sources/coolify-prefixed-managed-host-volume-1"
-    assert sources[0]["compose_source"] == "coolify-prefixed-managed-host-volume-1"
-    assert sources[0]["external_volume"] == "true"
-    assert not any(source["source"] == "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-runtime" for source in sources)
     assert not any(source["source"] == "main-computer-qbft-testnet-a-runtime" for source in sources)
+    assert any(source["source"] == "/srv/main-computer/qbft-testnet/runtime" for source in sources)
 
 
 def test_candidate_config_source_hosts_prefer_non_mutated_hosts(tmp_path: Path) -> None:
@@ -426,12 +459,12 @@ def test_render_compose_for_host_can_add_config_export_sidecar(tmp_path: Path) -
         plan,
         "a",
         include_bootstrap=False,
-        config_export={"token": "tok", "port": 38173},
+        config_export={"token": "tok", "port": 38173, "volume_prefixes": ["pr243zs9jmd4des9tlonk7dq"]},
     )
 
     assert "qbft-config-export:" in compose
     assert '"0.0.0.0:38173:8080"' in compose
-    assert "main-computer-qbft-testnet-a-runtime:/sources/managed-host-volume:ro" in compose
+    assert "/var/lib/docker/volumes/pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime/_data" in compose
     assert "Path(`/__main-computer/qbft-config/tok.json`)" in compose
 
 
@@ -492,7 +525,7 @@ def test_export_qbft_config_from_host_via_public_entry_redeploys_source_and_clea
     assert "qbft-config-export-public-entry-cleanup:" in sync_calls[1][1]._compose_override
 
 
-def test_export_qbft_config_from_host_via_public_entry_keeps_exporter_on_bad_bundle(
+def test_export_qbft_config_from_host_via_public_entry_keeps_exporter_on_invalid_bundle(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     module = _load_module()
@@ -504,9 +537,6 @@ def test_export_qbft_config_from_host_via_public_entry_keeps_exporter_on_bad_bun
 
     def fake_coolify_sync(sync_plan: Any, sync_args: Any, *, deploy: bool = False) -> dict[str, Any]:
         sync_calls.append((sync_plan, sync_args, deploy))
-        assert sync_plan is plan
-        assert sync_args.coolify_service_name == "main-computer-qbft-testnet-a-config-export"
-        assert deploy is True
         return {"ok": True, "service_name": sync_args.coolify_service_name}
 
     def fake_fetch_json_url(
@@ -520,6 +550,7 @@ def test_export_qbft_config_from_host_via_public_entry_keeps_exporter_on_bad_bun
             "ok": False,
             "source_mount": "",
             "missing_files": ["coolify-prefixed-managed-host-volume-1:/smoke/genesis.json"],
+            "files_b64": {},
             "sha256": {},
         }
 
@@ -530,12 +561,9 @@ def test_export_qbft_config_from_host_via_public_entry_keeps_exporter_on_bad_bun
     result = module.export_qbft_config_from_host_via_public_entry(plan, _args(), "a")
 
     assert result["ok"] is False
-    assert result["cleanup"]["skipped"] is True
-    assert "leaving exporter deployed" in result["cleanup"]["reason"]
-    assert result["inspection"]["direct_local_url"] == "http://127.0.0.1:38173/tok.json"
+    assert result["cleanup_skipped"]["reason"] == "config-export-left-running-until-bundle-ok"
     assert len(sync_calls) == 1
     assert "qbft-config-export-public-entry:" in sync_calls[0][1]._compose_override
-    assert "qbft-config-export-public-entry-cleanup:" not in sync_calls[0][1]._compose_override
 
 
 def test_normalize_qbft_config_bundle_preserves_export_source_diagnostics(tmp_path: Path) -> None:

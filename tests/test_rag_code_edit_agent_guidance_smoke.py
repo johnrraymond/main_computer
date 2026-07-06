@@ -950,6 +950,74 @@ def test_agent_verification_failure_scenario_blocks_commit(
     assert "commit_created" not in report["contracts"]
 
 
+
+
+def test_generated_editor_verification_failure_scenario_reports_expected_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "generated-editor-verification-failure-agent"
+    run_dir.mkdir()
+    commands_path = run_dir / "commands.jsonl"
+    commands_path.write_text(
+        json.dumps({"type": "add_instruction", "text": "Do not modify README.md.", "id": "guidance-001"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER", "1")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "none")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "readonly")
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--role",
+            "agent",
+            "--agent",
+            "generated-editor",
+            "--scenario",
+            "verification_failure_blocks_commit",
+            "--run-id",
+            "generated-editor-verification-failure-test",
+            "--run-dir",
+            str(run_dir),
+            "--commands-path",
+            str(commands_path),
+            "--report-path",
+            str(run_dir / "report.json"),
+            "--guidance-window-seconds",
+            "0",
+            "--poll-seconds",
+            "0.01",
+        ]
+    )
+
+    assert smoke.run_agent(args) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    contracts = report["contracts"]
+    generated_editor = report["edit_result"]["generated_editor"]
+
+    assert report["scenario"] == "verification_failure_blocks_commit"
+    assert report["verification"]["ok"] is False
+    assert report["commit"]["created"] is False
+    assert report["commit"]["blocked_by_verification_failure"] is True
+    assert report["final_head"] == report["base_head"]
+    assert report["changed_files"] == ["app.py"]
+
+    assert contracts["generated_editor_present"] is True
+    assert contracts["generated_editor_sandbox_executed"] is True
+    assert contracts["generated_editor_output_matches_scenario_contract"] is True
+    assert contracts["verification_failed_as_expected"] is True
+    assert contracts["verification_failure_blocks_commit"] is True
+    assert contracts["commit_not_created_after_verification_failure"] is True
+    assert "deterministic_safe_apply_can_be_replaced_by_sandbox_apply" not in contracts
+
+    assert generated_editor["host_apply"]["changed_files"] == ["app.py"]
+    assert generated_editor["host_apply"]["after_sha256_by_path"]["app.py"] == smoke.text_sha256(
+        smoke.APP_PY_VERIFICATION_FAILURE_FINAL
+    )
+
+
 def test_scenario_matrix_orchestrates_initial_scenarios(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

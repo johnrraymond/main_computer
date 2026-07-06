@@ -1988,22 +1988,6 @@ def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argpar
     }
 
 
-
-
-def qbft_config_export_failure_inspection_hint(plan: NetworkPlan, host_id: str, *, token: str, port: int) -> dict[str, Any]:
-    """Return a small host-side inspection hint for a preserved config exporter."""
-
-    host_id = safe_id(host_id, kind="host")
-    service_name = qbft_config_export_service_name(plan, host_id)
-    return {
-        "service_name": service_name,
-        "container_name": f"qbft-config-export-<coolify-service-uuid-for-{service_name}>",
-        "token": token,
-        "direct_local_url": f"http://127.0.0.1:{port}/{token}.json",
-        "dynamic_config_path": qbft_config_export_dynamic_config_path(plan, host_id),
-        "note": "Config exporter cleanup was skipped so the Coolify host can be inspected before manual cleanup.",
-    }
-
 def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argparse.Namespace, host_id: str) -> dict[str, Any]:
     """Slurp QBFT config through a Coolify-managed temporary public-entry tool.
 
@@ -2140,13 +2124,11 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
         if result.get("ok"):
             result["cleanup"] = coolify_sync(plan, cleanup_args, deploy=True)
         else:
-            result["cleanup"] = {
-                "ok": True,
-                "skipped": True,
-                "reason": "config export returned an unusable bundle; leaving exporter deployed for inspection",
+            result["cleanup_skipped"] = {
+                "reason": "config-export-left-running-until-bundle-ok",
+                "message": "Temporary QBFT config-export was left deployed because the fetched bundle was not valid.",
                 "service_name": service_name,
             }
-            result["inspection"] = qbft_config_export_failure_inspection_hint(plan, host_id, token=token, port=port)
         return result
     return {
         "ok": False,
@@ -2158,13 +2140,11 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
         "source_service_lookup": source_service_lookup,
         "volume_prefixes": volume_prefixes,
         "sync": sync_result,
-        "cleanup": {
-            "ok": True,
-            "skipped": True,
-            "reason": "config export fetch timed out; leaving exporter deployed for inspection",
+        "cleanup_skipped": {
+            "reason": "config-export-left-running-after-fetch-timeout",
+            "message": "Temporary QBFT config-export was left deployed for host-side inspection.",
             "service_name": service_name,
         },
-        "inspection": qbft_config_export_failure_inspection_hint(plan, host_id, token=token, port=port),
         "fetch_candidates": [
             {key: value for key, value in candidate.items() if key != "headers"}
             for candidate in fetch_candidates
@@ -2710,6 +2690,20 @@ def coolify_prefixed_volume_name(prefix: str, volume_name: str) -> str:
     return f"{prefix}_{volume_name}"
 
 
+def validator_static_enode_endpoint(service: PlannedService) -> str:
+    """Return the peer address other hosts should use for a validator enode.
+
+    Container IPs only work inside one Docker bridge on one host.  Remote hosts
+    must use the Coolify host's reachable address and the published P2P port.
+    A validator without a published P2P port falls back to the container address
+    for local/single-host deployments.
+    """
+
+    if service.p2p_host_port is not None and service.p2p_advertise:
+        return service.p2p_advertise
+    return f"{service.container_ip}:{P2P_CONTAINER_PORT}"
+
+
 def render_json_heredoc(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=True)
 
@@ -2745,111 +2739,37 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
         raise PlanError("Cannot render bootstrap service without validators.")
 
     config = render_json_heredoc(qbft_config(plan))
-    lines: list[str] = [
-        "set -eu",
-        "echo \"Main Computer QBFT bootstrap starting for " + plan.name + "\"",
-        "mkdir -p /smoke",
-        f"EXPECTED_QBFT_VALIDATOR_COUNT={len(validators)}",
-        f"EXPECTED_QBFT_RPC_COUNT={len(rpc_nodes)}",
-        "REGENERATE_QBFT_TOPOLOGY=false",
-        "if [ -f /smoke/network-metadata.json ] && [ \"${QBFT_RESET_CHAIN:-false}\" != \"true\" ]; then",
-        "  EXISTING_QBFT_VALIDATOR_COUNT=$(grep -c '\"id\": \"validator-' /smoke/network-metadata.json || true)",
-        "  EXISTING_QBFT_RPC_COUNT=$(grep -c '\"id\": \"rpc-' /smoke/network-metadata.json || true)",
-        "  EXISTING_QBFT_METADATA_MATCH=false",
-        "  if grep -q '\"network\": \"" + plan.name + "\"' /smoke/network-metadata.json && grep -q '\"docker_network\": \"" + plan.docker_network + "\"' /smoke/network-metadata.json && grep -q '\"docker_subnet\": \"" + plan.docker_subnet + "\"' /smoke/network-metadata.json; then",
-        "    EXISTING_QBFT_METADATA_MATCH=true",
-        "  fi",
-        "  if [ \"$EXISTING_QBFT_METADATA_MATCH\" = \"true\" ] && [ \"$EXISTING_QBFT_VALIDATOR_COUNT\" = \"$EXPECTED_QBFT_VALIDATOR_COUNT\" ] && [ \"$EXISTING_QBFT_RPC_COUNT\" = \"$EXPECTED_QBFT_RPC_COUNT\" ]; then",
-        "    echo \"Existing QBFT network metadata matches desired topology; reusing persistent genesis/key material.\"",
-        "    exit 0",
-        "  fi",
-        "  if [ \"$EXISTING_QBFT_METADATA_MATCH\" = \"true\" ] && [ \"$EXISTING_QBFT_VALIDATOR_COUNT\" = \"$EXPECTED_QBFT_VALIDATOR_COUNT\" ] && [ \"$EXISTING_QBFT_RPC_COUNT\" = \"0\" ] && [ \"$EXPECTED_QBFT_RPC_COUNT\" != \"0\" ] && [ -f /smoke/genesis.json ] && [ -f /smoke/static-nodes-all.json ]; then",
-        "    echo \"Existing validator topology matches; adding dedicated RPC runtime material without regenerating validator keys.\"",
-    ]
-    for service in rpc_nodes:
-        runtime_dir = service_runtime_dir(service)
-        lines.extend(
-            [
-                f"    mkdir -p /smoke/{runtime_dir}/data",
-                f"    cp /smoke/static-nodes-all.json /smoke/{runtime_dir}/static-nodes.json",
-            ]
-        )
-    lines.extend(
-        [
-            "    tmp=/smoke/network-metadata.json.tmp",
-            "    head -n -1 /smoke/network-metadata.json > \"$tmp\"",
-            "    printf ',\\n' >> \"$tmp\"",
-            "    printf '  \"rpc_nodes\": [\\n' >> \"$tmp\"",
-        ]
-    )
-    for index, service in enumerate(rpc_nodes, start=1):
-        comma = "," if index < len(rpc_nodes) else ""
-        lines.append(f"    printf '    {{\"id\": \"{service.id}\", \"ip\": \"{service.container_ip}\"}}{comma}\\n' >> \"$tmp\"")
-    lines.extend(
-        [
-            "    printf '  ]\\n' >> \"$tmp\"",
-            "    printf '}\\n' >> \"$tmp\"",
-            "    mv \"$tmp\" /smoke/network-metadata.json",
-            "    exit 0",
-            "  fi",
-            "  echo \"Existing QBFT network metadata does not match desired topology; regenerating genesis/key material.\"",
-            "  REGENERATE_QBFT_TOPOLOGY=true",
-            "fi",
-            "if [ -f /smoke/genesis.json ] && [ \"${QBFT_RESET_CHAIN:-false}\" != \"true\" ] && [ \"$REGENERATE_QBFT_TOPOLOGY\" != \"true\" ]; then",
-            "  echo \"genesis.json exists but metadata is missing; refusing to guess state. Set QBFT_RESET_CHAIN=true to regenerate.\" >&2",
-            "  exit 23",
-            "fi",
-            "rm -rf /tmp/qbft-networkFiles /smoke/networkFiles",
-            "cat > /smoke/qbftConfigFile.json <<'JSON'",
-            config,
-            "JSON",
-            "if command -v besu >/dev/null 2>&1; then BESU=besu; else BESU=/opt/besu/bin/besu; fi",
-            "\"$BESU\" operator generate-blockchain-config --config-file=/smoke/qbftConfigFile.json --to=/tmp/qbft-networkFiles --private-key-file-name=key",
-            f"set -- $(find /tmp/qbft-networkFiles/keys -mindepth 1 -maxdepth 1 -type d | sort)",
-            f"if [ \"$#\" -ne {len(validators)} ]; then echo \"expected {len(validators)} validator key directories, got $#\" >&2; exit 24; fi",
-        ]
-    )
-    for index, _service in enumerate(validators, start=1):
-        lines.append(f"KEY_DIR_{index}=\"${index}\"")
-
-    lines.extend(
-        [
-            "normalize_pubkey() {",
-            "  pub=$(tr -d '\\r\\n ' < \"$1\")",
-            "  pub=${pub#0x}",
-            "  case \"$pub\" in 04*) if [ \"${#pub}\" -eq 130 ]; then pub=${pub#04}; fi;; esac",
-            "  case \"$pub\" in (*[!0-9a-fA-F]*|'') echo \"invalid public key in $1\" >&2; exit 25;; esac",
-            "  if [ \"${#pub}\" -ne 128 ]; then echo \"expected 128 hex chars in $1, got ${#pub}\" >&2; exit 26; fi",
-            "  printf '%s' \"$pub\"",
-            "}",
-        ]
-    )
-
-    for index, service in enumerate(validators, start=1):
-        lines.extend(
-            [
-                f"mkdir -p /smoke/{service.id}/data",
-                f"cp \"$KEY_DIR_{index}/key\" /smoke/{service.id}/data/key",
-                f"cp \"$KEY_DIR_{index}/key.pub\" /smoke/{service.id}/data/key.pub",
-                f"PUB_{index}=$(normalize_pubkey \"$KEY_DIR_{index}/key.pub\")",
-                f"ENODE_{index}=\"enode://${{PUB_{index}}}@{service.container_ip}:{P2P_CONTAINER_PORT}\"",
-            ]
-        )
-
     enode_names = [f"ENODE_{index}" for index in range(1, len(validators) + 1)]
-    lines.extend(render_static_nodes_shell(enode_names, "/smoke/static-nodes-all.json"))
-    for index, service in enumerate(validators, start=1):
-        lines.extend(render_static_nodes_shell(enode_names, f"/smoke/{service.id}/static-nodes.json", exclude=f"ENODE_{index}"))
 
+    refresh_lines: list[str] = [
+        "normalize_pubkey() {",
+        "  pub=$(tr -d '\\r\\n ' < \"$1\")",
+        "  pub=${pub#0x}",
+        "  case \"$pub\" in 04*) if [ \"${#pub}\" -eq 130 ]; then pub=${pub#04}; fi;; esac",
+        "  case \"$pub\" in (*[!0-9a-fA-F]*|'') echo \"invalid public key in $1\" >&2; exit 25;; esac",
+        "  if [ \"${#pub}\" -ne 128 ]; then echo \"expected 128 hex chars in $1, got ${#pub}\" >&2; exit 26; fi",
+        "  printf '%s' \"$pub\"",
+        "}",
+        "refresh_static_runtime_config() {",
+    ]
+    for index, service in enumerate(validators, start=1):
+        refresh_lines.extend(
+            [
+                f"  [ -f /smoke/{service.id}/data/key.pub ] || {{ echo \"missing validator public key for static enode refresh: /smoke/{service.id}/data/key.pub\" >&2; exit 27; }}",
+                f"  PUB_{index}=$(normalize_pubkey /smoke/{service.id}/data/key.pub)",
+                f"  ENODE_{index}=\"enode://${{PUB_{index}}}@{validator_static_enode_endpoint(service)}\"",
+            ]
+        )
+    refresh_lines.extend(f"  {line}" for line in render_static_nodes_shell(enode_names, "/smoke/static-nodes-all.json"))
+    for index, service in enumerate(validators, start=1):
+        refresh_lines.extend(f"  {line}" for line in render_static_nodes_shell(enode_names, f"/smoke/{service.id}/static-nodes.json", exclude=f"ENODE_{index}"))
     for service in rpc_nodes:
         runtime_dir = service_runtime_dir(service)
-        lines.append(f"mkdir -p /smoke/{runtime_dir}/data")
-        lines.extend(render_static_nodes_shell(enode_names, f"/smoke/{runtime_dir}/static-nodes.json"))
-
-    lines.extend(
+        refresh_lines.append(f"  mkdir -p /smoke/{runtime_dir}/data")
+        refresh_lines.extend(f"  {line}" for line in render_static_nodes_shell(enode_names, f"/smoke/{runtime_dir}/static-nodes.json"))
+    refresh_lines.extend(
         [
-            "cp /tmp/qbft-networkFiles/genesis.json /smoke/genesis.json",
-            "cat > /smoke/network-metadata.json <<JSON",
+            "  cat > /smoke/network-metadata.json <<JSON",
             "{",
             f"  \"schema\": \"main-computer.coolify-qbft-network.v1\",",
             f"  \"network\": \"{plan.name}\",",
@@ -2862,8 +2782,10 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
     )
     for index, service in enumerate(validators, start=1):
         comma = "," if index < len(validators) else ""
-        lines.append(f"    {{\"id\": \"{service.id}\", \"ip\": \"{service.container_ip}\", \"enode\": \"$ENODE_{index}\"}}{comma}")
-    lines.extend(
+        refresh_lines.append(
+            f"    {{\"id\": \"{service.id}\", \"ip\": \"{service.container_ip}\", \"p2p\": \"{validator_static_enode_endpoint(service)}\", \"enode\": \"$ENODE_{index}\"}}{comma}"
+        )
+    refresh_lines.extend(
         [
             "  ],",
             "  \"rpc_nodes\": [",
@@ -2871,24 +2793,85 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
     )
     for index, service in enumerate(rpc_nodes, start=1):
         comma = "," if index < len(rpc_nodes) else ""
-        lines.append(f"    {{\"id\": \"{service.id}\", \"ip\": \"{service.container_ip}\"}}{comma}")
-    lines.extend(
+        refresh_lines.append(f"    {{\"id\": \"{service.id}\", \"ip\": \"{service.container_ip}\"}}{comma}")
+    refresh_lines.extend(
         [
             "  ]",
             "}",
             "JSON",
+            "}",
+        ]
+    )
+
+    lines: list[str] = [
+        "set -eu",
+        "echo \"Main Computer QBFT bootstrap starting for " + plan.name + "\"",
+        "mkdir -p /smoke",
+        f"EXPECTED_QBFT_VALIDATOR_COUNT={len(validators)}",
+        f"EXPECTED_QBFT_RPC_COUNT={len(rpc_nodes)}",
+        "REGENERATE_QBFT_TOPOLOGY=false",
+        *refresh_lines,
+        "if [ -f /smoke/network-metadata.json ] && [ \"${QBFT_RESET_CHAIN:-false}\" != \"true\" ]; then",
+        "  EXISTING_QBFT_VALIDATOR_COUNT=$(grep -c '\"id\": \"validator-' /smoke/network-metadata.json || true)",
+        "  EXISTING_QBFT_RPC_COUNT=$(grep -c '\"id\": \"rpc-' /smoke/network-metadata.json || true)",
+        "  EXISTING_QBFT_METADATA_MATCH=false",
+        "  if grep -q '\"network\": \"" + plan.name + "\"' /smoke/network-metadata.json && grep -q '\"docker_network\": \"" + plan.docker_network + "\"' /smoke/network-metadata.json && grep -q '\"docker_subnet\": \"" + plan.docker_subnet + "\"' /smoke/network-metadata.json; then",
+        "    EXISTING_QBFT_METADATA_MATCH=true",
+        "  fi",
+        "  if [ \"$EXISTING_QBFT_METADATA_MATCH\" = \"true\" ] && [ \"$EXISTING_QBFT_VALIDATOR_COUNT\" = \"$EXPECTED_QBFT_VALIDATOR_COUNT\" ] && [ \"$EXISTING_QBFT_RPC_COUNT\" = \"$EXPECTED_QBFT_RPC_COUNT\" ]; then",
+        "    echo \"Existing QBFT network metadata matches desired topology; refreshing static enodes and reusing persistent genesis/key material.\"",
+        "    refresh_static_runtime_config",
+        "    exit 0",
+        "  fi",
+        "  if [ \"$EXISTING_QBFT_METADATA_MATCH\" = \"true\" ] && [ \"$EXISTING_QBFT_VALIDATOR_COUNT\" = \"$EXPECTED_QBFT_VALIDATOR_COUNT\" ] && [ \"$EXISTING_QBFT_RPC_COUNT\" = \"0\" ] && [ \"$EXPECTED_QBFT_RPC_COUNT\" != \"0\" ] && [ -f /smoke/genesis.json ] && [ -f /smoke/static-nodes-all.json ]; then",
+        "    echo \"Existing validator topology matches; adding dedicated RPC runtime material without regenerating validator keys.\"",
+        "    refresh_static_runtime_config",
+        "    exit 0",
+        "  fi",
+        "  echo \"Existing QBFT network metadata does not match desired topology; regenerating genesis/key material.\"",
+        "  REGENERATE_QBFT_TOPOLOGY=true",
+        "fi",
+        "if [ -f /smoke/genesis.json ] && [ \"${QBFT_RESET_CHAIN:-false}\" != \"true\" ] && [ \"$REGENERATE_QBFT_TOPOLOGY\" != \"true\" ]; then",
+        "  echo \"genesis.json exists but metadata is missing; refusing to guess state. Set QBFT_RESET_CHAIN=true to regenerate.\" >&2",
+        "  exit 23",
+        "fi",
+        "rm -rf /tmp/qbft-networkFiles /smoke/networkFiles",
+        "cat > /smoke/qbftConfigFile.json <<'JSON'",
+        config,
+        "JSON",
+        "if command -v besu >/dev/null 2>&1; then BESU=besu; else BESU=/opt/besu/bin/besu; fi",
+        "\"$BESU\" operator generate-blockchain-config --config-file=/smoke/qbftConfigFile.json --to=/tmp/qbft-networkFiles --private-key-file-name=key",
+        f"set -- $(find /tmp/qbft-networkFiles/keys -mindepth 1 -maxdepth 1 -type d | sort)",
+        f"if [ \"$#\" -ne {len(validators)} ]; then echo \"expected {len(validators)} validator key directories, got $#\" >&2; exit 24; fi",
+    ]
+    for index, _service in enumerate(validators, start=1):
+        lines.append(f"KEY_DIR_{index}=\"${index}\"")
+
+    for index, service in enumerate(validators, start=1):
+        lines.extend(
+            [
+                f"mkdir -p /smoke/{service.id}/data",
+                f"cp \"$KEY_DIR_{index}/key\" /smoke/{service.id}/data/key",
+                f"cp \"$KEY_DIR_{index}/key.pub\" /smoke/{service.id}/data/key.pub",
+            ]
+        )
+
+    lines.extend(
+        [
+            "cp /tmp/qbft-networkFiles/genesis.json /smoke/genesis.json",
+            "refresh_static_runtime_config",
             "echo \"Main Computer QBFT bootstrap complete.\"",
         ]
     )
     return "\n".join(lines)
-
 
 def service_should_consider_p2p_host_port_for_collision(role: str) -> bool:
     return role == "validator"
 
 
 def service_should_publish_p2p(plan: NetworkPlan, service: PlannedService) -> bool:
-    return service.role == "validator" and service.p2p_host_port is not None and len({item.host for item in plan.services}) > 1
+    del plan
+    return service.role == "validator" and service.p2p_host_port is not None
 
 
 def service_should_publish_rpc(plan: NetworkPlan, service: PlannedService) -> bool:
@@ -3021,6 +3004,17 @@ def qbft_config_export_transport(args: argparse.Namespace) -> str:
     return raw
 
 
+def docker_volume_data_path(volume_name: str) -> str:
+    """Return the Docker host path for a local named volume's data directory."""
+
+    volume_name = str(volume_name or "").strip()
+    if not volume_name or "/" in volume_name or "\\" in volume_name or volume_name in {".", ".."}:
+        raise PlanError(f"Unsafe Docker volume name for host bind: {volume_name!r}")
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", volume_name):
+        raise PlanError(f"Unsafe Docker volume name for host bind: {volume_name!r}")
+    return f"/var/lib/docker/volumes/{volume_name}/_data"
+
+
 def qbft_config_export_mount_sources(
     plan: NetworkPlan,
     host_id: str,
@@ -3029,11 +3023,15 @@ def qbft_config_export_mount_sources(
 ) -> list[dict[str, str]]:
     """Return ordered host-local places that may contain current QBFT runtime material.
 
-    Coolify can leave runtime volumes under a service-UUID compose prefix such
-    as ``pr243..._main-computer-qbft-testnet-a-runtime``.  Try those discovered
-    prefixed volumes first, then the unprefixed managed/legacy names, then the
-    configured bind runtime root.  Empty candidates are reported by the exporter
-    as missing/uninitialized instead of making deployment itself fail.
+    Coolify stores service volumes as Docker named volumes prefixed with the
+    source service UUID, for example
+    ``pr243..._main-computer-qbft-testnet-a-runtime``.  A separate Coolify
+    service cannot reliably mount that name as a Compose named volume because
+    Coolify rewrites service volume sources under the config-export project,
+    creating empty shadow volumes.  For discovered source-service volumes,
+    bind-mount the Docker volume data path read-only instead.  That keeps the
+    slurp fatal when the source volume is genuinely absent, without creating an
+    empty lookalike volume.
     """
 
     host_id = safe_id(host_id, kind="host")
@@ -3044,34 +3042,20 @@ def qbft_config_export_mount_sources(
     candidates: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(
-        kind: str,
-        label: str,
-        source: str,
-        target: str,
-        *,
-        external_volume: bool = False,
-        compose_source: str = "",
-    ) -> None:
+    def add(kind: str, label: str, source: str, target: str, *, display_source: str | None = None) -> None:
         source = str(source or "").strip()
         if not source:
             return
-        key = (kind, source, target)
+        key = (kind, source)
         if key in seen:
             return
         seen.add(key)
         item = {"kind": kind, "label": label, "source": source, "target": target}
-        if kind == "volume":
-            # Compose service mounts must use a local alias when the actual
-            # Docker volume is external.  Mounting the raw Coolify-prefixed
-            # name directly lets Coolify/Compose create an empty shadow volume
-            # under the config-export service project.
-            item["compose_source"] = compose_source or source
-            item["external_volume"] = "true" if external_volume else "false"
+        if display_source:
+            item["display_source"] = str(display_source)
         candidates.append(item)
 
     managed = managed_volume_name(plan, host_id)
-    legacy = legacy_managed_volume_name(plan)
     prefixes: list[str] = []
     for raw_prefix in [*list(volume_prefixes or ()), host.service_uuid]:
         prefix = str(raw_prefix or "").strip()
@@ -3082,19 +3066,15 @@ def qbft_config_export_mount_sources(
         prefixes.append(prefix)
 
     for index, prefix in enumerate(prefixes, start=1):
-        label = f"coolify-prefixed-managed-host-volume-{index}"
+        volume_name = coolify_prefixed_volume_name(prefix, managed)
         add(
-            "volume",
-            label,
-            coolify_prefixed_volume_name(prefix, managed),
-            f"/sources/{label}",
-            external_volume=True,
-            compose_source=label,
+            "bind-existing",
+            f"coolify-prefixed-managed-host-volume-{index}",
+            docker_volume_data_path(volume_name),
+            f"/sources/coolify-prefixed-managed-host-volume-{index}",
+            display_source=volume_name,
         )
 
-    if not prefixes:
-        add("volume", "managed-host-volume", managed, "/sources/managed-host-volume")
-        add("volume", "legacy-network-volume", legacy, "/sources/legacy-network-volume")
     add("bind", "host-runtime-root", host.runtime_root, "/sources/host-runtime-root")
     return candidates
 
@@ -3199,7 +3179,7 @@ def render_qbft_config_exporter_shell(
     if not token:
         raise PlanError("QBFT config exporter sidecar requires a token.")
     source_payload = [
-        {"label": item["label"], "path": item["target"], "kind": item["kind"], "source": item["source"]}
+        {"label": item["label"], "path": item["target"], "kind": item["kind"], "source": item.get("display_source", item["source"])}
         for item in qbft_config_export_mount_sources(
             plan,
             host_id,
@@ -3210,6 +3190,7 @@ def render_qbft_config_exporter_shell(
         "set -eu",
         "mkdir -p /serve",
         f"TOKEN={shlex.quote(token)}",
+        f"PUBLIC_EXPORT_PATH={shlex.quote(qbft_config_export_public_path(token))}",
         f"NETWORK={shlex.quote(plan.name)}",
         f"HOST_ID={shlex.quote(host_id)}",
         "json_escape() {",
@@ -3270,7 +3251,9 @@ def render_qbft_config_exporter_shell(
             "  i=$((i + 1))",
             "done",
             "source_mount_esc=$(json_string \"$SOURCE_MOUNT\")",
-            "cat > \"/serve/$TOKEN.json\" <<JSON",
+            "EXPORT_FILE=\"/serve/$TOKEN.json\"",
+            "PUBLIC_EXPORT_FILE=\"/serve$PUBLIC_EXPORT_PATH\"",
+            "cat > \"$EXPORT_FILE\" <<JSON",
             "{",
             "  \"ok\": $OK,",
             "  \"network\": \"$(json_string \"$NETWORK\")\",",
@@ -3289,6 +3272,8 @@ def render_qbft_config_exporter_shell(
             "  }",
             "}",
             "JSON",
+            "mkdir -p \"$(dirname \"$PUBLIC_EXPORT_FILE\")\"",
+            "cp -f \"$EXPORT_FILE\" \"$PUBLIC_EXPORT_FILE\"",
             "printf '%s\\n' \"{\\\"ok\\\":$OK,\\\"host\\\":\\\"$HOST_ID\\\",\\\"source_mount\\\":\\\"$source_mount_esc\\\",\\\"missing_files\\\":[$MISSING_JSON]}\"",
             "cd /serve",
             "exec python3 -m http.server 8080 --bind 0.0.0.0",
@@ -3326,7 +3311,7 @@ def render_qbft_config_exporter_compose(
         raise PlanError(f"Unknown host for config export: {host_id}")
     sources = qbft_config_export_mount_sources(plan, host_id, volume_prefixes=volume_prefixes)
     source_payload = [
-        {"label": item["label"], "path": item["target"], "kind": item["kind"], "source": item["source"]}
+        {"label": item["label"], "path": item["target"], "kind": item["kind"], "source": item.get("display_source", item["source"])}
         for item in sources
     ]
     payload_script = "\n".join(
@@ -3334,6 +3319,7 @@ def render_qbft_config_exporter_compose(
             "set -eu",
             "mkdir -p /serve",
             f"TOKEN={shlex.quote(token)}",
+            f"PUBLIC_EXPORT_PATH={shlex.quote(qbft_config_export_public_path(token))}",
             f"NETWORK={shlex.quote(plan.name)}",
             f"HOST_ID={shlex.quote(host_id)}",
             f"SOURCES_JSON={shlex.quote(json.dumps(source_payload, sort_keys=True))}",
@@ -3414,7 +3400,9 @@ def render_qbft_config_exporter_compose(
             "  i=$((i + 1))",
             "done",
             "source_mount_esc=$(json_string \"$SOURCE_MOUNT\")",
-            "cat > \"/serve/$TOKEN.json\" <<JSON",
+            "EXPORT_FILE=\"/serve/$TOKEN.json\"",
+            "PUBLIC_EXPORT_FILE=\"/serve$PUBLIC_EXPORT_PATH\"",
+            "cat > \"$EXPORT_FILE\" <<JSON",
             "{",
             "  \"ok\": $OK,",
             "  \"network\": \"$(json_string \"$NETWORK\")\",",
@@ -3433,6 +3421,8 @@ def render_qbft_config_exporter_compose(
             "  }",
             "}",
             "JSON",
+            "mkdir -p \"$(dirname \"$PUBLIC_EXPORT_FILE\")\"",
+            "cp -f \"$EXPORT_FILE\" \"$PUBLIC_EXPORT_FILE\"",
             "printf '%s\\n' \"{\\\"ok\\\":$OK,\\\"host\\\":\\\"$HOST_ID\\\",\\\"source_mount\\\":\\\"$source_mount_esc\\\",\\\"missing_files\\\":[$MISSING_JSON]}\"",
             "cd /serve",
             "exec python3 -m http.server 8080 --bind 0.0.0.0",
@@ -3452,18 +3442,9 @@ def render_qbft_config_exporter_compose(
     ]
     for source in sources:
         if source["kind"] == "volume":
-            if source.get("external_volume") == "true":
-                lines.extend(
-                    [
-                        "      - type: volume",
-                        f"        source: {source['compose_source']}",
-                        f"        target: {source['target']}",
-                        "        read_only: true",
-                    ]
-                )
-            else:
-                lines.append(f"      - {yaml_quote(f'{source['compose_source']}:{source['target']}:ro')}")
-        elif source["kind"] == "bind":
+            lines.append(f"      - {yaml_quote(f'{source['source']}:{source['target']}:ro')}")
+        elif source["kind"] in {"bind", "bind-existing"}:
+            create_host_path = "false" if source["kind"] == "bind-existing" else "true"
             lines.extend(
                 [
                     "      - type: bind",
@@ -3471,7 +3452,7 @@ def render_qbft_config_exporter_compose(
                     f"        target: {source['target']}",
                     "        read_only: true",
                     "        bind:",
-                    "          create_host_path: true",
+                    f"          create_host_path: {create_host_path}",
                 ]
             )
     lines.extend(
@@ -3514,22 +3495,16 @@ def render_qbft_config_exporter_compose(
                 "",
             ]
         )
-    volume_defs: dict[str, dict[str, str]] = {}
-    for source in sources:
-        if source["kind"] != "volume":
-            continue
-        compose_source = source["compose_source"]
-        volume_defs[compose_source] = {
-            "name": source["source"],
-            "external_volume": source.get("external_volume", "false"),
-        }
-    if volume_defs:
+    volume_sources = [source["source"] for source in sources if source["kind"] == "volume"]
+    if volume_sources:
         lines.append("volumes:")
-        for compose_source, volume_def in volume_defs.items():
-            lines.append(f"  {compose_source}:")
-            if volume_def.get("external_volume") == "true":
-                lines.append("    external: true")
-            lines.append(f"    name: {volume_def['name']}")
+        for volume_name in volume_sources:
+            lines.extend(
+                [
+                    f"  {volume_name}:",
+                    f"    name: {volume_name}",
+                ]
+            )
         lines.append("")
     return "\n".join(lines)
 
@@ -3811,7 +3786,8 @@ def render_compose_for_host(
             if source["kind"] == "volume":
                 export_volume_lines.append(f"      - {yaml_quote(f'{source['source']}:{source['target']}:ro')}")
                 config_export_volume_names.append(str(source["source"]))
-            elif source["kind"] == "bind":
+            elif source["kind"] in {"bind", "bind-existing"}:
+                create_host_path = "false" if source["kind"] == "bind-existing" else "true"
                 export_volume_lines.extend(
                     [
                         "      - type: bind",
@@ -3819,7 +3795,7 @@ def render_compose_for_host(
                         f"        target: {source['target']}",
                         "        read_only: true",
                         "        bind:",
-                        "          create_host_path: true",
+                        f"          create_host_path: {create_host_path}",
                     ]
                 )
         export_script = escape_compose_interpolation(render_qbft_config_exporter_shell(plan, host_id, config_export))

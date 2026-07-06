@@ -89,3 +89,57 @@ You can also ask the helper to run the extraction:
 ```powershell
 .\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -NoSmoke -ExtractMemory
 ```
+
+
+## High-fidelity memory pushback
+
+
+### Automated pushback smoke
+
+To prove the pushback surface without manually editing JSON, run:
+
+```powershell
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -NoSmoke -PushbackSmoke
+```
+
+That one command creates or reuses `memory/YYYY-MM-DD-main-computer-pushback-smoke.md`,
+exports high-fidelity persistence, edits the exported JSON text payload with a
+unique marker, applies it back with expected-current SHA checks, re-extracts the
+workspace, verifies the marker, asks the running OpenClaw container to read the
+marker from its mounted workspace, restarts the container, and verifies the
+marker again.
+
+The standalone form is:
+
+```powershell
+python scripts\smoke_openclaw_persistence_pushback.py --memory-root "%LOCALAPPDATA%\MainComputer\openclaw-docker\workspace" --export-dir "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports" --container main-computer-openclaw-gateway --restart-container --gateway-url http://127.0.0.1:18790 --json
+```
+
+Round-trip edits through the JSON or JSONL export, not the rendered Markdown
+review file. The `sha256` value in each file record is treated as the expected
+current hash from extraction time, so you can edit `file.text` while leaving
+`sha256` unchanged. That lets the apply step detect whether OpenClaw memory
+changed underneath you before writing.
+
+Dry run first:
+
+```powershell
+python scripts\apply_openclaw_persistence.py --memory-root "%LOCALAPPDATA%\MainComputer\openclaw-docker\workspace" --export "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json" --dry-run --summary-json
+```
+
+Apply and verify readback:
+
+```powershell
+python scripts\apply_openclaw_persistence.py --memory-root "%LOCALAPPDATA%\MainComputer\openclaw-docker\workspace" --export "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json" --verify-after --summary-json
+```
+
+The helper can also apply the edited export and restart the OpenClaw container so
+the runtime sees the pushed-back Markdown files:
+
+```powershell
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -NoSmoke -ApplyMemoryExport "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json"
+```
+
+Use `-ApplyMemoryDryRun` to test the helper path without writing. Use
+`-ApplyMemoryForce` only when you intentionally want to bypass the expected-current
+SHA guard and allow creates.

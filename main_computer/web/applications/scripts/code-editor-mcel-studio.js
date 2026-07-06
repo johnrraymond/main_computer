@@ -48,6 +48,7 @@
       const SCM_AI_REPAIR_PROMPT_VERSION = "1.0.0";
       const SCM_REPLAY_SNAPSHOT_VERSION = "1.0.0";
       const SCM_REGRESSION_HARNESS_VERSION = "1.0.0";
+      const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.0.0";
       const SCM_CONTRACT_AUTHORING_HELPER_VERSION = "1.0.0";
       const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
       const MONACO_RUNTIME_EFFECTS = [
@@ -1769,6 +1770,714 @@
         };
       }
 
+      function buildGenericScmReplayFixtureVector(fields = {}) {
+        const actionOutcome = normalizeReceiptOutcome(fields.actionOutcome, "waiting");
+        const externalOutcome = normalizeReceiptExternalOutcome(fields.externalOutcome || {status: actionOutcome});
+        return jsonSafeClone({
+          kind: SCM_LAB_RECEIPT_PROOF_KIND,
+          vectorVersion: SCM_RECEIPT_VECTOR_VERSION,
+          sourceKind: fields.sourceKind || "mcel-code-studio-generic-replay-fixture",
+          ingestedAt: fields.ingestedAt || "",
+          status: fields.status || actionOutcome,
+          mode: fields.mode || "deterministic-fixture",
+          selectedEffect: fields.selectedEffect || "",
+          selectedEffectCategory: fields.selectedEffectCategory || "runtime-action",
+          actionOutcome,
+          externalOutcome,
+          governanceOutcome: normalizeReceiptOutcome(fields.governanceOutcome, "pass"),
+          safetyOutcome: normalizeReceiptOutcome(fields.safetyOutcome, "pass"),
+          proofCompleteness: fields.proofCompleteness || "complete",
+          declaredReads: uniqueScmReceiptList(fields.declaredReads),
+          declaredWrites: uniqueScmReceiptList(fields.declaredWrites),
+          runtimeConsequences: uniqueScmReceiptList(fields.runtimeConsequences),
+          nextAction: fields.nextAction || "inspect fixture receipt",
+          repairPacket: fields.repairPacket || {
+            status: "not required",
+            generated: false,
+            liveAiCall: null,
+            allowedWrites: [],
+            forbiddenWrites: [],
+            boundaryBlocked: false,
+            packet: {}
+          },
+          txDraftBoundary: fields.txDraftBoundary || {
+            status: "not-observed",
+            boundary: "",
+            noSend: false,
+            probeStatus: {nonce: "", gasEstimate: "", ethCall: ""},
+            raw: null
+          },
+          layoutObservation: fields.layoutObservation || {
+            kind: "",
+            source: "",
+            measured: false,
+            regions: {},
+            metrics: {},
+            documentHeightRatio: null,
+            violations: [],
+            styleViolations: []
+          },
+          checks: fields.checks || {},
+          rawReceipt: fields.rawReceipt || null
+        });
+      }
+
+      function buildWalletScmReplayFixtureReceipt(effectName, actionOutcome, externalOutcome = {}, proof = {}) {
+        const proofChecks = proof.checks || {};
+        const proofPayload = {...proof};
+        delete proofPayload.checks;
+        return jsonSafeClone({
+          kind: SCM_LAB_RECEIPT_KIND,
+          proof: {
+            component: "DevNetworkReleaseConsole",
+            mode: "deterministic-fixture",
+            selectedEffect: effectName,
+            status: actionOutcome,
+            actionOutcome,
+            externalOutcome: {
+              kind: "mcel-external-outcome",
+              status: actionOutcome,
+              provider: "fixture.ethereum",
+              method: effectName === "wallet.connect" ? "eth_requestAccounts" : "",
+              ...externalOutcome
+            },
+            governanceOutcome: "pass",
+            safetyOutcome: "pass",
+            proofCompleteness: "complete",
+            ...proofPayload,
+            checks: {
+              sourceSafeAfterExternalOutcome: true,
+              ...proofChecks
+            }
+          }
+        });
+      }
+
+      function buildWalletScmReplayFixtures() {
+        const draftTxBoundary = {
+          status: "observed",
+          boundary: "runtime-only-no-send",
+          noSend: true,
+          probeStatus: {nonce: "pass", gasEstimate: "pass", ethCall: "pass"},
+          raw: {boundary: "runtime-only-no-send"}
+        };
+        return [
+          {
+            id: "wallet.connect.pass",
+            family: "wallet",
+            label: "wallet.connect pass normalizes account-granted external outcome",
+            receipt: buildWalletScmReplayFixtureReceipt("wallet.connect", "pass", {
+              reason: "account-granted",
+              account: "0xfixture",
+              chainId: "0x539",
+              nextAction: "draft tx"
+            }, {walletConnectCount: 1}),
+            expected: {
+              selectedEffect: "wallet.connect",
+              actionOutcome: "pass",
+              externalStatus: "pass",
+              governanceOutcome: "pass",
+              safetyOutcome: "pass",
+              declaredWritesContain: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.evidenceStrip"],
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              nextAction: "draft tx"
+            }
+          },
+          {
+            id: "wallet.connect.blocked",
+            family: "wallet",
+            label: "wallet.connect blocked preserves source and clears unsafe tx draft",
+            receipt: buildWalletScmReplayFixtureReceipt("wallet.connect", "blocked", {
+              reason: "account-request-rejected",
+              message: "User rejected account request",
+              nextAction: "retry connect"
+            }, {walletConnectCount: 1}),
+            expected: {
+              selectedEffect: "wallet.connect",
+              actionOutcome: "blocked",
+              externalStatus: "blocked",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              nextAction: "retry connect"
+            }
+          },
+          {
+            id: "wallet.connect.exception",
+            family: "wallet",
+            label: "wallet.connect exception is captured without source mutation",
+            receipt: buildWalletScmReplayFixtureReceipt("wallet.connect", "exception", {
+              reason: "provider-exception",
+              message: "Injected provider threw",
+              nextAction: "inspect exception"
+            }, {walletConnectCount: 1}),
+            expected: {
+              selectedEffect: "wallet.connect",
+              actionOutcome: "exception",
+              externalStatus: "exception",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              nextAction: "inspect exception"
+            }
+          },
+          {
+            id: "wallet.accountsChanged.switch",
+            family: "wallet",
+            label: "accountsChanged account switch commits runtime account update and clears draft",
+            receipt: buildWalletScmReplayFixtureReceipt("wallet.provider.accountsChanged", "pass", {
+              reason: "account-switch",
+              account: "0xswitched"
+            }, {providerAccountsChangedCount: 1}),
+            expected: {
+              selectedEffect: "wallet.provider.accountsChanged",
+              actionOutcome: "pass",
+              externalStatus: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              consequencesContain: ["committed account update", "runtime.txDraft cleared"]
+            }
+          },
+          {
+            id: "wallet.accountsChanged.disconnect",
+            family: "wallet",
+            label: "accountsChanged empty account list disconnects wallet and clears draft",
+            receipt: buildWalletScmReplayFixtureReceipt("wallet.provider.accountsChanged", "pass", {
+              reason: "account-list-empty"
+            }, {providerAccountsChangedCount: 1, providerAccountDisconnectCount: 1}),
+            expected: {
+              selectedEffect: "wallet.provider.accountsChanged",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              consequencesContain: ["disconnected wallet", "runtime.txDraft cleared"]
+            }
+          },
+          {
+            id: "wallet.chainChanged.wrong-chain",
+            family: "wallet",
+            label: "chainChanged wrong chain blocks next tx draft and clears stale draft",
+            receipt: buildWalletScmReplayFixtureReceipt("wallet.provider.chainChanged", "blocked", {
+              reason: "wrong-chain",
+              chainId: "0x1",
+              nextAction: "switch network"
+            }, {providerChainChangedCount: 1, checks: {networkGatePass: false}}),
+            expected: {
+              selectedEffect: "wallet.provider.chainChanged",
+              actionOutcome: "blocked",
+              externalStatus: "blocked",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              nextAction: "switch network",
+              consequencesContain: ["runtime.network updated", "runtime.txDraft cleared"]
+            }
+          },
+          {
+            id: "wallet.draftTx.pass",
+            family: "wallet",
+            label: "release.draftTx pass creates runtime-only no-send tx draft",
+            receipt: buildWalletScmReplayFixtureReceipt("release.draftTx", "pass", {
+              reason: "probe-pass",
+              nextAction: "inspect tx draft"
+            }, {
+              txDraftCount: 1,
+              checks: {txDraftRuntimeOnly: true},
+              runtimeTxDraft: draftTxBoundary
+            }),
+            expected: {
+              selectedEffect: "release.draftTx",
+              actionOutcome: "pass",
+              externalStatus: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              txDraftNoSend: true,
+              consequencesContain: ["runtime.txDraft updated", "source unchanged", "no transaction send attempted"]
+            }
+          },
+          {
+            id: "wallet.draftTx.blocked-wallet",
+            family: "wallet",
+            label: "release.draftTx blocked after wallet block does not create a durable source change",
+            receipt: buildWalletScmReplayFixtureReceipt("release.draftTx", "blocked", {
+              reason: "wallet-blocked",
+              nextAction: "retry connect"
+            }, {checks: {txDraftRuntimeOnly: false}}),
+            expected: {
+              selectedEffect: "release.draftTx",
+              actionOutcome: "blocked",
+              externalStatus: "blocked",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              nextAction: "retry connect"
+            }
+          },
+          {
+            id: "wallet.draftTx.blocked-chain",
+            family: "wallet",
+            label: "release.draftTx blocked after wrong chain remains no-send and source-safe",
+            receipt: buildWalletScmReplayFixtureReceipt("release.draftTx", "blocked", {
+              reason: "wrong-chain",
+              chainId: "0x1",
+              nextAction: "retry connect"
+            }, {checks: {networkGatePass: false, txDraftRuntimeOnly: false}}),
+            expected: {
+              selectedEffect: "release.draftTx",
+              actionOutcome: "blocked",
+              externalStatus: "blocked",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              nextAction: "retry connect"
+            }
+          },
+          {
+            id: "wallet.repairPacket.generated",
+            family: "wallet",
+            label: "bounded repair packet is generated without a live AI call",
+            receipt: buildWalletScmReplayFixtureReceipt("ai.repairWalletHint", "pass", {
+              reason: "repair-packet-generated",
+              nextAction: "inspect bounded repair packet"
+            }, {
+              repairPacketCount: 1,
+              checks: {repairPacketGenerated: true, repairPacketNoLiveAiCall: true},
+              repairPacket: {
+                kind: "mcel-repair-packet",
+                status: "ready",
+                liveAiCall: false,
+                allowedWrites: ["runtime.proofChip", "runtime.repairPacket", "runtime.assistantRepairPrompt", "runtime.evidenceStrip"],
+                forbiddenWrites: ["source.devRelease", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"]
+              }
+            }),
+            expected: {
+              selectedEffect: "ai.repairWalletHint",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              repairPacketGenerated: true,
+              liveAiCall: false,
+              forbiddenWritesContain: ["source.devRelease", "runtime.txDraft"]
+            }
+          },
+          {
+            id: "wallet.repairPacket.forbidden-write-blocked",
+            family: "wallet",
+            label: "repair packet fixture proves forbidden wallet/source writes stay blocked",
+            receipt: buildWalletScmReplayFixtureReceipt("ai.repairWalletHint", "pass", {
+              reason: "forbidden-write-blocked",
+              nextAction: "inspect bounded repair packet"
+            }, {
+              repairPacketCount: 1,
+              repairBoundaryBlockedCount: 1,
+              checks: {repairPacketGenerated: true, repairPacketNoLiveAiCall: true, repairBoundaryBlocked: true},
+              repairPacket: {
+                kind: "mcel-repair-packet",
+                status: "ready",
+                liveAiCall: false,
+                allowedWrites: ["runtime.proofChip", "runtime.repairPacket", "runtime.assistantRepairPrompt", "runtime.evidenceStrip"],
+                forbiddenWrites: ["source.devRelease", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"]
+              }
+            }),
+            expected: {
+              selectedEffect: "ai.repairWalletHint",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              repairPacketGenerated: true,
+              repairBoundaryBlocked: true,
+              liveAiCall: false,
+              forbiddenWritesContain: ["source.devRelease", "runtime.wallet", "runtime.txDraft"]
+            }
+          }
+        ];
+      }
+
+      function buildCodeEditorScmReplayFixtures() {
+        const codeStudioSource = "mcel-code-studio-generic-replay-fixture";
+        const vector = (fields) => buildGenericScmReplayFixtureVector({
+          sourceKind: codeStudioSource,
+          governanceOutcome: "pass",
+          safetyOutcome: "pass",
+          proofCompleteness: "complete",
+          ...fields
+        });
+        return [
+          {
+            id: "code-editor.monaco.mount.pass",
+            family: "code-editor",
+            label: "Monaco mount pass stays runtime-only and points to commitDraft as the source gate",
+            receipt: vector({
+              selectedEffect: "editor.monaco.mount",
+              selectedEffectCategory: "editor-runtime",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "model-mounted", provider: "monaco-editor"},
+              declaredReads: ["source.workspace.files", "state.selectedPath"],
+              declaredWrites: ["runtime.editor.monacoInstance", "runtime.editor.monacoModel", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.monaco mounted", "source unchanged"],
+              nextAction: "edit runtime draft"
+            }),
+            expected: {
+              selectedEffect: "editor.monaco.mount",
+              actionOutcome: "pass",
+              externalStatus: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              declaredReadsContain: ["source.workspace.files"],
+              declaredWritesContain: ["runtime.editor.monacoInstance", "runtime.evidenceStrip"]
+            }
+          },
+          {
+            id: "code-editor.monaco.mount.blocked",
+            family: "code-editor",
+            label: "Monaco mount blocked falls back to textarea without source mutation",
+            receipt: vector({
+              selectedEffect: "editor.monaco.mount",
+              selectedEffectCategory: "editor-runtime",
+              actionOutcome: "blocked",
+              externalOutcome: {status: "blocked", reason: "mobile-browser-unsupported", provider: "monaco-editor"},
+              declaredReads: ["source.workspace.files", "state.selectedPath"],
+              declaredWrites: ["runtime.editor.fallback", "runtime.evidenceStrip"],
+              runtimeConsequences: ["fallback textarea active", "source unchanged"],
+              nextAction: "use fallback editor"
+            }),
+            expected: {
+              selectedEffect: "editor.monaco.mount",
+              actionOutcome: "blocked",
+              externalStatus: "blocked",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              nextAction: "use fallback editor"
+            }
+          },
+          {
+            id: "code-editor.monaco.mount.exception",
+            family: "code-editor",
+            label: "Monaco mount exception is captured as external runtime evidence",
+            receipt: vector({
+              selectedEffect: "editor.monaco.mount",
+              selectedEffectCategory: "editor-runtime",
+              actionOutcome: "exception",
+              externalOutcome: {status: "exception", reason: "loader-exception", provider: "monaco-editor", message: "loader failed"},
+              declaredReads: ["source.workspace.files", "state.selectedPath"],
+              declaredWrites: ["runtime.editor.fallback", "runtime.evidenceStrip"],
+              runtimeConsequences: ["fallback textarea active", "source unchanged"],
+              nextAction: "inspect exception"
+            }),
+            expected: {
+              selectedEffect: "editor.monaco.mount",
+              actionOutcome: "exception",
+              externalStatus: "exception",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              nextAction: "inspect exception"
+            }
+          },
+          {
+            id: "code-editor.monaco.change.draft-only",
+            family: "code-editor",
+            label: "Monaco change writes editor draft only until commitDraft",
+            receipt: vector({
+              selectedEffect: "editor.monaco.change",
+              selectedEffectCategory: "editor-runtime",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "model-updated", provider: "monaco-editor"},
+              declaredReads: ["runtime.editor.monacoModel", "state.selectedPath"],
+              declaredWrites: ["state.drafts", "state.dirty", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.editorDraft updated", "state.dirty updated", "source unchanged"],
+              nextAction: "commit draft"
+            }),
+            expected: {
+              selectedEffect: "editor.monaco.change",
+              actionOutcome: "pass",
+              externalStatus: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              declaredWritesContain: ["state.drafts", "state.dirty"],
+              nextAction: "commit draft"
+            }
+          },
+          {
+            id: "code-editor.commitDraft.source-gate",
+            family: "code-editor",
+            label: "commitDraft is the only fixture that may write source.workspace.files",
+            receipt: vector({
+              selectedEffect: "commitDraft",
+              selectedEffectCategory: "source-gate",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "explicit-user-commit"},
+              declaredReads: ["source.workspace.files", "state.drafts", "state.selectedPath"],
+              declaredWrites: ["source.workspace.files", "state.dirty", "runtime.validationReport", "runtime.evidenceStrip"],
+              runtimeConsequences: ["source.workspace.files updated by commitDraft", "runtime.editorDraft committed"],
+              nextAction: "serialize clean source",
+              checks: {sourceMutationGate: "commitDraft"}
+            }),
+            expected: {
+              selectedEffect: "commitDraft",
+              actionOutcome: "pass",
+              externalStatus: "pass",
+              sourceWriteEffect: true,
+              sourceMutationGate: "commitDraft",
+              declaredWritesContain: ["source.workspace.files"],
+              nextAction: "serialize clean source"
+            }
+          },
+          {
+            id: "code-editor.serialization.clean-source",
+            family: "code-editor",
+            label: "clean serialization excludes runtime and Monaco chrome",
+            receipt: vector({
+              selectedEffect: "serializeCleanSource",
+              selectedEffectCategory: "serialization",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "clean-source"},
+              declaredReads: ["source.workspace.files", "source.workspace.manifest"],
+              declaredWrites: ["runtime.serializedSource", "runtime.evidenceStrip"],
+              runtimeConsequences: ["serialized source generated", "runtime chrome omitted", "source unchanged"],
+              nextAction: "inspect serialized output",
+              checks: {runtimeChromeOmitted: true, sourceSerializationClean: true}
+            }),
+            expected: {
+              selectedEffect: "serializeCleanSource",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              checks: {runtimeChromeOmitted: true, sourceSerializationClean: true}
+            }
+          },
+          {
+            id: "code-editor.layout.observe.pass",
+            family: "code-editor",
+            label: "layout observation pass records measured component-owned viewport",
+            receipt: vector({
+              selectedEffect: "layout.observe",
+              selectedEffectCategory: "layout",
+              actionOutcome: "pass",
+              externalOutcome: {status: "pass", reason: "layout-measured"},
+              declaredReads: ["layout.editorGroup", "runtime.editor.monacoInstance"],
+              declaredWrites: ["runtime.layoutObservation", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.layoutObservation updated", "source unchanged"],
+              nextAction: "keep authoring",
+              layoutObservation: {
+                kind: "mcel-layout-observation",
+                source: "code-studio-component-owned-viewport",
+                measured: true,
+                regions: {editorGroup: true, bottomDock: true},
+                metrics: {ownedDocumentHeight: 720},
+                documentHeightRatio: 1,
+                violations: [],
+                styleViolations: []
+              }
+            }),
+            expected: {
+              selectedEffect: "layout.observe",
+              actionOutcome: "pass",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              layoutMeasured: true,
+              layoutViolationCount: 0
+            }
+          },
+          {
+            id: "code-editor.layout.observe.fail",
+            family: "code-editor",
+            label: "layout observation fail is represented as a blocked receipt, not source mutation",
+            receipt: vector({
+              selectedEffect: "layout.observe",
+              selectedEffectCategory: "layout",
+              actionOutcome: "blocked",
+              externalOutcome: {status: "blocked", reason: "layout-overflow"},
+              declaredReads: ["layout.editorGroup", "runtime.editor.monacoInstance"],
+              declaredWrites: ["runtime.layoutObservation", "runtime.evidenceStrip"],
+              runtimeConsequences: ["runtime.layoutObservation updated", "source unchanged"],
+              nextAction: "inspect layout violation",
+              layoutObservation: {
+                kind: "mcel-layout-observation",
+                source: "code-studio-component-owned-viewport",
+                measured: true,
+                regions: {editorGroup: true, bottomDock: true},
+                metrics: {ownedDocumentHeight: 1440},
+                documentHeightRatio: 1.4,
+                violations: ["editor-workbench-overflow"],
+                styleViolations: []
+              }
+            }),
+            expected: {
+              selectedEffect: "layout.observe",
+              actionOutcome: "blocked",
+              externalStatus: "blocked",
+              runtimeOnlyWrites: true,
+              sourceUnchanged: true,
+              layoutMeasured: true,
+              layoutViolationCount: 1,
+              nextAction: "inspect layout violation"
+            }
+          }
+        ];
+      }
+
+      function buildGenericScmReplayFixtures(options = {}) {
+        const allFixtures = [
+          ...buildWalletScmReplayFixtures(),
+          ...buildCodeEditorScmReplayFixtures()
+        ];
+        if (!options.family || options.family === "all") return allFixtures;
+        return allFixtures.filter((fixture) => fixture.family === options.family);
+      }
+
+      function listContainsAllScmFixtureValues(actual = [], expected = []) {
+        const values = Array.isArray(actual) ? actual : [];
+        const needles = Array.isArray(expected) ? expected : [];
+        return needles.every((needle) => values.includes(needle));
+      }
+
+      function summarizeScmReplayFixtureVector(vector = {}) {
+        return jsonSafeClone({
+          sourceKind: vector.sourceKind || "",
+          selectedEffect: vector.selectedEffect || "",
+          selectedEffectCategory: vector.selectedEffectCategory || "",
+          actionOutcome: vector.actionOutcome || "",
+          externalStatus: vector.externalOutcome?.status || "",
+          governanceOutcome: vector.governanceOutcome || "",
+          safetyOutcome: vector.safetyOutcome || "",
+          proofCompleteness: vector.proofCompleteness || "",
+          declaredReads: vector.declaredReads || [],
+          declaredWrites: vector.declaredWrites || [],
+          runtimeConsequences: vector.runtimeConsequences || [],
+          nextAction: vector.nextAction || "",
+          repairPacket: {
+            status: vector.repairPacket?.status || "",
+            generated: vector.repairPacket?.generated === true,
+            liveAiCall: vector.repairPacket?.liveAiCall ?? null,
+            forbiddenWrites: vector.repairPacket?.forbiddenWrites || [],
+            boundaryBlocked: vector.repairPacket?.boundaryBlocked === true
+          },
+          txDraftBoundary: {
+            status: vector.txDraftBoundary?.status || "",
+            boundary: vector.txDraftBoundary?.boundary || "",
+            noSend: vector.txDraftBoundary?.noSend === true
+          },
+          layoutObservation: {
+            measured: vector.layoutObservation?.measured === true,
+            violations: vector.layoutObservation?.violations || [],
+            styleViolations: vector.layoutObservation?.styleViolations || []
+          },
+          checks: vector.checks || {}
+        });
+      }
+
+      function assertGenericScmReplayFixtureVector(fixture = {}) {
+        const vector = normalizeScmReceiptVector(fixture.receipt, {selectedEvidence: fixture.selectedEvidence || null});
+        const expected = fixture.expected || {};
+        const failures = [];
+        const declaredWrites = vector.declaredWrites || [];
+        const declaredReads = vector.declaredReads || [];
+        const runtimeConsequences = vector.runtimeConsequences || [];
+        const writesSource = declaredWrites.some((write) => String(write).startsWith("source."));
+
+        if (vector.sourceKind === "not-ingested") failures.push("fixture receipt was not ingested");
+        if (expected.selectedEffect && vector.selectedEffect !== expected.selectedEffect) {
+          failures.push(`selectedEffect expected ${expected.selectedEffect} but saw ${vector.selectedEffect || "(empty)"}`);
+        }
+        if (expected.actionOutcome && vector.actionOutcome !== expected.actionOutcome) {
+          failures.push(`actionOutcome expected ${expected.actionOutcome} but saw ${vector.actionOutcome || "(empty)"}`);
+        }
+        if (expected.externalStatus && vector.externalOutcome?.status !== expected.externalStatus) {
+          failures.push(`externalOutcome.status expected ${expected.externalStatus} but saw ${vector.externalOutcome?.status || "(empty)"}`);
+        }
+        if (expected.governanceOutcome && vector.governanceOutcome !== expected.governanceOutcome) {
+          failures.push(`governanceOutcome expected ${expected.governanceOutcome} but saw ${vector.governanceOutcome || "(empty)"}`);
+        }
+        if (expected.safetyOutcome && vector.safetyOutcome !== expected.safetyOutcome) {
+          failures.push(`safetyOutcome expected ${expected.safetyOutcome} but saw ${vector.safetyOutcome || "(empty)"}`);
+        }
+        if (expected.nextAction && vector.nextAction !== expected.nextAction) {
+          failures.push(`nextAction expected ${expected.nextAction} but saw ${vector.nextAction || "(empty)"}`);
+        }
+        if (expected.declaredReadsContain && !listContainsAllScmFixtureValues(declaredReads, expected.declaredReadsContain)) {
+          failures.push(`declaredReads missing ${expected.declaredReadsContain.filter((item) => !declaredReads.includes(item)).join(", ")}`);
+        }
+        if (expected.declaredWritesContain && !listContainsAllScmFixtureValues(declaredWrites, expected.declaredWritesContain)) {
+          failures.push(`declaredWrites missing ${expected.declaredWritesContain.filter((item) => !declaredWrites.includes(item)).join(", ")}`);
+        }
+        if (expected.forbiddenWritesContain && !listContainsAllScmFixtureValues(vector.repairPacket?.forbiddenWrites || [], expected.forbiddenWritesContain)) {
+          failures.push(`forbiddenWrites missing ${expected.forbiddenWritesContain.filter((item) => !(vector.repairPacket?.forbiddenWrites || []).includes(item)).join(", ")}`);
+        }
+        if (expected.consequencesContain && !listContainsAllScmFixtureValues(runtimeConsequences, expected.consequencesContain)) {
+          failures.push(`runtimeConsequences missing ${expected.consequencesContain.filter((item) => !runtimeConsequences.includes(item)).join(", ")}`);
+        }
+        if (expected.runtimeOnlyWrites === true && writesSource) {
+          failures.push("runtime-only fixture declared a source write");
+        }
+        if (expected.sourceWriteEffect === true && !writesSource) {
+          failures.push("source-write fixture did not declare a source write");
+        }
+        if (writesSource && expected.sourceMutationGate && vector.checks?.sourceMutationGate !== expected.sourceMutationGate) {
+          failures.push(`source write was not gated by ${expected.sourceMutationGate}`);
+        }
+        if (expected.sourceUnchanged === true) {
+          const sourceSafe = runtimeConsequences.includes("source unchanged")
+            || runtimeConsequences.includes("source unchanged after external outcome")
+            || vector.checks?.sourceSafeAfterExternalOutcome === true
+            || vector.checks?.sourceSerializationClean === true;
+          if (!sourceSafe) failures.push("fixture did not prove source unchanged");
+        }
+        if (expected.txDraftNoSend === true && vector.txDraftBoundary?.noSend !== true) {
+          failures.push("txDraftBoundary.noSend was not true");
+        }
+        if (expected.repairPacketGenerated === true && vector.repairPacket?.generated !== true) {
+          failures.push("repair packet was not marked generated");
+        }
+        if (expected.repairBoundaryBlocked === true && vector.repairPacket?.boundaryBlocked !== true) {
+          failures.push("repair boundary was not marked blocked");
+        }
+        if (Object.prototype.hasOwnProperty.call(expected, "liveAiCall") && vector.repairPacket?.liveAiCall !== expected.liveAiCall) {
+          failures.push(`liveAiCall expected ${expected.liveAiCall} but saw ${vector.repairPacket?.liveAiCall}`);
+        }
+        if (expected.layoutMeasured === true && vector.layoutObservation?.measured !== true) {
+          failures.push("layout observation was not measured");
+        }
+        if (typeof expected.layoutViolationCount === "number" && (vector.layoutObservation?.violations || []).length !== expected.layoutViolationCount) {
+          failures.push(`layout violation count expected ${expected.layoutViolationCount} but saw ${(vector.layoutObservation?.violations || []).length}`);
+        }
+        if (expected.checks) {
+          Object.entries(expected.checks).forEach(([key, value]) => {
+            if (vector.checks?.[key] !== value) failures.push(`check ${key} expected ${value} but saw ${vector.checks?.[key]}`);
+          });
+        }
+
+        return jsonSafeClone({
+          id: fixture.id || "",
+          family: fixture.family || "",
+          label: fixture.label || "",
+          ok: failures.length === 0,
+          failures,
+          expected,
+          vector: summarizeScmReplayFixtureVector(vector)
+        });
+      }
+
+      function runGenericScmReplayFixturePack(options = {}) {
+        const fixtures = buildGenericScmReplayFixtures(options);
+        const results = fixtures.map((fixture) => assertGenericScmReplayFixtureVector(fixture));
+        const failed = results.filter((result) => !result.ok);
+        const familyCounts = results.reduce((counts, result) => {
+          const family = result.family || "unknown";
+          counts[family] = counts[family] || {total: 0, passed: 0, failed: 0};
+          counts[family].total += 1;
+          if (result.ok) counts[family].passed += 1;
+          else counts[family].failed += 1;
+          return counts;
+        }, {});
+        return jsonSafeClone({
+          kind: "mcel-code-studio-generic-scm-replay-fixture-pack",
+          fixtureHarnessVersion: SCM_REPLAY_FIXTURE_HARNESS_VERSION,
+          family: options.family || "all",
+          ok: failed.length === 0,
+          total: results.length,
+          passed: results.length - failed.length,
+          failed: failed.map((result) => result.id),
+          familyCounts,
+          results
+        });
+      }
+
       function runScmRegressionScenario(id, label, action) {
         const before = buildScmRegressionSourceSnapshot(`${id}:before`);
         let detail = null;
@@ -1847,6 +2556,22 @@
           };
         });
 
+        add("generic.wallet-fixtures", "Replay deterministic wallet receipt fixtures through the generic vector contract", () => {
+          const fixturePack = runGenericScmReplayFixturePack({family: "wallet"});
+          return {
+            ok: fixturePack.ok,
+            fixturePack
+          };
+        });
+
+        add("generic.code-editor-fixtures", "Replay deterministic Code Studio and Monaco receipt fixtures through the generic vector contract", () => {
+          const fixturePack = runGenericScmReplayFixturePack({family: "code-editor"});
+          return {
+            ok: fixturePack.ok,
+            fixturePack
+          };
+        });
+
         add("replay.snapshot-comparison", "Build replay before/after evidence snapshots and compare violation deltas", () => {
           const summary = collectScmEvidenceSummary(studioState.lastReport);
           const entry = resolveSelectedScmEvidence(summary, studioState.scmEvidenceFilter || "all", visibleScmEvidenceEntries(summary, studioState.scmEvidenceFilter || "all"));
@@ -1898,6 +2623,9 @@
           failed: failed.map((scenario) => scenario.id),
           sourceSafety: compareScmRegressionSourceSnapshots(results[0]?.before, buildScmRegressionSourceSnapshot("final")),
           scenarios: results,
+          fixturePacks: results
+            .map((scenario) => scenario.detail?.fixturePack)
+            .filter(Boolean),
           monaco: {
             mounted: studioState.monacoMounted,
             lastReceipt: studioState.lastMonacoRuntimeReceipt,
@@ -1926,7 +2654,7 @@
           return {
             kind: "mcel-code-studio-scm-regression-harness",
             harnessVersion: SCM_REGRESSION_HARNESS_VERSION,
-            status: "Run the SCM regression harness to replay source-safe validation, runtime mount, Monaco boundary, replay, and serialization scenarios."
+            status: "Run the SCM regression harness to replay source-safe validation, runtime mount, Monaco boundary, generic receipt fixtures, replay, and serialization scenarios."
           };
         }
         return {
@@ -1940,6 +2668,7 @@
           failed: harness.failed,
           sourceSafety: harness.sourceSafety,
           monaco: harness.monaco,
+          fixturePacks: harness.fixturePacks || [],
           scenarios: harness.scenarios.map((scenario) => ({
             id: scenario.id,
             ok: scenario.ok,
@@ -3877,6 +4606,8 @@
         runScmRegressionHarness,
         formatScmRegressionHarnessDetail,
         renderScmRegressionHarnessInProofDock,
+        buildGenericScmReplayFixtures,
+        runGenericScmReplayFixturePack,
         persistLiveWorkspaceFromSource,
         hydratePersistedLiveWorkspace,
         clearPersistedLiveWorkspace,

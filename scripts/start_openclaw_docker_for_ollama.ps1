@@ -16,6 +16,12 @@ param(
     [switch]$SkipRestartProof,
     [switch]$ExtractMemory,
     [string]$ExtractOutDir,
+    [string]$ApplyMemoryExport,
+    [switch]$ApplyMemoryDryRun,
+    [switch]$ApplyMemoryForce,
+    [string]$ApplyMemoryBackupDir,
+    [switch]$PushbackSmoke,
+    [string]$PushbackSmokeOutDir,
     [switch]$Down,
     [switch]$NoSmoke
 )
@@ -207,6 +213,81 @@ function Invoke-HighFidelityMemoryExtract([string]$ExtractPath, [string]$Workspa
 
     Write-Info "high-fidelity OpenClaw persistence export written to $OutputDir"
     return $jsonOut
+}
+
+
+function Invoke-OpenClawMemoryApply(
+    [string]$ApplyPath,
+    [string]$WorkspaceDir,
+    [string]$BackupDir,
+    [bool]$DryRun,
+    [bool]$Force
+) {
+    $repoRoot = Resolve-RepoRoot
+    $applyScript = Join-Path $repoRoot "scripts\apply_openclaw_persistence.py"
+    if (-not (Test-Path $applyScript)) {
+        throw "OpenClaw persistence apply script not found: $applyScript"
+    }
+    if (-not (Test-Path $ApplyPath)) {
+        throw "OpenClaw persistence export to apply was not found: $ApplyPath"
+    }
+    if (-not $BackupDir) {
+        $BackupDir = Join-Path (Split-Path -Parent $WorkspaceDir) "backups"
+    }
+
+    $applyArgs = @(
+        $applyScript,
+        "--memory-root", $WorkspaceDir,
+        "--export", $ApplyPath,
+        "--backup-dir", $BackupDir,
+        "--verify-after",
+        "--summary-json"
+    )
+    if ($DryRun) {
+        $applyArgs += "--dry-run"
+    }
+    if ($Force) {
+        $applyArgs += "--skip-current-sha-check"
+        $applyArgs += "--allow-create"
+    }
+
+    Write-Info "applying edited OpenClaw persistence export: $ApplyPath"
+    & python @applyArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenClaw persistence apply failed for $ApplyPath"
+    }
+}
+
+function Invoke-OpenClawPushbackSmoke(
+    [string]$PushbackSmokePath,
+    [string]$WorkspaceDir,
+    [string]$OutputDir,
+    [string]$BaseUrl,
+    [int]$TimeoutSeconds
+) {
+    if (-not (Test-Path $PushbackSmokePath)) {
+        throw "OpenClaw pushback smoke script not found: $PushbackSmokePath"
+    }
+    if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+        $OutputDir = Join-Path $StateRoot "exports"
+    }
+    New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+
+    Write-Info "running automated extract/edit/apply/re-extract OpenClaw persistence pushback smoke"
+    $pushbackArgs = @(
+        $PushbackSmokePath,
+        "--memory-root", $WorkspaceDir,
+        "--export-dir", $OutputDir,
+        "--container", "main-computer-openclaw-gateway",
+        "--restart-container",
+        "--gateway-url", $BaseUrl,
+        "--timeout", ([string]$TimeoutSeconds),
+        "--json"
+    )
+    & python @pushbackArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenClaw persistence pushback smoke failed with exit code $LASTEXITCODE"
+    }
 }
 
 function ConvertTo-OpenClawModelEntries($OllamaTags, [int]$ContextWindow, [int]$MaxTokens, [int]$OllamaNumPredict) {
@@ -461,6 +542,21 @@ $env:MAIN_COMPUTER_OPENCLAW_TOKEN = $GatewayToken
 $env:MAIN_COMPUTER_OPENCLAW_AGENT_ID = $AgentId
 $env:MAIN_COMPUTER_OPENCLAW_BACKEND_MODEL = "ollama/$Model"
 
+
+if ($ApplyMemoryExport) {
+    Invoke-OpenClawMemoryApply $ApplyMemoryExport $workspaceDir $ApplyMemoryBackupDir ([bool]$ApplyMemoryDryRun) ([bool]$ApplyMemoryForce)
+    if (-not $ApplyMemoryDryRun) {
+        Write-Info "restarting OpenClaw container so the runtime sees the pushed-back memory files"
+        & docker @composeArgs restart openclaw-gateway
+        if ($LASTEXITCODE -ne 0) {
+            Show-DockerDiagnostics
+            exit $LASTEXITCODE
+        }
+        Wait-HttpOk "$baseUrl/healthz" 120
+        Write-Info "OpenClaw restarted after memory pushback"
+    }
+}
+
 $smokePath = Join-Path $repoRoot "scripts\smoke_openclaw_persistence.py"
 if ((-not $NoSmoke) -and (Test-Path $smokePath)) {
     try {
@@ -513,6 +609,11 @@ if ($ExtractMemory) {
     [void](Invoke-HighFidelityMemoryExtract $extractPath $workspaceDir $ExtractOutDir)
 }
 
+$pushbackSmokePath = Join-Path $repoRoot "scripts\smoke_openclaw_persistence_pushback.py"
+if ($PushbackSmoke) {
+    Invoke-OpenClawPushbackSmoke $pushbackSmokePath $workspaceDir $PushbackSmokeOutDir $baseUrl $SmokeTimeoutSeconds
+}
+
 Write-Host ""
 Write-Host "Docker OpenClaw is ready for Main Computer persistence work."
 Write-Host "Gateway URL: $baseUrl"
@@ -530,6 +631,16 @@ Write-Host "python scripts\extract_openclaw_persistence.py --memory-root `"$work
 Write-Host ""
 Write-Host "Optional one-shot extraction from the helper:"
 Write-Host ".\scripts\start_openclaw_docker_for_ollama.ps1 -Model $Model -Port $Port -NoSmoke -ExtractMemory"
+Write-Host ""
+Write-Host "Persistence pushback after editing the JSON export:"
+Write-Host "python scripts\apply_openclaw_persistence.py --memory-root `"$workspaceDir`" --export `"$StateRoot\exports\openclaw-persistence.json`" --dry-run --summary-json"
+Write-Host "python scripts\apply_openclaw_persistence.py --memory-root `"$workspaceDir`" --export `"$StateRoot\exports\openclaw-persistence.json`" --verify-after --summary-json"
+Write-Host ""
+Write-Host "Automated pushback proof without manual editing:"
+Write-Host ".\scripts\start_openclaw_docker_for_ollama.ps1 -Model $Model -Port $Port -NoSmoke -PushbackSmoke"
+Write-Host ""
+Write-Host "Optional one-shot pushback from a hand-edited export:"
+Write-Host ".\scripts\start_openclaw_docker_for_ollama.ps1 -Model $Model -Port $Port -NoSmoke -ApplyMemoryExport `"$StateRoot\exports\openclaw-persistence.json`""
 Write-Host ""
 Write-Host "Optional agent smoke, after direct memory is proven:"
 Write-Host ".\scripts\start_openclaw_docker_for_ollama.ps1 -Model $Model -Port $Port -AgentSmoke"

@@ -522,7 +522,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'id="code-studio-run-scm-regression-harness"',
             'id="code-studio-scm-regression-harness"',
             "SCM regression harness",
-            "validation, runtime mount, Monaco boundary, replay snapshots, and clean serialization",
+            "validation, runtime mount, Monaco boundary, generic receipt fixtures, replay snapshots, and clean serialization",
         ]
         for text in expected_markup:
             with self.subTest(markup=text):
@@ -536,6 +536,9 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "function runScmRegressionHarness",
             "function formatScmRegressionHarnessDetail",
             "function renderScmRegressionHarnessInProofDock",
+            "function buildGenericScmReplayFixtures",
+            "function runGenericScmReplayFixturePack",
+            "function assertGenericScmReplayFixtureVector",
             'kind: "mcel-code-studio-scm-regression-harness"',
             'kind: "mcel-code-studio-scm-regression-source-snapshot"',
             'id="code-studio-run-scm-regression-harness"',
@@ -543,11 +546,15 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "source.validation",
             "runtime.mount-source-safe",
             "monaco.runtime-boundary",
+            "generic.wallet-fixtures",
+            "generic.code-editor-fixtures",
             "replay.snapshot-comparison",
             "serialization.clean-source",
             "lastRegressionHarness: studioState.lastScmRegressionHarness",
             "runScmRegressionHarness,",
             "renderScmRegressionHarnessInProofDock,",
+            "buildGenericScmReplayFixtures,",
+            "runGenericScmReplayFixturePack,",
         ]
         for text in expected_script:
             with self.subTest(script=text):
@@ -566,11 +573,75 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "source.validation",
             "runtime.mount-source-safe",
             "monaco.runtime-boundary",
+            "generic.wallet-fixtures",
+            "generic.code-editor-fixtures",
             "replay.snapshot-comparison",
             "serialization.clean-source",
         ]
         positions = [script.index(name, harness_start) for name in scenario_order]
         self.assertEqual(positions, sorted(positions))
+
+
+    def test_code_studio_generic_replay_fixture_harness_covers_wallet_and_editor_contracts(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        expected_script = [
+            'const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.0.0";',
+            "function buildGenericScmReplayFixtureVector",
+            "function buildWalletScmReplayFixtureReceipt",
+            "function buildWalletScmReplayFixtures",
+            "function buildCodeEditorScmReplayFixtures",
+            "function assertGenericScmReplayFixtureVector",
+            "function runGenericScmReplayFixturePack",
+            'kind: "mcel-code-studio-generic-scm-replay-fixture-pack"',
+            "wallet.connect.pass",
+            "wallet.connect.blocked",
+            "wallet.connect.exception",
+            "wallet.accountsChanged.switch",
+            "wallet.accountsChanged.disconnect",
+            "wallet.chainChanged.wrong-chain",
+            "wallet.draftTx.pass",
+            "wallet.draftTx.blocked-wallet",
+            "wallet.draftTx.blocked-chain",
+            "wallet.repairPacket.generated",
+            "wallet.repairPacket.forbidden-write-blocked",
+            "code-editor.monaco.mount.pass",
+            "code-editor.monaco.mount.blocked",
+            "code-editor.monaco.mount.exception",
+            "code-editor.monaco.change.draft-only",
+            "code-editor.commitDraft.source-gate",
+            "code-editor.serialization.clean-source",
+            "code-editor.layout.observe.pass",
+            "code-editor.layout.observe.fail",
+            "runtimeOnlyWrites",
+            "sourceUnchanged",
+            "sourceWriteEffect",
+            "sourceMutationGate",
+            "txDraftNoSend",
+            "repairBoundaryBlocked",
+            "layoutViolationCount",
+            "fixturePacks: harness.fixturePacks || []",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        wallet = script.index("function buildWalletScmReplayFixtures")
+        editor = script.index("function buildCodeEditorScmReplayFixtures")
+        pack = script.index("function buildGenericScmReplayFixtures")
+        assert_fn = script.index("function assertGenericScmReplayFixtureVector")
+        runner = script.index("function runGenericScmReplayFixturePack")
+        self.assertLess(wallet, pack)
+        self.assertLess(editor, pack)
+        self.assertLess(pack, assert_fn)
+        self.assertLess(assert_fn, runner)
+
+        harness_start = script.index("function runScmRegressionHarness")
+        wallet_scenario = script.index("generic.wallet-fixtures", harness_start)
+        editor_scenario = script.index("generic.code-editor-fixtures", harness_start)
+        replay_scenario = script.index("replay.snapshot-comparison", harness_start)
+        self.assertLess(wallet_scenario, editor_scenario)
+        self.assertLess(editor_scenario, replay_scenario)
 
 
     def test_code_studio_layout_gate_uses_component_owned_viewport_metrics(self) -> None:

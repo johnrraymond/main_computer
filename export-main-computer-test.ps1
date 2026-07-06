@@ -5,10 +5,41 @@ param(
   [string]$ProjectName = "main_computer_test",
   [Alias("ForInstallerReHome")]
   [switch]$InstallerReHome,
-  [string]$InstallerReHomeRoot = ""
+  [string]$InstallerReHomeRoot = "",
+  [Alias("f")]
+  [switch]$Follow,
+  [ValidateRange(1, 3600)]
+  [int]$FollowCalmSeconds = 4,
+  [Parameter(ValueFromRemainingArguments = $true)]
+  [string[]]$RemainingArguments = @()
 )
 
 $ErrorActionPreference = "Stop"
+
+$scriptDefaultSourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$dashDashFollowWasSourceRoot = ($SourceRoot -ieq "--follow")
+
+if ($dashDashFollowWasSourceRoot) {
+  $Follow = $true
+  $SourceRoot = $scriptDefaultSourceRoot
+}
+
+if ($RemainingArguments.Count -gt 0) {
+  foreach ($argument in $RemainingArguments) {
+    if ($argument -ieq "--follow") {
+      $Follow = $true
+      continue
+    }
+
+    if ($dashDashFollowWasSourceRoot -and $SourceRoot -eq $scriptDefaultSourceRoot -and -not $argument.StartsWith("-")) {
+      $SourceRoot = $argument
+      continue
+    }
+
+    throw "Unexpected argument for export-main-computer-test.ps1: $argument"
+  }
+}
+
 
 function Resolve-FullPath {
   param(
@@ -548,39 +579,14 @@ function Assert-CleanExportStage {
 }
 
 $sourceFull = (Resolve-Path -LiteralPath $SourceRoot).Path
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$nonce = [guid]::NewGuid().ToString("N").Substring(0, 8)
-$installerReHomeExtractRoot = ""
-$installerReHomeRepoRoot = ""
 
-if ($InstallerReHome) {
-  $installerReHomeBaseRoot = Resolve-InstallerReHomeBaseRoot
-  $installerReHomeRunRoot = Join-Path $installerReHomeBaseRoot $nonce
-  if ([string]::IsNullOrWhiteSpace($ArchiveRoot)) {
-    $ArchiveRoot = Join-Path $installerReHomeRunRoot "z"
-  }
-  $installerReHomeExtractRoot = Join-Path $installerReHomeRunRoot "x"
-  $installerReHomeRepoRoot = Join-Path $installerReHomeExtractRoot $ProjectName
+if ($Follow -and $InstallerReHome) {
+  throw "--follow cannot be combined with -InstallerReHome because installer rehome export uses a one-shot extracted run root."
 }
-elseif (-not $ArchiveRoot) {
+
+if ((-not $InstallerReHome) -and [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
   $ArchiveRoot = Join-Path (Split-Path -Parent $SourceRoot) "archive"
 }
-
-if (-not (Test-Path -LiteralPath $ArchiveRoot)) {
-  New-Item -ItemType Directory -Path $ArchiveRoot -Force | Out-Null
-}
-
-$zipPath = Join-Path $ArchiveRoot ("{0}-{1}.zip" -f $ProjectName, $timestamp)
-
-if ($InstallerReHome) {
-  $tempRoot = Join-Path $installerReHomeRunRoot "s"
-}
-else {
-  $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mct-{0}" -f $nonce)
-}
-$stageRoot = Join-Path $tempRoot $ProjectName
-
-New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
 
 $exportItems = @(
   "main_computer",
@@ -661,53 +667,371 @@ $exportItems = @(
   "conftest.py"
 )
 
-try {
-  foreach ($relative in $exportItems) {
-    $path = Join-Path $sourceFull $relative
+function Test-PathInsideRoot {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
 
-    if (Test-Path -LiteralPath $path) {
-      Copy-ExportItem -SourcePath $path -StageRoot $stageRoot -RelativePath $relative
+    [Parameter(Mandatory = $true)]
+    [string]$Root
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Root)) {
+    return $false
+  }
+
+  $fullPath = Resolve-FullPath $Path
+  $fullRoot = Resolve-FullPath $Root
+
+  if ($fullPath.Equals($fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $true
+  }
+
+  $rootPrefix = $fullRoot + [System.IO.Path]::DirectorySeparatorChar
+  return $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Convert-ToSourceRelativeRepoPath {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  if (-not (Test-PathInsideRoot -Path $Path -Root $sourceFull)) {
+    return ""
+  }
+
+  $fullPath = Resolve-FullPath $Path
+  $fullRoot = Resolve-FullPath $sourceFull
+
+  if ($fullPath.Length -le $fullRoot.Length) {
+    return ""
+  }
+
+  return Convert-ToRepoPath ($fullPath.Substring($fullRoot.Length).TrimStart("\", "/"))
+}
+
+function Test-FollowEventAllowed {
+  param(
+    [Parameter(Mandatory = $true)]
+    $EventRecord
+  )
+
+  $eventArgs = $EventRecord.SourceEventArgs
+  if ($null -eq $eventArgs) {
+    return $false
+  }
+
+  $eventPath = $eventArgs.FullPath
+  if ([string]::IsNullOrWhiteSpace($eventPath)) {
+    return $false
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
+    if (Test-PathInsideRoot -Path $eventPath -Root $ArchiveRoot) {
+      return $false
     }
   }
 
-  Assert-CleanExportStage -StageRoot $stageRoot
-
-  if (Test-Path -LiteralPath $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
+  $repoPath = Convert-ToSourceRelativeRepoPath -Path $eventPath
+  if ([string]::IsNullOrWhiteSpace($repoPath)) {
+    return $false
   }
 
-  Compress-Archive -Path $stageRoot -DestinationPath $zipPath -Force
+  $isDirectory = Test-Path -LiteralPath $eventPath -PathType Container
+  return (Test-RepoPathAllowed -RepoPath $repoPath -IsDirectory:$isDirectory)
+}
 
-  $count = (Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force).Count
+function Test-PathCoveredByRecursiveWatcher {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
 
-  Write-Host ("created {0}" -f $zipPath)
-  Write-Host ("files: {0}" -f $count)
-  Write-Host "clean export exclusions enforced"
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [System.Collections.Generic.List[string]]$RecursiveRoots
+  )
+
+  foreach ($root in $RecursiveRoots) {
+    if (Test-PathInsideRoot -Path $Path -Root $root) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function New-FollowFileWatcher {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$DirectoryPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Filter,
+
+    [bool]$IncludeSubdirectories = $false,
+
+    [Parameter(Mandatory = $true)]
+    [string]$SourceIdentifierPrefix,
+
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [System.Collections.Generic.List[System.IO.FileSystemWatcher]]$Watchers,
+
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [System.Collections.Generic.List[string]]$SubscriptionSourceIdentifiers,
+
+    [Parameter(Mandatory = $true)]
+    [ref]$Counter
+  )
+
+  $fullDirectoryPath = (Resolve-Path -LiteralPath $DirectoryPath).Path
+
+  $watcher = New-Object System.IO.FileSystemWatcher
+  $watcher.Path = $fullDirectoryPath
+  $watcher.Filter = $Filter
+  $watcher.IncludeSubdirectories = $IncludeSubdirectories
+  $watcher.NotifyFilter = [System.IO.NotifyFilters]"FileName, DirectoryName, LastWrite, Size, CreationTime"
+  $watcher.InternalBufferSize = 65536
+  $watcher.EnableRaisingEvents = $false
+  $Watchers.Add($watcher) | Out-Null
+
+  foreach ($eventName in @("Changed", "Created", "Deleted", "Renamed")) {
+    $sourceIdentifier = "{0}-{1}-{2}" -f $SourceIdentifierPrefix, $Counter.Value, $eventName
+    $Counter.Value += 1
+
+    Register-ObjectEvent `
+      -InputObject $watcher `
+      -EventName $eventName `
+      -SourceIdentifier $sourceIdentifier | Out-Null
+
+    $SubscriptionSourceIdentifiers.Add($sourceIdentifier) | Out-Null
+  }
+
+  $watcher.EnableRaisingEvents = $true
+}
+
+function Start-FollowExportLoop {
+  $sourceIdentifierPrefix = "main-computer-export-follow-{0}" -f ([guid]::NewGuid().ToString("N"))
+  $watchers = New-Object "System.Collections.Generic.List[System.IO.FileSystemWatcher]"
+  $subscriptionSourceIdentifiers = New-Object "System.Collections.Generic.List[string]"
+  $recursiveRoots = New-Object "System.Collections.Generic.List[string]"
+  $counter = 0
+
+  try {
+    foreach ($relative in ($exportItems | Sort-Object { (Convert-ToRepoPath $_).Length })) {
+      $repoPath = Convert-ToRepoPath $relative
+      $path = Join-Path $sourceFull $repoPath
+
+      if (Test-Path -LiteralPath $path -PathType Container) {
+        $fullDirectoryPath = (Resolve-Path -LiteralPath $path).Path
+
+        if (Test-PathCoveredByRecursiveWatcher -Path $fullDirectoryPath -RecursiveRoots $recursiveRoots) {
+          continue
+        }
+
+        New-FollowFileWatcher `
+          -DirectoryPath $fullDirectoryPath `
+          -Filter "*" `
+          -IncludeSubdirectories:$true `
+          -SourceIdentifierPrefix $sourceIdentifierPrefix `
+          -Watchers $watchers `
+          -SubscriptionSourceIdentifiers $subscriptionSourceIdentifiers `
+          -Counter ([ref]$counter)
+
+        $recursiveRoots.Add((Resolve-FullPath $fullDirectoryPath)) | Out-Null
+        continue
+      }
+
+      $parent = Split-Path -Parent $path
+      $leaf = Split-Path -Leaf $path
+      if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($leaf)) {
+        continue
+      }
+
+      if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        continue
+      }
+
+      if (Test-PathCoveredByRecursiveWatcher -Path $path -RecursiveRoots $recursiveRoots) {
+        continue
+      }
+
+      New-FollowFileWatcher `
+        -DirectoryPath $parent `
+        -Filter $leaf `
+        -IncludeSubdirectories:$false `
+        -SourceIdentifierPrefix $sourceIdentifierPrefix `
+        -Watchers $watchers `
+        -SubscriptionSourceIdentifiers $subscriptionSourceIdentifiers `
+        -Counter ([ref]$counter)
+    }
+
+    if ($watchers.Count -eq 0) {
+      throw "No export paths are available to watch under: $sourceFull"
+    }
+
+    Write-Host ("following export inputs under {0}" -f $sourceFull)
+    Write-Host ("watchers: {0}" -f $watchers.Count)
+    Write-Host ("quiet window: {0} second(s)" -f $FollowCalmSeconds)
+    Write-Host "press Ctrl+C to stop following"
+
+    $pendingExport = $false
+    $quietUntilUtc = [DateTime]::MinValue
+
+    while ($true) {
+      $eventRecord = Wait-Event -Timeout 1
+
+      if ($null -ne $eventRecord) {
+        $sawRelevantEvent = $false
+
+        while ($null -ne $eventRecord) {
+          if (
+            ($null -ne $eventRecord.SourceIdentifier) -and
+            $eventRecord.SourceIdentifier.StartsWith($sourceIdentifierPrefix, [System.StringComparison]::Ordinal)
+          ) {
+            if (Test-FollowEventAllowed -EventRecord $eventRecord) {
+              $sawRelevantEvent = $true
+            }
+
+            Remove-Event -EventIdentifier $eventRecord.EventIdentifier -ErrorAction SilentlyContinue
+          }
+
+          $eventRecord = Get-Event |
+            Where-Object {
+              ($null -ne $_.SourceIdentifier) -and
+              $_.SourceIdentifier.StartsWith($sourceIdentifierPrefix, [System.StringComparison]::Ordinal)
+            } |
+            Select-Object -First 1
+        }
+
+        if ($sawRelevantEvent) {
+          $pendingExport = $true
+          $quietUntilUtc = [DateTime]::UtcNow.AddSeconds($FollowCalmSeconds)
+          Write-Host ("detected export input changes; exporting after {0} quiet second(s)" -f $FollowCalmSeconds)
+        }
+      }
+
+      if ($pendingExport -and ([DateTime]::UtcNow -ge $quietUntilUtc)) {
+        Write-Host "quiet window elapsed; creating export"
+        Invoke-ExportSnapshot
+        $pendingExport = $false
+      }
+    }
+  } finally {
+    foreach ($sourceIdentifier in $subscriptionSourceIdentifiers) {
+      if (-not [string]::IsNullOrWhiteSpace($sourceIdentifier)) {
+        Unregister-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
+      }
+    }
+
+    Get-Event |
+      Where-Object {
+        ($null -ne $_.SourceIdentifier) -and
+        $_.SourceIdentifier.StartsWith($sourceIdentifierPrefix, [System.StringComparison]::Ordinal)
+      } |
+      ForEach-Object { Remove-Event -EventIdentifier $_.EventIdentifier -ErrorAction SilentlyContinue }
+
+    foreach ($watcher in $watchers) {
+      $watcher.EnableRaisingEvents = $false
+      $watcher.Dispose()
+    }
+  }
+}
+
+function Invoke-ExportSnapshot {
+  $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $nonce = [guid]::NewGuid().ToString("N").Substring(0, 8)
+  $runArchiveRoot = $ArchiveRoot
+  $installerReHomeRunRoot = ""
+  $installerReHomeExtractRoot = ""
+  $installerReHomeRepoRoot = ""
 
   if ($InstallerReHome) {
-    if (Test-Path -LiteralPath $installerReHomeExtractRoot) {
-      Remove-Item -LiteralPath $installerReHomeExtractRoot -Recurse -Force
+    $installerReHomeBaseRoot = Resolve-InstallerReHomeBaseRoot
+    $installerReHomeRunRoot = Join-Path $installerReHomeBaseRoot $nonce
+    if ([string]::IsNullOrWhiteSpace($runArchiveRoot)) {
+      $ArchiveRoot = Join-Path $installerReHomeRunRoot "z"
+      $runArchiveRoot = $ArchiveRoot
     }
-
-    New-Item -ItemType Directory -Path $installerReHomeExtractRoot -Force | Out-Null
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $installerReHomeExtractRoot)
-
-    if (-not (Test-Path -LiteralPath $installerReHomeRepoRoot -PathType Container)) {
-      throw "Installer rehome export did not extract the expected repository root: $installerReHomeRepoRoot"
-    }
-
-    $bootstrapDriver = Join-Path $installerReHomeRepoRoot "tools\bootstrap_main_computer.py"
-    if (-not (Test-Path -LiteralPath $bootstrapDriver -PathType Leaf)) {
-      throw "Installer rehome export is missing the Python bootstrap driver: $bootstrapDriver"
-    }
-
-    Write-Host ("extracted {0}" -f $installerReHomeRepoRoot)
-    Write-Host "installer rehome export ready"
-    Write-Output $installerReHomeRepoRoot
+    $installerReHomeExtractRoot = Join-Path $installerReHomeRunRoot "x"
+    $installerReHomeRepoRoot = Join-Path $installerReHomeExtractRoot $ProjectName
+  }
+  elseif ([string]::IsNullOrWhiteSpace($runArchiveRoot)) {
+    $runArchiveRoot = Join-Path (Split-Path -Parent $SourceRoot) "archive"
   }
 
-  return
-} finally {
-  Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+  if (-not (Test-Path -LiteralPath $runArchiveRoot)) {
+    New-Item -ItemType Directory -Path $runArchiveRoot -Force | Out-Null
+  }
+
+  $zipPath = Join-Path $runArchiveRoot ("{0}-{1}.zip" -f $ProjectName, $timestamp)
+
+  if ($InstallerReHome) {
+    $tempRoot = Join-Path $installerReHomeRunRoot "s"
+  }
+  else {
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mct-{0}" -f $nonce)
+  }
+  $stageRoot = Join-Path $tempRoot $ProjectName
+
+  New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
+
+  try {
+    foreach ($relative in $exportItems) {
+      $path = Join-Path $sourceFull $relative
+
+      if (Test-Path -LiteralPath $path) {
+        Copy-ExportItem -SourcePath $path -StageRoot $stageRoot -RelativePath $relative
+      }
+    }
+
+    Assert-CleanExportStage -StageRoot $stageRoot
+
+    if (Test-Path -LiteralPath $zipPath) {
+      Remove-Item -LiteralPath $zipPath -Force
+    }
+
+    Compress-Archive -Path $stageRoot -DestinationPath $zipPath -Force
+
+    $count = (Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force).Count
+
+    Write-Host ("created {0}" -f $zipPath)
+    Write-Host ("files: {0}" -f $count)
+    Write-Host "clean export exclusions enforced"
+
+    if ($InstallerReHome) {
+      if (Test-Path -LiteralPath $installerReHomeExtractRoot) {
+        Remove-Item -LiteralPath $installerReHomeExtractRoot -Recurse -Force
+      }
+
+      New-Item -ItemType Directory -Path $installerReHomeExtractRoot -Force | Out-Null
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+      [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $installerReHomeExtractRoot)
+
+      if (-not (Test-Path -LiteralPath $installerReHomeRepoRoot -PathType Container)) {
+        throw "Installer rehome export did not extract the expected repository root: $installerReHomeRepoRoot"
+      }
+
+      $bootstrapDriver = Join-Path $installerReHomeRepoRoot "tools\bootstrap_main_computer.py"
+      if (-not (Test-Path -LiteralPath $bootstrapDriver -PathType Leaf)) {
+        throw "Installer rehome export is missing the Python bootstrap driver: $bootstrapDriver"
+      }
+
+      Write-Host ("extracted {0}" -f $installerReHomeRepoRoot)
+      Write-Host "installer rehome export ready"
+      Write-Output $installerReHomeRepoRoot
+    }
+  } finally {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
+
+Invoke-ExportSnapshot
+
+if ($Follow) {
+  Start-FollowExportLoop
+}
+
+return

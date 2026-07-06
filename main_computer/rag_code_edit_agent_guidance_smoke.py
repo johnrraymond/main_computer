@@ -1240,18 +1240,27 @@ def run_generated_editor_sandbox_apply(
         raise SmokeFailure(f"generated editor sandbox did not produce a done proposal: {sandbox_result['status']!r}")
 
     host_apply = validate_and_apply_sandbox_proposal(worktree, plan, sandbox_result)
+    scenario_name = str(plan.get("scenario", DEFAULT_SCENARIO) or DEFAULT_SCENARIO)
+    scenario = scenario_spec(scenario_name)
+    scenario_expected_sha = text_sha256(scenario.final_app_py)
+    host_apply_contracts = {
+        "host_validated_sandbox_proposal": host_apply["ok"],
+        "host_applied_sandbox_proposal": host_apply["changed_files"] == sorted(plan.get("selected_files", [])),
+        "generated_editor_output_matches_scenario_contract": host_apply["changed_files"] == list(scenario.expected_changed_files)
+        and host_apply["after_sha256_by_path"].get("app.py") == scenario_expected_sha,
+    }
+    if scenario.name == DEFAULT_SCENARIO:
+        host_apply_contracts["deterministic_safe_apply_can_be_replaced_by_sandbox_apply"] = (
+            host_apply["changed_files"] == ["app.py"]
+            and host_apply["after_sha256_by_path"].get("app.py") == text_sha256(APP_PY_DETERMINISTIC_FINAL)
+        )
     host_apply_boundary = write_boundary(
         run_dir,
         "host_apply_boundary",
         {
             "boundary_type": "host_apply_sandbox_proposal",
             "host_apply": host_apply,
-            "contracts": {
-                "host_validated_sandbox_proposal": host_apply["ok"],
-                "host_applied_sandbox_proposal": host_apply["changed_files"] == sorted(plan.get("selected_files", [])),
-                "deterministic_safe_apply_can_be_replaced_by_sandbox_apply": host_apply["changed_files"] == ["app.py"]
-                and host_apply["after_sha256_by_path"].get("app.py") == text_sha256(APP_PY_DETERMINISTIC_FINAL),
-            },
+            "contracts": host_apply_contracts,
             "parent_boundaries": [sandbox_boundary["sha256"]],
             "next_stage": "verification",
         },
@@ -1275,10 +1284,7 @@ def run_generated_editor_sandbox_apply(
             set(sandbox_result["proposed_writes"]) & set(plan.get("forbidden_paths", []))
         ),
         "generated_editor_worktree_unchanged_during_sandbox": sandbox_result["worktree_unchanged_during_sandbox"],
-        "host_validated_sandbox_proposal": host_apply["ok"],
-        "host_applied_sandbox_proposal": host_apply["changed_files"] == sorted(plan.get("selected_files", [])),
-        "deterministic_safe_apply_can_be_replaced_by_sandbox_apply": host_apply["changed_files"] == ["app.py"]
-        and host_apply["after_sha256_by_path"].get("app.py") == text_sha256(APP_PY_DETERMINISTIC_FINAL),
+        **host_apply_contracts,
     }
     return (
         {

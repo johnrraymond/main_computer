@@ -141,6 +141,30 @@ class ExportMainComputerTestTests(unittest.TestCase):
         self.assertEqual(len(lower_aliases), len(set(lower_aliases)))
         self.assertNotIn("installerrehome", lower_aliases)
 
+    def test_export_script_has_follow_mode_for_quiet_event_based_reexports(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('[Alias("f")]', script)
+        self.assertIn("[switch]$Follow", script)
+        self.assertIn("[int]$FollowCalmSeconds = 4", script)
+        self.assertIn("[Parameter(ValueFromRemainingArguments = $true)]", script)
+        self.assertIn('$SourceRoot -ieq "--follow"', script)
+        self.assertIn("$SourceRoot = $scriptDefaultSourceRoot", script)
+        self.assertIn("Unexpected argument for export-main-computer-test.ps1", script)
+        self.assertIn("System.IO.FileSystemWatcher", script)
+        self.assertIn("Wait-Event -Timeout 1", script)
+        self.assertIn("Start-FollowExportLoop", script)
+        self.assertIn("Invoke-ExportSnapshot", script)
+        self.assertIn("Test-FollowEventAllowed", script)
+        self.assertIn("[AllowEmptyCollection()]", script)
+        self.assertIn("[System.Collections.Generic.List[string]]$RecursiveRoots", script)
+        self.assertIn("[System.Collections.Generic.List[System.IO.FileSystemWatcher]]$Watchers", script)
+        self.assertIn("[System.Collections.Generic.List[string]]$SubscriptionSourceIdentifiers", script)
+        self.assertIn("Unregister-Event -SourceIdentifier $sourceIdentifier", script)
+        self.assertNotIn("SubscriptionId", script)
+        self.assertIn("detected export input changes; exporting after", script)
+        self.assertIn("--follow cannot be combined with -InstallerReHome", script)
+
     def test_pretty_docs_seed_files_exist(self) -> None:
         index_path = ROOT / "pretty_docs" / "index.json"
         guide_path = ROOT / "pretty_docs" / "main-computer-user-guide.md"
