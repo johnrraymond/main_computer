@@ -38,6 +38,62 @@ def test_astrometric_docker_lifecycle_is_page_scoped(tmp_path: Path):
     assert str(tmp_path / "docker-compose.astrometric.yml") in command
 
 
+def test_astrometric_container_runtime_can_use_podman_for_compose_and_direct_calls(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    service = AstrometricRendererService(tmp_path)
+
+    compose = service._compose_command("ps", "-a")
+    direct = service._docker_base()
+
+    assert compose[:2] == ["podman", "compose"]
+    assert direct == ["podman"]
+
+
+def test_astrometric_compose_override_infers_podman_direct_command(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MAIN_COMPUTER_CONTAINER_RUNTIME", raising=False)
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND", "podman-compose")
+    service = AstrometricRendererService(tmp_path)
+
+    assert service._docker_compose_base() == ["podman-compose"]
+    assert service._docker_base() == ["podman"]
+
+
+def test_astrometric_status_reports_container_runtime_without_breaking_docker_key(tmp_path: Path, monkeypatch):
+    service = AstrometricRendererService(tmp_path)
+    (tmp_path / "docker-compose.astrometric.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    monkeypatch.setattr(service, "renderer_health", lambda **_kwargs: {"reachable": False, "stream_ready": False})
+    monkeypatch.setattr(
+        service,
+        "_container_lifecycle",
+        lambda: {
+            "container": "main-computer-astrometric-renderer",
+            "compose_project": "main-computer-astrometric",
+            "controlled_by_page": True,
+            "running": False,
+            "state": "exited",
+            "restart_policy": "no",
+        },
+    )
+
+    def fake_run(*args, **kwargs):
+        class Completed:
+            returncode = 0
+            stdout = "podman compose version 1.2.3"
+            stderr = ""
+        return Completed()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    status = service.status()
+
+    assert status["docker"]["runtime"] == "podman"
+    assert status["docker"]["container_command"] == ["podman"]
+    assert status["docker"]["compose_command"][:2] == ["podman", "compose"]
+    assert status["container_runtime"]["runtime"] == "podman"
+    assert status["docker"]["container"]["controlled_by_page"] is True
+
+
 def test_astrometric_compose_does_not_auto_restart_renderer():
     repo_root = Path(__file__).resolve().parents[1]
     compose = (repo_root / "docker-compose.astrometric.yml").read_text(encoding="utf-8")

@@ -31,11 +31,11 @@ class FakeRunner:
             if "entrypoint-contract-ok" in script:
                 return subprocess.CompletedProcess(command, 0, stdout="entrypoint-contract-ok\n", stderr="")
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        if command[:2] and command[0].endswith("docker") and command[1] == "version":
-            return subprocess.CompletedProcess(command, 0, stdout="Docker version ok\n", stderr="")
-        if command[:3] and command[0].endswith("docker") and command[1:3] == ["compose", "version"]:
-            return subprocess.CompletedProcess(command, 0, stdout="Docker Compose version ok\n", stderr="")
-        if command[:2] and command[0].endswith("docker") and command[1] == "ps":
+        if command[:2] and command[0].endswith(("docker", "podman")) and command[1] == "version":
+            return subprocess.CompletedProcess(command, 0, stdout="Container version ok\n", stderr="")
+        if command[:3] and command[0].endswith(("docker", "podman")) and command[1:3] == ["compose", "version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="Container Compose version ok\n", stderr="")
+        if command[:2] and command[0].endswith(("docker", "podman")) and command[1] == "ps":
             return subprocess.CompletedProcess(command, 0, stdout="main-computer-dev-hub-1\n", stderr="")
         if len(command) >= 2 and command[1].endswith("smoke_foundationdb_credit_ledger_primitives.py"):
             cluster_file = Path(command[command.index("--cluster-file") + 1])
@@ -44,10 +44,31 @@ class FakeRunner:
             return subprocess.CompletedProcess(command, 0, stdout="FoundationDB smoke bootstrap ok\n", stderr="")
         if "compose" in command and "build" in command and "executor-image" in command:
             return subprocess.CompletedProcess(command, 0, stdout="built executor image\n", stderr="")
-        if command[:3] and command[0].endswith("docker") and command[1:3] == ["image", "inspect"]:
+        if command[:3] and command[0].endswith(("docker", "podman")) and command[1:3] == ["image", "inspect"]:
             return subprocess.CompletedProcess(command, 0, stdout='[{"Id":"sha256:test"}]\n', stderr="")
         return subprocess.CompletedProcess(command, 99, stdout="", stderr=f"unexpected command: {command!r}")
 
+
+
+def test_executor_service_uses_podman_runtime_when_requested(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    monkeypatch.setattr("main_computer.executor_service._command_executable_path", lambda command: command[0])
+    repo, fake_wsl, _fake_docker = make_repo(tmp_path)
+    runner = FakeRunner()
+
+    service = ExecutorService(
+        root=repo,
+        wsl_command=str(fake_wsl),
+        runner=runner,
+        output_func=None,
+        docker_start_timeout_s=1,
+    )
+    state = service._full_boot_reconcile()
+
+    assert state["docker"]["container_runtime"]["runtime"] == "podman"
+    assert ["podman", "version"] in runner.calls
+    compose_build_calls = [call for call in runner.calls if call[:2] == ["podman", "compose"] and "build" in call]
+    assert compose_build_calls
 
 def make_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
@@ -197,7 +218,7 @@ class MissingDistroInstallRunner(FakeRunner):
 
 class DockerVersionTimeoutRunner(FakeRunner):
     def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[:2] and command[0].endswith("docker") and command[1] == "version":
+        if command[:2] and command[0].endswith(("docker", "podman")) and command[1] == "version":
             raise subprocess.TimeoutExpired(
                 cmd=command,
                 timeout=float(kwargs.get("timeout") or 0),
@@ -280,7 +301,7 @@ class FlakyDockerVersionRunner(FakeRunner):
         self.docker_version_attempts = 0
 
     def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command[:2] and command[0].endswith("docker") and command[1] == "version":
+        if command[:2] and command[0].endswith(("docker", "podman")) and command[1] == "version":
             self.docker_version_attempts += 1
             if self.docker_version_attempts <= self.failures_before_ready:
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="docker engine is still starting")

@@ -1,145 +1,69 @@
-# OpenClaw Docker Gateway for host Ollama
+# OpenClaw container helper for local Ollama
 
-This compose profile starts a local Docker OpenClaw Gateway that can use the Ollama
-models already installed on the Windows host.
+This helper runs the OpenClaw Gateway container against the host Ollama server and keeps all generated OpenClaw state outside the repository.
 
-The PowerShell helper writes generated state outside the repository under:
+By default, state is written under `%LOCALAPPDATA%\MainComputer\openclaw-docker` on Windows, or `~/.main-computer/openclaw-docker` when `LOCALAPPDATA` is not available. The helper writes the Gateway config, workspace, auth profile secrets, extraction exports, and smoke outputs there so repo checkouts stay clean.
 
-```text
-%LOCALAPPDATA%\MainComputer\openclaw-docker
-```
+## Runtime selection
 
-That state contains the generated OpenClaw config, bearer token, and workspace
-memory files. The repository only contains the compose template and helper script.
-
-## Why Docker uses `host.docker.internal:11434`
-
-Inside a Docker container, `127.0.0.1` is the container itself, not the Windows
-host. The helper writes OpenClaw config with:
-
-```text
-models.providers.ollama.baseUrl = "http://host.docker.internal:11434"
-```
-
-It also expands `models.providers.ollama.models` from the host
-`http://127.0.0.1:11434/api/tags` response so OpenClaw sees the exact local model
-names already installed by Ollama.
-
-The compose file maps the host-published Gateway port to the fixed container
-port. For example, `-Port 18790` publishes `127.0.0.1:18790`, while the container OpenClaw still listens on `18789`.
-
-## Default smoke
-
-Run:
+The PowerShell launcher can use Docker or Podman:
 
 ```powershell
-.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790
+# historical default
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b
+
+# Podman
+$env:MAIN_COMPUTER_CONTAINER_RUNTIME = "podman"
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b
 ```
 
-The default smoke is now deterministic. It verifies:
+You can also pass `-ContainerRuntime podman`, `-ContainerCommand podman`, or `-ComposeCommand "podman compose"` directly. The launcher still keeps the historical `openclaw-docker` folder and script name for compatibility.
 
-1. Docker can start the OpenClaw Gateway.
-2. The container can see the host Ollama model through `host.docker.internal:11434`.
-3. `/v1/models` responds.
-4. `smoke_openclaw_persistence.py --direct-memory` can write a marker into the
-   Docker-mounted OpenClaw Markdown memory workspace.
-5. The OpenClaw container can read that marker from `/home/node/.openclaw/workspace`.
-6. The marker remains visible after a container restart.
+Docker containers reach host Ollama through `host.docker.internal:11434`; the compose file includes a `host.docker.internal:host-gateway` mapping for Linux Docker hosts. Podman runs default to `host.containers.internal:11434`. Override either case with `-ContainerOllamaUrl` or `OPENCLAW_CONTAINER_OLLAMA_URL`.
 
-This proves the persistence layer surface before Main Computer grows an
-OpenClaw provider.
+The host-published Gateway port is controlled by `-Port` / `OPENCLAW_GATEWAY_PORT`, but the container OpenClaw still listens on `18789`. The launcher writes that internal port into the Gateway config.
 
-## Optional agent smoke
+## Generated config shape
 
-The old `/v1/responses` agent smoke is intentionally opt-in because local
-OpenClaw agent runs can be slow or can decide to use unrelated tools. After the
-direct memory smoke passes, run:
+The launcher discovers local Ollama models from `http://127.0.0.1:11434/api/tags`, then writes an OpenClaw config whose `models.providers.ollama.models` value is always a JSON array. The Gateway uses the native Ollama provider, not `/v1`, so the generated provider base URL is either `http://host.docker.internal:11434` or `http://host.containers.internal:11434`.
 
-```powershell
-.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -AgentSmoke
-```
+## Smoke tests
 
-For the fuller recall test:
+The default smoke first runs `smoke_openclaw_persistence.py` in direct memory mode. This direct memory smoke writes a Markdown fact under the mounted workspace, then asks the running OpenClaw container to read that marker from `/home/node/.openclaw/workspace`.
 
-```powershell
-.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -FullSmoke
-```
-
-Stop the stack with:
-
-```powershell
-.\scripts\start_openclaw_docker_for_ollama.ps1 -Down
-```
+Pass `-AgentSmoke` to additionally exercise `/v1/responses`; pass `-FullSmoke` to keep the recall turns enabled. The direct smoke is intentionally the default because it proves the persistence mount quickly without waiting on a large local model.
 
 ## High-fidelity memory extraction
 
-After the direct memory smoke passes, export the OpenClaw Markdown persistence
-surface without summarizing it:
+Use `extract_openclaw_persistence.py` to create a JSON, JSONL, and Markdown export from the mounted workspace:
 
 ```powershell
 python scripts\extract_openclaw_persistence.py --memory-root "%LOCALAPPDATA%\MainComputer\openclaw-docker\workspace" --out "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json" --jsonl-out "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.jsonl" --markdown-out "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.md" --summary-json
 ```
 
-The exporter preserves exact source text, SHA-256 hashes, line spans, heading
-paths, and section records. This gives Main Computer a deterministic persistence
-ingest surface before any `/v1/responses` agent integration is added.
-
-You can also ask the helper to run the extraction:
-
-```powershell
-.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -NoSmoke -ExtractMemory
-```
-
+The export records include source paths, byte counts, and SHA-256 hashes so later pushback can verify the expected-current content before modifying files.
 
 ## High-fidelity memory pushback
 
-
-### Automated pushback smoke
-
-To prove the pushback surface without manually editing JSON, run:
-
-```powershell
-.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -NoSmoke -PushbackSmoke
-```
-
-That one command creates or reuses `memory/YYYY-MM-DD-main-computer-pushback-smoke.md`,
-exports high-fidelity persistence, edits the exported JSON text payload with a
-unique marker, applies it back with expected-current SHA checks, re-extracts the
-workspace, verifies the marker, asks the running OpenClaw container to read the
-marker from its mounted workspace, restarts the container, and verifies the
-marker again.
-
-The standalone form is:
-
-```powershell
-python scripts\smoke_openclaw_persistence_pushback.py --memory-root "%LOCALAPPDATA%\MainComputer\openclaw-docker\workspace" --export-dir "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports" --container main-computer-openclaw-gateway --restart-container --gateway-url http://127.0.0.1:18790 --json
-```
-
-Round-trip edits through the JSON or JSONL export, not the rendered Markdown
-review file. The `sha256` value in each file record is treated as the expected
-current hash from extraction time, so you can edit `file.text` while leaving
-`sha256` unchanged. That lets the apply step detect whether OpenClaw memory
-changed underneath you before writing.
-
-Dry run first:
+Use `apply_openclaw_persistence.py` after editing the JSON export:
 
 ```powershell
 python scripts\apply_openclaw_persistence.py --memory-root "%LOCALAPPDATA%\MainComputer\openclaw-docker\workspace" --export "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json" --dry-run --summary-json
-```
-
-Apply and verify readback:
-
-```powershell
 python scripts\apply_openclaw_persistence.py --memory-root "%LOCALAPPDATA%\MainComputer\openclaw-docker\workspace" --export "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json" --verify-after --summary-json
 ```
 
-The helper can also apply the edited export and restart the OpenClaw container so
-the runtime sees the pushed-back Markdown files:
+Pushback uses expected-current SHA-256 checks by default and writes backups before replacing Markdown memory files.
+
+## Automated pushback smoke
+
+Pass `-PushbackSmoke` to run `smoke_openclaw_persistence_pushback.py`. It extracts the workspace, edits a memory Markdown record in memory, applies that edited export with expected-current checks, re-extracts, and optionally probes the running container before and after restart.
 
 ```powershell
-.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -NoSmoke -ApplyMemoryExport "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json"
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -NoSmoke -PushbackSmoke
 ```
 
-Use `-ApplyMemoryDryRun` to test the helper path without writing. Use
-`-ApplyMemoryForce` only when you intentionally want to bypass the expected-current
-SHA guard and allow creates.
+For one-shot pushback from a hand-edited export, use `-ApplyMemoryExport`:
+
+```powershell
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -NoSmoke -ApplyMemoryExport "%LOCALAPPDATA%\MainComputer\openclaw-docker\exports\openclaw-persistence.json"
+```

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import hashlib
@@ -12,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from main_computer.container_runtime import resolve_container_runtime
 from main_computer.contract_config import get_contract_record, load_contract_config
 
 
@@ -481,7 +481,7 @@ class DevChainBridgeAdapter:
         *,
         value_wei: int | None = None,
     ) -> list[str]:
-        command = [shutil.which("docker") or "docker", "run", "--rm"]
+        command = resolve_container_runtime(cwd=self.repo_root, probe=False).container_args("run", "--rm")
         if self.network_name:
             command.extend(["--network", self.network_name])
         command.extend(

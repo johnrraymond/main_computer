@@ -16,6 +16,7 @@ import time
 from typing import Any, Callable
 from main_computer.main_log_hooks import install_main_log_hooks_from_env
 from main_computer.main_log_client import emit_main_log_text
+from main_computer.container_runtime import legacy_docker_command_override, resolve_container_runtime
 
 from main_computer.service_control import complete_control_request, control_status, pending_control_requests
 
@@ -345,11 +346,17 @@ class ApplicationsService:
             fallback=DEFAULT_COMPOSE_PROJECT,
         )
         self.coolify_tool = self.root / "tools" / "local-prod" / "coolify-local-docker.py"
-        self.docker_command = (docker_command or "docker").strip() or "docker"
         self.compose_file = Path(compose_file) if compose_file else self.root / DEFAULT_COMPOSE_FILE
         if not self.compose_file.is_absolute():
             self.compose_file = (self.root / self.compose_file).resolve()
         self.runner = runner or subprocess.run
+        self.container_runtime = resolve_container_runtime(
+            cwd=self.root,
+            runner=self.runner,
+            container_command=legacy_docker_command_override(docker_command),
+            probe=True,
+        )
+        self.docker_command = " ".join(self.container_runtime.container_command)
         self.sleep = sleep_func or time.sleep
         self.time = time_func or time.monotonic
         self.output = output_func
@@ -915,54 +922,54 @@ class ApplicationsService:
         )
 
     def _reconcile_docker_engine(self) -> dict[str, Any]:
-        version = self._run([self.docker_command, "version"], timeout=12)
+        version = self._run(self.container_runtime.container_args("version"), timeout=12)
         if version.returncode != 0:
             return self._component(
                 ok=False,
                 state="down",
-                message="docker engine is not responding",
+                message="container engine is not responding",
                 command=_command_display(version.args if isinstance(version.args, list) else [str(version.args)]),
+                container_runtime=self.container_runtime.as_dict(),
                 returncode=version.returncode,
                 stdout=_truncate(version.stdout),
-                error=_truncate(version.stderr) or "docker version failed",
+                error=_truncate(version.stderr) or "container runtime version failed",
             )
 
-        compose = self._run([self.docker_command, "compose", "version"], timeout=12)
+        compose = self._run(self.container_runtime.compose_args("version"), timeout=12)
         if compose.returncode != 0:
             return self._component(
                 ok=False,
                 state="compose-missing",
-                message="docker compose is not available",
+                message="container compose is not available",
                 returncode=compose.returncode,
                 stdout=_truncate(compose.stdout),
-                error=_truncate(compose.stderr) or "docker compose version failed",
+                error=_truncate(compose.stderr) or "container compose version failed",
             )
 
         return self._component(
             ok=True,
             state="ready",
-            message="docker engine and compose are available",
+            message="container engine and compose are available",
             engine_available=True,
             compose_available=True,
             version_stdout=_truncate(version.stdout),
             compose_stdout=_truncate(compose.stdout),
+            container_runtime=self.container_runtime.as_dict(),
         )
 
     def _check_docker_light(self) -> dict[str, Any]:
-        result = self._run([self.docker_command, "ps", "--format", "{{.Names}}"], timeout=12)
+        result = self._run(self.container_runtime.container_args("ps", "--format", "{{.Names}}"), timeout=12)
         return self._component(
             ok=result.returncode == 0,
             state="ready" if result.returncode == 0 else "down",
-            message="docker is responding" if result.returncode == 0 else "docker is not responding",
+            message="container runtime is responding" if result.returncode == 0 else "container runtime is not responding",
             returncode=result.returncode,
             stdout=_truncate(result.stdout),
             error=_truncate(result.stderr),
         )
 
     def _compose_command(self, *args: str) -> list[str]:
-        return [
-            self.docker_command,
-            "compose",
+        return self.container_runtime.compose_args(
             "--project-name",
             self.compose_project,
             "--env-file",
@@ -970,7 +977,7 @@ class ApplicationsService:
             "-f",
             str(self.compose_file),
             *args,
-        ]
+        )
 
     def _reconcile_compose_stack(self) -> dict[str, Any]:
         if not self.compose_file.exists():

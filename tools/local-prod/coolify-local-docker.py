@@ -23,6 +23,50 @@ from urllib.parse import urlencode, urljoin
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 
+try:
+    from main_computer.container_runtime import resolve_container_runtime
+except Exception:  # pragma: no cover - fallback for standalone tool copies
+    def _split_container_command(value: str | None) -> list[str]:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        try:
+            return shlex.split(text)
+        except ValueError:
+            return text.split()
+
+    class _FallbackContainerRuntime:
+        def __init__(self) -> None:
+            runtime = str(os.environ.get("MAIN_COMPUTER_CONTAINER_RUNTIME") or "").strip().lower()
+            command = (
+                os.environ.get("MAIN_COMPUTER_CONTAINER_COMMAND")
+                or os.environ.get("MAIN_COMPUTER_DOCKER_COMMAND")
+                or os.environ.get("MAIN_COMPUTER_DOCKER")
+                or ""
+            )
+            if command:
+                self.container_command = tuple(_split_container_command(command))
+            elif runtime in {"podman", "podman-desktop"}:
+                self.container_command = ("podman",)
+            else:
+                self.container_command = ("docker",)
+            executable = self.container_command[0] if self.container_command else "docker"
+            if Path(executable).name.lower().replace(".exe", "") == "podman":
+                self.compose_command = (*self.container_command, "compose")
+            else:
+                self.compose_command = (*self.container_command, "compose")
+
+        def container_args(self, *args: object) -> list[str]:
+            return [*self.container_command, *map(str, args)]
+
+        def compose_args(self, *args: object) -> list[str]:
+            return [*self.compose_command, *map(str, args)]
+
+    def resolve_container_runtime(**_kwargs):
+        return _FallbackContainerRuntime()
+
+
+
 PROJECT_NAME = "main-computer-coolify-local"
 DEFAULT_APP_PORT = 8000
 DEFAULT_DASHBOARD_URL = f"http://127.0.0.1:{DEFAULT_APP_PORT}"
@@ -714,6 +758,14 @@ def write_initial_state(root: Path, *, force: bool = False, app_port: int | None
     return target_env, []
 
 
+def container_runtime(root: Path | None = None):
+    return resolve_container_runtime(cwd=root, probe=False)
+
+
+def container_command(root: Path | None, *args: object) -> list[str]:
+    return container_runtime(root).container_args(*args)
+
+
 def _subprocess_timeout_text(value: object) -> str:
     if value is None:
         return ""
@@ -771,9 +823,7 @@ def run(
 
 def docker_compose_command(root: Path, args: list[str]) -> list[str]:
     env_path = env_file(root)
-    return [
-        "docker",
-        "compose",
+    return container_runtime(root).compose_args(
         "--project-name",
         coolify_project_name(root),
         "--project-directory",
@@ -783,7 +833,7 @@ def docker_compose_command(root: Path, args: list[str]) -> list[str]:
         "-f",
         str(compose_file(root)),
         *args,
-    ]
+    )
 
 
 def check_command(command: list[str]) -> tuple[bool, str]:
@@ -3749,11 +3799,11 @@ def ensure_docker_network_exists(network: str) -> tuple[bool, str]:
     if not valid_docker_network_name(network):
         return False, f"invalid local Docker network name from Coolify destination: {network!r}"
 
-    inspected = run(["docker", "network", "inspect", network], check=False, capture=True)
+    inspected = run(container_command(None, "network", "inspect", network), check=False, capture=True)
     if inspected.returncode == 0:
         return True, f"local Docker destination network exists: {network}"
 
-    created = run(["docker", "network", "create", network], check=False, capture=True)
+    created = run(container_command(None, "network", "create", network), check=False, capture=True)
     output = (created.stdout or "").strip()
     if created.returncode == 0:
         return True, f"created local Docker destination network: {network}"
@@ -3802,9 +3852,7 @@ def start_smoke_service_with_local_docker(
     compose_path.write_text(raw, encoding="utf-8")
 
     project_name = local_smoke_compose_project_name(service_uuid, service_name)
-    up_cmd = [
-        "docker",
-        "compose",
+    up_cmd = container_runtime(root).compose_args(
         "-f",
         str(compose_path),
         "-p",
@@ -3813,7 +3861,7 @@ def start_smoke_service_with_local_docker(
         "-d",
         "--remove-orphans",
         "--force-recreate",
-    ]
+    )
     up = run(up_cmd, check=False, capture=True, timeout_seconds=240)
     up_output = (up.stdout or "").strip()
     if up.returncode != 0:
@@ -3823,15 +3871,15 @@ def start_smoke_service_with_local_docker(
         )
 
     ps = run(
-        [
-            "docker",
+        container_command(
+            root,
             "ps",
             "-q",
             "--filter",
             f"label=com.docker.compose.project={project_name}",
             "--filter",
             f"label=com.docker.compose.service={service_name}",
-        ],
+        ),
         check=False,
         capture=True,
     )
@@ -3847,7 +3895,7 @@ def start_smoke_service_with_local_docker(
     if network and valid_docker_network_name(network):
         alias = f"{service_name}-{service_uuid}" if service_uuid else service_name
         connect = run(
-            ["docker", "network", "connect", "--alias", alias, network, container_id],
+            container_command(root, "network", "connect", "--alias", alias, network, container_id),
             check=False,
             capture=True,
         )
@@ -4763,11 +4811,11 @@ def preflight(root: Path) -> int:
 
     failures = 0
 
-    ok, detail = check_command(["docker", "version", "--format", "{{.Server.Version}}"])
+    ok, detail = check_command(container_command(root, "version", "--format", "{{.Server.Version}}"))
     print_check("Docker server is reachable", ok, detail)
     failures += 0 if ok else 1
 
-    ok, detail = check_command(["docker", "compose", "version"])
+    ok, detail = check_command(container_runtime(root).compose_args("version"))
     print_check("Docker Compose v2 is reachable", ok, detail)
     failures += 0 if ok else 1
 
@@ -4850,7 +4898,7 @@ def _docker_rm_force(refs: list[str]) -> str:
     safe_refs = [str(ref).strip() for ref in refs if str(ref).strip()]
     if not safe_refs:
         return ""
-    completed = run(["docker", "rm", "-f", *safe_refs], check=False, capture=True)
+    completed = run(container_command(None, "rm", "-f", *safe_refs), check=False, capture=True)
     output = completed.stdout or ""
     if output:
         print(output, end="" if output.endswith("\n") else "\n")

@@ -68,6 +68,7 @@ def test_service_env_exposes_local_coolify_token_value_for_remote_prod_path(tmp_
         workspace=tmp_path,
         wsl_command="wsl.exe",
         onlyoffice_mode="disabled",
+        container_runtime="docker",
         local_server_mode="auto",
         local_coolify_mode="auto",
     )
@@ -88,6 +89,7 @@ def test_service_env_respects_empty_base_env_without_dev_shell_leakage(tmp_path:
         workspace=tmp_path,
         wsl_command="wsl.exe",
         onlyoffice_mode="disabled",
+        container_runtime="docker",
         local_server_mode="disabled",
         local_coolify_mode="disabled",
     )
@@ -95,6 +97,7 @@ def test_service_env_respects_empty_base_env_without_dev_shell_leakage(tmp_path:
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONPATH" not in env
     assert env["MAIN_COMPUTER_CONTROL_PORT"] == "28865"
+    assert env["MAIN_COMPUTER_CONTAINER_RUNTIME"] == "docker"
 
 
 def test_launcher_environment_records_managed_python_without_dev_shell_leakage(tmp_path: Path, monkeypatch) -> None:
@@ -107,9 +110,11 @@ def test_launcher_environment_records_managed_python_without_dev_shell_leakage(t
         venv_python=managed_python,
         wsl_command="wsl.exe",
         onlyoffice_mode="disabled",
+        container_runtime="docker",
         local_server_mode="disabled",
         local_coolify_mode="disabled",
     )
 
     assert env["MAIN_COMPUTER_PYTHON_COMMAND"] == str(managed_python)
+    assert env["MAIN_COMPUTER_CONTAINER_RUNTIME"] == "docker"
     assert "VIRTUAL_ENV" not in env

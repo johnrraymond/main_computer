@@ -62,6 +62,9 @@ param(
     [ValidateSet("auto", "disabled", "docker")]
     [string]$OnlyOfficeMode = "auto",
 
+    [ValidateSet("docker", "podman")]
+    [string]$ContainerRuntime = "docker",
+
     [ValidateSet("auto", "disabled", "required")]
     [string]$WslFirewallMode = "auto",
 
@@ -334,6 +337,7 @@ $installerParams = @{
     BindHost = $BindHost
     StartTimeoutSeconds = $StartTimeoutSeconds
     OnlyOfficeMode = $OnlyOfficeMode
+    ContainerRuntime = $ContainerRuntime
     WslFirewallMode = $WslFirewallMode
     LocalServerMode = $LocalServerMode
     LocalCoolifyMode = $LocalCoolifyMode

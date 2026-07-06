@@ -98,3 +98,27 @@ def test_docker_executor_uploads_raw_stream_and_records_container_path(tmp_path:
     uploads = executor.list_uploads()
     assert uploads[0]["id"] == record.id
     assert uploads[0]["filename"] == "unsafe name.csv"
+
+
+def test_docker_executor_uses_podman_runtime_when_requested(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    calls: list[list[str]] = []
+
+    def fake_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        output_mount = next(command[index + 1] for index, item in enumerate(command) if item == "-v" and command[index + 1].endswith(":/outputs:rw"))
+        output_dir = Path(output_mount.rsplit(":", 2)[0])
+        (output_dir / "result.txt").write_text("artifact\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="hello\n", stderr="")
+
+    executor = DockerExecutor(
+        image="main-computer-executor:test",
+        runtime_root=tmp_path / "runtime",
+        enabled=True,
+        runner=fake_runner,
+    )
+
+    result = executor.run(ExecutorRequest(command="python -c \"print('hello')\"", network=False))
+
+    assert result.ok is True
+    assert calls[0][:2] == ["podman", "run"]

@@ -48,6 +48,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Protocol, Sequence
 
+from main_computer.container_runtime import resolve_container_runtime
+
 
 MODE = "rag_code_edit_agent_guidance_smoke"
 DEFAULT_SCENARIO = "single_file_python_edit"
@@ -66,7 +68,7 @@ CONTAINER_RUN_DIR = "/smoke_run"
 CONTAINER_SOURCE_DIR = "/smoke_src"
 CONTAINER_REPLAY_REPORT_PATH = f"{CONTAINER_RUN_DIR}/replay_source_report.json"
 CONTAINER_LIVE_PLAN_PATH = f"{CONTAINER_RUN_DIR}/live_plan.json"
-DOCKER_IMAGE_BUILD_HINT = "docker compose -f docker-compose.executor.yml build executor-image"
+DOCKER_IMAGE_BUILD_HINT = "docker compose -f docker-compose.executor.yml build executor-image (or set MAIN_COMPUTER_CONTAINER_RUNTIME=podman and use the equivalent Podman Compose command)"
 APP_PY_INITIAL = """\
 def greet(name: str) -> str:
     return f"Hello, {name}!"
@@ -404,15 +406,29 @@ def require_git_available() -> None:
         raise SmokeFailure("git is required for this smoke but was not found on PATH")
 
 
+def container_runtime_command() -> list[str]:
+    return list(resolve_container_runtime(cwd=Path.cwd(), probe=False).container_command)
+
+
+def container_command_available() -> bool:
+    command = container_runtime_command()
+    return bool(command) and (shutil.which(command[0]) is not None or Path(command[0]).exists())
+
+
+def container_args(*args: object) -> list[str]:
+    return resolve_container_runtime(cwd=Path.cwd(), probe=False).container_args(*args)
+
+
 def require_docker_available() -> None:
-    if shutil.which("docker") is None:
-        raise SmokeFailure("Docker is required for this smoke because the agent must run inside a container.")
+    if not container_command_available():
+        runtime_name = resolve_container_runtime(cwd=Path.cwd(), probe=False).runtime
+        raise SmokeFailure(f"{runtime_name} is required for this smoke because the agent must run inside a container.")
 
 
 def docker_image_available(image: str) -> bool:
-    if shutil.which("docker") is None:
+    if not container_command_available():
         return False
-    result = run_command(Path.cwd(), ["docker", "image", "inspect", image], timeout_seconds=10.0)
+    result = run_command(Path.cwd(), container_args("image", "inspect", image), timeout_seconds=10.0)
     return result.returncode == 0 and not result.timed_out
 
 
@@ -420,7 +436,7 @@ def require_docker_image(image: str) -> None:
     require_docker_available()
     if not docker_image_available(image):
         raise SmokeFailure(
-            f"Docker image {image!r} is required for the agent container boundary. "
+            f"Container image {image!r} is required for the agent container boundary. "
             f"Build it with: {DOCKER_IMAGE_BUILD_HINT}"
         )
 
@@ -454,8 +470,7 @@ def build_docker_agent_command(
     live_plan_path: str = "",
 ) -> list[str]:
     command = [
-        "docker",
-        "run",
+        *resolve_container_runtime(cwd=repo_root, probe=False).container_args("run"),
         "--rm",
         "--network",
         "none",

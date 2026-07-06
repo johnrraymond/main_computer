@@ -11,7 +11,7 @@ hand-edit an export:
 4. Apply the edited export back to the workspace with expected-current SHA
    checks, backups, and readback verification.
 5. Re-extract the workspace and verify the edited marker is present.
-6. Optionally ask the running OpenClaw Docker container to read the mounted
+6. Optionally ask the running OpenClaw container to read the mounted
    memory file before and after a restart.
 
 The target file is limited to memory/**/*.md so it exercises the same safe
@@ -34,6 +34,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+_REPO_ROOT_FOR_IMPORT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT_FOR_IMPORT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT_FOR_IMPORT))
+
+from main_computer.container_runtime import resolve_container_runtime
 
 
 DEFAULT_TARGET_BASENAME = "main-computer-pushback-smoke.md"
@@ -185,7 +191,14 @@ def wait_for_http_ok(url: str, timeout_s: float) -> None:
     raise PushbackSmokeError(f"timed out waiting for {url}; last error: {last_error}")
 
 
-def run_docker_exec(args: list[str], *, timeout_s: float = 60.0) -> subprocess.CompletedProcess[str]:
+def container_runtime_cli(container_runtime: str | None = None) -> list[str]:
+    env = dict(os.environ)
+    if container_runtime and container_runtime != "auto":
+        env["MAIN_COMPUTER_CONTAINER_RUNTIME"] = container_runtime
+    return list(resolve_container_runtime(cwd=Path.cwd(), environ=env, probe=False).container_command)
+
+
+def run_container_command(args: list[str], *, timeout_s: float = 60.0) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
         text=True,
@@ -196,20 +209,27 @@ def run_docker_exec(args: list[str], *, timeout_s: float = 60.0) -> subprocess.C
     )
 
 
-def docker_exec_command(
+def run_docker_exec(args: list[str], *, timeout_s: float = 60.0) -> subprocess.CompletedProcess[str]:
+    """Backward-compatible alias for tests/plugins that monkeypatch the old helper name."""
+
+    return run_container_command(args, timeout_s=timeout_s)
+
+
+def container_exec_command(
     container: str,
     *,
+    container_runtime: str | None = None,
     env: dict[str, str] | None = None,
     command: list[str],
 ) -> list[str]:
-    """Build a non-interactive docker exec command.
+    """Build a non-interactive container exec command.
 
-    `docker exec` is non-TTY by default unless `-t` is requested. The `-T`
-    no-TTY flag belongs to `docker compose exec` and causes Docker CLI failures
-    such as "unknown shorthand flag: 'T' in -T" when used with plain
-    `docker exec`.
+    Plain ``docker exec`` and ``podman exec`` are non-TTY by default unless
+    ``-t`` is requested. The ``-T`` no-TTY flag belongs to Compose exec and is
+    intentionally avoided here.
     """
-    args = ["docker", "exec"]
+
+    args = [*container_runtime_cli(container_runtime), "exec"]
     for key, value in (env or {}).items():
         args.extend(["-e", f"{key}={value}"])
     args.extend([container, *command])
@@ -223,6 +243,7 @@ def container_probe(
     relative_path: str,
     container_workspace: str,
     timeout_s: float,
+    container_runtime: str | None = None,
 ) -> dict[str, Any]:
     js = r"""
 const fs = require('fs');
@@ -256,8 +277,9 @@ console.log(JSON.stringify({
   sha256: require('crypto').createHash('sha256').update(text, 'utf8').digest('hex')
 }));
 """
-    cmd = docker_exec_command(
+    cmd = container_exec_command(
         container,
+        container_runtime=container_runtime,
         env={
             "MAIN_COMPUTER_PUSHBACK_MARKER": marker,
             "MAIN_COMPUTER_PUSHBACK_RELATIVE_PATH": relative_path,
@@ -265,7 +287,7 @@ console.log(JSON.stringify({
         },
         command=["node", "-e", js],
     )
-    completed = run_docker_exec(cmd, timeout_s=timeout_s)
+    completed = run_container_command(cmd, timeout_s=timeout_s)
     if completed.returncode != 0:
         raise PushbackSmokeError(
             "container could not read pushed-back memory marker "
@@ -277,11 +299,19 @@ console.log(JSON.stringify({
         raise PushbackSmokeError(f"container probe returned non-JSON output: {completed.stdout!r}") from exc
 
 
-def restart_container(container: str, *, gateway_url: str | None, timeout_s: float) -> None:
-    completed = run_docker_exec(["docker", "restart", container], timeout_s=timeout_s)
+def restart_container(
+    container: str,
+    *,
+    gateway_url: str | None,
+    timeout_s: float,
+    container_runtime: str | None = None,
+) -> None:
+    command = [*container_runtime_cli(container_runtime), "restart", container]
+    completed = run_container_command(command, timeout_s=timeout_s)
     if completed.returncode != 0:
+        runtime = container_runtime or os.environ.get("MAIN_COMPUTER_CONTAINER_RUNTIME") or "container runtime"
         raise PushbackSmokeError(
-            f"docker restart failed for {container}: {completed.stderr.strip() or completed.stdout.strip()}"
+            f"{runtime} restart failed for {container}: {completed.stderr.strip() or completed.stdout.strip()}"
         )
     if gateway_url:
         wait_for_http_ok(gateway_url.rstrip("/") + "/healthz", timeout_s)
@@ -294,6 +324,7 @@ def run_pushback_smoke(
     target_relative_path: str | None = None,
     container: str | None = None,
     container_workspace: str = DEFAULT_CONTAINER_WORKSPACE,
+    container_runtime: str | None = None,
     restart: bool = False,
     gateway_url: str | None = None,
     timeout_s: float = 120.0,
@@ -380,18 +411,20 @@ def run_pushback_smoke(
             relative_path=relative_path,
             container_workspace=container_workspace,
             timeout_s=timeout_s,
+            container_runtime=container_runtime,
         )
         before["label"] = "before_restart"
         container_checks.append(before)
 
         if restart:
-            restart_container(container, gateway_url=gateway_url, timeout_s=timeout_s)
+            restart_container(container, gateway_url=gateway_url, timeout_s=timeout_s, container_runtime=container_runtime)
             after = container_probe(
                 container=container,
                 marker=marker,
                 relative_path=relative_path,
                 container_workspace=container_workspace,
                 timeout_s=timeout_s,
+                container_runtime=container_runtime,
             )
             after["label"] = "after_restart"
             container_checks.append(after)
@@ -460,7 +493,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--memory-root", type=Path, default=default_memory_root())
     parser.add_argument("--export-dir", type=Path, default=None)
     parser.add_argument("--target-relative-path", default=None)
-    parser.add_argument("--container", default=None, help="Docker container name to probe, e.g. main-computer-openclaw-gateway")
+    parser.add_argument("--container", default=None, help="Container name to probe, e.g. main-computer-openclaw-gateway")
+    parser.add_argument(
+        "--container-runtime",
+        choices=("auto", "docker", "podman"),
+        default=os.environ.get("MAIN_COMPUTER_CONTAINER_RUNTIME", "auto"),
+        help="Container runtime used for optional exec/restart probes.",
+    )
     parser.add_argument("--container-workspace", default=DEFAULT_CONTAINER_WORKSPACE)
     parser.add_argument("--restart-container", action="store_true")
     parser.add_argument("--gateway-url", default=None, help="Gateway URL used to wait for health after container restart")
@@ -488,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_relative_path=args.target_relative_path,
                 container=args.container,
                 container_workspace=args.container_workspace,
+                container_runtime=args.container_runtime,
                 restart=args.restart_container,
                 gateway_url=args.gateway_url,
                 timeout_s=args.timeout,

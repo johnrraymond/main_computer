@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from main_computer.container_runtime import command_display as _container_command_display, resolve_container_runtime
 from main_computer.git_commit import GitCommitJobManager
 
 
@@ -4292,6 +4293,9 @@ service._git_project_run_security_filter_scan_stream(
             return cleaned
         raise ValueError("External Git remote URL must look like https://host/owner/repo.git or git@host:owner/repo.git.")
 
+    def _git_server_container_runtime(self):
+        return resolve_container_runtime(cwd=self.repo_root, probe=False)
+
     def _git_server_base_status(self) -> dict[str, Any]:
         compose_file = self.repo_root / self.GIT_SERVER_COMPOSE_FILE
         capabilities = self.git_server_capabilities()
@@ -4302,7 +4306,8 @@ service._git_project_run_security_filter_scan_stream(
             "compose_project": self.GIT_SERVER_COMPOSE_PROJECT,
             "compose_file": str(compose_file),
             "compose_file_exists": compose_file.exists(),
-            "docker_available": shutil.which("docker") is not None,
+            "docker_available": shutil.which(self._git_server_container_runtime().container_command[0]) is not None,
+            "container_runtime": self._git_server_container_runtime().as_dict(),
             "configured": capabilities["available"],
             "state": "unavailable",
             "running": False,
@@ -4319,7 +4324,13 @@ service._git_project_run_security_filter_scan_stream(
         }
 
     def _git_server_compose_command_text(self) -> str:
-        return f"docker compose --project-name {self.GIT_SERVER_COMPOSE_PROJECT} -f {self.GIT_SERVER_COMPOSE_FILE}"
+        command = self._git_server_container_runtime().compose_args(
+            "--project-name",
+            self.GIT_SERVER_COMPOSE_PROJECT,
+            "-f",
+            self.GIT_SERVER_COMPOSE_FILE,
+        )
+        return _container_command_display(command)
 
     def _run_docker_compose(
         self,
@@ -4329,18 +4340,16 @@ service._git_project_run_security_filter_scan_stream(
         timeout: int = 30,
     ) -> dict[str, Any]:
         compose_file = self.repo_root / self.GIT_SERVER_COMPOSE_FILE
-        command = [
-            "docker",
-            "compose",
+        command = self._git_server_container_runtime().compose_args(
             "--project-name",
             self.GIT_SERVER_COMPOSE_PROJECT,
             "-f",
             str(compose_file),
             *args,
-        ]
-        result = self._run_command(command, cwd=self.repo_root, timeout=timeout, not_found_stderr="Docker CLI is not available.")
+        )
+        result = self._run_command(command, cwd=self.repo_root, timeout=timeout, not_found_stderr="Container Compose CLI is not available.")
         if result["returncode"] != 0 and not allow_failure:
-            raise RuntimeError(result["stderr"].strip() or "docker compose command failed")
+            raise RuntimeError(result["stderr"].strip() or "container compose command failed")
         return result
 
     def _clean_git_remote_name(self, raw: str) -> str:

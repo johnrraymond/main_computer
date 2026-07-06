@@ -38,6 +38,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from main_computer.container_runtime import resolve_container_runtime
+
 
 DEFAULT_SYSTEM = (
     "You write tiny ordinary Python code-gremlin files. "
@@ -649,7 +651,8 @@ def docker_grep(repo: Path, source_dirs: list[str], globs: list[str], patterns: 
         "| sed 's#^/workspace/##'\n"
         "exit 0\n"
     )
-    cmd = ["docker", "run", "--rm", "-v", f"{repo.resolve()}:/workspace:ro", "-w", "/workspace", image, "bash", "-lc", inner]
+    runtime = resolve_container_runtime(cwd=repo, probe=False)
+    cmd = runtime.container_args("run", "--rm", "-v", f"{repo.resolve()}:/workspace:ro", "-w", "/workspace", image, "bash", "-lc", inner)
     logger.block("DOCKER GREP COMMAND USED", shell_join(cmd))
     logger.block("DOCKER GREP INNER BASH USED", inner)
     proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout_s)
@@ -1140,7 +1143,8 @@ def generated_name(prefix: str, prompt: str) -> str:
 
 def run_python_in_docker(work_dir: Path, script_name: str, image: str, timeout_s: int, logger: Logger, args: list[str] | None = None) -> dict[str, Any]:
     args = args or []
-    cmd = ["docker", "run", "--rm", "-v", f"{work_dir.resolve()}:/workspace:rw", "-w", "/workspace", image, "python", f"/workspace/{script_name}", *args]
+    runtime = resolve_container_runtime(cwd=work_dir, probe=False)
+    cmd = runtime.container_args("run", "--rm", "-v", f"{work_dir.resolve()}:/workspace:rw", "-w", "/workspace", image, "python", f"/workspace/{script_name}", *args)
     logger.block(f"DOCKER EXEC COMMAND USED FOR {script_name}", shell_join(cmd))
     try:
         proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout_s)

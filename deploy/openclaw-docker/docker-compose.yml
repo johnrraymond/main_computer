@@ -1,23 +1,24 @@
 services:
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
-    container_name: main-computer-openclaw-gateway
+    container_name: ${OPENCLAW_CONTAINER_NAME:-main-computer-openclaw-gateway}
     restart: unless-stopped
     ports:
       - "${OPENCLAW_GATEWAY_HOST:-127.0.0.1}:${OPENCLAW_GATEWAY_PORT:-18789}:18789"
     environment:
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?OPENCLAW_GATEWAY_TOKEN is required}
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_API_KEY: ollama-local
+      OPENCLAW_CONFIG_PATH: /home/node/.config/openclaw/openclaw.json
+      OPENCLAW_WORKSPACE: /home/node/.openclaw/workspace
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "${OPENCLAW_HOST_DOCKER_INTERNAL:-host.docker.internal:host-gateway}"
     volumes:
       - type: bind
-        source: ${OPENCLAW_CONFIG_DIR:?OPENCLAW_CONFIG_DIR is required}
+        source: ${OPENCLAW_AUTH_PROFILE_SECRET_DIR:?OPENCLAW_AUTH_PROFILE_SECRET_DIR is required}
         target: /home/node/.openclaw
       - type: bind
         source: ${OPENCLAW_WORKSPACE_DIR:?OPENCLAW_WORKSPACE_DIR is required}
         target: /home/node/.openclaw/workspace
       - type: bind
-        source: ${OPENCLAW_AUTH_PROFILE_SECRET_DIR:?OPENCLAW_AUTH_PROFILE_SECRET_DIR is required}
+        source: ${OPENCLAW_CONFIG_DIR:?OPENCLAW_CONFIG_DIR is required}
         target: /home/node/.config/openclaw

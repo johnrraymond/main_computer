@@ -1753,3 +1753,46 @@ def test_directus_overwrite_removes_matching_containers_and_selected_volumes(
     connection = refreshed.manifest["backend"]["cms"]["local_connection"]
     assert connection["reset_requested"] is False
     assert connection["reset_applied_at"]
+
+
+def test_directus_runtime_action_uses_podman_for_container_removal_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    _configure_directus_connection_for_publish(tmp_path, mode="use_existing")
+    monkeypatch.setattr(
+        website_project_manifest,
+        "_docker_containers_for_compose_service",
+        lambda service, timeout_s=6.0: {
+            "checked": True,
+            "owners": [
+                {
+                    "id": "abc123",
+                    "name": "main-computer-local-platform-zzzzz-directus-1",
+                    "project": "main-computer-local-platform",
+                    "service": "zzzzz-directus",
+                    "status": "running",
+                    "image": "directus/directus:11",
+                    "ports": [],
+                }
+            ],
+            "error": "",
+        },
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(args: list[str], timeout_s: float = 20.0) -> dict[str, object]:
+        commands.append(args)
+        return {"ok": True, "args": args, "returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(website_project_manifest, "_run_docker_mutation", fake_run)
+
+    result = website_project_manifest._apply_directus_runtime_action(
+        tmp_path,
+        "zzzzz",
+        "main-computer-local-platform-unleashed",
+    )
+
+    assert result["ok"] is True
+    assert commands == [["podman", "rm", "-f", "main-computer-local-platform-zzzzz-directus-1"]]

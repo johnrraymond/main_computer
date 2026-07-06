@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from main_computer.container_runtime import resolve_container_runtime
+
 
 LOCAL_PUBLISH_STATE_DIR = "runtime/publishing/local-server"
 DEFAULT_ENVIRONMENT_NAME = "production"
@@ -23,6 +25,10 @@ LOCAL_PUBLISH_CONTAINER_PORT = 8080
 LOCAL_PUBLISH_PORT_OFFSET = 4
 LOCAL_PUBLISH_PORT_SEARCH_SPAN = 200
 LOCAL_PUBLISH_PROBE_TIMEOUT_SECONDS = 0.75
+
+
+def _container_args(*args: object) -> list[str]:
+    return resolve_container_runtime(probe=False).container_args(*args)
 
 
 class LocalServerPrepareError(RuntimeError):
@@ -354,7 +360,7 @@ def _stage_local_publish_build_context(
         return subprocess.run(command, text=True, capture_output=True, timeout=timeout)
 
     mkdir_script = f"rm -rf {shlex.quote(target_dir)} && mkdir -p {shlex.quote(target_dir)}"
-    mkdir = run_command(["docker", "exec", "--user", "root", container, "sh", "-lc", mkdir_script])
+    mkdir = run_command(_container_args("exec", "--user", "root", container, "sh", "-lc", mkdir_script))
     if mkdir.returncode != 0:
         result["issues"].append(
             "failed to prepare Coolify service build context directory: "
@@ -373,7 +379,7 @@ def _stage_local_publish_build_context(
 
     commands: list[dict[str, Any]] = [{"op": "mkdir", "user": "root", "returncode": mkdir.returncode}]
     for source in files:
-        copy = run_command(["docker", "cp", str(source), f"{container}:{target_dir}/{source.name}"])
+        copy = run_command(_container_args("cp", str(source), f"{container}:{target_dir}/{source.name}"))
         commands.append(
             {
                 "op": "copy",
@@ -399,7 +405,7 @@ def _stage_local_publish_build_context(
             "sha256sum Dockerfile app.py",
         ]
     )
-    verify = run_command(["docker", "exec", "--user", "root", container, "sh", "-lc", verify_script])
+    verify = run_command(_container_args("exec", "--user", "root", container, "sh", "-lc", verify_script))
     commands.append({"op": "verify", "user": "root", "returncode": verify.returncode, "stderr": verify.stderr[-1200:]})
     if verify.returncode != 0:
         result["issues"].append(
@@ -1593,7 +1599,7 @@ def _docker_mapped_coolify_dashboard_probe(
     """Return the healthy Docker-mapped Coolify dashboard URL, if Docker reports one."""
 
     container = _coolify_container_name(adapter, root)
-    command = ["docker", "port", container, container_port]
+    command = _container_args("port", container, container_port)
     try:
         completed = subprocess.run(command, text=True, capture_output=True, check=False)
         docker_result = {

@@ -9,6 +9,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from main_computer.container_runtime import resolve_container_runtime
 from typing import Mapping
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -115,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace", type=Path)
     parser.add_argument("--start-timeout-seconds", type=int, default=90)
     parser.add_argument("--onlyoffice-mode", choices=["auto", "disabled", "docker"], default="auto")
+    parser.add_argument("--container-runtime", choices=["docker", "podman"], default="docker")
     parser.add_argument("--local-server-mode", choices=["auto", "disabled", "required"], default="auto")
     parser.add_argument("--local-coolify-mode", choices=["auto", "disabled", "required"], default="auto")
     parser.add_argument("--onlyoffice-port", type=int)
@@ -243,6 +245,12 @@ def ps_single_quoted(value: str | os.PathLike[str]) -> str:
     return "'" + os.fspath(value).replace("'", "''") + "'"
 
 
+def _container_cli_available() -> bool:
+    runtime = resolve_container_runtime(probe=False)
+    command = runtime.container_command[0] if runtime.container_command else "docker"
+    return shutil.which(command) is not None or Path(command).exists()
+
+
 def _effective_onlyoffice_mode(value: str) -> str:
     """Resolve ONLYOFFICE auto mode the same way the legacy installer did."""
 
@@ -250,11 +258,11 @@ def _effective_onlyoffice_mode(value: str) -> str:
     if requested == "disabled":
         return "disabled"
     if requested == "docker":
-        if shutil.which("docker") is None:
-            raise RuntimeError("ONLYOFFICE mode 'docker' requires Docker, but docker was not found on PATH.")
+        if not _container_cli_available():
+            raise RuntimeError("ONLYOFFICE mode 'docker' requires a Docker-compatible container CLI, but none was found on PATH.")
         return "docker"
     if requested == "auto":
-        return "docker" if shutil.which("docker") is not None else "disabled"
+        return "docker" if _container_cli_available() else "disabled"
     raise RuntimeError(f"Unsupported ONLYOFFICE mode: {value}")
 
 
@@ -444,6 +452,7 @@ def write_runner(
     bind_host: str,
     start_timeout_seconds: int,
     onlyoffice_mode: str,
+    container_runtime: str,
     local_server_mode: str,
     local_coolify_mode: str,
     skip_mathics_check: bool,
@@ -504,6 +513,7 @@ $DefaultAllowForeignPortListener = {ps_single_quoted(allow_foreign_default)}
 
 $OnlyOfficeEnabled = {ps_single_quoted(onlyoffice_enabled)}
 $OnlyOfficeMode = {ps_single_quoted(effective_onlyoffice_mode)}
+$ContainerRuntime = {ps_single_quoted(container_runtime)}
 $OnlyOfficeJwtSecret = {ps_single_quoted(os.environ.get("MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET", "main-computer-onlyoffice-local-secret"))}
 $LocalServerEnabled = {ps_single_quoted(local_server_enabled)}
 $LocalCoolifyEnabled = {ps_single_quoted(local_coolify_enabled)}
@@ -538,6 +548,7 @@ function Set-RunnerEnvironment {{
     $env:MAIN_COMPUTER_MODE_LABEL = $SelectedMode.Label
     $env:MAIN_COMPUTER_GUIDANCE_LEVEL = $SelectedMode.GuidanceLevel
     $env:MAIN_COMPUTER_SAFE_MODE = if ($SelectedMode.Key -eq "safe") {{ "1" }} else {{ "0" }}
+    $env:MAIN_COMPUTER_CONTAINER_RUNTIME = $ContainerRuntime
     $env:MAIN_COMPUTER_INSTANCE_NAME = $InstanceName
     $env:MAIN_COMPUTER_STATE_ROOT = $SelectedMode.StateRoot
     $env:MAIN_COMPUTER_CONTROL_ROOT = $SelectedMode.ControlRoot
@@ -1278,6 +1289,7 @@ def _service_env(
     workspace: Path,
     wsl_command: str,
     onlyoffice_mode: str,
+    container_runtime: str,
     local_server_mode: str,
     local_coolify_mode: str,
 ) -> dict[str, str]:
@@ -1296,6 +1308,7 @@ def _service_env(
     env["MAIN_COMPUTER_MODE_LABEL"] = str(profile["label"])
     env["MAIN_COMPUTER_GUIDANCE_LEVEL"] = str(profile["guidance_level"])
     env["MAIN_COMPUTER_SAFE_MODE"] = "1" if mode_key == "safe" else "0"
+    env["MAIN_COMPUTER_CONTAINER_RUNTIME"] = str(container_runtime or "docker")
     env["MAIN_COMPUTER_STATE_ROOT"] = str(profile["state_root"])
     env["MAIN_COMPUTER_CONTROL_ROOT"] = str(profile["control_root"])
     env["MAIN_COMPUTER_CONTROL_PORT"] = str(profile["port"])
@@ -1374,6 +1387,7 @@ def _launcher_environment(
     venv_python: Path,
     wsl_command: str,
     onlyoffice_mode: str,
+    container_runtime: str,
     local_server_mode: str,
     local_coolify_mode: str,
 ) -> dict[str, str]:
@@ -1385,6 +1399,7 @@ def _launcher_environment(
         workspace=workspace,
         wsl_command=wsl_command,
         onlyoffice_mode=onlyoffice_mode,
+        container_runtime=container_runtime,
         local_server_mode=local_server_mode,
         local_coolify_mode=local_coolify_mode,
     )
@@ -1405,6 +1420,7 @@ def write_launcher_context(
     profile: dict[str, object],
     wsl_command: str,
     onlyoffice_mode: str,
+    container_runtime: str,
     local_server_mode: str,
     local_coolify_mode: str,
 ) -> Path:
@@ -1417,6 +1433,7 @@ def write_launcher_context(
         "mode": mode_key,
         "mode_label": mode_label,
         "runtime_profile": runtime_profile,
+        "container_runtime": container_runtime,
         "instance_name": instance_name,
         "install_tree_id": safe_name(install_root.name).replace("_", "-"),
         "install_root": str(install_root),
@@ -1431,6 +1448,7 @@ def write_launcher_context(
             venv_python=venv_python,
             wsl_command=wsl_command,
             onlyoffice_mode=onlyoffice_mode,
+            container_runtime=container_runtime,
             local_server_mode=local_server_mode,
             local_coolify_mode=local_coolify_mode,
         ),
@@ -1511,7 +1529,7 @@ def run_install_time_service_preparation(
 
 
 def _docker_available() -> bool:
-    return shutil.which("docker") is not None
+    return _container_cli_available()
 
 
 def initialize_local_server_publishing_if_requested(
@@ -1703,6 +1721,7 @@ def write_env_header(
     mode_key: str,
     mode_label: str,
     instance_name: str,
+    container_runtime: str,
 ) -> Path:
     env_header_path = install_root / "main-computer-env.ps1"
     env_header = f"""# Generated by tools\\bootstrap_main_computer.py.
@@ -1721,6 +1740,7 @@ $env:MC_VENV_PYTHON = {ps_single_quoted(venv_python)}
 $env:MC_MODE = {ps_single_quoted(mode_key)}
 $env:MC_MODE_LABEL = {ps_single_quoted(mode_label)}
 $env:MC_INSTANCE_NAME = {ps_single_quoted(instance_name)}
+$env:MC_CONTAINER_RUNTIME = {ps_single_quoted(container_runtime)}
 
 $env:MAIN_COMPUTER_INSTALL_ROOT = $env:MC_INSTALL
 $env:MAIN_COMPUTER_RUNNER = $env:MC_RUN
@@ -1731,6 +1751,7 @@ $env:MAIN_COMPUTER_VENV_PYTHON = $env:MC_VENV_PYTHON
 $env:MAIN_COMPUTER_INSTALL_MODE = $env:MC_MODE
 $env:MAIN_COMPUTER_MODE_LABEL = $env:MC_MODE_LABEL
 $env:MAIN_COMPUTER_INSTANCE_NAME = $env:MC_INSTANCE_NAME
+$env:MAIN_COMPUTER_CONTAINER_RUNTIME = $env:MC_CONTAINER_RUNTIME
 
 $env:MC_STATUS = "& `$env:MC_RUN -Action status"
 $env:MC_START = "& `$env:MC_RUN -Action start"
@@ -1995,6 +2016,7 @@ def main(argv: list[str] | None = None) -> int:
             bind_host=args.bind_host,
             start_timeout_seconds=args.start_timeout_seconds,
             onlyoffice_mode=args.onlyoffice_mode,
+            container_runtime=args.container_runtime,
             local_server_mode=args.local_server_mode,
             local_coolify_mode=args.local_coolify_mode,
             skip_mathics_check=args.skip_mathics_check,
@@ -2014,6 +2036,7 @@ def main(argv: list[str] | None = None) -> int:
             mode_key=mode_key,
             mode_label=mode_label,
             instance_name=instance_name,
+            container_runtime=args.container_runtime,
         )
 
     active_profile = mode_profiles[mode_key]
@@ -2022,6 +2045,7 @@ def main(argv: list[str] | None = None) -> int:
         workspace=workspace,
         wsl_command=args.wsl_command,
         onlyoffice_mode=args.onlyoffice_mode,
+        container_runtime=args.container_runtime,
         local_server_mode=args.local_server_mode,
         local_coolify_mode=args.local_coolify_mode,
     )
@@ -2038,6 +2062,7 @@ def main(argv: list[str] | None = None) -> int:
         profile=active_profile,
         wsl_command=args.wsl_command,
         onlyoffice_mode=args.onlyoffice_mode,
+        container_runtime=args.container_runtime,
         local_server_mode=args.local_server_mode,
         local_coolify_mode=args.local_coolify_mode,
     )
@@ -2056,6 +2081,7 @@ def main(argv: list[str] | None = None) -> int:
         "installer": "bootstrap-main-computer-python-windows.ps1",
         "driver": "tools/bootstrap_main_computer.py",
         "runtime_profile": args.runtime_profile,
+        "container_runtime": args.container_runtime,
         "mode": mode_key,
         "mode_label": mode_label,
         "install_root": str(install_root),

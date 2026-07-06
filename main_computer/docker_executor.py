@@ -15,6 +15,7 @@ import threading
 from typing import Any, Callable, BinaryIO
 import uuid
 
+from main_computer.container_runtime import command_display as _container_command_display, legacy_docker_command_override, resolve_container_runtime
 from main_computer.executor_models import ExecutorArtifact, ExecutorRequest, ExecutorResult, build_executor_runtime_command
 
 
@@ -294,6 +295,7 @@ class DockerExecutor:
         max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
         max_output_chars: int = 128_000,
         runner: Runner | None = None,
+        docker_command: str | None = None,
     ) -> None:
         self.image = str(image or "main-computer-executor:latest")
         self.runtime_root = Path(runtime_root).resolve()
@@ -302,6 +304,12 @@ class DockerExecutor:
         self.max_upload_bytes = max(1, int(max_upload_bytes))
         self.max_output_chars = max(1000, int(max_output_chars))
         self._runner = runner or subprocess.run
+        self.container_runtime = resolve_container_runtime(
+            cwd=self.runtime_root,
+            container_command=legacy_docker_command_override(docker_command),
+            probe=False,
+        )
+        self.docker_command = _container_command_display(self.container_runtime.container_command)
 
         self.inputs_root = self.runtime_root / "inputs"
         self.outputs_root = self.runtime_root / "outputs"
@@ -313,13 +321,15 @@ class DockerExecutor:
             path.mkdir(parents=True, exist_ok=True)
 
     def status(self) -> dict[str, Any]:
-        docker_path = shutil.which("docker")
+        container_command = list(self.container_runtime.container_command)
+        executable = container_command[0] if container_command else "docker"
+        docker_path = shutil.which(executable) or (executable if Path(executable).exists() else None)
         docker_available = False
         docker_error = None
         if docker_path:
             try:
                 result = self._runner(
-                    ["docker", "version", "--format", "{{.Server.Version}}"],
+                    self.container_runtime.container_args("version", "--format", "{{.Server.Version}}"),
                     capture_output=True,
                     text=True,
                     timeout=3,
@@ -331,7 +341,7 @@ class DockerExecutor:
             except Exception as exc:  # pragma: no cover - defensive status surface
                 docker_error = str(exc)
         else:
-            docker_error = "docker executable was not found on PATH"
+            docker_error = f"{self.docker_command} executable was not found on PATH"
 
         return {
             "ok": self.enabled and docker_available,
@@ -347,6 +357,7 @@ class DockerExecutor:
             "docker_path": docker_path,
             "docker_available": docker_available,
             "docker_error": docker_error,
+            "container_runtime": self.container_runtime.as_dict(),
         }
 
     def save_upload(
@@ -510,7 +521,7 @@ class DockerExecutor:
                 timed_out=False,
                 duration_ms=duration_ms,
                 artifacts=[],
-                error="Docker executable was not found.",
+                error=f"{self.docker_command} executable was not found.",
                 backend=self.backend_name,
             )
 
@@ -522,8 +533,7 @@ class DockerExecutor:
         job_output: Path,
         job_workspace: Path,
     ) -> list[str]:
-        command = [
-            "docker",
+        command = self.container_runtime.container_args(
             "run",
             "--rm",
             "--name",
@@ -548,7 +558,7 @@ class DockerExecutor:
             f"{job_workspace}:/workspace:rw",
             "-w",
             "/workspace",
-        ]
+        )
         for key, value in sorted(request.env.items()):
             command.extend(["-e", f"{key}={value}"])
         effective_timeout_s = min(float(request.timeout_s), self.max_timeout_s)

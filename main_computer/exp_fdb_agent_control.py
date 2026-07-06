@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from main_computer.container_runtime import resolve_container_runtime
+
 
 DEFAULT_EXP_FDB_AGENT_HUB_URL = "http://host.docker.internal:8870"
 DEFAULT_EXP_FDB_AGENT_HOST_HUB_URL = "http://127.0.0.1:8870"
@@ -16,6 +18,10 @@ DEFAULT_EXP_FDB_AGENT_IMAGE = "python:3.12-slim"
 DEFAULT_EXP_FDB_AGENT_RUNTIME_ROOT = Path("runtime") / "exp-fdb-agent-runs"
 DEFAULT_EXP_FDB_AGENT_CONTAINER_PREFIX = "main-computer-exp-fdb-agent"
 DEFAULT_EXP_FDB_AGENT_HEARTBEAT_SECONDS = 5.0
+
+
+def _container_args(*args: object) -> list[str]:
+    return resolve_container_runtime(probe=False).container_args(*args)
 
 
 def utc_now() -> str:
@@ -99,8 +105,7 @@ def build_docker_run_command(spec: AgentContainerSpec) -> list[str]:
     repo_root = spec.repo_root.resolve()
     run_dir = spec.run_dir.resolve()
     container_name = spec.resolved_container_name()
-    command = [
-        "docker",
+    command = _container_args(
         "run",
         "--name",
         container_name,
@@ -112,7 +117,7 @@ def build_docker_run_command(spec: AgentContainerSpec) -> list[str]:
         f"main-computer.agent.run-id={spec.run_id}",
         "--label",
         f"main-computer.agent.worker-ring={int(spec.worker_ring)}",
-    ]
+    )
     if spec.detach:
         command.append("-d")
     if spec.add_host_gateway:
@@ -166,7 +171,7 @@ def build_docker_run_command(spec: AgentContainerSpec) -> list[str]:
 
 def docker_inspect_status(container_name: str) -> dict[str, Any]:
     result = subprocess.run(
-        ["docker", "inspect", container_name],
+        _container_args("inspect", container_name),
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -244,12 +249,12 @@ def start_agent(args: argparse.Namespace) -> int:
 def shutdown_agent(args: argparse.Namespace) -> int:
     run_id = clean_run_id(args.run_id)
     container_name = args.container_name or container_name_for_run(run_id)
-    stop_command = ["docker", "stop", "--time", str(int(args.timeout_seconds)), container_name]
+    stop_command = _container_args("stop", "--time", str(int(args.timeout_seconds)), container_name)
     code = run_command(stop_command, dry_run=args.dry_run)
     if code != 0:
         return code
     if args.remove:
-        return run_command(["docker", "rm", container_name], dry_run=args.dry_run)
+        return run_command(_container_args("rm", container_name), dry_run=args.dry_run)
     return 0
 
 
@@ -264,7 +269,7 @@ def status_agent(args: argparse.Namespace) -> int:
 def logs_agent(args: argparse.Namespace) -> int:
     run_id = clean_run_id(args.run_id)
     container_name = args.container_name or container_name_for_run(run_id)
-    command = ["docker", "logs"]
+    command = _container_args("logs")
     if args.follow:
         command.append("--follow")
     command.extend(["--tail", str(int(args.tail)), container_name])

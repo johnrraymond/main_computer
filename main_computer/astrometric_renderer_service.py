@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import socket
 import subprocess
 import time
@@ -11,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from main_computer.container_runtime import resolve_container_runtime, split_command_override
 
 
 DEFAULT_RENDERER_PORT = 8794
@@ -29,14 +30,14 @@ class RendererHttpResponse:
 
 
 class AstrometricRendererError(RuntimeError):
-    """Raised when the Docker-backed astrometric renderer cannot be controlled."""
+    """Raised when the container-backed astrometric renderer cannot be controlled."""
 
 
 class AstrometricRendererService:
-    """Backend control plane for the Dockerized C++ astrometric renderer.
+    """Backend control plane for the containerized C++ astrometric renderer.
 
     The browser never talks to the renderer container directly. Main Computer owns
-    Docker lifecycle, reverse-proxies frames, and forwards mouse/camera events to
+    container lifecycle, reverse-proxies frames, and forwards mouse/camera events to
     the renderer process running inside the GPU-aware container.
     """
 
@@ -50,32 +51,14 @@ class AstrometricRendererService:
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    def _container_runtime(self):
+        return resolve_container_runtime(cwd=self.repo_root)
+
     def _split_command_override(self, value: str) -> list[str]:
-        try:
-            return shlex.split(value)
-        except ValueError:
-            return value.split()
+        return split_command_override(value)
 
     def _docker_compose_base(self) -> list[str]:
-        override = os.environ.get("MAIN_COMPUTER_DOCKER_COMPOSE", "").strip()
-        if override:
-            return self._split_command_override(override)
-
-        try:
-            completed = subprocess.run(
-                ["docker", "compose", "version"],
-                cwd=self.repo_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=8,
-                check=False,
-            )
-            if completed.returncode == 0:
-                return ["docker", "compose"]
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return ["docker-compose"]
+        return list(self._container_runtime().compose_command)
 
     def _compose_command(self, *args: str) -> list[str]:
         return [
@@ -125,9 +108,9 @@ class AstrometricRendererService:
                 env=self._renderer_env(env_overrides),
             )
         except FileNotFoundError as exc:
-            raise AstrometricRendererError("Docker Compose was not found. Install Docker Desktop/Compose or set MAIN_COMPUTER_DOCKER_COMPOSE.") from exc
+            raise AstrometricRendererError("Container Compose was not found. Install Docker Desktop/Compose or Podman Compose, or set MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND.") from exc
         except subprocess.TimeoutExpired as exc:
-            raise AstrometricRendererError(f"Docker Compose timed out while running: {' '.join(command)}") from exc
+            raise AstrometricRendererError(f"Container Compose timed out while running: {' '.join(command)}") from exc
 
         return {
             "command": command,
@@ -149,10 +132,7 @@ class AstrometricRendererService:
             return {"returncode": 1, "error": str(exc), "command": self._compose_command(*args)}
 
     def _docker_base(self) -> list[str]:
-        override = os.environ.get("MAIN_COMPUTER_DOCKER", "").strip()
-        if override:
-            return self._split_command_override(override)
-        return ["docker"]
+        return list(self._container_runtime().container_command)
 
     def _run_direct(
         self,
@@ -201,7 +181,7 @@ class AstrometricRendererService:
         """Report the astrometric container state without starting or stopping it.
 
         The Astrometric page is the lifecycle control surface.  Status probes are
-        read-only and Docker start/stop actions are scoped to the dedicated
+        read-only and container start/stop actions are scoped to the dedicated
         Compose project so this feature cannot accidentally tear down unrelated
         Main Computer containers that share the same repository directory.
         """
@@ -234,7 +214,7 @@ class AstrometricRendererService:
             state = json.loads(raw)
         except json.JSONDecodeError:
             lifecycle["state"] = "unknown"
-            lifecycle["error"] = raw[-1000:] or "docker inspect returned invalid state JSON"
+            lifecycle["error"] = raw[-1000:] or "container inspect returned invalid state JSON"
             return lifecycle
 
         if isinstance(state, dict):
@@ -260,7 +240,7 @@ class AstrometricRendererService:
         """Wait until the controlled container is stopped and the renderer port is closed.
 
         The browser can keep an MJPEG connection alive for a moment after its image
-        element is detached.  Treat stop as complete only when the Docker container
+        element is detached.  Treat stop as complete only when the container
         is not running and the local renderer endpoint no longer answers.
         """
 
@@ -377,9 +357,9 @@ class AstrometricRendererService:
         return best
 
     def _diagnostics(self, *, include_config: bool = False, include_exec_probe: bool = False) -> dict[str, Any]:
-        """Collect enough evidence to distinguish Docker, port, and GPU failures.
+        """Collect enough evidence to distinguish container runtime, port, and GPU failures.
 
-        This intentionally avoids pulling any new images.  It inspects the compose
+        This intentionally avoids pulling any new images.  It inspects the Compose
         project, the expected renderer container, and the already-built local image
         so a Windows/Docker/GPU problem can be diagnosed from the Astrometric UI.
         """
@@ -435,6 +415,17 @@ class AstrometricRendererService:
                 "docker_info": self._try_docker("info", "--format", "{{json .Runtimes}}", timeout=8),
             }
         )
+        diagnostics.update(
+            {
+                "container_ps": diagnostics.get("docker_ps"),
+                "container_logs": diagnostics.get("docker_logs"),
+                "container_port": diagnostics.get("docker_port"),
+                "container_inspect_state": diagnostics.get("docker_inspect_state"),
+                "container_inspect_health": diagnostics.get("docker_inspect_health"),
+                "container_image": diagnostics.get("docker_image"),
+                "container_info": diagnostics.get("docker_info"),
+            }
+        )
         if include_config:
             diagnostics["compose_config"] = self._try_compose("config", timeout=12)
         if include_exec_probe:
@@ -459,9 +450,9 @@ class AstrometricRendererService:
             "status": self.status(),
             "diagnostics": self._diagnostics(include_config=True, include_exec_probe=True),
             "recommended_next_steps": [
-                "If compose_ps/docker_ps show the container exited, read compose_logs/docker_logs first.",
-                "If tcp_probe is false but the container is running, check docker_port and the HTTP server log line.",
-                "Use action=start-smoke to test Docker port mapping and Main Computer streaming without CUDA.",
+                "If compose_ps/container_ps show the container exited, read compose_logs/container_logs first.",
+                "If tcp_probe is false but the container is running, check container_port and the HTTP server log line.",
+                "Use action=start-smoke to test container port mapping and Main Computer streaming without CUDA.",
                 "If start-smoke streams but start-gpu does not, the failure is in CUDA/NVIDIA container runtime/GPU-kernel startup.",
             ],
         }
@@ -472,10 +463,12 @@ class AstrometricRendererService:
         docker_available = True
         docker_error = ""
         docker_version = ""
+        runtime = self._container_runtime()
+        compose_base = list(runtime.compose_command)
+        container_base = list(runtime.container_command)
         try:
-            base = self._docker_compose_base()
             completed = subprocess.run(
-                [*base, "version"] if base[-1:] == ["compose"] else [base[0], "--version"],
+                [*compose_base, "version"],
                 cwd=self.repo_root,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -505,10 +498,14 @@ class AstrometricRendererService:
                 "available": docker_available,
                 "error": docker_error,
                 "version": docker_version,
-                "compose_command": self._docker_compose_base(),
+                "runtime": runtime.runtime,
+                "runtime_source": runtime.source,
+                "container_command": container_base,
+                "compose_command": compose_base,
                 "compose_project": COMPOSE_PROJECT_NAME,
                 "container": self._container_lifecycle(),
             },
+            "container_runtime": runtime.as_dict(),
             "stream_path": "/api/applications/astrometric/stream.mjpg",
             "frame_path": "/api/applications/astrometric/frame.jpg",
             "camera_path": "/api/applications/astrometric/camera",

@@ -20,6 +20,30 @@ Optional, feature-specific requirements:
 - A MetaMask wallet is required to use the blockchain/dev-chain wallet elements. It is not required for the basic local app startup.
 - Playwright Chromium is only needed for browser automation/harness tests.
 
+## Docker and Podman compatibility
+
+Main Computer resolves container commands through a small Docker-compatible runtime layer. Docker remains the default when it is available, but Podman can be selected without changing code:
+
+```powershell
+$env:MAIN_COMPUTER_CONTAINER_RUNTIME = "podman"
+```
+
+Useful overrides:
+
+```powershell
+$env:MAIN_COMPUTER_CONTAINER_COMMAND = "podman"
+$env:MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND = "podman compose"
+```
+
+Legacy Docker-named overrides are still honored for existing scripts:
+
+```powershell
+$env:MAIN_COMPUTER_DOCKER_COMMAND = "docker"
+$env:MAIN_COMPUTER_DOCKER_COMPOSE = "docker compose"
+```
+
+The Astrometric 3D renderer uses the same layer for both Compose lifecycle commands and direct container diagnostics such as `inspect`, `logs`, `port`, `rm`, and `exec`. Its CUDA/GPU mode still requires the selected runtime to have working NVIDIA GPU container support. Docker Compose uses the existing `gpus: all` service declaration; Podman setups may also need Podman/NVIDIA CDI configuration on the host or Podman machine.
+
 ## First-time source checkout setup
 
 From the repository root:

@@ -10,7 +10,7 @@ def read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
-def test_onlyoffice_control_is_docker_only() -> None:
+def test_onlyoffice_control_uses_resolved_container_runtime() -> None:
     text = read("tools/onlyoffice/onlyoffice-control.ps1")
 
     assert '[ValidateSet("install", "start", "stop", "status", "doctor")]' in text
@@ -23,12 +23,15 @@ def test_onlyoffice_control_is_docker_only() -> None:
     assert 'docker compose up -d onlyoffice returned exit code $composeExitCode' in text
     assert 'function Test-LocalTcpPortOpen' in text
     assert 'function Start-DockerOnlyOfficeNamedContainerIfPresent' in text
+    assert 'function Get-MainComputerContainerRuntime' in text
+    assert 'Invoke-MainComputerComposeCommand' in text
+    assert 'MAIN_COMPUTER_PYTHON_COMMAND' in text
     assert 'Shared ONLYOFFICE already reachable on port $Port; start path will not recreate it.' in text
     assert 'Compose up will not recreate it.' in text
-    assert 'docker compose -f $composePath -p $ProjectName ps -q onlyoffice' in text
-    assert 'docker ps -q --filter $nameFilter' in text
-    assert 'docker ps -aq --filter $nameFilter' in text
-    assert 'docker inspect --format "{{.State.Running}} {{.Id}}" $containerName' in text
+    assert 'Invoke-MainComputerComposeCommand -Arguments @("-f", $composePath, "-p", $ProjectName, "ps", "-q", "onlyoffice")' in text
+    assert 'Invoke-MainComputerContainerCommand -Arguments @("ps", "-q", "--filter", $nameFilter)' in text
+    assert 'Invoke-MainComputerContainerCommand -Arguments @("ps", "-aq", "--filter", $nameFilter)' in text
+    assert 'Invoke-MainComputerContainerCommand -Arguments @("inspect", "--format", "{{.State.Running}} {{.Id}}", $containerName)' in text
     assert 'ONLYOFFICE container is visible after $attempt docker/container inspection attempt(s)' in text
     assert '$script:MainComputerOnlyOfficeNeedsFinalStatus = $true' in text
     assert 'ONLYOFFICE final readiness recheck' in text
@@ -79,7 +82,7 @@ def test_main_computer_underscore_runtime_typo_is_ignored() -> None:
     assert ".main_computer/" in text
 
 
-def test_start_v2_helper_invokes_docker_onlyoffice_control_without_bridge_management() -> None:
+def test_start_v2_helper_invokes_container_onlyoffice_control_without_bridge_management() -> None:
     text = read("scripts/main-computer-start-stop.ps1")
 
     assert 'function Invoke-MainComputerOnlyOfficeControl' in text
@@ -88,6 +91,7 @@ def test_start_v2_helper_invokes_docker_onlyoffice_control_without_bridge_manage
     assert 'Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "stop"' in text
     assert 'MAIN_COMPUTER_ONLYOFFICE_STOP_ON_STOP' in text
     assert 'Leaving ONLYOFFICE Docker container running for faster next startup.' in text
+    assert 'Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand' in text
 
     assert 'MAIN_COMPUTER_ONLYOFFICE_ENABLED = "1"' in text
     assert 'MAIN_COMPUTER_ONLYOFFICE_MODE = "docker"' in text
@@ -130,11 +134,13 @@ def test_onlyoffice_docker_compose_uses_18085_no_jwt_and_private_ip_allowance() 
     assert 'ONLYOFFICE Docker uses 18085' in text
 
     assert '[ValidateSet("docker")]' in control
+    assert 'Get-MainComputerContainerRuntime' in control
     assert '[string]$JwtEnabled = ""' in control
     assert '$JwtEnabled = ConvertTo-MainComputerBoolText $JwtEnabled $false' in control
     assert '$env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"' in control
     assert '$env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = "true"' in control
     assert 'Invoke-DockerOnlyOffice "status"' in control
+    assert 'Use these Main Computer env vars for local container ONLYOFFICE mode:' in control
 
 
 def test_onlyoffice_docker_browser_load_smoke_helper_is_isolated() -> None:

@@ -31,7 +31,7 @@ def test_pushback_smoke_script_exists_and_documents_roundtrip() -> None:
     assert "memory/**/*.md" in text
 
 
-def test_pushback_smoke_self_test_runs_without_docker() -> None:
+def test_pushback_smoke_self_test_runs_without_container_runtime() -> None:
     completed = subprocess.run(
         [sys.executable, str(SMOKE_PATH), "--self-test", "--json"],
         cwd=REPO_ROOT,
@@ -53,11 +53,11 @@ def test_pushback_smoke_self_test_runs_without_docker() -> None:
     assert result["target_relative_path"] == "memory/self-test.md"
 
 
-def test_container_probe_uses_plain_docker_exec_without_compose_t_flag(monkeypatch) -> None:
+def test_container_probe_uses_plain_container_exec_without_compose_t_flag(monkeypatch) -> None:
     module = load_pushback_smoke_module()
     captured: dict[str, list[str]] = {}
 
-    def fake_run_docker_exec(args: list[str], *, timeout_s: float = 60.0) -> subprocess.CompletedProcess[str]:
+    def fake_run_container_command(args: list[str], *, timeout_s: float = 60.0) -> subprocess.CompletedProcess[str]:
         captured["args"] = args
         return subprocess.CompletedProcess(
             args,
@@ -66,7 +66,7 @@ def test_container_probe_uses_plain_docker_exec_without_compose_t_flag(monkeypat
             stderr="",
         )
 
-    monkeypatch.setattr(module, "run_docker_exec", fake_run_docker_exec)
+    monkeypatch.setattr(module, "run_container_command", fake_run_container_command)
 
     result = module.container_probe(
         container="openclaw-gateway",
@@ -91,3 +91,34 @@ def test_container_probe_uses_plain_docker_exec_without_compose_t_flag(monkeypat
     ]
     assert args[8:] == ["openclaw-gateway", "node", "-e", args[-1]]
 
+
+
+def test_container_probe_can_build_podman_exec(monkeypatch) -> None:
+    module = load_pushback_smoke_module()
+    captured: dict[str, list[str]] = {}
+
+    def fake_run_container_command(args: list[str], *, timeout_s: float = 60.0) -> subprocess.CompletedProcess[str]:
+        captured["args"] = args
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps({"target": "/workspace/memory/file.md", "marker": "MC_MARKER"}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(module, "run_container_command", fake_run_container_command)
+
+    result = module.container_probe(
+        container="openclaw-gateway",
+        marker="MC_MARKER",
+        relative_path="memory/file.md",
+        container_workspace="/workspace",
+        timeout_s=1.0,
+        container_runtime="podman",
+    )
+
+    args = captured["args"]
+    assert result["marker"] == "MC_MARKER"
+    assert args[:2] == ["podman", "exec"]
+    assert "-T" not in args
+    assert "-t" not in args

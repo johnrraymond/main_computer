@@ -39,6 +39,15 @@ def test_openclaw_docker_runner_writes_gateway_config_for_host_ollama() -> None:
     assert "http://127.0.0.1:11434" in script
     assert '[string]$AgentId = "main"' in script
     assert "http://host.docker.internal:11434" in script
+    assert "[ValidateSet(\"auto\", \"docker\", \"podman\")]" in script
+    assert "[string]$ContainerRuntime = \"auto\"" in script
+    assert "MAIN_COMPUTER_CONTAINER_RUNTIME" in script
+    assert "MAIN_COMPUTER_CONTAINER_COMMAND" in script
+    assert "MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND" in script
+    assert "Resolve-OpenClawContainerRuntime" in script
+    assert "$containerRuntimeName -eq \"podman\"" in script
+    assert "http://host.containers.internal:11434" in script
+    assert "OPENCLAW_CONTAINER_OLLAMA_URL" in script
     assert "/api/tags" in script
     assert 'api = "ollama"' in script
     assert 'apiKey = "ollama-local"' in script
@@ -72,7 +81,7 @@ def test_openclaw_docker_runner_writes_gateway_config_for_host_ollama() -> None:
     assert "$jsonStart = $directText.IndexOf(\"{\")" in script
     assert "MAIN_COMPUTER_DIRECT_MEMORY_MARKER" in script
     assert '"--direct-memory"' in script
-    assert "docker @composeArgs restart openclaw-gateway" in script
+    assert 'Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @("restart", "openclaw-gateway"))' in script
     assert "if ($AgentSmoke -or $FullSmoke)" in script
     assert "[int]$SmokeTimeoutSeconds = 300" in script
     assert "[switch]$AgentSmoke" in script
@@ -105,9 +114,9 @@ def test_openclaw_docker_runner_writes_gateway_config_for_host_ollama() -> None:
     assert '"--max-output-tokens", ([string]$OllamaNumPredict)' in script
     assert "--skip-recall-turns" in script
     assert "if (-not $FullSmoke)" in script
-    assert "-e \"MAIN_COMPUTER_PROBE_MODEL=$Model\"" in script
-    assert "-e \"MAIN_COMPUTER_PROBE_OLLAMA_TAGS_URL=$probeTagsUrl\"" in script
-    assert "openclaw-gateway node -e $probeJs" in script
+    assert '"-e", "MAIN_COMPUTER_PROBE_MODEL=$Model"' in script
+    assert '"-e", "MAIN_COMPUTER_PROBE_OLLAMA_TAGS_URL=$probeTagsUrl"' in script
+    assert '"openclaw-gateway", "node", "-e", $probeJs' in script
     assert "const model = $modelJson;" not in script
     assert '"--agent-id", $AgentId' in script
     assert '"--backend-model", "ollama/$Model"' in script
@@ -118,7 +127,8 @@ def test_openclaw_docker_runner_writes_gateway_config_for_host_ollama() -> None:
     assert "port = $containerGatewayPort" in script
     assert "port = $Port" not in script
     assert "Show-DockerDiagnostics" in script
-    assert "docker @composeArgs logs --tail 120 openclaw-gateway" in script
+    assert "& docker @composeArgs" not in script
+    assert 'Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @("logs", "--tail", "120", "openclaw-gateway"))' in script
 
     assert "$memoryProbeJs = @'" in script
     memory_probe = script.split("function Invoke-ContainerMemoryProbe", 1)[1].split("function ConvertTo-OpenClawModelEntries", 1)[0]

@@ -17,6 +17,7 @@ import time
 from typing import Any, Callable
 from main_computer.main_log_hooks import install_main_log_hooks_from_env
 from main_computer.main_log_client import emit_main_log_text
+from main_computer.container_runtime import command_display as _container_command_display, legacy_docker_command_override, resolve_container_runtime
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -240,6 +241,12 @@ def _which_or_path(command: str) -> str | None:
     return None
 
 
+def _command_executable_path(command: list[str] | tuple[str, ...]) -> str | None:
+    if not command:
+        return None
+    return _which_or_path(str(command[0]))
+
+
 
 def _flag_enabled(value: object, *, default: bool = True) -> bool:
     text = str(value if value is not None else ("1" if default else "0")).strip().lower()
@@ -448,7 +455,6 @@ class ExecutorService:
         self.pid_path = self.root / EXECUTOR_SERVICE_PID_FILENAME
         self.wsl_distribution = (wsl_distribution or "MainComputerExecutorTest").strip() or "MainComputerExecutorTest"
         self.wsl_command = (wsl_command or "wsl.exe").strip() or "wsl.exe"
-        self.docker_command = (docker_command or "docker").strip() or "docker"
         self.executor_image = (os.environ.get("MAIN_COMPUTER_EXECUTOR_IMAGE") or DEFAULT_EXECUTOR_IMAGE).strip() or DEFAULT_EXECUTOR_IMAGE
         self.powershell_command = (powershell_command or "powershell.exe").strip() or "powershell.exe"
         self.compose_file = Path(compose_file) if compose_file else self.root / "docker-compose.dev.yml"
@@ -460,6 +466,13 @@ class ExecutorService:
             or ""
         ).strip()
         self.runner = runner or subprocess.run
+        self.container_runtime = resolve_container_runtime(
+            cwd=self.root,
+            runner=self.runner,
+            container_command=legacy_docker_command_override(docker_command),
+            probe=True,
+        )
+        self.docker_command = _container_command_display(self.container_runtime.container_command)
         self.sleep = sleep_func or time.sleep
         self.time = time_func or time.monotonic
         self.output = output_func
@@ -762,6 +775,7 @@ class ExecutorService:
                 state="pending",
                 message="Docker engine check pending",
                 docker_command=self.docker_command,
+                container_runtime=self.container_runtime.as_dict(),
             ),
             "foundationdb": self._component(
                 ok=False,
@@ -1880,23 +1894,25 @@ class ExecutorService:
         )
 
     def _reconcile_docker_engine(self) -> dict[str, Any]:
-        docker_path = _which_or_path(self.docker_command)
+        container_command = list(self.container_runtime.container_command)
+        docker_path = _command_executable_path(container_command)
         if not docker_path:
             return self._component(
                 ok=False,
                 state="missing",
                 message=f"{self.docker_command} was not found",
                 docker_command=self.docker_command,
+                container_runtime=self.container_runtime.as_dict(),
             )
 
-        version = self._run([self.docker_command, "version"], timeout=12)
+        version = self._run(self.container_runtime.container_args("version"), timeout=12)
         started = False
         if version.returncode != 0:
             started = self._try_start_docker_desktop()
             deadline = self.time() + self.docker_start_timeout_s
             while self.time() < deadline:
                 self.sleep(2.0)
-                version = self._run([self.docker_command, "version"], timeout=12)
+                version = self._run(self.container_runtime.container_args("version"), timeout=12)
                 if version.returncode == 0:
                     break
 
@@ -1904,21 +1920,23 @@ class ExecutorService:
             return self._component(
                 ok=False,
                 state="down",
-                message="docker exists but the engine is not responding",
+                message="container runtime exists but the engine is not responding",
                 docker_command=self.docker_command,
                 docker_path=docker_path,
+                container_runtime=self.container_runtime.as_dict(),
                 start_attempted=started,
                 error=_truncate(version.stderr or version.stdout or ""),
             )
 
-        compose = self._run([self.docker_command, "compose", "version"], timeout=12)
+        compose = self._run(self.container_runtime.compose_args("version"), timeout=12)
         if compose.returncode != 0:
             return self._component(
                 ok=False,
                 state="missing-compose",
-                message="docker engine is available but docker compose is not",
+                message="container engine is available but compose is not",
                 docker_command=self.docker_command,
                 docker_path=docker_path,
+                container_runtime=self.container_runtime.as_dict(),
                 engine_available=True,
                 error=_truncate(compose.stderr or compose.stdout or ""),
             )
@@ -1926,9 +1944,10 @@ class ExecutorService:
         return self._component(
             ok=True,
             state="ready",
-            message="Docker engine and compose are available",
+            message="Container engine and compose are available",
             docker_command=self.docker_command,
             docker_path=docker_path,
+            container_runtime=self.container_runtime.as_dict(),
             engine_available=True,
             compose_available=True,
             start_attempted=started,
@@ -1949,20 +1968,27 @@ class ExecutorService:
             return False
 
     def _check_docker_light(self) -> dict[str, Any]:
-        docker_path = _which_or_path(self.docker_command)
+        container_command = list(self.container_runtime.container_command)
+        docker_path = _command_executable_path(container_command)
         if not docker_path:
-            return self._component(ok=False, state="missing", message=f"{self.docker_command} was not found")
-        result = self._run([self.docker_command, "ps", "--format", "{{.Names}}"], timeout=10)
+            return self._component(
+                ok=False,
+                state="missing",
+                message=f"{self.docker_command} was not found",
+                container_runtime=self.container_runtime.as_dict(),
+            )
+        result = self._run(self.container_runtime.container_args("ps", "--format", "{{.Names}}"), timeout=10)
         return self._component(
             ok=result.returncode == 0,
             state="ready" if result.returncode == 0 else "down",
-            message="docker ps succeeded" if result.returncode == 0 else "docker ps failed",
+            message="container ps succeeded" if result.returncode == 0 else "container ps failed",
             docker_path=docker_path,
+            container_runtime=self.container_runtime.as_dict(),
             error="" if result.returncode == 0 else _truncate(result.stderr or result.stdout or ""),
         )
 
     def _compose_command(self, *args: str) -> list[str]:
-        command = [self.docker_command, "compose"]
+        command = list(self.container_runtime.compose_command)
         if self.compose_project:
             command.extend(["--project-name", self.compose_project])
         command.extend(["-f", str(self.compose_file), *args])
@@ -2020,7 +2046,7 @@ class ExecutorService:
                 image=self.executor_image,
             )
 
-        command = [self.docker_command, "image", "inspect", self.executor_image]
+        command = self.container_runtime.container_args("image", "inspect", self.executor_image)
         result = self._run(
             command,
             timeout=15,

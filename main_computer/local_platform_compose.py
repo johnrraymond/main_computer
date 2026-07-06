@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from main_computer.container_runtime import resolve_container_runtime
 from main_computer.local_platform_registry import (
     LocalPlatformLane,
     LocalPlatformRegistry,
@@ -746,16 +747,16 @@ def _used_registry_ports(registry: LocalPlatformRegistry) -> set[int]:
 
 def _docker_port_owners(port: int) -> list[str]:
     try:
+        runtime = resolve_container_runtime(probe=False)
         completed = subprocess.run(
-            [
-                "docker",
+            runtime.container_args(
                 "ps",
                 "-a",
                 "--filter",
                 f"publish={int(port)}",
                 "--format",
                 "{{.Names}} {{.Image}} {{.Status}} {{.Ports}}",
-            ],
+            ),
             text=True,
             capture_output=True,
             timeout=4.0,

@@ -21,14 +21,14 @@ class FakeApplicationsRunner:
 
     def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(command)
-        if command[:2] == ["docker", "version"]:
+        if len(command) >= 2 and command[0] in {"docker", "podman"} and command[1] == "version":
             self.docker_version_attempts += 1
             if self.docker_version_attempts <= self.docker_failures_before_ready:
-                return subprocess.CompletedProcess(command, 1, stdout="", stderr="docker is still starting")
-            return subprocess.CompletedProcess(command, 0, stdout="Docker version ok\n", stderr="")
-        if command[:3] == ["docker", "compose", "version"]:
-            return subprocess.CompletedProcess(command, 0, stdout="Docker Compose version ok\n", stderr="")
-        if command[:2] == ["docker", "ps"]:
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="container runtime is still starting")
+            return subprocess.CompletedProcess(command, 0, stdout="Container version ok\n", stderr="")
+        if len(command) >= 3 and command[0] in {"docker", "podman"} and command[1:3] == ["compose", "version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="Container Compose version ok\n", stderr="")
+        if len(command) >= 2 and command[0] in {"docker", "podman"} and command[1] == "ps":
             return subprocess.CompletedProcess(command, 0, stdout="mc-applications-coolify\n", stderr="")
         if "compose" in command and "config" in command and "--quiet" in command:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
@@ -147,6 +147,20 @@ def test_boot_writes_app_env_and_starts_applications_compose(tmp_path: Path) -> 
 
 
 
+
+
+def test_applications_service_uses_podman_runtime_when_requested(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    repo = make_repo(tmp_path)
+    runner = FakeApplicationsRunner()
+
+    service = ApplicationsService(root=repo, runner=runner, output_func=None)
+    state = service._full_boot_reconcile()
+
+    assert state["docker"]["container_runtime"]["runtime"] == "podman"
+    assert ["podman", "version"] in runner.calls
+    compose_up_calls = [call for call in runner.calls if call[:2] == ["podman", "compose"] and "up" in call]
+    assert compose_up_calls
 
 def test_boot_does_not_start_docker_onlyoffice_after_coolify(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)

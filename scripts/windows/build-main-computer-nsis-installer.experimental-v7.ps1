@@ -366,6 +366,9 @@ param(
 
     [string]$Mode = "Unleashed",
 
+    [ValidateSet("auto", "docker", "podman")]
+    [string]$ContainerRuntime = "auto",
+
     [string]$InstallRoot = "",
 
     [switch]$AllowReHome,
@@ -489,6 +492,10 @@ function Refresh-CommonToolPaths {
     Add-ProcessPathIfPresent -Directory "$env:LOCALAPPDATA\Microsoft\WindowsApps"
     Add-ProcessPathIfPresent -Directory "$env:ProgramFiles\Docker\Docker\resources\bin"
     Add-ProcessPathIfPresent -Directory "${env:ProgramFiles(x86)}\Docker\Docker\resources\bin"
+    Add-ProcessPathIfPresent -Directory "$env:ProgramFiles\RedHat\Podman"
+    Add-ProcessPathIfPresent -Directory "$env:ProgramFiles\Podman"
+    Add-ProcessPathIfPresent -Directory "${env:ProgramFiles(x86)}\RedHat\Podman"
+    Add-ProcessPathIfPresent -Directory "${env:ProgramFiles(x86)}\Podman"
 }
 
 function Resolve-ApplicationCommand {
@@ -558,17 +565,178 @@ function Invoke-ToolCapture {
     }
 }
 
-function Fail-DockerRequirement {
+function Resolve-ContainerRuntimeCli {
+    param([Parameter(Mandatory = $true)][ValidateSet("docker", "podman")][string]$Runtime)
+
+    if ($Runtime -eq "podman") {
+        return Resolve-ApplicationCommand -Name "podman" -CandidatePaths @(
+            "$env:ProgramFiles\RedHat\Podman\podman.exe",
+            "$env:ProgramFiles\Podman\podman.exe",
+            "${env:ProgramFiles(x86)}\RedHat\Podman\podman.exe",
+            "${env:ProgramFiles(x86)}\Podman\podman.exe"
+        )
+    }
+
+    return Resolve-ApplicationCommand -Name "docker" -CandidatePaths @(
+        "$env:ProgramFiles\Docker\Docker\resources\bin\docker.exe",
+        "${env:ProgramFiles(x86)}\Docker\Docker\resources\bin\docker.exe"
+    )
+}
+
+function Test-ContainerRuntimeRequirement {
     param(
         [Parameter(Mandatory = $true)][string]$LogPath,
+        [Parameter(Mandatory = $true)][ValidateSet("docker", "podman")][string]$Runtime,
+        [switch]$Quiet
+    )
+
+    $containerCli = Resolve-ContainerRuntimeCli -Runtime $Runtime
+    if ([string]::IsNullOrWhiteSpace($containerCli)) {
+        if (-not $Quiet) {
+            Write-RequirementLog -LogPath $LogPath -Message "$Runtime executable was not found on PATH or in the expected install directory."
+        }
+        return $false
+    }
+
+    if (-not $Quiet) {
+        Write-RequirementLog -LogPath $LogPath -Message "Requested container runtime: $Runtime"
+        Write-RequirementLog -LogPath $LogPath -Message "Container CLI: $containerCli"
+    }
+
+    $version = Invoke-ToolCapture -LogPath $LogPath -FilePath $containerCli -Arguments @("version")
+    if ([int]$version.ExitCode -ne 0) {
+        if (-not $Quiet) {
+            Write-RequirementLog -LogPath $LogPath -Message "$Runtime version failed. The container runtime may not be installed correctly or may not be initialized/running."
+        }
+        return $false
+    }
+
+    $composeOk = $false
+    $compose = Invoke-ToolCapture -LogPath $LogPath -FilePath $containerCli -Arguments @("compose", "version")
+    if ([int]$compose.ExitCode -eq 0) {
+        $composeOk = $true
+        if (-not $Quiet) {
+            Write-RequirementLog -LogPath $LogPath -Message "Container Compose CLI: $containerCli compose"
+        }
+    }
+    elseif ($Runtime -eq "podman") {
+        $podmanCompose = Resolve-ApplicationCommand -Name "podman-compose" -CandidatePaths @()
+        if (-not [string]::IsNullOrWhiteSpace($podmanCompose)) {
+            $compose = Invoke-ToolCapture -LogPath $LogPath -FilePath $podmanCompose -Arguments @("version")
+            if ([int]$compose.ExitCode -eq 0) {
+                $composeOk = $true
+                if (-not $Quiet) {
+                    Write-RequirementLog -LogPath $LogPath -Message "Container Compose CLI: $podmanCompose"
+                }
+            }
+        }
+    }
+
+    if (-not $composeOk) {
+        if (-not $Quiet) {
+            if ($Runtime -eq "podman") {
+                Write-RequirementLog -LogPath $LogPath -Message "podman compose version and podman-compose version both failed. Podman Compose support is required."
+            }
+            else {
+                Write-RequirementLog -LogPath $LogPath -Message "docker compose version failed. Docker Compose v2 is required."
+            }
+        }
+        return $false
+    }
+
+    $ps = Invoke-ToolCapture -LogPath $LogPath -FilePath $containerCli -Arguments @("ps")
+    if ([int]$ps.ExitCode -ne 0) {
+        if (-not $Quiet) {
+            Write-RequirementLog -LogPath $LogPath -Message "$Runtime ps failed. Start or initialize the selected container runtime and wait for the engine to be ready."
+        }
+        return $false
+    }
+
+    if (-not $Quiet) {
+        Write-RequirementLog -LogPath $LogPath -Message "Container runtime requirement: OK ($Runtime)"
+    }
+    return $true
+}
+
+function Resolve-InstallerContainerRuntime {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [Parameter(Mandatory = $true)][ValidateSet("auto", "docker", "podman")][string]$SelectedRuntime
+    )
+
+    # Deliberately use the installer selection, not the environment of the shell
+    # that built or launched the setup EXE. The setup maker's
+    # MAIN_COMPUTER_CONTAINER_RUNTIME must not change the generated installer.
+    $selected = $SelectedRuntime.Trim().ToLowerInvariant()
+    if ($selected -eq "docker" -or $selected -eq "podman") {
+        return $selected
+    }
+
+    Write-RequirementLog -LogPath $LogPath -Message "Container runtime selection: auto-detect on this computer."
+    foreach ($candidate in @("docker", "podman")) {
+        Write-RequirementLog -LogPath $LogPath -Message "Trying container runtime candidate: $candidate"
+        if (Test-ContainerRuntimeRequirement -LogPath $LogPath -Runtime $candidate -Quiet) {
+            Write-RequirementLog -LogPath $LogPath -Message "Auto-detected container runtime: $candidate"
+            return $candidate
+        }
+    }
+
+    Fail-ContainerRuntimeRequirement -LogPath $LogPath -Runtime "auto" -Reason "Neither Docker Desktop nor Podman passed version, compose version, and ps checks on this computer."
+}
+
+function Get-ContainerRuntimeDisplayName {
+    param([Parameter(Mandatory = $true)][ValidateSet("auto", "docker", "podman")][string]$Runtime)
+
+    if ($Runtime -eq "auto") {
+        return "Auto-detect"
+    }
+    if ($Runtime -eq "podman") {
+        return "Podman"
+    }
+    return "Docker Desktop"
+}
+
+function Fail-ContainerRuntimeRequirement {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [Parameter(Mandatory = $true)][ValidateSet("auto", "docker", "podman")][string]$Runtime,
         [Parameter(Mandatory = $true)][string]$Reason
     )
 
     $dockerInstallUrl = "https://docs.docker.com/desktop/setup/install/windows-install/"
+    $podmanInstallUrl = "https://podman.io/docs/installation"
+    $displayName = Get-ContainerRuntimeDisplayName -Runtime $Runtime
+
     Write-RequirementLog -LogPath $LogPath -Message ""
-    Write-RequirementLog -LogPath $LogPath -Message "Docker Desktop is required for this version of Main Computer."
+    Write-RequirementLog -LogPath $LogPath -Message "A Docker-compatible container runtime is required for this version of Main Computer."
+    Write-RequirementLog -LogPath $LogPath -Message "Requested runtime: $Runtime ($displayName)"
     Write-RequirementLog -LogPath $LogPath -Message "Reason: $Reason"
     Write-RequirementLog -LogPath $LogPath -Message ""
+
+    if ($Runtime -eq "auto") {
+        Write-RequirementLog -LogPath $LogPath -Message "Auto-detect could not find a working Docker-compatible runtime on this computer."
+        Write-RequirementLog -LogPath $LogPath -Message "Install/start Docker Desktop or install/initialize Podman, then rerun this installer."
+        Write-RequirementLog -LogPath $LogPath -Message "Docker install guide: $dockerInstallUrl"
+        Write-RequirementLog -LogPath $LogPath -Message "Podman install guide: $podmanInstallUrl"
+        Write-RequirementLog -LogPath $LogPath -Message ""
+        Write-RequirementLog -LogPath $LogPath -Message "After installing one runtime, one of these command sets should work:"
+        Write-RequirementLog -LogPath $LogPath -Message "  docker version ; docker compose version ; docker ps"
+        Write-RequirementLog -LogPath $LogPath -Message "  podman version ; podman compose version ; podman ps"
+        throw "No working Docker-compatible container runtime was auto-detected. Install/start Docker Desktop or install/initialize Podman, then rerun this installer."
+    }
+
+    if ($Runtime -eq "podman") {
+        Write-RequirementLog -LogPath $LogPath -Message "The installer Podman runtime choice requires Podman to be installed and available on PATH."
+        Write-RequirementLog -LogPath $LogPath -Message "Install guide: $podmanInstallUrl"
+        Write-RequirementLog -LogPath $LogPath -Message ""
+        Write-RequirementLog -LogPath $LogPath -Message "After installing Podman, these commands should work:"
+        Write-RequirementLog -LogPath $LogPath -Message "  podman version"
+        Write-RequirementLog -LogPath $LogPath -Message "  podman compose version   # or: podman-compose version"
+        Write-RequirementLog -LogPath $LogPath -Message "  podman ps"
+        throw "The installer Podman runtime choice requires a working Podman CLI. Install Podman from $podmanInstallUrl, start/initialize it once, then rerun this installer."
+    }
+
+    Write-RequirementLog -LogPath $LogPath -Message "Docker Desktop is the default container runtime for the NSIS installer unless Podman is selected on the installer runtime page."
     Write-RequirementLog -LogPath $LogPath -Message "Install Docker Desktop for Windows, start Docker Desktop once, complete any first-run prompts, then rerun this installer."
     Write-RequirementLog -LogPath $LogPath -Message "Install guide: $dockerInstallUrl"
     Write-RequirementLog -LogPath $LogPath -Message ""
@@ -576,39 +744,21 @@ function Fail-DockerRequirement {
     Write-RequirementLog -LogPath $LogPath -Message "  docker version"
     Write-RequirementLog -LogPath $LogPath -Message "  docker compose version"
     Write-RequirementLog -LogPath $LogPath -Message "  docker ps"
-    throw "Docker Desktop is required. Install Docker Desktop from $dockerInstallUrl, start it once, then rerun this installer."
+    throw "Docker Desktop is required by default. Install Docker Desktop from $dockerInstallUrl, start it once, or rerun this installer and select Podman after installing/initializing Podman."
 }
 
-function Assert-DockerRequirement {
-    param([Parameter(Mandatory = $true)][string]$LogPath)
-
-    $docker = Resolve-ApplicationCommand -Name "docker" -CandidatePaths @(
-        "$env:ProgramFiles\Docker\Docker\resources\bin\docker.exe",
-        "${env:ProgramFiles(x86)}\Docker\Docker\resources\bin\docker.exe"
+function Assert-ContainerRuntimeRequirement {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [Parameter(Mandatory = $true)][ValidateSet("docker", "podman")][string]$SelectedRuntime
     )
 
-    if ([string]::IsNullOrWhiteSpace($docker)) {
-        Fail-DockerRequirement -LogPath $LogPath -Reason "docker.exe was not found on PATH or in the Docker Desktop install directory."
+    if (-not (Test-ContainerRuntimeRequirement -LogPath $LogPath -Runtime $SelectedRuntime)) {
+        if ($SelectedRuntime -eq "podman") {
+            Fail-ContainerRuntimeRequirement -LogPath $LogPath -Runtime $SelectedRuntime -Reason "The selected Podman runtime did not pass version, compose version, and ps checks."
+        }
+        Fail-ContainerRuntimeRequirement -LogPath $LogPath -Runtime $SelectedRuntime -Reason "The selected Docker Desktop runtime did not pass version, compose version, and ps checks."
     }
-
-    Write-RequirementLog -LogPath $LogPath -Message "Docker CLI: $docker"
-
-    $version = Invoke-ToolCapture -LogPath $LogPath -FilePath $docker -Arguments @("version")
-    if ([int]$version.ExitCode -ne 0) {
-        Fail-DockerRequirement -LogPath $LogPath -Reason "docker version failed. Docker Desktop may not be installed correctly or the daemon is not running."
-    }
-
-    $compose = Invoke-ToolCapture -LogPath $LogPath -FilePath $docker -Arguments @("compose", "version")
-    if ([int]$compose.ExitCode -ne 0) {
-        Fail-DockerRequirement -LogPath $LogPath -Reason "docker compose version failed. Docker Compose v2 is required."
-    }
-
-    $ps = Invoke-ToolCapture -LogPath $LogPath -FilePath $docker -Arguments @("ps")
-    if ([int]$ps.ExitCode -ne 0) {
-        Fail-DockerRequirement -LogPath $LogPath -Reason "docker ps failed. Start Docker Desktop and wait for the engine to be ready."
-    }
-
-    Write-RequirementLog -LogPath $LogPath -Message "Docker requirement: OK"
 }
 
 function Resolve-WingetRequirement {
@@ -783,7 +933,7 @@ function Check-WslRequirement {
     )
 
     if ([string]::IsNullOrWhiteSpace($wsl)) {
-        Write-RequirementLog -LogPath $LogPath -Message "WARNING: wsl.exe was not found. Docker may still be usable, but WSL-backed Main Computer features will need WSL installed."
+        Write-RequirementLog -LogPath $LogPath -Message "WARNING: wsl.exe was not found. The container runtime may still be usable, but WSL-backed Main Computer features will need WSL installed."
         Write-RequirementLog -LogPath $LogPath -Message "Install WSL with: wsl --install"
         return
     }
@@ -796,19 +946,20 @@ function Check-WslRequirement {
 function Invoke-HostRequirementPreparation {
     param(
         [Parameter(Mandatory = $true)][string]$LogPath,
+        [Parameter(Mandatory = $true)][ValidateSet("docker", "podman")][string]$SelectedRuntime,
         [switch]$SkipDockerRequirement,
         [switch]$SkipHostRequirementInstall
     )
 
-    Write-LogBlock -LogPath $LogPath -Title "host requirements" -Text "Checking Docker, Git, OpenSSH Client, Ollama, and WSL host requirements."
+    Write-LogBlock -LogPath $LogPath -Title "host requirements" -Text "Checking container runtime, Git, OpenSSH Client, Ollama, and WSL host requirements."
     Write-RequirementLog -LogPath $LogPath -Message ""
     Write-RequirementLog -LogPath $LogPath -Message "Checking Main Computer host requirements."
 
     if ($SkipDockerRequirement) {
-        Write-RequirementLog -LogPath $LogPath -Message "Skipping Docker requirement check because -SkipDockerRequirement was set."
+        Write-RequirementLog -LogPath $LogPath -Message "Skipping container runtime requirement check because -SkipDockerRequirement was set."
     }
     else {
-        Assert-DockerRequirement -LogPath $LogPath
+        Assert-ContainerRuntimeRequirement -LogPath $LogPath -SelectedRuntime $SelectedRuntime
     }
 
     if ($SkipHostRequirementInstall) {
@@ -844,8 +995,11 @@ Write-LogLine -LogPath $logPath -Message "Timestamp UTC: $((Get-Date).ToUniversa
 Write-LogLine -LogPath $logPath -Message "Package root:  $packageRoot"
 Write-LogLine -LogPath $logPath -Message "Payload root:  $payloadRoot"
 Write-LogLine -LogPath $logPath -Message "Bootstrap:     $bootstrapScript"
+Write-LogLine -LogPath $logPath -Message "Container runtime selected by installer UI/parameter: $ContainerRuntime"
+$EffectiveContainerRuntime = Resolve-InstallerContainerRuntime -LogPath $logPath -SelectedRuntime $ContainerRuntime
+Write-LogLine -LogPath $logPath -Message "Effective container runtime for this install: $EffectiveContainerRuntime"
 
-Invoke-HostRequirementPreparation -LogPath $logPath -SkipDockerRequirement:$SkipDockerRequirement -SkipHostRequirementInstall:$SkipHostRequirementInstall
+Invoke-HostRequirementPreparation -LogPath $logPath -SelectedRuntime $EffectiveContainerRuntime -SkipDockerRequirement:$SkipDockerRequirement -SkipHostRequirementInstall:$SkipHostRequirementInstall
 
 if (-not (Test-Path -LiteralPath $payloadRoot -PathType Container)) {
     Write-LogLine -LogPath $logPath -Message "ERROR: Packaged payload directory was not found: $payloadRoot"
@@ -862,7 +1016,8 @@ $bootstrapArgs = @(
     "-File", $bootstrapScript,
     "-RepoRoot", $payloadRoot,
     "-RuntimeProfile", $RuntimeProfile,
-    "-Mode", $Mode
+    "-Mode", $Mode,
+    "-ContainerRuntime", $EffectiveContainerRuntime
 )
 
 if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
@@ -899,6 +1054,10 @@ Write-Host "Running packaged Main Computer Python installer from:"
 Write-Host "  $payloadRoot"
 Write-Host "Python bootstrap log:"
 Write-Host "  $logPath"
+Write-Host "Selected container runtime:"
+Write-Host "  $ContainerRuntime"
+Write-Host "Effective container runtime:"
+Write-Host "  $EffectiveContainerRuntime"
 Write-Host ""
 
 Write-LogBlock -LogPath $logPath -Title "command" -Text "$($powershellCommand.Source) $argumentLine"
@@ -1005,8 +1164,15 @@ Var InstallModeArg
 Var ShortcutModeName
 Var ResolvedInstallRoot
 Var ShouldCreateDesktopShortcut
+Var ContainerRuntimeDialog
+Var ContainerRuntimeRadioAuto
+Var ContainerRuntimeRadioDocker
+Var ContainerRuntimeRadioPodman
+Var ContainerRuntimeArg
+Var ContainerRuntimeName
 
 Page custom ModePage ModePageLeave
+Page custom ContainerRuntimePage ContainerRuntimePageLeave
 Page instfiles
 
 Function .onInit
@@ -1015,6 +1181,8 @@ Function .onInit
   StrCpy $ShortcutModeName "Unleashed"
   StrCpy $ResolvedInstallRoot "$PROFILE\.main-computer-tools\installs\main_computer_test-test-unleashed"
   StrCpy $ShouldCreateDesktopShortcut "1"
+  StrCpy $ContainerRuntimeArg "auto"
+  StrCpy $ContainerRuntimeName "Auto-detect"
 FunctionEnd
 
 Function ResolveSelectedInstallRoot
@@ -1094,41 +1262,53 @@ Function ModePageLeave
   Call ResolveSelectedInstallRoot
 FunctionEnd
 
-Function RemoveMainComputerModeShortcuts
-  SetShellVarContext current
+Function ContainerRuntimePage
+  nsDialogs::Create 1018
+  Pop $ContainerRuntimeDialog
 
-  Delete "$SMPROGRAMS\Main Computer\Run Main Computer Installer.lnk"
-  Delete "$SMPROGRAMS\Main Computer\Main Computer - Unleashed.lnk"
-  Delete "$SMPROGRAMS\Main Computer\Main Computer - Debug.lnk"
-  Delete "$SMPROGRAMS\Main Computer\Main Computer - Safe.lnk"
+  ${If} $ContainerRuntimeDialog == error
+    Abort
+  ${EndIf}
 
-  Delete "$DESKTOP\Main Computer - Unleashed.lnk"
-  Delete "$DESKTOP\Main Computer - Debug.lnk"
-  Delete "$DESKTOP\Main Computer - Safe.lnk"
+  ${NSD_CreateLabel} 0 0 100% 22u "Choose the Docker-compatible container runtime for this install."
+
+  ${NSD_CreateRadioButton} 0 28u 100% 12u "Auto-detect on this computer"
+  Pop $ContainerRuntimeRadioAuto
+  ${NSD_CreateLabel} 16u 42u 92% 22u "Recommended. The installer probes this machine and uses Docker Desktop or Podman only if it is working."
+
+  ${NSD_CreateRadioButton} 0 74u 100% 12u "Docker Desktop"
+  Pop $ContainerRuntimeRadioDocker
+  ${NSD_CreateLabel} 16u 88u 92% 20u "Require Docker Desktop installed, initialized, and running."
+
+  ${NSD_CreateRadioButton} 0 116u 100% 12u "Podman"
+  Pop $ContainerRuntimeRadioPodman
+  ${NSD_CreateLabel} 16u 130u 92% 24u "Require Podman installed, initialized, and available through podman compose or podman-compose."
+
+  ${If} $ContainerRuntimeArg == "podman"
+    ${NSD_Check} $ContainerRuntimeRadioPodman
+  ${ElseIf} $ContainerRuntimeArg == "docker"
+    ${NSD_Check} $ContainerRuntimeRadioDocker
+  ${Else}
+    ${NSD_Check} $ContainerRuntimeRadioAuto
+  ${EndIf}
+
+  nsDialogs::Show
 FunctionEnd
 
-Function un.RemoveMainComputerModeShortcuts
-  SetShellVarContext current
-
-  Delete "$SMPROGRAMS\Main Computer\Run Main Computer Installer.lnk"
-  Delete "$SMPROGRAMS\Main Computer\Main Computer - Unleashed.lnk"
-  Delete "$SMPROGRAMS\Main Computer\Main Computer - Debug.lnk"
-  Delete "$SMPROGRAMS\Main Computer\Main Computer - Safe.lnk"
-
-  Delete "$DESKTOP\Main Computer - Unleashed.lnk"
-  Delete "$DESKTOP\Main Computer - Debug.lnk"
-  Delete "$DESKTOP\Main Computer - Safe.lnk"
-FunctionEnd
-
-Function CreateMainComputerModeShortcuts
-  SetShellVarContext current
-  Call RemoveMainComputerModeShortcuts
-
-  CreateDirectory "$SMPROGRAMS\Main Computer"
-  CreateShortCut "$SMPROGRAMS\Main Computer\Main Computer - $ShortcutModeName.lnk" "$ResolvedInstallRoot\start_v2.bat" "-OpenBrowser" "" 0 SW_SHOWNORMAL "" "Start Main Computer - $ShortcutModeName and open the browser"
-
-  ${If} $ShouldCreateDesktopShortcut == "1"
-    CreateShortCut "$DESKTOP\Main Computer - $ShortcutModeName.lnk" "$ResolvedInstallRoot\start_v2.bat" "-OpenBrowser" "" 0 SW_SHOWNORMAL "" "Start Main Computer - $ShortcutModeName and open the browser"
+Function ContainerRuntimePageLeave
+  ${NSD_GetState} $ContainerRuntimeRadioPodman $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $ContainerRuntimeArg "podman"
+    StrCpy $ContainerRuntimeName "Podman"
+  ${Else}
+    ${NSD_GetState} $ContainerRuntimeRadioDocker $0
+    ${If} $0 == ${BST_CHECKED}
+      StrCpy $ContainerRuntimeArg "docker"
+      StrCpy $ContainerRuntimeName "Docker Desktop"
+    ${Else}
+      StrCpy $ContainerRuntimeArg "auto"
+      StrCpy $ContainerRuntimeName "Auto-detect"
+    ${EndIf}
   ${EndIf}
 FunctionEnd
 
@@ -1138,6 +1318,7 @@ Section "Install Main Computer package files" SecInstall
 
   DetailPrint "Installing Main Computer package files to $INSTDIR"
   DetailPrint "Selected mode: $ShortcutModeName"
+  DetailPrint "Container runtime selection: $ContainerRuntimeName"
   DetailPrint "Resolved install root: $ResolvedInstallRoot"
 
   RMDir /r "$INSTDIR\payload\main_computer_test"
@@ -1161,15 +1342,16 @@ Section "Run Main Computer Python installer" SecBootstrap
 
   DetailPrint "Checking host requirements and running the packaged Main Computer Python installer."
   DetailPrint "Mode: $ShortcutModeName"
+  DetailPrint "Container runtime selection: $ContainerRuntimeName"
   DetailPrint "Install root: $ResolvedInstallRoot"
   DetailPrint "Installer diagnostics will be written under: $INSTDIR\logs"
-  DetailPrint "Docker is required. Git, OpenSSH Client, and Ollama will be installed or repaired when missing."
+  DetailPrint "A Docker-compatible container runtime is required. Git, OpenSSH Client, and Ollama will be installed or repaired when missing."
 
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-MainComputer-from-Package.nsis-experimental-v7.ps1" -RuntimeProfile test -Mode "$InstallModeArg" -InstallRoot "$ResolvedInstallRoot" -VerboseBootstrap'
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-MainComputer-from-Package.nsis-experimental-v7.ps1" -RuntimeProfile test -Mode "$InstallModeArg" -ContainerRuntime "$ContainerRuntimeArg" -InstallRoot "$ResolvedInstallRoot" -VerboseBootstrap'
   Pop $0
 
   StrCmp $0 "0" bootstrap_ok
-    MessageBox MB_ICONSTOP "Main Computer installer failed with exit code $0.$\r$\n$\r$\nIf Docker is missing or not running, install Docker Desktop for Windows, start it once, then rerun this installer:$\r$\nhttps://docs.docker.com/desktop/setup/install/windows-install/$\r$\n$\r$\nSee installer details and log files under:$\r$\n$INSTDIR\logs"
+    MessageBox MB_ICONSTOP "Main Computer installer failed with exit code $0.$\r$\n$\r$\nContainer runtime selection: $ContainerRuntimeName.$\r$\nNo selected or auto-detected Docker-compatible container runtime is ready.$\r$\n$\r$\nDocker Desktop: install/start Docker Desktop for Windows.$\r$\nPodman: install/initialize Podman or select Podman explicitly on the runtime page.$\r$\n$\r$\nSee installer details and log files under:$\r$\n$INSTDIR\logs"
     Abort "Main Computer installer failed with exit code $0. See $INSTDIR\logs."
   bootstrap_ok:
 
@@ -1243,7 +1425,7 @@ $packageJson = [ordered]@{
     nsisVersion = $compiler.Version
     payloadRoot = "payload/main_computer_test"
     hostRequirementsPolicy = [ordered]@{
-        docker = "required; fail with official Docker Desktop Windows install link when docker/docker compose/docker ps is not usable"
+        containerRuntime = "required; installer defaults to target-machine auto-detect; Docker Desktop and Podman can be selected explicitly; setup-maker environment variables are ignored; fail with runtime-specific install guidance when unusable"
         git = "install or repair with winget when missing"
         opensshClient = "install or repair Windows OpenSSH Client capability when ssh/scp/ssh-keygen are missing"
         ollama = "install or repair with winget when missing; warn if local API is not reachable after install"

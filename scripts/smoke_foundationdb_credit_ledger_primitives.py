@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -620,8 +621,36 @@ def run_process(
     return result
 
 
+def _split_container_command(value: str | None) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
+def _base_container_command(args: argparse.Namespace) -> list[str]:
+    explicit = str(getattr(args, "docker_command", "") or "").strip()
+    env_command = (
+        os.environ.get("MAIN_COMPUTER_CONTAINER_COMMAND")
+        or os.environ.get("MAIN_COMPUTER_DOCKER_COMMAND")
+        or os.environ.get("MAIN_COMPUTER_DOCKER")
+        or ""
+    )
+    if env_command and explicit in {"", "docker"}:
+        return _split_container_command(env_command)
+
+    runtime = str(os.environ.get("MAIN_COMPUTER_CONTAINER_RUNTIME") or "").strip().lower()
+    if explicit in {"", "docker"} and runtime in {"podman", "podman-desktop"}:
+        return ["podman"]
+
+    return _split_container_command(explicit) or ["docker"]
+
+
 def docker_command(args: argparse.Namespace, *extra: str) -> list[str]:
-    return [args.docker_command, *extra]
+    return [*_base_container_command(args), *extra]
 
 
 def container_exists(args: argparse.Namespace, name: str) -> bool:
@@ -695,10 +724,11 @@ def _foundationdb_status_is_configured(status_output: str) -> bool:
 
 
 def start_foundationdb_container(args: argparse.Namespace) -> DockerFDBRuntime:
-    docker_path = shutil.which(args.docker_command)
+    base_command = _base_container_command(args)
+    docker_path = shutil.which(base_command[0]) or (base_command[0] if Path(base_command[0]).exists() else None)
     if docker_path is None:
         raise SmokeFailure(
-            f"Could not find {args.docker_command!r}. Install Docker Desktop or put Docker on PATH."
+            f"Could not find {base_command[0]!r}. Install Docker Desktop, Podman, or put the container CLI on PATH."
         )
 
     name = args.fdb_container_name
@@ -1062,7 +1092,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--docker-command",
         default="docker",
-        help="Docker CLI executable name or path.",
+        help="Container CLI executable name or path. Defaults to Docker; MAIN_COMPUTER_CONTAINER_RUNTIME=podman switches to Podman.",
     )
     parser.add_argument(
         "--docker-platform",

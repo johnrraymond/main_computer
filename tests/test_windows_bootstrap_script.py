@@ -656,6 +656,9 @@ def test_python_windows_bootstrapper_is_boring_stage0_launcher() -> None:
     assert "exit $bootstrapExitCode" in script
     assert "--managed-python" in script
     assert "--pip-wheel-version" in script
+    assert "[ValidateSet(\"docker\", \"podman\")]" in script
+    assert "[string]$ContainerRuntime = \"docker\"" in script
+    assert '"--container-runtime", $ContainerRuntime' in script
 
     forbidden = [
         "ensurepip",
@@ -900,6 +903,8 @@ def test_python_target_install_launcher_sets_mc_install_and_calls_python_install
     assert "bootstrap-main-computer-python-windows.ps1" in script
     assert "$installerParams = @{" in script
     assert "InstallRoot = $targetInstallRoot" in script
+    assert "ContainerRuntime = $ContainerRuntime" in script
+    assert "[ValidateSet(\"docker\", \"podman\")]" in script
     assert "[switch]$NoReHome" in script
     assert "$installerParams.NoReHome = $true" in script
     assert "& $bootstrapScript @installerParams" in script
@@ -969,6 +974,8 @@ def test_python_stage0_accepts_regular_bootstrap_compatibility_knobs() -> None:
         "[int]$StartTimeoutSeconds = 90",
         "[ValidateSet(\"auto\", \"disabled\", \"docker\")]",
         "[string]$OnlyOfficeMode = \"auto\"",
+        "[ValidateSet(\"docker\", \"podman\")]",
+        "[string]$ContainerRuntime = \"docker\"",
         "[string]$LocalServerMode = \"auto\"",
         "[string]$LocalCoolifyMode = \"auto\"",
         "[switch]$InstallOnlyOffice",
@@ -997,6 +1004,7 @@ def test_python_stage0_accepts_regular_bootstrap_compatibility_knobs() -> None:
         '"--workspace"',
         '"--start-timeout-seconds"',
         '"--onlyoffice-mode"',
+        '"--container-runtime"',
         '"--local-server-mode"',
         '"--local-coolify-mode"',
         '"--install-onlyoffice"',

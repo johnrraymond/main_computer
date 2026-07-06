@@ -74,6 +74,9 @@ param(
     [ValidateSet("auto", "disabled", "docker")]
     [string]$OnlyOfficeMode = "auto",
 
+    [ValidateSet("docker", "podman")]
+    [string]$ContainerRuntime = "docker",
+
     [ValidateSet("auto", "disabled", "required")]
     [string]$WslFirewallMode = "auto",
 
@@ -564,6 +567,7 @@ try {
         "--bind-host", $BindHost,
         "--start-timeout-seconds", ([string]$StartTimeoutSeconds),
         "--onlyoffice-mode", $OnlyOfficeMode,
+        "--container-runtime", $ContainerRuntime,
         "--local-server-mode", $LocalServerMode,
         "--local-coolify-mode", $LocalCoolifyMode,
         "--wsl-firewall-mode", $WslFirewallMode,
@@ -648,6 +652,7 @@ try {
     Write-Host "  python: $pythonExe"
     Write-Host "  driver: $driverPath"
     Write-Host "  repo root: $resolvedRepoRoot"
+    Write-Host "  container runtime: $ContainerRuntime"
     Write-Host "  cwd: $(Get-Location)"
     if ([string]::IsNullOrWhiteSpace($installTargetDisplay)) {
         Write-Host "  install target: $installTargetSource"

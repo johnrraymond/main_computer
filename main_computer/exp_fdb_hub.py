@@ -20,6 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+from main_computer.container_runtime import command_display as _container_command_display, legacy_docker_command_override, resolve_container_runtime
 from main_computer.config import DEFAULT_HUB_BRIDGE_BACKEND, MainComputerConfig
 from main_computer.credit_units import (
     CREDIT_WEI_PER_CREDIT,
@@ -2583,9 +2584,13 @@ def _cluster_file_from_args(args: argparse.Namespace, *, repo_root: Path) -> Pat
 
 
 def _docker_container_running(docker_command: str, container_name: str) -> bool | None:
+    runtime = resolve_container_runtime(
+        container_command=legacy_docker_command_override(docker_command),
+        probe=False,
+    )
     try:
         result = subprocess.run(
-            [docker_command, "inspect", "--format={{.State.Running}}", container_name],
+            runtime.container_args("inspect", "--format={{.State.Running}}", container_name),
             check=False,
             capture_output=True,
             text=True,
@@ -2652,7 +2657,12 @@ def ensure_foundationdb_smoke_loaded(args: argparse.Namespace) -> None:
         "--fdb-docker-image",
         str(args.fdb_docker_image),
         "--docker-command",
-        str(args.fdb_docker_command),
+        _container_command_display(
+            resolve_container_runtime(
+                container_command=legacy_docker_command_override(args.fdb_docker_command),
+                probe=False,
+            ).container_command
+        ),
         "--docker-start-timeout",
         str(float(args.fdb_docker_start_timeout)),
         "--keep-container",
@@ -2811,9 +2821,7 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
     else:
         env.pop("LAB_REQUESTERS", None)
 
-    command = [
-        "docker",
-        "compose",
+    command = resolve_container_runtime(cwd=repo_root, probe=False).compose_args(
         "-f",
         str(compose_file),
         "--profile",
@@ -2822,7 +2830,7 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
         "--abort-on-container-exit",
         "--exit-code-from",
         "worker-lab",
-    ]
+    )
     if not args.no_docker_build:
         command.append("--build")
     command.append("worker-lab")
@@ -2854,7 +2862,7 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
     if args.worktime:
         print(f"Scheduler lab worker result runtime: {args.worktime} (seconds; sigma is standard deviation)")
     print(f"Scheduler lab lease seconds: {float(args.lease_seconds):g}")
-    print("Docker command:")
+    print("Container command:")
     print("  " + " ".join(command))
     return subprocess.Popen(command, cwd=str(repo_root), env=env)
 

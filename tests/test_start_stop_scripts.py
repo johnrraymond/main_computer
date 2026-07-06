@@ -141,9 +141,11 @@ def test_v2_helper_uses_mode_scoped_non_gitea_docker_projects() -> None:
     assert '"MAIN_COMPUTER_COOLIFY_PROJECT", "COOLIFY_COMPOSE_PROJECT", "COMPOSE_PROJECT_NAME"' in helper
     assert 'Get-EnvFirstValue @("MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT", "MAIN_COMPUTER_COOLIFY_PROJECT", "COMPOSE_PROJECT_NAME")' not in helper
     assert "function Start-MainComputerGiteaIfMissing" in helper
+    assert "Get-MainComputerContainerRuntime $RootPath $PythonCommand" in helper
+    assert "Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand" in helper
     assert "Shared Gitea already present on port" in helper
     assert "installer/start path will not recreate it" in helper
-    assert "ps -a -q gitea" in helper
+    assert '"ps", "-a", "-q", "gitea"' in helper
     assert '"start", "gitea"' in helper
     assert '"up", "-d", "gitea"' in helper
     assert "function Start-MainComputerLocalPlatform" in helper

@@ -10,6 +10,13 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from main_computer.container_runtime import resolve_container_runtime
+
+
+
+def container_args(*args: object) -> list[str]:
+    return resolve_container_runtime(cwd=Path.cwd(), probe=False).container_args(*args)
+
 
 def run(cmd: list[str], *, input_text: str | None = None, timeout: int = 60) -> tuple[int, str]:
     try:
@@ -35,8 +42,7 @@ def section(title: str) -> None:
 
 def docker_ps() -> list[dict[str, str]]:
     code, out = run([
-        "docker",
-        "ps",
+        *container_args("ps"),
         "--format",
         "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
     ])
@@ -91,7 +97,7 @@ def choose_containers(rows: list[dict[str, str]]) -> tuple[str, str | None]:
 
 
 def docker_exec(container: str, script: str, *, user: str | None = None, timeout: int = 60) -> tuple[int, str]:
-    cmd = ["docker", "exec"]
+    cmd = container_args("exec")
     if user:
         cmd += ["-u", user]
     cmd += [container, "sh", "-lc", script]
@@ -99,11 +105,11 @@ def docker_exec(container: str, script: str, *, user: str | None = None, timeout
 
 
 def docker_exec_stdin(container: str, script: str, input_text: str, *, timeout: int = 60) -> tuple[int, str]:
-    return run(["docker", "exec", "-i", container, "sh", "-lc", script], input_text=input_text, timeout=timeout)
+    return run(container_args("exec", "-i", container, "sh", "-lc", script), input_text=input_text, timeout=timeout)
 
 
 def dashboard_url_from_port(container: str) -> str:
-    code, out = run(["docker", "port", container, "8080/tcp"])
+    code, out = run(container_args("port", container, "8080/tcp"))
     if code == 0:
         # Typical: 127.0.0.1:17056
         for line in out.splitlines():

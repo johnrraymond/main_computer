@@ -298,3 +298,13 @@ def test_website_docker_cli_can_use_legacy_aggregate_scope(tmp_path: Path) -> No
     assert "docker-compose.websites.yml" in payload["plan"]["compose_path"]
     assert payload["plan"]["command"][3] == "main-computer-local-platform-unleashed"
     assert payload["plan"]["command"][-1] == "hub-dev"
+
+
+def test_lifecycle_plan_uses_podman_runtime_when_requested(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    list_website_projects(tmp_path)
+
+    plan = lifecycle_plan(tmp_path, "hub-site", lane="local-prod", action="start")
+
+    assert plan.command[:2] == ["podman", "compose"]
+    assert "-f" in plan.command

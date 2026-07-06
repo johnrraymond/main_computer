@@ -7,6 +7,11 @@ param(
     [string]$GatewayToken,
     [string]$Image = "ghcr.io/openclaw/openclaw:latest",
     [string]$ProjectName = "main-computer-openclaw",
+    [ValidateSet("auto", "docker", "podman")]
+    [string]$ContainerRuntime = "auto",
+    [string]$ContainerCommand = "",
+    [string]$ComposeCommand = "",
+    [string]$ContainerOllamaUrl = "",
     [int]$SmokeTimeoutSeconds = 300,
     [int]$ContextWindow = 8192,
     [int]$MaxTokens = 512,
@@ -48,7 +53,7 @@ function New-MainComputerToken {
 }
 
 function Write-Info([string]$Message) {
-    Write-Host "[openclaw-docker] $Message"
+    Write-Host "[openclaw-container] $Message"
 }
 
 function Invoke-JsonGet([string]$Uri) {
@@ -78,19 +83,101 @@ function Wait-HttpOk([string]$Uri, [int]$TimeoutSeconds = 90) {
     throw "Timed out waiting for $Uri. Last error: $lastError"
 }
 
+function Split-ContainerCommandLine([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @()
+    }
+    return @($Value.Trim() -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Get-FirstNonEmptyCommand([string[]]$Values) {
+    foreach ($value in $Values) {
+        $parts = @(Split-ContainerCommandLine $value)
+        if ($parts.Count -gt 0) {
+            return $parts
+        }
+    }
+    return @()
+}
+
+function Resolve-OpenClawContainerRuntime {
+    $requested = $ContainerRuntime
+    if ([string]::IsNullOrWhiteSpace($requested) -or $requested -eq "auto") {
+        $requested = $env:MAIN_COMPUTER_CONTAINER_RUNTIME
+    }
+    if ([string]::IsNullOrWhiteSpace($requested)) {
+        $requested = "auto"
+    }
+    $requested = $requested.ToLowerInvariant()
+
+    $container = @(Get-FirstNonEmptyCommand @(
+        $ContainerCommand,
+        $env:MAIN_COMPUTER_CONTAINER_COMMAND,
+        $env:MAIN_COMPUTER_DOCKER_COMMAND,
+        $env:MAIN_COMPUTER_DOCKER
+    ))
+    $compose = @(Get-FirstNonEmptyCommand @(
+        $ComposeCommand,
+        $env:MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND,
+        $env:MAIN_COMPUTER_DOCKER_COMPOSE,
+        $env:MAIN_COMPUTER_DOCKER_COMPOSE_COMMAND
+    ))
+
+    if ($container.Count -eq 0 -and $requested -eq "podman") {
+        $container = @("podman")
+    } elseif ($container.Count -eq 0) {
+        $container = @("docker")
+    }
+
+    if ($requested -eq "auto") {
+        $exe = [System.IO.Path]::GetFileNameWithoutExtension($container[0]).ToLowerInvariant()
+        if ($exe -eq "podman") {
+            $requested = "podman"
+        } else {
+            $requested = "docker"
+        }
+    }
+
+    if ($compose.Count -eq 0) {
+        if ($requested -eq "podman") {
+            $compose = @("podman", "compose")
+        } else {
+            $compose = @("docker", "compose")
+        }
+    }
+
+    return [pscustomobject]@{
+        Runtime = $requested
+        ContainerCommand = $container
+        ComposeCommand = $compose
+    }
+}
+
+function Invoke-ContainerRuntimeCommand([string[]]$Command, [object[]]$Arguments = @()) {
+    if ($Command.Count -lt 1) {
+        throw "container runtime command is empty"
+    }
+    $executable = $Command[0]
+    $baseArgs = @()
+    if ($Command.Count -gt 1) {
+        $baseArgs = @($Command[1..($Command.Count - 1)])
+    }
+    & $executable @baseArgs @Arguments
+}
+
 function Show-DockerDiagnostics {
-    Write-Info "Docker Compose status"
+    Write-Info "$containerRuntimeName Compose status"
     try {
-        & docker @composeArgs ps
+        Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @("ps"))
     } catch {
-        Write-Warning "Unable to collect Docker Compose status: $($_.Exception.Message)"
+        Write-Warning "Unable to collect container Compose status: $($_.Exception.Message)"
     }
 
     Write-Info "recent OpenClaw container logs"
     try {
-        & docker @composeArgs logs --tail 120 openclaw-gateway
+        Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @("logs", "--tail", "120", "openclaw-gateway"))
     } catch {
-        Write-Warning "Unable to collect Docker logs: $($_.Exception.Message)"
+        Write-Warning "Unable to collect container logs: $($_.Exception.Message)"
     }
 }
 
@@ -173,9 +260,11 @@ console.log(found);
 '@
 
     Write-Info "probing OpenClaw container memory mount ($Label)"
-    & docker @composeArgs exec -T `
-        -e "MAIN_COMPUTER_DIRECT_MEMORY_MARKER=$Marker" `
-        openclaw-gateway node -e $memoryProbeJs
+    Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @(
+        "exec", "-T",
+        "-e", "MAIN_COMPUTER_DIRECT_MEMORY_MARKER=$Marker",
+        "openclaw-gateway", "node", "-e", $memoryProbeJs
+    ))
     if ($LASTEXITCODE -ne 0) {
         throw "OpenClaw container could not read the direct memory marker during $Label."
     }
@@ -279,6 +368,7 @@ function Invoke-OpenClawPushbackSmoke(
         "--memory-root", $WorkspaceDir,
         "--export-dir", $OutputDir,
         "--container", "main-computer-openclaw-gateway",
+        "--container-runtime", $containerRuntimeName,
         "--restart-container",
         "--gateway-url", $BaseUrl,
         "--timeout", ([string]$TimeoutSeconds),
@@ -347,11 +437,15 @@ foreach ($path in @($configDir, $workspaceDir, $authSecretDir)) {
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
 
-$composeArgs = @("compose", "-f", $composeFile, "--project-name", $ProjectName)
+$containerRuntimeInfo = Resolve-OpenClawContainerRuntime
+$containerRuntimeName = [string]$containerRuntimeInfo.Runtime
+$containerCommand = @($containerRuntimeInfo.ContainerCommand)
+$composeCommand = @($containerRuntimeInfo.ComposeCommand)
+$composeArgs = @("-f", $composeFile, "--project-name", $ProjectName)
 
 if ($Down) {
-    Write-Info "stopping Docker OpenClaw stack"
-    & docker @composeArgs down
+    Write-Info "stopping $containerRuntimeName OpenClaw stack"
+    Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @("down"))
     exit $LASTEXITCODE
 }
 
@@ -386,11 +480,21 @@ if ($OllamaNumPredict -lt 1) {
 }
 $providerTimeoutSeconds = [Math]::Max($SmokeTimeoutSeconds, 300)
 
-Write-Info "checking Docker"
-& docker version | Out-Null
+Write-Info "checking container runtime: $containerRuntimeName"
+Invoke-ContainerRuntimeCommand $containerCommand @("version") | Out-Null
 
 $hostOllamaUrl = "http://127.0.0.1:11434"
-$containerOllamaUrl = "http://host.docker.internal:11434"
+if ([string]::IsNullOrWhiteSpace($ContainerOllamaUrl)) {
+    $ContainerOllamaUrl = $env:OPENCLAW_CONTAINER_OLLAMA_URL
+}
+if ([string]::IsNullOrWhiteSpace($ContainerOllamaUrl)) {
+    if ($containerRuntimeName -eq "podman") {
+        $ContainerOllamaUrl = "http://host.containers.internal:11434"
+    } else {
+        $ContainerOllamaUrl = "http://host.docker.internal:11434"
+    }
+}
+$containerOllamaUrl = $ContainerOllamaUrl
 $containerGatewayPort = 18789
 Write-Info "checking host Ollama at $hostOllamaUrl/api/tags"
 $ollamaTags = Invoke-JsonGet "$hostOllamaUrl/api/tags"
@@ -480,8 +584,8 @@ $env:OPENCLAW_WORKSPACE = $workspaceDir
 
 Write-Info "wrote OpenClaw config: $configPath"
 Write-Info "wrote smoke env: $runtimeEnvPath"
-Write-Info "starting Docker OpenClaw Gateway"
-& docker @composeArgs up -d
+Write-Info "starting $containerRuntimeName OpenClaw Gateway"
+Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @("up", "-d"))
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
@@ -518,10 +622,12 @@ fetch(tagsUrl)
 
 Write-Info "probing host Ollama from inside the OpenClaw container"
 $probeTagsUrl = "$containerOllamaUrl/api/tags"
-& docker @composeArgs exec -T `
-    -e "MAIN_COMPUTER_PROBE_MODEL=$Model" `
-    -e "MAIN_COMPUTER_PROBE_OLLAMA_TAGS_URL=$probeTagsUrl" `
-    openclaw-gateway node -e $probeJs
+Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @(
+    "exec", "-T",
+    "-e", "MAIN_COMPUTER_PROBE_MODEL=$Model",
+    "-e", "MAIN_COMPUTER_PROBE_OLLAMA_TAGS_URL=$probeTagsUrl",
+    "openclaw-gateway", "node", "-e", $probeJs
+))
 if ($LASTEXITCODE -ne 0) {
     throw "OpenClaw container could not confirm model '$Model' through $probeTagsUrl."
 }
@@ -547,7 +653,7 @@ if ($ApplyMemoryExport) {
     Invoke-OpenClawMemoryApply $ApplyMemoryExport $workspaceDir $ApplyMemoryBackupDir ([bool]$ApplyMemoryDryRun) ([bool]$ApplyMemoryForce)
     if (-not $ApplyMemoryDryRun) {
         Write-Info "restarting OpenClaw container so the runtime sees the pushed-back memory files"
-        & docker @composeArgs restart openclaw-gateway
+        Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @("restart", "openclaw-gateway"))
         if ($LASTEXITCODE -ne 0) {
             Show-DockerDiagnostics
             exit $LASTEXITCODE
@@ -565,7 +671,7 @@ if ((-not $NoSmoke) -and (Test-Path $smokePath)) {
 
         if (-not $SkipRestartProof) {
             Write-Info "restarting OpenClaw container to prove memory survives container restart"
-            & docker @composeArgs restart openclaw-gateway
+            Invoke-ContainerRuntimeCommand $composeCommand ($composeArgs + @("restart", "openclaw-gateway"))
             if ($LASTEXITCODE -ne 0) {
                 Show-DockerDiagnostics
                 exit $LASTEXITCODE
@@ -575,7 +681,7 @@ if ((-not $NoSmoke) -and (Test-Path $smokePath)) {
         }
 
         if ($AgentSmoke -or $FullSmoke) {
-            Write-Info "running optional /v1/responses agent smoke through Docker OpenClaw"
+            Write-Info "running optional /v1/responses agent smoke through containerized OpenClaw"
             $smokeArgs = @(
                 $smokePath,
                 "--agent-id", $AgentId,
@@ -615,7 +721,7 @@ if ($PushbackSmoke) {
 }
 
 Write-Host ""
-Write-Host "Docker OpenClaw is ready for Main Computer persistence work."
+Write-Host "containerized OpenClaw is ready for Main Computer persistence work."
 Write-Host "Gateway URL: $baseUrl"
 Write-Host "Agent id: $AgentId"
 Write-Host "Backend model: ollama/$Model"

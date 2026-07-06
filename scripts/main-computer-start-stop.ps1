@@ -509,6 +509,127 @@ function Test-MainComputerTcpPortOpen([int]$Port) {
   }
 }
 
+
+$script:MainComputerContainerRuntimeCache = @{}
+
+function ConvertTo-MainComputerStringArray([object]$Value) {
+  if ($null -eq $Value) {
+    return @()
+  }
+
+  if ($Value -is [System.Array]) {
+    return @($Value | ForEach-Object { [string]$_ })
+  }
+
+  return @([string]$Value)
+}
+
+function Get-MainComputerCommandDisplay([object]$Command) {
+  $parts = ConvertTo-MainComputerStringArray $Command
+  return ($parts -join " ")
+}
+
+function Get-MainComputerContainerRuntime([string]$RootPath, [string]$PythonCommand) {
+  $cacheKey = @(
+    $RootPath,
+    $PythonCommand,
+    [string]$env:MAIN_COMPUTER_CONTAINER_RUNTIME,
+    [string]$env:MAIN_COMPUTER_CONTAINER_COMMAND,
+    [string]$env:MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND,
+    [string]$env:MAIN_COMPUTER_DOCKER_COMMAND,
+    [string]$env:MAIN_COMPUTER_DOCKER,
+    [string]$env:MAIN_COMPUTER_DOCKER_COMPOSE,
+    [string]$env:MAIN_COMPUTER_DOCKER_COMPOSE_COMMAND
+  ) -join "`n"
+
+  if ($script:MainComputerContainerRuntimeCache.ContainsKey($cacheKey)) {
+    return $script:MainComputerContainerRuntimeCache[$cacheKey]
+  }
+
+  if ([string]::IsNullOrWhiteSpace($PythonCommand)) {
+    throw "Cannot resolve the Main Computer container runtime because the Python command is empty."
+  }
+
+  $arguments = @(
+    "-m",
+    "main_computer.container_runtime",
+    "--check",
+    "--cwd",
+    $RootPath,
+    "--json"
+  )
+
+  $output = @(& $PythonCommand @arguments 2>&1)
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    $detail = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+    throw "Main Computer container runtime resolution failed with exit code $exitCode.$([Environment]::NewLine)$detail"
+  }
+
+  $json = ($output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1)
+  if ([string]::IsNullOrWhiteSpace($json)) {
+    throw "Main Computer container runtime resolution returned no JSON output."
+  }
+
+  try {
+    $runtime = $json | ConvertFrom-Json
+  } catch {
+    throw "Main Computer container runtime JSON could not be parsed: $json"
+  }
+
+  $script:MainComputerContainerRuntimeCache[$cacheKey] = $runtime
+  return $runtime
+}
+
+function Invoke-MainComputerRuntimeCommand {
+  param(
+    [Parameter(Mandatory = $true)][object]$Command,
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [switch]$CaptureOutput,
+    [switch]$SuppressErrors
+  )
+
+  $parts = ConvertTo-MainComputerStringArray $Command
+  if ($parts.Count -eq 0 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+    throw "Cannot invoke an empty container runtime command."
+  }
+
+  $executable = [string]$parts[0]
+  $prefix = @()
+  if ($parts.Count -gt 1) {
+    $prefix = @($parts[1..($parts.Count - 1)])
+  }
+  $allArgs = @($prefix + $Arguments)
+
+  if ($CaptureOutput) {
+    if ($SuppressErrors) {
+      return @(& $executable @allArgs 2>$null)
+    }
+    return @(& $executable @allArgs 2>&1)
+  }
+
+  if ($SuppressErrors) {
+    & $executable @allArgs 2>$null
+    return
+  }
+  & $executable @allArgs
+}
+
+function Assert-MainComputerExplicitContainerRuntimeAvailable([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
+  $requested = (Get-EnvFirstValue @("MAIN_COMPUTER_CONTAINER_RUNTIME") (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTAINER_RUNTIME" "")).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($requested) -or @("auto", "default", "detect", "container", "containers") -contains $requested) {
+    return
+  }
+
+  if ($requested -notin @("docker", "docker-desktop", "podman", "podman-desktop")) {
+    return
+  }
+
+  $runtime = Get-MainComputerContainerRuntime $RootPath $PythonCommand
+  Write-Host ("Container runtime requested: {0}; direct={1}; compose={2}" -f [string]$runtime.runtime, (Get-MainComputerCommandDisplay $runtime.container_command), (Get-MainComputerCommandDisplay $runtime.compose_command))
+}
+
+
 function Get-MainComputerGiteaPort([object]$LaunchContext) {
   $rootUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_GITEA_ROOT_URL" "http://127.0.0.1:3000/"
   try {
@@ -526,7 +647,7 @@ function Get-MainComputerGiteaPort([object]$LaunchContext) {
   }
 }
 
-function Start-MainComputerGiteaIfMissing([string]$RootPath, [object]$LaunchContext) {
+function Start-MainComputerGiteaIfMissing([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
   $giteaPort = Get-MainComputerGiteaPort $LaunchContext
   $projectName = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_GITEA_COMPOSE_PROJECT" "main-computer-gitea"
   $composePath = Join-Path $RootPath "docker-compose.gitea.yml"
@@ -567,37 +688,39 @@ function Start-MainComputerGiteaIfMissing([string]$RootPath, [object]$LaunchCont
     }
   }
 
-  $docker = Get-Command "docker" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($null -eq $docker) {
+  try {
+    $containerRuntime = Get-MainComputerContainerRuntime $RootPath $PythonCommand
+  } catch {
     return [ordered]@{
       ok = $false
-      state = "missing-docker"
+      state = "missing-container-runtime"
       installed = $false
       compose_project = $projectName
       compose_file = $composePath
       port = $giteaPort
-      message = "Docker CLI is not available; shared Gitea cannot be prepared."
+      message = $_.Exception.Message
     }
   }
 
-  $containerIds = @(& $docker.Source compose --project-name $projectName -f $composePath ps -a -q gitea 2>$null)
+  $composeCommand = ConvertTo-MainComputerStringArray $containerRuntime.compose_command
+  $containerIds = @(Invoke-MainComputerRuntimeCommand -Command $composeCommand -Arguments @("--project-name", $projectName, "-f", $composePath, "ps", "-a", "-q", "gitea") -CaptureOutput -SuppressErrors)
   $containerExists = ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($containerIds -join "").Trim()))
 
   if ($containerExists) {
     Write-Host ("Shared Gitea container already exists but is not reachable on port {0}; starting existing container without reinstalling." -f $giteaPort)
-    $arguments = @("compose", "--project-name", $projectName, "-f", $composePath, "start", "gitea")
+    $arguments = @("--project-name", $projectName, "-f", $composePath, "start", "gitea")
     $stateOnSuccess = "started-existing"
     $stateOnFailure = "start-existing-failed"
     $installed = $false
   } else {
     Write-Host ("Shared Gitea not found on this machine; installing machine-wide Gitea with docker-compose.gitea.yml.")
-    $arguments = @("compose", "--project-name", $projectName, "-f", $composePath, "up", "-d", "gitea")
+    $arguments = @("--project-name", $projectName, "-f", $composePath, "up", "-d", "gitea")
     $stateOnSuccess = "installed-missing"
     $stateOnFailure = "install-missing-failed"
     $installed = $true
   }
 
-  & $docker.Source @arguments
+  Invoke-MainComputerRuntimeCommand -Command $composeCommand -Arguments $arguments
   $exitCode = $LASTEXITCODE
   return [ordered]@{
     ok = ($exitCode -eq 0)
@@ -607,7 +730,7 @@ function Start-MainComputerGiteaIfMissing([string]$RootPath, [object]$LaunchCont
     compose_project = $projectName
     compose_file = $composePath
     port = $giteaPort
-    command = @($docker.Source) + $arguments
+    command = @($composeCommand) + $arguments
     exit_code = $exitCode
   }
 }
@@ -1913,6 +2036,8 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   $controlRoot = Get-ControlRoot $RootPath $launchContext
   $pythonCommand = [string]$launchContext.python
 
+  Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand
+
   $devChainStart = Start-MainComputerDevChainIfNeeded $RootPath $launchContext $pythonCommand
   if ($null -eq $devChainStart) {
     throw "Dev chain startup returned no status."
@@ -1956,7 +2081,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   $argString = Join-CommandLine $launcherArgs
 
   try {
-    $giteaStart = Start-MainComputerGiteaIfMissing $RootPath $launchContext
+    $giteaStart = Start-MainComputerGiteaIfMissing $RootPath $launchContext $pythonCommand
   } catch {
     $giteaStart = [ordered]@{
       ok = $false

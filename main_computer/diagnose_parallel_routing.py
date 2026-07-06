@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from main_computer.container_runtime import resolve_container_runtime
+
 
 DEFAULT_PROD_PORT = 8765
 DEFAULT_DEV_PORT = 18765
@@ -153,6 +155,13 @@ class Reporter:
 
 def sh_quote(s: str) -> str:
     return "'" + s.replace("'", "'\"'\"'") + "'"
+
+
+def command_available(command: Sequence[str]) -> bool:
+    if not command:
+        return False
+    executable = str(command[0])
+    return shutil.which(executable) is not None or Path(executable).exists()
 
 
 def run_cmd(cmd: Sequence[str], timeout: float = 8.0, env: Optional[Dict[str, str]] = None) -> Tuple[int, str]:
@@ -404,7 +413,8 @@ def inspect_tools(rep: Reporter, repo: Optional[Path]) -> None:
     rep.section("Tool availability")
     rep.info("Platform", f"{platform.platform()} | python={sys.version.split()[0]}")
 
-    for cmd in [["docker", "--version"], ["docker", "compose", "version"], ["caddy", "version"]]:
+    runtime = resolve_container_runtime(cwd=repo, probe=False)
+    for cmd in [runtime.container_args("--version"), runtime.compose_args("version"), ["caddy", "version"]]:
         rc, out = run_cmd(cmd, timeout=8)
         name = " ".join(cmd)
         if rc == 0:
@@ -442,12 +452,16 @@ def inspect_tools(rep: Reporter, repo: Optional[Path]) -> None:
         else:
             rep.info("Not obviously running inside WSL", "No WSL_DISTRO_NAME detected.")
 
-    if repo and (repo / "docker-compose.dev.yml").exists() and shutil.which("docker"):
+    if repo and (repo / "docker-compose.dev.yml").exists():
+        runtime = resolve_container_runtime(cwd=repo, probe=False)
+        if not command_available(runtime.compose_command):
+            rep.warn("container compose config skipped", f"{' '.join(runtime.compose_command)} was not found on PATH")
+            return
         env = os.environ.copy()
         for k in ["MAIN_COMPUTER_HOST_PORT", "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT"]:
             env.pop(k, None)
 
-        rc, out = run_cmd(["docker", "compose", "-f", str(repo / "docker-compose.dev.yml"), "config"], timeout=20, env=env)
+        rc, out = run_cmd(runtime.compose_args("-f", str(repo / "docker-compose.dev.yml"), "config"), timeout=20, env=env)
         if rc == 0:
             interesting = "\n".join(
                 line for line in out.splitlines()

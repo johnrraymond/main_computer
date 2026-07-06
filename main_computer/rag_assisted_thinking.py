@@ -10,6 +10,7 @@ import subprocess
 import traceback
 from typing import Any, Sequence
 
+from main_computer.container_runtime import resolve_container_runtime
 from main_computer.docker_executor import default_docker_instance_pool
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.providers import LLMProvider
@@ -482,7 +483,8 @@ def run_docker_verification(
     if not command_text:
         raise ValueError("docker verification command is required")
 
-    docker_command = ["docker", "run", "--rm"]
+    runtime = resolve_container_runtime(cwd=repo_path, probe=False)
+    docker_command = runtime.container_args("run", "--rm")
     if not allow_network:
         docker_command.extend(["--network", "none"])
     docker_command.extend(["-v", f"{str(repo_path)}:/workspace", "-w", "/workspace", str(image or DEFAULT_DOCKER_IMAGE), "sh", "-lc", command_text])
@@ -573,7 +575,7 @@ def run_docker_verification(
                 command=docker_command,
                 returncode=127,
                 stdout="",
-                stderr="Docker executable was not found on PATH.",
+                stderr="Container runtime executable was not found on PATH.",
                 error=str(exc),
             )
         except subprocess.TimeoutExpired as exc:
@@ -965,7 +967,9 @@ def run_rag_assisted_thinking_request(
 
 
 def docker_available() -> bool:
-    return shutil.which("docker") is not None
+    runtime = resolve_container_runtime(probe=False)
+    command = runtime.container_command
+    return bool(command) and (shutil.which(command[0]) is not None or Path(command[0]).exists())
 
 
 __all__ = [

@@ -19,6 +19,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import urlopen
 
+from main_computer.container_runtime import resolve_container_runtime
 from main_computer.local_platform_compose import (
     cms_dependency_service_names_for_site,
     compose_project_name,
@@ -57,6 +58,11 @@ PUBLISH_SCP_SCRIPT = Path("deploy") / "coolify" / "push_site_scp.py"
 PUBLISH_LOCAL_SERVER_SCRIPT = Path("deploy") / "coolify" / "push_site_local.py"
 PUBLISH_SSH_PASSWORD_FILENAME = "ssh_password.local"
 SITE_RUNTIME_SOURCE = Path("deploy") / "local-platform" / "site-server" / "app.py"
+
+
+def _container_args(*args: object) -> list[str]:
+    return resolve_container_runtime(probe=False).container_args(*args)
+
 SITE_RUNTIME_DIR = Path(".main-computer") / "runtime"
 SITE_RUNTIME_ENTRYPOINT = SITE_RUNTIME_DIR / "app.py"
 SITE_RUNTIME_METADATA = SITE_RUNTIME_DIR / "runtime.json"
@@ -4395,16 +4401,16 @@ def _inspect_running_container_env(container_name: str, timeout_s: float = 3.0) 
         return {"checked": False, "found": False, "env": {}, "error": "missing container name"}
     try:
         completed = subprocess.run(
-            ["docker", "inspect", "--format", "{{json .Config.Env}}", container_name],
+            _container_args("inspect", "--format", "{{json .Config.Env}}", container_name),
             text=True,
             capture_output=True,
             timeout=timeout_s,
             check=False,
         )
     except FileNotFoundError:
-        return {"checked": False, "found": False, "env": {}, "error": "docker command not found"}
+        return {"checked": False, "found": False, "env": {}, "error": "container command not found"}
     except PermissionError:
-        return {"checked": False, "found": False, "env": {}, "error": "docker command is not executable"}
+        return {"checked": False, "found": False, "env": {}, "error": "container command is not executable"}
     except OSError as exc:
         return {"checked": False, "found": False, "env": {}, "error": str(exc)}
     except subprocess.TimeoutExpired:
@@ -4472,16 +4478,16 @@ def _docker_containers_publishing_port(port: object, timeout_s: float = 4.0) -> 
         return {"checked": False, "owners": [], "error": "invalid port"}
     try:
         listed = subprocess.run(
-            ["docker", "ps", "-aq", "--filter", f"publish={clean_port}", "--no-trunc"],
+            _container_args("ps", "-aq", "--filter", f"publish={clean_port}", "--no-trunc"),
             text=True,
             capture_output=True,
             timeout=timeout_s,
             check=False,
         )
     except FileNotFoundError:
-        return {"checked": False, "owners": [], "error": "docker command not found"}
+        return {"checked": False, "owners": [], "error": "container command not found"}
     except PermissionError:
-        return {"checked": False, "owners": [], "error": "docker command is not executable"}
+        return {"checked": False, "owners": [], "error": "container command is not executable"}
     except OSError as exc:
         return {"checked": False, "owners": [], "error": str(exc)}
     except subprocess.TimeoutExpired:
@@ -4497,16 +4503,16 @@ def _docker_containers_publishing_port(port: object, timeout_s: float = 4.0) -> 
 
     try:
         inspected = subprocess.run(
-            ["docker", "inspect", *container_ids],
+            _container_args("inspect", *container_ids),
             text=True,
             capture_output=True,
             timeout=timeout_s,
             check=False,
         )
     except FileNotFoundError:
-        return {"checked": False, "owners": [], "error": "docker command not found"}
+        return {"checked": False, "owners": [], "error": "container command not found"}
     except PermissionError:
-        return {"checked": False, "owners": [], "error": "docker command is not executable"}
+        return {"checked": False, "owners": [], "error": "container command is not executable"}
     except OSError as exc:
         return {"checked": False, "owners": [], "error": str(exc)}
     except subprocess.TimeoutExpired:
@@ -4736,7 +4742,7 @@ def _apply_stale_site_web_port_repair(preflight: dict[str, Any]) -> dict[str, An
     removed: list[str] = []
     commands: list[list[str]] = []
     for name in targets:
-        command = ["docker", "rm", "-f", name]
+        command = _container_args("rm", "-f", name)
         commands.append(command)
         result = _run_docker_mutation(command)
         if not result.get("ok"):
@@ -4850,16 +4856,16 @@ def _docker_containers_for_compose_service(service: str, timeout_s: float = 6.0)
         return {"checked": False, "owners": [], "error": "missing service"}
     try:
         listed = subprocess.run(
-            ["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.service={clean_service}", "--no-trunc"],
+            _container_args("ps", "-aq", "--filter", f"label=com.docker.compose.service={clean_service}", "--no-trunc"),
             text=True,
             capture_output=True,
             timeout=timeout_s,
             check=False,
         )
     except FileNotFoundError:
-        return {"checked": False, "owners": [], "error": "docker command not found"}
+        return {"checked": False, "owners": [], "error": "container command not found"}
     except PermissionError:
-        return {"checked": False, "owners": [], "error": "docker command is not executable"}
+        return {"checked": False, "owners": [], "error": "container command is not executable"}
     except OSError as exc:
         return {"checked": False, "owners": [], "error": str(exc)}
     except subprocess.TimeoutExpired:
@@ -4875,16 +4881,16 @@ def _docker_containers_for_compose_service(service: str, timeout_s: float = 6.0)
 
     try:
         inspected = subprocess.run(
-            ["docker", "inspect", *container_ids],
+            _container_args("inspect", *container_ids),
             text=True,
             capture_output=True,
             timeout=timeout_s,
             check=False,
         )
     except FileNotFoundError:
-        return {"checked": False, "owners": [], "error": "docker command not found"}
+        return {"checked": False, "owners": [], "error": "container command not found"}
     except PermissionError:
-        return {"checked": False, "owners": [], "error": "docker command is not executable"}
+        return {"checked": False, "owners": [], "error": "container command is not executable"}
     except OSError as exc:
         return {"checked": False, "owners": [], "error": str(exc)}
     except subprocess.TimeoutExpired:
@@ -4936,9 +4942,9 @@ def _run_docker_mutation(args: list[str], timeout_s: float = 20.0) -> dict[str, 
             check=False,
         )
     except FileNotFoundError:
-        return {"ok": False, "args": args, "returncode": 127, "stdout": "", "stderr": "docker command not found"}
+        return {"ok": False, "args": args, "returncode": 127, "stdout": "", "stderr": "container command not found"}
     except PermissionError:
-        return {"ok": False, "args": args, "returncode": 126, "stdout": "", "stderr": "docker command is not executable"}
+        return {"ok": False, "args": args, "returncode": 126, "stdout": "", "stderr": "container command is not executable"}
     except OSError as exc:
         return {"ok": False, "args": args, "returncode": 1, "stdout": "", "stderr": str(exc)}
     except subprocess.TimeoutExpired as exc:
@@ -4947,7 +4953,7 @@ def _run_docker_mutation(args: list[str], timeout_s: float = 20.0) -> dict[str, 
             "args": args,
             "returncode": 124,
             "stdout": exc.stdout or "",
-            "stderr": exc.stderr or "docker command timed out",
+            "stderr": exc.stderr or "container command timed out",
         }
     return {
         "ok": completed.returncode == 0,
@@ -5024,7 +5030,7 @@ def _apply_directus_runtime_action(repo_root: Path, site_id: object, project_nam
         name = str(owner.get("name") or "").strip()
         if not name:
             continue
-        result = _run_docker_mutation(["docker", "rm", "-f", name])
+        result = _run_docker_mutation(_container_args("rm", "-f", name))
         commands.append(result)
         if not result["ok"]:
             return {
@@ -5044,7 +5050,7 @@ def _apply_directus_runtime_action(repo_root: Path, site_id: object, project_nam
         for volume in [str(plan.get("database_volume") or ""), str(plan.get("uploads_volume") or "")]:
             if not volume:
                 continue
-            result = _run_docker_mutation(["docker", "volume", "rm", volume])
+            result = _run_docker_mutation(_container_args("volume", "rm", volume))
             commands.append(result)
             missing_volume = result["returncode"] != 0 and "no such volume" in (result["stderr"] or result["stdout"] or "").lower()
             if not result["ok"] and not missing_volume:
@@ -5107,9 +5113,7 @@ def configure_website_directus_runtime(
     service_names = [service.service for service in dependency_services if service.service and getattr(service, "managed", True)]
     all_service_names = [service.service for service in dependency_services if service.service]
     action_plan = _directus_runtime_action_plan(project, project_name)
-    command = [
-        "docker",
-        "compose",
+    command = resolve_container_runtime(cwd=repo_root, probe=False).compose_args(
         "-p",
         project_name,
         "-f",
@@ -5118,7 +5122,7 @@ def configure_website_directus_runtime(
         "-d",
         "--build",
         *service_names,
-    ] if service_names else []
+    ) if service_names else []
 
     base: dict[str, Any] = {
         "dry_run": bool(dry_run),
@@ -5304,9 +5308,7 @@ def website_publish_plan(repo_root: Path, site_id: object, lane: object = "local
         cms_dependency_services,
     )
     command_services = [*cms_dependency_services, lane_data["service"]] if lane_data["service"] else []
-    command = [
-        "docker",
-        "compose",
+    command = resolve_container_runtime(cwd=repo_root, probe=False).compose_args(
         "-p",
         project_name,
         "-f",
@@ -5314,7 +5316,7 @@ def website_publish_plan(repo_root: Path, site_id: object, lane: object = "local
         "up",
         "-d",
         "--build",
-    ] if command_services else []
+    ) if command_services else []
     if command and recreate_plan["required"]:
         command.append("--force-recreate")
     if command:

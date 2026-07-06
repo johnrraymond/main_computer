@@ -195,7 +195,7 @@ const astrometricState = window.astrometricState || (window.astrometricState = {
 
     async function astrometricFetchDiagnostics() {
       astrometricSetBusy(true);
-      astrometricSetStatus("collecting Docker diagnostics", "working");
+      astrometricSetStatus("collecting container diagnostics", "working");
       try {
         const response = await fetch(ASTROMETRIC_DIAGNOSTICS_ENDPOINT, {cache: "no-store"});
         const diagnostics = await response.json().catch(() => ({ok: false, error: "Invalid JSON response"}));

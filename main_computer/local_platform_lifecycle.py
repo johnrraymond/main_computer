@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from main_computer.container_runtime import resolve_container_runtime
 from main_computer.local_platform_compose import (
     LocalPlatformComposeError,
     compose_project_name,
@@ -105,14 +106,13 @@ def _compose_path_and_project(repo_root: Path, site_id: str, compose_scope: str)
 
 def _docker_compose_base(repo_root: Path, site_id: str, compose_scope: str) -> list[str]:
     compose_path, project_name = _compose_path_and_project(repo_root, site_id, compose_scope)
-    return [
-        "docker",
-        "compose",
+    runtime = resolve_container_runtime(cwd=repo_root, probe=False)
+    return runtime.compose_args(
         "-p",
         project_name,
         "-f",
         str(compose_path),
-    ]
+    )
 
 
 def _docker_command_for_action(

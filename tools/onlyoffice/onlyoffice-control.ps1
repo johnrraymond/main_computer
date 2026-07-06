@@ -59,9 +59,10 @@ function ConvertTo-MainComputerBoolText {
 }
 
 function Resolve-PythonCommand {
-  $explicit = $env:MAIN_COMPUTER_PYTHON
-  if (-not [string]::IsNullOrWhiteSpace($explicit)) {
-    return $explicit
+  foreach ($explicit in @($env:MAIN_COMPUTER_PYTHON_COMMAND, $env:MAIN_COMPUTER_PYTHON)) {
+    if (-not [string]::IsNullOrWhiteSpace($explicit)) {
+      return $explicit
+    }
   }
 
   $py = Get-Command py -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -94,6 +95,118 @@ function Test-LocalTcpPortOpen {
   }
 }
 
+
+$script:MainComputerContainerRuntime = $null
+
+function ConvertTo-MainComputerStringArray([object]$Value) {
+  if ($null -eq $Value) {
+    return @()
+  }
+
+  if ($Value -is [System.Array]) {
+    return @($Value | ForEach-Object { [string]$_ })
+  }
+
+  return @([string]$Value)
+}
+
+function Get-MainComputerCommandDisplay([object]$Command) {
+  $parts = ConvertTo-MainComputerStringArray $Command
+  return ($parts -join " ")
+}
+
+function Get-MainComputerContainerRuntime {
+  if ($null -ne $script:MainComputerContainerRuntime) {
+    return $script:MainComputerContainerRuntime
+  }
+
+  $python = Resolve-PythonCommand
+  $arguments = @(
+    "-m",
+    "main_computer.container_runtime",
+    "--check",
+    "--cwd",
+    $repoRoot,
+    "--json"
+  )
+
+  $output = @(& $python @arguments 2>&1)
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    $detail = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+    throw "Main Computer container runtime resolution failed with exit code $exitCode.$([Environment]::NewLine)$detail"
+  }
+
+  $json = ($output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1)
+  if ([string]::IsNullOrWhiteSpace($json)) {
+    throw "Main Computer container runtime resolution returned no JSON output."
+  }
+
+  try {
+    $script:MainComputerContainerRuntime = $json | ConvertFrom-Json
+  } catch {
+    throw "Main Computer container runtime JSON could not be parsed: $json"
+  }
+
+  return $script:MainComputerContainerRuntime
+}
+
+function Invoke-MainComputerRuntimeCommand {
+  param(
+    [Parameter(Mandatory = $true)][object]$Command,
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [switch]$CaptureOutput,
+    [switch]$SuppressErrors
+  )
+
+  $parts = ConvertTo-MainComputerStringArray $Command
+  if ($parts.Count -eq 0 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+    throw "Cannot invoke an empty container runtime command."
+  }
+
+  $executable = [string]$parts[0]
+  $prefix = @()
+  if ($parts.Count -gt 1) {
+    $prefix = @($parts[1..($parts.Count - 1)])
+  }
+  $allArgs = @($prefix + $Arguments)
+
+  if ($CaptureOutput) {
+    if ($SuppressErrors) {
+      return @(& $executable @allArgs 2>$null)
+    }
+    return @(& $executable @allArgs 2>&1)
+  }
+
+  if ($SuppressErrors) {
+    & $executable @allArgs 2>$null
+    return
+  }
+  & $executable @allArgs
+}
+
+function Invoke-MainComputerContainerCommand {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [switch]$CaptureOutput,
+    [switch]$SuppressErrors
+  )
+
+  $runtime = Get-MainComputerContainerRuntime
+  return Invoke-MainComputerRuntimeCommand -Command $runtime.container_command -Arguments $Arguments -CaptureOutput:$CaptureOutput -SuppressErrors:$SuppressErrors
+}
+
+function Invoke-MainComputerComposeCommand {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [switch]$CaptureOutput,
+    [switch]$SuppressErrors
+  )
+
+  $runtime = Get-MainComputerContainerRuntime
+  return Invoke-MainComputerRuntimeCommand -Command $runtime.compose_command -Arguments $Arguments -CaptureOutput:$CaptureOutput -SuppressErrors:$SuppressErrors
+}
+
 function Get-DockerOnlyOfficeNamedContainerId {
   $containerName = [string]$env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME
   if ([string]::IsNullOrWhiteSpace($containerName)) {
@@ -101,7 +214,7 @@ function Get-DockerOnlyOfficeNamedContainerId {
   }
 
   $nameFilter = "name=^/$containerName$"
-  $namedContainerId = (& docker ps -aq --filter $nameFilter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  $namedContainerId = (Invoke-MainComputerContainerCommand -Arguments @("ps", "-aq", "--filter", $nameFilter) -CaptureOutput -SuppressErrors | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
   if (-not [string]::IsNullOrWhiteSpace([string]$namedContainerId)) {
     return [string]$namedContainerId
   }
@@ -115,7 +228,7 @@ function Test-DockerOnlyOfficeNamedContainerRunning {
     return $false
   }
 
-  $running = (& docker inspect --format "{{.State.Running}}" $containerName 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  $running = (Invoke-MainComputerContainerCommand -Arguments @("inspect", "--format", "{{.State.Running}}", $containerName) -CaptureOutput -SuppressErrors | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
   return (([string]$running).Trim().ToLowerInvariant() -eq "true")
 }
 
@@ -136,7 +249,7 @@ function Start-DockerOnlyOfficeNamedContainerIfPresent {
   }
 
   Write-Host "Shared ONLYOFFICE named container exists but is stopped: $containerName ($containerId). Starting it without recreating."
-  & docker start $containerName | Out-Null
+  Invoke-MainComputerContainerCommand -Arguments @("start", $containerName) | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "Existing shared ONLYOFFICE container '$containerName' could not be started; remove or repair it before rerunning startup."
   }
@@ -155,7 +268,7 @@ function Invoke-DockerComposeOnlyOffice {
     throw "Compose file not found: $composePath"
   }
 
-  & docker compose -f $composePath -p $ProjectName @ComposeArgs
+  Invoke-MainComputerComposeCommand -Arguments (@("-f", $composePath, "-p", $ProjectName) + $ComposeArgs)
   $exitCode = [int]$LASTEXITCODE
   $script:MainComputerOnlyOfficeLastComposeExitCode = $exitCode
   if ($exitCode -ne 0 -and -not $AllowFailure) {
@@ -166,7 +279,7 @@ function Invoke-DockerComposeOnlyOffice {
 function Get-DockerOnlyOfficeContainerId {
   $composePath = Join-Path $repoRoot $ComposeFile
 
-  $composeContainerId = (& docker compose -f $composePath -p $ProjectName ps -q onlyoffice 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  $composeContainerId = (Invoke-MainComputerComposeCommand -Arguments @("-f", $composePath, "-p", $ProjectName, "ps", "-q", "onlyoffice") -CaptureOutput -SuppressErrors | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
   if (-not [string]::IsNullOrWhiteSpace([string]$composeContainerId)) {
     return [string]$composeContainerId
   }
@@ -177,12 +290,12 @@ function Get-DockerOnlyOfficeContainerId {
   }
 
   $nameFilter = "name=^/$containerName$"
-  $namedContainerId = (& docker ps -q --filter $nameFilter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  $namedContainerId = (Invoke-MainComputerContainerCommand -Arguments @("ps", "-q", "--filter", $nameFilter) -CaptureOutput -SuppressErrors | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
   if (-not [string]::IsNullOrWhiteSpace([string]$namedContainerId)) {
     return [string]$namedContainerId
   }
 
-  $inspectLine = (& docker inspect --format "{{.State.Running}} {{.Id}}" $containerName 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  $inspectLine = (Invoke-MainComputerContainerCommand -Arguments @("inspect", "--format", "{{.State.Running}} {{.Id}}", $containerName) -CaptureOutput -SuppressErrors | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
   if ([string]$inspectLine -match '^true\s+(?<id>\S+)') {
     return [string]$Matches["id"]
   }
@@ -229,9 +342,9 @@ function Invoke-DockerOnlyOfficeStatus {
 function Invoke-DockerOnlyOffice {
   param([Parameter(Mandatory = $true)][string]$DockerAction)
 
-  if (-not (Get-Command docker -CommandType Application -ErrorAction SilentlyContinue)) {
-    throw "docker was not found on PATH. Install/start Docker Desktop, then rerun Main Computer startup."
-  }
+  $runtime = Get-MainComputerContainerRuntime
+  $containerCommandDisplay = Get-MainComputerCommandDisplay $runtime.container_command
+  $composeCommandDisplay = Get-MainComputerCommandDisplay $runtime.compose_command
 
   $composePath = Join-Path $repoRoot $ComposeFile
   if (-not (Test-Path -LiteralPath $composePath -PathType Leaf)) {
@@ -255,6 +368,9 @@ function Invoke-DockerOnlyOffice {
   $env:MAIN_COMPUTER_ONLYOFFICE_PROJECT = $ProjectName
   $env:COMPOSE_PROJECT_NAME = $ProjectName
 
+  Write-Host "container runtime: $([string]$runtime.runtime)"
+  Write-Host "container command: $containerCommandDisplay"
+  Write-Host "compose command: $composeCommandDisplay"
   Write-Host "compose file: $composePath"
   Write-Host "compose project: $ProjectName"
   Write-Host "container name: $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME"
@@ -320,8 +436,8 @@ if (-not $ProjectName) {
   }
 }
 
-Write-Section "ONLYOFFICE Docker control"
-Write-Host "mode: docker"
+Write-Section "ONLYOFFICE container control"
+Write-Host "mode: $Mode"
 Write-Host "port: $Port"
 Write-Host "project: $ProjectName"
 Write-Host "document server URL: http://127.0.0.1:$Port"
@@ -329,7 +445,7 @@ Write-Host "Main Computer callback app port: $AppPort"
 
 switch ($Action) {
   "install" {
-    Write-Host "Docker mode does not need a native install step; pulling/starting ONLYOFFICE service instead."
+    Write-Host "Container mode does not need a native install step; pulling/starting ONLYOFFICE service instead."
     Invoke-DockerOnlyOffice "start"
   }
   "start" {
@@ -352,7 +468,7 @@ if ($script:MainComputerOnlyOfficeNeedsFinalStatus) {
 }
 
 Write-Host ""
-Write-Host "Use these Main Computer env vars for local Docker ONLYOFFICE mode:"
+Write-Host "Use these Main Computer env vars for local container ONLYOFFICE mode:"
 Write-Host "  MAIN_COMPUTER_ONLYOFFICE_MODE=docker"
 Write-Host "  MAIN_COMPUTER_ONLYOFFICE_PORT=$Port"
 Write-Host "  MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL=http://127.0.0.1:$Port"
