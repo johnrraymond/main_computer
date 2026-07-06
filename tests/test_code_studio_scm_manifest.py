@@ -80,6 +80,7 @@ def test_code_studio_scm_manifest_is_loaded_after_mcel_core() -> None:
         "applications/scripts/mcel-scm.js",
         "applications/scripts/mcel-core.js",
         "applications/scripts/code-editor-scm-manifest.js",
+        "applications/scripts/code-editor-monaco-adapter.js",
         "applications/scripts/code-editor-mcel-studio.js",
     ]
     positions = [markup.index(include) for include in include_order]
@@ -125,7 +126,7 @@ process.stdout.write(JSON.stringify({{
     assert data["registered"] is True
     assert data["componentName"] == "CodeStudio"
     assert data["definitionName"] == "CodeStudio"
-    assert data["version"] == "2.9.0"
+    assert data["version"] == "2.10.0"
     assert data["contract"] == "mcel.scm.code-studio.v1"
     assert data["validation"]["ok"] is True
     assert data["owns"]["source"] == ["workspace.manifest", "workspace.files"]
@@ -136,6 +137,11 @@ process.stdout.write(JSON.stringify({{
         "loadFile",
         "saveFile",
         "runValidation",
+        "editor.monaco.load",
+        "editor.monaco.mount",
+        "editor.monaco.change",
+        "editor.monaco.layoutObserved",
+        "editor.monaco.dispose",
     ]
     assert data["transitions"] == [
         "openFile",
@@ -146,6 +152,11 @@ process.stdout.write(JSON.stringify({{
         "serializeWorkspace",
     ]
     assert data["effects"] == [
+        "editor.monaco.load",
+        "editor.monaco.mount",
+        "editor.monaco.change",
+        "editor.monaco.layoutObserved",
+        "editor.monaco.dispose",
         "loadWorkspace",
         "loadFile",
         "saveFile",
@@ -463,6 +474,87 @@ process.stdout.write(JSON.stringify({{
     assert "route-loader-start" in data["routePhases"]
     assert "route-loader-commit" in data["routePhases"]
 
+def test_code_studio_scm_monaco_effects_are_runtime_only_and_source_safe(tmp_path: Path) -> None:
+    script = f"""
+{_mcel_with_code_studio_manifest()}
+
+const instance = McelCodeStudioScm.createDefaultInstance({{mcel: MCEL}});
+const load = MCEL.runEffect(instance, "editor.monaco.load", {{
+  actionOutcome: "pass",
+  externalOutcome: "monaco-loaded",
+  source: "local-vendor"
+}});
+const mount = MCEL.runEffect(instance, "editor.monaco.mount", {{
+  actionOutcome: "pass",
+  externalOutcome: "model-mounted",
+  source: "local-vendor",
+  path: "src/app.js",
+  language: "javascript"
+}});
+const change = MCEL.runEffect(instance, "editor.monaco.change", {{
+  actionOutcome: "pass",
+  externalOutcome: "model-updated",
+  path: "src/app.js",
+  language: "javascript",
+  textLength: 42
+}});
+const layout = MCEL.runEffect(instance, "editor.monaco.layoutObserved", {{
+  actionOutcome: "pass",
+  externalOutcome: "layout-observed",
+  path: "src/app.js"
+}});
+const dispose = MCEL.runEffect(instance, "editor.monaco.dispose", {{
+  actionOutcome: "pass",
+  externalOutcome: "monaco-disposed",
+  path: "src/app.js"
+}});
+
+const packet = MCEL.exportScmEvidence(instance);
+
+process.stdout.write(JSON.stringify({{
+  results: [load.ok, mount.ok, change.ok, layout.ok, dispose.ok],
+  loader: instance.runtime.editor.monaco.loader,
+  mountedAfterDispose: instance.runtime.editor.monaco.mounted,
+  editorDraft: instance.runtime.editorDraft,
+  layoutObservation: instance.runtime.layoutObservation,
+  externalOutcome: instance.runtime.externalOutcome,
+  evidenceStrip: instance.runtime.evidenceStrip,
+  sourceFiles: instance.source.workspace.files.map((file) => file.text),
+  effectNames: packet.evidence.filter((entry) => entry.phase === "effect-start").map((entry) => entry.effectName),
+  writeSets: packet.evidence
+    .filter((entry) => entry.phase === "effect-start" && String(entry.effectName).startsWith("editor.monaco."))
+    .map((entry) => [entry.effectName, entry.declaredWrites])
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["results"] == [True, True, True, True, True]
+    assert data["loader"]["state"] == "loaded"
+    assert data["loader"]["source"] == "local-vendor"
+    assert data["mountedAfterDispose"] is False
+    assert data["editorDraft"] == {
+        "fileId": "src-app",
+        "path": "src/app.js",
+        "language": "javascript",
+        "textLength": 42,
+        "source": "monaco-model",
+    }
+    assert data["layoutObservation"]["kind"] == "monaco-layout-observation"
+    assert data["externalOutcome"]["effect"] == "editor.monaco.dispose"
+    assert [entry["effect"] for entry in data["evidenceStrip"]] == [
+        "editor.monaco.load",
+        "editor.monaco.mount",
+        "editor.monaco.change",
+        "editor.monaco.layoutObserved",
+        "editor.monaco.dispose",
+    ]
+    assert "console.log('hello from MCEL Code Studio');" in data["sourceFiles"]
+    assert "editor.monaco.mount" in data["effectNames"]
+    for effect_name, declared_writes in data["writeSets"]:
+        assert all(not path.startswith("source.") for path in declared_writes), effect_name
+
+
 def test_code_studio_scm_manifest_does_not_rewrite_existing_studio_behavior() -> None:
     script = _script("code-editor-scm-manifest.js")
 
@@ -489,7 +581,7 @@ process.stdout.write(JSON.stringify({{
 
     data = _run_node_json(tmp_path, script)
 
-    assert data["version"] == "2.9.0"
+    assert data["version"] == "2.10.0"
     assert data["layoutRoot"] == "#code-editor-app"
     assert data["layoutSlots"] == [
         "activitybar",
@@ -620,18 +712,24 @@ process.stdout.write(JSON.stringify({{
 
     data = _run_node_json(tmp_path, script)
 
-    assert data["version"] == "2.9.0"
+    assert data["version"] == "2.10.0"
     assert data["serializationSourceOwns"] == [
         "source.workspace.manifest",
         "source.workspace.files",
     ]
     assert "runtime.editor.chrome" in data["serializationRuntimeOnly"]
+    assert "runtime.editor.monaco" in data["serializationRuntimeOnly"]
+    assert "runtime.evidenceStrip" in data["serializationRuntimeOnly"]
     assert data["serializationWriteTo"] == "runtime.serializedOutput"
     assert data["serializationDirtyBlockedBy"] == ["state.dirty", "state.drafts"]
     assert data["repairAllowed"] == [
         "runtime.workbench.shell",
         "runtime.editor.chrome",
+        "runtime.editor.monaco",
         "runtime.validationReport",
+        "runtime.layoutObservation",
+        "runtime.externalOutcome",
+        "runtime.evidenceStrip",
     ]
     assert "source.workspace.files" in data["repairForbidden"]
     assert data["repairStrategies"] == ["rebuildWorkbenchShell"]

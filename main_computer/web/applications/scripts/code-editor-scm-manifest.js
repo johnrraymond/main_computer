@@ -1,6 +1,6 @@
 var McelCodeStudioScm = (() => {
       const COMPONENT_NAME = "CodeStudio";
-      const COMPONENT_VERSION = "2.9.0";
+      const COMPONENT_VERSION = "2.10.0";
       const COMPONENT_CONTRACT = "mcel.scm.code-studio.v1";
       const ROUTE_NAME = "workspace.file";
       const ROUTE_VERSION = "1.1.0";
@@ -60,12 +60,27 @@ var McelCodeStudioScm = (() => {
             chrome: {
               generated: true,
               serialize: "omit"
+            },
+            monaco: {
+              loader: {
+                state: "not-loaded",
+                source: "none",
+                outcome: "not-started"
+              },
+              instance: null,
+              model: null,
+              mounted: false,
+              lastOutcome: null
             }
           },
+          editorDraft: "",
           loadedFile: null,
           serializedOutput: "",
           validationReport: null,
-          assistantSession: null
+          assistantSession: null,
+          layoutObservation: null,
+          externalOutcome: null,
+          evidenceStrip: []
         };
       }
 
@@ -86,6 +101,32 @@ var McelCodeStudioScm = (() => {
         return Array.isArray(files) ? files.find((file) => file && file.id === fileId) || null : null;
       }
 
+      function normalizeMonacoOutcome(event = {}, effectName = "editor.monaco.mount") {
+        const actionOutcome = event.actionOutcome || (event.ok === false ? "blocked" : "pass");
+        return {
+          kind: event.kind || "mcel-code-studio-monaco-runtime-receipt",
+          effect: event.effect || effectName,
+          ok: event.ok !== false && actionOutcome !== "exception" && actionOutcome !== "blocked",
+          actionOutcome,
+          externalOutcome: event.externalOutcome || "unknown",
+          governanceOutcome: event.governanceOutcome || "pass",
+          safetyOutcome: event.safetyOutcome || "pass",
+          nextAction: event.nextAction || "inspect Monaco receipt",
+          path: event.path || "",
+          language: event.language || "",
+          source: event.source || "",
+          message: event.message || ""
+        };
+      }
+
+      function appendEvidenceStrip(ctx, receipt) {
+        const existing = ctx.get("runtime.evidenceStrip");
+        const next = Array.isArray(existing) ? existing.slice(-11) : [];
+        next.push(cloneValue(receipt));
+        ctx.set("runtime.evidenceStrip", next);
+        return next;
+      }
+
       const componentManifest = {
         version: COMPONENT_VERSION,
         contract: COMPONENT_CONTRACT,
@@ -99,10 +140,15 @@ var McelCodeStudioScm = (() => {
           runtime: [
             "workbench.shell",
             "editor.chrome",
+            "editor.monaco",
+            "editorDraft",
             "loadedFile",
             "serializedOutput",
             "validationReport",
-            "assistantSession"
+            "assistantSession",
+            "layoutObservation",
+            "externalOutcome",
+            "evidenceStrip"
           ],
 
           state: [
@@ -133,7 +179,12 @@ var McelCodeStudioScm = (() => {
             "loadWorkspace",
             "loadFile",
             "saveFile",
-            "runValidation"
+            "runValidation",
+            "editor.monaco.load",
+            "editor.monaco.mount",
+            "editor.monaco.change",
+            "editor.monaco.layoutObserved",
+            "editor.monaco.dispose"
           ]
         },
 
@@ -147,7 +198,12 @@ var McelCodeStudioScm = (() => {
           "draftCommitted",
           "panelSelected",
           "dockToggled",
-          "workspaceSerialized"
+          "workspaceSerialized",
+          "monacoLoaded",
+          "monacoMounted",
+          "monacoDraftChanged",
+          "monacoLayoutObserved",
+          "monacoDisposed"
         ],
 
         children: {
@@ -329,10 +385,15 @@ var McelCodeStudioScm = (() => {
           runtimeOnly: [
             "runtime.workbench.shell",
             "runtime.editor.chrome",
+            "runtime.editor.monaco",
+            "runtime.editorDraft",
             "runtime.loadedFile",
             "runtime.serializedOutput",
             "runtime.validationReport",
-            "runtime.assistantSession"
+            "runtime.assistantSession",
+            "runtime.layoutObservation",
+            "runtime.externalOutcome",
+            "runtime.evidenceStrip"
           ],
 
           commitRequiredFor: [
@@ -354,7 +415,9 @@ var McelCodeStudioScm = (() => {
             "data-mc-generated",
             "code-studio-shell",
             "code-studio-titlebar",
-            "code-studio-bottom-panel"
+            "code-studio-bottom-panel",
+            "code-studio-runtime-monaco",
+            "data-code-studio-monaco-runtime"
           ],
 
           output: {
@@ -370,7 +433,11 @@ var McelCodeStudioScm = (() => {
           allowed: [
             "runtime.workbench.shell",
             "runtime.editor.chrome",
-            "runtime.validationReport"
+            "runtime.editor.monaco",
+            "runtime.validationReport",
+            "runtime.layoutObservation",
+            "runtime.externalOutcome",
+            "runtime.evidenceStrip"
           ],
 
           forbidden: [
@@ -573,6 +640,240 @@ var McelCodeStudioScm = (() => {
           }
         },
         effects: {
+          "editor.monaco.load": {
+            kind: "external-runtime",
+            triggers: [
+              "runtime.editor.monaco.loader"
+            ],
+            reads: [
+              "runtime.editor.monaco",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editor.monaco",
+              "runtime.externalOutcome",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "monaco-editor",
+              operation: "load"
+            },
+            cancellation: "cancel-previous",
+            racePolicy: "latest-inputs-win",
+            errorPolicy: {
+              onFailure: "set-runtime-error",
+              retry: "manual"
+            },
+            run(_ctx, event) {
+              return normalizeMonacoOutcome(event, "editor.monaco.load");
+            },
+            commit(ctx, result) {
+              ctx.set("runtime.editor.monaco.loader", {
+                state: result.actionOutcome === "pass" ? "loaded" : result.actionOutcome,
+                source: result.source || "none",
+                outcome: result.externalOutcome,
+                message: result.message || ""
+              });
+              ctx.set("runtime.externalOutcome", result);
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editor.monaco.mount": {
+            kind: "external-runtime",
+            triggers: [
+              "source.workspace.files",
+              "state.activeFileId"
+            ],
+            reads: [
+              "source.workspace.files",
+              "state.activeFileId",
+              "runtime.editor.monaco",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editor.monaco",
+              "runtime.loadedFile",
+              "runtime.externalOutcome",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "monaco-editor",
+              operation: "mount"
+            },
+            cancellation: "cancel-previous",
+            racePolicy: "latest-inputs-win",
+            errorPolicy: {
+              onFailure: "set-runtime-error",
+              retry: "manual"
+            },
+            run(ctx, event) {
+              const files = ctx.get("source.workspace.files");
+              const fileId = ctx.get("state.activeFileId");
+              const file = findFileById(files, fileId);
+              return {
+                ...normalizeMonacoOutcome(event, "editor.monaco.mount"),
+                fileId,
+                path: event?.path || file?.path || "",
+                language: event?.language || file?.language || "plaintext"
+              };
+            },
+            commit(ctx, result) {
+              ctx.set("runtime.editor.monaco.instance", {
+                mounted: result.actionOutcome === "pass",
+                source: result.source || "none",
+                outcome: result.externalOutcome,
+                fileId: result.fileId || null,
+                path: result.path || "",
+                language: result.language || "plaintext"
+              });
+              ctx.set("runtime.editor.monaco.model", result.actionOutcome === "pass" ? {
+                path: result.path || "",
+                language: result.language || "plaintext",
+                source: "monaco-model"
+              } : null);
+              ctx.set("runtime.editor.monaco.mounted", result.actionOutcome === "pass");
+              ctx.set("runtime.editor.monaco.lastOutcome", result);
+              ctx.set("runtime.loadedFile", {
+                id: result.fileId || null,
+                path: result.path || "",
+                language: result.language || "plaintext"
+              });
+              ctx.set("runtime.externalOutcome", result);
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editor.monaco.change": {
+            kind: "external-runtime",
+            triggers: [
+              "runtime.editor.monaco.model"
+            ],
+            reads: [
+              "state.activeFileId",
+              "runtime.editor.monaco",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editorDraft",
+              "runtime.editor.monaco",
+              "runtime.externalOutcome",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "monaco-editor",
+              operation: "modelChange"
+            },
+            cancellation: "none",
+            racePolicy: "same-model-order",
+            errorPolicy: {
+              onFailure: "set-runtime-error",
+              retry: "manual"
+            },
+            run(ctx, event) {
+              return {
+                ...normalizeMonacoOutcome(event, "editor.monaco.change"),
+                fileId: ctx.get("state.activeFileId"),
+                textLength: Number(event?.textLength || 0)
+              };
+            },
+            commit(ctx, result) {
+              ctx.set("runtime.editorDraft", {
+                fileId: result.fileId || null,
+                path: result.path || "",
+                language: result.language || "plaintext",
+                textLength: result.textLength,
+                source: "monaco-model"
+              });
+              ctx.set("runtime.editor.monaco.lastOutcome", result);
+              ctx.set("runtime.externalOutcome", result);
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editor.monaco.layoutObserved": {
+            kind: "external-runtime",
+            triggers: [
+              "runtime.editor.monaco.instance"
+            ],
+            reads: [
+              "runtime.editor.monaco",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.layoutObservation",
+              "runtime.editor.monaco",
+              "runtime.externalOutcome",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "monaco-editor",
+              operation: "layout"
+            },
+            cancellation: "none",
+            racePolicy: "latest-inputs-win",
+            errorPolicy: {
+              onFailure: "set-runtime-error",
+              retry: "manual"
+            },
+            run(_ctx, event) {
+              return normalizeMonacoOutcome(event, "editor.monaco.layoutObserved");
+            },
+            commit(ctx, result) {
+              ctx.set("runtime.layoutObservation", {
+                kind: "monaco-layout-observation",
+                ok: result.actionOutcome === "pass",
+                externalOutcome: result.externalOutcome,
+                path: result.path || ""
+              });
+              ctx.set("runtime.editor.monaco.lastOutcome", result);
+              ctx.set("runtime.externalOutcome", result);
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
+          "editor.monaco.dispose": {
+            kind: "external-runtime",
+            triggers: [
+              "runtime.editor.monaco.instance"
+            ],
+            reads: [
+              "runtime.editor.monaco",
+              "runtime.evidenceStrip"
+            ],
+            writes: [
+              "runtime.editor.monaco",
+              "runtime.externalOutcome",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "monaco-editor",
+              operation: "dispose"
+            },
+            cancellation: "none",
+            racePolicy: "latest-inputs-win",
+            errorPolicy: {
+              onFailure: "set-runtime-error",
+              retry: "manual"
+            },
+            run(_ctx, event) {
+              return normalizeMonacoOutcome(event, "editor.monaco.dispose");
+            },
+            commit(ctx, result) {
+              ctx.set("runtime.editor.monaco.instance", null);
+              ctx.set("runtime.editor.monaco.model", null);
+              ctx.set("runtime.editor.monaco.mounted", false);
+              ctx.set("runtime.editor.monaco.lastOutcome", result);
+              ctx.set("runtime.externalOutcome", result);
+              appendEvidenceStrip(ctx, result);
+              return result;
+            }
+          },
+
           loadWorkspace: {
             kind: "async-data",
             triggers: [

@@ -38,6 +38,7 @@
         "component",
         "route",
         "effect",
+        "monaco",
         "layout",
         "style",
         "serialization",
@@ -46,8 +47,16 @@
       const SCM_EVIDENCE_PACKET_VERSION = "1.0.0";
       const SCM_AI_REPAIR_PROMPT_VERSION = "1.0.0";
       const SCM_REPLAY_SNAPSHOT_VERSION = "1.0.0";
+      const SCM_REGRESSION_HARNESS_VERSION = "1.0.0";
       const SCM_CONTRACT_AUTHORING_HELPER_VERSION = "1.0.0";
       const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
+      const MONACO_RUNTIME_EFFECTS = [
+        "editor.monaco.load",
+        "editor.monaco.mount",
+        "editor.monaco.change",
+        "editor.monaco.layoutObserved",
+        "editor.monaco.dispose"
+      ];
       const LIVE_WORKSPACE_PERSISTENCE_KEY = "main-computer-code-studio-live-workspace-v1";
       const MCEL_RUNTIME_PACKAGE_VERSION = "mcel-runtime.v0.1.15";
       const SCM_RECEIPT_VECTOR_VERSION = "1.0.0";
@@ -139,6 +148,8 @@
         lastScmRepairPrompt: "",
         lastScmRepairPromptExport: null,
         lastScmReplaySnapshotComparison: null,
+        lastScmRegressionHarness: null,
+        lastScmRegressionHarnessExport: null,
         lastLiveWorkspacePersistence: null,
         lastRouteLoaderPersistenceGate: null,
         lastScmContractAuthoringHelper: null,
@@ -150,6 +161,10 @@
         lastRepairGate: null,
         lastSaveFileEffectGate: null,
         activeScmInspectorTab: "contract",
+        monacoMounted: false,
+        monacoRuntimeReceipts: [],
+        lastMonacoRuntimeReceipt: null,
+        lastMonacoRuntimeEffectGate: null,
       };
 
       let scmInstance = null;
@@ -897,9 +912,25 @@
       function collectLayoutObservation() {
         ensureCodeStudioScmSurfaceStyles();
         const bottomDock = scopedNode("#code-studio-bottom-panel");
-        const rootRect = root.getBoundingClientRect?.() || {height: 0};
-        const documentHeight = document.documentElement?.scrollHeight || rootRect.height || 0;
-        const rootHeight = rootRect.height || root.offsetHeight || 1;
+        const rootRect = root.getBoundingClientRect?.() || {height: 0, width: 0};
+        const rootComputed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(root) : null;
+        const rootHeight = rootRect.height || root.offsetHeight || root.clientHeight || window.innerHeight || 1;
+        const rootWidth = rootRect.width || root.offsetWidth || root.clientWidth || window.innerWidth || 0;
+        const pageHeight = Math.max(
+          document.documentElement?.scrollHeight || 0,
+          document.body?.scrollHeight || 0,
+          rootHeight
+        );
+        const rootIsBoundedViewport = rootComputed?.position === "fixed"
+          || rootComputed?.overflow === "hidden"
+          || root.style?.position === "fixed"
+          || root.style?.overflow === "hidden";
+        const ownedDocumentHeight = rootIsBoundedViewport
+          ? rootHeight
+          : Math.max(root.scrollHeight || 0, rootHeight);
+        const documentHeight = rootIsBoundedViewport
+          ? ownedDocumentHeight
+          : Math.max(pageHeight, ownedDocumentHeight);
 
         return {
           computed: {
@@ -918,6 +949,15 @@
             "#code-studio-bottom-panel": {
               height: bottomDock?.getBoundingClientRect?.().height || bottomDock?.offsetHeight || 0
             }
+          },
+          metrics: {
+            rootHeight,
+            rootWidth,
+            pageHeight,
+            ownedDocumentHeight,
+            rootPosition: rootComputed?.position || root.style?.position || "",
+            rootOverflow: rootComputed?.overflow || root.style?.overflow || "",
+            rootIsBoundedViewport
           },
           documentHeightRatio: rootHeight ? documentHeight / rootHeight : 1
         };
@@ -1003,6 +1043,7 @@
 
       function evidenceEntryScope(entry, fallback = "component") {
         if (entry.scope) return entry.scope;
+        if (String(entry.effectName || "").startsWith("editor.monaco.") || String(entry.effect || "").startsWith("editor.monaco.")) return "monaco";
         if (entry.routeName || entry.loaderName || String(entry.phase || "").startsWith("route")) return "route";
         if (entry.effectName || String(entry.phase || "").includes("effect")) return "effect";
         if (entry.strategyName || String(entry.phase || "").includes("repair")) return "repair";
@@ -1092,6 +1133,20 @@
           recentRouteEvidence: routeEvidence.slice(-10),
           recentEvidence: combined.slice(-24)
         };
+      }
+
+      function summarizeLayoutGateViolations(gates = studioState.lastScmGates || null) {
+        const violations = gates?.layout?.violations || gates?.layout?.result?.violations || [];
+        return violations.map((violation) => ({
+          code: violation.code || "",
+          severity: violation.severity || "",
+          selector: violation.selector || "",
+          property: violation.property || "",
+          stateName: violation.stateName || "",
+          actual: violation.actual ?? "",
+          expected: violation.expected ?? violation.expectedMax ?? "",
+          message: violation.message || ""
+        }));
       }
 
       function parseScmReceiptJsonCandidate(value) {
@@ -1668,6 +1723,234 @@
         };
       }
 
+      function hashRegressionString(value = "") {
+        const text = String(value || "");
+        let hash = 2166136261;
+        for (let index = 0; index < text.length; index += 1) {
+          hash ^= text.charCodeAt(index);
+          hash = Math.imul(hash, 16777619);
+        }
+        return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+      }
+
+      function buildScmRegressionSourceSnapshot(label = "snapshot") {
+        const source = sourceEditor.value || "";
+        const fields = workspaceFields();
+        const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
+        const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
+        const activePane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "";
+        return jsonSafeClone({
+          kind: "mcel-code-studio-scm-regression-source-snapshot",
+          harnessVersion: SCM_REGRESSION_HARNESS_VERSION,
+          label,
+          capturedAt: new Date().toISOString(),
+          selectedPath: studioState.selectedPath,
+          selectedFileId: selectedScmFileId(fields),
+          sourceLength: source.length,
+          sourceHash: hashRegressionString(source),
+          sourceContainsRuntimeChrome: source.includes('data-mc-generated="runtime"') || source.includes('data-mc-serialize="omit"'),
+          runtimeDraftMounted: Boolean(draft),
+          runtimeDraftLength: draft?.value?.length || 0,
+          monacoHostMounted: Boolean(host),
+          monacoOutcome: host?.dataset?.monacoOutcome || runtimePreview.querySelector(".code-studio-runtime-editor")?.dataset?.monacoOutcome || "",
+          dirty: studioState.dirty,
+          damaged: studioState.damaged,
+          activePane
+        });
+      }
+
+      function compareScmRegressionSourceSnapshots(before, after) {
+        return {
+          sourceUnchanged: before?.sourceHash === after?.sourceHash && before?.sourceLength === after?.sourceLength,
+          runtimeChromeStayedOutOfSource: after?.sourceContainsRuntimeChrome === false,
+          selectedPathStable: before?.selectedPath === after?.selectedPath,
+          beforeHash: before?.sourceHash || "",
+          afterHash: after?.sourceHash || ""
+        };
+      }
+
+      function runScmRegressionScenario(id, label, action) {
+        const before = buildScmRegressionSourceSnapshot(`${id}:before`);
+        let detail = null;
+        let exception = null;
+        try {
+          detail = action(before) || {};
+        } catch (error) {
+          exception = {
+            name: error?.name || "Error",
+            message: error?.message || String(error)
+          };
+        }
+        const after = buildScmRegressionSourceSnapshot(`${id}:after`);
+        const sourceSafety = compareScmRegressionSourceSnapshots(before, after);
+        const actionOk = !exception && detail?.ok !== false;
+        return jsonSafeClone({
+          id,
+          label,
+          ok: actionOk && sourceSafety.sourceUnchanged && sourceSafety.runtimeChromeStayedOutOfSource,
+          actionOk,
+          sourceSafety,
+          before,
+          after,
+          detail,
+          exception
+        });
+      }
+
+      function runScmRegressionHarness(options = {}) {
+        const startedAt = new Date().toISOString();
+        const previousPane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "source";
+        const results = [];
+        const add = (id, label, action) => {
+          results.push(runScmRegressionScenario(id, label, action));
+        };
+
+        add("source.validation", "Validate source without mutating author-owned MCEL", () => {
+          const report = validateSource();
+          return {
+            ok: report?.ok !== false,
+            failed: report?.failed || [],
+            checks: (report?.checks || []).map((check) => ({id: check.id, ok: check.ok}))
+          };
+        });
+
+        add("runtime.mount-source-safe", "Mount runtime and verify Monaco/fallback chrome stays generated", () => {
+          renderRuntime();
+          const editor = runtimePreview.querySelector(".code-studio-runtime-editor");
+          const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
+          const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
+          return {
+            ok: Boolean(editor && host && draft)
+              && host.getAttribute("data-mc-generated") === "runtime"
+              && host.getAttribute("data-mc-serialize") === "omit"
+              && draft.getAttribute("data-code-studio-monaco-fallback") === "textarea",
+            editorGenerated: editor?.getAttribute("data-mc-generated") || "",
+            hostSerialize: host?.getAttribute("data-mc-serialize") || "",
+            fallback: draft?.getAttribute("data-code-studio-monaco-fallback") || ""
+          };
+        });
+
+        add("monaco.runtime-boundary", "Assert Monaco effects are runtime-only and commitDraft remains the source gate", () => {
+          const manifest = window.McelCodeStudioScm?.manifest || window.McelCodeStudioScm?.surface || null;
+          const declaredEffects = MONACO_RUNTIME_EFFECTS.map((effectName) => ({
+            effectName,
+            known: Boolean((manifest?.effects || {})[effectName] || (manifest?.effectSurface || {})[effectName])
+          }));
+          const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
+          const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
+          return {
+            ok: declaredEffects.length === 5 && Boolean(draft && host),
+            declaredEffects,
+            lastMonacoReceipt: studioState.lastMonacoRuntimeReceipt,
+            recentMonacoReceipts: studioState.monacoRuntimeReceipts.slice(-5),
+            sourceMutationGate: "commitRuntimeDraft"
+          };
+        });
+
+        add("replay.snapshot-comparison", "Build replay before/after evidence snapshots and compare violation deltas", () => {
+          const summary = collectScmEvidenceSummary(studioState.lastReport);
+          const entry = resolveSelectedScmEvidence(summary, studioState.scmEvidenceFilter || "all", visibleScmEvidenceEntries(summary, studioState.scmEvidenceFilter || "all"));
+          const beforeReplay = buildScmReplaySnapshot("regression-before", entry, studioState.lastReport);
+          const replayResult = runScmRuntimeChecks();
+          const afterReplay = buildScmReplaySnapshot("regression-after", entry, studioState.lastReport);
+          const comparison = compareScmReplaySnapshots(beforeReplay, afterReplay, replayResult);
+          studioState.lastScmReplayResult = {
+            evidenceKey: entry?.evidenceKey || "",
+            label: evidenceEntryLabel(entry),
+            scope: evidenceEntryScope(entry),
+            ok: replayResult?.ok !== false,
+            replayedAt: new Date().toISOString(),
+            result: replayResult
+          };
+          studioState.lastScmReplaySnapshotComparison = comparison;
+          return {
+            ok: comparison.ok !== false,
+            stable: comparison.stable,
+            deltas: comparison.deltas
+          };
+        });
+
+        add("serialization.clean-source", "Serialize clean source and prove runtime/Monaco chrome is omitted", () => {
+          const clean = serializeCleanSource();
+          return {
+            ok: Boolean(clean)
+              && !clean.includes('data-mc-generated="runtime"')
+              && !clean.includes('data-mc-serialize="omit"')
+              && !clean.includes("code-studio-runtime-monaco"),
+            serializedLength: clean.length,
+            omittedRuntimeChrome: !clean.includes("code-studio-runtime-monaco")
+          };
+        });
+
+        if (options.restorePane !== false) {
+          showPane(previousPane);
+        }
+
+        const failed = results.filter((scenario) => !scenario.ok);
+        const harness = jsonSafeClone({
+          kind: "mcel-code-studio-scm-regression-harness",
+          harnessVersion: SCM_REGRESSION_HARNESS_VERSION,
+          ranAt: startedAt,
+          completedAt: new Date().toISOString(),
+          ok: failed.length === 0,
+          total: results.length,
+          passed: results.length - failed.length,
+          failed: failed.map((scenario) => scenario.id),
+          sourceSafety: compareScmRegressionSourceSnapshots(results[0]?.before, buildScmRegressionSourceSnapshot("final")),
+          scenarios: results,
+          monaco: {
+            mounted: studioState.monacoMounted,
+            lastReceipt: studioState.lastMonacoRuntimeReceipt,
+            recentReceipts: studioState.monacoRuntimeReceipts.slice(-5),
+            declaredEffects: [...MONACO_RUNTIME_EFFECTS]
+          }
+        });
+
+        studioState.lastScmRegressionHarness = harness;
+        studioState.lastScmRegressionHarnessExport = {
+          ranAt: harness.ranAt,
+          ok: harness.ok,
+          total: harness.total,
+          passed: harness.passed,
+          failed: [...harness.failed]
+        };
+        setStatus(harness.ok
+          ? `SCM regression harness passed ${harness.passed}/${harness.total}; source remained unchanged.`
+          : `SCM regression harness blocked ${harness.failed.length} scenario(s): ${harness.failed.join(", ")}.`);
+        renderScmEvidencePanel(studioState.lastReport);
+        return harness;
+      }
+
+      function formatScmRegressionHarnessDetail(harness = studioState.lastScmRegressionHarness) {
+        if (!harness) {
+          return {
+            kind: "mcel-code-studio-scm-regression-harness",
+            harnessVersion: SCM_REGRESSION_HARNESS_VERSION,
+            status: "Run the SCM regression harness to replay source-safe validation, runtime mount, Monaco boundary, replay, and serialization scenarios."
+          };
+        }
+        return {
+          kind: harness.kind,
+          harnessVersion: harness.harnessVersion,
+          ranAt: harness.ranAt,
+          completedAt: harness.completedAt,
+          ok: harness.ok,
+          total: harness.total,
+          passed: harness.passed,
+          failed: harness.failed,
+          sourceSafety: harness.sourceSafety,
+          monaco: harness.monaco,
+          scenarios: harness.scenarios.map((scenario) => ({
+            id: scenario.id,
+            ok: scenario.ok,
+            actionOk: scenario.actionOk,
+            sourceSafety: scenario.sourceSafety,
+            detail: scenario.detail,
+            exception: scenario.exception
+          }))
+        };
+      }
+
       function toContractIdentifier(value, fallback = "GeneratedMcelApp") {
         const words = String(value || fallback)
           .replace(/[^A-Za-z0-9]+/g, " ")
@@ -1976,7 +2259,8 @@
             componentContract: studio.contract || "mcel.scm.code-studio.v1",
             route: studio.routeVersion || "1.1.0",
             routeContract: studio.routeContract || "mcel.scm.route.workspace-file.v1",
-            runtimePackage: MCEL_RUNTIME_PACKAGE_VERSION
+            runtimePackage: MCEL_RUNTIME_PACKAGE_VERSION,
+            regressionHarness: SCM_REGRESSION_HARNESS_VERSION
           },
           workspace: {
             title: fields.title,
@@ -2028,6 +2312,7 @@
           selectedEvidence: formatEvidenceDetail(selectedEntry),
           lastReplayResult: studioState.lastScmReplayResult,
           lastReplaySnapshotComparison: studioState.lastScmReplaySnapshotComparison,
+          lastRegressionHarness: studioState.lastScmRegressionHarness,
           lastReport: report ? {
             ok: report.ok,
             selectedPath: report.selectedPath,
@@ -2792,6 +3077,13 @@
         });
       }
 
+      function renderScmRegressionHarnessInProofDock() {
+        return renderProofDockPayload("SCM regression harness", formatScmRegressionHarnessDetail(studioState.lastScmRegressionHarness), {
+          kind: "regression-harness",
+          action: "copy-regression-harness"
+        });
+      }
+
       function renderContractHelperInProofDock() {
         const detail = studioState.lastScmContractAuthoringHelper
           ? formatScmContractAuthoringHelperDetail(studioState.lastScmContractAuthoringHelper)
@@ -2837,8 +3129,10 @@
                 </select>
               </label>
               <button type="button" id="code-studio-replay-scm-evidence">Replay selected gate</button>
+              <button type="button" id="code-studio-run-scm-regression-harness">Run regression harness</button>
               <button type="button" id="code-studio-open-scm-evidence-detail">Open evidence detail in proof dock</button>
               <button type="button" id="code-studio-open-scm-replay-detail">Open replay in proof dock</button>
+              <button type="button" id="code-studio-open-scm-regression-detail">Open regression in proof dock</button>
               <button type="button" id="code-studio-open-scm-contract-helper-detail">Open helper in proof dock</button>
               <button type="button" id="code-studio-export-scm-evidence-packet">Copy packet</button>
               <button type="button" id="code-studio-generate-scm-repair-prompt">Generate AI repair prompt</button>
@@ -2853,6 +3147,7 @@
             <span>visible <code>${entries.length}</code></span>
             <span>violations <code>${summary.combined.violations}</code></span>
             <span>blocking <code>${summary.combined.blocking}</code></span>
+            <span>regression <code>${studioState.lastScmRegressionHarness?.ok === false ? "fail" : studioState.lastScmRegressionHarness ? "ok" : "idle"}</code></span>
             <span>layout <code>${gates.layout?.ok === false ? "fail" : "ok"}</code></span>
             <span>style <code>${gates.style?.ok === false ? "fail" : "ok"}</code></span>
             <span>route <code>${gates.route?.ok === false ? "fail" : "ok"}</code></span>
@@ -2890,6 +3185,10 @@
           renderReplayComparisonInProofDock();
         });
 
+        scmEvidencePanel.querySelector("#code-studio-open-scm-regression-detail")?.addEventListener("click", () => {
+          renderScmRegressionHarnessInProofDock();
+        });
+
         scmEvidencePanel.querySelector("#code-studio-open-scm-contract-helper-detail")?.addEventListener("click", () => {
           renderContractHelperInProofDock();
         });
@@ -2899,6 +3198,11 @@
           replayScmEvidenceEntry(entry);
           renderScmEvidencePanel(studioState.lastReport);
           renderReplayComparisonInProofDock();
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-run-scm-regression-harness")?.addEventListener("click", () => {
+          runScmRegressionHarness();
+          renderScmRegressionHarnessInProofDock();
         });
 
         scmEvidencePanel.querySelector("#code-studio-export-scm-evidence-packet")?.addEventListener("click", () => {
@@ -2986,7 +3290,174 @@
         return `data-mc-generated="runtime" data-mc-serialize="omit" data-mc-runtime-kind="${escapeHtml(kind)}" data-mc-runtime-key="${escapeHtml(key)}"`;
       }
 
+      function resolveMonacoAdapter() {
+        if (typeof window === "undefined") return null;
+        return window.MainComputerMonacoAdapter || null;
+      }
+
+      function monacoReceiptSummary(receipt = {}) {
+        return {
+          kind: receipt.kind || "mcel-code-studio-monaco-runtime-receipt",
+          effect: receipt.effect || "editor.monaco.mount",
+          actionOutcome: receipt.actionOutcome || (receipt.ok === false ? "blocked" : "pass"),
+          externalOutcome: receipt.externalOutcome || "unknown",
+          governanceOutcome: receipt.governanceOutcome || "pass",
+          safetyOutcome: receipt.safetyOutcome || "pass",
+          nextAction: receipt.nextAction || "inspect Monaco receipt",
+          source: receipt.source || "",
+          path: receipt.path || studioState.selectedPath || "",
+          language: receipt.language || "",
+          message: receipt.message || ""
+        };
+      }
+
+      function runMonacoScmEffect(effectName, payload = {}) {
+        return runScmGate(`effect:${effectName}`, (mcel, instance) => {
+          if (typeof mcel.runEffect !== "function") {
+            return {
+              ok: true,
+              skipped: true,
+              effectName,
+              message: "SCM effect runner is unavailable."
+            };
+          }
+          return mcel.runEffect(instance, effectName, payload);
+        });
+      }
+
+      function recordMonacoRuntimeReceipt(receipt = {}, context = {}) {
+        const normalized = monacoReceiptSummary({
+          ...receipt,
+          ...context,
+          path: receipt.path || context.path || studioState.selectedPath || "",
+          language: receipt.language || context.language || ""
+        });
+        studioState.lastMonacoRuntimeReceipt = normalized;
+        studioState.monacoRuntimeReceipts = [...studioState.monacoRuntimeReceipts.slice(-11), normalized];
+        studioState.lastMonacoRuntimeEffectGate = runMonacoScmEffect(normalized.effect, normalized);
+        if (normalized.effect === "editor.monaco.mount") {
+          studioState.monacoMounted = normalized.actionOutcome === "pass";
+        }
+        return normalized;
+      }
+
+      function disposeRuntimeMonaco(reason = "renderRuntime") {
+        const adapter = resolveMonacoAdapter();
+        if (!adapter || typeof adapter.dispose !== "function") return null;
+        const outcome = adapter.dispose(reason);
+        if (outcome?.actionOutcome === "blocked" && outcome?.externalOutcome === "not-mounted") return outcome;
+        recordMonacoRuntimeReceipt({
+          ...outcome,
+          effect: "editor.monaco.dispose",
+          nextAction: "remount editor"
+        });
+        return outcome;
+      }
+
+      function updateRuntimeDraftFromEditor(draft, text, context = {}) {
+        if (!draft) return;
+        draft.value = String(text ?? "");
+        studioState.dirty = true;
+        studioState.damaged = false;
+        runScmTransition("editDraft", {text: draft.value});
+        if (context.origin === "monaco") {
+          recordMonacoRuntimeReceipt({
+            effect: "editor.monaco.change",
+            actionOutcome: "pass",
+            externalOutcome: "model-updated",
+            path: context.path || studioState.selectedPath || "",
+            language: context.language || "",
+            nextAction: "commit draft"
+          });
+        }
+        setRuntimeLabel();
+        setStatus(context.origin === "monaco"
+          ? "Monaco draft changed through SCM editDraft. Source is still unchanged until Commit editor draft."
+          : "Runtime draft changed through SCM editDraft. Source is still unchanged until Commit editor draft.");
+      }
+
+      function mountRuntimeMonaco(file, draft) {
+        const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
+        const editor = runtimePreview.querySelector(".code-studio-runtime-editor");
+        if (!host || !draft || !file) return;
+        const adapter = resolveMonacoAdapter();
+        if (!adapter || typeof adapter.mount !== "function") {
+          host.dataset.monacoOutcome = "blocked";
+          host.textContent = "Monaco adapter is unavailable. Fallback textarea remains active.";
+          recordMonacoRuntimeReceipt({
+            effect: "editor.monaco.mount",
+            actionOutcome: "blocked",
+            externalOutcome: "adapter-missing",
+            path: file.path,
+            language: file.language,
+            nextAction: "load Monaco adapter"
+          });
+          return;
+        }
+
+        adapter.mount({
+          host,
+          path: file.path,
+          language: file.language,
+          value: draft.value,
+          allowCdn: true,
+          onChange: (text) => updateRuntimeDraftFromEditor(draft, text, {
+            origin: "monaco",
+            path: file.path,
+            language: file.language
+          }),
+          onReceipt: (receipt) => {
+            const normalized = recordMonacoRuntimeReceipt(receipt, {
+              path: file.path,
+              language: file.language
+            });
+            if (editor) {
+              editor.dataset.monacoOutcome = normalized.actionOutcome;
+              editor.dataset.monacoMounted = normalized.effect === "editor.monaco.mount" && normalized.actionOutcome === "pass" ? "true" : editor.dataset.monacoMounted || "false";
+            }
+          }
+        }).then((receipt) => {
+          const normalized = recordMonacoRuntimeReceipt(receipt, {
+            path: file.path,
+            language: file.language
+          });
+          if (editor) {
+            editor.dataset.monacoOutcome = normalized.actionOutcome;
+            editor.dataset.monacoMounted = normalized.actionOutcome === "pass" ? "true" : "false";
+          }
+          if (normalized.actionOutcome === "pass") {
+            setStatus("Monaco mounted as a runtime-only draft editor. Commit editor draft remains the source mutation gate.");
+          } else if (normalized.actionOutcome === "blocked") {
+            setStatus("Monaco was blocked; the fallback runtime textarea remains active and source-safe.");
+          } else {
+            setStatus("Monaco raised a runtime exception; the fallback runtime textarea remains active.");
+          }
+          renderScmEvidencePanel();
+          renderFlagshipInspector();
+        }).catch((error) => {
+          const normalized = recordMonacoRuntimeReceipt({
+            effect: "editor.monaco.mount",
+            actionOutcome: "exception",
+            externalOutcome: "mount-promise-exception",
+            path: file.path,
+            language: file.language,
+            message: error?.message || String(error),
+            nextAction: "inspect exception"
+          });
+          host.dataset.monacoOutcome = "exception";
+          host.textContent = "Monaco raised an exception. Fallback textarea remains active.";
+          if (editor) {
+            editor.dataset.monacoOutcome = normalized.actionOutcome;
+            editor.dataset.monacoMounted = "false";
+          }
+          setStatus("Monaco raised a runtime exception; the fallback runtime textarea remains active.");
+          renderScmEvidencePanel();
+          renderFlagshipInspector();
+        });
+      }
+
       function renderRuntime() {
+        disposeRuntimeMonaco("renderRuntime");
         const fields = workspaceFields();
         const file = selectedFile(fields);
         const fileButtons = fields.files.map((entry) => `
@@ -3006,16 +3477,26 @@
                 <strong>Generated file explorer</strong>
                 ${fileButtons || "<p>No files found in source.</p>"}
               </aside>
-              <article class="code-studio-runtime-editor" ${generatedAttrs("runtime-editor", file?.path || "empty")}>
-                <label>
-                  <span>${escapeHtml(file?.path || "No source file")}</span>
-                  <textarea id="code-studio-runtime-draft" spellcheck="false">${escapeHtml(file?.value || "")}</textarea>
+              <article class="code-studio-runtime-editor" data-monaco-mounted="false" data-monaco-outcome="not-started" ${generatedAttrs("runtime-editor", file?.path || "empty")}>
+                <div
+                  id="code-studio-runtime-monaco"
+                  class="code-studio-monaco-host"
+                  data-mc-generated="runtime"
+                  data-mc-serialize="omit"
+                  data-mc-runtime-kind="runtime-monaco-editor"
+                  data-mc-runtime-key="${escapeHtml(file?.path || "empty")}"
+                  data-code-studio-monaco-runtime="host"
+                >Monaco editor runtime will mount here when the adapter is available.</div>
+                <label class="code-studio-runtime-fallback">
+                  <span>${escapeHtml(file?.path || "No source file")} · fallback runtime draft</span>
+                  <textarea id="code-studio-runtime-draft" spellcheck="false" data-code-studio-monaco-fallback="textarea">${escapeHtml(file?.value || "")}</textarea>
                 </label>
                 <div class="code-studio-runtime-badges" ${generatedAttrs("runtime-badges", "proof-badges")}>
-                  <span>generated editor chrome</span>
+                  <span>Monaco runtime adapter</span>
                   <span>runtime-only dirty state</span>
                   <span>serialize=omit</span>
-                  <span>repairable from source</span>
+                  <span>commitDraft is source gate</span>
+                  <span>fallback textarea preserved</span>
                 </div>
               </article>
             </div>
@@ -3034,16 +3515,15 @@
         });
         const draft = runtimePreview.querySelector("#code-studio-runtime-draft");
         if (draft) {
-          draft.addEventListener("input", () => {
-            studioState.dirty = true;
-            studioState.damaged = false;
-            runScmTransition("editDraft", {text: draft.value});
-            setRuntimeLabel();
-            setStatus("Runtime draft changed through SCM editDraft. Source is still unchanged until Commit editor draft.");
-          });
+          draft.addEventListener("input", () => updateRuntimeDraftFromEditor(draft, draft.value, {
+            origin: "fallback",
+            path: file?.path || studioState.selectedPath || "",
+            language: file?.language || ""
+          }));
         }
         studioState.mounted = true;
         studioState.damaged = false;
+        mountRuntimeMonaco(file, draft);
         setRuntimeLabel();
       }
 
@@ -3126,6 +3606,7 @@
               available: Boolean(report.scm?.available),
               ok: Boolean(report.scm?.ok),
               layoutOk: Boolean(report.scm?.layout?.ok),
+              layoutViolations: summarizeLayoutGateViolations(report.scm),
               styleOk: Boolean(report.scm?.style?.ok),
               validationEffectOk: Boolean(report.scm?.validation?.ok),
               routeOk: Boolean(report.scm?.route?.ok),
@@ -3218,6 +3699,9 @@
           setStatus("No runtime draft is mounted.");
           return;
         }
+        const adapter = resolveMonacoAdapter();
+        const monacoValue = adapter && typeof adapter.getValue === "function" ? adapter.getValue() : null;
+        if (typeof monacoValue === "string") draft.value = monacoValue;
         const {doc, workspace} = parseSource();
         const file = selectedFile();
         if (!workspace || !file) {
@@ -3390,6 +3874,9 @@
         buildScmReplaySnapshot,
         compareScmReplaySnapshots,
         formatScmReplayComparisonDetail,
+        runScmRegressionHarness,
+        formatScmRegressionHarnessDetail,
+        renderScmRegressionHarnessInProofDock,
         persistLiveWorkspaceFromSource,
         hydratePersistedLiveWorkspace,
         clearPersistedLiveWorkspace,

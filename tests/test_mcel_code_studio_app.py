@@ -11,6 +11,7 @@ APP_PATH = ROOT / "main_computer" / "web" / "applications" / "apps" / "code-edit
 APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
 STYLE_PATH = ROOT / "main_computer" / "web" / "applications" / "styles" / "code-editor.css"
 SCRIPT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-mcel-studio.js"
+MONACO_ADAPTER_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-monaco-adapter.js"
 PRETTY_DOC = ROOT / "pretty_docs" / "mcel-code-studio-example.md"
 
 
@@ -136,12 +137,90 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "applications/scripts/mcel-scm.js",
             "applications/scripts/mcel-core.js",
             "applications/scripts/code-editor-scm-manifest.js",
+            "applications/scripts/code-editor-monaco-adapter.js",
             "applications/scripts/code-editor-mcel-studio.js",
         ]
         applications_html = APPLICATIONS_HTML.read_text(encoding="utf-8")
         positions = [applications_html.index(include) for include in include_order]
 
         self.assertEqual(positions, sorted(positions))
+
+    def test_code_studio_mounts_monaco_as_runtime_only_editor_adapter(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        applications_html = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        adapter = MONACO_ADAPTER_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            "Monaco mounts as runtime-only editor chrome",
+            'id="code-studio-runtime-monaco"',
+            'data-code-studio-monaco-runtime="host"',
+            'data-code-studio-monaco-fallback="textarea"',
+            "fallback runtime draft",
+            "commitDraft is source gate",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app + script)
+
+        expected_application_order = [
+            "applications/scripts/code-editor-scm-manifest.js",
+            "applications/scripts/code-editor-monaco-adapter.js",
+            "applications/scripts/code-editor-mcel-studio.js",
+        ]
+        positions = [applications_html.index(include) for include in expected_application_order]
+        self.assertEqual(positions, sorted(positions))
+
+        expected_style = [
+            ".code-studio-monaco-host",
+            '.code-studio-monaco-host[data-monaco-outcome="pass"]',
+            '.code-studio-runtime-editor[data-monaco-mounted="true"] .code-studio-runtime-fallback',
+            ".code-studio-runtime-fallback",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        expected_script = [
+            "function resolveMonacoAdapter",
+            "function mountRuntimeMonaco",
+            "function recordMonacoRuntimeReceipt",
+            "function updateRuntimeDraftFromEditor",
+            "editor.monaco.load",
+            "editor.monaco.mount",
+            "editor.monaco.change",
+            "editor.monaco.layoutObserved",
+            "editor.monaco.dispose",
+            "adapter.getValue",
+            "Monaco mounted as a runtime-only draft editor. Commit editor draft remains the source mutation gate.",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        expected_adapter = [
+            "MainComputerMonacoAdapter",
+            "LOCAL_VS_BASE",
+            "CDN_VS_BASE",
+            "loadViaAmd",
+            "createModel",
+            "onDidChangeContent",
+            "disposeActive",
+            "mcel-code-studio-monaco-runtime-receipt",
+            "file-protocol-workers-unsupported",
+        ]
+        for text in expected_adapter:
+            with self.subTest(adapter=text):
+                self.assertIn(text, adapter)
+
+        commit_start = script.index("function commitRuntimeDraft")
+        monaco_value = script.index("adapter.getValue", commit_start)
+        edit_gate = script.index('runScmTransition("editDraft"', monaco_value)
+        commit_gate = script.index('runScmTransition("commitDraft"', edit_gate)
+        self.assertLess(monaco_value, edit_gate)
+        self.assertLess(edit_gate, commit_gate)
+
 
     def test_code_studio_script_exposes_contract_workflow(self) -> None:
         script = SCRIPT_PATH.read_text(encoding="utf-8")
@@ -432,6 +511,92 @@ class McelCodeStudioAppTests(unittest.TestCase):
         compare = script.index("compareScmReplaySnapshots(beforeSnapshot, afterSnapshot", replay_start)
         self.assertLess(before, after)
         self.assertLess(after, compare)
+
+
+    def test_code_studio_scm_regression_harness_covers_monaco_and_replay(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'id="code-studio-run-scm-regression-harness"',
+            'id="code-studio-scm-regression-harness"',
+            "SCM regression harness",
+            "validation, runtime mount, Monaco boundary, replay snapshots, and clean serialization",
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_script = [
+            "SCM_REGRESSION_HARNESS_VERSION",
+            "function buildScmRegressionSourceSnapshot",
+            "function compareScmRegressionSourceSnapshots",
+            "function runScmRegressionScenario",
+            "function runScmRegressionHarness",
+            "function formatScmRegressionHarnessDetail",
+            "function renderScmRegressionHarnessInProofDock",
+            'kind: "mcel-code-studio-scm-regression-harness"',
+            'kind: "mcel-code-studio-scm-regression-source-snapshot"',
+            'id="code-studio-run-scm-regression-harness"',
+            'id="code-studio-open-scm-regression-detail"',
+            "source.validation",
+            "runtime.mount-source-safe",
+            "monaco.runtime-boundary",
+            "replay.snapshot-comparison",
+            "serialization.clean-source",
+            "lastRegressionHarness: studioState.lastScmRegressionHarness",
+            "runScmRegressionHarness,",
+            "renderScmRegressionHarnessInProofDock,",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        expected_style = [
+            ".code-studio-scm-regression-harness",
+            ".code-studio-scm-regression-harness code",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        harness_start = script.index("function runScmRegressionHarness")
+        scenario_order = [
+            "source.validation",
+            "runtime.mount-source-safe",
+            "monaco.runtime-boundary",
+            "replay.snapshot-comparison",
+            "serialization.clean-source",
+        ]
+        positions = [script.index(name, harness_start) for name in scenario_order]
+        self.assertEqual(positions, sorted(positions))
+
+
+    def test_code_studio_layout_gate_uses_component_owned_viewport_metrics(self) -> None:
+        script = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        expected_script = [
+            "const rootComputed = typeof window.getComputedStyle === \"function\" ? window.getComputedStyle(root) : null;",
+            "rootIsBoundedViewport",
+            "ownedDocumentHeight",
+            "pageHeight",
+            "rootPosition",
+            "rootOverflow",
+            "documentHeightRatio: rootHeight ? documentHeight / rootHeight : 1",
+            "function summarizeLayoutGateViolations",
+            "layoutViolations: summarizeLayoutGateViolations(report.scm)",
+        ]
+        for text in expected_script:
+            with self.subTest(script=text):
+                self.assertIn(text, script)
+
+        observation_start = script.index("function collectLayoutObservation")
+        bounded = script.index("rootIsBoundedViewport", observation_start)
+        owned_height = script.index("ownedDocumentHeight", bounded)
+        ratio = script.index("documentHeightRatio", owned_height)
+        self.assertLess(bounded, owned_height)
+        self.assertLess(owned_height, ratio)
 
 
     def test_code_studio_scm_ai_repair_prompt_is_contract_first(self) -> None:

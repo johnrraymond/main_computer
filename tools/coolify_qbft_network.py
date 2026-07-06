@@ -29,6 +29,7 @@ import re
 import shlex
 import secrets
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -63,7 +64,7 @@ TRAEFIK_DYNAMIC_CONFIG_DIR = "/data/coolify/proxy/dynamic"
 TRAEFIK_DYNAMIC_CONFIG_IMAGE = "alpine:3.20"
 TRAEFIK_DYNAMIC_CONFIG_REFRESH_S = 300
 QBFT_CONFIG_TRANSFER_IMAGE = "python:3.12-alpine"
-QBFT_CONFIG_EXPORT_IMAGE = "alpine:3.20"
+QBFT_CONFIG_EXPORT_IMAGE = "python:3.12-alpine"
 DEFAULT_QBFT_CONFIG_EXPORT_PORT = 38173
 DEFAULT_QBFT_CONFIG_EXPORT_TIMEOUT_S = 240.0
 DEFAULT_QBFT_CONFIG_EXPORT_TRANSPORT = "public-entry"
@@ -1847,6 +1848,68 @@ def candidate_qbft_config_source_hosts(plan: NetworkPlan, target_services: list[
     return preferred or fallback
 
 
+def qbft_config_export_source_service_lookup(plan: NetworkPlan, args: argparse.Namespace, host_id: str) -> dict[str, Any]:
+    """Resolve the source host's normal QBFT Coolify service UUID, if possible."""
+
+    host_id = safe_id(host_id, kind="host")
+    service_name = project_service_name(plan, host_id)
+    host = host_by_id(plan).get(host_id)
+    configured_uuid = str(host.service_uuid if host else "").strip()
+    context: dict[str, Any] = {
+        "ok": bool(configured_uuid),
+        "service_name": service_name,
+        "configured_service_uuid": configured_uuid,
+        "service_uuid": configured_uuid,
+        "source": "private-state" if configured_uuid else "unresolved",
+    }
+    if bool(getattr(args, "dry_run", False)) or bool(getattr(args, "no_deploy", False)):
+        context["skipped_live_lookup"] = True
+        return context
+
+    tried: list[dict[str, Any]] = []
+    try:
+        lookup_args = args_copy_with(args, host=host_id, _coolify_host_id=host_id)
+        client, token, token_source = coolify_client_from_args(lookup_args, plan, host_id=host_id)
+        service_uuid, lookup_context = coolify_find_service_by_name(
+            client=client,
+            args=lookup_args,
+            service_name=service_name,
+            tried=tried,
+        )
+        context.update(
+            {
+                "ok": bool(service_uuid or configured_uuid),
+                "service_uuid": service_uuid or configured_uuid,
+                "source": "coolify-service-name" if service_uuid else context["source"],
+                "lookup": lookup_context,
+                "tried": tried,
+                "token_source": token_source,
+            }
+        )
+        return context
+    except Exception as exc:  # noqa: BLE001 - non-fatal; unprefixed/bind candidates can still be tried.
+        context.update(
+            {
+                "ok": bool(configured_uuid),
+                "source": context["source"] if configured_uuid else "lookup-error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "tried": tried,
+            }
+        )
+        return context
+
+
+def qbft_config_export_volume_prefixes_from_lookup(lookup: Mapping[str, Any]) -> list[str]:
+    prefixes: list[str] = []
+    for raw in [lookup.get("service_uuid"), lookup.get("configured_service_uuid")]:
+        prefix = str(raw or "").strip()
+        if not prefix or prefix in prefixes:
+            continue
+        if SAFE_ID_RE.match(prefix):
+            prefixes.append(prefix)
+    return prefixes
+
+
 def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argparse.Namespace, host_id: str) -> dict[str, Any]:
     hosts = host_by_id(plan)
     if host_id not in hosts:
@@ -1854,7 +1917,15 @@ def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argpar
     port = qbft_config_export_port(args)
     token = qbft_config_export_token()
     service_name = qbft_config_export_service_name(plan, host_id)
-    compose = render_qbft_config_exporter_compose(plan, host_id, token=token, port=port)
+    source_service_lookup = qbft_config_export_source_service_lookup(plan, args, host_id)
+    volume_prefixes = qbft_config_export_volume_prefixes_from_lookup(source_service_lookup)
+    compose = render_qbft_config_exporter_compose(
+        plan,
+        host_id,
+        token=token,
+        port=port,
+        volume_prefixes=volume_prefixes,
+    )
     export_args = args_copy_with(
         args,
         host=host_id,
@@ -1870,6 +1941,8 @@ def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argpar
             "source_host": host_id,
             "source_url": source_url,
             "service_name": service_name,
+            "source_service_lookup": source_service_lookup,
+            "volume_prefixes": volume_prefixes,
             "sync": sync_result,
             "message": "QBFT config export planned; live slurp skipped.",
         }
@@ -1879,6 +1952,8 @@ def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argpar
             "source_host": host_id,
             "source_url": source_url,
             "service_name": service_name,
+            "source_service_lookup": source_service_lookup,
+            "volume_prefixes": volume_prefixes,
             "sync": sync_result,
             "missing_files": ["export-service-deploy-failed"],
         }
@@ -1893,6 +1968,8 @@ def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argpar
                 raise RuntimeError(f"exporter returned non-object payload: {type(payload).__name__}")
             result = normalize_qbft_config_bundle(payload, source_host=host_id, source_url=source_url)
             result["service_name"] = service_name
+            result["source_service_lookup"] = source_service_lookup
+            result["volume_prefixes"] = volume_prefixes
             result["sync"] = sync_result
             return result
         except Exception as exc:  # noqa: BLE001 - return diagnostic for operator packet.
@@ -1903,6 +1980,8 @@ def export_qbft_config_from_host_via_direct_port(plan: NetworkPlan, args: argpar
         "source_host": host_id,
         "source_url": source_url,
         "service_name": service_name,
+        "source_service_lookup": source_service_lookup,
+        "volume_prefixes": volume_prefixes,
         "sync": sync_result,
         "missing_files": ["export-fetch-timeout"],
         "error": last_error,
@@ -1916,12 +1995,12 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
     source-host Coolify service that:
       * mounts candidate QBFT runtime volumes / bind roots,
       * serves a tokenized non-secret config bundle on an internal export port,
-      * writes a separate Traefik dynamic config file for a temporary HTTP path.
+      * writes a separate Traefik dynamic config file for a temporary HTTP/HTTPS path.
 
-    The operator fetches that path through the host's normal public entrypoint
-    using the canonical RPC Host header, so the workflow does not depend on
-    opening the temporary export port to the internet.  A cleanup compose removes
-    the temporary dynamic config after the bundle is fetched.
+    The operator fetches that path through the host's normal public entrypoint.
+    HTTPS-to-source-IP with the canonical Host header is tried first so the
+    workflow does not require plain HTTP to be open on the machine.  A cleanup
+    compose removes the temporary dynamic config after the bundle is fetched.
     """
 
     hosts = host_by_id(plan)
@@ -1940,9 +2019,19 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
     token = qbft_config_export_token()
     host = hosts[host_id]
     hostname = canonical_rpc_hostname(plan)
-    public_url = qbft_config_export_public_entry_url(host, token=token)
+    fetch_candidates = qbft_config_export_public_entry_fetch_candidates(plan, host, token=token)
+    public_url = fetch_candidates[0]["url"] if fetch_candidates else qbft_config_export_public_entry_url(host, token=token)
     service_name = qbft_config_export_service_name(plan, host_id)
-    compose = render_qbft_config_exporter_compose(plan, host_id, token=token, port=port, public_entry=True)
+    source_service_lookup = qbft_config_export_source_service_lookup(plan, args, host_id)
+    volume_prefixes = qbft_config_export_volume_prefixes_from_lookup(source_service_lookup)
+    compose = render_qbft_config_exporter_compose(
+        plan,
+        host_id,
+        token=token,
+        port=port,
+        public_entry=True,
+        volume_prefixes=volume_prefixes,
+    )
     cleanup_compose = render_qbft_config_export_cleanup_compose(plan, host_id)
 
     export_args = args_copy_with(
@@ -1965,9 +2054,15 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
             "dry_run": bool(getattr(args, "dry_run", False)),
             "source_host": host_id,
             "source_url": public_url,
+            "fetch_candidates": [
+                {key: value for key, value in candidate.items() if key != "headers"}
+                for candidate in fetch_candidates
+            ],
             "host_header": hostname,
             "transport": "public-entry",
             "service_name": service_name,
+            "source_service_lookup": source_service_lookup,
+            "volume_prefixes": volume_prefixes,
             "sync": sync_result,
             "message": "QBFT config public-entry export planned; live slurp skipped.",
         }
@@ -1979,35 +2074,55 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
             "host_header": hostname,
             "transport": "public-entry",
             "service_name": service_name,
+            "source_service_lookup": source_service_lookup,
+            "volume_prefixes": volume_prefixes,
             "sync": sync_result,
             "missing_files": ["public-entry-export-deploy-failed"],
         }
 
     deadline = time.time() + qbft_config_export_timeout_s(args)
     last_error = ""
+    attempts: list[dict[str, Any]] = []
     result: dict[str, Any] | None = None
     while time.time() < deadline:
-        try:
-            payload = fetch_json_url(
-                public_url,
-                timeout_s=min(10.0, max(2.0, qbft_config_export_timeout_s(args) / 12.0)),
-                headers={"Host": hostname},
-            )
-            if not isinstance(payload, Mapping):
-                raise RuntimeError(f"exporter returned non-object payload: {type(payload).__name__}")
-            result = normalize_qbft_config_bundle(payload, source_host=host_id, source_url=public_url)
-            result["host_header"] = hostname
-            result["transport"] = "public-entry"
-            result["service_name"] = service_name
-            result["sync"] = sync_result
+        for candidate in fetch_candidates:
+            candidate_url = str(candidate.get("url") or "")
+            try:
+                payload = fetch_json_url(
+                    candidate_url,
+                    timeout_s=min(10.0, max(2.0, qbft_config_export_timeout_s(args) / 12.0)),
+                    headers=candidate.get("headers") if isinstance(candidate.get("headers"), Mapping) else None,
+                    insecure_https=bool(candidate.get("insecure_https")),
+                )
+                if not isinstance(payload, Mapping):
+                    raise RuntimeError(f"exporter returned non-object payload: {type(payload).__name__}")
+                result = normalize_qbft_config_bundle(payload, source_host=host_id, source_url=candidate_url)
+                result["host_header"] = hostname
+                result["transport"] = "public-entry"
+                result["service_name"] = service_name
+                result["source_service_lookup"] = source_service_lookup
+                result["volume_prefixes"] = volume_prefixes
+                result["sync"] = sync_result
+                result["fetch_candidate"] = {key: value for key, value in candidate.items() if key != "headers"}
+                break
+            except Exception as exc:  # noqa: BLE001 - return diagnostic for operator packet.
+                last_error = f"{type(exc).__name__}: {exc}"
+                attempts.append(
+                    {
+                        "label": candidate.get("label"),
+                        "url": candidate_url,
+                        "insecure_https": bool(candidate.get("insecure_https")),
+                        "error": last_error,
+                    }
+                )
+        if result is not None:
             break
-        except Exception as exc:  # noqa: BLE001 - return diagnostic for operator packet.
-            last_error = f"{type(exc).__name__}: {exc}"
-            time.sleep(2.0)
+        time.sleep(2.0)
 
     cleanup_result = coolify_sync(plan, cleanup_args, deploy=True)
     if result is not None:
         result["cleanup"] = cleanup_result
+        result["fetch_attempts"] = attempts[-8:]
         return result
     return {
         "ok": False,
@@ -2016,8 +2131,15 @@ def export_qbft_config_from_host_via_public_entry(plan: NetworkPlan, args: argpa
         "host_header": hostname,
         "transport": "public-entry",
         "service_name": service_name,
+        "source_service_lookup": source_service_lookup,
+        "volume_prefixes": volume_prefixes,
         "sync": sync_result,
         "cleanup": cleanup_result,
+        "fetch_candidates": [
+            {key: value for key, value in candidate.items() if key != "headers"}
+            for candidate in fetch_candidates
+        ],
+        "fetch_attempts": attempts[-12:],
         "missing_files": ["public-entry-export-fetch-timeout"],
         "error": last_error,
     }
@@ -2316,6 +2438,7 @@ def render_rpc_public_entry_dynamic_config(
     export_port = int((config_export or {}).get("port") or DEFAULT_QBFT_CONFIG_EXPORT_PORT)
     export_service_name = f"{rid}-config-export-service"
     export_router_id = f"{rid}-config-export-http"
+    export_https_router_id = f"{rid}-config-export-https"
     export_path = qbft_config_export_public_path(export_token) if export_enabled else ""
     lines: list[str] = [
         "# Generated by tools/coolify_qbft_network.py RPC public-entry sidecar.",
@@ -2336,6 +2459,14 @@ def render_rpc_public_entry_dynamic_config(
                 f"      rule: {yaml_quote(f'Host(`{hostname}`) && Path(`{export_path}`)')}",
                 "      priority: 10000",
                 f"      service: {export_service_name}",
+                f"    {export_https_router_id}:",
+                "      entryPoints:",
+                "        - https",
+                f"      rule: {yaml_quote(f'Host(`{hostname}`) && Path(`{export_path}`)')}",
+                "      priority: 10000",
+                f"      service: {export_service_name}",
+                "      tls:",
+                "        certResolver: letsencrypt",
             ]
         )
     lines.extend(
@@ -2390,25 +2521,22 @@ def render_rpc_public_entry_writer_script(
     config_export: Mapping[str, Any] | None = None,
 ) -> str:
     config_path = rpc_public_entry_dynamic_config_path(plan, host_id)
+    config_tmp_path = f"{config_path}.tmp"
     config = render_rpc_public_entry_dynamic_config(plan, host_id, config_export=config_export).rstrip("\n")
     refresh_s = max(30, int(TRAEFIK_DYNAMIC_CONFIG_REFRESH_S))
     return "\n".join(
         [
             "set -eu",
-            f"CONFIG_PATH={shell_single_quote(config_path)}",
-            f"CONFIG_DIR={shell_single_quote(TRAEFIK_DYNAMIC_CONFIG_DIR)}",
-            f"REFRESH_SECONDS={refresh_s}",
             "write_config() {",
-            '  mkdir -p "$$CONFIG_DIR"',
-            '  tmp="$${CONFIG_PATH}.tmp"',
-            "  cat > \"$$tmp\" <<'TRAEFIKDYNAMICCONFIG'",
+            f"  mkdir -p {shell_single_quote(TRAEFIK_DYNAMIC_CONFIG_DIR)}",
+            f"  cat > {shell_single_quote(config_tmp_path)} <<'TRAEFIKDYNAMICCONFIG'",
             config,
             "TRAEFIKDYNAMICCONFIG",
-            '  mv "$$tmp" "$$CONFIG_PATH"',
-            '  echo "Installed RPC Traefik dynamic config: $$CONFIG_PATH"',
+            f"  mv {shell_single_quote(config_tmp_path)} {shell_single_quote(config_path)}",
+            f"  echo {shell_single_quote(f'Installed RPC Traefik dynamic config: {config_path}')}",
             "}",
             "write_config",
-            'while true; do sleep "$$REFRESH_SECONDS"; write_config; done',
+            f"while true; do sleep {refresh_s}; write_config; done",
         ]
     )
 
@@ -2419,11 +2547,9 @@ def render_rpc_public_entry_cleanup_script(plan: NetworkPlan, host_id: str) -> s
     return "\n".join(
         [
             "set -eu",
-            f"CONFIG_PATH={shell_single_quote(config_path)}",
-            f"REFRESH_SECONDS={refresh_s}",
-            'rm -f "$$CONFIG_PATH"',
-            'echo "Removed stale RPC Traefik dynamic config: $$CONFIG_PATH"',
-            'while true; do sleep "$$REFRESH_SECONDS"; rm -f "$$CONFIG_PATH"; done',
+            f"rm -f {shell_single_quote(config_path)}",
+            f"echo {shell_single_quote(f'Removed stale RPC Traefik dynamic config: {config_path}')}",
+            f"while true; do sleep {refresh_s}; rm -f {shell_single_quote(config_path)}; done",
         ]
     )
 
@@ -2531,6 +2657,27 @@ def legacy_managed_volume_name(plan: NetworkPlan) -> str:
     """Return the pre-host-split runtime volume name used by early testnet deploys."""
 
     return safe_id(f"{plan.compose_project}-runtime", kind="volume")
+
+
+def coolify_prefixed_volume_name(prefix: str, volume_name: str) -> str:
+    """Return Coolify's compose-project-prefixed named volume spelling.
+
+    Coolify deploys service compose files under the service resource UUID as the
+    compose project.  Even when the rendered volume declares ``name:
+    main-computer-qbft-...-runtime``, Docker may retain already-created runtime
+    material under ``<service_uuid>_<volume_name>`` from earlier deploys.  The
+    config exporter must try those live prefixed volumes before an unprefixed
+    name, otherwise Docker Compose can create a fresh empty lookalike and the
+    slurp fails even though the real runtime config exists on the host.
+    """
+
+    prefix = str(prefix or "").strip()
+    volume_name = str(volume_name or "").strip()
+    if not prefix or not volume_name:
+        return ""
+    if not SAFE_ID_RE.match(prefix):
+        raise PlanError(f"Unsafe Coolify volume prefix: {prefix!r}")
+    return f"{prefix}_{volume_name}"
 
 
 def render_json_heredoc(value: Any) -> str:
@@ -2785,6 +2932,58 @@ def qbft_config_export_public_entry_url(host: PlannedHost, *, token: str) -> str
     return f"http://{host.address}{qbft_config_export_public_path(token)}"
 
 
+def qbft_config_export_public_entry_fetch_candidates(plan: NetworkPlan, host: PlannedHost, *, token: str) -> list[dict[str, Any]]:
+    """Return operator fetch URLs for the temporary public-entry export path.
+
+    Prefer HTTPS to the source host address with the canonical Host header.  This
+    still flows through Coolify/Traefik, but it does not depend on plain HTTP
+    being open on the machine.  Certificate verification is disabled for that
+    IP-address candidate because the certificate is issued for the canonical
+    hostname, not the raw host IP.
+    """
+
+    path = qbft_config_export_public_path(token)
+    hostname = canonical_rpc_hostname(plan)
+    candidates: list[dict[str, Any]] = []
+    if host.address:
+        candidates.append(
+            {
+                "url": f"https://{host.address}{path}",
+                "headers": {"Host": hostname},
+                "insecure_https": True,
+                "label": "source-host-https-ip-with-host-header",
+            }
+        )
+    if hostname:
+        candidates.append(
+            {
+                "url": f"https://{hostname}{path}",
+                "headers": {},
+                "insecure_https": False,
+                "label": "canonical-https-hostname",
+            }
+        )
+    if host.address:
+        candidates.append(
+            {
+                "url": f"http://{host.address}{path}",
+                "headers": {"Host": hostname},
+                "insecure_https": False,
+                "label": "source-host-http-ip-with-host-header",
+            }
+        )
+    if hostname:
+        candidates.append(
+            {
+                "url": f"http://{hostname}{path}",
+                "headers": {},
+                "insecure_https": False,
+                "label": "canonical-http-hostname",
+            }
+        )
+    return candidates
+
+
 def qbft_config_export_transport(args: argparse.Namespace) -> str:
     raw = str(getattr(args, "config_export_transport", DEFAULT_QBFT_CONFIG_EXPORT_TRANSPORT) or DEFAULT_QBFT_CONFIG_EXPORT_TRANSPORT).strip().lower()
     if raw not in {"public-entry", "direct-port"}:
@@ -2792,14 +2991,19 @@ def qbft_config_export_transport(args: argparse.Namespace) -> str:
     return raw
 
 
-def qbft_config_export_mount_sources(plan: NetworkPlan, host_id: str) -> list[dict[str, str]]:
+def qbft_config_export_mount_sources(
+    plan: NetworkPlan,
+    host_id: str,
+    *,
+    volume_prefixes: list[str] | tuple[str, ...] = (),
+) -> list[dict[str, str]]:
     """Return ordered host-local places that may contain current QBFT runtime material.
 
-    Early single-host testnet deployments used a hostless runtime volume name;
-    newer split-host deployments use one volume per Coolify host.  Operators can
-    also run with the configured bind runtime root.  Config discovery should
-    treat empty/missing candidates as uninitialized, not as fatal, and select the
-    one complete lineage if exactly one exists.
+    Coolify can leave runtime volumes under a service-UUID compose prefix such
+    as ``pr243..._main-computer-qbft-testnet-a-runtime``.  Try those discovered
+    prefixed volumes first, then the unprefixed managed/legacy names, then the
+    configured bind runtime root.  Empty candidates are reported by the exporter
+    as missing/uninitialized instead of making deployment itself fail.
     """
 
     host_id = safe_id(host_id, kind="host")
@@ -2820,11 +3024,35 @@ def qbft_config_export_mount_sources(plan: NetworkPlan, host_id: str) -> list[di
         seen.add(key)
         candidates.append({"kind": kind, "label": label, "source": source, "target": target})
 
-    add("volume", "managed-host-volume", managed_volume_name(plan, host_id), "/sources/managed-host-volume")
-    add("volume", "legacy-network-volume", legacy_managed_volume_name(plan), "/sources/legacy-network-volume")
+    managed = managed_volume_name(plan, host_id)
+    legacy = legacy_managed_volume_name(plan)
+    prefixes: list[str] = []
+    for raw_prefix in [*list(volume_prefixes or ()), host.service_uuid]:
+        prefix = str(raw_prefix or "").strip()
+        if not prefix or prefix in prefixes:
+            continue
+        if not SAFE_ID_RE.match(prefix):
+            raise PlanError(f"Unsafe Coolify volume prefix: {prefix!r}")
+        prefixes.append(prefix)
+
+    for index, prefix in enumerate(prefixes, start=1):
+        add(
+            "volume",
+            f"coolify-prefixed-managed-host-volume-{index}",
+            coolify_prefixed_volume_name(prefix, managed),
+            f"/sources/coolify-prefixed-managed-host-volume-{index}",
+        )
+        add(
+            "volume",
+            f"coolify-prefixed-legacy-network-volume-{index}",
+            coolify_prefixed_volume_name(prefix, legacy),
+            f"/sources/coolify-prefixed-legacy-network-volume-{index}",
+        )
+
+    add("volume", "managed-host-volume", managed, "/sources/managed-host-volume")
+    add("volume", "legacy-network-volume", legacy, "/sources/legacy-network-volume")
     add("bind", "host-runtime-root", host.runtime_root, "/sources/host-runtime-root")
     return candidates
-
 
 def qbft_config_export_dynamic_config_path(plan: NetworkPlan, host_id: str) -> str:
     host_id = safe_id(host_id, kind="host")
@@ -2856,6 +3084,14 @@ def render_qbft_config_export_public_entry_dynamic_config(plan: NetworkPlan, hos
             f"      rule: {yaml_quote(f'Host(`{hostname}`) && Path(`{export_path}`)')}",
             "      priority: 10000",
             f"      service: {service_name}",
+            f"    {rid}-https:",
+            "      entryPoints:",
+            "        - https",
+            f"      rule: {yaml_quote(f'Host(`{hostname}`) && Path(`{export_path}`)')}",
+            "      priority: 10000",
+            f"      service: {service_name}",
+            "      tls:",
+            "        certResolver: letsencrypt",
             "  services:",
             f"    {service_name}:",
             "      loadBalancer:",
@@ -2869,25 +3105,22 @@ def render_qbft_config_export_public_entry_dynamic_config(plan: NetworkPlan, hos
 
 def render_qbft_config_export_public_entry_writer_script(plan: NetworkPlan, host_id: str, *, token: str, port: int) -> str:
     config_path = qbft_config_export_dynamic_config_path(plan, host_id)
+    config_tmp_path = f"{config_path}.tmp"
     config = render_qbft_config_export_public_entry_dynamic_config(plan, host_id, token=token, port=port).rstrip("\n")
     refresh_s = max(30, int(TRAEFIK_DYNAMIC_CONFIG_REFRESH_S))
     return "\n".join(
         [
             "set -eu",
-            f"CONFIG_PATH={shell_single_quote(config_path)}",
-            f"CONFIG_DIR={shell_single_quote(TRAEFIK_DYNAMIC_CONFIG_DIR)}",
-            f"REFRESH_SECONDS={refresh_s}",
             "write_config() {",
-            '  mkdir -p "$$CONFIG_DIR"',
-            '  tmp="$${CONFIG_PATH}.tmp"',
-            "  cat > \"$$tmp\" <<'TRAEFIKDYNAMICCONFIG'",
+            f"  mkdir -p {shell_single_quote(TRAEFIK_DYNAMIC_CONFIG_DIR)}",
+            f"  cat > {shell_single_quote(config_tmp_path)} <<'TRAEFIKDYNAMICCONFIG'",
             config,
             "TRAEFIKDYNAMICCONFIG",
-            '  mv "$$tmp" "$$CONFIG_PATH"',
-            '  echo "Installed temporary QBFT config export Traefik dynamic config: $$CONFIG_PATH"',
+            f"  mv {shell_single_quote(config_tmp_path)} {shell_single_quote(config_path)}",
+            f"  echo {shell_single_quote(f'Installed temporary QBFT config export Traefik dynamic config: {config_path}')}",
             "}",
             "write_config",
-            'while true; do sleep "$$REFRESH_SECONDS"; write_config; done',
+            f"while true; do sleep {refresh_s}; write_config; done",
         ]
     )
 
@@ -2898,11 +3131,9 @@ def render_qbft_config_export_public_entry_cleanup_script(plan: NetworkPlan, hos
     return "\n".join(
         [
             "set -eu",
-            f"CONFIG_PATH={shell_single_quote(config_path)}",
-            f"REFRESH_SECONDS={refresh_s}",
-            'rm -f "$$CONFIG_PATH"',
-            'echo "Removed temporary QBFT config export Traefik dynamic config: $$CONFIG_PATH"',
-            'while true; do sleep "$$REFRESH_SECONDS"; rm -f "$$CONFIG_PATH"; done',
+            f"rm -f {shell_single_quote(config_path)}",
+            f"echo {shell_single_quote(f'Removed temporary QBFT config export Traefik dynamic config: {config_path}')}",
+            f"while true; do sleep {refresh_s}; rm -f {shell_single_quote(config_path)}; done",
         ]
     )
 
@@ -2925,7 +3156,11 @@ def render_qbft_config_exporter_shell(
         raise PlanError("QBFT config exporter sidecar requires a token.")
     source_payload = [
         {"label": item["label"], "path": item["target"], "kind": item["kind"], "source": item["source"]}
-        for item in qbft_config_export_mount_sources(plan, host_id)
+        for item in qbft_config_export_mount_sources(
+            plan,
+            host_id,
+            volume_prefixes=list(config_export.get("volume_prefixes") or ()),
+        )
     ]
     lines: list[str] = [
         "set -eu",
@@ -3012,13 +3247,21 @@ def render_qbft_config_exporter_shell(
             "JSON",
             "printf '%s\\n' \"{\\\"ok\\\":$OK,\\\"host\\\":\\\"$HOST_ID\\\",\\\"source_mount\\\":\\\"$source_mount_esc\\\",\\\"missing_files\\\":[$MISSING_JSON]}\"",
             "cd /serve",
-            "exec busybox httpd -f -p 0.0.0.0:8080",
+            "exec python3 -m http.server 8080 --bind 0.0.0.0",
         ]
     )
     return "\n".join(lines)
 
 
-def render_qbft_config_exporter_compose(plan: NetworkPlan, host_id: str, *, token: str, port: int, public_entry: bool = False) -> str:
+def render_qbft_config_exporter_compose(
+    plan: NetworkPlan,
+    host_id: str,
+    *,
+    token: str,
+    port: int,
+    public_entry: bool = False,
+    volume_prefixes: list[str] | tuple[str, ...] = (),
+) -> str:
     """Render a temporary config-export service for existing host runtime material.
 
     The exporter exposes only non-secret QBFT runtime material: genesis,
@@ -3026,17 +3269,18 @@ def render_qbft_config_exporter_compose(plan: NetworkPlan, host_id: str, *, toke
     or included.  The URL path includes a per-run token so accidental probes
     do not receive the bundle.
 
-    The service scans the current host-specific volume, the old hostless
-    single-host volume, and the configured bind runtime root.  Missing
-    candidates are reported as empty/uninitialized instead of failing the export
-    service deployment.  The exporter uses alpine plus shell/base64 instead of
-    a Python image so config discovery can start quickly on new Coolify hosts.
+    The service scans discovered Coolify-prefixed runtime volumes, the
+    current host-specific volume, the old hostless single-host volume, and the
+    configured bind runtime root.  Missing candidates are reported as
+    empty/uninitialized instead of failing the export service deployment.  It
+    uses a tiny Python image so the generated shell can write the JSON bundle
+    and then serve it with ``python3 -m http.server``.
     """
 
     host_id = safe_id(host_id, kind="host")
     if host_id not in host_by_id(plan):
         raise PlanError(f"Unknown host for config export: {host_id}")
-    sources = qbft_config_export_mount_sources(plan, host_id)
+    sources = qbft_config_export_mount_sources(plan, host_id, volume_prefixes=volume_prefixes)
     source_payload = [
         {"label": item["label"], "path": item["target"], "kind": item["kind"], "source": item["source"]}
         for item in sources
@@ -3147,7 +3391,7 @@ def render_qbft_config_exporter_compose(plan: NetworkPlan, host_id: str, *, toke
             "JSON",
             "printf '%s\\n' \"{\\\"ok\\\":$OK,\\\"host\\\":\\\"$HOST_ID\\\",\\\"source_mount\\\":\\\"$source_mount_esc\\\",\\\"missing_files\\\":[$MISSING_JSON]}\"",
             "cd /serve",
-            "exec busybox httpd -f -p 0.0.0.0:8080",
+            "exec python3 -m http.server 8080 --bind 0.0.0.0",
         ]
     )
     payload_script = escape_compose_interpolation(payload_script)
@@ -3306,13 +3550,25 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
     }
 
 
-def fetch_json_url(url: str, *, timeout_s: float, headers: Mapping[str, str] | None = None) -> Any:
+def fetch_json_url(
+    url: str,
+    *,
+    timeout_s: float,
+    headers: Mapping[str, str] | None = None,
+    insecure_https: bool = False,
+) -> Any:
     request_headers = {"Accept": "application/json"}
     if headers:
         request_headers.update({str(key): str(value) for key, value in headers.items()})
     request = urllib.request.Request(url, headers=request_headers)
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        raw = response.read().decode("utf-8", errors="replace")
+    parsed = urllib.parse.urlsplit(url)
+    context = ssl._create_unverified_context() if insecure_https and parsed.scheme == "https" else None
+    if context is None:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    else:
+        with urllib.request.urlopen(request, timeout=timeout_s, context=context) as response:
+            raw = response.read().decode("utf-8", errors="replace")
     return json.loads(raw)
 
 
@@ -3485,7 +3741,11 @@ def render_compose_for_host(
     config_export = config_export or None
     config_export_volume_names: list[str] = []
     if config_export is not None:
-        export_sources = qbft_config_export_mount_sources(plan, host_id)
+        export_sources = qbft_config_export_mount_sources(
+            plan,
+            host_id,
+            volume_prefixes=list(config_export.get("volume_prefixes") or ()),
+        )
         export_volume_lines: list[str] = []
         for source in export_sources:
             if source["kind"] == "volume":

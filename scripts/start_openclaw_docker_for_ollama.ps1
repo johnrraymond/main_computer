@@ -2,10 +2,18 @@
 param(
     [string]$Model = "gemma4:26b",
     [int]$Port = 18789,
+    [string]$AgentId = "main",
     [string]$StateRoot,
     [string]$GatewayToken,
     [string]$Image = "ghcr.io/openclaw/openclaw:latest",
     [string]$ProjectName = "main-computer-openclaw",
+    [int]$SmokeTimeoutSeconds = 300,
+    [int]$ContextWindow = 8192,
+    [int]$MaxTokens = 512,
+    [int]$OllamaNumPredict = 128,
+    [switch]$AgentSmoke,
+    [switch]$FullSmoke,
+    [switch]$SkipRestartProof,
     [switch]$Down,
     [switch]$NoSmoke
 )
@@ -78,7 +86,94 @@ function Show-DockerDiagnostics {
     }
 }
 
-function ConvertTo-OpenClawModelEntries($OllamaTags) {
+function Invoke-DirectMemorySmoke([string]$SmokePath, [string]$WorkspaceDir) {
+    Write-Info "running deterministic direct OpenClaw Markdown memory smoke"
+    $directArgs = @(
+        $SmokePath,
+        "--direct-memory",
+        "--memory-root", $WorkspaceDir,
+        "--memory-poll-s", "5",
+        "--json"
+    )
+    $directOutput = @(& python @directArgs 2>&1)
+    $directExitCode = $LASTEXITCODE
+    $directOutput | ForEach-Object { Write-Host $_ }
+    if ($directExitCode -ne 0) {
+        throw "direct Markdown memory smoke failed with exit code $directExitCode"
+    }
+
+    $directText = $directOutput -join "`n"
+    $jsonStart = $directText.IndexOf("{")
+    $jsonEnd = $directText.LastIndexOf("}")
+    if ($jsonStart -lt 0 -or $jsonEnd -lt $jsonStart) {
+        throw "direct Markdown memory smoke did not return a JSON object"
+    }
+
+    try {
+        $directResult = $directText.Substring($jsonStart, $jsonEnd - $jsonStart + 1) | ConvertFrom-Json
+    } catch {
+        throw "direct Markdown memory smoke did not return parseable JSON: $($_.Exception.Message)"
+    }
+
+    if (-not $directResult.ok) {
+        throw "direct Markdown memory smoke returned ok=false"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$directResult.marker)) {
+        throw "direct Markdown memory smoke did not return a marker"
+    }
+    return [string]$directResult.marker
+}
+
+function Invoke-ContainerMemoryProbe([string]$Marker, [string]$Label) {
+    # Use a single-quoted here-string so PowerShell does not try to expand the
+    # JavaScript template literal variables (${root}, ${marker}) under
+    # Set-StrictMode.
+    $memoryProbeJs = @'
+const fs = require('fs');
+const path = require('path');
+
+const marker = process.env.MAIN_COMPUTER_DIRECT_MEMORY_MARKER;
+const root = '/home/node/.openclaw/workspace';
+
+function scan(dir) {
+  if (!fs.existsSync(dir)) {
+    return null;
+  }
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = scan(full);
+      if (found) {
+        return found;
+      }
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      const text = fs.readFileSync(full, 'utf8');
+      if (text.includes(marker)) {
+        return full;
+      }
+    }
+  }
+  return null;
+}
+
+const found = scan(root);
+if (!found) {
+  console.error(`marker not found in ${root}: ${marker}`);
+  process.exit(2);
+}
+console.log(found);
+'@
+
+    Write-Info "probing OpenClaw container memory mount ($Label)"
+    & docker @composeArgs exec -T `
+        -e "MAIN_COMPUTER_DIRECT_MEMORY_MARKER=$Marker" `
+        openclaw-gateway node -e $memoryProbeJs
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenClaw container could not read the direct memory marker during $Label."
+    }
+}
+
+function ConvertTo-OpenClawModelEntries($OllamaTags, [int]$ContextWindow, [int]$MaxTokens, [int]$OllamaNumPredict) {
     $models = New-Object System.Collections.ArrayList
     foreach ($entry in @($OllamaTags.models)) {
         $name = [string]$entry.name
@@ -99,10 +194,13 @@ function ConvertTo-OpenClawModelEntries($OllamaTags) {
                 cacheRead = 0
                 cacheWrite = 0
             }
-            contextWindow = 128000
-            maxTokens = 8192
+            contextWindow = $ContextWindow
+            maxTokens = $MaxTokens
             params = [ordered]@{
                 keep_alive = "15m"
+                num_ctx = $ContextWindow
+                num_predict = $OllamaNumPredict
+                temperature = 0
             }
         })
     }
@@ -154,6 +252,22 @@ if ([string]::IsNullOrWhiteSpace($GatewayToken)) {
 if ($Model -notmatch '^[A-Za-z0-9._:/-]+$') {
     throw "Model contains unsupported characters for this smoke helper: $Model"
 }
+if ($AgentId -notmatch '^[A-Za-z0-9._-]+$') {
+    throw "AgentId contains unsupported characters for this smoke helper: $AgentId"
+}
+if ($SmokeTimeoutSeconds -lt 1) {
+    throw "SmokeTimeoutSeconds must be at least 1."
+}
+if ($ContextWindow -lt 1024) {
+    throw "ContextWindow must be at least 1024."
+}
+if ($MaxTokens -lt 1) {
+    throw "MaxTokens must be at least 1."
+}
+if ($OllamaNumPredict -lt 1) {
+    throw "OllamaNumPredict must be at least 1."
+}
+$providerTimeoutSeconds = [Math]::Max($SmokeTimeoutSeconds, 300)
 
 Write-Info "checking Docker"
 & docker version | Out-Null
@@ -163,7 +277,7 @@ $containerOllamaUrl = "http://host.docker.internal:11434"
 $containerGatewayPort = 18789
 Write-Info "checking host Ollama at $hostOllamaUrl/api/tags"
 $ollamaTags = Invoke-JsonGet "$hostOllamaUrl/api/tags"
-$modelEntries = @(ConvertTo-OpenClawModelEntries $ollamaTags)
+$modelEntries = @(ConvertTo-OpenClawModelEntries $ollamaTags $ContextWindow $MaxTokens $OllamaNumPredict)
 $modelNames = @($modelEntries | ForEach-Object { [string]$_.id })
 
 if ($modelNames.Count -eq 0) {
@@ -201,7 +315,7 @@ $openClawConfig = [ordered]@{
                 api = "ollama"
                 apiKey = "ollama-local"
                 baseUrl = $containerOllamaUrl
-                timeoutSeconds = 300
+                timeoutSeconds = $providerTimeoutSeconds
                 models = @($modelEntries)
             }
         }
@@ -227,9 +341,14 @@ $envLines = @(
     "OPENCLAW_CONFIG_DIR=$configDir",
     "OPENCLAW_WORKSPACE_DIR=$workspaceDir",
     "OPENCLAW_AUTH_PROFILE_SECRET_DIR=$authSecretDir",
+    "OPENCLAW_WORKSPACE=$workspaceDir",
     "MAIN_COMPUTER_OPENCLAW_BASE_URL=http://127.0.0.1:$Port",
     "MAIN_COMPUTER_OPENCLAW_TOKEN=$GatewayToken",
-    "MAIN_COMPUTER_OPENCLAW_BACKEND_MODEL=ollama/$Model"
+    "MAIN_COMPUTER_OPENCLAW_AGENT_ID=$AgentId",
+    "MAIN_COMPUTER_OPENCLAW_BACKEND_MODEL=ollama/$Model",
+    "MAIN_COMPUTER_OPENCLAW_CONTEXT_WINDOW=$ContextWindow",
+    "MAIN_COMPUTER_OPENCLAW_MAX_TOKENS=$MaxTokens",
+    "MAIN_COMPUTER_OPENCLAW_OLLAMA_NUM_PREDICT=$OllamaNumPredict"
 )
 Set-Content -Path $runtimeEnvPath -Value $envLines -Encoding UTF8
 
@@ -240,6 +359,7 @@ $env:OPENCLAW_GATEWAY_TOKEN = $GatewayToken
 $env:OPENCLAW_CONFIG_DIR = $configDir
 $env:OPENCLAW_WORKSPACE_DIR = $workspaceDir
 $env:OPENCLAW_AUTH_PROFILE_SECRET_DIR = $authSecretDir
+$env:OPENCLAW_WORKSPACE = $workspaceDir
 
 Write-Info "wrote OpenClaw config: $configPath"
 Write-Info "wrote smoke env: $runtimeEnvPath"
@@ -258,29 +378,35 @@ try {
     throw
 }
 
-$modelJson = $Model | ConvertTo-Json -Compress
 $probeJs = @"
-const model = $modelJson;
-fetch("$containerOllamaUrl/api/tags")
+const model = process.env.MAIN_COMPUTER_PROBE_MODEL;
+const tagsUrl = process.env.MAIN_COMPUTER_PROBE_OLLAMA_TAGS_URL;
+fetch(tagsUrl)
   .then(async (response) => {
     const payload = await response.json();
     const names = (payload.models || []).map((entry) => entry.name).filter(Boolean);
-    console.log(names.join("\\n"));
+    for (const name of names) {
+      console.log(name);
+    }
     if (!names.includes(model)) {
-      console.error("container can reach Ollama, but model is missing: " + model);
+      console.error(model);
       process.exit(2);
     }
   })
   .catch((error) => {
-    console.error(error && error.message ? error.message : String(error));
+    console.error(error && error.message ? error.message : error);
     process.exit(1);
   });
 "@
 
 Write-Info "probing host Ollama from inside the OpenClaw container"
-& docker @composeArgs exec -T openclaw-gateway node -e $probeJs
+$probeTagsUrl = "$containerOllamaUrl/api/tags"
+& docker @composeArgs exec -T `
+    -e "MAIN_COMPUTER_PROBE_MODEL=$Model" `
+    -e "MAIN_COMPUTER_PROBE_OLLAMA_TAGS_URL=$probeTagsUrl" `
+    openclaw-gateway node -e $probeJs
 if ($LASTEXITCODE -ne 0) {
-    throw "OpenClaw container could not confirm model '$Model' through $containerOllamaUrl/api/tags."
+    throw "OpenClaw container could not confirm model '$Model' through $probeTagsUrl."
 }
 
 Write-Info "probing OpenClaw /v1/models"
@@ -296,25 +422,67 @@ try {
 
 $env:MAIN_COMPUTER_OPENCLAW_BASE_URL = $baseUrl
 $env:MAIN_COMPUTER_OPENCLAW_TOKEN = $GatewayToken
+$env:MAIN_COMPUTER_OPENCLAW_AGENT_ID = $AgentId
 $env:MAIN_COMPUTER_OPENCLAW_BACKEND_MODEL = "ollama/$Model"
 
 $smokePath = Join-Path $repoRoot "scripts\smoke_openclaw_persistence.py"
 if ((-not $NoSmoke) -and (Test-Path $smokePath)) {
-    Write-Info "running persistence smoke through Docker OpenClaw"
-    & python $smokePath --backend-model "ollama/$Model" --json
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
+    try {
+        $directMarker = Invoke-DirectMemorySmoke $smokePath $workspaceDir
+        Invoke-ContainerMemoryProbe $directMarker "before restart"
+
+        if (-not $SkipRestartProof) {
+            Write-Info "restarting OpenClaw container to prove memory survives container restart"
+            & docker @composeArgs restart openclaw-gateway
+            if ($LASTEXITCODE -ne 0) {
+                Show-DockerDiagnostics
+                exit $LASTEXITCODE
+            }
+            Wait-HttpOk "$baseUrl/healthz" 120
+            Invoke-ContainerMemoryProbe $directMarker "after restart"
+        }
+
+        if ($AgentSmoke -or $FullSmoke) {
+            Write-Info "running optional /v1/responses agent smoke through Docker OpenClaw"
+            $smokeArgs = @(
+                $smokePath,
+                "--agent-id", $AgentId,
+                "--backend-model", "ollama/$Model",
+                "--memory-root", $workspaceDir,
+                "--timeout", ([string]$SmokeTimeoutSeconds),
+                "--max-output-tokens", ([string]$OllamaNumPredict),
+                "--json"
+            )
+            if (-not $FullSmoke) {
+                $smokeArgs += "--skip-recall-turns"
+            }
+            & python @smokeArgs
+            if ($LASTEXITCODE -ne 0) {
+                Show-DockerDiagnostics
+                exit $LASTEXITCODE
+            }
+        } else {
+            Write-Info "skipping /v1/responses agent smoke by default; pass -AgentSmoke or -FullSmoke to run it."
+        }
+    } catch {
+        Show-DockerDiagnostics
+        throw
     }
 } elseif (-not (Test-Path $smokePath)) {
     Write-Info "persistence smoke script not found; skipping optional smoke: $smokePath"
 }
 
 Write-Host ""
-Write-Host "Docker OpenClaw is ready for Main Computer persistence smoke."
+Write-Host "Docker OpenClaw is ready for Main Computer persistence work."
 Write-Host "Gateway URL: $baseUrl"
+Write-Host "Agent id: $AgentId"
 Write-Host "Backend model: ollama/$Model"
+Write-Host "Workspace: $workspaceDir"
 Write-Host ""
 Write-Host "For this PowerShell session:"
 Write-Host "`$env:MAIN_COMPUTER_OPENCLAW_BASE_URL = `"$baseUrl`""
 Write-Host "`$env:MAIN_COMPUTER_OPENCLAW_TOKEN = `"$GatewayToken`""
-Write-Host "python scripts\smoke_openclaw_persistence.py --backend-model ollama/$Model --json"
+Write-Host "python scripts\smoke_openclaw_persistence.py --direct-memory --memory-root `"$workspaceDir`" --json"
+Write-Host ""
+Write-Host "Optional agent smoke, after direct memory is proven:"
+Write-Host ".\scripts\start_openclaw_docker_for_ollama.ps1 -Model $Model -Port $Port -AgentSmoke"

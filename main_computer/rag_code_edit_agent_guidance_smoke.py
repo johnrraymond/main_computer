@@ -34,6 +34,7 @@ path that future live agent adapters should use.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -56,6 +57,9 @@ DEFAULT_TASK = "Make greet(name) trim surrounding whitespace before greeting."
 DEFAULT_GUIDANCE_WINDOW_SECONDS = 3.0
 DEFAULT_POLL_SECONDS = 0.05
 DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_COMMIT_POLICY = "auto-after-verification"
+DEFAULT_APPROVAL_TIMEOUT_SECONDS = 10.0
+COMMIT_POLICIES = ("auto-after-verification", "require-approval", "never")
 DEFAULT_DOCKER_IMAGE = "main-computer-executor:latest"
 CONTAINER_RUN_DIR = "/smoke_run"
 CONTAINER_SOURCE_DIR = "/smoke_src"
@@ -104,6 +108,64 @@ DEFAULT_LIVE_PLAN_PAYLOAD: dict[str, Any] = {
     "edit_strategy": "live_plan_trim_greeting_with_deterministic_apply",
     "requires_verification_before_commit": True,
     "rationale": "Plan-only adapter chooses app.py; deterministic safe applier performs the actual mutation.",
+}
+
+
+GENERATED_EDITOR_BLOCKED_IMPORT_ROOTS = {
+    "builtins",
+    "glob",
+    "http",
+    "importlib",
+    "io",
+    "os",
+    "pathlib",
+    "requests",
+    "shutil",
+    "socket",
+    "subprocess",
+    "sys",
+    "tempfile",
+    "urllib",
+}
+GENERATED_EDITOR_BLOCKED_CALL_NAMES = {
+    "__import__",
+    "compile",
+    "eval",
+    "exec",
+    "getattr",
+    "globals",
+    "input",
+    "locals",
+    "open",
+    "setattr",
+    "vars",
+}
+GENERATED_EDITOR_BLOCKED_ATTR_NAMES = {
+    "chmod",
+    "chown",
+    "copy",
+    "copy2",
+    "copyfile",
+    "glob",
+    "iterdir",
+    "link",
+    "mkdir",
+    "move",
+    "open",
+    "popen",
+    "read_bytes",
+    "remove",
+    "rename",
+    "resolve",
+    "rglob",
+    "rmdir",
+    "rmtree",
+    "run",
+    "symlink",
+    "system",
+    "unlink",
+    "walk",
+    "write_bytes",
 }
 
 
@@ -283,6 +345,8 @@ def build_docker_agent_command(
     task: str,
     guidance_window_seconds: float,
     poll_seconds: float,
+    commit_policy: str = DEFAULT_COMMIT_POLICY,
+    approval_timeout_seconds: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     replay_report_path: str = "",
     live_plan_path: str = "",
 ) -> list[str]:
@@ -337,6 +401,10 @@ def build_docker_agent_command(
         str(guidance_window_seconds),
         "--poll-seconds",
         str(poll_seconds),
+        "--commit-policy",
+        commit_policy,
+        "--approval-timeout-seconds",
+        str(approval_timeout_seconds),
     ]
     if replay_report_path:
         command.extend(["--replay-report", replay_report_path])
@@ -692,6 +760,411 @@ class LivePlanCodeEditAgent:
 
 
 
+class GeneratedEditorCodeEditAgent:
+    """Deterministic generated-editor adapter with no direct worktree mutation.
+
+    This adapter proves the Stage 4 boundary shape without involving a live model:
+    it emits a deterministic plan and deterministic editor source, but the editor
+    can only return proposed replacements from a capability-style sandbox.  The
+    host validates and applies those proposals to the Git worktree.
+    """
+
+    agent_mode = "generated-editor"
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "agent_mode": self.agent_mode,
+            "editor_source": "deterministic_fixture",
+            "planning_only": False,
+            "apply_mode": "sandbox_proposal_host_apply",
+            "direct_worktree_mutation_allowed": False,
+        }
+
+    def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "agent_mode": self.agent_mode,
+            "task": task,
+            "selected_files": ["app.py"],
+            "allowed_write_paths": ["app.py"],
+            "forbidden_paths": guidance_state.get("forbidden_paths", []),
+            "edit_strategy": "generated_editor_trim_greeting_with_sandbox_proposal",
+            "requires_generated_editor": True,
+            "requires_verification_before_commit": True,
+            "apply_mode": "sandbox_proposal_host_apply",
+        }
+
+    def generate_editor(self, plan: dict[str, Any]) -> str:
+        allowed = [safe_relative_path(path) for path in plan.get("allowed_write_paths", [])]
+        if allowed != ["app.py"]:
+            raise SmokeFailure(f"generated-editor fixture only supports app.py at this stage; got {allowed!r}")
+        return deterministic_generated_editor_source()
+
+    def apply_edit(self, worktree: Path, plan: dict[str, Any]) -> dict[str, Any]:
+        raise SmokeFailure("generated-editor adapter must not directly mutate the worktree; use sandbox proposal flow")
+
+
+def deterministic_generated_editor_source() -> str:
+    return (
+        "TARGET = 'app.py'\n"
+        f"OLD = {APP_PY_INITIAL!r}\n"
+        f"NEW = {APP_PY_DETERMINISTIC_FINAL!r}\n"
+        "\n"
+        "def edit(files):\n"
+        "    text = files.get(TARGET)\n"
+        "    if text is None:\n"
+        "        return {'status': 'needs_more_evidence', 'proposed_writes': {}, 'reason': 'target_missing'}\n"
+        "    if OLD not in text:\n"
+        "        return {'status': 'needs_more_evidence', 'proposed_writes': {}, 'reason': 'old_text_not_found'}\n"
+        "    updated = text.replace(OLD, NEW, 1)\n"
+        "    return {'status': 'done', 'proposed_writes': {TARGET: updated}}\n"
+    )
+
+
+def generated_editor_static_preflight(editor_source: str) -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    try:
+        tree = ast.parse(editor_source)
+    except SyntaxError as exc:
+        issues.append({"kind": "syntax_error", "detail": str(exc), "lineno": exc.lineno})
+        tree = ast.Module(body=[], type_ignores=[])
+
+    has_edit_function = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "edit":
+            has_edit_function = True
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name.split(".", 1)[0] for alias in node.names]
+            elif node.module:
+                names = [node.module.split(".", 1)[0]]
+            issues.append(
+                {
+                    "kind": "import_not_allowed",
+                    "detail": ",".join(sorted(names)) or "import",
+                    "lineno": getattr(node, "lineno", None),
+                }
+            )
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in GENERATED_EDITOR_BLOCKED_CALL_NAMES:
+                issues.append(
+                    {
+                        "kind": "blocked_call",
+                        "detail": func.id,
+                        "lineno": getattr(node, "lineno", None),
+                    }
+                )
+            if isinstance(func, ast.Attribute):
+                attr = func.attr
+                value = func.value
+                if attr in GENERATED_EDITOR_BLOCKED_ATTR_NAMES:
+                    issues.append(
+                        {
+                            "kind": "blocked_attribute_call",
+                            "detail": attr,
+                            "lineno": getattr(node, "lineno", None),
+                        }
+                    )
+                if isinstance(value, ast.Name) and value.id in GENERATED_EDITOR_BLOCKED_IMPORT_ROOTS:
+                    issues.append(
+                        {
+                            "kind": "blocked_module_call",
+                            "detail": f"{value.id}.{attr}",
+                            "lineno": getattr(node, "lineno", None),
+                        }
+                    )
+
+    if not has_edit_function:
+        issues.append({"kind": "missing_edit_function", "detail": "editor must define edit(files)", "lineno": None})
+
+    no_imports = not any(issue["kind"] == "import_not_allowed" for issue in issues)
+    no_open_eval_exec_subprocess = not any(
+        issue["kind"] in {"blocked_call", "blocked_attribute_call", "blocked_module_call"}
+        for issue in issues
+    )
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "source_sha256": text_sha256(editor_source),
+        "generated_editor_present": bool(editor_source.strip()),
+        "generated_editor_no_imports": no_imports,
+        "generated_editor_no_open_eval_exec_subprocess": no_open_eval_exec_subprocess,
+        "has_edit_function": has_edit_function,
+    }
+
+
+def _limited_generated_editor_builtins() -> dict[str, Any]:
+    return {
+        "bool": bool,
+        "dict": dict,
+        "Exception": Exception,
+        "isinstance": isinstance,
+        "len": len,
+        "list": list,
+        "set": set,
+        "sorted": sorted,
+        "str": str,
+        "tuple": tuple,
+    }
+
+
+def execute_generated_editor_sandbox(editor_source: str, worktree: Path, allowed_paths: Sequence[str]) -> dict[str, Any]:
+    safe_allowed_paths = [safe_relative_path(path) for path in allowed_paths]
+    capability_files = {
+        path: (worktree / path).read_text(encoding="utf-8")
+        for path in safe_allowed_paths
+    }
+    watched_paths = sorted(set(safe_allowed_paths + ["README.md"]))
+    watched_before = {
+        path: file_sha256(worktree / path)
+        for path in watched_paths
+        if (worktree / path).exists()
+    }
+
+    env: dict[str, Any] = {"__builtins__": _limited_generated_editor_builtins()}
+    exec(compile(editor_source, "<generated_editor>", "exec"), env, env)
+    edit_func = env.get("edit")
+    if not callable(edit_func):
+        raise SmokeFailure("generated editor did not define callable edit(files)")
+
+    raw_result = edit_func(dict(capability_files))
+    if not isinstance(raw_result, dict):
+        raise SmokeFailure("generated editor must return an object")
+    status = str(raw_result.get("status", "")).strip()
+    proposed_writes_raw = raw_result.get("proposed_writes", {})
+    if not isinstance(proposed_writes_raw, dict):
+        raise SmokeFailure("generated editor proposed_writes must be an object")
+
+    proposed_writes: dict[str, str] = {}
+    for raw_path, raw_text in proposed_writes_raw.items():
+        safe_path = safe_relative_path(str(raw_path))
+        if not isinstance(raw_text, str):
+            raise SmokeFailure(f"generated editor proposed write for {safe_path!r} is not text")
+        proposed_writes[safe_path] = raw_text
+
+    watched_after = {
+        path: file_sha256(worktree / path)
+        for path in watched_paths
+        if (worktree / path).exists()
+    }
+    changed_paths = sorted(
+        path
+        for path, proposed_text in proposed_writes.items()
+        if capability_files.get(path) != proposed_text
+    )
+    return {
+        "ok": status == "done",
+        "status": status,
+        "reason": str(raw_result.get("reason", "")),
+        "allowed_paths": safe_allowed_paths,
+        "changed_paths": changed_paths,
+        "proposed_writes": proposed_writes,
+        "proposed_write_sha256": {path: text_sha256(text) for path, text in proposed_writes.items()},
+        "worktree_hashes_before": watched_before,
+        "worktree_hashes_after": watched_after,
+        "worktree_unchanged_during_sandbox": watched_before == watched_after,
+    }
+
+
+def validate_and_apply_sandbox_proposal(worktree: Path, plan: dict[str, Any], sandbox_result: dict[str, Any]) -> dict[str, Any]:
+    allowed_paths = [safe_relative_path(path) for path in plan.get("allowed_write_paths", [])]
+    selected_files = [safe_relative_path(path) for path in plan.get("selected_files", [])]
+    forbidden_paths = [safe_relative_path(path) for path in plan.get("forbidden_paths", [])]
+    proposed_writes = sandbox_result.get("proposed_writes", {})
+    if not isinstance(proposed_writes, dict):
+        raise SmokeFailure("sandbox result proposed_writes must be an object")
+
+    proposed_paths = sorted(safe_relative_path(path) for path in proposed_writes.keys())
+    changed_paths = sorted(safe_relative_path(path) for path in sandbox_result.get("changed_paths", []))
+    validations = {
+        "sandbox_status_done": sandbox_result.get("status") == "done",
+        "sandbox_did_not_mutate_worktree": sandbox_result.get("worktree_unchanged_during_sandbox") is True,
+        "proposed_paths_safe": proposed_paths == sorted(set(proposed_paths)),
+        "proposed_paths_within_allowed": set(proposed_paths).issubset(set(allowed_paths)),
+        "changed_paths_match_selected_files": changed_paths == sorted(selected_files),
+        "forbidden_paths_not_proposed": not (set(proposed_paths) & set(forbidden_paths)),
+        "requires_verification_before_commit": plan.get("requires_verification_before_commit") is True,
+    }
+    if not all(validations.values()):
+        raise SmokeFailure(f"sandbox proposal failed host validation: {validations!r}")
+
+    before_sha256 = {
+        path: file_sha256(worktree / path)
+        for path in proposed_paths
+    }
+    for path in proposed_paths:
+        (worktree / path).write_text(str(proposed_writes[path]), encoding="utf-8")
+    after_sha256 = {
+        path: file_sha256(worktree / path)
+        for path in proposed_paths
+    }
+    applied_changed_files = git_worktree_modified_files(worktree)
+    validations["applied_changed_files_match_selected_files"] = applied_changed_files == sorted(selected_files)
+    if not validations["applied_changed_files_match_selected_files"]:
+        raise SmokeFailure(f"host apply changed unexpected files: {applied_changed_files!r}")
+
+    return {
+        "ok": all(validations.values()),
+        "validations": validations,
+        "changed_files": applied_changed_files,
+        "before_sha256_by_path": before_sha256,
+        "after_sha256_by_path": after_sha256,
+    }
+
+
+def run_generated_editor_sandbox_apply(
+    *,
+    run_dir: Path,
+    worktree: Path,
+    plan: dict[str, Any],
+    editor_source: str,
+    edit_plan_boundary: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    editor_dir = run_dir / "generated_editor"
+    editor_dir.mkdir(parents=True, exist_ok=True)
+    editor_source_path = editor_dir / "editor.py"
+    editor_source_path.write_text(editor_source, encoding="utf-8")
+    generated_editor_boundary = write_boundary(
+        run_dir,
+        "generated_editor_boundary",
+        {
+            "boundary_type": "generated_editor_source",
+            "editor_source_path": str(editor_source_path),
+            "editor_source_sha256": text_sha256(editor_source),
+            "generated_editor_present": bool(editor_source.strip()),
+            "direct_worktree_mutation_allowed": False,
+            "parent_boundaries": [edit_plan_boundary["sha256"]],
+            "next_stage": "generated_editor_static_preflight",
+        },
+    )
+
+    preflight = generated_editor_static_preflight(editor_source)
+    static_preflight_boundary = write_boundary(
+        run_dir,
+        "generated_editor_static_preflight_boundary",
+        {
+            "boundary_type": "generated_editor_static_preflight",
+            "preflight": preflight,
+            "contracts": {
+                "generated_editor_present": preflight["generated_editor_present"],
+                "generated_editor_static_preflight_passed": preflight["ok"],
+                "generated_editor_no_imports": preflight["generated_editor_no_imports"],
+                "generated_editor_no_open_eval_exec_subprocess": preflight[
+                    "generated_editor_no_open_eval_exec_subprocess"
+                ],
+            },
+            "parent_boundaries": [generated_editor_boundary["sha256"]],
+            "next_stage": "generated_editor_sandbox",
+        },
+    )
+    if not preflight["ok"]:
+        raise SmokeFailure(f"generated editor static preflight failed: {preflight['issues']!r}")
+
+    sandbox_result = execute_generated_editor_sandbox(editor_source, worktree, plan.get("allowed_write_paths", []))
+    sandbox_boundary = write_boundary(
+        run_dir,
+        "generated_editor_sandbox_boundary",
+        {
+            "boundary_type": "generated_editor_sandbox_result",
+            "sandbox": {
+                key: value
+                for key, value in sandbox_result.items()
+                if key != "proposed_writes"
+            },
+            "proposed_write_paths": sorted(sandbox_result.get("proposed_writes", {}).keys()),
+            "contracts": {
+                "generated_editor_sandbox_executed": True,
+                "generated_editor_writes_only_allowed_paths": set(sandbox_result["proposed_writes"]).issubset(
+                    set(plan.get("allowed_write_paths", []))
+                ),
+                "generated_editor_output_matches_plan": sorted(sandbox_result["changed_paths"])
+                == sorted(plan.get("selected_files", [])),
+                "generated_editor_did_not_touch_forbidden_files": not (
+                    set(sandbox_result["proposed_writes"]) & set(plan.get("forbidden_paths", []))
+                ),
+                "generated_editor_worktree_unchanged_during_sandbox": sandbox_result[
+                    "worktree_unchanged_during_sandbox"
+                ],
+            },
+            "parent_boundaries": [static_preflight_boundary["sha256"]],
+            "next_stage": "host_apply",
+        },
+    )
+    if not sandbox_result["ok"]:
+        raise SmokeFailure(f"generated editor sandbox did not produce a done proposal: {sandbox_result['status']!r}")
+
+    host_apply = validate_and_apply_sandbox_proposal(worktree, plan, sandbox_result)
+    host_apply_boundary = write_boundary(
+        run_dir,
+        "host_apply_boundary",
+        {
+            "boundary_type": "host_apply_sandbox_proposal",
+            "host_apply": host_apply,
+            "contracts": {
+                "host_validated_sandbox_proposal": host_apply["ok"],
+                "host_applied_sandbox_proposal": host_apply["changed_files"] == sorted(plan.get("selected_files", [])),
+                "deterministic_safe_apply_can_be_replaced_by_sandbox_apply": host_apply["changed_files"] == ["app.py"]
+                and host_apply["after_sha256_by_path"].get("app.py") == text_sha256(APP_PY_DETERMINISTIC_FINAL),
+            },
+            "parent_boundaries": [sandbox_boundary["sha256"]],
+            "next_stage": "verification",
+        },
+    )
+
+    changed_files = host_apply["changed_files"]
+    before_sha = host_apply["before_sha256_by_path"].get(changed_files[0], "") if changed_files else ""
+    after_sha = host_apply["after_sha256_by_path"].get(changed_files[0], "") if changed_files else ""
+    generated_contracts = {
+        "generated_editor_present": preflight["generated_editor_present"],
+        "generated_editor_static_preflight_passed": preflight["ok"],
+        "generated_editor_no_imports": preflight["generated_editor_no_imports"],
+        "generated_editor_no_open_eval_exec_subprocess": preflight["generated_editor_no_open_eval_exec_subprocess"],
+        "generated_editor_sandbox_executed": True,
+        "generated_editor_writes_only_allowed_paths": set(sandbox_result["proposed_writes"]).issubset(
+            set(plan.get("allowed_write_paths", []))
+        ),
+        "generated_editor_output_matches_plan": sorted(sandbox_result["changed_paths"])
+        == sorted(plan.get("selected_files", [])),
+        "generated_editor_did_not_touch_forbidden_files": not (
+            set(sandbox_result["proposed_writes"]) & set(plan.get("forbidden_paths", []))
+        ),
+        "generated_editor_worktree_unchanged_during_sandbox": sandbox_result["worktree_unchanged_during_sandbox"],
+        "host_validated_sandbox_proposal": host_apply["ok"],
+        "host_applied_sandbox_proposal": host_apply["changed_files"] == sorted(plan.get("selected_files", [])),
+        "deterministic_safe_apply_can_be_replaced_by_sandbox_apply": host_apply["changed_files"] == ["app.py"]
+        and host_apply["after_sha256_by_path"].get("app.py") == text_sha256(APP_PY_DETERMINISTIC_FINAL),
+    }
+    return (
+        {
+            "changed_files": changed_files,
+            "before_sha256": before_sha,
+            "after_sha256": after_sha,
+            "applied_by": "host_apply_sandbox_proposal",
+            "planned_by": "generated-editor",
+            "generated_editor": {
+                "editor_source_path": str(editor_source_path),
+                "editor_source_sha256": text_sha256(editor_source),
+                "preflight": preflight,
+                "sandbox": {
+                    key: value
+                    for key, value in sandbox_result.items()
+                    if key != "proposed_writes"
+                },
+                "host_apply": host_apply,
+                "contracts": generated_contracts,
+            },
+        },
+        [
+            generated_editor_boundary,
+            static_preflight_boundary,
+            sandbox_boundary,
+            host_apply_boundary,
+        ],
+    )
+
+
+
 def load_report(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -719,6 +1192,8 @@ def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
     if args.agent == "live-plan":
         raw_plan, plan_source = load_live_plan_payload(args)
         return LivePlanCodeEditAgent(raw_plan, plan_source)
+    if args.agent == "generated-editor":
+        return GeneratedEditorCodeEditAgent()
     raise SmokeFailure(f"unsupported agent mode for this smoke stage: {args.agent!r}")
 
 
@@ -775,17 +1250,73 @@ def report_contract_shape(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compare_report_contract_shape(expected: dict[str, Any], actual: dict[str, Any]) -> dict[str, Any]:
+def compare_report_contract_shape(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+    *,
+    allow_generated_editor_extensions: bool = False,
+) -> dict[str, Any]:
     expected_shape = report_contract_shape(expected)
     actual_shape = report_contract_shape(actual)
     mismatches: list[dict[str, Any]] = []
     for key in sorted(set(expected_shape) | set(actual_shape)):
-        if expected_shape.get(key) != actual_shape.get(key):
+        expected_value = expected_shape.get(key)
+        actual_value = actual_shape.get(key)
+        if allow_generated_editor_extensions and key == "boundary_names":
+            expected_boundaries = set(expected_value or [])
+            actual_boundaries = set(actual_value or [])
+            generated_boundaries = {
+                "generated_editor_boundary",
+                "generated_editor_static_preflight_boundary",
+                "generated_editor_sandbox_boundary",
+                "host_apply_boundary",
+            }
+            if not expected_boundaries.issubset(actual_boundaries) or not generated_boundaries.issubset(actual_boundaries):
+                mismatches.append(
+                    {
+                        "field": key,
+                        "expected": {
+                            "core_subset": sorted(expected_boundaries),
+                            "generated_editor_subset": sorted(generated_boundaries),
+                        },
+                        "actual": sorted(actual_boundaries),
+                    }
+                )
+            continue
+        if allow_generated_editor_extensions and key == "contract_keys":
+            expected_contracts = set(expected_value or [])
+            actual_contracts = set(actual_value or [])
+            generated_contracts = {
+                "generated_editor_present",
+                "generated_editor_static_preflight_passed",
+                "generated_editor_no_imports",
+                "generated_editor_no_open_eval_exec_subprocess",
+                "generated_editor_sandbox_executed",
+                "generated_editor_writes_only_allowed_paths",
+                "generated_editor_output_matches_plan",
+                "generated_editor_did_not_touch_forbidden_files",
+                "host_validated_sandbox_proposal",
+                "host_applied_sandbox_proposal",
+                "deterministic_safe_apply_can_be_replaced_by_sandbox_apply",
+            }
+            if not expected_contracts.issubset(actual_contracts) or not generated_contracts.issubset(actual_contracts):
+                mismatches.append(
+                    {
+                        "field": key,
+                        "expected": {
+                            "core_subset": sorted(expected_contracts),
+                            "generated_editor_subset": sorted(generated_contracts),
+                        },
+                        "actual": sorted(actual_contracts),
+                    }
+                )
+            continue
+        if expected_value != actual_value:
             mismatches.append(
                 {
                     "field": key,
-                    "expected": expected_shape.get(key),
-                    "actual": actual_shape.get(key),
+                    "expected": expected_value,
+                    "actual": actual_value,
                 }
             )
     required_actual = actual_shape.get("required_keys_present", {})
@@ -845,11 +1376,260 @@ def create_commit(worktree: Path, message: str, files: Sequence[str]) -> dict[st
     sha = git_stdout(worktree, ["rev-parse", "HEAD"])
     return {
         "created": True,
+        "expected": True,
         "sha": sha,
         "message": message,
         "files": safe_files,
         "command": command_payload(commit),
     }
+
+
+def commit_policy_from_args(args: argparse.Namespace) -> str:
+    policy = str(getattr(args, "commit_policy", DEFAULT_COMMIT_POLICY) or DEFAULT_COMMIT_POLICY)
+    if policy not in COMMIT_POLICIES:
+        raise SmokeFailure(f"unsupported commit policy: {policy!r}")
+    return policy
+
+
+def commit_approval_timeout_from_args(args: argparse.Namespace) -> float:
+    try:
+        timeout = float(getattr(args, "approval_timeout_seconds", DEFAULT_APPROVAL_TIMEOUT_SECONDS))
+    except (TypeError, ValueError) as exc:
+        raise SmokeFailure("--approval-timeout-seconds must be a number") from exc
+    if timeout < 0:
+        raise SmokeFailure("--approval-timeout-seconds must be non-negative")
+    return timeout
+
+
+def summarize_commit_command(record: dict[str, Any], *, index: int) -> dict[str, Any]:
+    return {
+        "index": index,
+        "type": str(record.get("type", "")),
+        "id": str(record.get("id", "")),
+        "source": str(record.get("source", "")),
+        "timestamp": str(record.get("timestamp", "")),
+    }
+
+
+def resolve_commit_policy(
+    *,
+    args: argparse.Namespace,
+    run_dir: Path,
+    commands_path: Path,
+    seen_count: int,
+    poll_seconds: float,
+    changed_files_before_commit: Sequence[str],
+    base_head: str,
+    current_head: str,
+    verification_boundary: dict[str, Any],
+    event: Any,
+) -> tuple[dict[str, Any], dict[str, Any], int]:
+    """Resolve whether verification-passed changes may be committed.
+
+    The approval gate is intentionally agent-side and command-file based so the
+    same primitive can be driven by the CLI smoke supervisor or later by the UI.
+    """
+
+    policy = commit_policy_from_args(args)
+    timeout_seconds = commit_approval_timeout_from_args(args)
+    changed_files = [safe_relative_path(path) for path in changed_files_before_commit]
+    common: dict[str, Any] = {
+        "policy": policy,
+        "changed_files_before_commit": changed_files,
+        "base_head": base_head,
+        "head_before_commit_policy": current_head,
+        "commit_not_created_before_approval": current_head == base_head,
+    }
+
+    if policy == "auto-after-verification":
+        decision = {
+            **common,
+            "ok": True,
+            "action": "commit",
+            "decision": "auto_after_verification",
+            "waited_for_approval": False,
+            "approval_received": False,
+            "rejected": False,
+            "timed_out": False,
+            "commit_expected": True,
+            "contracts": {
+                "commit_policy_auto_after_verification": True,
+                "commit_policy_satisfied": True,
+            },
+        }
+        boundary = write_boundary(
+            run_dir,
+            "commit_policy_boundary",
+            {
+                "boundary_type": "commit_policy_decision",
+                "decision": decision,
+                "parent_boundaries": [verification_boundary["sha256"]],
+                "next_stage": "commit",
+            },
+        )
+        return decision, boundary, seen_count
+
+    if policy == "never":
+        decision = {
+            **common,
+            "ok": True,
+            "action": "skip_commit",
+            "decision": "never",
+            "waited_for_approval": False,
+            "approval_received": False,
+            "rejected": False,
+            "timed_out": False,
+            "commit_expected": False,
+            "contracts": {
+                "commit_policy_never_blocks_commit": True,
+                "commit_blocked_by_policy": True,
+                "commit_policy_satisfied": True,
+            },
+        }
+        boundary = write_boundary(
+            run_dir,
+            "commit_policy_boundary",
+            {
+                "boundary_type": "commit_policy_decision",
+                "decision": decision,
+                "parent_boundaries": [verification_boundary["sha256"]],
+                "next_stage": "report_without_commit",
+            },
+        )
+        return decision, boundary, seen_count
+
+    event(
+        "commit_approval_waiting",
+        commit_policy=policy,
+        commands_path=str(commands_path),
+        changed_files=changed_files,
+        approval_timeout_seconds=timeout_seconds,
+    )
+    deadline = time.monotonic() + timeout_seconds
+    accepted_command: dict[str, Any] | None = None
+    accepted_command_index = -1
+    rejected_commands: list[dict[str, Any]] = []
+
+    while time.monotonic() <= deadline:
+        new_records, seen_count = load_new_commands(commands_path, seen_count)
+        for offset, record in enumerate(new_records):
+            record_index = seen_count - len(new_records) + offset
+            command_type = str(record.get("type", "")).strip()
+            if command_type in {"approve_commit", "reject_commit"}:
+                accepted_command = record
+                accepted_command_index = record_index
+                break
+            rejected_commands.append(
+                {
+                    "index": record_index,
+                    "record": record,
+                    "reason": "not_a_commit_approval_command",
+                }
+            )
+        if accepted_command is not None:
+            break
+        if timeout_seconds == 0:
+            break
+        time.sleep(poll_seconds)
+
+    if accepted_command is None:
+        decision = {
+            **common,
+            "ok": False,
+            "action": "skip_commit",
+            "decision": "approval_timeout",
+            "waited_for_approval": True,
+            "approval_received": False,
+            "rejected": False,
+            "timed_out": True,
+            "commit_expected": False,
+            "rejected_commands": rejected_commands,
+            "contracts": {
+                "commit_waited_for_approval": True,
+                "commit_not_created_before_approval": current_head == base_head,
+                "commit_blocked_by_policy": True,
+                "commit_policy_satisfied": False,
+            },
+        }
+        boundary = write_boundary(
+            run_dir,
+            "commit_policy_boundary",
+            {
+                "boundary_type": "commit_policy_decision",
+                "decision": decision,
+                "parent_boundaries": [verification_boundary["sha256"]],
+                "next_stage": "error",
+            },
+        )
+        return decision, boundary, seen_count
+
+    command_type = str(accepted_command.get("type", "")).strip()
+    command_summary = summarize_commit_command(accepted_command, index=accepted_command_index)
+    if command_type == "reject_commit":
+        event("commit_rejected", approval=command_summary)
+        decision = {
+            **common,
+            "ok": True,
+            "action": "skip_commit",
+            "decision": "rejected",
+            "waited_for_approval": True,
+            "approval_received": False,
+            "approval": command_summary,
+            "rejected": True,
+            "timed_out": False,
+            "commit_expected": False,
+            "rejected_commands": rejected_commands,
+            "contracts": {
+                "commit_waited_for_approval": True,
+                "commit_not_created_before_approval": current_head == base_head,
+                "reject_commit_blocks_commit": True,
+                "commit_blocked_by_policy": True,
+                "commit_policy_satisfied": True,
+            },
+        }
+        boundary = write_boundary(
+            run_dir,
+            "commit_policy_boundary",
+            {
+                "boundary_type": "commit_policy_decision",
+                "decision": decision,
+                "parent_boundaries": [verification_boundary["sha256"]],
+                "next_stage": "report_without_commit",
+            },
+        )
+        return decision, boundary, seen_count
+
+    event("commit_approval_received", approval=command_summary)
+    decision = {
+        **common,
+        "ok": True,
+        "action": "commit",
+        "decision": "approved",
+        "waited_for_approval": True,
+        "approval_received": True,
+        "approval": command_summary,
+        "rejected": False,
+        "timed_out": False,
+        "commit_expected": True,
+        "rejected_commands": rejected_commands,
+        "contracts": {
+            "commit_waited_for_approval": True,
+            "commit_not_created_before_approval": current_head == base_head,
+            "approval_received_while_running": True,
+            "commit_policy_satisfied": True,
+        },
+    }
+    boundary = write_boundary(
+        run_dir,
+        "commit_policy_boundary",
+        {
+            "boundary_type": "commit_policy_decision",
+            "decision": decision,
+            "parent_boundaries": [verification_boundary["sha256"]],
+            "next_stage": "commit",
+        },
+    )
+    return decision, boundary, seen_count
 
 
 def run_agent(args: argparse.Namespace) -> int:
@@ -976,6 +1756,7 @@ def run_agent(args: argparse.Namespace) -> int:
         )
 
         plan = agent_adapter.plan(task, guidance_state)
+        generated_editor_mode = agent_adapter.agent_mode == "generated-editor"
         edit_plan_boundary = write_boundary(
             run_dir,
             "edit_plan_boundary",
@@ -983,14 +1764,36 @@ def run_agent(args: argparse.Namespace) -> int:
                 "boundary_type": "edit_plan",
                 "plan": plan,
                 "parent_boundaries": [bootstrap_boundary["sha256"], guidance_boundary["sha256"]],
-                "next_stage": "apply_edit",
+                "next_stage": "generated_editor" if generated_editor_mode else "apply_edit",
             },
         )
         event("boundary_committed", boundary="edit_plan_boundary", sha256=edit_plan_boundary["sha256"])
 
-        event("stage_started", stage="apply_edit", files=plan["allowed_write_paths"])
-        edit_result = agent_adapter.apply_edit(worktree, plan)
-        event("edit_applied", files=edit_result["changed_files"], after_sha256=edit_result["after_sha256"])
+        generated_editor_boundaries: list[dict[str, Any]] = []
+        if generated_editor_mode:
+            if not isinstance(agent_adapter, GeneratedEditorCodeEditAgent):
+                raise SmokeFailure("generated-editor mode selected a non-generated-editor adapter")
+            editor_source = agent_adapter.generate_editor(plan)
+            event("stage_started", stage="generated_editor_static_preflight", files=plan["allowed_write_paths"])
+            edit_result, generated_editor_boundaries = run_generated_editor_sandbox_apply(
+                run_dir=run_dir,
+                worktree=worktree,
+                plan=plan,
+                editor_source=editor_source,
+                edit_plan_boundary=edit_plan_boundary,
+            )
+            for boundary in generated_editor_boundaries:
+                event("boundary_committed", boundary=boundary["name"], sha256=boundary["sha256"])
+            event(
+                "edit_applied",
+                files=edit_result["changed_files"],
+                after_sha256=edit_result["after_sha256"],
+                applied_by=edit_result.get("applied_by"),
+            )
+        else:
+            event("stage_started", stage="apply_edit", files=plan["allowed_write_paths"])
+            edit_result = agent_adapter.apply_edit(worktree, plan)
+            event("edit_applied", files=edit_result["changed_files"], after_sha256=edit_result["after_sha256"])
 
         event("stage_started", stage="verification")
         verification = verify_worktree(worktree)
@@ -1021,19 +1824,75 @@ def run_agent(args: argparse.Namespace) -> int:
         if forbidden_changed:
             raise SmokeFailure(f"forbidden files changed before commit: {forbidden_changed!r}")
 
-        event("stage_started", stage="commit")
-        commit = create_commit(
-            worktree,
-            f"smoke: apply {args.agent} guided greeting edit",
-            changed_files_before_commit,
+        head_before_commit_policy = git_stdout(worktree, ["rev-parse", "HEAD"])
+        commit_decision, commit_policy_boundary, seen_count = resolve_commit_policy(
+            args=args,
+            run_dir=run_dir,
+            commands_path=commands_path,
+            seen_count=seen_count,
+            poll_seconds=args.poll_seconds,
+            changed_files_before_commit=changed_files_before_commit,
+            base_head=base_head,
+            current_head=head_before_commit_policy,
+            verification_boundary=verification_boundary,
+            event=event,
         )
-        final_head = git_stdout(worktree, ["rev-parse", "HEAD"])
-        main_head = git_stdout(worktree, ["rev-parse", "main"])
-        branch = git_stdout(worktree, ["branch", "--show-current"])
-        changed_files = git_changed_files(worktree, base_head, final_head)
-        repo_status = status_porcelain(worktree)
-        event("commit_created", sha=commit["sha"], branch=branch, files=changed_files)
+        event(
+            "boundary_committed",
+            boundary="commit_policy_boundary",
+            sha256=commit_policy_boundary["sha256"],
+            commit_policy=commit_decision["policy"],
+            decision=commit_decision["decision"],
+        )
+        if not commit_decision["ok"]:
+            raise SmokeFailure(f"commit policy was not satisfied: {commit_decision['decision']}")
 
+        if commit_decision["action"] == "commit":
+            event("stage_started", stage="commit", commit_policy=commit_decision["policy"])
+            commit = create_commit(
+                worktree,
+                f"smoke: apply {args.agent} guided greeting edit",
+                changed_files_before_commit,
+            )
+            final_head = git_stdout(worktree, ["rev-parse", "HEAD"])
+            main_head = git_stdout(worktree, ["rev-parse", "main"])
+            branch = git_stdout(worktree, ["branch", "--show-current"])
+            changed_files = git_changed_files(worktree, base_head, final_head)
+            repo_status = status_porcelain(worktree)
+            event("commit_created", sha=commit["sha"], branch=branch, files=changed_files)
+        else:
+            event(
+                "commit_blocked_by_policy",
+                commit_policy=commit_decision["policy"],
+                decision=commit_decision["decision"],
+                files=changed_files_before_commit,
+            )
+            final_head = git_stdout(worktree, ["rev-parse", "HEAD"])
+            main_head = git_stdout(worktree, ["rev-parse", "main"])
+            branch = git_stdout(worktree, ["branch", "--show-current"])
+            changed_files = list(changed_files_before_commit)
+            repo_status = status_porcelain(worktree)
+            commit = {
+                "created": False,
+                "expected": False,
+                "sha": final_head,
+                "message": "",
+                "files": [],
+                "blocked_by_policy": True,
+                "policy": commit_decision["policy"],
+                "decision": commit_decision["decision"],
+            }
+
+        generated_editor_contracts = (
+            edit_result.get("generated_editor", {}).get("contracts", {})
+            if isinstance(edit_result.get("generated_editor"), dict)
+            and isinstance(edit_result.get("generated_editor", {}).get("contracts"), dict)
+            else {}
+        )
+        policy_contracts = (
+            commit_decision.get("contracts", {}) if isinstance(commit_decision.get("contracts"), dict) else {}
+        )
+        scoped_changed_files = changed_files if commit.get("created") else changed_files_before_commit
         contracts = {
             "agent_adapter_selected": agent_adapter.agent_mode == args.agent,
             "agent_containerized": agent_containerized,
@@ -1043,13 +1902,31 @@ def run_agent(args: argparse.Namespace) -> int:
             "guidance_integrated_before_edit": len(guidance_state["accepted"]) > 0
             and edit_plan_boundary["payload"]["timestamp"] >= guidance_boundary["payload"]["timestamp"],
             "branch_isolated": branch == target_branch and main_head == base_head,
-            "changed_files_scoped": changed_files == ["app.py"],
+            "changed_files_scoped": scoped_changed_files == ["app.py"],
             "forbidden_files_unchanged": readme_before_sha == file_sha256(worktree / "README.md"),
             "verification_passed": verification["ok"],
-            "commit_created": commit["created"] and final_head == commit["sha"] and final_head != base_head,
-            "repo_clean_after_commit": repo_status == [],
             "report_written": True,
+            **policy_contracts,
+            **generated_editor_contracts,
         }
+        if commit_decision.get("commit_expected"):
+            contracts["commit_created"] = commit["created"] and final_head == commit["sha"] and final_head != base_head
+            contracts["repo_clean_after_commit"] = repo_status == []
+            if commit_decision.get("decision") == "approved":
+                contracts["commit_created_after_approval"] = (
+                    commit["created"]
+                    and bool(commit_decision.get("approval_received"))
+                    and final_head == commit["sha"]
+                    and final_head != base_head
+                )
+        else:
+            contracts["commit_blocked_by_policy"] = (
+                not commit["created"]
+                and bool(commit.get("blocked_by_policy"))
+                and final_head == base_head
+                and changed_files_before_commit == ["app.py"]
+            )
+            contracts["worktree_left_uncommitted_by_policy"] = repo_status != []
         failed_contracts = sorted(name for name, ok in contracts.items() if not ok)
         commit_boundary = write_boundary(
             run_dir,
@@ -1060,8 +1937,10 @@ def run_agent(args: argparse.Namespace) -> int:
                 "final_head": final_head,
                 "main_head": main_head,
                 "target_branch": target_branch,
+                "commit_policy": commit_decision,
                 "commit": commit,
                 "changed_files": changed_files,
+                "changed_files_before_commit": changed_files_before_commit,
                 "contracts": contracts,
                 "failed_contracts": failed_contracts,
             },
@@ -1075,6 +1954,7 @@ def run_agent(args: argparse.Namespace) -> int:
             "agent_mode": args.agent,
             "agent_adapter": agent_adapter_metadata,
             "edit_plan": plan,
+            "edit_result": edit_result,
             "run_id": args.run_id,
             "run_dir": str(run_dir),
             "commands_path": str(commands_path),
@@ -1082,6 +1962,7 @@ def run_agent(args: argparse.Namespace) -> int:
             "origin_path": str(origin),
             "worktree": str(worktree),
             "target_branch": target_branch,
+            "commit_policy": commit_decision,
             "base_head": base_head,
             "final_head": final_head,
             "main_head": main_head,
@@ -1099,7 +1980,9 @@ def run_agent(args: argparse.Namespace) -> int:
                     bootstrap_boundary,
                     guidance_boundary,
                     edit_plan_boundary,
+                    *generated_editor_boundaries,
                     verification_boundary,
+                    commit_policy_boundary,
                     commit_boundary,
                 ]
             ],
@@ -1163,6 +2046,8 @@ def run_supervisor(args: argparse.Namespace) -> int:
         task=args.task,
         guidance_window_seconds=args.guidance_window_seconds,
         poll_seconds=args.poll_seconds,
+        commit_policy=args.commit_policy,
+        approval_timeout_seconds=args.approval_timeout_seconds,
         replay_report_path=CONTAINER_REPLAY_REPORT_PATH if args.agent == "replay" else "",
         live_plan_path=CONTAINER_LIVE_PLAN_PATH if args.agent == "live-plan" else "",
     )
@@ -1234,6 +2119,15 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "id": "guidance-001",
         "timestamp": utc_now(),
     }
+    approval_injected = False
+    commit_approval_waiting_seen_while_running = False
+    commit_approval_received_seen_while_running = False
+    approval_payload = {
+        "type": "approve_commit",
+        "source": "deterministic_smoke_supervisor",
+        "id": "approval-001",
+        "timestamp": utc_now(),
+    }
 
     for line in proc.stdout:
         stripped = line.strip()
@@ -1259,6 +2153,21 @@ def run_supervisor(args: argparse.Namespace) -> int:
             )
         if payload.get("event") == "guidance_received":
             guidance_received_seen_while_running = proc.poll() is None
+        if payload.get("event") == "commit_approval_waiting" and args.commit_policy == "require-approval":
+            commit_approval_waiting_seen_while_running = proc.poll() is None
+            if not approval_injected:
+                approval_payload = {**approval_payload, "timestamp": utc_now()}
+                append_jsonl(commands_path, approval_payload)
+                approval_injected = True
+                emit_event(
+                    "supervisor_commit_approval_injected",
+                    run_id=run_id,
+                    commands_path=str(commands_path),
+                    child_running=proc.poll() is None,
+                    approval=approval_payload,
+                )
+        if payload.get("event") == "commit_approval_received":
+            commit_approval_received_seen_while_running = proc.poll() is None
 
     returncode = proc.wait(timeout=args.timeout_seconds)
     stderr = proc.stderr.read()
@@ -1269,10 +2178,30 @@ def run_supervisor(args: argparse.Namespace) -> int:
     agent_run_started = run_started_events[-1] if run_started_events else {}
     agent_contracts = agent_report.get("contracts", {}) if isinstance(agent_report.get("contracts"), dict) else {}
     agent_adapter_report = agent_report.get("agent_adapter", {}) if isinstance(agent_report.get("agent_adapter"), dict) else {}
+    commit_report = agent_report.get("commit", {}) if isinstance(agent_report.get("commit"), dict) else {}
+    commit_expected = bool(commit_report.get("expected", True))
+    actual_commit_created = bool(commit_report.get("created"))
+    agent_boundaries = agent_report.get("boundaries", []) if isinstance(agent_report.get("boundaries"), list) else []
+    agent_boundary_names = [
+        str(boundary.get("name") or "")
+        for boundary in agent_boundaries
+        if isinstance(boundary, dict)
+    ]
+    commit_policy_boundary_written = "commit_policy_boundary" in agent_boundary_names
+    commit_boundary_written = "commit_boundary" in agent_boundary_names
+    commit_blocked_by_policy = (
+        not commit_expected
+        and not actual_commit_created
+        and bool(agent_contracts.get("commit_blocked_by_policy"))
+    )
     comparison_report_path = args.compare_report or (args.replay_report if args.agent == "replay" else "")
     report_shape_comparison: dict[str, Any] | None = None
     if comparison_report_path:
-        report_shape_comparison = compare_report_contract_shape(load_report(Path(comparison_report_path)), agent_report)
+        report_shape_comparison = compare_report_contract_shape(
+            load_report(Path(comparison_report_path)),
+            agent_report,
+            allow_generated_editor_extensions=args.agent == "generated-editor",
+        )
 
     docker_command_contracts = {
         "agent_containerized": bool(agent_run_started.get("containerized")) and bool(agent_contracts.get("agent_containerized")),
@@ -1296,17 +2225,47 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "changed_files_scoped": bool(agent_contracts.get("changed_files_scoped")),
         "forbidden_files_unchanged": bool(agent_contracts.get("forbidden_files_unchanged")),
         "verification_passed": bool(agent_contracts.get("verification_passed")),
-        "commit_created": bool(agent_contracts.get("commit_created")),
+        "commit_policy_boundary_written": commit_policy_boundary_written,
+        "commit_boundary_written": commit_boundary_written,
+        "commit_policy_satisfied": bool(agent_contracts.get("commit_policy_satisfied")),
+        "commit_approval_gate": args.commit_policy != "require-approval"
+        or (
+            commit_approval_waiting_seen_while_running
+            and approval_injected
+            and commit_approval_received_seen_while_running
+            and bool(agent_contracts.get("commit_waited_for_approval"))
+            and bool(agent_contracts.get("commit_not_created_before_approval"))
+            and bool(agent_contracts.get("approval_received_while_running"))
+            and bool(agent_contracts.get("commit_created_after_approval"))
+        ),
         "report_written": report_path.exists() and bool(agent_contracts.get("report_written")),
         "live_plan_deterministic_apply": args.agent != "live-plan"
         or (
             agent_adapter_report.get("planning_only") is True
             and agent_adapter_report.get("apply_mode") == "deterministic_safe_applier"
         ),
+        "generated_editor_sandbox_apply": args.agent != "generated-editor"
+        or (
+            agent_adapter_report.get("apply_mode") == "sandbox_proposal_host_apply"
+            and bool(agent_contracts.get("generated_editor_static_preflight_passed"))
+            and bool(agent_contracts.get("generated_editor_sandbox_executed"))
+            and bool(agent_contracts.get("generated_editor_worktree_unchanged_during_sandbox"))
+            and bool(agent_contracts.get("host_validated_sandbox_proposal"))
+            and bool(agent_contracts.get("host_applied_sandbox_proposal"))
+        ),
         "required_event_order": event_names.index("guidance_window_open") < event_names.index("edit_applied")
         if "guidance_window_open" in event_names and "edit_applied" in event_names
         else False,
     }
+    if commit_expected:
+        contracts["commit_created"] = (
+            actual_commit_created
+            and bool(agent_contracts.get("commit_created"))
+            and agent_report.get("final_head") == commit_report.get("sha")
+            and agent_report.get("final_head") != agent_report.get("base_head")
+        )
+    else:
+        contracts["commit_not_created_by_policy"] = commit_blocked_by_policy
     if report_shape_comparison is not None:
         contracts["report_contract_shape_matches_reference"] = bool(report_shape_comparison.get("ok"))
     failed_contracts = sorted(name for name, ok in contracts.items() if not ok)
@@ -1328,6 +2287,12 @@ def run_supervisor(args: argparse.Namespace) -> int:
         "child_stderr": stderr,
         "child_event_names": event_names,
         "guidance_payload": guidance_payload,
+        "approval_payload": approval_payload if args.commit_policy == "require-approval" else None,
+        "commit_created": actual_commit_created,
+        "commit_expected": commit_expected,
+        "commit_blocked_by_policy": commit_blocked_by_policy,
+        "commit_policy_boundary_written": commit_policy_boundary_written,
+        "commit_boundary_written": commit_boundary_written,
         "contracts": contracts,
         "failed_contracts": failed_contracts,
         "report_shape_comparison": report_shape_comparison,
@@ -1352,6 +2317,10 @@ def run_supervisor(args: argparse.Namespace) -> int:
         agent_report_path=str(report_path),
         final_head=agent_report.get("final_head"),
         commit_sha=agent_report.get("commit", {}).get("sha"),
+        commit_created=actual_commit_created,
+        commit_expected=commit_expected,
+        commit_blocked_by_policy=commit_blocked_by_policy,
+        commit_boundary_written=commit_boundary_written,
         contracts=contracts,
     )
     return 0
@@ -1697,13 +2666,218 @@ def run_live_plan_cycle(args: argparse.Namespace) -> int:
     )
     return 0
 
+def run_generated_editor_cycle(args: argparse.Namespace) -> int:
+    """Run deterministic first, then deterministic generated-editor sandbox apply."""
+
+    cycle_id = args.run_id or run_id_from_now()
+    parent_work_root = Path(args.work_root).resolve() if args.work_root else default_work_root()
+    cycle_dir = parent_work_root / cycle_id
+    cycle_dir.mkdir(parents=True, exist_ok=True)
+    cycle_report_path = cycle_dir / "generated_editor_cycle_report.json"
+    deterministic_run_id = f"{cycle_id}-deterministic"
+    generated_editor_run_id = f"{cycle_id}-generated-editor"
+
+    emit_event(
+        "generated_editor_cycle_started",
+        run_id=cycle_id,
+        role="supervisor",
+        agent_boundary="docker",
+        deterministic_run_id=deterministic_run_id,
+        generated_editor_run_id=generated_editor_run_id,
+        cycle_dir=str(cycle_dir),
+    )
+
+    deterministic_args = namespace_with(
+        args,
+        exercise_replay=False,
+        exercise_live_plan=False,
+        exercise_generated_editor=False,
+        agent="deterministic",
+        run_id=deterministic_run_id,
+        work_root=str(cycle_dir),
+        replay_report="",
+        compare_report="",
+        live_plan_path="",
+        live_plan_json="",
+    )
+    emit_event("generated_editor_cycle_stage_started", run_id=cycle_id, stage="deterministic_baseline")
+    deterministic_rc = run_supervisor(deterministic_args)
+    deterministic_run_dir = cycle_dir / deterministic_run_id
+    deterministic_agent_report_path = deterministic_run_dir / "report.json"
+    deterministic_supervisor_report_path = deterministic_run_dir / "supervisor_report.json"
+
+    if deterministic_rc != 0 or not deterministic_agent_report_path.exists():
+        cycle_report = {
+            "ok": False,
+            "mode": MODE,
+            "scenario": SCENARIO,
+            "cycle_id": cycle_id,
+            "failed_stage": "deterministic_baseline",
+            "deterministic_returncode": deterministic_rc,
+            "deterministic_agent_report_path": str(deterministic_agent_report_path),
+            "deterministic_supervisor_report_path": str(deterministic_supervisor_report_path),
+            "generated_editor_returncode": None,
+            "contracts": {
+                "deterministic_self_check_passed": False,
+                "generated_editor_self_check_passed": False,
+                "report_contract_shape_matches_reference": False,
+            },
+        }
+        atomic_write_json(cycle_report_path, cycle_report)
+        emit_event(
+            "generated_editor_cycle_failed",
+            run_id=cycle_id,
+            failed_stage="deterministic_baseline",
+            report_path=str(cycle_report_path),
+            deterministic_returncode=deterministic_rc,
+        )
+        return 1
+
+    generated_editor_args = namespace_with(
+        args,
+        exercise_replay=False,
+        exercise_live_plan=False,
+        exercise_generated_editor=False,
+        agent="generated-editor",
+        run_id=generated_editor_run_id,
+        work_root=str(cycle_dir),
+        replay_report="",
+        compare_report=str(deterministic_agent_report_path),
+        live_plan_path="",
+        live_plan_json="",
+    )
+    emit_event("generated_editor_cycle_stage_started", run_id=cycle_id, stage="generated_editor")
+    generated_editor_rc = run_supervisor(generated_editor_args)
+    generated_editor_run_dir = cycle_dir / generated_editor_run_id
+    generated_editor_agent_report_path = generated_editor_run_dir / "report.json"
+    generated_editor_supervisor_report_path = generated_editor_run_dir / "supervisor_report.json"
+
+    deterministic_agent_report = load_report(deterministic_agent_report_path)
+    generated_editor_agent_report = (
+        load_report(generated_editor_agent_report_path) if generated_editor_agent_report_path.exists() else {}
+    )
+    deterministic_supervisor_report = (
+        load_report(deterministic_supervisor_report_path) if deterministic_supervisor_report_path.exists() else {}
+    )
+    generated_editor_supervisor_report = (
+        load_report(generated_editor_supervisor_report_path) if generated_editor_supervisor_report_path.exists() else {}
+    )
+    shape_comparison = compare_report_contract_shape(
+        deterministic_agent_report,
+        generated_editor_agent_report,
+        allow_generated_editor_extensions=True,
+    )
+
+    deterministic_contracts = (
+        deterministic_supervisor_report.get("contracts", {})
+        if isinstance(deterministic_supervisor_report.get("contracts"), dict)
+        else {}
+    )
+    generated_editor_supervisor_contracts = (
+        generated_editor_supervisor_report.get("contracts", {})
+        if isinstance(generated_editor_supervisor_report.get("contracts"), dict)
+        else {}
+    )
+    generated_editor_agent_contracts = (
+        generated_editor_agent_report.get("contracts", {})
+        if isinstance(generated_editor_agent_report.get("contracts"), dict)
+        else {}
+    )
+    contracts = {
+        "deterministic_self_check_passed": deterministic_rc == 0 and bool(deterministic_supervisor_report.get("ok")),
+        "generated_editor_self_check_passed": generated_editor_rc == 0
+        and bool(generated_editor_supervisor_report.get("ok")),
+        "deterministic_agent_containerized": bool(deterministic_contracts.get("agent_containerized")),
+        "generated_editor_agent_containerized": bool(generated_editor_supervisor_contracts.get("agent_containerized")),
+        "generated_editor_agent_mode": generated_editor_agent_report.get("agent_mode") == "generated-editor",
+        "generated_editor_present": bool(generated_editor_agent_contracts.get("generated_editor_present")),
+        "generated_editor_static_preflight_passed": bool(
+            generated_editor_agent_contracts.get("generated_editor_static_preflight_passed")
+        ),
+        "generated_editor_no_imports": bool(generated_editor_agent_contracts.get("generated_editor_no_imports")),
+        "generated_editor_no_open_eval_exec_subprocess": bool(
+            generated_editor_agent_contracts.get("generated_editor_no_open_eval_exec_subprocess")
+        ),
+        "generated_editor_sandbox_executed": bool(
+            generated_editor_agent_contracts.get("generated_editor_sandbox_executed")
+        ),
+        "generated_editor_writes_only_allowed_paths": bool(
+            generated_editor_agent_contracts.get("generated_editor_writes_only_allowed_paths")
+        ),
+        "generated_editor_output_matches_plan": bool(
+            generated_editor_agent_contracts.get("generated_editor_output_matches_plan")
+        ),
+        "generated_editor_did_not_touch_forbidden_files": bool(
+            generated_editor_agent_contracts.get("generated_editor_did_not_touch_forbidden_files")
+        ),
+        "generated_editor_worktree_unchanged_during_sandbox": bool(
+            generated_editor_agent_contracts.get("generated_editor_worktree_unchanged_during_sandbox")
+        ),
+        "host_validated_sandbox_proposal": bool(
+            generated_editor_agent_contracts.get("host_validated_sandbox_proposal")
+        ),
+        "host_applied_sandbox_proposal": bool(generated_editor_agent_contracts.get("host_applied_sandbox_proposal")),
+        "deterministic_safe_apply_can_be_replaced_by_sandbox_apply": bool(
+            generated_editor_agent_contracts.get("deterministic_safe_apply_can_be_replaced_by_sandbox_apply")
+        ),
+        "generated_editor_compared_against_deterministic": bool(
+            generated_editor_supervisor_contracts.get("report_contract_shape_matches_reference")
+        ),
+        "report_contract_shape_matches_reference": bool(shape_comparison.get("ok")),
+        "deterministic_then_generated_editor_order": True,
+    }
+    failed_contracts = sorted(name for name, ok in contracts.items() if not ok)
+    cycle_report = {
+        "ok": not failed_contracts,
+        "mode": MODE,
+        "scenario": SCENARIO,
+        "cycle_id": cycle_id,
+        "run_dir": str(cycle_dir),
+        "deterministic": {
+            "run_id": deterministic_run_id,
+            "returncode": deterministic_rc,
+            "agent_report_path": str(deterministic_agent_report_path),
+            "supervisor_report_path": str(deterministic_supervisor_report_path),
+            "agent_report": deterministic_agent_report,
+        },
+        "generated_editor": {
+            "run_id": generated_editor_run_id,
+            "returncode": generated_editor_rc,
+            "agent_report_path": str(generated_editor_agent_report_path),
+            "supervisor_report_path": str(generated_editor_supervisor_report_path),
+            "agent_report": generated_editor_agent_report,
+        },
+        "report_shape_comparison": shape_comparison,
+        "contracts": contracts,
+        "failed_contracts": failed_contracts,
+    }
+    atomic_write_json(cycle_report_path, cycle_report)
+    if failed_contracts:
+        emit_event(
+            "generated_editor_cycle_failed",
+            run_id=cycle_id,
+            failed_contracts=failed_contracts,
+            report_path=str(cycle_report_path),
+        )
+        return 1
+    emit_event(
+        "generated_editor_cycle_passed",
+        run_id=cycle_id,
+        report_path=str(cycle_report_path),
+        deterministic_report_path=str(deterministic_agent_report_path),
+        generated_editor_report_path=str(generated_editor_agent_report_path),
+        contracts=contracts,
+    )
+    return 0
+
+
 
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic code-editing agent guidance smoke.")
     parser.add_argument("--role", choices=["supervisor", "agent"], default="supervisor")
-    parser.add_argument("--agent", choices=["deterministic", "replay", "live-plan"], default="deterministic")
+    parser.add_argument("--agent", choices=["deterministic", "replay", "live-plan", "generated-editor"], default="deterministic")
     parser.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
     parser.add_argument("--replay-report", default="", help="Prior agent report to replay through the same harness.")
     parser.add_argument("--live-plan-path", default="", help="JSON live-planning artifact for --agent live-plan.")
@@ -1721,6 +2895,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument(
+        "--commit-policy",
+        choices=COMMIT_POLICIES,
+        default=DEFAULT_COMMIT_POLICY,
+        help="Commit behavior after verification: auto, require approve_commit, or never commit.",
+    )
+    parser.add_argument(
+        "--approval-timeout-seconds",
+        type=float,
+        default=DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        help="How long an agent waits for approve_commit/reject_commit when --commit-policy require-approval.",
+    )
+    parser.add_argument(
         "--exercise-replay",
         action="store_true",
         help="Run deterministic first, then replay its report through the same Docker-contained harness.",
@@ -1729,6 +2915,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--exercise-live-plan",
         action="store_true",
         help="Run deterministic first, then live-plan with deterministic apply through the same Docker-contained harness.",
+    )
+    parser.add_argument(
+        "--exercise-generated-editor",
+        action="store_true",
+        help="Run deterministic first, then generated-editor sandbox proposal with host apply.",
     )
     return parser
 
@@ -1746,6 +2937,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_replay_cycle(args)
     if args.exercise_live_plan:
         return run_live_plan_cycle(args)
+    if args.exercise_generated_editor:
+        return run_generated_editor_cycle(args)
     return run_supervisor(args)
 
 

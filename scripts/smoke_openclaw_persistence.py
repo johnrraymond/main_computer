@@ -3,17 +3,22 @@ from __future__ import annotations
 """Live smoke test for the OpenClaw persistence surface Main Computer may use.
 
 This intentionally tests OpenClaw before Main Computer grows an OpenClaw provider.
-It proves whether the Gateway can offer a persistence surface that is meaningfully
-different from a plain Ollama-style model call:
+It proves whether OpenClaw can offer a persistence surface that is meaningfully
+different from a plain Ollama-style model call.
 
-1. send a durable "remember this" fact through POST /v1/responses
-2. prove same-session continuity through x-openclaw-session-key
-3. prove durable persistence by finding the marker in OpenClaw memory files, or
-   by recalling it from a different session when file access is unavailable
+There are two smoke modes:
+
+* direct Markdown memory smoke (`--direct-memory`) writes a marker into the
+  OpenClaw workspace memory files and scans those files. This is deterministic
+  and is the default used by the Docker helper because it proves the persistence
+  layer without depending on agent behavior.
+* agent smoke calls `POST /v1/responses`, then checks session continuity and/or
+  durable memory evidence. This is useful, but it is opt-in for Docker because
+  local agent runs can be slow or can decide to use unrelated tools.
 
 The durable file check is the strongest local signal because OpenClaw memory is
-supposed to be written to disk. Cross-session recall is useful, but it is still a
-model behavior check and can fail if the agent does not search memory.
+written to disk. Cross-session recall is useful, but it is still a model
+behavior check and can fail if the agent does not search memory.
 """
 
 import argparse
@@ -33,9 +38,10 @@ from typing import Any
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:18789"
-DEFAULT_AGENT_ID = "default"
-DEFAULT_TIMEOUT_S = 60.0
+DEFAULT_AGENT_ID = "main"
+DEFAULT_TIMEOUT_S = 300.0
 DEFAULT_POLL_S = 90.0
+DEFAULT_MAX_OUTPUT_TOKENS = 128
 USER_AGENT = "main-computer-openclaw-persistence-smoke/1"
 
 
@@ -292,13 +298,88 @@ def run_openclaw_memory_search(
     }
 
 
-def responses_payload(*, model: str, user: str, instructions: str, prompt: str) -> dict[str, Any]:
-    return {
+def write_direct_memory_fact(memory_root: Path, *, marker: str, phrase: str) -> Path:
+    """Append a smoke-test fact directly to the OpenClaw Markdown memory layer."""
+
+    memory_dir = memory_root / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+    path = memory_dir / f"{today}-main-computer-smoke.md"
+    timestamp = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+    entry = (
+        "\n"
+        "## Main Computer persistence smoke\n\n"
+        f"- Timestamp: {timestamp}\n"
+        f"- Marker: {marker}\n"
+        f"- Phrase: {phrase}\n"
+        "- Purpose: validate that Main Computer can write and later read OpenClaw's durable Markdown memory surface.\n"
+    )
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(entry)
+    return path
+
+
+def run_direct_memory_smoke(
+    *,
+    memory_root: Path,
+    memory_poll_s: float,
+    memory_poll_interval_s: float,
+) -> dict[str, Any]:
+    """Run a deterministic local persistence proof without contacting an LLM."""
+
+    memory_root = memory_root.expanduser()
+    marker = f"MC_OPENCLAW_DIRECT_MEMORY_SMOKE_{utc_stamp()}_{secrets.token_hex(5)}"
+    phrase = f"main-computer-direct-memory-phrase-{secrets.token_hex(4)}"
+    written_file = write_direct_memory_fact(memory_root, marker=marker, phrase=phrase)
+    memory_files = poll_memory_files(
+        memory_root,
+        marker,
+        poll_s=memory_poll_s,
+        interval_s=memory_poll_interval_s,
+    )
+    found = bool(memory_files.get("found")) and any(
+        marker_in_text(phrase, match.get("snippet", "")) for match in memory_files.get("matches", [])
+    )
+    result = {
+        "ok": found,
+        "smoke": "openclaw-persistence-direct-memory",
+        "marker": marker,
+        "phrase": phrase,
+        "memory_root": str(memory_root),
+        "written_file": str(written_file),
+        "proved": [
+            "marker was written to OpenClaw's Markdown memory workspace",
+            "marker was read back from the same durable memory files",
+        ]
+        if found
+        else [],
+        "checks": {
+            "memory_files": memory_files,
+            "phrase_found_in_marker_snippet": found,
+        },
+    }
+    if not found:
+        result["failures"] = ["direct Markdown memory write could not be read back"]
+    return result
+
+
+def responses_payload(
+    *,
+    model: str,
+    user: str,
+    instructions: str,
+    prompt: str,
+    max_output_tokens: int | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "model": model,
         "user": user,
         "instructions": instructions,
         "input": prompt,
     }
+    if max_output_tokens and max_output_tokens > 0:
+        payload["max_output_tokens"] = max_output_tokens
+    return payload
 
 
 def run_smoke(
@@ -317,6 +398,8 @@ def run_smoke(
     timeout: float,
     require_cross_session_recall: bool,
     message_channel: str | None,
+    max_output_tokens: int | None,
+    skip_recall_turns: bool,
 ) -> dict[str, Any]:
     base_url = clean_base_url(base_url)
     marker = f"MC_OPENCLAW_PERSISTENCE_SMOKE_{utc_stamp()}_{secrets.token_hex(5)}"
@@ -324,16 +407,15 @@ def run_smoke(
     model = f"openclaw/{agent_id}" if agent_id else "openclaw/default"
     fresh_session_key = f"{session_key}-fresh-{secrets.token_hex(4)}"
     instructions = (
-        "You are running a Main Computer/OpenClaw persistence smoke test. "
-        "When asked to remember a marker, save it to durable OpenClaw memory if memory tools are available. "
-        "Keep replies brief. Do not execute shell commands."
+        "Main Computer/OpenClaw persistence smoke. "
+        "Save the requested marker to durable OpenClaw memory if a memory tool is available. "
+        "Reply briefly with only the marker and phrase. Do not execute shell commands."
     )
 
     write_prompt = (
-        "Remember this durable smoke-test fact for Main Computer provider validation. "
+        "Save this exact smoke-test fact to durable OpenClaw memory. "
         f"Marker: {marker}. Phrase: {phrase}. "
-        "Store it in OpenClaw memory, not only in the current conversation. "
-        "Reply with the marker and phrase after attempting the memory write."
+        "Reply with only the marker and phrase."
     )
     write_response = post_json(
         base_url=base_url,
@@ -342,26 +424,41 @@ def run_smoke(
         session_key=session_key,
         backend_model=backend_model,
         message_channel=message_channel,
-        payload=responses_payload(model=model, user=session_key, instructions=instructions, prompt=write_prompt),
+        payload=responses_payload(
+            model=model,
+            user=session_key,
+            instructions=instructions,
+            prompt=write_prompt,
+            max_output_tokens=max_output_tokens,
+        ),
         timeout=timeout,
     )
     write_text = extract_text(write_response)
 
-    same_session_prompt = (
-        "Using the current session context, repeat the exact Main Computer persistence smoke marker and phrase."
-    )
-    same_session_response = post_json(
-        base_url=base_url,
-        token=token,
-        agent_id=agent_id,
-        session_key=session_key,
-        backend_model=backend_model,
-        message_channel=message_channel,
-        payload=responses_payload(model=model, user=session_key, instructions=instructions, prompt=same_session_prompt),
-        timeout=timeout,
-    )
-    same_session_text = extract_text(same_session_response)
-    same_session_found = marker_in_text(marker, same_session_text) and marker_in_text(phrase, same_session_text)
+    same_session_found = False
+    same_session_text = ""
+    if not skip_recall_turns:
+        same_session_prompt = (
+            "Using the current session context, repeat the exact Main Computer persistence smoke marker and phrase."
+        )
+        same_session_response = post_json(
+            base_url=base_url,
+            token=token,
+            agent_id=agent_id,
+            session_key=session_key,
+            backend_model=backend_model,
+            message_channel=message_channel,
+            payload=responses_payload(
+                model=model,
+                user=session_key,
+                instructions=instructions,
+                prompt=same_session_prompt,
+                max_output_tokens=max_output_tokens,
+            ),
+            timeout=timeout,
+        )
+        same_session_text = extract_text(same_session_response)
+        same_session_found = marker_in_text(marker, same_session_text) and marker_in_text(phrase, same_session_text)
 
     memory_files: dict[str, Any] = {"checked": False, "found": False}
     if check_memory_files:
@@ -381,26 +478,35 @@ def run_smoke(
             command=openclaw_command,
         )
 
-    fresh_prompt = (
-        "This is a fresh session. Use durable OpenClaw memory if needed. "
-        "What exact Main Computer persistence smoke marker and phrase were saved earlier? "
-        "Return only the marker and phrase if you can find them."
-    )
-    fresh_response = post_json(
-        base_url=base_url,
-        token=token,
-        agent_id=agent_id,
-        session_key=fresh_session_key,
-        backend_model=backend_model,
-        message_channel=message_channel,
-        payload=responses_payload(model=model, user=fresh_session_key, instructions=instructions, prompt=fresh_prompt),
-        timeout=timeout,
-    )
-    fresh_text = extract_text(fresh_response)
-    fresh_session_found = marker_in_text(marker, fresh_text) and marker_in_text(phrase, fresh_text)
+    fresh_session_found = False
+    fresh_text = ""
+    if not skip_recall_turns:
+        fresh_prompt = (
+            "This is a fresh session. Use durable OpenClaw memory if needed. "
+            "What exact Main Computer persistence smoke marker and phrase were saved earlier? "
+            "Return only the marker and phrase if you can find them."
+        )
+        fresh_response = post_json(
+            base_url=base_url,
+            token=token,
+            agent_id=agent_id,
+            session_key=fresh_session_key,
+            backend_model=backend_model,
+            message_channel=message_channel,
+            payload=responses_payload(
+                model=model,
+                user=fresh_session_key,
+                instructions=instructions,
+                prompt=fresh_prompt,
+                max_output_tokens=max_output_tokens,
+            ),
+            timeout=timeout,
+        )
+        fresh_text = extract_text(fresh_response)
+        fresh_session_found = marker_in_text(marker, fresh_text) and marker_in_text(phrase, fresh_text)
 
     durable_found = bool(memory_files.get("found")) or bool(memory_cli.get("found")) or fresh_session_found
-    ok = bool(same_session_found and durable_found)
+    ok = bool(durable_found) if skip_recall_turns else bool(same_session_found and durable_found)
     if require_cross_session_recall:
         ok = bool(ok and fresh_session_found)
 
@@ -427,8 +533,10 @@ def run_smoke(
         "proved": proved,
         "checks": {
             "write_response_had_marker": marker_in_text(marker, write_text),
+            "same_session_checked": not skip_recall_turns,
             "same_session_found": same_session_found,
             "durable_found": durable_found,
+            "fresh_session_checked": not skip_recall_turns,
             "fresh_session_found": fresh_session_found,
             "memory_files": memory_files,
             "memory_cli": memory_cli,
@@ -441,7 +549,7 @@ def run_smoke(
     }
     if not ok:
         failures: list[str] = []
-        if not same_session_found:
+        if (not skip_recall_turns) and (not same_session_found):
             failures.append("same-session recall did not contain the marker and phrase")
         if not durable_found:
             failures.append("no durable persistence evidence was found")
@@ -473,6 +581,13 @@ def run_self_test() -> dict[str, Any]:
         scan = scan_memory_files(root, "MC_OPENCLAW_PERSISTENCE_SMOKE_SELFTEST")
         if not scan["found"]:
             raise SmokeError("self-test failed to find marker in memory file")
+        direct = run_direct_memory_smoke(
+            memory_root=root,
+            memory_poll_s=0.0,
+            memory_poll_interval_s=0.5,
+        )
+        if not direct["ok"]:
+            raise SmokeError("self-test failed direct memory smoke")
     finally:
         try:
             for path in sorted(root.rglob("*"), reverse=True):
@@ -490,6 +605,7 @@ def run_self_test() -> dict[str, Any]:
         "proved": [
             "OpenResponses text extraction handles message/content arrays",
             "Markdown memory file scanning finds smoke markers",
+            "direct Markdown memory smoke writes and reads a durable marker",
         ],
     }
 
@@ -593,6 +709,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_TIMEOUT_S,
         help=f"HTTP/CLI timeout seconds. Default: {DEFAULT_TIMEOUT_S}.",
     )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=int(os.environ.get("MAIN_COMPUTER_OPENCLAW_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS)),
+        help=f"Maximum output tokens requested from /v1/responses. Default: {DEFAULT_MAX_OUTPUT_TOKENS}.",
+    )
+    parser.add_argument(
+        "--skip-recall-turns",
+        action="store_true",
+        help="Run only the write turn and durable memory-file/CLI checks. This keeps Docker/local-model startup smoke fast.",
+    )
+    parser.add_argument(
+        "--direct-memory",
+        action="store_true",
+        help="Run only the deterministic Markdown-memory persistence smoke; do not contact OpenClaw Gateway or an LLM.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--self-test", action="store_true", help="Run local parser/scanner self-test without contacting OpenClaw.")
     return parser.parse_args(argv)
@@ -603,6 +735,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.self_test:
             result = run_self_test()
+        elif args.direct_memory:
+            result = run_direct_memory_smoke(
+                memory_root=args.memory_root.expanduser(),
+                memory_poll_s=max(0.0, args.memory_poll_s),
+                memory_poll_interval_s=max(0.5, args.memory_poll_interval_s),
+            )
         else:
             result = run_smoke(
                 base_url=args.base_url,
@@ -619,6 +757,8 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=max(1.0, args.timeout),
                 require_cross_session_recall=args.require_cross_session_recall,
                 message_channel=args.message_channel,
+                max_output_tokens=max(1, args.max_output_tokens),
+                skip_recall_turns=args.skip_recall_turns,
             )
     except SmokeError as exc:
         result = {"ok": False, "smoke": "openclaw-persistence-surface", "error": str(exc)}

@@ -307,20 +307,44 @@ def test_mutate_apply_rpc_add_dry_run_does_not_wait_or_probe(tmp_path: Path, mon
 
 
 
-def test_qbft_config_exporter_scans_host_volume_legacy_volume_and_bind_root(tmp_path: Path) -> None:
+def test_qbft_config_exporter_scans_prefixed_host_volume_legacy_volume_and_bind_root(tmp_path: Path) -> None:
     module = _load_module()
     plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
 
-    compose = module.render_qbft_config_exporter_compose(plan, "a", token="tok", port=38173)
+    compose = module.render_qbft_config_exporter_compose(
+        plan,
+        "a",
+        token="tok",
+        port=38173,
+        volume_prefixes=["pr243zs9jmd4des9tlonk7dq"],
+    )
 
+    assert "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime:/sources/coolify-prefixed-managed-host-volume-1:ro" in compose
     assert "main-computer-qbft-testnet-a-runtime:/sources/managed-host-volume:ro" in compose
     assert "main-computer-qbft-testnet-runtime:/sources/legacy-network-volume:ro" in compose
     assert 'source: "/srv/main-computer/qbft-testnet/runtime"' in compose
     assert "target: /sources/host-runtime-root" in compose
     assert "external: true" not in compose
-    assert "alpine:3.20" in compose
-    assert "python:3.12-alpine" not in compose
+    assert "python:3.12-alpine" in compose
+    assert "python3 -m http.server 8080 --bind 0.0.0.0" in compose
+    assert "busybox httpd" not in compose
     assert "files_b64" in compose
+
+
+def test_qbft_config_export_mount_sources_prefers_coolify_service_uuid_prefix(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+
+    sources = module.qbft_config_export_mount_sources(
+        plan,
+        "a",
+        volume_prefixes=["pr243zs9jmd4des9tlonk7dq"],
+    )
+
+    assert sources[0]["source"] == "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-a-runtime"
+    assert sources[0]["target"] == "/sources/coolify-prefixed-managed-host-volume-1"
+    assert sources[1]["source"] == "pr243zs9jmd4des9tlonk7dq_main-computer-qbft-testnet-runtime"
+    assert any(source["source"] == "main-computer-qbft-testnet-a-runtime" for source in sources)
 
 
 def test_candidate_config_source_hosts_prefer_non_mutated_hosts(tmp_path: Path) -> None:
@@ -329,6 +353,19 @@ def test_candidate_config_source_hosts_prefer_non_mutated_hosts(tmp_path: Path) 
     rpc_service = module.planned_service_by_id(plan)["rpc-2"]
 
     assert module.candidate_qbft_config_source_hosts(plan, [rpc_service], _args()) == ["a"]
+
+
+def test_qbft_config_export_public_entry_fetch_candidates_prefer_https_host_ip(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+    host = module.host_by_id(plan)["a"]
+
+    candidates = module.qbft_config_export_public_entry_fetch_candidates(plan, host, token="tok")
+
+    assert candidates[0]["url"] == "https://198.51.100.10/__main-computer/qbft-config/tok.json"
+    assert candidates[0]["headers"] == {"Host": "testnet-rpc.greatlibrary.io"}
+    assert candidates[0]["insecure_https"] is True
+    assert candidates[1]["url"] == "https://testnet-rpc.greatlibrary.io/__main-computer/qbft-config/tok.json"
 
 
 def test_public_entry_dynamic_config_can_expose_tokenized_config_export(tmp_path: Path) -> None:
@@ -343,8 +380,39 @@ def test_public_entry_dynamic_config_can_expose_tokenized_config_export(tmp_path
 
     assert "Path(`/__main-computer/qbft-config/tok.json`)" in config
     assert "priority: 10000" in config
+    assert "entryPoints:" in config
+    assert "- https" in config
     assert "http://198.51.100.10:38173" in config
     assert "testnet-rpc.greatlibrary.io" in config
+
+
+def test_public_entry_writer_and_cleanup_scripts_do_not_use_pid_expanding_double_dollars(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+
+    writer = module.render_rpc_public_entry_writer_script(
+        plan,
+        "a",
+        config_export={"token": "tok", "port": 38173},
+    )
+    cleanup = module.render_rpc_public_entry_cleanup_script(plan, "a")
+    export_writer = module.render_qbft_config_export_public_entry_writer_script(
+        plan,
+        "a",
+        token="tok",
+        port=38173,
+    )
+    export_cleanup = module.render_qbft_config_export_public_entry_cleanup_script(plan, "a")
+
+    for script in (writer, cleanup, export_writer, export_cleanup):
+        assert "$$CONFIG_PATH" not in script
+        assert "$$CONFIG_DIR" not in script
+        assert "$$REFRESH_SECONDS" not in script
+        assert "$$tmp" not in script
+        assert "sleep 300" in script
+        assert "/data/coolify/proxy/dynamic" in script
+
+
 
 
 def test_render_compose_for_host_can_add_config_export_sidecar(tmp_path: Path) -> None:
@@ -384,10 +452,17 @@ def test_export_qbft_config_from_host_via_public_entry_redeploys_source_and_clea
         assert deploy is True
         return {"ok": True, "service_name": sync_args.coolify_service_name}
 
-    def fake_fetch_json_url(url: str, *, timeout_s: float, headers: dict[str, str] | None = None) -> dict[str, Any]:
-        fetch_calls.append((url, timeout_s, headers))
-        assert url == "http://198.51.100.10/__main-computer/qbft-config/tok.json"
+    def fake_fetch_json_url(
+        url: str,
+        *,
+        timeout_s: float,
+        headers: dict[str, str] | None = None,
+        insecure_https: bool = False,
+    ) -> dict[str, Any]:
+        fetch_calls.append((url, timeout_s, headers, insecure_https))
+        assert url == "https://198.51.100.10/__main-computer/qbft-config/tok.json"
         assert headers == {"Host": "testnet-rpc.greatlibrary.io"}
+        assert insecure_https is True
         return {
             "ok": True,
             "source_mount": "managed-host-volume",

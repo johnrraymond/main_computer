@@ -1,58 +1,72 @@
 # OpenClaw Docker Gateway for host Ollama
 
-This stack runs OpenClaw in Docker while routing its `ollama` provider to the
-Ollama daemon on the Windows host. It is intended for the Main Computer
-persistence smoke path, where OpenClaw supplies session/memory behavior and
-Ollama remains the model runtime.
+This compose profile starts a local Docker OpenClaw Gateway that can use the Ollama
+models already installed on the Windows host.
 
-The important network detail is that `127.0.0.1` inside the OpenClaw container is
-the container itself, not Windows. The compose file therefore publishes the
-Gateway on host loopback and maps host services through:
+The PowerShell helper writes generated state outside the repository under:
 
 ```text
-http://host.docker.internal:11434
+%LOCALAPPDATA%\MainComputer\openclaw-docker
 ```
 
-## Start
+That state contains the generated OpenClaw config, bearer token, and workspace
+memory files. The repository only contains the compose template and helper script.
 
-From the repository root in PowerShell:
+## Why Docker uses `host.docker.internal:11434`
+
+Inside a Docker container, `127.0.0.1` is the container itself, not the Windows
+host. The helper writes OpenClaw config with:
+
+```text
+models.providers.ollama.baseUrl = "http://host.docker.internal:11434"
+```
+
+It also expands `models.providers.ollama.models` from the host
+`http://127.0.0.1:11434/api/tags` response so OpenClaw sees the exact local model
+names already installed by Ollama.
+
+The compose file maps the host-published Gateway port to the fixed container
+port. For example, `-Port 18790` publishes `127.0.0.1:18790`, while the container OpenClaw still listens on `18789`.
+
+## Default smoke
+
+Run:
 
 ```powershell
-.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790
 ```
 
-The script:
+The default smoke is now deterministic. It verifies:
 
-1. checks that Docker is available;
-2. checks host Ollama at `http://127.0.0.1:11434/api/tags`;
-3. writes an OpenClaw config under `%LOCALAPPDATA%\MainComputer\openclaw-docker`;
-4. lists every locally installed Ollama model in `models.providers.ollama.models`;
-5. sets `agents.defaults.model.primary` to `ollama/<model>`;
-6. starts the OpenClaw Gateway container;
-7. probes `http://host.docker.internal:11434/api/tags` from inside the container;
-8. probes the Gateway `/v1/models` surface;
-9. runs `scripts\smoke_openclaw_persistence.py` when that smoke script exists.
+1. Docker can start the OpenClaw Gateway.
+2. The container can see the host Ollama model through `host.docker.internal:11434`.
+3. `/v1/models` responds.
+4. `smoke_openclaw_persistence.py --direct-memory` can write a marker into the
+   Docker-mounted OpenClaw Markdown memory workspace.
+5. The OpenClaw container can read that marker from `/home/node/.openclaw/workspace`.
+6. The marker remains visible after a container restart.
 
-## Stop
+This proves the persistence layer surface before Main Computer grows an
+OpenClaw provider.
+
+## Optional agent smoke
+
+The old `/v1/responses` agent smoke is intentionally opt-in because local
+OpenClaw agent runs can be slow or can decide to use unrelated tools. After the
+direct memory smoke passes, run:
+
+```powershell
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -AgentSmoke
+```
+
+For the fuller recall test:
+
+```powershell
+.\scripts\start_openclaw_docker_for_ollama.ps1 -Model gemma4:26b -Port 18790 -FullSmoke
+```
+
+Stop the stack with:
 
 ```powershell
 .\scripts\start_openclaw_docker_for_ollama.ps1 -Down
 ```
-
-## Smoke environment
-
-After start, the script prints the environment values needed by the existing
-persistence smoke:
-
-```powershell
-$env:MAIN_COMPUTER_OPENCLAW_BASE_URL = "http://127.0.0.1:18789"
-$env:MAIN_COMPUTER_OPENCLAW_TOKEN = "<generated-token>"
-python scripts\smoke_openclaw_persistence.py --backend-model ollama/gemma4:26b --json
-```
-
-The `-Port` option changes only the host-published Gateway port. Inside the
-container OpenClaw still listens on `18789`, and Docker maps your chosen host
-port to that internal port.
-
-The generated OpenClaw state is intentionally outside the repository so tokens,
-memory, session logs, and auth material do not get committed.

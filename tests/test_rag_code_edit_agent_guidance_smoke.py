@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,7 @@ from main_computer.rag_code_edit_agent_guidance_smoke import (
     CONTAINER_RUN_DIR,
     CONTAINER_SOURCE_DIR,
     DEFAULT_DOCKER_IMAGE,
+    DEFAULT_COMMIT_POLICY,
     build_docker_agent_command,
     compare_report_contract_shape,
     default_live_plan_payload,
@@ -113,6 +117,8 @@ def test_docker_agent_command_shape_contract(tmp_path: Path) -> None:
     assert f"{CONTAINER_SOURCE_DIR}/main_computer/rag_code_edit_agent_guidance_smoke.py" in command
     assert f"{CONTAINER_RUN_DIR}/commands.jsonl" in command
     assert f"{CONTAINER_RUN_DIR}/report.json" in command
+    assert "--commit-policy" in command
+    assert command[command.index("--commit-policy") + 1] == DEFAULT_COMMIT_POLICY
 
 
 
@@ -432,3 +438,446 @@ def test_deterministic_code_edit_agent_guidance_smoke_contracts(tmp_path: Path) 
     assert agent_report["forbidden_paths"] == ["README.md"]
     assert agent_report["target_branch"] == "ai/smoke-guided-edit"
     assert agent_report["main_head"] == agent_report["base_head"]
+
+
+
+def test_generated_editor_static_preflight_blocks_escape_attempts() -> None:
+    source = (
+        "import os\n"
+        "def edit(files):\n"
+        "    open('app.py', 'w').write('bad')\n"
+        "    os.system('echo bad')\n"
+        "    return {'status': 'done', 'proposed_writes': {}}\n"
+    )
+
+    preflight = smoke.generated_editor_static_preflight(source)
+
+    assert preflight["ok"] is False
+    assert preflight["generated_editor_present"] is True
+    assert preflight["generated_editor_no_imports"] is False
+    assert preflight["generated_editor_no_open_eval_exec_subprocess"] is False
+    issue_kinds = {issue["kind"] for issue in preflight["issues"]}
+    assert "import_not_allowed" in issue_kinds
+    assert "blocked_call" in issue_kinds
+    assert "blocked_module_call" in issue_kinds
+
+
+def test_generated_editor_agent_uses_sandbox_proposal_then_host_apply(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "generated-editor-agent"
+    run_dir.mkdir()
+    commands_path = run_dir / "commands.jsonl"
+    commands_path.write_text(
+        json.dumps({"type": "add_instruction", "text": "Do not modify README.md.", "id": "guidance-001"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER", "1")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "none")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "readonly")
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--role",
+            "agent",
+            "--agent",
+            "generated-editor",
+            "--run-id",
+            "generated-editor-test",
+            "--run-dir",
+            str(run_dir),
+            "--commands-path",
+            str(commands_path),
+            "--report-path",
+            str(run_dir / "report.json"),
+            "--guidance-window-seconds",
+            "0",
+            "--poll-seconds",
+            "0.01",
+        ]
+    )
+
+    assert smoke.run_agent(args) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    boundary_names = [boundary["name"] for boundary in report["boundaries"]]
+    assert report["agent_mode"] == "generated-editor"
+    assert report["changed_files"] == ["app.py"]
+    assert report["forbidden_paths"] == ["README.md"]
+    assert "generated_editor_boundary" in boundary_names
+    assert "generated_editor_static_preflight_boundary" in boundary_names
+    assert "generated_editor_sandbox_boundary" in boundary_names
+    assert "host_apply_boundary" in boundary_names
+
+    contracts = report["contracts"]
+    assert contracts["generated_editor_present"] is True
+    assert contracts["generated_editor_static_preflight_passed"] is True
+    assert contracts["generated_editor_no_imports"] is True
+    assert contracts["generated_editor_no_open_eval_exec_subprocess"] is True
+    assert contracts["generated_editor_sandbox_executed"] is True
+    assert contracts["generated_editor_writes_only_allowed_paths"] is True
+    assert contracts["generated_editor_output_matches_plan"] is True
+    assert contracts["generated_editor_did_not_touch_forbidden_files"] is True
+    assert contracts["generated_editor_worktree_unchanged_during_sandbox"] is True
+    assert contracts["host_validated_sandbox_proposal"] is True
+    assert contracts["host_applied_sandbox_proposal"] is True
+    assert contracts["deterministic_safe_apply_can_be_replaced_by_sandbox_apply"] is True
+
+    generated_editor = report["edit_result"]["generated_editor"]
+    assert generated_editor["sandbox"]["worktree_unchanged_during_sandbox"] is True
+    assert generated_editor["host_apply"]["changed_files"] == ["app.py"]
+    assert generated_editor["host_apply"]["after_sha256_by_path"]["app.py"] == smoke.text_sha256(
+        smoke.APP_PY_DETERMINISTIC_FINAL
+    )
+
+
+
+
+def test_agent_commit_policy_never_blocks_commit_but_keeps_verified_edit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "commit-never-agent"
+    run_dir.mkdir()
+    commands_path = run_dir / "commands.jsonl"
+    commands_path.write_text(
+        json.dumps({"type": "add_instruction", "text": "Do not modify README.md.", "id": "guidance-001"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER", "1")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "none")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "readonly")
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--role",
+            "agent",
+            "--agent",
+            "deterministic",
+            "--run-id",
+            "commit-never-test",
+            "--run-dir",
+            str(run_dir),
+            "--commands-path",
+            str(commands_path),
+            "--report-path",
+            str(run_dir / "report.json"),
+            "--guidance-window-seconds",
+            "0",
+            "--poll-seconds",
+            "0.01",
+            "--commit-policy",
+            "never",
+        ]
+    )
+
+    assert smoke.run_agent(args) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    boundary_names = [boundary["name"] for boundary in report["boundaries"]]
+    assert "commit_policy_boundary" in boundary_names
+    assert "commit_boundary" in boundary_names
+    assert report["commit_policy"]["policy"] == "never"
+    assert report["commit"]["created"] is False
+    assert report["final_head"] == report["base_head"]
+    assert report["changed_files"] == ["app.py"]
+    assert report["contracts"]["commit_policy_never_blocks_commit"] is True
+    assert report["contracts"]["commit_blocked_by_policy"] is True
+    assert report["contracts"]["worktree_left_uncommitted_by_policy"] is True
+    assert "commit_created" not in report["contracts"]
+
+
+def test_supervisor_commit_policy_never_reports_no_actual_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The supervisor must not treat a successful commit boundary as a commit."""
+
+    run_id = "supervisor-never"
+    run_dir = tmp_path / run_id
+    report_path = run_dir / "report.json"
+
+    def fake_require_docker_image(image: str) -> None:
+        return None
+
+    class FakeProc:
+        def __init__(self) -> None:
+            events = [
+                {"event": "run_started", "containerized": True},
+                {"event": "agent_adapter_selected"},
+                {"event": "stage_started", "stage": "fixture_origin"},
+                {"event": "guidance_window_open"},
+                {"event": "guidance_received"},
+                {"event": "boundary_committed", "boundary": "guidance_boundary"},
+                {"event": "edit_applied", "files": ["app.py"]},
+                {"event": "verification_passed"},
+                {"event": "commit_blocked_by_policy", "commit_policy": "never"},
+                {"event": "run_finished", "status": "ok"},
+            ]
+            self.stdout = io.StringIO("\n".join(smoke.json_dumps(event) for event in events) + "\n")
+            self.stderr = io.StringIO("")
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+    def fake_popen(*args, **kwargs) -> FakeProc:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        report = _sample_agent_report(agent_mode="deterministic")
+        report["run_id"] = run_id
+        report["base_head"] = "base"
+        report["final_head"] = "base"
+        report["main_head"] = "base"
+        report["commit_policy"] = {"policy": "never", "decision": "never"}
+        report["commit"] = {
+            "created": False,
+            "expected": False,
+            "sha": "base",
+            "blocked_by_policy": True,
+            "policy": "never",
+            "decision": "never",
+        }
+        report["contracts"].pop("commit_created")
+        report["contracts"].pop("repo_clean_after_commit")
+        report["contracts"].update(
+            {
+                "commit_policy_never_blocks_commit": True,
+                "commit_blocked_by_policy": True,
+                "commit_policy_satisfied": True,
+                "worktree_left_uncommitted_by_policy": True,
+            }
+        )
+        report["boundaries"].insert(
+            -1,
+            {"name": "commit_policy_boundary", "path": "commit_policy.json", "sha256": "policy"},
+        )
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return FakeProc()
+
+    monkeypatch.setattr(smoke, "require_docker_image", fake_require_docker_image)
+    monkeypatch.setattr(smoke.subprocess, "Popen", fake_popen)
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--work-root",
+            str(tmp_path),
+            "--run-id",
+            run_id,
+            "--guidance-window-seconds",
+            "0.1",
+            "--poll-seconds",
+            "0.01",
+            "--commit-policy",
+            "never",
+        ]
+    )
+
+    assert smoke.run_supervisor(args) == 0
+
+    supervisor_report = json.loads((run_dir / "supervisor_report.json").read_text(encoding="utf-8"))
+    contracts = supervisor_report["contracts"]
+    assert supervisor_report["ok"] is True
+    assert supervisor_report["commit_created"] is False
+    assert supervisor_report["commit_expected"] is False
+    assert supervisor_report["commit_blocked_by_policy"] is True
+    assert supervisor_report["commit_policy_boundary_written"] is True
+    assert supervisor_report["commit_boundary_written"] is True
+    assert contracts["commit_not_created_by_policy"] is True
+    assert contracts["commit_boundary_written"] is True
+    assert "commit_created" not in contracts
+
+
+def test_agent_commit_policy_require_approval_waits_then_commits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "commit-approval-agent"
+    run_dir.mkdir()
+    commands_path = run_dir / "commands.jsonl"
+    commands_path.write_text(
+        json.dumps({"type": "add_instruction", "text": "Do not modify README.md.", "id": "guidance-001"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_CONTAINER", "1")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_DOCKER_NETWORK", "none")
+    monkeypatch.setenv("MAIN_COMPUTER_AGENT_SMOKE_SOURCE_MOUNT", "readonly")
+
+    args = smoke.build_parser().parse_args(
+        [
+            "--role",
+            "agent",
+            "--agent",
+            "deterministic",
+            "--run-id",
+            "commit-approval-test",
+            "--run-dir",
+            str(run_dir),
+            "--commands-path",
+            str(commands_path),
+            "--report-path",
+            str(run_dir / "report.json"),
+            "--guidance-window-seconds",
+            "0",
+            "--poll-seconds",
+            "0.01",
+            "--commit-policy",
+            "require-approval",
+            "--approval-timeout-seconds",
+            "5",
+        ]
+    )
+
+    result: dict[str, int] = {}
+
+    def run() -> None:
+        result["returncode"] = smoke.run_agent(args)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    events_path = run_dir / "events.jsonl"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if events_path.exists():
+            events = _json_events(events_path.read_text(encoding="utf-8"))
+            if any(event.get("event") == "commit_approval_waiting" for event in events):
+                smoke.append_jsonl(
+                    commands_path,
+                    {
+                        "type": "approve_commit",
+                        "id": "approval-001",
+                        "source": "pytest",
+                        "timestamp": smoke.utc_now(),
+                    },
+                )
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("agent did not emit commit_approval_waiting")
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert result["returncode"] == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    assert report["commit_policy"]["policy"] == "require-approval"
+    assert report["commit_policy"]["decision"] == "approved"
+    assert report["commit"]["created"] is True
+    assert report["final_head"] != report["base_head"]
+    assert report["contracts"]["commit_waited_for_approval"] is True
+    assert report["contracts"]["commit_not_created_before_approval"] is True
+    assert report["contracts"]["approval_received_while_running"] is True
+    assert report["contracts"]["commit_created_after_approval"] is True
+
+
+def test_generated_editor_cycle_orchestrates_deterministic_then_generated_editor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    generated_contracts = {
+        "generated_editor_present": True,
+        "generated_editor_static_preflight_passed": True,
+        "generated_editor_no_imports": True,
+        "generated_editor_no_open_eval_exec_subprocess": True,
+        "generated_editor_sandbox_executed": True,
+        "generated_editor_writes_only_allowed_paths": True,
+        "generated_editor_output_matches_plan": True,
+        "generated_editor_did_not_touch_forbidden_files": True,
+        "generated_editor_worktree_unchanged_during_sandbox": True,
+        "host_validated_sandbox_proposal": True,
+        "host_applied_sandbox_proposal": True,
+        "deterministic_safe_apply_can_be_replaced_by_sandbox_apply": True,
+    }
+
+    def fake_run_supervisor(args) -> int:
+        calls.append((args.agent, args.run_id, args.compare_report))
+        run_dir = Path(args.work_root) / args.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        report = _sample_agent_report(agent_mode=args.agent)
+        report["run_id"] = args.run_id
+        report["report_path"] = str(run_dir / "report.json")
+        if args.agent == "generated-editor":
+            report["agent_adapter"] = {
+                "agent_mode": "generated-editor",
+                "editor_source": "deterministic_fixture",
+                "planning_only": False,
+                "apply_mode": "sandbox_proposal_host_apply",
+                "direct_worktree_mutation_allowed": False,
+            }
+            report["edit_plan"] = {
+                "agent_mode": "generated-editor",
+                "selected_files": ["app.py"],
+                "allowed_write_paths": ["app.py"],
+                "forbidden_paths": ["README.md"],
+                "requires_generated_editor": True,
+                "apply_mode": "sandbox_proposal_host_apply",
+            }
+            report["contracts"].update(generated_contracts)
+            report["boundaries"] = [
+                {"name": "bootstrap_boundary", "path": "bootstrap.json", "sha256": "1"},
+                {"name": "guidance_boundary", "path": "guidance.json", "sha256": "2"},
+                {"name": "edit_plan_boundary", "path": "edit.json", "sha256": "3"},
+                {"name": "generated_editor_boundary", "path": "generated_editor.json", "sha256": "4"},
+                {
+                    "name": "generated_editor_static_preflight_boundary",
+                    "path": "generated_editor_static_preflight.json",
+                    "sha256": "5",
+                },
+                {"name": "generated_editor_sandbox_boundary", "path": "generated_editor_sandbox.json", "sha256": "6"},
+                {"name": "host_apply_boundary", "path": "host_apply.json", "sha256": "7"},
+                {"name": "verification_boundary", "path": "verification.json", "sha256": "8"},
+                {"name": "commit_boundary", "path": "commit.json", "sha256": "9"},
+            ]
+        (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        supervisor_report = {
+            "ok": True,
+            "contracts": {
+                "agent_containerized": True,
+                "report_contract_shape_matches_reference": args.agent == "generated-editor",
+                "generated_editor_sandbox_apply": args.agent == "generated-editor",
+            },
+        }
+        (run_dir / "supervisor_report.json").write_text(json.dumps(supervisor_report), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(smoke, "run_supervisor", fake_run_supervisor)
+    args = smoke.build_parser().parse_args(
+        [
+            "--exercise-generated-editor",
+            "--work-root",
+            str(tmp_path),
+            "--run-id",
+            "cycle",
+            "--guidance-window-seconds",
+            "0.1",
+            "--poll-seconds",
+            "0.01",
+        ]
+    )
+
+    assert smoke.run_generated_editor_cycle(args) == 0
+    assert [call[0] for call in calls] == ["deterministic", "generated-editor"]
+    assert calls[0][2] == ""
+    assert calls[1][2].endswith("cycle-deterministic/report.json")
+
+    cycle_report = json.loads((tmp_path / "cycle" / "generated_editor_cycle_report.json").read_text(encoding="utf-8"))
+    assert cycle_report["ok"] is True
+    assert cycle_report["contracts"]["deterministic_self_check_passed"] is True
+    assert cycle_report["contracts"]["generated_editor_self_check_passed"] is True
+    assert cycle_report["contracts"]["generated_editor_agent_mode"] is True
+    assert cycle_report["contracts"]["generated_editor_static_preflight_passed"] is True
+    assert cycle_report["contracts"]["generated_editor_sandbox_executed"] is True
+    assert cycle_report["contracts"]["generated_editor_worktree_unchanged_during_sandbox"] is True
+    assert cycle_report["contracts"]["host_validated_sandbox_proposal"] is True
+    assert cycle_report["contracts"]["host_applied_sandbox_proposal"] is True
+    assert cycle_report["contracts"]["deterministic_safe_apply_can_be_replaced_by_sandbox_apply"] is True
+    assert cycle_report["contracts"]["report_contract_shape_matches_reference"] is True
