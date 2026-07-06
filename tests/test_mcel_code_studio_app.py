@@ -535,7 +535,12 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "function runScmRegressionScenario",
             "function runScmRegressionHarness",
             "function formatScmRegressionHarnessDetail",
+            "function formatScmReplayExpectationFailuresDetail",
             "function renderScmRegressionHarnessInProofDock",
+            "function renderScmReplayExpectationFailuresInProofDock",
+            "function summarizeScmReplayComparisonForWorkbench",
+            "function summarizeScmReplayExpectationsForWorkbench",
+            "function summarizeScmReplayFixturePackForWorkbench",
             "disposition",
             "const safetyOk = sourceSafety.sourceUnchanged && sourceSafety.runtimeChromeStayedOutOfSource;",
             'scenario.disposition === "BLOCKED"',
@@ -552,6 +557,15 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'kind: "mcel-code-studio-scm-regression-source-snapshot"',
             'id="code-studio-run-scm-regression-harness"',
             'id="code-studio-open-scm-regression-detail"',
+            'id="code-studio-open-scm-replay-expectation-failures"',
+            "Open replay expectation failures in proof dock",
+            "Replay expectation failures",
+            "Fixture pack status",
+            "Mismatch-first findings",
+            "replay-expectation-failures",
+            "copy-replay-expectation-failures",
+            "mcel-code-studio-replay-expectation-workbench-summary",
+            "mcel-code-studio-replay-workbench-summary",
             "source.validation",
             "runtime.mount-source-safe",
             "monaco.runtime-boundary",
@@ -562,6 +576,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "lastRegressionHarness: studioState.lastScmRegressionHarness",
             "runScmRegressionHarness,",
             "renderScmRegressionHarnessInProofDock,",
+            "renderScmReplayExpectationFailuresInProofDock,",
+            "summarizeScmReplayExpectationsForWorkbench,",
             "buildGenericScmReplayFixtures,",
             "runGenericScmReplayFixturePack,",
         ]
@@ -575,6 +591,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
         expected_style = [
             ".code-studio-scm-regression-harness",
             ".code-studio-scm-regression-harness code",
+            ".code-studio-proof-detail-summary",
+            ".code-studio-proof-detail-issues",
         ]
         for text in expected_style:
             with self.subTest(style=text):
@@ -598,7 +616,7 @@ class McelCodeStudioAppTests(unittest.TestCase):
         script = SCRIPT_PATH.read_text(encoding="utf-8")
 
         expected_script = [
-            'const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.1.0";',
+            'const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.2.0";',
             "function buildGenericScmReplayFixtureVector",
             "function buildWalletScmReplayFixtureReceipt",
             "function buildWalletScmReplayFixtures",
@@ -607,6 +625,9 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "function classifyScmReplayFixtureDisposition",
             "function buildScmReplayFixtureExpectationComparison",
             "function runGenericScmReplayFixturePack",
+            "formatScmDispositionCounts",
+            "fixturePackStatus",
+            "replayExpectationFailures",
             'kind: "mcel-code-studio-generic-scm-replay-fixture-pack"',
             "wallet.connect.pass",
             "wallet.connect.blocked",
@@ -1073,6 +1094,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "layoutObservation",
             "mcel-code-studio-tx-draft-provenance-workbench-summary",
             "mcel-code-studio-normalized-scm-receipt-workbench-detail",
+            "replayWorkbench",
+            "replayExpectations",
             "mcel-code-studio-receipt-source-authority",
             "mcel-code-studio-receipt-source-workbench-summary",
             "Receipt source",

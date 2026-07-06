@@ -662,8 +662,9 @@ def test_generated_editor_structured_steering_constraints_flow(
         assert contracts[contract_name] is True
 
 
-def _write_fake_ai_command(tmp_path: Path) -> str:
-    script_path = tmp_path / "fake_ai_provider.py"
+def _write_fake_ai_command(tmp_path: Path, *, invalid_first_plan: bool = False) -> str:
+    script_path = tmp_path / ("fake_ai_provider_bad_plan.py" if invalid_first_plan else "fake_ai_provider.py")
+    state_path = tmp_path / ("fake_ai_provider_bad_plan_state.json" if invalid_first_plan else "fake_ai_provider_state.json")
     final_app_py = """def greet(name: str) -> str:
     cleaned = name.strip()
     return f"Hello, {cleaned}!"
@@ -676,19 +677,44 @@ if __name__ == "__main__":
         f"""
 import json
 import sys
+from pathlib import Path
 
 request = json.loads(sys.stdin.read())
 user = json.loads(request["user"])
 stage = user.get("stage")
+state_path = Path({str(state_path)!r})
+invalid_first_plan = {invalid_first_plan!r}
+state = {{}}
+if state_path.exists():
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        state = {{}}
+planning_calls = int(state.get("planning_calls", 0))
 if stage == "planning":
     active_constraints = user["active_constraints"]
-    response = {{
-        "selected_files": ["app.py"],
-        "allowed_write_paths": ["app.py"],
-        "active_constraints_ack": active_constraints,
-        "required_tests": active_constraints.get("required_tests", []),
-        "rationale": "fake command provider selected the pinned app.py file",
-    }}
+    state["planning_calls"] = planning_calls + 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    if invalid_first_plan and planning_calls == 0:
+        response = {{
+            "allowed_write_paths": ["app.py"],
+            "active_constraints_ack": {{
+                "forbidden_files": active_constraints.get("forbidden_files", []),
+                "pinned_files": active_constraints.get("pinned_files", []),
+                "required_tests": ["python_import_and_greet_conatract"],
+                "freeform_instructions": active_constraints.get("freeform_instructions", []),
+            }},
+            "required_tests": active_constraints.get("required_tests", []),
+            "rationale": "intentionally malformed first plan for host-repair smoke",
+        }}
+    else:
+        response = {{
+            "selected_files": ["app.py"],
+            "allowed_write_paths": ["app.py"],
+            "active_constraints_ack": active_constraints,
+            "required_tests": active_constraints.get("required_tests", []),
+            "rationale": "fake command provider selected the pinned app.py file",
+        }}
 else:
     response = {{
         "final_app_py": {final_app_py!r},
@@ -913,6 +939,44 @@ def test_ai_restart_recovery_smoke_live_command_surface_records_three_ai_calls(
     assert report["contracts"]["live_ai_touched_planning_editor_and_retry"] is True
     assert report["contracts"]["ai_attempt_1_used_live_ai"] is True
     assert report["contracts"]["ai_attempt_2_used_live_ai"] is True
+    assert report["failed_contracts"] == []
+
+
+def test_ai_restart_recovery_smoke_live_command_surface_repairs_invalid_ai_plan(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "direct-live-ai-command-invalid-plan-recovery-smoke"
+    ai_command = _write_fake_ai_command(tmp_path, invalid_first_plan=True)
+
+    assert smoke.main([
+        "--ai-restart-recovery-smoke",
+        "--ai-provider",
+        "command",
+        "--ai-command",
+        ai_command,
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "ai_restart_recovery_smoke_summary.json").read_text(encoding="utf-8"))
+    ai_calls = smoke.read_jsonl(run_dir / "ai_calls.jsonl")
+
+    assert report["ok"] is True
+    assert summary["ok"] is True
+    assert summary["live_ai_call_count"] == 3
+    assert report["edit_plan"]["ai_plan_rejected"] is True
+    assert report["edit_plan"]["ai_plan_recovered_after_rejection"] is True
+    assert report["edit_plan"]["planner"] == "host_repaired_rejected_live_ai_plan"
+    assert report["edit_plan"]["selected_files"] == ["app.py"]
+    assert report["edit_plan"]["allowed_write_paths"] == ["app.py"]
+    assert report["edit_plan"]["active_constraints"]["required_tests"] == ["python_import_and_greet_contract"]
+    assert report["contracts"]["ai_plan_rejection_recorded"] is True
+    assert report["contracts"]["host_repaired_invalid_ai_plan_from_active_constraints"] is True
+    assert report["contracts"]["ai_plan_recovery_preserved_active_constraints"] is True
+    assert report["contracts"]["live_ai_call_count_at_least_3"] is True
+    assert report["contracts"]["live_ai_touched_planning_editor_and_retry"] is True
+    assert any(record.get("event") == "ai_payload_rejected" and record.get("ai_stage") == "planning" for record in ai_calls)
     assert report["failed_contracts"] == []
 
 

@@ -354,6 +354,23 @@ class SmokeFailure(RuntimeError):
     """Raised when a smoke contract is not satisfied."""
 
 
+class AIPayloadValidationError(SmokeFailure):
+    """Raised when a live AI payload is well-formed JSON but fails host contracts."""
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        validations: dict[str, bool],
+        payload: dict[str, Any],
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.validations = validations
+        self.payload = payload
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1540,6 +1557,7 @@ def summarize_ai_trace(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     started = [record for record in records if record.get("event") == "ai_call_started"]
     finished = [record for record in records if record.get("event") == "ai_call_finished"]
     failed = [record for record in records if record.get("event") == "ai_call_failed"]
+    rejected = [record for record in records if record.get("event") == "ai_payload_rejected"]
     live_finished = [
         record
         for record in finished
@@ -1549,10 +1567,12 @@ def summarize_ai_trace(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "started_call_count": len(started),
         "finished_call_count": len(finished),
         "failed_call_count": len(failed),
+        "rejected_payload_count": len(rejected),
         "finished_live_call_count": len(live_finished),
         "started_stages": [str(record.get("ai_stage", "")) for record in started],
         "finished_live_stages": [str(record.get("ai_stage", "")) for record in live_finished],
         "failed_stages": [str(record.get("ai_stage", "")) for record in failed],
+        "rejected_stages": [str(record.get("ai_stage", "")) for record in rejected],
         "providers": sorted({str(record.get("provider", "")) for record in finished if record.get("provider")}),
         "models": sorted({str(record.get("model", "")) for record in finished if record.get("model")}),
     }
@@ -1703,6 +1723,74 @@ def ai_plan_user_prompt(*, task: str, scenario: ScenarioSpec, active_constraints
     )
 
 
+def ai_plan_rejection_feedback_payload(
+    *,
+    stage: str,
+    payload: dict[str, Any],
+    validations: dict[str, bool],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "provider": metadata.get("provider", ""),
+        "model": metadata.get("model", ""),
+        "call_id": metadata.get("call_id", ""),
+        "content_sha256": metadata.get("content_sha256", ""),
+        "payload_sha256": text_sha256(json_dumps(payload)),
+        "payload_keys": sorted(str(key) for key in payload.keys()),
+        "validations": validations,
+        "payload": payload,
+    }
+
+
+def repaired_ai_plan_from_active_constraints(
+    *,
+    task: str,
+    scenario: ScenarioSpec,
+    active_constraints: dict[str, Any],
+    rejection: dict[str, Any],
+) -> dict[str, Any]:
+    expected_files = expected_files_from_active_constraints(scenario, active_constraints)
+    required_tests = sorted(set(active_constraints["required_tests"]))
+    validations = {
+        "ai_plan_selected_expected_files": True,
+        "ai_plan_allowed_expected_files": True,
+        "ai_plan_acknowledged_active_constraints": True,
+        "ai_plan_did_not_select_forbidden_files": True,
+        "ai_plan_includes_required_tests": True,
+        "host_repaired_from_active_constraints": True,
+    }
+    return {
+        "agent_mode": "ai-generated-editor",
+        "scenario": scenario.name,
+        "task": task,
+        "selected_files": expected_files,
+        "allowed_write_paths": expected_files,
+        "forbidden_paths": active_constraints["forbidden_files"],
+        "active_constraints": active_constraints,
+        "required_tests": required_tests,
+        "freeform_instructions": active_constraints["freeform_instructions"],
+        "edit_strategy": "live_ai_plan_rejected_host_repaired_then_live_ai_editor",
+        "requires_generated_editor": True,
+        "requires_verification_before_commit": True,
+        "expected_verification_success": scenario.expects_verification_success,
+        "apply_mode": "sandbox_proposal_host_apply",
+        "planner": "host_repaired_rejected_live_ai_plan",
+        "uses_ai": True,
+        "uses_live_ai": True,
+        "ai_plan_generated": False,
+        "ai_plan_rejected": True,
+        "ai_plan_recovered_after_rejection": True,
+        "ai_plan_rejections": [rejection],
+        "active_constraints_ack": active_constraints,
+        "rationale": (
+            "The live AI planning payload failed host validation, so the host rejected it "
+            "and derived the safe plan from compacted active_constraints."
+        ),
+        "ai_plan_validations": validations,
+    }
+
+
 def ai_editor_system_prompt() -> str:
     return (
         "You are the editor-generation stage of a safety-harnessed code editing agent. "
@@ -1758,7 +1846,12 @@ def validate_ai_plan_payload(*, payload: dict[str, Any], task: str, scenario: Sc
         "ai_plan_includes_required_tests": set(active_constraints["required_tests"]).issubset(set(required_tests)),
     }
     if not all(validations.values()):
-        raise SmokeFailure(f"live AI plan failed host validation: {validations!r}; payload={payload!r}")
+        raise AIPayloadValidationError(
+            stage="planning",
+            validations=validations,
+            payload=payload,
+            message=f"live AI plan failed host validation: {validations!r}; payload={payload!r}",
+        )
     return {
         "agent_mode": "ai-generated-editor",
         "scenario": scenario.name,
@@ -1893,6 +1986,7 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         self.last_plan_ai_metadata: dict[str, Any] = {}
         self.last_editor_ai_metadata: dict[str, Any] = {}
         self.last_editor_ai_payload: dict[str, Any] = {}
+        self.plan_rejections: list[dict[str, Any]] = []
         self.editor_attempt_index = 0
 
     def metadata(self) -> dict[str, Any]:
@@ -1963,12 +2057,48 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
                 active_constraints=active_constraints,
             ),
         )
-        plan = validate_ai_plan_payload(
-            payload=payload,
-            task=task,
-            scenario=self.scenario,
-            active_constraints=active_constraints,
-        )
+        try:
+            plan = validate_ai_plan_payload(
+                payload=payload,
+                task=task,
+                scenario=self.scenario,
+                active_constraints=active_constraints,
+            )
+        except AIPayloadValidationError as exc:
+            rejection = ai_plan_rejection_feedback_payload(
+                stage=exc.stage,
+                payload=exc.payload,
+                validations=exc.validations,
+                metadata=metadata,
+            )
+            self.plan_rejections.append(rejection)
+            rejection_event = {
+                "event": "ai_payload_rejected",
+                "run_id": self.run_id,
+                "ai_stage": exc.stage,
+                "rejection_kind": "planning",
+                "provider": metadata.get("provider", ""),
+                "model": metadata.get("model", ""),
+                "call_id": metadata.get("call_id", ""),
+                "validations": exc.validations,
+                "payload_keys": rejection["payload_keys"],
+                "payload_sha256": rejection["payload_sha256"],
+                "recovery": "host_repaired_from_active_constraints",
+            }
+            emit_event(
+                "ai_payload_rejected",
+                **{key: value for key, value in rejection_event.items() if key != "event"},
+            )
+            write_ai_trace_event(self.ai_trace_path, rejection_event)
+            plan = repaired_ai_plan_from_active_constraints(
+                task=task,
+                scenario=self.scenario,
+                active_constraints=active_constraints,
+                rejection=rejection,
+            )
+        if self.plan_rejections and "ai_plan_rejections" not in plan:
+            plan["ai_plan_rejections"] = list(self.plan_rejections)
+            plan["ai_plan_recovered_after_rejection"] = True
         plan.update(
             {
                 "ai_backend": metadata["provider"],
@@ -3727,6 +3857,20 @@ def run_agent(args: argparse.Namespace) -> int:
                 "live_ai_touched_planning_editor_and_retry": finished_stages
                 >= {"planning", "editor_generation", "editor_generation_retry"},
             }
+            if plan.get("ai_plan_rejected"):
+                ai_contracts.update(
+                    {
+                        "ai_plan_rejection_recorded": bool(plan.get("ai_plan_rejections")),
+                        "host_repaired_invalid_ai_plan_from_active_constraints": plan.get("planner")
+                        == "host_repaired_rejected_live_ai_plan"
+                        and plan.get("selected_files") == expected_changed_files
+                        and plan.get("allowed_write_paths") == expected_changed_files,
+                        "ai_plan_recovery_preserved_active_constraints": normalized_active_constraints(
+                            plan.get("active_constraints")
+                        )
+                        == active_constraints,
+                    }
+                )
 
         runtime_contracts = {
             # Default supervisor runs inside the Docker executor with network disabled

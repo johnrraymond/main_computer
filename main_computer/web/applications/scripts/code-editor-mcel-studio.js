@@ -48,7 +48,7 @@
       const SCM_AI_REPAIR_PROMPT_VERSION = "1.0.0";
       const SCM_REPLAY_SNAPSHOT_VERSION = "1.0.0";
       const SCM_REGRESSION_HARNESS_VERSION = "1.0.0";
-      const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.1.0";
+      const SCM_REPLAY_FIXTURE_HARNESS_VERSION = "1.2.0";
       const SCM_DRAFT_PROVENANCE_VERSION = "1.0.0";
       const SCM_CONTRACT_AUTHORING_HELPER_VERSION = "1.0.0";
       const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
@@ -1921,6 +1921,50 @@
         };
       }
 
+      function formatScmDispositionCounts(counts = {}) {
+        const order = ["PASS", "BLOCKED", "EXCEPTION", "FAIL", "MISMATCH"];
+        return order
+          .map((key) => `${key} ${counts?.[key] || 0}`)
+          .join(" · ");
+      }
+
+      function summarizeScmReplayComparisonForWorkbench(comparison = studioState.lastScmReplaySnapshotComparison) {
+        if (!comparison) {
+          return jsonSafeClone({
+            kind: "mcel-code-studio-replay-workbench-summary",
+            state: "not run",
+            label: "not run",
+            selectedEvidenceLabel: "none",
+            deltaSummary: "no replay captured",
+            issueRows: ["Replay selected gate to capture before/after SCM evidence snapshots."]
+          });
+        }
+
+        const deltas = comparison.deltas || {};
+        const gateChanges = Array.isArray(deltas.gateChanges) ? deltas.gateChanges : [];
+        const issueRows = [];
+        if (comparison.ok === false) issueRows.push("Replay gate result failed or SCM gates were not ok after replay.");
+        if ((deltas.violations || 0) > 0) issueRows.push(`violations increased by ${deltas.violations}`);
+        if ((deltas.blocking || 0) > 0) issueRows.push(`blocking evidence increased by ${deltas.blocking}`);
+        if (gateChanges.length) issueRows.push(`${gateChanges.length} gate flag change(s) after replay`);
+        if (!issueRows.length && comparison.stable) issueRows.push("Replay snapshot stayed stable; no violation, blocking, or gate deltas increased.");
+
+        const state = comparison.stable ? "stable" : (comparison.ok === false ? "failed" : "changed");
+        const selectedEvidenceLabel = evidenceEntryLabel(comparison.selectedEvidence || {});
+        const deltaSummary = `total ${deltas.total || 0} · violations ${deltas.violations || 0} · blocking ${deltas.blocking || 0} · gate changes ${gateChanges.length}`;
+        return jsonSafeClone({
+          kind: "mcel-code-studio-replay-workbench-summary",
+          state,
+          label: comparison.stable ? "PASS stable replay" : `${state.toUpperCase()} replay needs inspection`,
+          selectedEvidenceLabel: selectedEvidenceLabel || "selected evidence",
+          ok: comparison.ok !== false,
+          stable: comparison.stable === true,
+          deltaSummary,
+          issueRows,
+          deltas
+        });
+      }
+
       function hashRegressionString(value = "") {
         const text = String(value || "");
         let hash = 2166136261;
@@ -3470,12 +3514,21 @@
           return {
             kind: "mcel-code-studio-scm-regression-harness",
             harnessVersion: SCM_REGRESSION_HARNESS_VERSION,
+            workbenchSummary: summarizeScmReplayExpectationsForWorkbench(null),
             status: "Run the SCM regression harness to replay source-safe validation, runtime mount, Monaco boundary, generic receipt fixtures, replay, and serialization scenarios."
           };
         }
+        const workbenchSummary = summarizeScmReplayExpectationsForWorkbench(harness);
         return {
           kind: harness.kind,
           harnessVersion: harness.harnessVersion,
+          workbenchSummary,
+          replayExpectationFailures: {
+            mismatchCount: workbenchSummary.mismatchCount || 0,
+            mismatchDetails: workbenchSummary.mismatchDetails || [],
+            issueRows: workbenchSummary.issueRows || []
+          },
+          fixturePackStatus: workbenchSummary.fixturePackStatus || [],
           ranAt: harness.ranAt,
           completedAt: harness.completedAt,
           ok: harness.ok,
@@ -3483,6 +3536,7 @@
           passed: harness.passed,
           failed: harness.failed,
           dispositionCounts: harness.dispositionCounts || {},
+          dispositionSummary: workbenchSummary.dispositionSummary,
           mismatchCount: harness.mismatchCount || 0,
           fixtureMismatches: harness.fixtureMismatches || [],
           sourceSafety: harness.sourceSafety,
@@ -3499,6 +3553,22 @@
             exception: scenario.exception
           }))
         };
+      }
+
+      function formatScmReplayExpectationFailuresDetail(harness = studioState.lastScmRegressionHarness) {
+        const summary = summarizeScmReplayExpectationsForWorkbench(harness);
+        return jsonSafeClone({
+          kind: "mcel-code-studio-replay-expectation-failures-workbench-detail",
+          status: summary.state,
+          label: summary.label,
+          mismatchFirst: summary.mismatchDetails || [],
+          fixturePackStatus: summary.fixturePackStatus || [],
+          dispositionSummary: summary.dispositionSummary,
+          nextAction: summary.mismatchCount
+            ? "Inspect expectedDisposition versus observedDisposition before trusting replay regression output."
+            : "No replay fixture expectation mismatches recorded. Inspect fixture pack status for blocked or exception scenarios.",
+          rawRegressionHarness: harness || null
+        });
       }
 
       function toContractIdentifier(value, fallback = "GeneratedMcelApp") {
@@ -4287,6 +4357,87 @@
         });
       }
 
+      function summarizeScmReplayFixturePackForWorkbench(pack = {}) {
+        const counts = pack.dispositionCounts || {};
+        const mismatchCount = pack.mismatchCount || (pack.mismatches || []).length || 0;
+        const state = mismatchCount > 0 || pack.disposition === "MISMATCH"
+          ? "mismatches"
+          : ((counts.FAIL || 0) > 0
+            ? "failures"
+            : ((counts.EXCEPTION || 0) > 0
+              ? "exceptions"
+              : ((counts.BLOCKED || 0) > 0 ? "blocked" : "all matched")));
+        return jsonSafeClone({
+          family: pack.family || "all",
+          state,
+          label: `${pack.family || "all"}: ${state} · ${pack.passed || 0}/${pack.total || 0} matched`,
+          ok: pack.ok !== false && mismatchCount === 0,
+          total: pack.total || 0,
+          passed: pack.passed || 0,
+          failed: pack.failed || [],
+          mismatchCount,
+          dispositionCounts: counts,
+          dispositionSummary: formatScmDispositionCounts(counts),
+          mismatches: pack.mismatches || []
+        });
+      }
+
+      function summarizeScmReplayExpectationsForWorkbench(harness = studioState.lastScmRegressionHarness) {
+        if (!harness) {
+          return jsonSafeClone({
+            kind: "mcel-code-studio-replay-expectation-workbench-summary",
+            state: "not run",
+            label: "not run",
+            mismatchCount: 0,
+            dispositionSummary: formatScmDispositionCounts({PASS: 0, BLOCKED: 0, EXCEPTION: 0, FAIL: 0, MISMATCH: 0}),
+            fixturePackStatus: [],
+            mismatchDetails: [],
+            issueRows: ["Run the SCM regression harness to compare replay fixtures against expected dispositions."]
+          });
+        }
+
+        const fixturePackStatus = (harness.fixturePacks || []).map((pack) => summarizeScmReplayFixturePackForWorkbench(pack));
+        const mismatchDetails = (harness.fixtureMismatches || []).map((mismatch) => ({
+          family: mismatch.family || "all",
+          id: mismatch.id || "",
+          expectedDisposition: mismatch.expectedDisposition || "",
+          observedDisposition: mismatch.observedDisposition || "",
+          reasons: mismatch.reasons || []
+        }));
+        const mismatchCount = harness.mismatchCount || mismatchDetails.length || fixturePackStatus.reduce((count, pack) => count + (pack.mismatchCount || 0), 0);
+        const counts = harness.dispositionCounts || {};
+        const blockedCount = counts.BLOCKED || 0;
+        const exceptionCount = counts.EXCEPTION || 0;
+        const failCount = counts.FAIL || 0;
+        const state = mismatchCount > 0
+          ? "mismatches"
+          : (failCount > 0
+            ? "failures"
+            : (exceptionCount > 0
+              ? "exceptions"
+              : (blockedCount > 0 ? "blocked" : "all matched")));
+        const issueRows = mismatchDetails.length
+          ? mismatchDetails.slice(0, 6).map((mismatch) => `${mismatch.family}/${mismatch.id}: expected ${mismatch.expectedDisposition || "?"} but observed ${mismatch.observedDisposition || "?"}${mismatch.reasons?.length ? ` · ${mismatch.reasons.join("; ")}` : ""}`)
+          : [`Fixture pack status: ${state}. ${formatScmDispositionCounts(counts)}`];
+
+        return jsonSafeClone({
+          kind: "mcel-code-studio-replay-expectation-workbench-summary",
+          state,
+          label: mismatchCount > 0
+            ? `MISMATCH ${mismatchCount} replay expectation mismatch(es)`
+            : `${state} · ${harness.passed || 0}/${harness.total || 0} scenarios`,
+          total: harness.total || 0,
+          passed: harness.passed || 0,
+          failed: harness.failed || [],
+          mismatchCount,
+          dispositionCounts: counts,
+          dispositionSummary: formatScmDispositionCounts(counts),
+          fixturePackStatus,
+          mismatchDetails,
+          issueRows
+        });
+      }
+
       function summarizeScmRegressionStatusForWorkbench(harness = studioState.lastScmRegressionHarness) {
         if (!harness) {
           return {
@@ -4296,7 +4447,13 @@
             failed: [],
             blocked: [],
             exceptions: [],
-            fixturePacks: []
+            mismatches: [],
+            mismatchCount: 0,
+            dispositionCounts: {},
+            dispositionSummary: formatScmDispositionCounts({PASS: 0, BLOCKED: 0, EXCEPTION: 0, FAIL: 0, MISMATCH: 0}),
+            fixturePacks: [],
+            fixturePackStatus: [],
+            replayExpectations: summarizeScmReplayExpectationsForWorkbench(null)
           };
         }
         const scenarios = Array.isArray(harness.scenarios) ? harness.scenarios : [];
@@ -4306,14 +4463,27 @@
         const exceptions = scenarios
           .filter((scenario) => scenario.disposition === "EXCEPTION")
           .map((scenario) => scenario.id);
+        const mismatches = scenarios
+          .filter((scenario) => scenario.disposition === "MISMATCH")
+          .map((scenario) => scenario.id);
+        const replayExpectations = summarizeScmReplayExpectationsForWorkbench(harness);
+        const label = replayExpectations.mismatchCount > 0
+          ? replayExpectations.label
+          : (harness.ok ? `PASS ${harness.passed}/${harness.total}` : `FAIL ${(harness.failed || []).length}/${harness.total}`);
         return jsonSafeClone({
-          label: harness.ok ? `PASS ${harness.passed}/${harness.total}` : `FAIL ${(harness.failed || []).length}/${harness.total}`,
+          label,
           total: harness.total || scenarios.length,
           passed: harness.passed || 0,
           failed: harness.failed || [],
           blocked,
           exceptions,
-          fixturePacks: harness.fixturePacks || []
+          mismatches,
+          mismatchCount: replayExpectations.mismatchCount || 0,
+          dispositionCounts: harness.dispositionCounts || {},
+          dispositionSummary: formatScmDispositionCounts(harness.dispositionCounts || {}),
+          fixturePacks: harness.fixturePacks || [],
+          fixturePackStatus: replayExpectations.fixturePackStatus || [],
+          replayExpectations
         });
       }
 
@@ -4322,8 +4492,12 @@
         const receiptSource = summarizeScmReceiptSourceForWorkbench(vector);
         const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(vector);
         const regression = summarizeScmRegressionStatusForWorkbench();
+        const replayWorkbench = summarizeScmReplayComparisonForWorkbench();
+        const replayExpectations = summarizeScmReplayExpectationsForWorkbench();
         return jsonSafeClone({
           kind: "mcel-code-studio-normalized-scm-receipt-workbench-detail",
+          replayWorkbench,
+          replayExpectations,
           receiptVectorVersion: vector.vectorVersion || SCM_RECEIPT_VECTOR_VERSION,
           sourceKind: vector.sourceKind || "not-ingested",
           receiptSource,
@@ -4561,6 +4735,8 @@
           : (receiptMode === "waiting" ? "not run" : receiptOk ? "pass" : `gap · ${summary.combined.violations} violation(s)`);
         const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(receiptVector);
         const regressionStatus = summarizeScmRegressionStatusForWorkbench();
+        const replayWorkbench = summarizeScmReplayComparisonForWorkbench(replayComparison);
+        const replayExpectations = summarizeScmReplayExpectationsForWorkbench();
         const gaps = buildActionableScmGaps(summary, gates, effectGraph, selectedEvidence);
         if (receiptVectorIngested && receiptSource.current === false) {
           gaps.unshift(`Receipt vector source is ${receiptSource.freshness}: ${receiptSource.reason || receiptSource.guidance || "refresh or select a current receipt source."}`);
@@ -4619,7 +4795,8 @@
           proofHistoryRows: [
             ["Receipt vector", receiptVectorIngested ? `${receiptVector.sourceKind || "ingested"} · ${receiptVector.vectorVersion || SCM_RECEIPT_VECTOR_VERSION}` : "not ingested"],
             ["Receipt authority", `${receiptSource.authority} · ${receiptSource.current ? "current" : receiptSource.freshness}`],
-            ["Replay", replayComparison ? (replayComparison.stable ? "PASS stable" : "FAIL changed") : "not run"],
+            ["Replay", replayWorkbench.label],
+            ["Replay expectations", replayExpectations.label],
             ["Regression harness", regressionStatus.label],
             ["Serialization", gates.serialization?.ok === false ? "fail" : studioState.lastSerializationGate ? "clean source checked" : "not run"],
             ["Repair", gates.repair?.ok === false ? "fail" : studioState.lastRepairGate ? "scoped repair checked" : "not run"],
@@ -4628,7 +4805,9 @@
           ],
           txDraftProvenance,
           receiptSource,
-          regressionStatus
+          regressionStatus,
+          replayWorkbench,
+          replayExpectations
         };
       }
 
@@ -4702,7 +4881,7 @@
             ["Mounted", studioState.mounted ? "mounted" : "not mounted"],
             ["Persistence", `${persistence.status || "not saved"}${persistence.savedAt ? ` · ${persistence.savedAt}` : ""}`],
             ["Route key", currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())],
-            ["Replay", replayComparison ? (replayComparison.stable ? "stable" : "changed") : "not run"]
+            ["Replay", receiptSurface.replayWorkbench?.label || "not run"]
           ],
           aiRows: [
             ["Repair prompt", studioState.lastScmRepairPrompt ? "generated" : "ready from evidence"],
@@ -4774,7 +4953,15 @@
         if (!proofDockDetailPanel) return null;
         const kind = options.kind || "proof-detail";
         const action = options.action || "";
+        const summaryRows = Array.isArray(options.summaryRows) ? options.summaryRows.filter((row) => row && row.length) : [];
+        const issueRows = Array.isArray(options.issueRows) ? options.issueRows.filter(Boolean) : [];
         const payload = typeof detail === "string" ? detail : JSON.stringify(jsonSafeClone(detail), null, 2);
+        const summaryMarkup = summaryRows.length || issueRows.length
+          ? `<section class="code-studio-proof-detail-summary" aria-label="Proof detail summary">
+              ${summaryRows.length ? `<dl>${summaryRows.map((row) => `<div><dt>${escapeHtml(row[0])}</dt><dd>${escapeHtml(row[1])}</dd></div>`).join("")}</dl>` : ""}
+              ${issueRows.length ? `<div class="code-studio-proof-detail-issues"><strong>Mismatch-first findings</strong><ul>${issueRows.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>` : ""}
+            </section>`
+          : "";
         proofDockDetailPanel.hidden = false;
         proofDockDetailPanel.dataset.proofKind = kind;
         proofDockDetailPanel.innerHTML = `
@@ -4783,6 +4970,7 @@
             <span>${escapeHtml(kind)}</span>
             ${action ? `<button type="button" data-code-studio-proof-action="${escapeHtml(action)}">Copy</button>` : ""}
           </div>
+          ${summaryMarkup}
           <pre class="code-studio-proof-detail-output" tabindex="0">${escapeHtml(payload || "{}")}</pre>
         `;
         proofDockDetailPanel.querySelector("[data-code-studio-proof-action]")?.addEventListener("click", async () => {
@@ -4806,16 +4994,44 @@
       }
 
       function renderReplayComparisonInProofDock() {
+        const workbench = summarizeScmReplayComparisonForWorkbench(studioState.lastScmReplaySnapshotComparison);
         return renderProofDockPayload("Replay snapshot comparison", formatScmReplayComparisonDetail(studioState.lastScmReplaySnapshotComparison), {
           kind: "replay-comparison",
-          action: "copy-replay-comparison"
+          action: "copy-replay-comparison",
+          summaryRows: [
+            ["Replay status", workbench.label],
+            ["Selected evidence", workbench.selectedEvidenceLabel],
+            ["Delta summary", workbench.deltaSummary]
+          ],
+          issueRows: workbench.issueRows
         });
       }
 
       function renderScmRegressionHarnessInProofDock() {
+        const workbench = summarizeScmReplayExpectationsForWorkbench(studioState.lastScmRegressionHarness);
         return renderProofDockPayload("SCM regression harness", formatScmRegressionHarnessDetail(studioState.lastScmRegressionHarness), {
           kind: "regression-harness",
-          action: "copy-regression-harness"
+          action: "copy-regression-harness",
+          summaryRows: [
+            ["Fixture pack status", workbench.label],
+            ["Disposition counts", workbench.dispositionSummary],
+            ["Mismatch count", String(workbench.mismatchCount || 0)]
+          ],
+          issueRows: workbench.issueRows
+        });
+      }
+
+      function renderScmReplayExpectationFailuresInProofDock() {
+        const workbench = summarizeScmReplayExpectationsForWorkbench(studioState.lastScmRegressionHarness);
+        return renderProofDockPayload("Replay expectation failures", formatScmReplayExpectationFailuresDetail(studioState.lastScmRegressionHarness), {
+          kind: "replay-expectation-failures",
+          action: "copy-replay-expectation-failures",
+          summaryRows: [
+            ["Replay expectations", workbench.label],
+            ["Fixture packs", workbench.fixturePackStatus?.map((pack) => pack.label).join(" | ") || "none"],
+            ["Disposition counts", workbench.dispositionSummary]
+          ],
+          issueRows: workbench.issueRows
         });
       }
 
@@ -4855,6 +5071,8 @@
         const selectedEntry = resolveSelectedScmEvidence(summary, filter, entries);
         const receiptVector = collectScmReceiptVector(report, summary, selectedEntry);
         const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(receiptVector);
+        const replayWorkbench = summarizeScmReplayComparisonForWorkbench(studioState.lastScmReplaySnapshotComparison);
+        const replayExpectations = summarizeScmReplayExpectationsForWorkbench(studioState.lastScmRegressionHarness);
         studioState.selectedScmEvidenceKey = selectedEntry.evidenceKey || "";
         const previewEntries = entries.slice(0, 8);
 
@@ -4888,6 +5106,7 @@
               <button type="button" id="code-studio-open-scm-receipt-vector-detail">Open receipt vector in proof dock</button>
               <button type="button" id="code-studio-open-scm-replay-detail">Open replay in proof dock</button>
               <button type="button" id="code-studio-open-scm-regression-detail">Open regression in proof dock</button>
+              <button type="button" id="code-studio-open-scm-replay-expectation-failures">Open replay expectation failures in proof dock</button>
               <button type="button" id="code-studio-open-draft-provenance-detail">Open editor draft provenance in proof dock</button>
               <button type="button" id="code-studio-open-scm-contract-helper-detail">Open helper in proof dock</button>
               <button type="button" id="code-studio-export-scm-evidence-packet">Copy packet</button>
@@ -4904,6 +5123,8 @@
             <span>violations <code>${summary.combined.violations}</code></span>
             <span>blocking <code>${summary.combined.blocking}</code></span>
             <span>receipt vector <code>${receiptVector.sourceKind === "not-ingested" ? "idle" : "ingested"}</code></span>
+            <span>replay <code>${replayWorkbench.state}</code></span>
+            <span>fixture packs <code>${replayExpectations.state}</code></span>
             <span>regression <code>${studioState.lastScmRegressionHarness?.mismatchCount ? "mismatch" : (studioState.lastScmRegressionHarness?.ok === false ? "fail" : studioState.lastScmRegressionHarness ? "ok" : "idle")}</code></span>
             <span>txDraft provenance <code>${txDraftProvenance.state}</code></span>
             <span>editor draft provenance <code>${collectEditorDraftProvenanceSummary().invariants.sourceMutationsOnlyByCommitDraft ? "ok" : "fail"}</code></span>
@@ -4950,6 +5171,10 @@
 
         scmEvidencePanel.querySelector("#code-studio-open-scm-regression-detail")?.addEventListener("click", () => {
           renderScmRegressionHarnessInProofDock();
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-open-scm-replay-expectation-failures")?.addEventListener("click", () => {
+          renderScmReplayExpectationFailuresInProofDock();
         });
 
         scmEvidencePanel.querySelector("#code-studio-open-scm-contract-helper-detail")?.addEventListener("click", () => {
@@ -5660,9 +5885,13 @@
         buildScmReplaySnapshot,
         compareScmReplaySnapshots,
         formatScmReplayComparisonDetail,
+        summarizeScmReplayComparisonForWorkbench,
+        summarizeScmReplayExpectationsForWorkbench,
         runScmRegressionHarness,
         formatScmRegressionHarnessDetail,
+        formatScmReplayExpectationFailuresDetail,
         renderScmRegressionHarnessInProofDock,
+        renderScmReplayExpectationFailuresInProofDock,
         buildGenericScmReplayFixtures,
         runGenericScmReplayFixturePack,
         persistLiveWorkspaceFromSource,
