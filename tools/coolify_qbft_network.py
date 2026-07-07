@@ -72,6 +72,7 @@ QBFT_HELPER_PARK_SERVICE_KEYS = (
     "qbft-runtime-import",
     "qbft-validator-key-init",
     "qbft-validator-vote",
+    "qbft-static-refresh",
     "qbft-retire-orphan-cleanup",
 )
 TRAEFIK_DYNAMIC_CONFIG_REFRESH_S = 300
@@ -80,6 +81,9 @@ QBFT_CONFIG_EXPORT_IMAGE = "python:3.12-alpine"
 DEFAULT_QBFT_CONFIG_EXPORT_PORT = 38173
 DEFAULT_QBFT_CONFIG_EXPORT_TIMEOUT_S = 240.0
 DEFAULT_QBFT_CONFIG_EXPORT_TRANSPORT = "public-entry"
+QBFT_CONSENSUS_TWIDDLE_IMAGE = "python:3.12-alpine"
+DEFAULT_QBFT_CONSENSUS_TWIDDLE_PORT = 38174
+DEFAULT_QBFT_CONSENSUS_TWIDDLE_TIMEOUT_S = 180.0
 QBFT_CONFIG_EXPORT_PUBLIC_PATH_PREFIX = "/__main-computer/qbft-config"
 DEFAULT_FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:latest"
 DEFAULT_DEPLOY_CONTRACTS_TIMEOUT_S = 0.0
@@ -462,6 +466,32 @@ def normalize_validator_address_map(value: object) -> dict[str, str]:
             continue
         try:
             result[safe_id(key, kind="runtime_dir")] = normalize_validator_address(raw_address, field=f"validator address for {key}")
+        except PlanError:
+            continue
+    return result
+
+
+def normalize_validator_public_key(value: object, *, field: str = "validator public key") -> str:
+    text = str(value or "").strip().lower()
+    if text.startswith("0x"):
+        text = text[2:]
+    if text.startswith("04") and len(text) == 130:
+        text = text[2:]
+    if not re.fullmatch(r"[0-9a-f]{128}", text):
+        raise PlanError(f"Invalid {field}: {value!r}")
+    return text
+
+
+def normalize_validator_public_key_map(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for raw_key, raw_key_value in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        try:
+            result[safe_id(key, kind="runtime_dir")] = normalize_validator_public_key(raw_key_value, field=f"validator public key for {key}")
         except PlanError:
             continue
     return result
@@ -1678,31 +1708,23 @@ def validator_add_execution_service_ids(
 ) -> list[str]:
     """Return the host-scoped compose service set for a validator-only add.
 
-    Coolify stores one compose service per QBFT host.  Deploying only the new
-    validator on a host that already runs the current validator-RPC would omit
-    that existing node from the replacement compose and can temporarily break the
-    very RPC surface needed to submit the QBFT vote.  Preserve same-host services
-    when the selected config source is the target host, because the source host is
-    known to contain usable live runtime.  Also preserve a single unambiguous
-    same-host RPC service, which covers the common "add a validator next to the
-    existing RPC node" path without starting unrelated future declarations.
+    ``mutate --add <validator>`` must be narrow: it should not start unrelated
+    future RPC declarations merely because they share the target host.  The only
+    time this executor preserves all same-host services is when the selected
+    live config source is already the target host; in that case replacing the
+    host compose with only the new validator would delete/stop services that are
+    known to be live and needed for the current topology.
     """
 
     target_host = target_service.host
-    same_host_services = [service for service in services_for_host(plan, target_host)]
-    same_host_ids = [service.id for service in same_host_services]
-    selected_source_host = safe_id(str(discovery.get("selected_source_host") or discovery.get("source_host") or ""), kind="host") if str(discovery.get("selected_source_host") or discovery.get("source_host") or "").strip() else ""
+    selected_source_host = (
+        safe_id(str(discovery.get("selected_source_host") or discovery.get("source_host") or ""), kind="host")
+        if str(discovery.get("selected_source_host") or discovery.get("source_host") or "").strip()
+        else ""
+    )
 
     if selected_source_host == target_host:
-        return same_host_ids
-
-    preserved_rpc_services = [
-        service
-        for service in same_host_services
-        if service.id != target_service.id and "rpc" in service.roles
-    ]
-    if len(preserved_rpc_services) == 1:
-        return [preserved_rpc_services[0].id, target_service.id]
+        return [service.id for service in services_for_host(plan, target_host)]
 
     return [target_service.id]
 
@@ -2108,6 +2130,122 @@ def wait_for_stable_observable_chain(
         "observations": observations,
     }
 
+
+def wait_for_qbft_peer_count(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    *,
+    min_peer_count: int,
+    label: str = "wait-qbft-peer-count",
+    stable_successes: int = DEFAULT_MUTATE_STABLE_CHAIN_SUCCESSES,
+    require_block_advance: bool = True,
+) -> dict[str, Any]:
+    """Wait until the observable QBFT RPC reports stable peers and block progress.
+
+    A single peer-count flicker is not safe enough for a validator-set mutation:
+    the failed cross-host add showed peer_count=1 once, then the add vote wedged
+    the chain at the validator-set transition.  Require consecutive acceptable
+    probes and, by default, a block advance while the peer is present.
+    """
+
+    min_peer_count = max(0, int(min_peer_count))
+    stable_successes = max(1, int(stable_successes))
+    timeout_s = max(chain_observation_timeout_from_args(args), DEFAULT_MUTATE_RPC_WAIT_TIMEOUT_S)
+    poll_s = float(getattr(args, "rpc_poll_interval_s", DEFAULT_RPC_POLL_INTERVAL_S) or DEFAULT_RPC_POLL_INTERVAL_S)
+    if poll_s <= 0:
+        poll_s = DEFAULT_RPC_POLL_INTERVAL_S
+    deadline = time.monotonic() + timeout_s
+    observe_args = args_copy_with(args, rpc_url="")
+    observations: list[dict[str, Any]] = []
+    attempt = 0
+    consecutive = 0
+    first_acceptable_block: int | None = None
+    last_error = ""
+
+    operator_log(
+        args,
+        f"{label} start",
+        min_peer_count=min_peer_count,
+        timeout_s=timeout_s,
+        stable_successes=stable_successes,
+        require_block_advance=require_block_advance,
+    )
+    while time.monotonic() <= deadline:
+        attempt += 1
+        observation = observe_chain_state(plan, observe_args)
+        observations.append(observation)
+        if len(observations) > 8:
+            observations = observations[-8:]
+
+        chain = observation.get("chain") if isinstance(observation.get("chain"), dict) else {}
+        peer_count: int | None = None
+        block_number: int | None = None
+        if isinstance(chain, dict):
+            try:
+                peer_count = int(chain.get("peer_count"))
+            except (TypeError, ValueError):
+                peer_count = None
+            try:
+                block_number = int(chain.get("block_number"))
+            except (TypeError, ValueError):
+                block_number = None
+
+        errors: list[str] = []
+        if not observation.get("ok"):
+            errors.append(str(observation.get("errors") or observation.get("error") or "chain observation failed"))
+        if peer_count is None:
+            errors.append("peer_count was not available")
+        elif peer_count < min_peer_count:
+            errors.append(f"peer_count {peer_count} < required {min_peer_count}")
+        if block_number is None:
+            errors.append("block_number was not available")
+
+        block_advanced = False
+        if not errors and block_number is not None:
+            if first_acceptable_block is None:
+                first_acceptable_block = block_number
+            block_advanced = block_number > first_acceptable_block
+            if require_block_advance and not block_advanced:
+                errors.append(f"block has not advanced beyond first acceptable peer block {first_acceptable_block}")
+
+        if errors:
+            consecutive = 0
+            last_error = "; ".join(errors)
+            operator_log(args, f"{label} retry", attempt=attempt, peer_count=peer_count, block_number=block_number, error=last_error)
+        else:
+            consecutive += 1
+            last_error = ""
+            operator_log(args, f"{label} probe", attempt=attempt, consecutive=consecutive, peer_count=peer_count, block_number=block_number, block_advanced=block_advanced)
+            if consecutive >= stable_successes:
+                operator_log(args, f"{label} done", attempt=attempt, peer_count=peer_count, block_number=block_number)
+                return {
+                    "ok": True,
+                    "label": label,
+                    "attempts": attempt,
+                    "stable_successes": consecutive,
+                    "required_stable_successes": stable_successes,
+                    "min_peer_count": min_peer_count,
+                    "peer_count": peer_count,
+                    "first_acceptable_block": first_acceptable_block,
+                    "block_advanced": block_advanced,
+                    "chain": chain,
+                    "observation": observation,
+                    "observations": observations,
+                }
+
+        time.sleep(poll_s)
+
+    return {
+        "ok": False,
+        "label": label,
+        "attempts": attempt,
+        "stable_successes": consecutive,
+        "required_stable_successes": stable_successes,
+        "min_peer_count": min_peer_count,
+        "first_acceptable_block": first_acceptable_block,
+        "error": last_error or f"stable peer_count did not reach {min_peer_count} before timeout",
+        "observations": observations,
+    }
 
 def build_mutation_observed_state(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
     if not bool(getattr(args, "observe_chain", False)):
@@ -4095,6 +4233,7 @@ def apply_validator_add_mutation(plan: NetworkPlan, args: argparse.Namespace, pa
         no_bootstrap=True,
         _runtime_import_bundle=runtime_bundle,
         _include_rpc_public_entry=False,
+        _park_inactive_qbft_helpers=False,
     )
     sync_result = coolify_sync(host_plan, deploy_args, deploy=not no_deploy)
     phases.append({"phase": "seed-new-node-bootstrap", "host": host_id, "result": sync_result})
@@ -4159,7 +4298,140 @@ def apply_validator_add_mutation(plan: NetworkPlan, args: argparse.Namespace, pa
             }
         )
 
+        try:
+            target_public_key = validator_public_key_from_export(address_export, target_service)
+            static_refresh = build_post_add_static_refresh(plan, runtime_bundle, target_service, target_public_key)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "error": f"Unable to prepare post-add static-node topology: {type(exc).__name__}: {exc}",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator service was deployed and identified, but static-node refresh could not be prepared; consensus vote was not submitted.",
+                },
+                "apply_phases": phases,
+            }
+        phases.append(
+            {
+                "phase": "prepare-post-add-static-topology",
+                "result": {
+                    "ok": True,
+                    "target": target_service.id,
+                    "target_enode": static_refresh.get("target_enode"),
+                    "static_node_count": len(static_refresh.get("static_nodes") or []),
+                },
+            }
+        )
+
+        target_static_args = args_copy_with(
+            args,
+            host=host_id,
+            no_bootstrap=True,
+            _qbft_static_refresh=static_refresh,
+            _include_rpc_public_entry=False,
+            _park_inactive_qbft_helpers=False,
+        )
+        target_static_result = coolify_sync(host_plan, target_static_args, deploy=not no_deploy)
+        phases.append({"phase": "refresh-target-static-topology", "host": host_id, "result": target_static_result})
+        if not target_static_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator add deployed the node but failed while refreshing target-host static-node topology; consensus vote was not submitted.",
+                },
+                "apply_phases": phases,
+            }
+
+        source_host_id = str(runtime_bundle.get("source_host") or discovery.get("selected_source_host") or discovery.get("source_host") or "")
+        source_host_id = safe_id(source_host_id, kind="host") if source_host_id else ""
+        source_refresh_services = live_validator_services_from_export(
+            plan,
+            runtime_bundle,
+            current_validators if "current_validators" in locals() else [],
+            source_host=source_host_id,
+        )
+        source_refresh_ids = [service.id for service in source_refresh_services]
+        if source_host_id and (source_host_id != host_id or set(source_refresh_ids) != set(deploy_service_ids)):
+            if not source_refresh_ids:
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": False,
+                        "message": "Validator add could not identify the live source validator service to refresh with the new validator enode; consensus vote was not submitted.",
+                    },
+                    "apply_phases": phases,
+                }
+            source_refresh_plan = plan_with_only_services(plan, source_refresh_ids)
+            source_static_args = args_copy_with(
+                args,
+                host=source_host_id,
+                no_bootstrap=True,
+                _qbft_static_refresh=static_refresh,
+                _include_rpc_public_entry=True,
+                _park_inactive_qbft_helpers=False,
+            )
+            source_static_result = coolify_sync(source_refresh_plan, source_static_args, deploy=not no_deploy)
+            phases.append({"phase": "refresh-source-static-topology", "host": source_host_id, "services": source_refresh_ids, "result": source_static_result})
+            if not source_static_result.get("ok"):
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": False,
+                        "message": "Validator add failed while refreshing the existing validator host with the new validator enode; consensus vote was not submitted.",
+                    },
+                    "apply_phases": phases,
+                }
+            pre_vote_result = wait_for_stable_observable_chain(
+                plan,
+                args,
+                expected_validator_count=len(current_validators) if "current_validators" in locals() else None,
+                label="verify-pre-vote-static-topology",
+            )
+            phases.append({"phase": "verify-pre-vote-static-topology", "result": pre_vote_result})
+            if not pre_vote_result.get("ok"):
+                return {
+                    **packet,
+                    "ok": False,
+                    "mode": "apply",
+                    "execution": {
+                        "implemented": True,
+                        "dry_run": dry_run,
+                        "no_mutation_performed": False,
+                        "message": "Validator add refreshed static-node topology but the existing chain was not stable before the QBFT vote; consensus vote was not submitted.",
+                    },
+                    "apply_phases": phases,
+                }
+
     if dry_run or no_deploy:
+        phases.append(
+            {
+                "phase": "wait-new-validator-peer",
+                "result": {
+                    "ok": True,
+                    "dry_run": dry_run,
+                    "skipped": True,
+                    "reason": "dry-run" if dry_run else "no-deploy",
+                    "min_peer_count": 1,
+                },
+            }
+        )
         phases.append(
             {
                 "phase": "propose-validator-vote",
@@ -4173,6 +4445,26 @@ def apply_validator_add_mutation(plan: NetworkPlan, args: argparse.Namespace, pa
             }
         )
     else:
+        peer_result = wait_for_qbft_peer_count(
+            plan,
+            args,
+            min_peer_count=1,
+            label="wait-new-validator-peer",
+        )
+        phases.append({"phase": "wait-new-validator-peer", "result": peer_result})
+        if not peer_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator add deployed the node and fetched its address, but the new validator did not peer before the QBFT vote.",
+                },
+                "apply_phases": phases,
+            }
         vote_result = propose_qbft_validator_vote_until_ok(
             plan,
             args,
@@ -5101,6 +5393,7 @@ def render_qbft_config_exporter_shell(
             "STATIC_SHA=",
             "METADATA_SHA=",
             "VALIDATOR_ADDRESSES_JSON=",
+            "VALIDATOR_PUBLIC_KEYS_JSON=",
             "i=0",
             "while [ \"$i\" -lt \"$SOURCE_COUNT\" ]; do",
             "  eval label=\"\\${SRC_LABEL_$i}\"",
@@ -5122,12 +5415,23 @@ def render_qbft_config_exporter_shell(
             "    for addr_file in \"$root\"/*/validator-address; do",
             "      [ -f \"$addr_file\" ] || continue",
             "      runtime_dir=$(basename \"$(dirname \"$addr_file\")\")",
+            "      runtime_root=$(dirname \"$addr_file\")",
             "      addr=$(tr -d '\\r\\n ' < \"$addr_file\")",
             "      case \"$addr\" in 0x*) ;; *) addr=\"0x$addr\" ;; esac",
             "      if printf '%s' \"$addr\" | grep -Eq '^0x[0-9a-fA-F]{40}$'; then",
             "        key_esc=$(json_string \"$runtime_dir\")",
             "        addr_esc=$(json_string \"$addr\")",
             "        if [ -z \"$VALIDATOR_ADDRESSES_JSON\" ]; then VALIDATOR_ADDRESSES_JSON=\"\\\"$key_esc\\\":\\\"$addr_esc\\\"\"; else VALIDATOR_ADDRESSES_JSON=\"$VALIDATOR_ADDRESSES_JSON,\\\"$key_esc\\\":\\\"$addr_esc\\\"\"; fi",
+            "      fi",
+            "      if [ -f \"$runtime_root/data/key.pub\" ]; then",
+            "        pub=$(tr -d '\\r\\n ' < \"$runtime_root/data/key.pub\")",
+            "        pub=${pub#0x}",
+            "        case \"$pub\" in 04*) if [ \"${#pub}\" -eq 130 ]; then pub=${pub#04}; fi;; esac",
+            "        if printf '%s' \"$pub\" | grep -Eq '^[0-9a-fA-F]{128}$'; then",
+            "          key_esc=$(json_string \"$runtime_dir\")",
+            "          pub_esc=$(json_string \"$pub\")",
+            "          if [ -z \"$VALIDATOR_PUBLIC_KEYS_JSON\" ]; then VALIDATOR_PUBLIC_KEYS_JSON=\"\\\"$key_esc\\\":\\\"$pub_esc\\\"\"; else VALIDATOR_PUBLIC_KEYS_JSON=\"$VALIDATOR_PUBLIC_KEYS_JSON,\\\"$key_esc\\\":\\\"$pub_esc\\\"\"; fi",
+            "        fi",
             "      fi",
             "    done",
             "    break",
@@ -5159,7 +5463,8 @@ def render_qbft_config_exporter_shell(
             "    \"static_nodes_all_json\": \"$STATIC_SHA\",",
             "    \"network_metadata_json\": \"$METADATA_SHA\"",
             "  },",
-            "  \"validator_addresses\": {$VALIDATOR_ADDRESSES_JSON}",
+            "  \"validator_addresses\": {$VALIDATOR_ADDRESSES_JSON},",
+            "  \"validator_public_keys\": {$VALIDATOR_PUBLIC_KEYS_JSON}",
             "}",
             "JSON",
             "mkdir -p \"$(dirname \"$PUBLIC_EXPORT_FILE\")\"",
@@ -5452,6 +5757,7 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
         files = decoded_files
     sha256 = payload.get("sha256") if isinstance(payload.get("sha256"), Mapping) else {}
     validator_addresses = normalize_validator_address_map(payload.get("validator_addresses"))
+    validator_public_keys = normalize_validator_public_key_map(payload.get("validator_public_keys"))
     missing = [str(item) for item in payload.get("missing_files") or []]
     source_mount = str(payload.get("source_mount") or "")
     raw_candidates = payload.get("source_candidates") if isinstance(payload.get("source_candidates"), list) else []
@@ -5466,6 +5772,8 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
             "missing_files": missing,
             "sha256": {str(key): str(value) for key, value in sha256.items()},
             "validator_addresses": validator_addresses,
+        "validator_public_keys": validator_public_keys,
+            "validator_public_keys": validator_public_keys,
         }
     required = sorted(QBFT_RUNTIME_CONFIG_FILES)
     missing_keys = [key for key in required if not str(files.get(key) or "").strip()]
@@ -5479,6 +5787,8 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
             "missing_files": missing + missing_keys,
             "sha256": {str(key): str(value) for key, value in sha256.items()},
             "validator_addresses": validator_addresses,
+        "validator_public_keys": validator_public_keys,
+            "validator_public_keys": validator_public_keys,
         }
     return {
         "ok": True,
@@ -5490,6 +5800,7 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
         "sha256": {str(key): str(value) for key, value in sha256.items()},
         "lineage_hash": str(sha256.get("genesis_json") or ""),
         "validator_addresses": validator_addresses,
+        "validator_public_keys": validator_public_keys,
     }
 
 
@@ -5597,6 +5908,195 @@ def render_qbft_runtime_import_shell(
         ]
     )
 
+
+
+
+def runtime_bundle_static_nodes(bundle: Mapping[str, Any]) -> list[str]:
+    files = bundle.get("files") if isinstance(bundle.get("files"), Mapping) else {}
+    raw = str(files.get("static_nodes_all_json") or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise PlanError(f"Exported static_nodes_all_json is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise PlanError("Exported static_nodes_all_json must be a JSON list.")
+    nodes: list[str] = []
+    for item in parsed:
+        text = str(item or "").strip()
+        if text and text.startswith("enode://") and text not in nodes:
+            nodes.append(text)
+    return nodes
+
+
+def runtime_bundle_metadata(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    files = bundle.get("files") if isinstance(bundle.get("files"), Mapping) else {}
+    raw = str(files.get("network_metadata_json") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return dict(parsed) if isinstance(parsed, Mapping) else {}
+
+
+def validator_public_key_from_export(export: Mapping[str, Any], service: PlannedService) -> str:
+    public_keys = normalize_validator_public_key_map(export.get("validator_public_keys"))
+    for key in (service_runtime_dir(service), service.id):
+        value = public_keys.get(safe_id(key, kind="runtime_dir"))
+        if value:
+            return value
+    raise PlanError(f"Validator public key for {service.id!r} was not exported from host {service.host!r}.")
+
+
+def validator_enode_from_public_key(service: PlannedService, public_key: str) -> str:
+    return f"enode://{normalize_validator_public_key(public_key)}@{validator_static_enode_endpoint(service)}"
+
+
+def live_validator_services_from_export(
+    plan: NetworkPlan,
+    export: Mapping[str, Any],
+    current_validators: list[str] | tuple[str, ...],
+    *,
+    source_host: str = "",
+) -> list[PlannedService]:
+    addresses = normalize_validator_address_map(export.get("validator_addresses"))
+    current = {normalize_validator_address(address) for address in current_validators}
+    services: list[PlannedService] = []
+    for service in plan.services:
+        if service.role != "validator":
+            continue
+        if source_host and service.host != source_host:
+            continue
+        for key in (service_runtime_dir(service), service.id):
+            address = addresses.get(safe_id(key, kind="runtime_dir"))
+            if address and address in current:
+                services.append(service)
+                break
+    return services
+
+
+def build_post_add_static_refresh(
+    plan: NetworkPlan,
+    bundle: Mapping[str, Any],
+    target_service: PlannedService,
+    target_public_key: str,
+) -> dict[str, Any]:
+    """Build static-node material for the active post-add topology.
+
+    The existing runtime bundle is treated as the live pre-add source of truth.
+    Private state can contain future or retired validators, so this intentionally
+    appends only the target validator's public enode to the exported live static
+    node set.
+    """
+
+    old_nodes = runtime_bundle_static_nodes(bundle)
+    target_enode = validator_enode_from_public_key(target_service, target_public_key)
+    all_nodes = list(dict.fromkeys([*old_nodes, target_enode]))
+
+    metadata = runtime_bundle_metadata(bundle)
+    if not metadata:
+        metadata = {
+            "schema": "main-computer.coolify-qbft-network.v1",
+            "network": plan.name,
+            "chain_id": plan.chain_id,
+            "compose_project": plan.compose_project,
+            "docker_network": plan.docker_network,
+            "docker_subnet": plan.docker_subnet,
+            "validators": [],
+            "rpc_nodes": [],
+        }
+    validators = metadata.get("validators") if isinstance(metadata.get("validators"), list) else []
+    kept_validators = [item for item in validators if isinstance(item, Mapping) and str(item.get("id") or "") != target_service.id]
+    kept_validators.append(
+        {
+            "id": target_service.id,
+            "ip": target_service.container_ip,
+            "p2p": validator_static_enode_endpoint(target_service),
+            "enode": target_enode,
+        }
+    )
+    metadata["validators"] = kept_validators
+    metadata["network"] = plan.name
+    metadata["chain_id"] = plan.chain_id
+    metadata["compose_project"] = plan.compose_project
+    metadata["docker_network"] = plan.docker_network
+    metadata["docker_subnet"] = plan.docker_subnet
+
+    service_enodes: dict[str, str] = {}
+    for item in kept_validators:
+        if not isinstance(item, Mapping):
+            continue
+        service_id = str(item.get("id") or "").strip()
+        enode = str(item.get("enode") or "").strip()
+        if service_id and enode:
+            service_enodes[service_id] = enode
+
+    return {
+        "static_nodes": all_nodes,
+        "target_enode": target_enode,
+        "network_metadata_json": json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        "service_enodes": service_enodes,
+    }
+
+
+def render_qbft_static_refresh_shell(
+    services: list[PlannedService] | tuple[PlannedService, ...],
+    static_refresh: Mapping[str, Any],
+) -> str:
+    nodes = [str(item) for item in static_refresh.get("static_nodes") or [] if str(item or "").strip()]
+    if not nodes:
+        raise PlanError("QBFT static refresh requires at least one enode.")
+    service_enodes = {str(key): str(value) for key, value in (static_refresh.get("service_enodes") or {}).items()}
+    runtime_dirs: list[dict[str, Any]] = []
+    for service in services:
+        runtime_dir = service_runtime_dir(service)
+        exclude = service_enodes.get(service.id, "") if service.role == "validator" else ""
+        runtime_dirs.append({"runtime_dir": runtime_dir, "exclude": exclude})
+    payload = {
+        "static_nodes": nodes,
+        "runtime_dirs": runtime_dirs,
+        "network_metadata_json": str(static_refresh.get("network_metadata_json") or ""),
+    }
+    payload_json = json.dumps(payload, sort_keys=True)
+    return "\n".join(
+        [
+            "set -eu",
+            "mkdir -p /smoke",
+            "python3 - <<'PY'",
+            "import json, os",
+            f"payload = json.loads({json.dumps(payload_json)})",
+            "nodes = [str(item).strip() for item in payload.get('static_nodes') or [] if str(item).strip()]",
+            "if not nodes:",
+            "    raise SystemExit('static refresh has no enodes')",
+            "def write_nodes(path, keep):",
+            "    os.makedirs(os.path.dirname(path), exist_ok=True)",
+            "    tmp = path + '.tmp'",
+            "    with open(tmp, 'w', encoding='utf-8') as fh:",
+            "        json.dump(list(dict.fromkeys(keep)), fh, indent=2)",
+            "        fh.write('\\n')",
+            "    os.replace(tmp, path)",
+            "write_nodes('/smoke/static-nodes-all.json', nodes)",
+            "for item in payload.get('runtime_dirs') or []:",
+            "    runtime_dir = str(item.get('runtime_dir') or '').strip()",
+            "    if not runtime_dir or '/' in runtime_dir or runtime_dir.startswith('.'):",
+            "        raise SystemExit(f'unsafe runtime dir: {runtime_dir!r}')",
+            "    exclude = str(item.get('exclude') or '').strip()",
+            "    keep = [node for node in nodes if node != exclude]",
+            "    write_nodes(f'/smoke/{runtime_dir}/static-nodes.json', keep)",
+            "metadata = str(payload.get('network_metadata_json') or '')",
+            "if metadata.strip():",
+            "    json.loads(metadata)",
+            "    tmp = '/smoke/network-metadata.json.tmp'",
+            "    with open(tmp, 'w', encoding='utf-8') as fh:",
+            "        fh.write(metadata)",
+            "    os.replace(tmp, '/smoke/network-metadata.json')",
+            "print(json.dumps({'ok': True, 'runtime_dirs': [item.get('runtime_dir') for item in payload.get('runtime_dirs') or []], 'static_node_count': len(nodes)}, sort_keys=True))",
+            "PY",
+        ]
+    )
 
 
 def render_validator_key_init_shell(plan: NetworkPlan, services: list[PlannedService] | tuple[PlannedService, ...]) -> str:
@@ -5911,6 +6411,8 @@ def render_compose_for_host(
     config_export: Mapping[str, Any] | None = None,
     retire_cleanup_services: list[PlannedService] | tuple[PlannedService, ...] = (),
     validator_vote: Mapping[str, Any] | None = None,
+    static_refresh: Mapping[str, Any] | None = None,
+    park_inactive_helpers: bool = True,
 ) -> str:
     host_id = safe_id(host_id, kind="host")
     hosts = host_by_id(plan)
@@ -6034,6 +6536,50 @@ def render_compose_for_host(
             ]
         )
 
+    if static_refresh:
+        active_helper_service_keys.add("qbft-static-refresh")
+        static_refresh_script = escape_compose_interpolation(render_qbft_static_refresh_shell(services, static_refresh))
+        lines.extend(
+            [
+                "  qbft-static-refresh:",
+                f"    image: {yaml_quote(QBFT_CONFIG_TRANSFER_IMAGE)}",
+                "    restart: \"no\"",
+                "    exclude_from_hc: true",
+            ]
+        )
+        if include_runtime_import or include_validator_key_init:
+            lines.append("    depends_on:")
+            if include_runtime_import:
+                lines.extend(
+                    [
+                        "      qbft-runtime-import:",
+                        "        condition: service_completed_successfully",
+                    ]
+                )
+            if include_validator_key_init:
+                lines.extend(
+                    [
+                        "      qbft-validator-key-init:",
+                        "        condition: service_completed_successfully",
+                    ]
+                )
+        lines.extend(
+            [
+                "    entrypoint:",
+                "      - /bin/sh",
+                "      - -ec",
+                "      - |-",
+            ]
+        )
+        lines.extend([f"        {line}" if line else "" for line in static_refresh_script.splitlines()])
+        lines.extend(
+            [
+                "    volumes:",
+                *volume_lines,
+                "",
+            ]
+        )
+
     if include_bootstrap:
         active_helper_service_keys.add("qbft-bootstrap")
         bootstrap_script = escape_compose_interpolation(render_bootstrap_shell(plan))
@@ -6078,7 +6624,7 @@ def render_compose_for_host(
         if port_lines:
             lines.append("    ports:")
             lines.extend(port_lines)
-        if include_bootstrap or include_runtime_import or include_validator_key_init:
+        if include_bootstrap or include_runtime_import or include_validator_key_init or static_refresh:
             lines.append("    depends_on:")
             if include_bootstrap:
                 lines.extend(
@@ -6098,6 +6644,13 @@ def render_compose_for_host(
                 lines.extend(
                     [
                         "      qbft-validator-key-init:",
+                        "        condition: service_completed_successfully",
+                    ]
+                )
+            if static_refresh:
+                lines.extend(
+                    [
+                        "      qbft-static-refresh:",
                         "        condition: service_completed_successfully",
                     ]
                 )
@@ -6137,7 +6690,8 @@ def render_compose_for_host(
         active_helper_service_keys.add("qbft-retire-orphan-cleanup")
     append_retired_qbft_service_cleanup(lines, retire_cleanup_services)
 
-    append_parked_qbft_helper_services(lines, active_helper_service_keys)
+    if park_inactive_helpers:
+        append_parked_qbft_helper_services(lines, active_helper_service_keys)
 
     if include_rpc_public_entry:
         append_rpc_public_entry_sidecar(lines, plan, host_id, config_export=config_export)
@@ -6889,12 +7443,13 @@ def coolify_client_from_args(
     host_id: str | None = None,
 ) -> tuple[CoolifyClient, str, str]:
     url = str(getattr(args, "coolify_url", "") or "").strip()
-    host = coolify_host_for_action(plan, host_id or str(getattr(args, "_coolify_host_id", "") or ""))
+    selected_host_id = host_id or str(getattr(args, "_coolify_host_id", "") or "")
+    host = coolify_host_for_action(plan, selected_host_id)
     if not url and host is not None:
         url = host.coolify_url
     if not url:
         raise CoolifyError("Coolify URL is required. Pass --coolify-url or define coolify.hosts.<slot>.url in private state.")
-    token, token_source = resolve_coolify_token(args, plan, host_id=host_id)
+    token, token_source = resolve_coolify_token(args, plan, host_id=selected_host_id)
     return CoolifyClient(
         url,
         token,
@@ -7709,6 +8264,467 @@ def discover_topology(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, 
     }
 
 
+
+
+def qbft_consensus_twiddle_hosts(plan: NetworkPlan, args: argparse.Namespace) -> list[str]:
+    """Return Coolify host ids that should receive the read-only consensus twiddle."""
+
+    hosts_by_id = host_by_id(plan)
+    explicit = str(getattr(args, "twiddle_hosts", "") or "").strip()
+    if explicit:
+        requested = list(split_selected_ids(explicit, kind="host"))
+    else:
+        raw_instances = list(split_selected_ids(str(getattr(args, "instances", "") or ""), kind="instance"))
+        if raw_instances:
+            services = planned_service_by_id(plan)
+            requested = []
+            for instance_id in raw_instances:
+                service = services.get(instance_id)
+                if service is not None:
+                    requested.append(service.host)
+        else:
+            requested = [host.id for host in plan.hosts]
+
+    selected: list[str] = []
+    seen: set[str] = set()
+    for host_id in requested:
+        clean = safe_id(host_id, kind="host")
+        if clean not in hosts_by_id:
+            raise PlanError(f"Unknown --twiddle-hosts host id: {host_id!r}")
+        if clean not in seen:
+            seen.add(clean)
+            selected.append(clean)
+    return selected
+
+
+def qbft_consensus_twiddle_service_name(plan: NetworkPlan, host_id: str) -> str:
+    host_id = safe_id(host_id, kind="host")
+    return f"{project_service_name(plan, host_id)}-consensus-twiddle"
+
+
+def qbft_consensus_twiddle_url(plan: NetworkPlan, host_id: str, token: str, port: int) -> str:
+    hosts = host_by_id(plan)
+    host = hosts.get(safe_id(host_id, kind="host"))
+    if host is None:
+        raise PlanError(f"Unknown twiddle host: {host_id!r}")
+    address = str(host.address or "").strip()
+    if not address:
+        raise PlanError(f"Host {host_id!r} has no public address for twiddle result fetch")
+    return f"http://{address}:{int(port)}/{urllib.parse.quote(token)}.json"
+
+
+def plan_without_host_service_uuids(plan: NetworkPlan) -> NetworkPlan:
+    """Return a plan copy that cannot accidentally update the normal QBFT services.
+
+    coolify_sync normally falls back to PlannedHost.service_uuid for the host's
+    managed QBFT service.  The consensus twiddle is an auxiliary service and must
+    be discovered/created by its own service name instead.
+    """
+
+    return replace(plan, hosts=tuple(replace(host, service_uuid="") for host in plan.hosts))
+
+
+def render_qbft_consensus_twiddle_shell(plan: NetworkPlan, host_id: str, token: str) -> str:
+    """Return the shell/Python script that inspects host-local Docker consensus state.
+
+    The script is deliberately read-only: it calls docker inspect/list commands,
+    reads mounted Docker volume files through a read-only bind mount, and refuses
+    to emit private-key-like file contents.
+    """
+
+    host_id = safe_id(host_id, kind="host")
+    service_ids = [service.id for service in services_for_host(plan, host_id)]
+    cfg = {
+        "network": plan.name,
+        "environment": plan.environment,
+        "compose_project": plan.compose_project,
+        "host_id": host_id,
+        "service_ids": service_ids,
+        "token": token,
+    }
+    cfg_json = json.dumps(cfg, sort_keys=True)
+    return "\n".join(
+        [
+            "set -eu",
+            "mkdir -p /out",
+            "cat > /tmp/qbft-consensus-twiddle.json <<'JSON_QBFT_CONSENSUS_TWIDDLE'",
+            cfg_json,
+            "JSON_QBFT_CONSENSUS_TWIDDLE",
+            "python3 - <<'PY_QBFT_CONSENSUS_TWIDDLE'",
+            "import datetime as _dt",
+            "import json",
+            "import os",
+            "import re",
+            "import subprocess",
+            "import sys",
+            "from pathlib import Path",
+            "",
+            "with open('/tmp/qbft-consensus-twiddle.json', 'r', encoding='utf-8') as fh:",
+            "    cfg = json.load(fh)",
+            "",
+            "def run(cmd, timeout=20):",
+            "    try:",
+            "        completed = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=False)",
+            "        return {",
+            "            'ok': completed.returncode == 0,",
+            "            'returncode': completed.returncode,",
+            "            'cmd': cmd,",
+            "            'stdout': completed.stdout,",
+            "            'stderr': completed.stderr,",
+            "        }",
+            "    except Exception as exc:",
+            "        return {'ok': False, 'returncode': None, 'cmd': cmd, 'stdout': '', 'stderr': f'{type(exc).__name__}: {exc}'}",
+            "",
+            "def split_lines(value):",
+            "    return [line.strip() for line in str(value or '').splitlines() if line.strip()]",
+            "",
+            "def marker_match(value, markers):",
+            "    lower = str(value or '').lower()",
+            "    return any(marker and marker.lower() in lower for marker in markers)",
+            "",
+            "def read_text_limited(path, limit=65536):",
+            "    with open(path, 'rb') as fh:",
+            "        raw = fh.read(limit + 1)",
+            "    truncated = len(raw) > limit",
+            "    raw = raw[:limit]",
+            "    return raw.decode('utf-8', errors='replace'), truncated",
+            "",
+            "def is_private_like(rel_path):",
+            "    rel = rel_path.replace('\\\\', '/').lower()",
+            "    base = rel.rsplit('/', 1)[-1]",
+            "    if base in {'key', 'nodekey', 'private-key', 'private.key', 'jwt.hex'}:",
+            "        return True",
+            "    if base.endswith(('.key', '.pem')):",
+            "        return True",
+            "    return any(part in {'keystore', 'secrets', 'secret', 'passwords'} for part in rel.split('/'))",
+            "",
+            "def is_safe_consensus_file(rel_path):",
+            "    rel = rel_path.replace('\\\\', '/').lower()",
+            "    base = rel.rsplit('/', 1)[-1]",
+            "    exact = {",
+            "        'genesis.json',",
+            "        'static-nodes.json',",
+            "        'static-nodes-all.json',",
+            "        'network-metadata.json',",
+            "        'validator-address',",
+            "        'validator-address.txt',",
+            "        'validator-addresses.json',",
+            "    }",
+            "    if base in exact:",
+            "        return True",
+            "    if base.endswith(('.json', '.toml', '.txt', '.pub', '.properties')) and ('/smoke/' in '/' + rel or rel.startswith('smoke/')):",
+            "        return True",
+            "    if base.endswith('.pub'):",
+            "        return True",
+            "    return False",
+            "",
+            "def file_record(path, root):",
+            "    rel = os.path.relpath(path, root).replace('\\\\', '/')",
+            "    try:",
+            "        stat = os.stat(path)",
+            "    except OSError as exc:",
+            "        return {'path': rel, 'ok': False, 'error': f'{type(exc).__name__}: {exc}'}",
+            "    private_like = is_private_like(rel)",
+            "    safe = is_safe_consensus_file(rel)",
+            "    record = {",
+            "        'path': rel,",
+            "        'ok': True,",
+            "        'size': stat.st_size,",
+            "        'private_like': private_like,",
+            "        'content_included': bool(safe and not private_like),",
+            "    }",
+            "    if safe and not private_like:",
+            "        try:",
+            "            content, truncated = read_text_limited(path)",
+            "            record['content'] = content",
+            "            record['truncated'] = truncated",
+            "            if rel.lower().endswith('.json'):",
+            "                try:",
+            "                    record['json'] = json.loads(content)",
+            "                except Exception:",
+            "                    pass",
+            "        except Exception as exc:",
+            "            record['ok'] = False",
+            "            record['error'] = f'{type(exc).__name__}: {exc}'",
+            "    return record",
+            "",
+            "apk = run(['/sbin/apk', 'add', '--no-cache', 'docker-cli'], timeout=120)",
+            "markers = [cfg.get('compose_project', ''), 'main-computer-qbft', 'qbft', 'besu']",
+            "markers.extend(str(item) for item in cfg.get('service_ids') or [])",
+            "containers = []",
+            "docker_available = apk['ok']",
+            "if docker_available:",
+            "    ids_result = run(['docker', 'ps', '-a', '--format', '{{.ID}}'])",
+            "    container_ids = split_lines(ids_result.get('stdout'))",
+            "    if container_ids:",
+            "        inspect_result = run(['docker', 'inspect', *container_ids], timeout=30)",
+            "        if inspect_result['ok']:",
+            "            try:",
+            "                for item in json.loads(inspect_result['stdout']):",
+            "                    labels = ((item.get('Config') or {}).get('Labels') or {})",
+            "                    compose_service = str(labels.get('com.docker.compose.service') or '')",
+            "                    if compose_service == 'qbft-consensus-twiddle':",
+            "                        continue",
+            "                    name = str(item.get('Name') or '').lstrip('/')",
+            "                    image = str(((item.get('Config') or {}).get('Image')) or '')",
+            "                    state = item.get('State') or {}",
+            "                    ports = item.get('NetworkSettings', {}).get('Ports') or {}",
+            "                    blob = ' '.join([name, image, json.dumps(labels, sort_keys=True), json.dumps(ports, sort_keys=True)])",
+            "                    if marker_match(blob, markers):",
+            "                        containers.append({",
+            "                            'id': str(item.get('Id') or '')[:12],",
+            "                            'name': name,",
+            "                            'image': image,",
+            "                            'status': state.get('Status'),",
+            "                            'running': bool(state.get('Running')),",
+            "                            'labels': {",
+            "                                key: labels.get(key)",
+            "                                for key in sorted(labels)",
+            "                                if key.startswith('com.docker.compose') or key.startswith('coolify') or key.startswith('main-computer')",
+            "                            },",
+            "                            'ports': ports,",
+            "                        })",
+            "            except Exception as exc:",
+            "                containers.append({'ok': False, 'error': f'container inspect parse failed: {type(exc).__name__}: {exc}'})",
+            "else:",
+            "    ids_result = {'ok': False, 'stderr': 'docker-cli was not installed'}",
+            "",
+            "volumes = []",
+            "volume_files = []",
+            "if docker_available:",
+            "    volume_result = run(['docker', 'volume', 'ls', '--format', '{{.Name}}'])",
+            "    for volume_name in split_lines(volume_result.get('stdout')):",
+            "        if not marker_match(volume_name, markers):",
+            "            continue",
+            "        root = Path('/host-docker-volumes') / volume_name / '_data'",
+            "        volume_record = {'name': volume_name, 'mount_probe': str(root), 'mount_readable': root.is_dir()}",
+            "        volumes.append(volume_record)",
+            "        if not root.is_dir():",
+            "            continue",
+            "        found_for_volume = []",
+            "        skipped_dirs = {'database', 'caches', 'cache', 'logs', 'lost+found'}",
+            "        for dirpath, dirnames, filenames in os.walk(root):",
+            "            rel_dir = os.path.relpath(dirpath, root).replace('\\\\', '/')",
+            "            depth = 0 if rel_dir == '.' else rel_dir.count('/') + 1",
+            "            dirnames[:] = [d for d in dirnames if d not in skipped_dirs and depth < 5]",
+            "            for filename in filenames:",
+            "                rel_path = os.path.relpath(os.path.join(dirpath, filename), root).replace('\\\\', '/')",
+            "                if not is_safe_consensus_file(rel_path) and not is_private_like(rel_path):",
+            "                    continue",
+            "                found_for_volume.append(file_record(os.path.join(dirpath, filename), str(root)))",
+            "                if len(found_for_volume) >= 200:",
+            "                    break",
+            "            if len(found_for_volume) >= 200:",
+            "                break",
+            "        volume_files.append({'volume': volume_name, 'files': found_for_volume})",
+            "else:",
+            "    volume_result = {'ok': False, 'stderr': 'docker-cli was not installed'}",
+            "",
+            "static_node_files = []",
+            "for bundle in volume_files:",
+            "    for item in bundle.get('files') or []:",
+            "        if str(item.get('path') or '').endswith(('static-nodes.json', 'static-nodes-all.json')):",
+            "            entry = {'volume': bundle.get('volume'), 'path': item.get('path'), 'content_included': item.get('content_included')}",
+            "            if isinstance(item.get('json'), list):",
+            "                entry['count'] = len(item['json'])",
+            "                entry['enodes'] = item['json']",
+            "            static_node_files.append(entry)",
+            "",
+            "warnings = []",
+            "if docker_available and not containers:",
+            "    warnings.append('no QBFT/Besu-looking containers found on this host')",
+            "if docker_available and not volumes:",
+            "    warnings.append('no QBFT/Besu-looking Docker volumes found on this host')",
+            "if volumes and not static_node_files:",
+            "    warnings.append('QBFT-looking volumes exist, but no static-nodes files were found')",
+            "",
+            "payload = {",
+            "    'ok': True,",
+            "    'action': 'twiddle-consensus',",
+            "    'generated_at': _dt.datetime.now(_dt.timezone.utc).isoformat(),",
+            "    'network': cfg.get('network'),",
+            "    'environment': cfg.get('environment'),",
+            "    'host_id': cfg.get('host_id'),",
+            "    'compose_project': cfg.get('compose_project'),",
+            "    'service_ids_for_host': cfg.get('service_ids') or [],",
+            "    'docker_cli_install': {key: apk.get(key) for key in ('ok', 'returncode', 'stderr')},",
+            "    'docker_available': docker_available,",
+            "    'containers': containers,",
+            "    'volumes': volumes,",
+            "    'volume_files': volume_files,",
+            "    'static_node_files': static_node_files,",
+            "    'warnings': warnings,",
+            "}",
+            "out_path = Path('/out') / (cfg['token'] + '.json')",
+            "out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')",
+            "print(json.dumps({'ok': True, 'wrote': str(out_path), 'warnings': warnings}, sort_keys=True))",
+            "PY_QBFT_CONSENSUS_TWIDDLE",
+            "python3 - <<'PY_QBFT_CONSENSUS_TWIDDLE_HTTP'",
+            "import json",
+            "from pathlib import Path",
+            "from http.server import BaseHTTPRequestHandler, HTTPServer",
+            "",
+            "with open('/tmp/qbft-consensus-twiddle.json', 'r', encoding='utf-8') as fh:",
+            "    cfg = json.load(fh)",
+            "token = cfg['token']",
+            "payload_path = Path('/out') / (token + '.json')",
+            "",
+            "class Handler(BaseHTTPRequestHandler):",
+            "    def do_GET(self):",
+            "        if self.path != '/' + token + '.json':",
+            "            self.send_response(404)",
+            "            self.end_headers()",
+            "            self.wfile.write(b'not found')",
+            "            return",
+            "        data = payload_path.read_bytes()",
+            "        self.send_response(200)",
+            "        self.send_header('Content-Type', 'application/json')",
+            "        self.send_header('Content-Length', str(len(data)))",
+            "        self.end_headers()",
+            "        self.wfile.write(data)",
+            "    def log_message(self, fmt, *args):",
+            "        print('twiddle-http ' + (fmt % args))",
+            "",
+            "HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()",
+            "PY_QBFT_CONSENSUS_TWIDDLE_HTTP",
+        ]
+    )
+
+
+def render_qbft_consensus_twiddle_compose(plan: NetworkPlan, host_id: str, token: str, port: int) -> str:
+    host_id = safe_id(host_id, kind="host")
+    port = int(port)
+    if port <= 0 or port > 65535:
+        raise PlanError("--twiddle-port must be between 1 and 65535")
+    script = escape_compose_interpolation(render_qbft_consensus_twiddle_shell(plan, host_id, token))
+    lines = [
+        f"name: {plan.compose_project}-{host_id}-consensus-twiddle",
+        "",
+        "services:",
+        "  qbft-consensus-twiddle:",
+        f"    image: {yaml_quote(QBFT_CONSENSUS_TWIDDLE_IMAGE)}",
+        "    restart: unless-stopped",
+        "    exclude_from_hc: true",
+        "    labels:",
+        "      - \"traefik.enable=false\"",
+        "      - \"main-computer.qbft-consensus-twiddle=true\"",
+        "    ports:",
+        f"      - {yaml_quote(f'0.0.0.0:{port}:8080')}",
+        "    volumes:",
+        "      - \"/var/run/docker.sock:/var/run/docker.sock\"",
+        "      - \"/var/lib/docker/volumes:/host-docker-volumes:ro\"",
+        "    entrypoint:",
+        "      - /bin/sh",
+        "      - -ec",
+        "      - |-",
+    ]
+    lines.extend([f"        {line}" if line else "" for line in script.splitlines()])
+    return "\n".join(lines) + "\n"
+
+
+def run_coolify_consensus_twiddle(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    """Run a Coolify-native, read-only consensus-state inspection twiddle per host."""
+
+    configure_local_coolify_defaults(plan, args)
+    host_ids = qbft_consensus_twiddle_hosts(plan, args)
+    token_by_host = {host_id: secrets.token_urlsafe(18) for host_id in host_ids}
+    port = int(getattr(args, "twiddle_port", DEFAULT_QBFT_CONSENSUS_TWIDDLE_PORT))
+    timeout_s = float(getattr(args, "twiddle_timeout_s", DEFAULT_QBFT_CONSENSUS_TWIDDLE_TIMEOUT_S))
+    dry_run = bool(getattr(args, "dry_run", False))
+    no_deploy = bool(getattr(args, "no_deploy", False))
+    aux_plan = plan_without_host_service_uuids(plan)
+    phases: list[dict[str, Any]] = []
+    results: dict[str, Any] = {}
+    operator_log(args, "twiddle-consensus start", network=plan.name, hosts=",".join(host_ids), port=port)
+
+    for host_id in host_ids:
+        token = token_by_host[host_id]
+        service_name = qbft_consensus_twiddle_service_name(plan, host_id)
+        result_url = qbft_consensus_twiddle_url(plan, host_id, token, port)
+        compose = render_qbft_consensus_twiddle_compose(plan, host_id, token, port)
+        twiddle_args = args_copy_with(
+            args,
+            host=host_id,
+            coolify_service_name=service_name,
+            coolify_service_uuid="",
+            _compose_override=compose,
+        )
+        sync_result = coolify_sync(aux_plan, twiddle_args, deploy=not no_deploy)
+        phase = {
+            "phase": "deploy-consensus-twiddle",
+            "host": host_id,
+            "service_name": service_name,
+            "result_url": result_url,
+            "result": sync_result,
+        }
+        phases.append(phase)
+        if dry_run or no_deploy:
+            results[host_id] = {
+                "ok": bool(sync_result.get("ok")),
+                "dry_run": dry_run,
+                "no_deploy": no_deploy,
+                "service_name": service_name,
+                "result_url": result_url,
+                "compose": compose if dry_run else "",
+                "message": "Consensus twiddle rendered but not fetched because deployment was skipped.",
+            }
+            continue
+        if not sync_result.get("ok"):
+            results[host_id] = {
+                "ok": False,
+                "service_name": service_name,
+                "result_url": result_url,
+                "error": "Coolify sync/deploy failed before twiddle result could be fetched.",
+                "sync": sync_result,
+            }
+            continue
+
+        deadline = time.time() + timeout_s
+        last_error = ""
+        payload: Any = None
+        while time.time() < deadline:
+            try:
+                payload = fetch_json_url(result_url, timeout_s=min(10.0, max(2.0, timeout_s / 12.0)))
+                if not isinstance(payload, Mapping):
+                    raise RuntimeError(f"twiddle returned non-object payload: {type(payload).__name__}")
+                break
+            except Exception as exc:  # noqa: BLE001 - return all fetch diagnostics in JSON.
+                last_error = f"{type(exc).__name__}: {exc}"
+                time.sleep(2.0)
+        if isinstance(payload, Mapping):
+            results[host_id] = {
+                "ok": bool(payload.get("ok")),
+                "service_name": service_name,
+                "result_url": result_url,
+                "payload": payload,
+            }
+            phases.append({"phase": "fetch-consensus-twiddle", "host": host_id, "result": {"ok": bool(payload.get("ok")), "result_url": result_url}})
+        else:
+            results[host_id] = {
+                "ok": False,
+                "service_name": service_name,
+                "result_url": result_url,
+                "error": last_error or "twiddle result fetch timed out",
+            }
+            phases.append({"phase": "fetch-consensus-twiddle", "host": host_id, "result": {"ok": False, "result_url": result_url, "error": last_error}})
+
+    ok = all(bool(item.get("ok")) for item in results.values()) if results else False
+    return {
+        "ok": ok,
+        "action": "twiddle-consensus",
+        "network": plan.name,
+        "hosts": host_ids,
+        "port": port,
+        "dry_run": dry_run,
+        "mode": "coolify-read-only-diagnostic-sidecar",
+        "warning": (
+            "This twiddle is read-only with respect to consensus files and Docker objects, but it creates/updates "
+            "temporary Coolify diagnostic services and exposes tokenized JSON result endpoints on the selected host port."
+        ),
+        "results": results,
+        "phases": phases,
+    }
+
 def coolify_service_matches_name(item: dict[str, Any], service_name: str) -> bool:
     clean_name = str(service_name or "").strip().lower()
     if not clean_name:
@@ -8429,6 +9445,8 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
             config_export=getattr(args, "_config_export", None),
             retire_cleanup_services=tuple(getattr(args, "_retire_cleanup_services", ()) or ()),
             validator_vote=getattr(args, "_validator_vote", None),
+            static_refresh=getattr(args, "_qbft_static_refresh", None),
+            park_inactive_helpers=bool(getattr(args, "_park_inactive_qbft_helpers", True)),
         )
     compose_b64 = base64_compose(compose)
     service_name = str(getattr(args, "coolify_service_name", "") or project_service_name(plan, host_id))
@@ -8763,6 +9781,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "coolify-check",
             "coolify-discover",
             "discover-topology",
+            "twiddle-consensus",
             "observe-chain",
             "coolify-sync",
             "wait-rpc",
@@ -8896,6 +9915,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hub-wait-timeout-s", type=float, default=30.0)
     parser.add_argument("--hub-wait-poll-s", type=float, default=5.0)
     parser.add_argument("--hub-status-timeout-s", type=float, default=8.0)
+    parser.add_argument(
+        "--twiddle-hosts",
+        default="",
+        help="For twiddle-consensus: comma-separated Coolify host ids to inspect. Defaults to --instances hosts, or all plan hosts.",
+    )
+    parser.add_argument(
+        "--twiddle-port",
+        type=int,
+        default=DEFAULT_QBFT_CONSENSUS_TWIDDLE_PORT,
+        help="Temporary direct host port used by the Coolify consensus twiddle HTTP result endpoint.",
+    )
+    parser.add_argument(
+        "--twiddle-timeout-s",
+        type=float,
+        default=DEFAULT_QBFT_CONSENSUS_TWIDDLE_TIMEOUT_S,
+        help="Seconds to wait for each Coolify consensus twiddle result endpoint.",
+    )
 
     parser.add_argument("--deploy-contracts", action="store_true", help="For apply: deploy contracts after RPC is healthy.")
     parser.add_argument("--deployment-run-id", default="", help="Override the contract deployment run id.")
@@ -9078,6 +10114,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result.get("ok") else 1
         if args.action == "discover-topology":
             result = discover_topology(plan, args)
+            print_json(result)
+            return 0 if result.get("ok") else 1
+        if args.action == "twiddle-consensus":
+            result = run_coolify_consensus_twiddle(plan, args)
             print_json(result)
             return 0 if result.get("ok") else 1
         if args.action == "observe-chain":

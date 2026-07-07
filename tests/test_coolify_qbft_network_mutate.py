@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,6 +94,19 @@ networks:
         encoding="utf-8",
     )
     return state_path
+
+
+def test_coolify_client_from_args_uses_selected_host_token_when_coolify_url_is_implicit(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+    args = _args()
+    args._coolify_host_id = "b"
+
+    client, token, token_source = module.coolify_client_from_args(args, plan)
+
+    assert client.base_url == "http://198.51.100.11:8000"
+    assert token == "secret-b"
+    assert token_source == "private-state:coolify.hosts.b.api_token"
 
 
 def test_private_state_rpc_only_instance_does_not_require_p2p_host_port(tmp_path: Path) -> None:
@@ -226,7 +240,14 @@ def test_validator_runtime_import_compose_initializes_key_and_exports_address(tm
         "sha256": {},
     }
 
-    compose = module.render_compose_for_host(plan, "b", runtime_import_bundle=bundle, include_rpc_public_entry=False)
+    compose = module.render_compose_for_host(
+        plan,
+        "b",
+        include_bootstrap=False,
+        runtime_import_bundle=bundle,
+        include_rpc_public_entry=False,
+        park_inactive_helpers=False,
+    )
 
     assert "qbft-runtime-import:" in compose
     assert "qbft-validator-key-init:" in compose
@@ -235,7 +256,11 @@ def test_validator_runtime_import_compose_initializes_key_and_exports_address(tm
     assert "validator-address" in compose
     assert "public-entry:" not in compose
     assert "validator-2:" in compose
-    assert "qbft-validator-key-init:" in compose.split("validator-2:", 1)[1]
+    assert "qbft-bootstrap:" not in compose
+    validator_block = compose.split("validator-2:", 1)[1]
+    assert "qbft-runtime-import:" in validator_block
+    assert "qbft-validator-key-init:" in validator_block
+    assert "qbft-bootstrap:" not in validator_block
 
 
 def test_config_exporter_reports_validator_address_files(tmp_path: Path) -> None:
@@ -297,7 +322,7 @@ networks:
     assert service_ids == ["validator-1", "validator-rpc-1"] or service_ids == ["validator-rpc-1", "validator-1"]
 
 
-def test_validator_add_preserves_single_same_host_rpc_when_source_is_elsewhere(tmp_path: Path) -> None:
+def test_validator_add_does_not_auto_deploy_same_host_rpc_when_source_is_elsewhere(tmp_path: Path) -> None:
     module = _load_module()
     state_path = tmp_path / "main_computer.private.yaml"
     state_path.write_text(
@@ -349,7 +374,7 @@ networks:
 
     service_ids = module.validator_add_execution_service_ids(plan, target, {"selected_source_host": "a"})
 
-    assert service_ids == ["rpc-1", "validator-2"]
+    assert service_ids == ["validator-2"]
 
 
 def test_validator_add_ambiguous_same_host_rpc_future_declarations_stays_narrow(tmp_path: Path) -> None:
@@ -366,16 +391,24 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
     module = _load_module()
     plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
     calls: list[tuple[str, Any]] = []
+    source_enode = "enode://" + ("1" * 128) + "@198.51.100.10:30321"
+    target_public_key = "2" * 128
     bundle = {
         "ok": True,
         "source_host": "a",
         "lineage_hash": "abc123",
         "files": {
             "genesis_json": '{"config":{"chainId":42424241}}\n',
-            "static_nodes_all_json": "[]\n",
-            "network_metadata_json": '{"network":"testnet"}\n',
+            "static_nodes_all_json": json.dumps([source_enode]) + "\n",
+            "network_metadata_json": json.dumps({
+                "network": "testnet",
+                "validators": [
+                    {"id": "validator-rpc-1", "enode": source_enode, "p2p": "198.51.100.10:30321"}
+                ],
+            }) + "\n",
         },
         "sha256": {},
+        "validator_addresses": {"validator-rpc-1": "0x1111111111111111111111111111111111111111"},
     }
     new_validator = "0x2222222222222222222222222222222222222222"
 
@@ -391,21 +424,39 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
 
     def fake_coolify_sync(sync_plan: Any, sync_args: Any, *, deploy: bool = False) -> dict[str, Any]:
         calls.append(("coolify-sync", sync_plan, sync_args, deploy))
-        assert [host.id for host in sync_plan.hosts] == ["b"]
-        assert [service.id for service in sync_plan.services] == ["validator-2"]
-        assert sync_args.host == "b"
         assert sync_args.no_bootstrap is True
-        assert sync_args._runtime_import_bundle is bundle
-        assert sync_args._include_rpc_public_entry is False
+        assert sync_args._park_inactive_qbft_helpers is False
         assert deploy is True
-        return {"ok": True, "service_uuid": "svc-b", "service_name": "main-computer-qbft-testnet-b"}
+        service_ids = [service.id for service in sync_plan.services]
+        if getattr(sync_args, "_runtime_import_bundle", None) is bundle:
+            assert [host.id for host in sync_plan.hosts] == ["b"]
+            assert service_ids == ["validator-2"]
+            assert sync_args.host == "b"
+            assert sync_args._include_rpc_public_entry is False
+        elif getattr(sync_args, "_qbft_static_refresh", None):
+            assert service_ids in (["validator-2"], ["validator-rpc-1"])
+            assert sync_args.host in {"a", "b"}
+        else:
+            raise AssertionError("unexpected coolify_sync call")
+        return {"ok": True, "service_uuid": f"svc-{sync_args.host}", "service_name": f"main-computer-qbft-testnet-{sync_args.host}"}
 
     def fake_fetch_validator_address_from_host(fetch_plan: Any, fetch_args: Any, host_id: str, service: Any) -> tuple[str, dict[str, Any]]:
         calls.append(("fetch-validator-address", fetch_plan, fetch_args, host_id, service))
         assert fetch_plan is plan
         assert host_id == "b"
         assert service.id == "validator-2"
-        return new_validator, {"ok": True, "validator_addresses": {"validator-2": new_validator}}
+        return new_validator, {"ok": True, "validator_addresses": {"validator-2": new_validator}, "validator_public_keys": {"validator-2": target_public_key}}
+
+    def fake_wait_for_qbft_peer_count(
+        wait_plan: Any,
+        wait_args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        calls.append(("wait-new-validator-peer", wait_plan, wait_args, kwargs))
+        assert wait_plan is plan
+        assert kwargs["min_peer_count"] == 1
+        assert kwargs["label"] == "wait-new-validator-peer"
+        return {"ok": True, "peer_count": 1, "min_peer_count": 1}
 
     def fake_propose_qbft_validator_vote_until_ok(
         vote_plan: Any,
@@ -443,6 +494,9 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
         calls.append(("stable-chain", stable_plan, stable_args, kwargs))
         assert stable_plan is plan
         assert stable_args.rpc_url == ""
+        if kwargs["label"] == "verify-pre-vote-static-topology":
+            assert kwargs["expected_validator_count"] == 1
+            return {"ok": True, "canonical_rpc": "ok", "consensus": "ok", "chain": {"validator_count": 1}}
         assert kwargs["expected_validator_count"] == 2
         assert kwargs["required_validators_present"] == (new_validator,)
         return {"ok": True, "canonical_rpc": "ok", "consensus": "ok", "chain": {"validator_count": 2}}
@@ -451,6 +505,7 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
     monkeypatch.setattr(module, "current_qbft_validators", fake_current_qbft_validators)
     monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
     monkeypatch.setattr(module, "fetch_validator_address_from_host", fake_fetch_validator_address_from_host)
+    monkeypatch.setattr(module, "wait_for_qbft_peer_count", fake_wait_for_qbft_peer_count)
     monkeypatch.setattr(module, "propose_qbft_validator_vote_until_ok", fake_propose_qbft_validator_vote_until_ok)
     monkeypatch.setattr(module, "wait_for_qbft_validator_membership", fake_wait_for_qbft_validator_membership)
     monkeypatch.setattr(module, "wait_for_stable_observable_chain", fake_wait_for_stable_observable_chain)
@@ -470,6 +525,11 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
         "seed-new-node-bootstrap",
         "deploy-service",
         "verify-node-identity",
+        "prepare-post-add-static-topology",
+        "refresh-target-static-topology",
+        "refresh-source-static-topology",
+        "verify-pre-vote-static-topology",
+        "wait-new-validator-peer",
         "propose-validator-vote",
         "wait-validator-set",
         "verify-block-production",
@@ -481,10 +541,98 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
         "current-validators",
         "coolify-sync",
         "fetch-validator-address",
+        "coolify-sync",
+        "coolify-sync",
+        "stable-chain",
+        "wait-new-validator-peer",
         "propose-vote-retry",
         "wait-validator-set",
         "stable-chain",
     ]
+
+
+def test_mutate_apply_validator_add_refuses_vote_until_new_validator_peers(tmp_path: Path, monkeypatch: Any) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+    source_enode = "enode://" + ("1" * 128) + "@198.51.100.10:30321"
+    target_public_key = "2" * 128
+    bundle = {
+        "ok": True,
+        "source_host": "a",
+        "lineage_hash": "abc123",
+        "files": {
+            "genesis_json": '{"config":{"chainId":42424241}}\n',
+            "static_nodes_all_json": json.dumps([source_enode]) + "\n",
+            "network_metadata_json": json.dumps({
+                "network": "testnet",
+                "validators": [
+                    {"id": "validator-rpc-1", "enode": source_enode, "p2p": "198.51.100.10:30321"}
+                ],
+            }) + "\n",
+        },
+        "sha256": {},
+        "validator_addresses": {"validator-rpc-1": "0x1111111111111111111111111111111111111111"},
+    }
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        module,
+        "discover_qbft_config_bundle",
+        lambda discover_plan, discover_args, target_services: (bundle, {"ok": True, "selected_source_host": "a"}),
+    )
+    monkeypatch.setattr(
+        module,
+        "current_qbft_validators",
+        lambda vote_plan, vote_args, *, block="latest": ["0x1111111111111111111111111111111111111111"],
+    )
+
+    def fake_coolify_sync(sync_plan: Any, sync_args: Any, *, deploy: bool = False) -> dict[str, Any]:
+        assert sync_args._park_inactive_qbft_helpers is False
+        assert [service.id for service in sync_plan.services] in (["validator-2"], ["validator-rpc-1"])
+        return {"ok": True, "service_uuid": f"svc-{sync_args.host}", "service_name": f"main-computer-qbft-testnet-{sync_args.host}"}
+
+    monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
+    monkeypatch.setattr(
+        module,
+        "fetch_validator_address_from_host",
+        lambda fetch_plan, fetch_args, host_id, service: (
+            "0x2222222222222222222222222222222222222222",
+            {"ok": True, "validator_addresses": {"validator-2": "0x2222222222222222222222222222222222222222"}, "validator_public_keys": {"validator-2": target_public_key}},
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "wait_for_qbft_peer_count",
+        lambda wait_plan, wait_args, **kwargs: {
+            "ok": False,
+            "min_peer_count": 1,
+            "peer_count": 0,
+            "error": "peer_count 0 < required 1",
+        },
+    )
+
+    monkeypatch.setattr(
+        module,
+        "wait_for_stable_observable_chain",
+        lambda stable_plan, stable_args, **kwargs: {"ok": True, "chain": {"validator_count": 1}},
+    )
+
+    def fake_propose(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append("propose")
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "propose_qbft_validator_vote_until_ok", fake_propose)
+
+    packet = module.mutate_network(plan, _args(add="validator-2", apply=True, ack_consensus_change=True))
+
+    assert packet["ok"] is False
+    assert packet["execution"]["message"] == (
+        "Validator add deployed the node and fetched its address, but the new validator did not peer before the QBFT vote."
+    )
+    assert "wait-new-validator-peer" in [phase["phase"] for phase in packet["apply_phases"]]
+    assert calls == []
+
+
 
 
 def test_propose_qbft_validator_vote_until_ok_retries_transient_rpc_failure(tmp_path: Path, monkeypatch: Any) -> None:
@@ -1864,3 +2012,50 @@ def test_mutate_apply_validator_retire_restores_topology_when_membership_wait_ti
     assert [item[0] for item in calls].count("coolify-sync") == 2
 
 
+
+
+
+def test_twiddle_consensus_dry_run_renders_auxiliary_services_for_a_and_b(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+
+    result = module.run_coolify_consensus_twiddle(
+        plan,
+        _args(
+            dry_run=True,
+            no_deploy=False,
+            twiddle_hosts="a,b",
+            twiddle_port=38174,
+            twiddle_timeout_s=1.0,
+            coolify_service_name="",
+            coolify_service_uuid="",
+            host="",
+        ),
+    )
+
+    assert result["ok"] is True
+    assert result["mode"] == "coolify-read-only-diagnostic-sidecar"
+    assert result["hosts"] == ["a", "b"]
+    assert set(result["results"]) == {"a", "b"}
+
+    compose_a = result["results"]["a"]["compose"]
+    compose_b = result["results"]["b"]["compose"]
+
+    assert "main-computer-qbft-testnet-a-consensus-twiddle" in compose_a
+    assert "main-computer-qbft-testnet-b-consensus-twiddle" in compose_b
+    assert "qbft-consensus-twiddle:" in compose_a
+    assert "main-computer.qbft-consensus-twiddle=true" in compose_a
+    assert "/var/run/docker.sock:/var/run/docker.sock" in compose_a
+    assert "/var/lib/docker/volumes:/host-docker-volumes:ro" in compose_a
+    assert '"0.0.0.0:38174:8080"' in compose_a
+    assert "\n  validator-rpc-1:" not in compose_a
+    assert "\n  validator-2:" not in compose_b
+
+
+def test_twiddle_consensus_hosts_can_be_selected_from_instances(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+
+    hosts = module.qbft_consensus_twiddle_hosts(plan, _args(instances="validator-rpc-1,validator-2", twiddle_hosts=""))
+
+    assert hosts == ["a", "b"]

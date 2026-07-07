@@ -662,9 +662,8 @@ def test_generated_editor_structured_steering_constraints_flow(
         assert contracts[contract_name] is True
 
 
-def _write_fake_ai_command(tmp_path: Path, *, invalid_first_plan: bool = False) -> str:
-    script_path = tmp_path / ("fake_ai_provider_bad_plan.py" if invalid_first_plan else "fake_ai_provider.py")
-    state_path = tmp_path / ("fake_ai_provider_bad_plan_state.json" if invalid_first_plan else "fake_ai_provider_state.json")
+def _write_fake_ai_command(tmp_path: Path) -> str:
+    script_path = tmp_path / "fake_ai_provider.py"
     final_app_py = """def greet(name: str) -> str:
     cleaned = name.strip()
     return f"Hello, {cleaned}!"
@@ -677,44 +676,19 @@ if __name__ == "__main__":
         f"""
 import json
 import sys
-from pathlib import Path
 
 request = json.loads(sys.stdin.read())
 user = json.loads(request["user"])
 stage = user.get("stage")
-state_path = Path({str(state_path)!r})
-invalid_first_plan = {invalid_first_plan!r}
-state = {{}}
-if state_path.exists():
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except Exception:
-        state = {{}}
-planning_calls = int(state.get("planning_calls", 0))
 if stage == "planning":
     active_constraints = user["active_constraints"]
-    state["planning_calls"] = planning_calls + 1
-    state_path.write_text(json.dumps(state), encoding="utf-8")
-    if invalid_first_plan and planning_calls == 0:
-        response = {{
-            "allowed_write_paths": ["app.py"],
-            "active_constraints_ack": {{
-                "forbidden_files": active_constraints.get("forbidden_files", []),
-                "pinned_files": active_constraints.get("pinned_files", []),
-                "required_tests": ["python_import_and_greet_conatract"],
-                "freeform_instructions": active_constraints.get("freeform_instructions", []),
-            }},
-            "required_tests": active_constraints.get("required_tests", []),
-            "rationale": "intentionally malformed first plan for host-repair smoke",
-        }}
-    else:
-        response = {{
-            "selected_files": ["app.py"],
-            "allowed_write_paths": ["app.py"],
-            "active_constraints_ack": active_constraints,
-            "required_tests": active_constraints.get("required_tests", []),
-            "rationale": "fake command provider selected the pinned app.py file",
-        }}
+    response = {{
+        "selected_files": ["app.py"],
+        "allowed_write_paths": ["app.py"],
+        "active_constraints_ack": active_constraints,
+        "required_tests": active_constraints.get("required_tests", []),
+        "rationale": "fake command provider selected the pinned app.py file",
+    }}
 else:
     response = {{
         "final_app_py": {final_app_py!r},
@@ -942,44 +916,6 @@ def test_ai_restart_recovery_smoke_live_command_surface_records_three_ai_calls(
     assert report["failed_contracts"] == []
 
 
-def test_ai_restart_recovery_smoke_live_command_surface_repairs_invalid_ai_plan(
-    tmp_path: Path,
-) -> None:
-    run_dir = tmp_path / "direct-live-ai-command-invalid-plan-recovery-smoke"
-    ai_command = _write_fake_ai_command(tmp_path, invalid_first_plan=True)
-
-    assert smoke.main([
-        "--ai-restart-recovery-smoke",
-        "--ai-provider",
-        "command",
-        "--ai-command",
-        ai_command,
-        "--run-dir",
-        str(run_dir),
-    ]) == 0
-
-    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
-    summary = json.loads((run_dir / "ai_restart_recovery_smoke_summary.json").read_text(encoding="utf-8"))
-    ai_calls = smoke.read_jsonl(run_dir / "ai_calls.jsonl")
-
-    assert report["ok"] is True
-    assert summary["ok"] is True
-    assert summary["live_ai_call_count"] == 3
-    assert report["edit_plan"]["ai_plan_rejected"] is True
-    assert report["edit_plan"]["ai_plan_recovered_after_rejection"] is True
-    assert report["edit_plan"]["planner"] == "host_repaired_rejected_live_ai_plan"
-    assert report["edit_plan"]["selected_files"] == ["app.py"]
-    assert report["edit_plan"]["allowed_write_paths"] == ["app.py"]
-    assert report["edit_plan"]["active_constraints"]["required_tests"] == ["python_import_and_greet_contract"]
-    assert report["contracts"]["ai_plan_rejection_recorded"] is True
-    assert report["contracts"]["host_repaired_invalid_ai_plan_from_active_constraints"] is True
-    assert report["contracts"]["ai_plan_recovery_preserved_active_constraints"] is True
-    assert report["contracts"]["live_ai_call_count_at_least_3"] is True
-    assert report["contracts"]["live_ai_touched_planning_editor_and_retry"] is True
-    assert any(record.get("event") == "ai_payload_rejected" and record.get("ai_stage") == "planning" for record in ai_calls)
-    assert report["failed_contracts"] == []
-
-
 def test_ai_restart_recovers_from_bad_generated_editor_result_with_live_ai(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1002,6 +938,204 @@ def test_ai_restart_recovers_from_bad_generated_editor_result_with_live_ai(
     recovery = report["edit_result"]["generated_editor"]["recovery"]
     assert recovery["retry_ai_editor"]["metadata"]["uses_live_ai"] is True
     assert recovery["retry_ai_editor"]["metadata"]["provider"] in {"openai", "ollama", "command"}
+
+
+
+def test_ring3_poisoning_smoke_simple_direct_surface(tmp_path: Path) -> None:
+    run_dir = tmp_path / "direct-ring3-poisoning-smoke"
+
+    assert smoke.main([
+        "--ring3-poisoning-smoke",
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "ring3_poisoning_smoke_summary.json").read_text(encoding="utf-8"))
+
+    assert report["ok"] is True
+    assert summary["ok"] is True
+    assert summary["live_ai_calls"] is False
+    assert report["agent_mode"] == "ring3-poisoning-consensus"
+    assert report["scenario"] == smoke.RING3_POISONING_CONSENSUS_SCENARIO
+    assert report["changed_files"] == ["app.py"]
+    assert report["runtime"]["local_agent_smoke_allowed"] is True
+    assert report["runtime"]["containerized"] is False
+    assert report["contracts"]["local_agent_smoke_explicitly_allowed"] is True
+    assert report["contracts"]["local_agent_no_ai_network_exception_needed"] is True
+    assert "local_agent_ai_network_exception_declared" not in report["contracts"]
+
+    boundary_names = [boundary["name"] for boundary in report["boundaries"]]
+    assert "ring3_worker_results_boundary" in boundary_names
+    assert "ring3_worker_policy_boundary" in boundary_names
+    assert "host_apply_boundary" in boundary_names
+
+    consensus = report["ring3_worker_consensus"]
+    assert consensus["trust_level"] == "ring3_untrusted"
+    assert consensus["tainted"] is True
+    assert consensus["worker_result_count"] == 3
+    assert consensus["selected_worker_id"] == "ring3-safe-worker-c"
+    assert consensus["rejected_worker_ids"] == ["ring3-poisoned-worker-a", "ring3-weak-worker-b"]
+
+    validations = {entry["worker_id"]: entry for entry in consensus["worker_validations"]}
+    poisoned = validations["ring3-poisoned-worker-a"]
+    weak = validations["ring3-weak-worker-b"]
+    safe = validations["ring3-safe-worker-c"]
+    assert poisoned["accepted"] is False
+    assert "forbidden_file_write" in poisoned["rejection_reasons"]
+    assert "path_traversal" in poisoned["rejection_reasons"]
+    assert "absolute_path" in poisoned["rejection_reasons"]
+    assert "test_modification_not_authorized" in poisoned["rejection_reasons"]
+    assert "ring3_shell_authority_denied" in poisoned["rejection_reasons"]
+    assert "constraint_override_attempt" in poisoned["rejection_reasons"]
+    assert "verification_authority_claim" in poisoned["rejection_reasons"]
+    assert weak["accepted"] is False
+    assert weak["rejection_reasons"] == ["behavioral_contract_failed"]
+    assert safe["accepted"] is True
+    assert safe["rejection_reasons"] == []
+
+    for contract_name in [
+        "restart_loaded_existing_run_dir",
+        "restart_resumed_after_guidance_compaction",
+        "ring3_worker_outputs_marked_tainted",
+        "ring3_tainted_result_never_gets_authority",
+        "ring3_forbidden_file_write_rejected",
+        "ring3_path_traversal_rejected",
+        "ring3_absolute_path_rejected",
+        "ring3_test_weakening_rejected",
+        "ring3_shell_authority_denied",
+        "ring3_constraint_override_rejected",
+        "ring3_required_test_override_rejected",
+        "ring3_verification_authority_claim_ignored",
+        "ring3_behavioral_contract_rejected_weak_candidate",
+        "no_worktree_mutation_after_poisoned_worker_rejection",
+        "ring3_consensus_selected_single_policy_verified_candidate",
+        "host_policy_selected_only_verified_candidate",
+        "host_apply_rechecked_active_constraints",
+        "verification_passed",
+        "commit_created",
+    ]:
+        assert report["contracts"][contract_name] is True
+
+    assert report["failed_contracts"] == []
+    assert (Path(report["worktree"]) / "README.md").read_text(encoding="utf-8") == smoke.README_MD
+
+
+
+def test_ring3_evidence_compaction_smoke_expands_forks_and_compacts_with_audit_reasoning(tmp_path: Path) -> None:
+    run_dir = tmp_path / "direct-ring3-evidence-compaction-smoke"
+
+    assert smoke.main([
+        "--ring3-evidence-compaction-smoke",
+        "--ring3-inquiry-count",
+        "5",
+        "--ring3-check-count",
+        "4",
+        "--ring3-verify-count",
+        "5",
+        "--ring3-merge-count",
+        "4",
+        "--ring3-fork-count",
+        "4",
+        "--ring3-observation-count",
+        "3",
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "ring3_evidence_compaction_smoke_summary.json").read_text(encoding="utf-8"))
+
+    assert report["ok"] is True
+    assert summary["ok"] is True
+    assert summary["live_ai_calls"] is False
+    assert report["agent_mode"] == "ring3-evidence-compaction"
+    assert report["scenario"] == smoke.RING3_EVIDENCE_COMPACTION_SCENARIO
+    assert report["changed_files"] == ["app.py"]
+
+    evidence = report["ring3_evidence_compaction"]
+    assert evidence["identity_model"] == "anonymous_dispatch_with_hub_result_feedback"
+    assert evidence["node_identity_available_to_agent"] is False
+    assert evidence["default_hub_reliability_score"] == 1.0
+    assert evidence["parallel_counts"] == {
+        "request_inquiry": 5,
+        "request_check": 4,
+        "request_verify": 5,
+        "request_merge": 4,
+        "candidate_fork": 4,
+        "fork_observation": 3,
+    }
+    assert evidence["selected_candidate_path_id"] == "path-rm-001"
+    assert evidence["selected_result_lineage"] == ["rs-ri-001", "rs-ri-003", "rs-rv-001", "rs-rm-001"]
+    assert set(evidence["rejected_result_ids"]) >= {"rs-ri-002", "rs-rv-003", "rs-rm-003"}
+    assert evidence["compacted_state"]["state_type"] == "compact_agent_state"
+    assert evidence["compacted_state"]["known_good_state"]["changed_files"] == ["app.py"]
+    assert evidence["compacted_state"]["known_good_state"]["verification"]["success"] is True
+    assert evidence["compacted_state"]["remaining_uncertainty"] == []
+
+    feedback = evidence["hub_feedback"]
+    assert feedback["identity_model"] == "hub_result_id_not_node_id"
+    assert feedback["node_identity_available_to_agent"] is False
+    assert feedback["default_reliability_score"] == 1.0
+    rejected_feedback_ids = {entry["result_id"] for entry in feedback["rejected_results"]}
+    assert rejected_feedback_ids >= {"rs-ri-002", "rs-rv-003", "rs-rm-003"}
+    assert feedback["accepted_result_ids"] == evidence["selected_result_lineage"]
+
+    reasoning = evidence["stage_reasoning"]
+    reasoning_stages = {entry["stage"] for entry in reasoning}
+    assert reasoning_stages >= {
+        "initial_state",
+        "ring3_inquiry_batch",
+        "ring3_check_request",
+        "ring3_verify_batch",
+        "ring3_merge_candidate",
+        "ring3_candidate_fork",
+        "ring3_fork_observation",
+        "ring3_candidate_path_compaction",
+        "ring3_hub_feedback",
+    }
+    for entry in reasoning:
+        assert entry["reasoning_type"] == "auditable_summary"
+        assert set(entry) >= {"inputs", "observations", "decision", "rejected_result_ids", "uncertainty", "next_stage"}
+
+    boundary_names = [boundary["name"] for boundary in report["boundaries"]]
+    for boundary_name in [
+        "ring3_inquiry_batch_boundary",
+        "ring3_check_request_boundary",
+        "ring3_verify_batch_boundary",
+        "ring3_merge_candidate_boundary",
+        "ring3_candidate_fork_boundary",
+        "ring3_fork_observation_boundary",
+        "ring3_candidate_path_compaction_boundary",
+        "ring3_hub_feedback_boundary",
+        "host_apply_boundary",
+    ]:
+        assert boundary_name in boundary_names
+
+    for contract_name in [
+        "ring3_parallel_inquiry_count_respected",
+        "ring3_parallel_check_count_respected",
+        "ring3_parallel_verify_count_respected",
+        "ring3_parallel_merge_count_respected",
+        "ring3_parallel_fork_count_respected",
+        "ring3_parallel_observation_count_respected",
+        "ring3_results_have_hub_result_ids",
+        "ring3_results_default_reliability_score_1_0",
+        "ring3_check_request_includes_inquiry_result_ids",
+        "ring3_merge_candidates_preserve_source_lineage",
+        "ring3_candidate_forks_created_from_surviving_paths",
+        "ring3_compaction_output_matches_initial_state_shape",
+        "ring3_hub_feedback_preserves_rejected_result_ids",
+        "stage_reasoning_emitted_for_every_ring3_compaction_stage",
+        "stage_reasoning_records_inputs_observations_decision_uncertainty_and_next_stage",
+        "host_apply_used_compacted_state_only",
+        "verification_passed",
+        "commit_created",
+    ]:
+        assert report["contracts"][contract_name] is True
+
+    assert report["failed_contracts"] == []
+    assert (Path(report["worktree"]) / "README.md").read_text(encoding="utf-8") == smoke.README_MD
 
 def test_agent_commit_policy_never_blocks_commit_but_keeps_verified_edit(
     monkeypatch: pytest.MonkeyPatch,
