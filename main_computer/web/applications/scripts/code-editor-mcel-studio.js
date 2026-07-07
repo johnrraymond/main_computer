@@ -1332,8 +1332,15 @@
             abiEncodingStatus: rawTxDraft.abiEncodingStatus || proof.txDraftProvenance?.abiEncodingStatus || "",
             probeEnvelopeIds: rawTxDraft.probeEnvelopeIds || proof.txDraftProvenance?.probeEnvelopeIds || [],
             invalidatedBy,
+            freshnessStatus: rawTxDraft.freshnessStatus || proof.txDraftProvenance?.freshnessStatus || "",
+            freshnessAction: rawTxDraft.freshnessAction || proof.txDraftProvenance?.freshnessAction || "",
+            noSendBoundaryPreserved: rawTxDraft.noSendBoundaryPreserved === true || proof.txDraftProvenance?.noSendBoundaryPreserved === true,
+            provenanceEnforced: rawTxDraft.provenanceEnforced === true || proof.txDraftProvenance?.provenanceEnforced === true,
+            provenanceFreshness: rawTxDraft.provenanceFreshness || proof.txDraftProvenance?.provenanceFreshness || null,
+            consumerGate: rawTxDraft.consumerGate || proof.txDraftConsumerGate || proof.txDraftProvenance?.consumerGate || {},
             valid: rawTxDraft.valid === true || proof.txDraftProvenance?.valid === true
           },
+          consumerGate: rawTxDraft.consumerGate || proof.txDraftConsumerGate || proof.txDraftProvenance?.consumerGate || {},
           raw: rawTxDraft || null
         });
       }
@@ -4292,6 +4299,14 @@
         const networkGateSequence = Array.isArray(provenance.networkGateSequence) ? provenance.networkGateSequence : [];
         const probeEnvelopeIds = Array.isArray(provenance.probeEnvelopeIds) ? provenance.probeEnvelopeIds : [];
         const chainProofStatus = provenance.chainProof?.status || provenance.chainProof?.chainId || "";
+        const freshnessStatus = provenance.freshnessStatus || provenance.provenanceFreshness?.status || "";
+        const freshnessAction = provenance.freshnessAction || provenance.provenanceFreshness?.action || "";
+        const consumerGate = boundary.consumerGate || provenance.consumerGate || {};
+        const consumerGateStatus = consumerGate.status || "";
+        const consumerGateAction = consumerGate.action || "";
+        const consumerGateReasons = Array.isArray(consumerGate.invalidationReasons)
+          ? consumerGate.invalidationReasons
+          : normalizeTxDraftInvalidationReasons(consumerGate.invalidatedBy || []);
         const hasProvenance = Boolean(
           provenance.provenanceVersion
           || provenance.sourceRequestHash
@@ -4310,12 +4325,16 @@
         let state = "not observed";
         if (!observed) {
           state = "not observed";
-        } else if (invalidatedBy.length) {
+        } else if (invalidatedBy.length || freshnessStatus === "invalidated") {
           state = "invalidated";
-        } else if (boundary.noSend !== true) {
+        } else if (consumerGateStatus === "blocked" && observed) {
+          state = "consumer blocked";
+        } else if (boundary.noSend !== true && provenance.noSendBoundaryPreserved !== true) {
           state = "needs inspection";
-        } else if (provenance.valid === true) {
+        } else if (provenance.valid === true || freshnessStatus === "valid") {
           state = "valid";
+        } else if (freshnessStatus === "stale") {
+          state = "stale";
         } else if (hasProvenance) {
           state = "provenance present";
         } else {
@@ -4327,9 +4346,13 @@
             ? `provenance present · no-send · ${chainProofStatus || "chain proof pending"}`
             : (state === "invalidated"
               ? `invalidated · ${invalidatedBy.join(", ")}`
-              : (state === "needs inspection"
-                ? `needs inspection · ${boundary.boundary || "boundary unclear"}`
-                : state)));
+              : (state === "consumer blocked"
+                ? `consumer blocked · ${consumerGateReasons.join(", ") || consumerGateAction || "freshness not proven"}`
+                : (state === "needs inspection"
+                  ? `needs inspection · ${boundary.boundary || "boundary unclear"}`
+                  : (state === "stale"
+                    ? `stale · ${freshnessAction || "rebuild draft to prove freshness"}`
+                    : state)))));
         return jsonSafeClone({
           kind: "mcel-code-studio-tx-draft-provenance-workbench-summary",
           state,
@@ -4348,11 +4371,21 @@
           networkGateCount: networkGateSequence.length,
           probeEnvelopeCount: probeEnvelopeIds.length,
           invalidatedBy,
+          freshnessStatus,
+          freshnessAction,
+          noSendBoundaryPreserved: provenance.noSendBoundaryPreserved === true,
+          provenanceEnforced: provenance.provenanceEnforced === true,
+          consumerGate,
+          consumerGateStatus,
+          consumerGateReasons,
+          consumerGateAction,
+          nextAction: consumerGateAction || freshnessAction || (state === "invalidated" || state === "consumer blocked" ? "rebuild draft from current receipt" : ""),
           valid: state === "valid",
           provenancePresent: hasProvenance,
           raw: {
             boundary,
-            provenance
+            provenance,
+            consumerGate
           }
         });
       }
@@ -4742,7 +4775,11 @@
           gaps.unshift(`Receipt vector source is ${receiptSource.freshness}: ${receiptSource.reason || receiptSource.guidance || "refresh or select a current receipt source."}`);
         }
         if (receiptVectorIngested && txDraftProvenance.state === "invalidated") {
-          gaps.unshift(`txDraft provenance invalidated: ${txDraftProvenance.invalidatedBy.join(", ")}.`);
+          gaps.unshift(`txDraft provenance invalidated: ${txDraftProvenance.invalidatedBy.join(", ")}. Action: ${txDraftProvenance.nextAction || "rebuild draft from current receipt"}.`);
+        } else if (receiptVectorIngested && txDraftProvenance.state === "consumer blocked") {
+          gaps.unshift(`txDraft consumer gate blocked: ${txDraftProvenance.consumerGateReasons.join(", ") || txDraftProvenance.consumerGateAction || "freshness not proven"}. Action: ${txDraftProvenance.nextAction || "rebuild draft from current receipt"}.`);
+        } else if (receiptVectorIngested && txDraftProvenance.state === "stale") {
+          gaps.unshift(`txDraft provenance is stale: ${txDraftProvenance.nextAction || "rebuild draft to prove freshness"}.`);
         } else if (receiptVectorIngested && txDraftProvenance.state === "needs inspection") {
           gaps.unshift("txDraft boundary needs inspection before any future send/sign work.");
         } else if (receiptVectorIngested && txDraftProvenance.state === "missing provenance" && receiptVector?.selectedEffect === "release.draftTx") {
@@ -4770,6 +4807,8 @@
             ["Proof completeness", receiptVector?.proofCompleteness || "waiting"],
             ["Tx draft boundary", receiptVector?.txDraftBoundary?.boundary || "not observed"],
             ["Tx draft provenance", txDraftProvenance.label],
+            ["Tx draft consumer gate", txDraftProvenance.consumerGateStatus || "not observed"],
+            ["Tx draft action", txDraftProvenance.nextAction || txDraftProvenance.freshnessAction || "none"],
             ["Next action", receiptVector?.nextAction || "none"],
             ["Raw payloads", "Receipt Vector in Bottom Proof Dock"]
           ],
