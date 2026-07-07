@@ -2546,6 +2546,17 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "txDraftConsumerGatePass" in ui
     assert "txDraftConsumerGateBlocksUnsafe" in ui
     assert "txDraft consumer gate blocked" in ui
+    assert "mcelTinyContractTxDraftEndgamePreflight" in ui
+    assert "mcel-tx-draft-endgame-preflight.v1" in ui
+    assert "send/sign preflight:" in ui
+    assert "futureBoundaryEligible" in ui
+    assert "canSend: false" in ui
+    assert "canSign: false" in ui
+    assert "canBroadcast: false" in ui
+    assert "send-sign-not-implemented" in ui
+    assert "locked-ready-for-future-boundary" in ui
+    assert "txDraftEndgamePreflightLocked" in ui
+    assert "txDraftEndgamePreflightSafe" in ui
     assert "txDraft provenance was not current for the declared source effect" in ui
     assert "only after txDraft provenance passed the consumer gate" in ui
     assert "runtime.txDraftConsumerGate" in ui
@@ -2654,6 +2665,11 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "instance.runtime.network.providerEvent" not in ui
     assert "instance.runtime.wallet.account =" not in ui
     assert "instance.runtime.network.chainId =" not in ui
+    assert "eth_sendTransaction" not in ui
+    assert "eth_signTransaction" not in ui
+    assert "personal_sign" not in ui
+    assert "signTypedData" not in ui
+    assert "sendTransaction" not in ui
 
     assert "explicit-wallet-connect" not in ui
     assert "explicit-draft" not in ui

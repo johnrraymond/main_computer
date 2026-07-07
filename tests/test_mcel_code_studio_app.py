@@ -1098,6 +1098,11 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "consumer blocked",
             "Tx draft consumer gate",
             "txDraft consumer gate blocked",
+            "endgamePreflight",
+            "sendSignPreflightStatus",
+            "sendSignPreflightLabel",
+            "Send/sign preflight",
+            "locked-no-draft · canSend=false canSign=false canBroadcast=false",
             "mcel-code-studio-normalized-scm-receipt-workbench-detail",
             "replayWorkbench",
             "replayExpectations",
@@ -1149,6 +1154,11 @@ class McelCodeStudioAppTests(unittest.TestCase):
         self.assertNotIn("provenance.valid === true || hasProvenance", script)
         self.assertNotIn("studioState.lastScmReceiptVector,\n          findMcelLabReceiptPayload()", script)
         self.assertNotIn("PASS: wallet lifecycle is tamed by SCM", script)
+        self.assertNotIn("eth_sendTransaction", script)
+        self.assertNotIn("eth_signTransaction", script)
+        self.assertNotIn("personal_sign", script)
+        self.assertNotIn("signTypedData", script)
+        self.assertNotIn("sendTransaction", script)
 
 
     def test_code_studio_flagship_workbench_regions_are_hard_split(self) -> None:
