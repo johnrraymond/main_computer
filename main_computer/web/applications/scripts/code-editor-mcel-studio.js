@@ -1338,9 +1338,11 @@
             provenanceEnforced: rawTxDraft.provenanceEnforced === true || proof.txDraftProvenance?.provenanceEnforced === true,
             provenanceFreshness: rawTxDraft.provenanceFreshness || proof.txDraftProvenance?.provenanceFreshness || null,
             consumerGate: rawTxDraft.consumerGate || proof.txDraftConsumerGate || proof.txDraftProvenance?.consumerGate || {},
+            endgamePreflight: rawTxDraft.endgamePreflight || proof.txDraftEndgamePreflight || proof.txDraftConsumerGate?.endgamePreflight || {},
             valid: rawTxDraft.valid === true || proof.txDraftProvenance?.valid === true
           },
           consumerGate: rawTxDraft.consumerGate || proof.txDraftConsumerGate || proof.txDraftProvenance?.consumerGate || {},
+          endgamePreflight: rawTxDraft.endgamePreflight || proof.txDraftEndgamePreflight || proof.txDraftConsumerGate?.endgamePreflight || {},
           raw: rawTxDraft || null
         });
       }
@@ -4304,6 +4306,9 @@
         const consumerGate = boundary.consumerGate || provenance.consumerGate || {};
         const consumerGateStatus = consumerGate.status || "";
         const consumerGateAction = consumerGate.action || "";
+        const endgamePreflight = boundary.endgamePreflight || provenance.endgamePreflight || consumerGate.endgamePreflight || {};
+        const sendSignPreflightStatus = endgamePreflight.status || "locked-no-draft";
+        const sendSignPreflightLabel = `${sendSignPreflightStatus} · canSend=${endgamePreflight.canSend === true} canSign=${endgamePreflight.canSign === true} canBroadcast=${endgamePreflight.canBroadcast === true}`;
         const consumerGateReasons = Array.isArray(consumerGate.invalidationReasons)
           ? consumerGate.invalidationReasons
           : normalizeTxDraftInvalidationReasons(consumerGate.invalidatedBy || []);
@@ -4379,6 +4384,9 @@
           consumerGateStatus,
           consumerGateReasons,
           consumerGateAction,
+          endgamePreflight,
+          sendSignPreflightStatus,
+          sendSignPreflightLabel,
           nextAction: consumerGateAction || freshnessAction || (state === "invalidated" || state === "consumer blocked" ? "rebuild draft from current receipt" : ""),
           valid: state === "valid",
           provenancePresent: hasProvenance,
@@ -4827,6 +4835,7 @@
             ["Dirty state", studioState.dirty ? "dirty" : "clean"],
             ["Selected file", selected?.path || studioState.selectedPath || "none"],
             ["Tx draft provenance", txDraftProvenance.label],
+            ["Send/sign preflight", txDraftProvenance.sendSignPreflightLabel || "locked-no-draft · canSend=false canSign=false canBroadcast=false"],
             ["Receipt source", receiptSource.label],
             ["Runtime chrome", "runtime preview, editor UI, evidence, assistant output"],
             ["Route key", currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())]
@@ -4917,6 +4926,7 @@
             ["Dirty state", studioState.dirty ? "dirty" : "clean"],
             ["Editor draft provenance", `${draftProvenance.totalEvents} event(s) · ${draftProvenance.invariants.sourceMutationsOnlyByCommitDraft ? "commit-gated" : "needs inspection"}`],
             ["txDraft provenance", receiptSurface.txDraftProvenance?.label || "not observed"],
+            ["Send/sign preflight", receiptSurface.txDraftProvenance?.sendSignPreflightLabel || "locked-no-draft · canSend=false canSign=false canBroadcast=false"],
             ["Mounted", studioState.mounted ? "mounted" : "not mounted"],
             ["Persistence", `${persistence.status || "not saved"}${persistence.savedAt ? ` · ${persistence.savedAt}` : ""}`],
             ["Route key", currentScmRouteKey(routeParamsForScm(fields), routeQueryForScm())],

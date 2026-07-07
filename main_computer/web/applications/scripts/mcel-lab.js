@@ -424,7 +424,7 @@
       const action = valid
         ? "allow declared source effect; no-send boundary preserved"
         : (freshness.action || txDraft.freshnessAction || "rebuild draft from current receipt");
-      return {
+      const gate = {
         kind: "mcel-tx-draft-consumer-gate.v1",
         consumer,
         status,
@@ -445,6 +445,63 @@
           "txDraft freshness valid",
           "no invalidation reasons",
           "no-send boundary preserved"
+        ]
+      };
+      gate.endgamePreflight = mcelTinyContractTxDraftEndgamePreflight({txDraft, freshness, consumerGate: gate});
+      return gate;
+    }
+
+    function mcelTinyContractTxDraftEndgamePreflight({txDraft = {}, freshness = {}, consumerGate = {}} = {}) {
+      const invalidatedBy = Array.isArray(consumerGate.invalidatedBy)
+        ? consumerGate.invalidatedBy
+        : (Array.isArray(freshness.invalidatedBy) ? freshness.invalidatedBy : (Array.isArray(txDraft.invalidatedBy) ? txDraft.invalidatedBy : []));
+      const invalidationReasons = Array.isArray(consumerGate.invalidationReasons) && consumerGate.invalidationReasons.length
+        ? consumerGate.invalidationReasons
+        : invalidatedBy
+          .map((entry) => entry?.reason || entry?.kind || entry?.event || entry)
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean);
+      const freshnessStatus = freshness.status || txDraft.freshnessStatus || consumerGate.freshnessStatus || "not-observed";
+      const noSendBoundaryPreserved = consumerGate.noSendBoundaryPreserved === true || freshness.noSendBoundaryPreserved === true || txDraft.noSendBoundaryPreserved === true || txDraft.noSend === true;
+      const draftCurrent = txDraft.status === "ready"
+        && txDraft.valid === true
+        && txDraft.provenanceEnforced === true
+        && freshnessStatus === "valid"
+        && invalidationReasons.length === 0
+        && noSendBoundaryPreserved;
+      const futureBoundaryEligible = draftCurrent && consumerGate.status === "pass" && consumerGate.valid === true;
+      const blockers = [];
+      if (txDraft.status !== "ready") blockers.push("draft-not-ready");
+      if (txDraft.provenanceEnforced !== true) blockers.push("provenance-not-enforced");
+      if (freshnessStatus !== "valid") blockers.push(`freshness-${freshnessStatus || "unknown"}`);
+      if (invalidationReasons.length) blockers.push(...invalidationReasons);
+      if (!noSendBoundaryPreserved) blockers.push("no-send-boundary-missing");
+      blockers.push("send-sign-not-implemented");
+      const status = futureBoundaryEligible
+        ? "locked-ready-for-future-boundary"
+        : (txDraft.status === "ready" ? "blocked" : "locked-no-draft");
+      return {
+        kind: "mcel-tx-draft-endgame-preflight.v1",
+        status,
+        futureBoundaryEligible,
+        draftCurrent,
+        consumerGateStatus: consumerGate.status || "not-observed",
+        freshnessStatus,
+        invalidationReasons,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        noSendBoundaryPreserved,
+        action: futureBoundaryEligible
+          ? "hold no-send lock; design explicit send/sign boundary separately"
+          : "rebuild draft from current receipt before future send/sign boundary work",
+        blockers: [...new Set(blockers.filter(Boolean))],
+        invariant: [
+          "future send/sign is locked",
+          "no provider send method is called",
+          "draft must be current before future boundary design",
+          "consumer gate must pass before any source-affecting use",
+          "no-send boundary remains preserved"
         ]
       };
     }
@@ -788,7 +845,18 @@
             "txDraft freshness valid",
             "no invalidation reasons",
             "no-send boundary preserved"
-          ]
+          ],
+          endgamePreflight: {
+            kind: "mcel-tx-draft-endgame-preflight.v1",
+            status: "locked-no-draft",
+            futureBoundaryEligible: false,
+            canSend: false,
+            canSign: false,
+            canBroadcast: false,
+            noSendBoundaryPreserved: true,
+            action: "build and validate a runtime-only draft before future send/sign boundary work",
+            blockers: ["draft-not-ready", "send-sign-not-implemented"]
+          }
         },
         walletAdapter: {
           providerKind: "unknown",
@@ -2624,6 +2692,17 @@
       if (!slot) return;
       const txDraftEnforcement = mcelTinyContractEnforceTxDraftProvenance(instance, "render-runtime-summary");
       const txDraft = txDraftEnforcement?.txDraft || instance?.runtime?.txDraft || {};
+      const txDraftConsumerGate = instance?.runtime?.txDraftConsumerGate || {};
+      const txDraftEndgamePreflight = txDraftConsumerGate.endgamePreflight || mcelTinyContractTxDraftEndgamePreflight({
+        txDraft,
+        freshness: txDraft.provenanceFreshness || {
+          status: txDraft.freshnessStatus || "",
+          invalidatedBy: txDraft.invalidatedBy || [],
+          action: txDraft.freshnessAction || "",
+          noSendBoundaryPreserved: txDraft.noSendBoundaryPreserved === true
+        },
+        consumerGate: txDraftConsumerGate
+      });
       const network = instance?.runtime?.network || {};
       const selected = selectedMcelTinyContractItem(instance);
       const output = document.createElement("section");
@@ -2648,6 +2727,7 @@
           <dt>call</dt><dd>${txDraft.ethCall?.status || "not-probed"}</dd>
           <dt>provenance</dt><dd>${txDraft.freshnessStatus || (txDraft.valid ? "valid" : "stale")} · ${txDraft.freshnessAction || "rebuild draft to prove freshness"}</dd>
           <dt>invalidated</dt><dd>${(txDraft.invalidatedBy || []).map((entry) => entry.reason).filter(Boolean).join(", ") || "none"}</dd>
+          <dt>send/sign preflight</dt><dd>${txDraftEndgamePreflight.status || "locked-no-draft"} · ${txDraftEndgamePreflight.action || "future send/sign boundary is locked"}</dd>
         </dl>
       `;
       slot.replaceChildren(output);
@@ -4270,6 +4350,16 @@
         },
         consumer: "release.approve"
       });
+      const runtimeTxDraftEndgamePreflight = runtimeTxDraftConsumerGate.endgamePreflight || mcelTinyContractTxDraftEndgamePreflight({
+        txDraft: runtimeTxDraft,
+        freshness: runtimeTxDraft.provenanceFreshness || {
+          status: runtimeTxDraft.freshnessStatus || "",
+          invalidatedBy: runtimeTxDraft.invalidatedBy || [],
+          action: runtimeTxDraft.freshnessAction || "",
+          noSendBoundaryPreserved: runtimeTxDraft.noSendBoundaryPreserved === true
+        },
+        consumerGate: runtimeTxDraftConsumerGate
+      });
       const externalOutcome = mcelTinyContractLatestWalletActionOutcome(instance);
       const actionOutcome = externalOutcome.status || "waiting";
       const externalOutcomeCaptured = externalOutcome.kind === "mcel-external-outcome" && actionOutcome !== "waiting";
@@ -4311,6 +4401,8 @@
         txDraftConsumerGateObserved: runtimeTxDraftConsumerGate.kind === "mcel-tx-draft-consumer-gate.v1",
         txDraftConsumerGatePass: runtimeTxDraftConsumerGate.status === "pass",
         txDraftConsumerGateBlocksUnsafe: runtimeTxDraftConsumerGate.status !== "blocked" || runtimeTxDraftConsumerGate.valid !== true,
+        txDraftEndgamePreflightLocked: runtimeTxDraftEndgamePreflight.canSend !== true && runtimeTxDraftEndgamePreflight.canSign !== true && runtimeTxDraftEndgamePreflight.canBroadcast !== true,
+        txDraftEndgamePreflightSafe: runtimeTxDraftEndgamePreflight.noSendBoundaryPreserved === true && Array.isArray(runtimeTxDraftEndgamePreflight.blockers) && runtimeTxDraftEndgamePreflight.blockers.includes("send-sign-not-implemented"),
         declaredSourceEffectRan: tinyState.reviewedCount > 0 || (approvedSource && componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.approve")),
         unsafeSourceWriteBlocked: unsafeBlocked,
         repairPacketGenerated: tinyState.repairPacketCount > 0 || (
@@ -4473,6 +4565,7 @@
         txDraftCount: tinyState.txDraftCount,
         runtimeTxDraft: runtimeTxDraft,
         txDraftConsumerGate: runtimeTxDraftConsumerGate,
+        txDraftEndgamePreflight: runtimeTxDraftEndgamePreflight,
         txDraftProvenance: {
           provenanceVersion: runtimeTxDraft.provenanceVersion || "",
           sourceRequestHash: runtimeTxDraft.sourceRequestHash || "",
@@ -4556,6 +4649,7 @@
           `runtime tx draft: ${checks.txDraftRuntimeOnly ? "pass" : `not run${fullOnlyText}`}`,
           `tx draft boundary: ${runtimeTxDraft.noSend ? "no-send" : "not built"} · calldata=${runtimeTxDraft.calldata ? (runtimeTxDraft.calldataEncoding || "present") : "missing"} · nonce=${runtimeTxDraft.nonce?.status || "not-probed"} · gas=${runtimeTxDraft.gasEstimate?.status || "not-probed"} · call=${runtimeTxDraft.ethCall?.status || "not-probed"}`,
           `tx draft provenance: ${checks.txDraftProvenanceRecorded ? "recorded" : "missing"} · freshness=${runtimeTxDraft.freshnessStatus || "unknown"} · action=${runtimeTxDraft.freshnessAction || "inspect"} · sourceRequestHash=${runtimeTxDraft.sourceRequestHash || "missing"} · accountHash=${runtimeTxDraft.walletAccountHash || "missing"} · chain=${runtimeTxDraft.chainProof?.status || "unknown"} · invalidatedBy=${txDraftInvalidationReasons.join("|") || "none"}`,
+          `send/sign preflight: ${runtimeTxDraftEndgamePreflight.status || "locked-no-draft"} · canSend=${runtimeTxDraftEndgamePreflight.canSend === true} · canSign=${runtimeTxDraftEndgamePreflight.canSign === true} · canBroadcast=${runtimeTxDraftEndgamePreflight.canBroadcast === true} · action=${runtimeTxDraftEndgamePreflight.action || "locked"}`,
           `source approval: ${checks.declaredSourceEffectRan ? "pass" : `not run${fullOnlyText}`}`,
           `unsafe write blocked: ${checks.unsafeSourceWriteBlocked ? "true" : `not run${fullOnlyText}`}`,
           repairPacketLine,
