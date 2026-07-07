@@ -52,6 +52,8 @@
       const SCM_DRAFT_PROVENANCE_VERSION = "1.0.0";
       const SCM_CONTRACT_AUTHORING_HELPER_VERSION = "1.0.0";
       const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
+      const MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION = "18N-MCEL-g";
+      const MCEL_PROOF_DOCK_UNIFICATION_VERSION = "18N-MCEL-g";
       const MONACO_RUNTIME_EFFECTS = [
         "editor.monaco.load",
         "editor.monaco.mount",
@@ -182,6 +184,9 @@
         },
         lastEditorDraftProvenanceReceipt: null,
         lastEditorDraftProvenanceEffectGate: null,
+        lastCodeStudioCommitBoundary: null,
+        codeStudioCommitBoundaryReceipts: [],
+        codeStudioCommitBoundarySequence: 0,
       };
 
       let scmInstance = null;
@@ -639,7 +644,23 @@
         studioState.lastRouteLoaderPersistenceGate = loaderGate;
 
         const record = buildLiveWorkspacePersistenceRecord(reason);
-        const ok = saveGate.ok !== false && loaderGate.ok !== false;
+        const beforePersistenceSourceHash = hashRegressionString(sourceEditor.value || "");
+        const persistenceBoundary = buildMcelCodeStudioCommitBoundary({
+          action: "codeStudio.persistLiveWorkspace",
+          draftText: sourceEditor.value || "",
+          reason,
+          gates: {saveGate, loaderGate},
+          phase: "persistence-preflight",
+          intendedWrites: [
+            `localStorage.${LIVE_WORKSPACE_PERSISTENCE_KEY}`,
+            "runtime.liveWorkspacePersistence",
+            "runtime.evidenceStrip"
+          ],
+          beforeSourceHash: beforePersistenceSourceHash,
+          blockers: []
+        });
+        recordMcelCodeStudioCommitBoundary(persistenceBoundary);
+        const ok = saveGate.ok !== false && loaderGate.ok !== false && persistenceBoundary.canCommit === true;
         const summary = {
           kind: "mcel-code-studio-live-workspace-persistence-summary",
           persistenceVersion: LIVE_WORKSPACE_PERSISTENCE_VERSION,
@@ -655,12 +676,36 @@
           route: record.route,
           dirtyState: record.dirtyState,
           saveFileEffect: summarizeScmGateForPersistence(saveGate),
-          routeLoaderSync: summarizeRouteLoaderPersistenceGate(loaderGate)
+          routeLoaderSync: summarizeRouteLoaderPersistenceGate(loaderGate),
+          commitBoundary: {
+            kind: persistenceBoundary.kind,
+            boundaryVersion: persistenceBoundary.boundaryVersion,
+            action: persistenceBoundary.action,
+            status: persistenceBoundary.status,
+            canCommit: persistenceBoundary.canCommit === true,
+            receipt: persistenceBoundary.mcelCommitReceipt
+          }
         };
 
         if (ok) {
           try {
             storage.setItem(LIVE_WORKSPACE_PERSISTENCE_KEY, JSON.stringify(record));
+            const committedPersistenceBoundary = jsonSafeClone(persistenceBoundary);
+            committedPersistenceBoundary.status = "committed";
+            committedPersistenceBoundary.mcelCommitReceipt = mcelCodeStudioCommitReceipt({
+              draft: persistenceBoundary.mcelCommitDraft,
+              provenance: persistenceBoundary.mcelCommitProvenance,
+              freshness: persistenceBoundary.mcelCommitFreshness,
+              consumerGate: persistenceBoundary.mcelCommitConsumerGate,
+              preflight: persistenceBoundary.mcelCommitPreflight,
+              mutationExecuted: true,
+              beforeSourceHash: beforePersistenceSourceHash,
+              afterSourceHash: hashRegressionString(sourceEditor.value || ""),
+              reason: `${reason}:localStorage-write`
+            });
+            summary.commitBoundary.status = committedPersistenceBoundary.status;
+            summary.commitBoundary.receipt = committedPersistenceBoundary.mcelCommitReceipt;
+            recordMcelCodeStudioCommitBoundary(committedPersistenceBoundary);
           } catch (error) {
             summary.status = "blocked";
             summary.ok = false;
@@ -670,7 +715,7 @@
 
         studioState.lastLiveWorkspacePersistence = jsonSafeClone(summary);
         renderLiveWorkspacePersistenceStatus(studioState.lastLiveWorkspacePersistence);
-        setStatus(summary.ok ? "Live workspace persisted through SCM saveFile effect and route loaders." : `Live workspace persistence blocked: ${summary.message || saveGate.code || loaderGate.route?.code || "SCM gate failed"}.`);
+        setStatus(summary.ok ? "Live workspace persisted through SCM saveFile effect, route loaders, and MCEL 18N commit boundary." : `Live workspace persistence blocked: ${summary.message || persistenceBoundary.mcelCommitPreflight?.blockers?.join(", ") || saveGate.code || loaderGate.route?.code || "SCM/18N gate failed"}.`);
         return studioState.lastLiveWorkspacePersistence;
       }
 
@@ -1387,6 +1432,353 @@
         return parseScmReceiptJsonCandidate(node.textContent || "");
       }
 
+      function normalizeMcelCommitBoundaryForReceipt(boundary = null, txDraftBoundary = {}) {
+        const source = boundary && typeof boundary === "object" ? boundary : {};
+        const draft = source.mcelCommitDraft || source.commitDraft || {};
+        const provenance = source.mcelCommitProvenance || source.provenance || {};
+        const freshness = source.mcelCommitFreshness || source.freshness || {};
+        const consumerGate = source.mcelCommitConsumerGate || source.consumerGate || {};
+        const preflight = source.mcelCommitPreflight || source.preflight || txDraftBoundary.endgamePreflight || {};
+        const receipt = source.mcelCommitReceipt || source.commitReceipt || {};
+        const blockers = uniqueScmReceiptList(preflight.blockers, consumerGate.blockers, freshness.invalidatedBy?.map?.((entry) => entry?.reason || entry));
+        const observed = Boolean(
+          source.kind
+          || draft.kind
+          || provenance.kind
+          || freshness.kind
+          || consumerGate.kind
+          || preflight.kind
+          || receipt.kind
+          || txDraftBoundary.endgamePreflight
+        );
+        const canSend = source.canSend === true || preflight.canSend === true;
+        const canSign = source.canSign === true || preflight.canSign === true;
+        const canBroadcast = source.canBroadcast === true || preflight.canBroadcast === true;
+        const locked = source.locked !== false && (canSend !== true && canSign !== true && canBroadcast !== true);
+        return jsonSafeClone({
+          kind: "mcel-code-studio-18n-commit-boundary-summary",
+          boundaryKind: source.kind || (observed ? "mcelWalletToolCommitBoundary.v1" : ""),
+          boundaryVersion: source.boundaryVersion || receipt.receiptVersion || "",
+          action: source.action || draft.action || "wallet.send-sign",
+          status: source.status || preflight.status || consumerGate.status || (observed ? "locked" : "not-observed"),
+          observed,
+          mcelOnly: source.mcelOnly !== false,
+          seriousAction: source.seriousAction !== false,
+          locked,
+          canCommit: preflight.canCommit === true,
+          canSend,
+          canSign,
+          canBroadcast,
+          draftKind: draft.kind || "",
+          draftId: draft.draftId || "",
+          provenanceKind: provenance.kind || "",
+          freshnessKind: freshness.kind || "",
+          freshnessStatus: freshness.status || "",
+          consumerGateKind: consumerGate.kind || "",
+          consumerGateStatus: consumerGate.status || "",
+          preflightKind: preflight.kind || "",
+          preflightStatus: preflight.status || "",
+          receiptKind: receipt.kind || "",
+          receiptStatus: receipt.status || "",
+          mutationExecuted: receipt.mutationExecuted === true,
+          blockers,
+          allowedActions: uniqueScmReceiptList(source.allowedActions, consumerGate.allowedActions, preflight.allowedActions),
+          blockedActions: uniqueScmReceiptList(source.blockedActions, preflight.blockedActions, blockers),
+          proofDockSpecimens: source.mcelProofDockSpecimens || source.proofDockSpecimens || null,
+          nextAction: source.nextAction || preflight.summary || consumerGate.reason || "",
+          invariant: source.invariant || [],
+          raw: source
+        });
+      }
+
+      function summarizeMcelCommitBoundaryForWorkbench(receiptVector = studioState.lastScmReceiptVector) {
+        const boundary = receiptVector?.commitBoundary || receiptVector?.mcelCommitBoundary || receiptVector?.walletCommitBoundary || {};
+        const observed = boundary.observed === true || Boolean(boundary.boundaryKind || boundary.draftKind || boundary.receiptKind);
+        const locked = boundary.locked !== false && boundary.canSend !== true && boundary.canSign !== true && boundary.canBroadcast !== true;
+        const status = observed
+          ? (boundary.status || (locked ? "locked" : "needs inspection"))
+          : "not observed";
+        const label = observed
+          ? `${status} · ${boundary.action || "wallet.send-sign"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
+          : "not observed";
+        return jsonSafeClone({
+          kind: "mcel-code-studio-18n-commit-boundary-workbench-summary",
+          observed,
+          status,
+          label,
+          action: boundary.action || "wallet.send-sign",
+          locked,
+          canCommit: boundary.canCommit === true,
+          canSend: boundary.canSend === true,
+          canSign: boundary.canSign === true,
+          canBroadcast: boundary.canBroadcast === true,
+          draftKind: boundary.draftKind || "",
+          provenanceKind: boundary.provenanceKind || "",
+          freshnessKind: boundary.freshnessKind || "",
+          freshnessStatus: boundary.freshnessStatus || "",
+          consumerGateStatus: boundary.consumerGateStatus || "",
+          preflightStatus: boundary.preflightStatus || "",
+          receiptStatus: boundary.receiptStatus || "",
+          mutationExecuted: boundary.mutationExecuted === true,
+          blockers: boundary.blockers || [],
+          allowedActions: boundary.allowedActions || [],
+          blockedActions: boundary.blockedActions || [],
+          proofDockSpecimens: boundary.proofDockSpecimens || null,
+          nextAction: boundary.nextAction || (observed ? "inspect MCEL 18N preflight/receipt" : "run MCEL Lab wallet proof"),
+          raw: boundary
+        });
+      }
+
+      function mcelProofDockBoundaryParts(boundary = {}) {
+        const draft = boundary.mcelCommitDraft || boundary.commitDraft || {};
+        const provenance = boundary.mcelCommitProvenance || boundary.provenance || {};
+        const freshness = boundary.mcelCommitFreshness || boundary.freshness || {};
+        const consumerGate = boundary.mcelCommitConsumerGate || boundary.consumerGate || {};
+        const preflight = boundary.mcelCommitPreflight || boundary.preflight || {};
+        const receipt = boundary.mcelCommitReceipt || boundary.commitReceipt || boundary.walletBlockedAttemptReceipt || {};
+        const blockers = uniqueScmReceiptList(
+          boundary.blockers,
+          preflight.blockers,
+          consumerGate.blockers,
+          freshness.blockers,
+          (freshness.invalidatedBy || []).map((entry) => entry?.reason || entry)
+        );
+        const allowedActions = uniqueScmReceiptList(boundary.allowedActions, consumerGate.allowedActions, preflight.allowedActions);
+        const blockedActions = uniqueScmReceiptList(boundary.blockedActions, preflight.blockedActions, blockers);
+        return {draft, provenance, freshness, consumerGate, preflight, receipt, blockers, allowedActions, blockedActions};
+      }
+
+      function mcelProofDockCommitBoundarySpecimen({
+        specimen = "unknown",
+        action = "unknown",
+        label = "",
+        boundary = {},
+        receipt = null,
+        source = "code-studio",
+        locked = null,
+        fallbackStatus = "not-observed",
+        blockedActions = []
+      } = {}) {
+        const parts = mcelProofDockBoundaryParts(boundary);
+        const draft = parts.draft;
+        const provenance = parts.provenance;
+        const freshness = parts.freshness;
+        const consumerGate = parts.consumerGate;
+        const preflight = parts.preflight;
+        const commitReceipt = receipt || parts.receipt || {};
+        const observed = Boolean(boundary.kind || draft.kind || commitReceipt.kind || receipt);
+        const mergedBlockers = uniqueScmReceiptList(parts.blockers, blockedActions, commitReceipt.blockers);
+        const mergedAllowedActions = uniqueScmReceiptList(parts.allowedActions, commitReceipt.allowedActions);
+        const mergedBlockedActions = uniqueScmReceiptList(blockedActions, parts.blockedActions, mergedBlockers);
+        const computedLocked = locked === null
+          ? (boundary.locked === true || (action.startsWith("wallet.") && boundary.canSend !== true && boundary.canSign !== true && boundary.canBroadcast !== true))
+          : locked === true;
+        return jsonSafeClone({
+          kind: "mcelProofDockCommitBoundarySpecimen.v1",
+          proofDockVersion: MCEL_PROOF_DOCK_UNIFICATION_VERSION,
+          source,
+          specimen,
+          action,
+          label: label || specimen,
+          observed,
+          mcelOnly: true,
+          seriousAction: true,
+          locked: computedLocked,
+          status: boundary.status || preflight.status || consumerGate.status || commitReceipt.status || fallbackStatus,
+          draft: {
+            kind: draft.kind || boundary.draftKind || "",
+            id: draft.draftId || boundary.draftId || commitReceipt.draftId || "",
+            status: draft.status || boundary.status || ""
+          },
+          provenance: {
+            kind: provenance.kind || boundary.provenanceKind || "",
+            status: provenance.provenanceEnforced === false ? "missing" : (provenance.kind || boundary.provenanceKind ? "recorded" : "not-observed"),
+            sourceHash: provenance.sourceHash || commitReceipt.sourceHash || "",
+            targetHash: provenance.targetHash || ""
+          },
+          freshness: {
+            kind: freshness.kind || boundary.freshnessKind || "",
+            status: freshness.status || boundary.freshnessStatus || commitReceipt.freshnessStatus || "not-observed",
+            invalidatedBy: freshness.invalidatedBy || []
+          },
+          consumerGate: {
+            kind: consumerGate.kind || boundary.consumerGateKind || "",
+            status: consumerGate.status || boundary.consumerGateStatus || commitReceipt.consumerGateStatus || "not-observed",
+            allowedActions: mergedAllowedActions
+          },
+          preflight: {
+            kind: preflight.kind || boundary.preflightKind || "",
+            status: preflight.status || boundary.preflightStatus || commitReceipt.preflightStatus || "not-observed",
+            canCommit: preflight.canCommit === true || boundary.canCommit === true,
+            canSend: boundary.canSend === true || preflight.canSend === true,
+            canSign: boundary.canSign === true || preflight.canSign === true,
+            canBroadcast: boundary.canBroadcast === true || preflight.canBroadcast === true
+          },
+          receipt: {
+            kind: commitReceipt.kind || boundary.receiptKind || "",
+            status: commitReceipt.status || boundary.receiptStatus || "not-observed",
+            receiptId: commitReceipt.receiptId || "",
+            mutationExecuted: commitReceipt.mutationExecuted === true || boundary.mutationExecuted === true
+          },
+          allowedActions: mergedAllowedActions,
+          blockedActions: mergedBlockedActions,
+          blockers: mergedBlockers,
+          nextAction: boundary.nextAction || preflight.summary || consumerGate.reason || "inspect MCEL 18N proof dock specimen",
+          invariant: [
+            "Unified MCEL proof dock specimens expose draft, provenance, freshness, consumer gate, preflight, and receipt.",
+            "Code Studio and wallet specimens share one proof-dock shape.",
+            "Wallet send/sign/broadcast remain locked."
+          ]
+        });
+      }
+
+      function latestCodeStudioCommitBoundaryForAction(action) {
+        if (studioState.lastCodeStudioCommitBoundary?.action === action) return studioState.lastCodeStudioCommitBoundary;
+        const receipt = [...(studioState.codeStudioCommitBoundaryReceipts || [])].reverse().find((entry) => entry.action === action);
+        if (!receipt) return null;
+        return {
+          kind: "mcelCodeStudioCommitBoundary.v1",
+          boundaryVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+          action,
+          status: receipt.status || "not-observed",
+          locked: false,
+          canCommit: receipt.committed === true || receipt.status === "committed",
+          canSend: false,
+          canSign: false,
+          canBroadcast: false,
+          mcelCommitReceipt: receipt,
+          mcelCommitPreflight: {
+            kind: "mcelCommitPreflight.v1",
+            status: receipt.preflightStatus || "not-observed",
+            canCommit: receipt.committed === true,
+            canSend: false,
+            canSign: false,
+            canBroadcast: false,
+            blockers: receipt.blockers || []
+          },
+          mcelCommitConsumerGate: {
+            kind: "mcelCommitConsumerGate.v1",
+            status: receipt.consumerGateStatus || "not-observed",
+            allowedActions: receipt.committed === true ? [`${action}-with-receipt`] : ["inspect-18n-preflight"],
+            blockers: receipt.blockers || []
+          },
+          mcelCommitFreshness: {
+            kind: "mcelCommitFreshness.v1",
+            status: receipt.freshnessStatus || "not-observed",
+            invalidatedBy: []
+          },
+          mcelCommitDraft: {
+            kind: "mcelCommitDraft.v1",
+            action,
+            draftId: receipt.draftId || ""
+          },
+          mcelCommitProvenance: {
+            kind: "mcelCommitProvenance.v1",
+            sourceHash: receipt.sourceHash || "",
+            provenanceEnforced: Boolean(receipt.sourceHash || receipt.draftId)
+          }
+        };
+      }
+
+      function collectMcelProofDockUnifiedSpecimens(receiptVector = studioState.lastScmReceiptVector) {
+        const vector = receiptVector || normalizeScmReceiptVector(null);
+        const walletBoundary = vector?.commitBoundary || vector?.mcelCommitBoundary || vector?.walletCommitBoundary || {};
+        const walletSourceSpecimens = vector?.mcelProofDockSpecimens || vector?.proofDockSpecimens || walletBoundary.proofDockSpecimens || null;
+        const walletBlockedActions = ["wallet.send", "wallet.sign", "wallet.broadcast"];
+        const walletSpecimens = [
+          mcelProofDockCommitBoundarySpecimen({
+            specimen: "wallet.txDraft",
+            action: "wallet.txDraft",
+            label: "Wallet txDraft",
+            boundary: walletBoundary.raw || walletBoundary,
+            source: "mcel-lab.wallet-tool.txDraft",
+            locked: true,
+            fallbackStatus: walletBoundary.status || "locked"
+          }),
+          mcelProofDockCommitBoundarySpecimen({
+            specimen: "wallet.blockedSend",
+            action: "wallet.blockedSend",
+            label: "Blocked wallet send",
+            boundary: walletBoundary.raw || walletBoundary,
+            source: "mcel-lab.wallet-tool.blockedSend",
+            locked: true,
+            blockedActions: walletBlockedActions,
+            fallbackStatus: walletBoundary.status || "locked"
+          }),
+          mcelProofDockCommitBoundarySpecimen({
+            specimen: "wallet.blockedSign",
+            action: "wallet.blockedSign",
+            label: "Blocked wallet sign",
+            boundary: walletBoundary.raw || walletBoundary,
+            source: "mcel-lab.wallet-tool.blockedSign",
+            locked: true,
+            blockedActions: walletBlockedActions,
+            fallbackStatus: walletBoundary.status || "locked"
+          }),
+          mcelProofDockCommitBoundarySpecimen({
+            specimen: "wallet.blockedBroadcast",
+            action: "wallet.blockedBroadcast",
+            label: "Blocked wallet broadcast",
+            boundary: walletBoundary.raw || walletBoundary,
+            source: "mcel-lab.wallet-tool.blockedBroadcast",
+            locked: true,
+            blockedActions: walletBlockedActions,
+            fallbackStatus: walletBoundary.status || "locked"
+          })
+        ];
+        const codeStudioActions = [
+          ["codeStudio.runtimeMount", "codeStudio.mountRuntimeDraft", "Code Studio runtime mount"],
+          ["codeStudio.editorDraftCommit", "codeStudio.commitRuntimeDraft", "Code Studio editor draft commit"],
+          ["codeStudio.workspacePersist", "codeStudio.persistLiveWorkspace", "Code Studio workspace persistence"]
+        ];
+        const codeStudioSpecimens = codeStudioActions.map(([specimen, action, label]) => {
+          const boundary = latestCodeStudioCommitBoundaryForAction(action) || {
+            kind: "mcelCodeStudioCommitBoundary.v1",
+            boundaryVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+            action,
+            status: "not-observed",
+            locked: false,
+            canCommit: false,
+            canSend: false,
+            canSign: false,
+            canBroadcast: false
+          };
+          return mcelProofDockCommitBoundarySpecimen({
+            specimen,
+            action,
+            label,
+            boundary,
+            source: "code-studio.bottom-proof-dock",
+            locked: false,
+            fallbackStatus: boundary.status || "not-observed"
+          });
+        });
+        const specimens = [...codeStudioSpecimens, ...walletSpecimens];
+        const blockers = uniqueScmReceiptList(...specimens.map((entry) => entry.blockers || []));
+        return jsonSafeClone({
+          kind: "mcelProofDockUnifiedSpecimens.v1",
+          proofDockVersion: MCEL_PROOF_DOCK_UNIFICATION_VERSION,
+          source: "code-studio.bottom-proof-dock",
+          sourceVectorKind: vector?.sourceKind || "not-ingested",
+          specimenCount: specimens.length,
+          codeStudioSpecimenCount: codeStudioSpecimens.length,
+          walletSpecimenCount: walletSpecimens.length,
+          walletLocked: walletSpecimens.every((entry) => entry.locked === true && entry.preflight.canSend !== true && entry.preflight.canSign !== true && entry.preflight.canBroadcast !== true),
+          mutationExecutedCount: specimens.filter((entry) => entry.receipt.mutationExecuted === true).length,
+          blockedCount: specimens.filter((entry) => (entry.blockers || []).length || String(entry.status || "").includes("blocked") || entry.locked === true).length,
+          blockers,
+          sourceWalletProofDockSpecimens: walletSourceSpecimens,
+          codeStudioSpecimens,
+          walletSpecimens,
+          specimens,
+          invariant: [
+            "codeStudio.runtimeMount, codeStudio.editorDraftCommit, codeStudio.workspacePersist, wallet.txDraft, wallet.blockedSend, wallet.blockedSign, and wallet.blockedBroadcast share one proof dock model.",
+            "Every unified specimen reports draft, provenance, freshness, consumer gate, preflight, receipt, allowed actions, and blocked actions.",
+            "Wallet send/sign/broadcast remain locked while Code Studio runtime-only mutations may be receipted."
+          ]
+        });
+      }
+
       function normalizeMcelLabReceiptVector(input, options = {}) {
         const envelope = parseScmReceiptJsonCandidate(input);
         if (!envelope || typeof envelope !== "object") return null;
@@ -1407,7 +1799,16 @@
         const safetyOutcome = normalizeReceiptOutcome(proof.safetyOutcome, "waiting");
         const repairPacket = normalizeLabReceiptRepairPacket(proof, declaration);
         const txDraftBoundary = normalizeLabReceiptTxDraftBoundary(proof, repairPacket.packet);
-        const nextAction = proof.nextAction || inferLabReceiptNextAction(selectedEffect, actionOutcome, externalOutcome, declaration);
+        const commitBoundary = normalizeMcelCommitBoundaryForReceipt(
+          proof.mcelCommitBoundary || proof.walletCommitBoundary || proof.commitBoundary,
+          txDraftBoundary
+        );
+        const mcelProofDockSpecimens = proof.mcelProofDockSpecimens
+          || proof.proofDockSpecimens
+          || commitBoundary.proofDockSpecimens
+          || proof.walletCommitBoundary?.mcelProofDockSpecimens
+          || null;
+        const nextAction = proof.nextAction || commitBoundary.nextAction || inferLabReceiptNextAction(selectedEffect, actionOutcome, externalOutcome, declaration);
 
         return jsonSafeClone({
           kind: SCM_LAB_RECEIPT_PROOF_KIND,
@@ -1429,6 +1830,11 @@
           nextAction,
           repairPacket,
           txDraftBoundary,
+          commitBoundary,
+          mcelCommitBoundary: commitBoundary,
+          walletCommitBoundary: commitBoundary,
+          mcelProofDockSpecimens,
+          proofDockSpecimens: mcelProofDockSpecimens,
           layoutObservation: normalizeLabReceiptLayoutObservation(proof),
           checks: proof.checks || {},
           rawReceipt: envelope
@@ -1489,6 +1895,23 @@
               valid: false
             },
             raw: null
+          },
+          commitBoundary: normalizeMcelCommitBoundaryForReceipt(null, {}),
+          mcelCommitBoundary: normalizeMcelCommitBoundaryForReceipt(null, {}),
+          walletCommitBoundary: normalizeMcelCommitBoundaryForReceipt(null, {}),
+          mcelProofDockSpecimens: {
+            kind: "mcelProofDockUnifiedSpecimens.v1",
+            proofDockVersion: MCEL_PROOF_DOCK_UNIFICATION_VERSION,
+            source: "not-ingested",
+            specimenCount: 0,
+            specimens: []
+          },
+          proofDockSpecimens: {
+            kind: "mcelProofDockUnifiedSpecimens.v1",
+            proofDockVersion: MCEL_PROOF_DOCK_UNIFICATION_VERSION,
+            source: "not-ingested",
+            specimenCount: 0,
+            specimens: []
           },
           draftProvenance: {
             status: "not-observed",
@@ -2090,6 +2513,7 @@
             ? ["source.workspace.files", "state.drafts", "state.dirty", "runtime.editorDraftProvenance", "runtime.evidenceStrip"]
             : ["runtime.editorDraft", "runtime.editorDraftProvenance", "state.drafts", "state.dirty", "runtime.evidenceStrip"]),
           forbiddenWrites: effect === "editorDraft.committed" ? [] : ["source.workspace.files"],
+          commitBoundaryReceipt: context.commitBoundaryReceipt || null,
           nextAction: context.nextAction || (effect === "editorDraft.committed" ? "render committed source" : "commit draft or discard draft")
         });
 
@@ -2141,6 +2565,435 @@
             uncommittedDraftsRuntimeOnly,
             serializationExcludedUntilCommit: events.every((event) => event.effect === "editorDraft.committed" || event.serializationExcludedUntilCommit !== false)
           }
+        });
+      }
+
+
+      function currentCodeStudioCommitSourceSnapshot(fields = workspaceFields(), draftText = "") {
+        const file = selectedFile(fields);
+        const routeParams = routeParamsForScm(fields) || {};
+        const routeQuery = routeQueryForScm();
+        const activePane = root.querySelector("[data-code-studio-pane].active")?.dataset.codeStudioPane || "";
+        return jsonSafeClone({
+          kind: "mcelCodeStudioCommitSourceSnapshot.v1",
+          selectedPath: studioState.selectedPath,
+          selectedFileId: selectedScmFileId(fields),
+          selectedFileHash: hashRegressionString(file?.value || ""),
+          selectedFileLength: file?.value?.length || 0,
+          sourceHash: hashRegressionString(sourceEditor.value || ""),
+          sourceLength: sourceEditor.value.length,
+          draftHash: hashRegressionString(draftText),
+          draftLength: String(draftText || "").length,
+          route: {
+            name: window.McelCodeStudioScm?.routeName || "workspace.file",
+            params: routeParams,
+            query: routeQuery,
+            key: currentScmRouteKey(routeParams, routeQuery)
+          },
+          activePane,
+          dirtyState: collectDirtyStateSummary(fields),
+          sourceContainsRuntimeChrome: String(sourceEditor.value || "").includes('data-mc-generated="runtime"') || String(sourceEditor.value || "").includes('data-mc-serialize="omit"')
+        });
+      }
+
+      function mcelCodeStudioCommitDraft({
+        action = "codeStudio.commitRuntimeDraft",
+        draftText = "",
+        reason = "commit-draft",
+        intendedWrites = [],
+        sourceSnapshot = null,
+        selectedFile = null
+      } = {}) {
+        const fields = workspaceFields();
+        const snapshot = sourceSnapshot || currentCodeStudioCommitSourceSnapshot(fields, draftText);
+        const file = selectedFile || selectedFileFromFieldsForBoundary(fields);
+        const draftPayload = {
+          action,
+          selectedPath: snapshot.selectedPath,
+          selectedFileId: snapshot.selectedFileId,
+          sourceHash: snapshot.sourceHash,
+          selectedFileHash: snapshot.selectedFileHash,
+          draftHash: snapshot.draftHash,
+          routeKey: snapshot.route?.key || ""
+        };
+        return jsonSafeClone({
+          kind: "mcelCommitDraft.v1",
+          boundarySpecimen: "mcel.code-studio",
+          boundaryVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+          draftId: `mcelCodeStudioCommitDraft:${hashRegressionString(JSON.stringify(draftPayload))}`,
+          action,
+          seriousAction: true,
+          locked: false,
+          mcelOnly: true,
+          selectedPath: snapshot.selectedPath,
+          selectedFileId: snapshot.selectedFileId,
+          sourceSnapshotHash: snapshot.sourceHash,
+          selectedFileHash: snapshot.selectedFileHash,
+          draftHash: snapshot.draftHash,
+          draftLength: snapshot.draftLength,
+          sourceLength: snapshot.sourceLength,
+          route: snapshot.route,
+          target: {
+            path: file?.path || snapshot.selectedPath || "",
+            field: file?.field || "",
+            language: file?.language || ""
+          },
+          intendedWrites,
+          proofRefs: [
+            studioState.lastEditorDraftProvenanceReceipt?.eventId || "editor-draft-provenance.not-observed",
+            studioState.lastScmReceiptVector?.vectorVersion || "receipt-vector.not-ingested",
+            studioState.lastSaveFileEffectGate?.resultKind || studioState.lastSaveFileEffectGate?.kind || "saveFile.not-run",
+            studioState.lastRouteLoaderPersistenceGate?.label || "route-loaders.not-run"
+          ],
+          createdFor: reason,
+          invariant: [
+            "runtime draft intent is explicit before source mutation",
+            "selected file, route, source hash, and draft hash are captured",
+            "commitRuntimeDraft cannot write source until freshness and SCM gates pass",
+            "wallet send/sign/broadcast remains out of scope"
+          ]
+        });
+      }
+
+      function selectedFileFromFieldsForBoundary(fields = workspaceFields()) {
+        return fields.files.find((file) => file.path === studioState.selectedPath) || fields.files[0] || null;
+      }
+
+      function mcelCodeStudioCommitProvenance({draft = {}, sourceSnapshot = null, currentSnapshot = null} = {}) {
+        const snapshot = sourceSnapshot || currentSnapshot || currentCodeStudioCommitSourceSnapshot(workspaceFields(), "");
+        return jsonSafeClone({
+          kind: "mcelCommitProvenance.v1",
+          boundarySpecimen: "mcel.code-studio",
+          boundaryVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+          draftHash: draft.draftId || "",
+          sourceHash: snapshot.sourceHash || "",
+          targetHash: hashRegressionString(JSON.stringify({
+            selectedPath: snapshot.selectedPath || "",
+            selectedFileId: snapshot.selectedFileId || "",
+            routeKey: snapshot.route?.key || ""
+          })),
+          sourceSnapshot: snapshot,
+          targetSnapshot: {
+            selectedPath: snapshot.selectedPath || "",
+            selectedFileId: snapshot.selectedFileId || "",
+            route: snapshot.route || {}
+          },
+          provenanceEnforced: Boolean(draft.draftId && snapshot.sourceHash && snapshot.selectedFileId),
+          proofRefs: draft.proofRefs || [],
+          invariant: [
+            "reviewed source snapshot is identified",
+            "selected target file is identified",
+            "route/key context is identified before mutation"
+          ]
+        });
+      }
+
+      function mcelCodeStudioCommitFreshness({
+        draft = {},
+        provenance = {},
+        currentSnapshot = null,
+        expectedDraftHash = "",
+        extraInvalidations = []
+      } = {}) {
+        const current = currentSnapshot || currentCodeStudioCommitSourceSnapshot(workspaceFields(), "");
+        const invalidatedBy = [...extraInvalidations.filter(Boolean)];
+        if (provenance.sourceHash && current.sourceHash && provenance.sourceHash !== current.sourceHash) {
+          invalidatedBy.push({
+            reason: "source-file-changed",
+            previousSourceHash: provenance.sourceHash,
+            currentSourceHash: current.sourceHash
+          });
+        }
+        if (draft.selectedPath && current.selectedPath && draft.selectedPath !== current.selectedPath) {
+          invalidatedBy.push({
+            reason: "selected-file-changed",
+            previousSelectedPath: draft.selectedPath,
+            currentSelectedPath: current.selectedPath
+          });
+        }
+        if (draft.selectedFileHash && current.selectedFileHash && draft.selectedFileHash !== current.selectedFileHash) {
+          invalidatedBy.push({
+            reason: "selected-file-content-changed",
+            previousSelectedFileHash: draft.selectedFileHash,
+            currentSelectedFileHash: current.selectedFileHash
+          });
+        }
+        if (expectedDraftHash && draft.draftHash && expectedDraftHash !== draft.draftHash) {
+          invalidatedBy.push({
+            reason: "runtime-draft-changed",
+            previousDraftHash: draft.draftHash,
+            currentDraftHash: expectedDraftHash
+          });
+        }
+        if (current.sourceContainsRuntimeChrome === true) {
+          invalidatedBy.push({
+            reason: "runtime-chrome-in-source",
+            message: "Generated runtime chrome must not be persisted into author-owned source."
+          });
+        }
+        const unique = [];
+        const seen = new Set();
+        invalidatedBy.forEach((entry) => {
+          const key = `${entry.reason || "unknown"}:${JSON.stringify(entry)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          unique.push(entry);
+        });
+        const valid = unique.length === 0 && provenance.provenanceEnforced === true;
+        return jsonSafeClone({
+          kind: "mcelCommitFreshness.v1",
+          boundarySpecimen: "mcel.code-studio",
+          boundaryVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+          status: valid ? "valid" : (unique.length ? "invalidated" : "stale"),
+          valid,
+          sourceHash: current.sourceHash || "",
+          selectedFileHash: current.selectedFileHash || "",
+          draftHash: expectedDraftHash || current.draftHash || "",
+          invalidatedBy: unique,
+          action: valid ? "continue to MCEL Code Studio consumer gate" : "rebuild runtime draft from the current author source",
+          invariant: [
+            "source hash must match the reviewed draft source",
+            "selected file must match the reviewed draft target",
+            "runtime draft hash must match the reviewed draft text"
+          ]
+        });
+      }
+
+      function mcelCodeStudioCommitConsumerGate({
+        draft = {},
+        provenance = {},
+        freshness = {},
+        gates = {},
+        phase = "preflight",
+        blockers = []
+      } = {}) {
+        const allBlockers = [...blockers.filter(Boolean)];
+        const editGate = gates.editGate || null;
+        const commitGate = gates.commitGate || null;
+        const saveGate = gates.saveGate || null;
+        const loaderGate = gates.loaderGate || null;
+        if (freshness.valid !== true) allBlockers.push(...(freshness.invalidatedBy || []).map((entry) => entry.reason || "freshness-invalid"));
+        if (provenance.provenanceEnforced !== true) allBlockers.push("provenance-not-enforced");
+        if (editGate && editGate.ok === false) allBlockers.push(editGate.code || "editDraft-gate-blocked");
+        if (commitGate && commitGate.ok === false) allBlockers.push(commitGate.code || "commitDraft-gate-blocked");
+        if (saveGate && saveGate.ok === false) allBlockers.push(saveGate.code || "saveFile-gate-blocked");
+        if (loaderGate && loaderGate.ok === false) allBlockers.push(loaderGate.route?.code || "route-loader-gate-blocked");
+        if (!draft.draftId) allBlockers.push("commit-draft-missing");
+        const uniqueBlockers = [...new Set(allBlockers.filter(Boolean))];
+        const valid = provenance.provenanceEnforced === true && freshness.valid === true && uniqueBlockers.length === 0;
+        const actionName = draft.action || "codeStudio.commitRuntimeDraft";
+        const allowedActions = valid
+          ? (actionName === "codeStudio.mountRuntimeDraft"
+            ? ["mountRuntimeDraft-with-receipt", "mountMonaco-runtime-only", "inspect-runtime-mount-receipt"]
+            : actionName === "codeStudio.persistLiveWorkspace"
+              ? ["persistLiveWorkspace-with-receipt", "refresh-route-loader-receipt", "inspect-persistence-receipt"]
+              : ["commitRuntimeDraft-with-receipt", "persistLiveWorkspace-with-receipt", "inspect-source-mutation-receipt"])
+          : ["rebuild-draft", "refresh-scm-gates", "inspect-18n-preflight"];
+        return jsonSafeClone({
+          kind: "mcelCommitConsumerGate.v1",
+          boundarySpecimen: "mcel.code-studio",
+          boundaryVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+          consumer: `mcel.code-studio.${actionName}`,
+          phase,
+          status: valid ? "pass" : "blocked",
+          valid,
+          blockers: uniqueBlockers,
+          allowedActions,
+          reason: valid
+            ? `MCEL Code Studio 18N consumer gate accepted ${actionName}.`
+            : `MCEL Code Studio 18N consumer gate blocked commit: ${uniqueBlockers.join(", ") || "not proven"}`,
+          invariant: [
+            "Code Studio cannot commit stale runtime intent",
+            "Code Studio cannot mount runtime chrome without a fresh source snapshot",
+            "Code Studio cannot persist without SCM save/load proof",
+            "consumer gate must run before source/localStorage mutation"
+          ]
+        });
+      }
+
+      function mcelCodeStudioCommitPreflight({draft = {}, freshness = {}, consumerGate = {}} = {}) {
+        const blockers = [...new Set([...(consumerGate.blockers || []), ...((freshness.invalidatedBy || []).map((entry) => entry.reason || "freshness-invalid"))].filter(Boolean))];
+        const allowed = consumerGate.valid === true && blockers.length === 0;
+        return jsonSafeClone({
+          kind: "mcelCommitPreflight.v1",
+          boundarySpecimen: "mcel.code-studio",
+          boundaryVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+          status: allowed ? "allowed" : "blocked",
+          allowed,
+          canCommit: allowed,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false,
+          blockers,
+          summary: allowed
+            ? `${draft.action || "Code Studio commit"} may proceed through a receipted MCEL 18N boundary.`
+            : `${draft.action || "Code Studio commit"} is blocked until draft, provenance, freshness, and SCM gates agree.`,
+          invariant: [
+            "preflight result is explicit",
+            "source mutation is not inferred from a button click",
+            "wallet execution remains locked and unrelated"
+          ]
+        });
+      }
+
+      function mcelCodeStudioCommitReceipt({
+        draft = {},
+        provenance = {},
+        freshness = {},
+        consumerGate = {},
+        preflight = {},
+        mutationExecuted = false,
+        beforeSourceHash = "",
+        afterSourceHash = "",
+        reason = "mcel-code-studio-commit"
+      } = {}) {
+        const sequence = (studioState.codeStudioCommitBoundarySequence || 0) + 1;
+        studioState.codeStudioCommitBoundarySequence = sequence;
+        const committed = mutationExecuted === true && preflight.allowed === true && consumerGate.valid === true;
+        return jsonSafeClone({
+          kind: "mcelCommitReceipt.v1",
+          receiptVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+          receiptId: `mcel-code-studio-commit-receipt-${String(sequence).padStart(4, "0")}`,
+          boundarySpecimen: "mcel.code-studio",
+          action: draft.action || "codeStudio.commitRuntimeDraft",
+          status: committed ? "committed" : (preflight.allowed ? "preflight-allowed" : "blocked"),
+          committed,
+          mutationExecuted,
+          beforeSourceHash,
+          afterSourceHash,
+          draftId: draft.draftId || "",
+          sourceHash: provenance.sourceHash || "",
+          freshnessStatus: freshness.status || "not-observed",
+          consumerGateStatus: consumerGate.status || "not-observed",
+          preflightStatus: preflight.status || "not-observed",
+          blockers: preflight.blockers || consumerGate.blockers || [],
+          reason,
+          invariant: [
+            "receipt records the exact commit decision",
+            "receipt records whether mutation actually executed",
+            "receipt keeps wallet send/sign/broadcast false"
+          ]
+        });
+      }
+
+      function buildMcelCodeStudioCommitBoundary({
+        action = "codeStudio.commitRuntimeDraft",
+        draftText = "",
+        reason = "preflight",
+        gates = {},
+        phase = "preflight",
+        intendedWrites = [],
+        mutationExecuted = false,
+        beforeSourceHash = "",
+        afterSourceHash = "",
+        blockers = []
+      } = {}) {
+        const fields = workspaceFields();
+        const file = selectedFileFromFieldsForBoundary(fields);
+        const sourceSnapshot = currentCodeStudioCommitSourceSnapshot(fields, draftText);
+        const draft = mcelCodeStudioCommitDraft({action, draftText, reason, intendedWrites, sourceSnapshot, selectedFile: file});
+        const provenance = mcelCodeStudioCommitProvenance({draft, sourceSnapshot, currentSnapshot: sourceSnapshot});
+        const freshness = mcelCodeStudioCommitFreshness({
+          draft,
+          provenance,
+          currentSnapshot: sourceSnapshot,
+          expectedDraftHash: hashRegressionString(draftText),
+          extraInvalidations: blockers.map((reason) => ({reason}))
+        });
+        const consumerGate = mcelCodeStudioCommitConsumerGate({draft, provenance, freshness, gates, phase, blockers});
+        const preflight = mcelCodeStudioCommitPreflight({draft, freshness, consumerGate});
+        const receipt = mcelCodeStudioCommitReceipt({
+          draft,
+          provenance,
+          freshness,
+          consumerGate,
+          preflight,
+          mutationExecuted,
+          beforeSourceHash,
+          afterSourceHash,
+          reason
+        });
+        return jsonSafeClone({
+          kind: "mcelCodeStudioCommitBoundary.v1",
+          boundaryVersion: MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION,
+          action,
+          status: preflight.status,
+          seriousAction: true,
+          mcelOnly: true,
+          locked: false,
+          canCommit: preflight.canCommit === true,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false,
+          mcelCommitDraft: draft,
+          mcelCommitProvenance: provenance,
+          mcelCommitFreshness: freshness,
+          mcelCommitConsumerGate: consumerGate,
+          mcelCommitPreflight: preflight,
+          mcelCommitReceipt: receipt,
+          nextAction: preflight.allowed
+            ? (action === "codeStudio.mountRuntimeDraft"
+              ? "mount runtime preview through receipt and keep generated chrome out of source"
+              : "commit through receipt and record after-source hash")
+            : "rebuild runtime draft and rerun SCM gates",
+          invariant: [
+            "Code Studio runtime mount is now an 18N boundary specimen",
+            "Code Studio runtime commit is now an 18N boundary specimen",
+            "source mutation only follows allowed preflight",
+            "local workspace persistence carries its own boundary receipt",
+            "wallet execution remains locked"
+          ]
+        });
+      }
+
+      function recordMcelCodeStudioCommitBoundary(boundary = null) {
+        if (!boundary) return null;
+        studioState.lastCodeStudioCommitBoundary = jsonSafeClone(boundary);
+        if (boundary.mcelCommitReceipt) {
+          studioState.codeStudioCommitBoundaryReceipts = [
+            ...(studioState.codeStudioCommitBoundaryReceipts || []).slice(-15),
+            boundary.mcelCommitReceipt
+          ];
+        }
+        renderMcelCodeStudioCommitBoundarySurface(boundary);
+        return boundary;
+      }
+
+      function renderMcelCodeStudioCommitBoundarySurface(boundary = studioState.lastCodeStudioCommitBoundary) {
+        const target = root.querySelector("#code-studio-18n-commit-boundary-status");
+        if (!target || !boundary) return null;
+        const preflight = boundary.mcelCommitPreflight || {};
+        const receipt = boundary.mcelCommitReceipt || {};
+        target.dataset.status = boundary.status || "unknown";
+        target.dataset.canCommit = boundary.canCommit === true ? "true" : "false";
+        target.textContent = [
+          `18N Code Studio boundary: ${boundary.status || "unknown"}`,
+          `action: ${boundary.action || "codeStudio.commitRuntimeDraft"}`,
+          `canCommit=${boundary.canCommit === true} canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`,
+          `receipt=${receipt.status || "not-recorded"} mutationExecuted=${receipt.mutationExecuted === true}`,
+          `blockers=${(preflight.blockers || []).join(", ") || "none"}`
+        ].join("\n");
+        return target;
+      }
+
+      function renderMcelCodeStudioCommitBoundaryInProofDock(boundary = studioState.lastCodeStudioCommitBoundary) {
+        const payload = boundary || buildMcelCodeStudioCommitBoundary({
+          action: "codeStudio.commitRuntimeDraft",
+          reason: "proof-dock-empty-boundary",
+          blockers: ["commit-boundary-not-run"]
+        });
+        return renderProofDockPayload("MCEL 18N Code Studio commit boundary", payload, {
+          kind: "mcel-code-studio-18n-commit-boundary-detail",
+          action: "copy-code-studio-18n-boundary",
+          summaryRows: [
+            ["Boundary", payload.kind || "mcelCodeStudioCommitBoundary.v1"],
+            ["Status", payload.status || "unknown"],
+            ["Action", payload.action || "codeStudio.commitRuntimeDraft"],
+            ["Can commit", String(payload.canCommit === true)],
+            ["Allowed actions", (payload.mcelCommitConsumerGate?.allowedActions || []).join(", ") || "none"],
+            ["Wallet execution", `send=${payload.canSend === true} sign=${payload.canSign === true} broadcast=${payload.canBroadcast === true}`]
+          ],
+          issueRows: payload.mcelCommitPreflight?.blockers || []
         });
       }
 
@@ -2209,6 +3062,9 @@
             },
             raw: null
           },
+          commitBoundary: normalizeMcelCommitBoundaryForReceipt(fields.commitBoundary || fields.mcelCommitBoundary || fields.walletCommitBoundary, fields.txDraftBoundary || {}),
+          mcelCommitBoundary: normalizeMcelCommitBoundaryForReceipt(fields.commitBoundary || fields.mcelCommitBoundary || fields.walletCommitBoundary, fields.txDraftBoundary || {}),
+          walletCommitBoundary: normalizeMcelCommitBoundaryForReceipt(fields.commitBoundary || fields.mcelCommitBoundary || fields.walletCommitBoundary, fields.txDraftBoundary || {}),
           draftProvenance: fields.draftProvenance || {
             status: "not-observed",
             activeDraftId: "",
@@ -4532,6 +5388,8 @@
         const vector = receiptVector || normalizeScmReceiptVector(null);
         const receiptSource = summarizeScmReceiptSourceForWorkbench(vector);
         const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(vector);
+        const mcelCommitBoundary = summarizeMcelCommitBoundaryForWorkbench(vector);
+        const mcelProofDockSpecimens = collectMcelProofDockUnifiedSpecimens(vector);
         const regression = summarizeScmRegressionStatusForWorkbench();
         const replayWorkbench = summarizeScmReplayComparisonForWorkbench();
         const replayExpectations = summarizeScmReplayExpectationsForWorkbench();
@@ -4556,6 +5414,9 @@
           nextAction: vector.nextAction || "",
           repairPacket: vector.repairPacket || {},
           txDraftProvenance,
+          mcelCommitBoundary,
+          mcelProofDockSpecimens,
+          commitBoundary: vector.commitBoundary || {},
           layoutObservation: vector.layoutObservation || {},
           replay: {
             lastReplaySnapshotComparison: studioState.lastScmReplaySnapshotComparison || null,
@@ -4775,12 +5636,17 @@
           ? receiptVector.status
           : (receiptMode === "waiting" ? "not run" : receiptOk ? "pass" : `gap · ${summary.combined.violations} violation(s)`);
         const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(receiptVector);
+        const mcelCommitBoundary = summarizeMcelCommitBoundaryForWorkbench(receiptVector);
+        const mcelProofDockSpecimens = collectMcelProofDockUnifiedSpecimens(receiptVector);
         const regressionStatus = summarizeScmRegressionStatusForWorkbench();
         const replayWorkbench = summarizeScmReplayComparisonForWorkbench(replayComparison);
         const replayExpectations = summarizeScmReplayExpectationsForWorkbench();
         const gaps = buildActionableScmGaps(summary, gates, effectGraph, selectedEvidence);
         if (receiptVectorIngested && receiptSource.current === false) {
           gaps.unshift(`Receipt vector source is ${receiptSource.freshness}: ${receiptSource.reason || receiptSource.guidance || "refresh or select a current receipt source."}`);
+        }
+        if (receiptVectorIngested && mcelCommitBoundary.observed && mcelCommitBoundary.locked !== true) {
+          gaps.unshift("MCEL 18N commit boundary needs inspection: a serious action boundary is not locked.");
         }
         if (receiptVectorIngested && txDraftProvenance.state === "invalidated") {
           gaps.unshift(`txDraft provenance invalidated: ${txDraftProvenance.invalidatedBy.join(", ")}. Action: ${txDraftProvenance.nextAction || "rebuild draft from current receipt"}.`);
@@ -4799,6 +5665,7 @@
           receiptMode,
           receiptOk,
           receiptVector,
+          mcelProofDockSpecimens,
           effectGraph: effectGraph.effects,
           actionableGaps: gaps,
           receiptRows: [
@@ -4817,6 +5684,9 @@
             ["Tx draft provenance", txDraftProvenance.label],
             ["Tx draft consumer gate", txDraftProvenance.consumerGateStatus || "not observed"],
             ["Tx draft action", txDraftProvenance.nextAction || txDraftProvenance.freshnessAction || "none"],
+            ["MCEL 18N boundary", mcelCommitBoundary.label],
+            ["MCEL 18N receipt", `${mcelCommitBoundary.receiptStatus || "not observed"} · mutationExecuted=${mcelCommitBoundary.mutationExecuted === true}`],
+            ["MCEL 18N specimens", `${mcelProofDockSpecimens.specimenCount || 0} · wallet locked=${mcelProofDockSpecimens.walletLocked === true}`],
             ["Next action", receiptVector?.nextAction || "none"],
             ["Raw payloads", "Receipt Vector in Bottom Proof Dock"]
           ],
@@ -4843,6 +5713,7 @@
           proofHistoryRows: [
             ["Receipt vector", receiptVectorIngested ? `${receiptVector.sourceKind || "ingested"} · ${receiptVector.vectorVersion || SCM_RECEIPT_VECTOR_VERSION}` : "not ingested"],
             ["Receipt authority", `${receiptSource.authority} · ${receiptSource.current ? "current" : receiptSource.freshness}`],
+            ["Unified 18N specimens", `${mcelProofDockSpecimens.specimenCount || 0} specimen(s)`],
             ["Replay", replayWorkbench.label],
             ["Replay expectations", replayExpectations.label],
             ["Regression harness", regressionStatus.label],
@@ -5094,6 +5965,25 @@
         });
       }
 
+      function renderMcelUnifiedProofDockSpecimensInProofDock() {
+        const summary = collectScmEvidenceSummary(studioState.lastReport);
+        const selectedEntry = resolveSelectedScmEvidence(summary, studioState.scmEvidenceFilter || "all", visibleScmEvidenceEntries(summary, studioState.scmEvidenceFilter || "all"));
+        const vector = collectScmReceiptVector(studioState.lastReport, summary, selectedEntry);
+        const specimens = collectMcelProofDockUnifiedSpecimens(vector);
+        return renderProofDockPayload("Unified MCEL 18N proof dock specimens", specimens, {
+          kind: "mcel-proof-dock-unified-commit-boundary-specimens",
+          action: "copy-mcel-proof-dock-unified-specimens",
+          summaryRows: [
+            ["Specimens", String(specimens.specimenCount || 0)],
+            ["Code Studio", String(specimens.codeStudioSpecimenCount || 0)],
+            ["Wallet", String(specimens.walletSpecimenCount || 0)],
+            ["Wallet locked", String(specimens.walletLocked === true)],
+            ["Mutation receipts", String(specimens.mutationExecutedCount || 0)]
+          ],
+          issueRows: specimens.blockers || []
+        });
+      }
+
       function renderEditorDraftProvenanceInProofDock() {
         return renderProofDockPayload("Draft provenance", formatEditorDraftProvenanceDetail(), {
           kind: "draft-provenance",
@@ -5120,6 +6010,7 @@
         const selectedEntry = resolveSelectedScmEvidence(summary, filter, entries);
         const receiptVector = collectScmReceiptVector(report, summary, selectedEntry);
         const txDraftProvenance = summarizeTxDraftProvenanceForWorkbench(receiptVector);
+        const mcelCommitBoundary = summarizeMcelCommitBoundaryForWorkbench(receiptVector);
         const replayWorkbench = summarizeScmReplayComparisonForWorkbench(studioState.lastScmReplaySnapshotComparison);
         const replayExpectations = summarizeScmReplayExpectationsForWorkbench(studioState.lastScmRegressionHarness);
         studioState.selectedScmEvidenceKey = selectedEntry.evidenceKey || "";
@@ -5153,6 +6044,7 @@
               <button type="button" id="code-studio-run-scm-regression-harness">Run regression harness</button>
               <button type="button" id="code-studio-open-scm-evidence-detail">Open evidence detail in proof dock</button>
               <button type="button" id="code-studio-open-scm-receipt-vector-detail">Open receipt vector in proof dock</button>
+              <button type="button" id="code-studio-open-mcel-18n-specimens-detail">Open 18N specimens in proof dock</button>
               <button type="button" id="code-studio-open-scm-replay-detail">Open replay in proof dock</button>
               <button type="button" id="code-studio-open-scm-regression-detail">Open regression in proof dock</button>
               <button type="button" id="code-studio-open-scm-replay-expectation-failures">Open replay expectation failures in proof dock</button>
@@ -5176,6 +6068,8 @@
             <span>fixture packs <code>${replayExpectations.state}</code></span>
             <span>regression <code>${studioState.lastScmRegressionHarness?.mismatchCount ? "mismatch" : (studioState.lastScmRegressionHarness?.ok === false ? "fail" : studioState.lastScmRegressionHarness ? "ok" : "idle")}</code></span>
             <span>txDraft provenance <code>${txDraftProvenance.state}</code></span>
+            <span>18N boundary <code>${mcelCommitBoundary.status}</code></span>
+            <span>18N specimens <code>${collectMcelProofDockUnifiedSpecimens(receiptVector).specimenCount}</code></span>
             <span>editor draft provenance <code>${collectEditorDraftProvenanceSummary().invariants.sourceMutationsOnlyByCommitDraft ? "ok" : "fail"}</code></span>
             <span>layout <code>${gates.layout?.ok === false ? "fail" : "ok"}</code></span>
             <span>style <code>${gates.style?.ok === false ? "fail" : "ok"}</code></span>
@@ -5212,6 +6106,10 @@
 
         scmEvidencePanel.querySelector("#code-studio-open-scm-receipt-vector-detail")?.addEventListener("click", () => {
           renderScmReceiptVectorInProofDock();
+        });
+
+        scmEvidencePanel.querySelector("#code-studio-open-mcel-18n-specimens-detail")?.addEventListener("click", () => {
+          renderMcelUnifiedProofDockSpecimensInProofDock();
         });
 
         scmEvidencePanel.querySelector("#code-studio-open-scm-replay-detail")?.addEventListener("click", () => {
@@ -5506,6 +6404,40 @@
         disposeRuntimeMonaco("renderRuntime");
         const fields = workspaceFields();
         const file = selectedFile(fields);
+        const parsed = parseSource();
+        const mountBlockers = [
+          ...(!parsed.workspace || parsed.parseError ? ["source-workspace-missing-or-invalid"] : []),
+          ...(!file ? ["selected-file-missing"] : []),
+          ...(String(sourceEditor.value || "").includes('data-mc-generated="runtime"') ? ["runtime-chrome-in-source"] : [])
+        ];
+        const mountBoundary = buildMcelCodeStudioCommitBoundary({
+          action: "codeStudio.mountRuntimeDraft",
+          draftText: file?.value || "",
+          reason: "mount-runtime-draft",
+          phase: "runtime-mount-preflight",
+          intendedWrites: ["runtime.preview", "runtime.editorDraftProvenance", "runtime.monacoAdapter"],
+          beforeSourceHash: hashRegressionString(sourceEditor.value || ""),
+          blockers: mountBlockers
+        });
+        recordMcelCodeStudioCommitBoundary(mountBoundary);
+        if (mountBoundary.canCommit !== true) {
+          runtimePreview.innerHTML = `
+            <section class="code-studio-runtime-window" ${generatedAttrs("runtime-envelope", "blocked-18n-boundary")}>
+              <header class="code-studio-runtime-header" ${generatedAttrs("runtime-header", "blocked-18n-boundary")}>
+                <strong>Runtime mount blocked by MCEL 18N boundary</strong>
+                <span>${escapeHtml(mountBoundary.mcelCommitPreflight?.blockers?.join(", ") || "source is not current/proven")}</span>
+              </header>
+              <article class="code-studio-runtime-editor" ${generatedAttrs("runtime-editor", "blocked-18n-boundary")}>
+                <p>Rebuild the runtime draft from current source before mounting generated chrome.</p>
+              </article>
+            </section>
+          `;
+          studioState.mounted = false;
+          setRuntimeLabel();
+          renderMcelCodeStudioCommitBoundaryInProofDock(mountBoundary);
+          setStatus(`18N runtime mount blocked: ${mountBoundary.mcelCommitPreflight?.blockers?.join(", ") || "not proven"}.`);
+          return;
+        }
         const fileButtons = fields.files.map((entry) => `
           <button type="button" data-code-studio-runtime-file="${escapeHtml(entry.path)}" ${entry.path === (file?.path || "") ? 'aria-current="true"' : ""}>
             ${escapeHtml(entry.path)}
@@ -5571,6 +6503,20 @@
         studioState.mounted = true;
         studioState.damaged = false;
         mountRuntimeMonaco(file, draft);
+        const mountedBoundary = jsonSafeClone(mountBoundary);
+        mountedBoundary.status = "mounted";
+        mountedBoundary.mcelCommitReceipt = mcelCodeStudioCommitReceipt({
+          draft: mountBoundary.mcelCommitDraft,
+          provenance: mountBoundary.mcelCommitProvenance,
+          freshness: mountBoundary.mcelCommitFreshness,
+          consumerGate: mountBoundary.mcelCommitConsumerGate,
+          preflight: mountBoundary.mcelCommitPreflight,
+          mutationExecuted: true,
+          beforeSourceHash: mountBoundary.mcelCommitProvenance?.sourceHash || "",
+          afterSourceHash: hashRegressionString(runtimePreview.innerHTML || ""),
+          reason: "mount-runtime-draft-runtime-only-mutation"
+        });
+        recordMcelCodeStudioCommitBoundary(mountedBoundary);
         setRuntimeLabel();
       }
 
@@ -5764,24 +6710,77 @@
         }
         const commitGate = runScmTransition("commitDraft");
         if (!commitGate.ok) {
+          const blockedBoundary = buildMcelCodeStudioCommitBoundary({
+            action: "codeStudio.commitRuntimeDraft",
+            draftText: draft.value,
+            reason: "commitDraft-transition-blocked",
+            gates: {editGate, commitGate},
+            phase: "source-mutation-preflight",
+            intendedWrites: ["source.workspace.files", "state.dirty", "runtime.editorDraftProvenance"],
+            beforeSourceHash
+          });
+          recordMcelCodeStudioCommitBoundary(blockedBoundary);
           setStatus(`SCM commitDraft transition blocked commit: ${commitGate.code || commitGate.message || "contract violation"}.`);
+          return;
+        }
+
+        const commitBoundary = buildMcelCodeStudioCommitBoundary({
+          action: "codeStudio.commitRuntimeDraft",
+          draftText: draft.value,
+          reason: "commit-runtime-draft",
+          gates: {editGate, commitGate},
+          phase: "source-mutation-preflight",
+          intendedWrites: ["source.workspace.files", "state.dirty", "runtime.editorDraftProvenance"],
+          beforeSourceHash
+        });
+        recordMcelCodeStudioCommitBoundary(commitBoundary);
+        if (commitBoundary.canCommit !== true) {
+          renderMcelCodeStudioCommitBoundaryInProofDock(commitBoundary);
+          setStatus(`18N commit boundary blocked runtime draft commit: ${commitBoundary.mcelCommitPreflight?.blockers?.join(", ") || "not proven"}.`);
           return;
         }
 
         const target = [...workspace.querySelectorAll('[data-mc-component="code-file"]')]
           .find((node) => node.getAttribute("data-mc-file-path") === file.path);
         if (!target) {
+          const missingTargetBoundary = buildMcelCodeStudioCommitBoundary({
+            action: "codeStudio.commitRuntimeDraft",
+            draftText: draft.value,
+            reason: "selected-target-missing",
+            gates: {editGate, commitGate},
+            phase: "source-mutation-preflight",
+            intendedWrites: ["source.workspace.files", "state.dirty", "runtime.editorDraftProvenance"],
+            beforeSourceHash,
+            blockers: ["selected-target-missing"]
+          });
+          recordMcelCodeStudioCommitBoundary(missingTargetBoundary);
           setStatus("Cannot commit: selected file path is no longer in source.");
           return;
         }
         target.textContent = draft.value;
         sourceEditor.value = workspace.outerHTML.trim();
+        const afterSourceHash = hashRegressionString(sourceEditor.value || "");
+        const committedBoundary = jsonSafeClone(commitBoundary);
+        committedBoundary.status = "committed";
+        committedBoundary.mcelCommitReceipt = mcelCodeStudioCommitReceipt({
+          draft: commitBoundary.mcelCommitDraft,
+          provenance: commitBoundary.mcelCommitProvenance,
+          freshness: commitBoundary.mcelCommitFreshness,
+          consumerGate: commitBoundary.mcelCommitConsumerGate,
+          preflight: commitBoundary.mcelCommitPreflight,
+          mutationExecuted: true,
+          beforeSourceHash,
+          afterSourceHash,
+          reason: "commit-runtime-draft-source-mutation"
+        });
+        recordMcelCodeStudioCommitBoundary(committedBoundary);
         recordEditorDraftProvenance("committed", {
           origin: "commitDraft",
           text: draft.value,
           sourceChanged: true,
           beforeSourceHash,
-          afterSourceHash: hashRegressionString(sourceEditor.value || ""),
+          afterSourceHash,
+          commitBoundaryReceipt: committedBoundary.mcelCommitReceipt,
           nextAction: "render committed source"
         });
         studioState.dirty = false;
@@ -5797,7 +6796,8 @@
           loaderGate: studioState.lastRouteLoaderPersistenceGate
         });
         renderRuntime();
-        setStatus("Runtime draft committed into author-owned source, persisted through SCM saveFile, and route/effect loaders refreshed.");
+        renderMcelCodeStudioCommitBoundaryInProofDock(studioState.lastCodeStudioCommitBoundary);
+        setStatus("Runtime draft committed through MCEL 18N boundary, persisted through SCM saveFile, and route/effect loaders refreshed.");
       }
 
       tabButtons.forEach((button) => {
@@ -5898,6 +6898,9 @@
       damageButton?.addEventListener("click", damageRuntime);
       repairButton?.addEventListener("click", repairRuntime);
       commitButton?.addEventListener("click", commitRuntimeDraft);
+      root.querySelector("#code-studio-show-18n-boundary")?.addEventListener("click", () => {
+        renderMcelCodeStudioCommitBoundaryInProofDock(studioState.lastCodeStudioCommitBoundary);
+      });
 
       window.MainComputerCodeStudio = {
         getState() {
@@ -5909,6 +6912,8 @@
         repairRuntime,
         serialize: serializeCleanSource,
         commitRuntimeDraft,
+        buildMcelCodeStudioCommitBoundary,
+        renderMcelCodeStudioCommitBoundaryInProofDock,
         syncScmInstance,
         checkScmContracts: runScmRuntimeChecks,
         syncScmRouteInstance,
@@ -5924,6 +6929,8 @@
         summarizeTxDraftProvenanceForWorkbench,
         formatNormalizedScmReceiptVectorDetail,
         renderScmReceiptVectorInProofDock,
+        collectMcelProofDockUnifiedSpecimens,
+        renderMcelUnifiedProofDockSpecimensInProofDock,
         buildScmEvidenceDebugPacket,
         exportScmEvidenceDebugPacket,
         copyCurrentScmEvidenceDebugPacket,

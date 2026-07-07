@@ -138,6 +138,10 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
             <button type="button" id="code-studio-damage-runtime">Break runtime</button>
             <button type="button" id="code-studio-repair-runtime">Repair from source</button>
             <button type="button" id="code-studio-commit-runtime">Commit editor draft</button>
+            <button type="button" id="code-studio-show-18n-boundary" data-code-studio-proof-action="show-code-studio-18n-boundary">Show 18N boundary</button>
+            <output id="code-studio-18n-commit-boundary-status" class="code-studio-live-workspace-persistence" data-mcel-18n-code-studio-boundary="runtime-commit" data-status="waiting" aria-live="polite">
+              18N Code Studio boundary is waiting for runtime draft preflight.
+            </output>
           </div>
           <div class="code-studio-runtime-preview" id="code-studio-runtime-preview" data-mc-component-id="code-editor.studio.runtime-preview" data-mc-component-kind="output" data-mc-component-label="Generated Runtime Preview" data-mc-component-owner="code-editor.studio.runtime-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio"></div>
         </section>
@@ -329,10 +333,10 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
     <section class="code-studio-bottom-panel code-studio-proof-dock" id="code-studio-bottom-panel" data-expanded="false" data-code-studio-workbench-region="proof-dock" aria-label="Terminal assistant and documentation viewport" data-mc-component-id="code-editor.studio.bottom-panel" data-mc-component-kind="panel" data-mc-component-label="Assistant and Documentation Panel" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
       <div class="code-studio-bottom-tabs">
         <strong>Bottom Proof Dock</strong>
-        <span class="code-studio-proof-dock-tabs">Diagnostics · Receipt Vector · Evidence Detail · Replay · Draft Provenance · Serialization · Persistence · Logs</span>
+        <span class="code-studio-proof-dock-tabs">Diagnostics · Receipt Vector · 18N Commit Boundary · Evidence Detail · Replay · Draft Provenance · Serialization · Persistence · Logs</span>
         <button type="button" id="code-studio-toggle-assistant" aria-expanded="false" aria-controls="code-studio-bottom-panel">Open proof dock</button>
       </div>
-      <div class="code-studio-proof-detail-panel" id="code-studio-proof-detail-panel" hidden data-mc-component-id="code-editor.studio.proof-detail" data-mc-component-kind="output" data-mc-component-label="Bottom Proof Dock Detail" data-mc-component-owner="code-editor.studio.bottom-panel" data-mc-feature-id="code-editor.feature.mcel-code-studio"></div>
+      <div class="code-studio-proof-detail-panel" id="code-studio-proof-detail-panel" hidden data-mcel-18n-commit-boundary-mount="receipt-vector" data-mc-component-id="code-editor.studio.proof-detail" data-mc-component-kind="output" data-mc-component-label="Bottom Proof Dock Detail" data-mc-component-owner="code-editor.studio.bottom-panel" data-mc-feature-id="code-editor.feature.mcel-code-studio"></div>
       <div class="aider-shell code-studio-aider-shell">
         <div class="aider-workspace" data-grid-key="aider-workspace" data-mc-component-id="code-editor.aider.workspace" data-mc-component-kind="workspace" data-mc-component-label="Aider Workspace" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.aider-run" data-mc-source="main_computer/web/applications/scripts/code-editor-aider-actions.js; main_computer/web/applications/scripts/code-editor-aider-output.js" data-mc-widget-class="box" data-mc-widget-id="code-editor.aider-workspace" data-mc-widget-kind="container" data-mc-widget-label="Aider Workspace" data-widget-label="Aider Workspace">
 <div class="aider-grid" data-mc-component-id="code-editor.aider.settings" data-mc-component-kind="form" data-mc-component-label="Aider Settings" data-mc-component-owner="code-editor.aider.workspace" data-mc-feature-id="code-editor.feature.aider-run">

@@ -116,14 +116,14 @@
       <h4>A dev-network release console with wallet state, route data, source approvals, runtime transaction drafts, AI repair hints, serialization, and an SCM receipt.</h4>
       <p>
         This specimen is intentionally larger than a toy counter: MetaMask/dev-network state,
-        route loaders, source-owned release requests, runtime-only transaction previews, declared
-        approval effects, tx draft provenance, blocked unsafe writes, and visual complexity all have to cooperate without
+        route loaders, source-owned release requests, runtime-only transaction previews, 18N commit-boundary preflight,
+        declared approval effects, tx draft provenance, blocked unsafe writes, and visual complexity all have to cooperate without
         leaking wallet/runtime data into durable HTML.
       </p>
     </div>
     <div class="mcel-tiny-contract-actions" role="group" aria-label="SCM-proven dev-network actions">
       <button type="button" id="mcel-tiny-contract-run">Run SCM + wallet proof</button>
-      <button type="button" id="mcel-tiny-contract-wallet">Connect/check MetaMask devnet</button>
+      <button type="button" id="mcel-tiny-contract-wallet">Check wallet + 18N preflight</button>
       <button type="button" id="mcel-tiny-contract-disconnect">Disconnect/reset wallet</button>
       <button type="button" id="mcel-tiny-contract-increment">Select next release</button>
       <button type="button" id="mcel-tiny-contract-tx-draft">Draft release transaction</button>
@@ -153,6 +153,30 @@
           SCM proof has not run yet.
         </output>
         <pre id="mcel-tiny-contract-evidence" class="mcel-tiny-contract-evidence">Evidence packet is waiting.</pre>
+      </article>
+      <article class="mcel-tiny-contract-card" data-mcel-18n-wallet-tool="true">
+        <h5>5 · 18N wallet commit boundary</h5>
+        <p>
+          The MCEL wallet tool now crosses the general 18N boundary: draft intent, provenance,
+          freshness, consumer gate, preflight, and receipt. Send/sign/broadcast remains locked while txDraft provenance, stale simulation, rebuild, preflight, and blocked-attempt receipts are visible.
+        </p>
+        <div class="mcel-tiny-contract-controls" data-mcel-18n-wallet-tool-controls="true">
+          <button type="button" id="mcel-18n-wallet-tool-refresh">Refresh wallet 18N preflight</button>
+          <button type="button" id="mcel-18n-wallet-tool-rebuild-draft">Rebuild draft from current wallet state</button>
+          <button type="button" id="mcel-18n-wallet-tool-simulate-account">Simulate account stale</button>
+          <button type="button" id="mcel-18n-wallet-tool-simulate-chain">Simulate chain stale</button>
+          <button type="button" id="mcel-18n-wallet-tool-simulate-source">Simulate source request stale</button>
+          <button type="button" id="mcel-18n-wallet-tool-simulate-target">Simulate target/value stale</button>
+          <button type="button" id="mcel-18n-wallet-tool-copy-receipt">Copy wallet receipt</button>
+        </div>
+        <output id="mcel-18n-wallet-tool-status" class="mcel-tiny-contract-proof" data-status="locked" aria-live="polite">
+          18N wallet tool is locked until a current MCEL commit draft is proven.
+        </output>
+        <pre id="mcel-18n-wallet-tool-tx-draft" class="mcel-tiny-contract-evidence">MCEL wallet txDraft specimen is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-freshness" class="mcel-tiny-contract-evidence">MCEL wallet freshness snapshot is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-preflight" class="mcel-tiny-contract-evidence">MCEL 18N preflight has not run yet.</pre>
+        <pre id="mcel-18n-wallet-tool-receipt" class="mcel-tiny-contract-evidence">MCEL 18N commit receipt has not been recorded yet.</pre>
+        <pre id="mcel-18n-wallet-tool-ledger" class="mcel-tiny-contract-evidence">MCEL 18N wallet receipt ledger is waiting.</pre>
       </article>
     </div>
     <template id="mcel-tiny-contract-language-template">
