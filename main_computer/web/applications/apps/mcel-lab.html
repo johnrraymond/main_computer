@@ -158,7 +158,7 @@
         <h5>5 · 18N wallet commit boundary</h5>
         <p>
           The MCEL wallet tool now crosses the general 18N boundary: draft intent, provenance,
-          freshness, consumer gate, preflight, and receipt. Send/sign/broadcast remains locked while txDraft provenance, stale simulation, rebuild, preflight, and blocked-attempt receipts are visible.
+          freshness, consumer gate, preflight, and receipt. Send/sign/broadcast remains locked while txDraft provenance, stale simulation, rebuild, preflight, blocked-attempt receipts, negative-path checks, unlock requirements, and the final locked wallet specimen are visible.
         </p>
         <div class="mcel-tiny-contract-controls" data-mcel-18n-wallet-tool-controls="true">
           <button type="button" id="mcel-18n-wallet-tool-refresh">Refresh wallet 18N preflight</button>
@@ -177,6 +177,9 @@
         <pre id="mcel-18n-wallet-tool-preflight" class="mcel-tiny-contract-evidence">MCEL 18N preflight has not run yet.</pre>
         <pre id="mcel-18n-wallet-tool-receipt" class="mcel-tiny-contract-evidence">MCEL 18N commit receipt has not been recorded yet.</pre>
         <pre id="mcel-18n-wallet-tool-ledger" class="mcel-tiny-contract-evidence">MCEL 18N wallet receipt ledger is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-negative-paths" class="mcel-tiny-contract-evidence">MCEL 18N wallet negative-path test wall is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-unlock-requirements" class="mcel-tiny-contract-evidence">Unlock requirements: incomplete.</pre>
+        <pre id="mcel-18n-wallet-tool-final-locked-specimen" class="mcel-tiny-contract-evidence">Final locked wallet specimen is waiting.</pre>
       </article>
     </div>
     <template id="mcel-tiny-contract-language-template">

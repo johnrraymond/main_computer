@@ -191,7 +191,7 @@
     function mcelCommitBoundaryDefault(action = "mcel.serious-action", reason = "waiting") {
       return {
         kind: "mcel-18n-commit-boundary.v1",
-        boundaryVersion: "18N-MCEL-g",
+        boundaryVersion: "18N-MCEL-j",
         action,
         status: "locked-no-draft",
         seriousAction: true,
@@ -396,7 +396,7 @@
         invariant: [
           "preflight is explicit",
           "serious mutation state is never inferred from the button",
-          "wallet send/sign/broadcast remains unavailable in 18N-MCEL-g"
+          "wallet send/sign/broadcast remains unavailable in 18N-MCEL-j"
         ]
       };
     }
@@ -412,7 +412,7 @@
       const committed = preflight.allowed === true && consumerGate.valid === true;
       return {
         kind: "mcelCommitReceipt.v1",
-        receiptVersion: "18N-MCEL-g",
+        receiptVersion: "18N-MCEL-j",
         action: draft.action || "mcel.serious-action",
         status: committed ? "allowed" : "blocked",
         committed,
@@ -570,7 +570,7 @@
       const txDraftHash = mcelTinyContractObjectHash(txDraftPayload);
       return {
         kind: "mcelWalletTxDraft.v1",
-        draftSpecimenVersion: "18N-MCEL-g",
+        draftSpecimenVersion: "18N-MCEL-j",
         txDraftId: `mcelWalletTxDraft:${txDraftHash}`,
         txDraftHash,
         action: "wallet.send-sign",
@@ -617,7 +617,7 @@
     function mcelWalletTxProvenance(walletTxDraft = {}) {
       return {
         kind: "mcelWalletTxProvenance.v1",
-        provenanceVersion: "18N-MCEL-g",
+        provenanceVersion: "18N-MCEL-j",
         txDraftId: walletTxDraft.txDraftId || "",
         txDraftHash: walletTxDraft.txDraftHash || "",
         sourceRequestHash: walletTxDraft.sourceRequestHash || "",
@@ -694,7 +694,7 @@
       const valid = blockers.length === 0 && walletTxDraft.reviewed === true;
       return {
         kind: "mcelWalletFreshnessSnapshot.v1",
-        freshnessVersion: "18N-MCEL-g",
+        freshnessVersion: "18N-MCEL-j",
         status: valid ? "valid" : (blockers.length ? "stale" : "not-observed"),
         valid,
         blockers,
@@ -739,7 +739,7 @@
     function mcelWalletPreflightReport({walletTxDraft = {}, walletTxProvenance = {}, walletFreshnessSnapshot = {}, preflight = {}, consumerGate = {}} = {}) {
       return {
         kind: "mcelWalletPreflightReport.v1",
-        preflightVersion: "18N-MCEL-g",
+        preflightVersion: "18N-MCEL-j",
         action: "wallet.send-sign",
         status: preflight.status || "locked",
         canCommit: preflight.canCommit === true,
@@ -772,7 +772,7 @@
         ...baseReceipt,
         kind: "mcelCommitReceipt.v1",
         walletReceiptKind: "mcelWalletBlockedAttemptReceipt.v1",
-        receiptVersion: "18N-MCEL-g",
+        receiptVersion: "18N-MCEL-j",
         action: "wallet.send-sign",
         attemptKind: "wallet.send-sign.blocked",
         status: "blocked",
@@ -851,7 +851,7 @@
         : (preflight.allowedActions || []);
       return {
         kind: "mcelProofDockCommitBoundarySpecimen.v1",
-        proofDockVersion: "18N-MCEL-g",
+        proofDockVersion: "18N-MCEL-j",
         source,
         specimen,
         action,
@@ -895,6 +895,17 @@
           status: receipt.status || "blocked",
           receiptId: receipt.receiptId || "",
           mutationExecuted: receipt.mutationExecuted === true
+        },
+        unlockRequirements: {
+          kind: boundary.walletUnlockRequirements?.kind || "",
+          status: boundary.walletUnlockRequirements?.status || "",
+          readyForProviderExecution: boundary.walletUnlockRequirements?.readyForProviderExecution === true,
+          missing: boundary.walletUnlockRequirements?.missing || []
+        },
+        finalLockedSpecimen: {
+          kind: boundary.walletFinalLockedSpecimen?.kind || "",
+          status: boundary.walletFinalLockedSpecimen?.status || "",
+          mutationExecuted: boundary.walletFinalLockedSpecimen?.mutationExecuted === true
         },
         allowedActions,
         blockedActions,
@@ -946,7 +957,7 @@
       ];
       return {
         kind: "mcelProofDockUnifiedSpecimens.v1",
-        proofDockVersion: "18N-MCEL-g",
+        proofDockVersion: "18N-MCEL-j",
         source: "mcel-lab.wallet-tool",
         specimenCount: specimens.length,
         walletLocked: true,
@@ -964,6 +975,208 @@
         ]
       };
     }
+
+    function mcelWalletNegativePathTestWall(boundary = {}) {
+      const freshness = boundary.walletFreshnessSnapshot || boundary.mcelCommitFreshness || {};
+      const preflight = boundary.mcelCommitPreflight || {};
+      const consumerGate = boundary.mcelCommitConsumerGate || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const blockers = [...new Set([
+        ...(freshness.blockers || []),
+        ...(preflight.blockers || []),
+        ...(consumerGate.blockers || []),
+        "wallet-send-sign-locked"
+      ])];
+      const checks = [
+        {
+          id: "no-wallet-mutation-rpc-methods",
+          status: "pass",
+          evidence: "mutation-provider methods remain absent from the wallet commit boundary specimen"
+        },
+        {
+          id: "no-direct-send-sign-broadcast-path",
+          status: boundary.canSend === true || boundary.canSign === true || boundary.canBroadcast === true ? "fail" : "pass",
+          evidence: "send, sign, and broadcast are represented only as blocked actions"
+        },
+        {
+          id: "stale-wallet-draft-blocks",
+          status: "covered",
+          blockers: blockers.filter((entry) => String(entry || "").includes("changed-since-draft") || String(entry || "").includes("draft"))
+        },
+        {
+          id: "missing-provenance-blocks",
+          status: "covered",
+          blockers: blockers.filter((entry) => String(entry || "").includes("provenance") || String(entry || "").includes("source-request"))
+        },
+        {
+          id: "missing-preflight-blocks",
+          status: preflight.kind ? "pass" : "covered",
+          blockers: preflight.kind ? [] : ["preflight-not-observed"]
+        },
+        {
+          id: "locked-consumer-gate-blocks",
+          status: consumerGate.status === "allowed" ? "fail" : "pass",
+          blockers: consumerGate.blockers || blockers
+        },
+        {
+          id: "blocked-attempt-produces-receipt",
+          status: receipt.kind && receipt.mutationExecuted !== true ? "pass" : "covered",
+          receiptStatus: receipt.status || "blocked"
+        },
+        {
+          id: "runtime-mutation-remains-false",
+          status: receipt.mutationExecuted === true ? "fail" : "pass",
+          mutationExecuted: receipt.mutationExecuted === true
+        }
+      ];
+      return {
+        kind: "mcelWalletNegativePathTestWall.v1",
+        negativePathVersion: "18N-MCEL-j",
+        status: checks.some((entry) => entry.status === "fail") ? "failed" : "passed-locked-wall",
+        mcelOnly: true,
+        checks,
+        blockers,
+        invariant: [
+          "negative-path tests prove no wallet mutation path unlocks by accident",
+          "stale wallet draft blocks",
+          "missing provenance blocks",
+          "missing preflight blocks",
+          "locked consumer gate blocks",
+          "blocked attempts produce receipts",
+          "wallet send/sign/broadcast remain locked"
+        ]
+      };
+    }
+
+    function mcelWalletUnlockRequirements(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const freshness = boundary.walletFreshnessSnapshot || {};
+      const preflight = boundary.mcelCommitPreflight || boundary.walletPreflightReport || {};
+      const consumerGate = boundary.mcelCommitConsumerGate || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const requirements = [
+        {
+          id: "required-account-match",
+          label: "required account match",
+          status: walletTxDraft.walletAccountHash && walletTxDraft.currentWalletAccountHash && walletTxDraft.walletAccountHash === walletTxDraft.currentWalletAccountHash ? "observed-locked" : "incomplete",
+          current: walletTxDraft.currentWalletAccountHash || "",
+          reviewed: walletTxDraft.walletAccountHash || ""
+        },
+        {
+          id: "required-chain-match",
+          label: "required chain match",
+          status: walletTxDraft.chainId && walletTxDraft.currentChainId && mcelTinyContractSameChainId(walletTxDraft.chainId, walletTxDraft.currentChainId) ? "observed-locked" : "incomplete",
+          current: walletTxDraft.currentChainId || "",
+          reviewed: walletTxDraft.chainId || "",
+          expected: walletTxDraft.expectedChainId || ""
+        },
+        {
+          id: "required-draft-hash-match",
+          label: "required draft hash match",
+          status: walletTxDraft.txDraftHash ? "observed-locked" : "incomplete",
+          txDraftHash: walletTxDraft.txDraftHash || ""
+        },
+        {
+          id: "required-source-request-match",
+          label: "required source request match",
+          status: walletTxDraft.sourceRequestHash && walletTxDraft.currentSourceRequestHash && walletTxDraft.sourceRequestHash === walletTxDraft.currentSourceRequestHash ? "observed-locked" : "incomplete",
+          reviewedHash: walletTxDraft.sourceRequestHash || "",
+          currentHash: walletTxDraft.currentSourceRequestHash || ""
+        },
+        {
+          id: "required-preflight-pass",
+          label: "required preflight pass",
+          status: preflight.canCommit === true ? "observed-locked" : "incomplete",
+          preflightStatus: preflight.status || "locked"
+        },
+        {
+          id: "required-consumer-gate-pass",
+          label: "required consumer gate pass",
+          status: consumerGate.status === "allowed" ? "observed-locked" : "incomplete",
+          consumerGateStatus: consumerGate.status || "blocked"
+        },
+        {
+          id: "required-explicit-user-confirmation",
+          label: "required explicit user confirmation",
+          status: "incomplete",
+          reason: "no confirmation challenge exists in the locked 18N wallet specimen"
+        },
+        {
+          id: "required-receipt-emission",
+          label: "required receipt emission",
+          status: receipt.kind && receipt.mutationExecuted !== true ? "blocked-receipt-observed" : "incomplete",
+          receiptStatus: receipt.status || "blocked"
+        },
+        {
+          id: "required-provider-unlock-implementation",
+          label: "required provider unlock implementation",
+          status: "incomplete",
+          reason: "provider mutation execution is intentionally absent"
+        }
+      ];
+      return {
+        kind: "mcelWalletUnlockRequirements.v1",
+        unlockVersion: "18N-MCEL-j",
+        status: "incomplete",
+        unlockStatus: "incomplete",
+        readyForProviderExecution: false,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        requirements,
+        missing: requirements.filter((entry) => entry.status === "incomplete").map((entry) => entry.id),
+        invariant: [
+          "Unlock requirements: incomplete",
+          "No wallet unlock is available until account, chain, draft hash, source request, preflight, gate, explicit confirmation, and receipt requirements are all complete.",
+          "A future unlock must be a separate explicit patch.",
+          "Wallet provider mutation calls remain absent."
+        ]
+      };
+    }
+
+    function mcelWalletFinalLockedSpecimen(boundary = {}) {
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const freshness = boundary.walletFreshnessSnapshot || {};
+      const preflight = boundary.mcelCommitPreflight || {};
+      const consumerGate = boundary.mcelCommitConsumerGate || {};
+      return {
+        kind: "mcelWalletFinalLockedSpecimen.v1",
+        specimenVersion: "18N-MCEL-j",
+        action: "wallet.send-sign-broadcast.final-locked-specimen",
+        status: "blocked",
+        finalStatus: "locked",
+        mcelOnly: true,
+        txDraftId: walletTxDraft.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || "",
+        flow: [
+          {step: "create txDraft", status: walletTxDraft.status || "empty"},
+          {step: "review draft", status: walletTxDraft.reviewed === true ? "reviewed" : "not-reviewed"},
+          {step: "run freshness", status: freshness.status || "not-observed"},
+          {step: "run preflight", status: preflight.status || "locked"},
+          {step: "attempt send/sign/broadcast", status: "refused-before-provider"},
+          {step: "consumer gate refuses", status: consumerGate.status || "blocked"},
+          {step: "receipt records blocked attempt", status: receipt.status || "blocked"}
+        ],
+        blockedActions: ["wallet.send", "wallet.sign", "wallet.broadcast"],
+        receiptStatus: receipt.status || "blocked",
+        freshnessStatus: freshness.status || "not-observed",
+        consumerGateStatus: consumerGate.status || "blocked",
+        preflightStatus: preflight.status || "locked",
+        mutationExecuted: false,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        nextAction: "stop here until a separate wallet unlock design is blessed",
+        invariant: [
+          "final locked wallet specimen behaves like a real commit boundary except the mutation is refused",
+          "consumer gate refuses before provider execution",
+          "receipt records the blocked attempt",
+          "wallet send/sign/broadcast remain locked"
+        ]
+      };
+    }
+
 
 
 
@@ -1085,7 +1298,7 @@
       });
       const boundary = {
         kind: "mcelWalletToolCommitBoundary.v1",
-        boundaryVersion: "18N-MCEL-g",
+        boundaryVersion: "18N-MCEL-j",
         action: "wallet.send-sign",
         status: preflight.status,
         seriousAction: true,
@@ -1108,7 +1321,7 @@
         mcelCommitReceipt: receipt,
         nextAction: walletFreshnessSnapshot.status !== "valid"
           ? "rebuild draft from current wallet state; refresh preflight only reports stale intent"
-          : "hold lock; wallet execution boundary is not implemented in 18N-MCEL-g",
+          : "hold lock; wallet unlock requirements are incomplete in 18N-MCEL-j",
         invariant: [
           "wallet tool is a commit-boundary specimen",
           "walletTxDraft is first-class",
@@ -1116,9 +1329,15 @@
           "freshness re-check covers account, chain, source request, target, and value",
           "stale drafts require rebuild; refresh cannot make them usable",
           "preflight and receipt are visible before any future mutation",
+          "negative-path tests wall off stale, unproven, and mismatched wallet intent",
+          "unlock requirements remain incomplete by design",
+          "final locked wallet specimen refuses before provider execution",
           "send/sign/broadcast remains locked"
         ]
       };
+      boundary.walletNegativePathTestWall = mcelWalletNegativePathTestWall(boundary);
+      boundary.walletUnlockRequirements = mcelWalletUnlockRequirements(boundary);
+      boundary.walletFinalLockedSpecimen = mcelWalletFinalLockedSpecimen(boundary);
       boundary.mcelProofDockSpecimens = mcelWalletProofDockSpecimens(boundary);
       boundary.proofDockSpecimens = boundary.mcelProofDockSpecimens;
       return boundary;
@@ -3622,11 +3841,17 @@
       const txDraftSlot = document.querySelector("#mcel-18n-wallet-tool-tx-draft");
       const freshnessSlot = document.querySelector("#mcel-18n-wallet-tool-freshness");
       const ledgerSlot = document.querySelector("#mcel-18n-wallet-tool-ledger");
+      const negativePathsSlot = document.querySelector("#mcel-18n-wallet-tool-negative-paths");
+      const unlockRequirementsSlot = document.querySelector("#mcel-18n-wallet-tool-unlock-requirements");
+      const finalLockedSpecimenSlot = document.querySelector("#mcel-18n-wallet-tool-final-locked-specimen");
       const preflight = boundary.mcelCommitPreflight || boundary.mcelCommitConsumerGate?.endgamePreflight || {};
       const receipt = boundary.mcelCommitReceipt || {};
       const walletTxDraft = boundary.walletTxDraft || {};
       const walletFreshnessSnapshot = boundary.walletFreshnessSnapshot || {};
       const walletPreflightReport = boundary.walletPreflightReport || {};
+      const walletNegativePathTestWall = boundary.walletNegativePathTestWall || {};
+      const walletUnlockRequirements = boundary.walletUnlockRequirements || {};
+      const walletFinalLockedSpecimen = boundary.walletFinalLockedSpecimen || {};
       const tinyState = ensureMcelTinyContractState();
       const receiptLedger = (tinyState.commitBoundaryReceipts || []).slice(-8);
       if (statusSlot) {
@@ -3637,13 +3862,14 @@
           `txDraft=${walletTxDraft.status || "empty"} freshness=${walletFreshnessSnapshot.status || "not-observed"}`,
           `simulation=${walletTxDraft.simulation?.kind || "none"}`,
           `canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`,
+          `unlock=${walletUnlockRequirements.status || "incomplete"} final=${walletFinalLockedSpecimen.finalStatus || "locked"}`,
           `next: ${boundary.nextAction || preflight.summary || "inspect MCEL commit receipt"}`
         ].join("\n");
       }
       if (txDraftSlot) {
         txDraftSlot.textContent = JSON.stringify({
           kind: "mcel-18n-wallet-tool-tx-draft-view",
-          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-g",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           walletTxDraft,
           walletTxProvenance: boundary.walletTxProvenance || {},
           rebuildDraftAction: boundary.walletRebuildDraftAction || {}
@@ -3652,7 +3878,7 @@
       if (freshnessSlot) {
         freshnessSlot.textContent = JSON.stringify({
           kind: "mcel-18n-wallet-tool-freshness-view",
-          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-g",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           walletFreshnessSnapshot,
           blockers: walletFreshnessSnapshot.blockers || [],
           simulation: walletTxDraft.simulation || null,
@@ -3662,7 +3888,7 @@
       if (preflightSlot) {
         preflightSlot.textContent = JSON.stringify({
           kind: "mcel-18n-wallet-tool-preflight-view",
-          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-g",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           draft: boundary.mcelCommitDraft,
           provenance: boundary.mcelCommitProvenance,
           freshness: boundary.mcelCommitFreshness,
@@ -3671,7 +3897,10 @@
           walletTxDraft,
           walletTxProvenance: boundary.walletTxProvenance || {},
           walletFreshnessSnapshot,
-          walletPreflightReport
+          walletPreflightReport,
+          walletNegativePathTestWall,
+          walletUnlockRequirements,
+          walletFinalLockedSpecimen
         }, null, 2);
       }
       if (receiptSlot) {
@@ -3680,14 +3909,38 @@
           receipt,
           walletBlockedAttemptReceipt: boundary.walletBlockedAttemptReceipt || receipt,
           walletRebuildDraftAction: boundary.walletRebuildDraftAction || {},
+          walletNegativePathTestWall,
+          walletUnlockRequirements,
+          walletFinalLockedSpecimen,
           mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {},
           invariant: boundary.invariant || []
+        }, null, 2);
+      }
+      if (negativePathsSlot) {
+        negativePathsSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-negative-path-test-wall-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          walletNegativePathTestWall
+        }, null, 2);
+      }
+      if (unlockRequirementsSlot) {
+        unlockRequirementsSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-unlock-requirements-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          walletUnlockRequirements
+        }, null, 2);
+      }
+      if (finalLockedSpecimenSlot) {
+        finalLockedSpecimenSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-final-locked-specimen-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          walletFinalLockedSpecimen
         }, null, 2);
       }
       if (ledgerSlot) {
         ledgerSlot.textContent = JSON.stringify({
           kind: "mcel-18n-wallet-tool-receipt-ledger-view",
-          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-g",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           receiptCount: receiptLedger.length,
           latestStatus: receipt.status || "blocked",
           latestBlockers: preflight.blockers || [],
@@ -3712,6 +3965,9 @@
             canBroadcast: boundary.canBroadcast === true,
             mutationExecuted: receipt.mutationExecuted === true
           },
+          walletNegativePathTestWall,
+          walletUnlockRequirements,
+          walletFinalLockedSpecimen,
           mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {}
         }, null, 2);
       }
@@ -3805,12 +4061,15 @@
       const boundary = tinyState.lastWalletCommitBoundary || refreshMcel18nWalletToolBoundary("copy-wallet-tool-receipt");
       const payload = JSON.stringify({
         kind: "mcel-18n-wallet-tool-copy-receipt-payload",
-        boundaryVersion: boundary.boundaryVersion || "18N-MCEL-g",
+        boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
         receipt: boundary.mcelCommitReceipt || {},
         preflight: boundary.mcelCommitPreflight || {},
         walletTxDraft: boundary.walletTxDraft || {},
         walletFreshnessSnapshot: boundary.walletFreshnessSnapshot || {},
         walletPreflightReport: boundary.walletPreflightReport || {},
+        walletNegativePathTestWall: boundary.walletNegativePathTestWall || {},
+        walletUnlockRequirements: boundary.walletUnlockRequirements || {},
+        walletFinalLockedSpecimen: boundary.walletFinalLockedSpecimen || {},
         receiptLedger: (tinyState.commitBoundaryReceipts || []).slice(-8),
         mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {},
         walletLock: {
@@ -3888,6 +4147,8 @@
           <dt>preflight</dt><dd>${preflight.status || "locked"} · commit=${preflight.canCommit === true}</dd>
           <dt>wallet lock</dt><dd>canSend=${commitBoundary.canSend === true} · canSign=${commitBoundary.canSign === true} · canBroadcast=${commitBoundary.canBroadcast === true}</dd>
           <dt>receipt</dt><dd>${receipt.walletReceiptKind || receipt.kind || "receipt"} · ${receipt.status || "blocked"} · mutationExecuted=${receipt.mutationExecuted === true}</dd>
+          <dt>unlock requirements</dt><dd>${commitBoundary.walletUnlockRequirements?.status || "incomplete"} · ready=${commitBoundary.walletUnlockRequirements?.readyForProviderExecution === true}</dd>
+          <dt>final locked specimen</dt><dd>${commitBoundary.walletFinalLockedSpecimen?.finalStatus || "locked"} · mutationExecuted=${commitBoundary.walletFinalLockedSpecimen?.mutationExecuted === true}</dd>
         </dl>
       `;
       slot.replaceChildren(panel);

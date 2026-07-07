@@ -52,8 +52,8 @@
       const SCM_DRAFT_PROVENANCE_VERSION = "1.0.0";
       const SCM_CONTRACT_AUTHORING_HELPER_VERSION = "1.0.0";
       const LIVE_WORKSPACE_PERSISTENCE_VERSION = "1.0.0";
-      const MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION = "18N-MCEL-g";
-      const MCEL_PROOF_DOCK_UNIFICATION_VERSION = "18N-MCEL-g";
+      const MCEL_CODE_STUDIO_COMMIT_BOUNDARY_VERSION = "18N-MCEL-j";
+      const MCEL_PROOF_DOCK_UNIFICATION_VERSION = "18N-MCEL-j";
       const MONACO_RUNTIME_EFFECTS = [
         "editor.monaco.load",
         "editor.monaco.mount",
@@ -1620,6 +1620,17 @@
             receiptId: commitReceipt.receiptId || "",
             mutationExecuted: commitReceipt.mutationExecuted === true || boundary.mutationExecuted === true
           },
+          unlockRequirements: {
+            kind: boundary.walletUnlockRequirements?.kind || "",
+            status: boundary.walletUnlockRequirements?.status || "",
+            readyForProviderExecution: boundary.walletUnlockRequirements?.readyForProviderExecution === true,
+            missing: boundary.walletUnlockRequirements?.missing || []
+          },
+          finalLockedSpecimen: {
+            kind: boundary.walletFinalLockedSpecimen?.kind || "",
+            status: boundary.walletFinalLockedSpecimen?.status || "",
+            mutationExecuted: boundary.walletFinalLockedSpecimen?.mutationExecuted === true
+          },
           allowedActions: mergedAllowedActions,
           blockedActions: mergedBlockedActions,
           blockers: mergedBlockers,
@@ -1627,7 +1638,9 @@
           invariant: [
             "Unified MCEL proof dock specimens expose draft, provenance, freshness, consumer gate, preflight, and receipt.",
             "Code Studio and wallet specimens share one proof-dock shape.",
-            "Wallet send/sign/broadcast remain locked."
+            "Wallet send/sign/broadcast remain locked.",
+            "Wallet unlock requirements remain incomplete until a separate explicit unlock design patch."
+
           ]
         });
       }
@@ -1764,6 +1777,8 @@
           codeStudioSpecimenCount: codeStudioSpecimens.length,
           walletSpecimenCount: walletSpecimens.length,
           walletLocked: walletSpecimens.every((entry) => entry.locked === true && entry.preflight.canSend !== true && entry.preflight.canSign !== true && entry.preflight.canBroadcast !== true),
+          walletUnlockStatus: walletBoundary.walletUnlockRequirements?.status || "incomplete",
+          walletFinalLockedSpecimenStatus: walletBoundary.walletFinalLockedSpecimen?.finalStatus || "locked",
           mutationExecutedCount: specimens.filter((entry) => entry.receipt.mutationExecuted === true).length,
           blockedCount: specimens.filter((entry) => (entry.blockers || []).length || String(entry.status || "").includes("blocked") || entry.locked === true).length,
           blockers,
