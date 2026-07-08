@@ -8,6 +8,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "tools" / "coolify_qbft_network.py"
+FAKE_PRIVATE_STATE_FIXTURE = ROOT / "tests" / "fixtures" / "fake-main-computer.private.yaml"
 
 
 def _load_module() -> Any:
@@ -640,3 +641,44 @@ def test_coolify_sync_uses_singleton_coolify_server_when_private_host_name_is_no
     assert fake_client.created_payload["environment_uuid"] == "env-1"
     assert fake_client.created_payload["name"] == "main-computer-qbft-testnet-a"
     assert not _contains_exact_key(result, "body")
+
+
+def test_fake_private_state_fixture_drives_testnet_and_mainnet_qbft_plans() -> None:
+    module = _load_module()
+
+    testnet = module.build_plan("testnet", private_state_path=FAKE_PRIVATE_STATE_FIXTURE)
+    testnet_services = {service.id: service for service in testnet.services}
+    assert testnet.environment == "testnet"
+    assert {host.id for host in testnet.hosts} == {"a", "b"}
+    assert set(testnet_services) == {"validator-rpc-1", "validator-1", "validator-2", "rpc-1"}
+    assert testnet_services["validator-rpc-1"].rpc_host_port == 30110
+    assert testnet_services["validator-rpc-1"].p2p_host_port == 30410
+    assert testnet_services["rpc-1"].rpc_host_port == 30120
+    assert module.rpc_target_service(testnet).id == "rpc-1"
+    assert "single-Besu" not in "\n".join(testnet.warnings)
+    assert "Topology has 3 validators" in "\n".join(testnet.warnings)
+
+    try:
+        module.build_plan("mainnet", private_state_path=FAKE_PRIVATE_STATE_FIXTURE)
+    except module.PlanError as exc:
+        assert "--allow-mainnet" in str(exc)
+    else:
+        raise AssertionError("mainnet fixture must still require --allow-mainnet")
+
+    mainnet = module.build_plan(
+        "mainnet",
+        private_state_path=FAKE_PRIVATE_STATE_FIXTURE,
+        allow_mainnet=True,
+    )
+    mainnet_services = {service.id: service for service in mainnet.services}
+    assert mainnet.environment == "mainnet"
+    assert mainnet.chain_id == 42424240
+    assert {host.id for host in mainnet.hosts} == {"a", "b"}
+    assert set(mainnet_services) == {"validator-rpc-1", "validator-1", "validator-2", "rpc-1"}
+    assert mainnet_services["validator-rpc-1"].rpc_host_port == 31110
+    assert mainnet_services["validator-rpc-1"].p2p_host_port == 31410
+    assert mainnet_services["rpc-1"].rpc_host_port == 31120
+    assert mainnet_services["rpc-1"].host == "b"
+    assert module.rpc_target_service(mainnet).id == "rpc-1"
+    assert "single-validator" not in "\n".join(mainnet.warnings)
+    assert "Topology has 3 validators" in "\n".join(mainnet.warnings)

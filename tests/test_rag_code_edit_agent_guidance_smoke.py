@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import shutil
@@ -696,6 +697,79 @@ def test_ai_restart_live_ring3_probe_prompt_is_compact_and_goal_locked() -> None
     assert payload["required_response"]["round_type"] == "request_verify"
 
 
+def test_ai_restart_live_ring3_probe_uses_host_envelope_when_model_omits_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    directive = "Runtime directive: strip names before formatting."
+    contract = smoke.ai_restart_directive_contract(directive)
+    calls: list[str] = []
+
+    def fake_call_live_ai_json(**kwargs: object) -> tuple[dict[str, object], dict[str, object]]:
+        stage = str(kwargs["stage"])
+        calls.append(stage)
+        round_type = "_".join(stage.removeprefix("ring3_live_").split("_")[:-1])
+        sample_index = int(stage.rsplit("_", 1)[1])
+        metadata = {
+            "stage": stage,
+            "provider": "ollama",
+            "model": "gemma4:26b",
+            "uses_live_ai": True,
+            "content_sha256": f"sha-{stage}",
+            "payload_keys": [],
+        }
+        if round_type == "request_inquiry":
+            return {"summary": "model gave useful inquiry text", "risks": []}, metadata
+        return {
+            "goal_directive_sha256": contract["directive_sha256"],
+            "hub_reliability_score": 1.0,
+            "result_id": smoke.ai_restart_live_ring3_probe_result_id(round_type, sample_index),
+            "risks": [],
+            "round_type": round_type,
+            "selected_files": ["app.py"],
+            "summary": "model echoed host fields",
+        }, metadata
+
+    monkeypatch.setattr(smoke, "call_live_ai_json", fake_call_live_ai_json)
+    args = argparse.Namespace(
+        ai_restart_live_ring3_probe=True,
+        scripted_ai_smoke=False,
+        ring3_inquiry_count=3,
+        ring3_check_count=3,
+        ring3_verify_count=3,
+        ring3_merge_count=3,
+        ai_provider="ollama",
+        ai_model="gemma4:26b",
+        ai_command="",
+        ai_timeout_seconds=300.0,
+    )
+
+    summary = smoke.run_ai_restart_live_ring3_probe(
+        args=args,
+        run_id="host-envelope-probe-test",
+        run_dir=tmp_path,
+        goal_directive=directive,
+    )
+
+    assert len(calls) == 12
+    assert summary["ok"] is True
+    assert summary["finished_live_ai_calls"] == 12
+    assert summary["failed_live_ai_calls"] == 0
+    assert summary["host_goal_bound_live_ai_calls"] == 12
+    assert summary["model_goal_acknowledged_live_ai_calls"] == 9
+    assert summary["model_result_id_echo_count"] == 9
+    assert summary["model_contract_failure_count"] == 6
+    assert summary["contracts"]["ai_restart_live_ring3_probe_all_host_envelopes_bound_goal"] is True
+    assert summary["contracts"]["ai_restart_live_ring3_probe_all_host_result_ids_present"] is True
+    assert summary["model_echo_contracts"]["ai_restart_live_ring3_probe_model_echoed_goal_on_all_calls"] is False
+    assert summary["records"][0]["result_id"] == "live-ri-001"
+    assert summary["records"][0]["host_envelope"]["goal_directive_sha256"] == contract["directive_sha256"]
+    assert summary["records"][0]["model_contract_failures"] == [
+        "missing_or_wrong_goal_directive_sha256",
+        "missing_result_id",
+    ]
+
+
 def test_ollama_json_adapter_reports_empty_thinking_without_dumping_raw_thinking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -738,9 +812,10 @@ def test_ollama_json_adapter_reports_empty_thinking_without_dumping_raw_thinking
     assert diagnostics["content_char_count"] == 0
 
 
-def _write_fake_ai_command(tmp_path: Path) -> str:
+def _write_fake_ai_command(tmp_path: Path, final_app_py: str | None = None) -> str:
     script_path = tmp_path / "fake_ai_provider.py"
-    final_app_py = """def greet(name: str) -> str:
+    if final_app_py is None:
+        final_app_py = """def greet(name: str) -> str:
     cleaned = name.strip()
     return f"Hello, {cleaned}!"
 
@@ -1087,6 +1162,44 @@ def test_ai_restart_recovery_smoke_live_ring3_probe_records_actual_provider_call
     assert "editor_generation_retry" in finished_stages
     assert [record["event"] for record in ai_calls].count("ai_call_started") == 15
     assert [record["event"] for record in ai_calls].count("ai_call_finished") == 15
+
+
+
+def test_ai_restart_recovery_smoke_accepts_live_ai_output_that_satisfies_goal_without_reference_sha(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "direct-live-ai-command-restart-nonreference-final-smoke"
+    directive = "CLI live directive: update greet so names are stripped before formatting the hello message."
+    nonreference_final = """def greet(name: str) -> str:
+    return "Hello, " + name.strip() + "!"
+
+
+if __name__ == "__main__":
+    print(greet("world"))
+"""
+    ai_command = _write_fake_ai_command(tmp_path, final_app_py=nonreference_final)
+
+    assert smoke.main([
+        "--ai-restart-recovery-smoke",
+        "--ai-provider",
+        "command",
+        "--ai-command",
+        ai_command,
+        "--ai-restart-directive",
+        directive,
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    contracts = report["contracts"]
+
+    assert report["ok"] is True
+    diagnostics = report["edit_result"]["generated_editor"]["diagnostics"]
+    assert diagnostics["generated_editor_output_matches_scenario_reference_sha"] is False
+    assert contracts["generated_editor_output_satisfies_runtime_goal_contract"] is True
+    assert contracts["generated_editor_output_matches_scenario_contract"] is True
+    assert report["failed_contracts"] == []
 
 
 

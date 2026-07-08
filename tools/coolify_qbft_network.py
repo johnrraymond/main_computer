@@ -1050,13 +1050,14 @@ def build_plan(
         topology_policy.validator_warning_below is not None
         and len(validators) < topology_policy.validator_warning_below
     ):
-        warnings.append(
-            topology_policy.validator_warning
-            or (
-                f"Topology has fewer than {topology_policy.validator_warning_below} validators; "
+        if len(validators) == 1 and topology_policy.validator_warning:
+            warnings.append(topology_policy.validator_warning)
+        else:
+            warnings.append(
+                f"Topology has {len(validators)} validators, below the configured "
+                f"{topology_policy.validator_warning_below}-validator fault-tolerance target; "
                 "review the seed topology_policy before persistent use."
             )
-        )
     if not rpc_nodes:
         warnings.append("No dedicated non-validator RPC node is configured; the first validator is also the operator RPC target.")
     if len({service.host for service in services}) > 1:
@@ -1885,39 +1886,96 @@ def chain_observation_timeout_from_args(args: argparse.Namespace) -> float:
     return DEFAULT_CHAIN_OBSERVATION_TIMEOUT_S if value <= 0 else value
 
 
-def chain_observation_rpc_candidates(plan: NetworkPlan, args: argparse.Namespace) -> list[dict[str, str]]:
-    """Return the RPC surfaces that are safe to inspect for current chain state.
+def _unique_rpc_observation_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for candidate in candidates:
+        url = str(candidate.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        unique.append({key: value for key, value in candidate.items() if value not in ("", None)})
+    return unique
 
-    Unlike apply readiness, mutation planning often builds the full private-state
-    catalog so it can name future instances.  Direct host-port URLs in that full
-    catalog can point at nodes that intentionally do not exist yet.  Chain
-    observation therefore prefers the canonical network RPC entry, falling back to
-    direct candidates only when no canonical/explicit RPC URL is available.
+
+def chain_observation_rpc_candidates(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    *,
+    observe_all: bool = False,
+) -> list[dict[str, Any]]:
+    """Return RPC surfaces for chain observation.
+
+    The default path is intentionally conservative for mutation preflights: it
+    prefers the canonical network RPC and falls back to direct host-port URLs only
+    when no canonical/explicit endpoint exists.
+
+    The standalone ``observe-chain`` command passes ``observe_all=True`` because
+    an operator observation should actively inspect every RPC surface the tooling
+    can derive.  Private-state service definitions are still only a decoding
+    template; a direct RPC probe proves live behavior only when that endpoint
+    answers.
     """
 
     explicit = str(getattr(args, "rpc_url", "") or "").strip()
-    if explicit:
-        return [{"url": explicit, "source": "explicit"}]
-
     configured = str(getattr(plan, "external_rpc_url", "") or "").strip()
-    if configured:
-        return [{"url": configured, "source": "configured-network-rpc"}]
 
-    return rpc_probe_url_candidates(plan, args)
+    if not observe_all:
+        if explicit:
+            return [{"url": explicit, "source": "explicit"}]
+        if configured:
+            return [{"url": configured, "source": "configured-network-rpc"}]
+        return rpc_probe_url_candidates(plan, args)
+
+    candidates: list[dict[str, Any]] = []
+    if explicit:
+        candidates.append({"url": explicit, "source": "explicit", "label": "explicit"})
+    if configured:
+        candidates.append({"url": configured, "source": "configured-network-rpc", "label": "canonical"})
+
+    hosts = host_by_id(plan)
+    for service in plan.services:
+        if "rpc" not in service.roles or service.rpc_host_port is None or not service.rpc_url_on_host:
+            continue
+        if is_local_coolify_plan(plan):
+            reachable = True
+        else:
+            host = hosts.get(service.host)
+            reachable = bool(service.rpc_bind_host == "0.0.0.0" and host is not None and host.address)
+        if not reachable:
+            continue
+        candidates.append(
+            {
+                "url": service.rpc_url_on_host,
+                "source": "direct-host-port",
+                "label": f"{service.id}@{service.host}",
+                "service": service.id,
+                "host": service.host,
+                "roles": list(service.roles),
+            }
+        )
+
+    return _unique_rpc_observation_candidates(candidates)
 
 
 def observe_rpc_endpoint(
     plan: NetworkPlan,
-    candidate: Mapping[str, str],
+    candidate: Mapping[str, Any],
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     url = str(candidate.get("url") or "").strip()
     source = str(candidate.get("source") or "unknown").strip() or "unknown"
+    metadata = {
+        key: candidate.get(key)
+        for key in ("label", "service", "host", "roles")
+        if candidate.get(key) not in ("", None)
+    }
     if not url:
         return {
             "ok": False,
             "url": url,
             "source": source,
+            **metadata,
             "error": "empty RPC URL",
         }
 
@@ -1944,6 +2002,7 @@ def observe_rpc_endpoint(
             "ok": chain_id_matches,
             "url": url,
             "source": source,
+            **metadata,
             "chain_id": chain_id,
             "expected_chain_id": expected_chain_id,
             "chain_id_matches_plan": chain_id_matches,
@@ -1962,6 +2021,7 @@ def observe_rpc_endpoint(
             "ok": False,
             "url": url,
             "source": source,
+            **metadata,
             "expected_chain_id": expected_chain_id,
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -1974,59 +2034,245 @@ def rpc_probe_status(probes: list[dict[str, Any]], sources: set[str], *, absent:
     return "ok" if any(bool(probe.get("ok")) for probe in matching) else "error"
 
 
-def observe_chain_state(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
-    candidates = chain_observation_rpc_candidates(plan, args)
+def observe_chain_state(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    *,
+    include_all_rpcs: bool = False,
+    include_coolify: bool = False,
+) -> dict[str, Any]:
+    candidates = chain_observation_rpc_candidates(plan, args, observe_all=include_all_rpcs)
     if not candidates:
-        return {
+        result: dict[str, Any] = {
             "ok": False,
+            "status": "error",
             "network": plan.name,
             "environment": plan.environment,
             "expected_chain_id": hex(plan.chain_id),
             "direct_rpc": "not-configured",
             "canonical_rpc": "not-configured",
+            "explicit_rpc": "not-inspected",
             "consensus": "not-inspected",
             "probes": [],
             "errors": ["No RPC URL is available for chain observation."],
         }
+    else:
+        probes = [observe_rpc_endpoint(plan, candidate, args) for candidate in candidates]
+        successful = [probe for probe in probes if bool(probe.get("ok"))]
+        consensus_probe = successful[0] if successful else None
+        errors = [str(probe.get("error")) for probe in probes if probe.get("error")]
+        direct_status = rpc_probe_status(probes, {"direct-host-port"}, absent="not-inspected")
+        canonical_absent = "not-configured" if not str(plan.external_rpc_url or "").strip() else "not-inspected"
+        canonical_status = rpc_probe_status(probes, {"configured-network-rpc"}, absent=canonical_absent)
+        explicit_status = rpc_probe_status(probes, {"explicit"}, absent="not-inspected")
 
-    probes = [observe_rpc_endpoint(plan, candidate, args) for candidate in candidates]
-    successful = [probe for probe in probes if bool(probe.get("ok"))]
-    consensus_probe = successful[0] if successful else None
-    errors = [str(probe.get("error")) for probe in probes if probe.get("error")]
-    direct_status = rpc_probe_status(probes, {"direct-host-port"}, absent="not-inspected")
-    canonical_absent = "not-configured" if not str(plan.external_rpc_url or "").strip() else "not-inspected"
-    canonical_status = rpc_probe_status(probes, {"configured-network-rpc"}, absent=canonical_absent)
-    explicit_status = rpc_probe_status(probes, {"explicit"}, absent="not-inspected")
+        chain: dict[str, Any] = {}
+        if consensus_probe is not None:
+            chain = {
+                "source_url": consensus_probe.get("url"),
+                "source": consensus_probe.get("source"),
+                "label": consensus_probe.get("label"),
+                "service": consensus_probe.get("service"),
+                "host": consensus_probe.get("host"),
+                "chain_id": consensus_probe.get("chain_id"),
+                "expected_chain_id": consensus_probe.get("expected_chain_id"),
+                "chain_id_matches_plan": consensus_probe.get("chain_id_matches_plan"),
+                "block_number": consensus_probe.get("block_number"),
+                "block_number_hex": consensus_probe.get("block_number_hex"),
+                "peer_count": consensus_probe.get("peer_count"),
+                "peer_count_hex": consensus_probe.get("peer_count_hex"),
+                "validators": consensus_probe.get("validators", []),
+                "validator_count": consensus_probe.get("validator_count", 0),
+            }
+            chain = {key: value for key, value in chain.items() if value not in ("", None)}
 
-    chain: dict[str, Any] = {}
-    if consensus_probe is not None:
-        chain = {
-            "source_url": consensus_probe.get("url"),
-            "source": consensus_probe.get("source"),
-            "chain_id": consensus_probe.get("chain_id"),
-            "expected_chain_id": consensus_probe.get("expected_chain_id"),
-            "chain_id_matches_plan": consensus_probe.get("chain_id_matches_plan"),
-            "block_number": consensus_probe.get("block_number"),
-            "block_number_hex": consensus_probe.get("block_number_hex"),
-            "peer_count": consensus_probe.get("peer_count"),
-            "peer_count_hex": consensus_probe.get("peer_count_hex"),
-            "validators": consensus_probe.get("validators", []),
-            "validator_count": consensus_probe.get("validator_count", 0),
+        result = {
+            "ok": bool(consensus_probe),
+            "status": "ok" if consensus_probe is not None else "error",
+            "network": plan.name,
+            "environment": plan.environment,
+            "expected_chain_id": hex(plan.chain_id),
+            "direct_rpc": direct_status,
+            "canonical_rpc": canonical_status,
+            "explicit_rpc": explicit_status,
+            "consensus": "ok" if consensus_probe is not None else "error",
+            "chain": chain,
+            "probes": probes,
+            **({"errors": errors} if errors else {}),
         }
 
-    return {
-        "ok": bool(consensus_probe),
-        "network": plan.name,
-        "environment": plan.environment,
-        "expected_chain_id": hex(plan.chain_id),
-        "direct_rpc": direct_status,
-        "canonical_rpc": canonical_status,
-        "explicit_rpc": explicit_status,
-        "consensus": "ok" if consensus_probe is not None else "error",
-        "chain": chain,
-        "probes": probes,
-        **({"errors": errors} if errors else {}),
-    }
+    if include_coolify:
+        try:
+            coolify_topology = discover_coolify_topology(plan, args)
+        except Exception as exc:  # noqa: BLE001 - observe should surface every failed observation layer.
+            coolify_topology = {
+                "ok": False,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        result["coolify_topology"] = coolify_topology
+        result["coolify"] = "ok" if bool(coolify_topology.get("ok")) else "error"
+        if not bool(coolify_topology.get("ok")):
+            if result.get("ok"):
+                result["status"] = "degraded"
+            result["ok"] = False
+    else:
+        result["coolify"] = "not-inspected"
+
+    return result
+
+
+def _format_probe_label(probe: Mapping[str, Any]) -> str:
+    label = str(probe.get("label") or "").strip()
+    if label:
+        return label
+    source = str(probe.get("source") or "unknown").strip() or "unknown"
+    service = str(probe.get("service") or "").strip()
+    host = str(probe.get("host") or "").strip()
+    if service and host:
+        return f"{source} {service}@{host}"
+    return source
+
+
+def _format_probe_summary(probe: Mapping[str, Any]) -> str:
+    label = _format_probe_label(probe)
+    url = str(probe.get("url") or "").strip()
+    if probe.get("ok"):
+        parts = [
+            f"{label}: ok",
+            f"chain={probe.get('chain_id')}",
+            f"block={probe.get('block_number')}",
+            f"peers={probe.get('peer_count')}",
+            f"validators={probe.get('validator_count')}",
+        ]
+        if url:
+            parts.append(f"url={url}")
+        return " ".join(str(part) for part in parts if part not in ("", None))
+    error = str(probe.get("error") or "unavailable").strip()
+    return f"{label}: error {error}" + (f" url={url}" if url else "")
+
+
+def _format_coolify_observation_lines(plan: NetworkPlan, result: Mapping[str, Any]) -> list[str]:
+    topology = result.get("coolify_topology") if isinstance(result.get("coolify_topology"), Mapping) else {}
+    if not topology:
+        return ["coolify api: not-inspected"]
+
+    lines = [f"coolify api: {'ok' if topology.get('ok') else 'error'}"]
+    hosts = topology.get("hosts") if isinstance(topology.get("hosts"), Mapping) else {}
+    planned_hosts = host_by_id(plan)
+    for host_id, host_result_raw in hosts.items():
+        host_result = host_result_raw if isinstance(host_result_raw, Mapping) else {}
+        host = planned_hosts.get(str(host_id))
+        host_addr = f" [{host.address}]" if host is not None and host.address else ""
+        found = "found" if host_result.get("found") else "missing"
+        ok = "ok" if host_result.get("ok") else "error"
+        stage = str(host_result.get("stage") or "").strip()
+        deployed = [str(item) for item in host_result.get("deployed_instances") or []]
+        unknown = [str(item) for item in host_result.get("unknown_instances") or []]
+        suffix = ""
+        if deployed:
+            suffix = f" deployed={','.join(deployed)}"
+        elif unknown:
+            suffix = f" deployed=unknown expected={','.join(unknown)}"
+        elif stage:
+            suffix = f" stage={stage}"
+        lines.append(f"  host {host_id}{host_addr}: {ok} {found}{suffix}")
+    if topology.get("observed_deployed_instances"):
+        deployed = ", ".join(str(item) for item in topology.get("observed_deployed_instances") or [])
+        lines.append(f"  observed deployed instances: {deployed}")
+    if topology.get("observed_missing_instances"):
+        missing = ", ".join(str(item) for item in topology.get("observed_missing_instances") or [])
+        lines.append(f"  template instances not observed in Coolify: {missing}")
+    if topology.get("error"):
+        lines.append(f"  error: {topology.get('error')}")
+    return lines
+
+
+def _format_topology_template_lines(plan: NetworkPlan) -> list[str]:
+    validator_count = sum(1 for service in plan.services if "validator" in service.roles)
+    rpc_count = sum(1 for service in plan.services if "rpc" in service.roles)
+    lines = [
+        "topology template (private-state/plan; not proof of deployment):",
+        f"  template services: {len(plan.services)} ({validator_count} validator-role, {rpc_count} rpc-role)",
+    ]
+    for host in plan.hosts:
+        services = services_for_host(plan, host.id)
+        if not services:
+            continue
+        address = f" [{host.address}]" if host.address else ""
+        lines.append(f"  host {host.id}{address}:")
+        for service in services:
+            parts = [f"roles={','.join(service.roles)}"]
+            if service.rpc_host_port is not None:
+                parts.append(f"rpc={service.rpc_host_port}")
+            if service.p2p_host_port is not None:
+                parts.append(f"p2p={service.p2p_host_port}")
+            lines.append(f"    - {service.id}: {' '.join(parts)}")
+    return lines
+
+
+def format_chain_observation_report(plan: NetworkPlan, result: Mapping[str, Any], args: argparse.Namespace) -> str:
+    lines: list[str] = [
+        f"CHAIN OBSERVATION: {result.get('network', plan.name)} ({result.get('environment', plan.environment)})",
+        "mode: live observation; private state is used only as a decoding template",
+        f"status: {result.get('status') or ('ok' if result.get('ok') else 'error')}",
+        f"expected chain id: {result.get('expected_chain_id')} ({plan.chain_id})",
+    ]
+
+    chain = result.get("chain") if isinstance(result.get("chain"), Mapping) else {}
+    observed_chain_id = chain.get("chain_id") if chain else "unavailable"
+    match = chain.get("chain_id_matches_plan") if chain else None
+    match_text = "unknown" if match is None else ("yes" if match else "no")
+    lines.append(f"observed chain id: {observed_chain_id} (matches template: {match_text})")
+    lines.append(f"consensus: {result.get('consensus', 'unknown')}")
+    lines.append(f"canonical rpc: {result.get('canonical_rpc', 'unknown')}")
+    lines.append(f"direct rpc: {result.get('direct_rpc', 'unknown')}")
+    lines.append(f"explicit rpc: {result.get('explicit_rpc', 'unknown')}")
+    lines.append(f"coolify api: {result.get('coolify', 'unknown')}")
+    if chain:
+        source = chain.get("source")
+        label = chain.get("label")
+        source_url = chain.get("source_url")
+        source_bits = ", ".join(str(item) for item in (source, label) if item)
+        if source_url:
+            lines.append(f"selected live rpc: {source_url}" + (f" ({source_bits})" if source_bits else ""))
+        lines.append(f"block: {chain.get('block_number')}")
+        lines.append(f"peers: {chain.get('peer_count')}")
+        lines.append(f"observed validators: {chain.get('validator_count')}")
+
+    lines.append("rpc probes (live):")
+    probes = result.get("probes") if isinstance(result.get("probes"), list) else []
+    if probes:
+        for probe in probes:
+            lines.append(f"  - {_format_probe_summary(probe if isinstance(probe, Mapping) else {})}")
+    else:
+        lines.append("  - none")
+
+    lines.extend(_format_coolify_observation_lines(plan, result))
+
+    warnings = list(plan.warnings)
+    topology = result.get("coolify_topology") if isinstance(result.get("coolify_topology"), Mapping) else {}
+    warnings.extend(str(item) for item in topology.get("warnings") or [])
+    if warnings:
+        lines.append("warnings:")
+        for warning in warnings:
+            lines.append(f"  - {warning}")
+
+    errors = [str(item) for item in result.get("errors") or []]
+    if topology.get("error"):
+        errors.append(str(topology.get("error")))
+    if errors:
+        lines.append("errors:")
+        for error in errors:
+            lines.append(f"  - {error}")
+
+    lines.extend(_format_topology_template_lines(plan))
+
+    if bool(getattr(args, "verbose", False)):
+        lines.append("raw observation json:")
+        lines.append(json.dumps(result, indent=2, sort_keys=True))
+
+    return "\n".join(lines)
 
 
 def mutate_stable_chain_timeout_s(args: argparse.Namespace) -> float:
@@ -10365,6 +10611,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--packet", default="", help="For mutate: optional JSON path to write the read-only mutation packet.")
     parser.add_argument("--observe-chain", action="store_true", help="For mutate: include read-only chain/RPC observation in the mutation packet.")
     parser.add_argument("--chain-observation-timeout-s", type=float, default=DEFAULT_CHAIN_OBSERVATION_TIMEOUT_S, help="Per-call JSON-RPC timeout for observe-chain / mutate --observe-chain.")
+    parser.add_argument("--verbose", action="store_true", help="For observe-chain: include raw observation JSON and secondary details.")
     parser.add_argument("--ack-consensus-change", action="store_true", help="For future mutate --apply validator changes.")
     parser.add_argument("--ack-mainnet-consensus-change", action="store_true", help="For future mutate --apply mainnet validator changes.")
     parser.add_argument("--config-root-host", default="", help="For mutate --apply: force the QBFT runtime config/genesis source host when multiple lineages are found.")
@@ -10656,8 +10903,8 @@ def main(argv: list[str] | None = None) -> int:
             print_json(result)
             return 0 if result.get("ok") else 1
         if args.action == "observe-chain":
-            result = observe_chain_state(plan, args)
-            print_json(result)
+            result = observe_chain_state(plan, args, include_all_rpcs=True, include_coolify=True)
+            print(format_chain_observation_report(plan, result, args))
             return 0 if result.get("ok") else 1
         if args.action == "coolify-sync":
             result = coolify_sync(plan, args, deploy=not bool(args.no_deploy))

@@ -1512,16 +1512,32 @@
           wallet20aUnlockContractStage: source.wallet20aUnlockContract?.stage || source.walletUnlockContract?.stage || "not-observed",
           wallet20aAllowedCapabilities: source.wallet20aUnlockContract?.allowedCapabilities || source.walletUnlockContract?.allowedCapabilities || [],
           wallet20aLockedCapabilities: source.wallet20aUnlockContract?.lockedCapabilities || source.walletUnlockContract?.lockedCapabilities || [],
+          wallet20bSignedIntentUnlock: source.wallet20bSignedIntentUnlock || source.walletSignedIntentUnlock || {},
+          wallet20bSignedIntentStatus: source.wallet20bSignedIntentUnlock?.status || source.walletSignedIntentUnlock?.status || "not-observed",
+          wallet20bSignedIntentStage: source.wallet20bSignedIntentUnlock?.stage || source.walletSignedIntentUnlock?.stage || "not-observed",
+          wallet20bAllowedCapabilities: source.wallet20bSignedIntentUnlock?.allowedCapabilities || source.walletSignedIntentUnlock?.allowedCapabilities || [],
+          wallet20bLockedCapabilities: source.wallet20bSignedIntentUnlock?.lockedCapabilities || source.walletSignedIntentUnlock?.lockedCapabilities || [],
+          wallet20bProviderSignatureRequested: source.wallet20bSignedIntentUnlock?.providerSignatureRequested === true || source.walletSignedIntentUnlock?.providerSignatureRequested === true,
+          wallet20cSignatureRequestPreflight: source.wallet20cSignatureRequestPreflight || source.walletSignatureRequestPreflight || {},
+          wallet20cSignaturePreflightStatus: source.wallet20cSignatureRequestPreflight?.status || source.walletSignatureRequestPreflight?.status || "not-observed",
+          wallet20cSignaturePreflightStage: source.wallet20cSignatureRequestPreflight?.stage || source.walletSignatureRequestPreflight?.stage || "not-observed",
+          wallet20cAllowedCapabilities: source.wallet20cSignatureRequestPreflight?.allowedCapabilities || source.walletSignatureRequestPreflight?.allowedCapabilities || [],
+          wallet20cLockedCapabilities: source.wallet20cSignatureRequestPreflight?.lockedCapabilities || source.walletSignatureRequestPreflight?.lockedCapabilities || [],
+          wallet20cCanArmSignatureRequest: source.wallet20cSignatureRequestPreflight?.canArmSignatureRequest === true || source.walletSignatureRequestPreflight?.canArmSignatureRequest === true,
+          wallet20cProviderPromptBound: source.wallet20cSignatureRequestPreflight?.providerPromptBound === true || source.walletSignatureRequestPreflight?.providerPromptBound === true,
+          wallet20cProviderSignatureRequested: source.wallet20cSignatureRequestPreflight?.providerSignatureRequested === true || source.walletSignatureRequestPreflight?.providerSignatureRequested === true,
           canBuildDraft: source.wallet20aUnlockContract?.canBuildDraft === true || source.walletUnlockContract?.canBuildDraft === true,
           canSimulate: source.wallet20aUnlockContract?.canSimulate === true || source.walletUnlockContract?.canSimulate === true,
-          canRequestSignature: source.wallet20aUnlockContract?.canRequestSignature === true || source.walletUnlockContract?.canRequestSignature === true,
+          canRequestSignature: source.wallet20bSignedIntentUnlock?.canRequestSignature === true || source.walletSignedIntentUnlock?.canRequestSignature === true || source.wallet20aUnlockContract?.canRequestSignature === true || source.walletUnlockContract?.canRequestSignature === true,
+          canArmSignatureRequest: source.wallet20cSignatureRequestPreflight?.canArmSignatureRequest === true || source.walletSignatureRequestPreflight?.canArmSignatureRequest === true,
+          canRequestProviderSignature: source.wallet20cSignatureRequestPreflight?.canRequestProviderSignature === true || source.walletSignatureRequestPreflight?.canRequestProviderSignature === true,
           blockers,
           allowedActions: uniqueScmReceiptList(source.allowedActions, consumerGate.allowedActions, preflight.allowedActions),
           blockedActions: uniqueScmReceiptList(source.blockedActions, preflight.blockedActions, blockers),
           proofDockSpecimens: source.mcelProofDockSpecimens || source.proofDockSpecimens || null,
           wallet18nCompletionReport: source.wallet18nCompletionReport || {},
           wallet18nCompletionStatus: source.wallet18nCompletionReport?.status || "not-observed",
-          nextAction: source.wallet20aUnlockContract?.nextAction || source.walletUnlockContract?.nextAction || source.wallet18nCompletionReport?.nextAction || source.nextAction || preflight.summary || consumerGate.reason || "",
+          nextAction: source.wallet20cSignatureRequestPreflight?.nextAction || source.walletSignatureRequestPreflight?.nextAction || source.wallet20bSignedIntentUnlock?.nextAction || source.walletSignedIntentUnlock?.nextAction || source.wallet20aUnlockContract?.nextAction || source.walletUnlockContract?.nextAction || source.wallet18nCompletionReport?.nextAction || source.nextAction || preflight.summary || consumerGate.reason || "",
           invariant: source.invariant || [],
           raw: source
         });
@@ -1535,7 +1551,7 @@
           ? (boundary.status || (locked ? "locked" : "needs inspection"))
           : "not observed";
         const label = observed
-          ? `${status} · ${boundary.action || "wallet.send-sign"} · validity=${boundary.txDraftValidityStatus || "not-observed"} · 19D=${boundary.wallet19dProofSurfaceAlignmentStatus || "not-observed"} · 19E=${boundary.wallet19eNegativePathRegressionStatus || "not-observed"} · 20A=${boundary.wallet20aUnlockContractStage || "not-observed"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
+          ? `${status} · ${boundary.action || "wallet.send-sign"} · validity=${boundary.txDraftValidityStatus || "not-observed"} · 19D=${boundary.wallet19dProofSurfaceAlignmentStatus || "not-observed"} · 19E=${boundary.wallet19eNegativePathRegressionStatus || "not-observed"} · 20A=${boundary.wallet20aUnlockContractStage || "not-observed"} · 20B=${boundary.wallet20bSignedIntentStage || "not-observed"} · 20C=${boundary.wallet20cSignaturePreflightStage || "not-observed"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
           : "not observed";
         return jsonSafeClone({
           kind: "mcel-code-studio-18n-commit-boundary-workbench-summary",
@@ -1565,10 +1581,26 @@
           wallet20aUnlockContractStage: boundary.wallet20aUnlockContractStage || "not-observed",
           wallet20aAllowedCapabilities: boundary.wallet20aAllowedCapabilities || [],
           wallet20aLockedCapabilities: boundary.wallet20aLockedCapabilities || [],
+          wallet20bSignedIntentUnlock: boundary.wallet20bSignedIntentUnlock || {},
+          wallet20bSignedIntentStatus: boundary.wallet20bSignedIntentStatus || "not-observed",
+          wallet20bSignedIntentStage: boundary.wallet20bSignedIntentStage || "not-observed",
+          wallet20bAllowedCapabilities: boundary.wallet20bAllowedCapabilities || [],
+          wallet20bLockedCapabilities: boundary.wallet20bLockedCapabilities || [],
+          wallet20bProviderSignatureRequested: boundary.wallet20bProviderSignatureRequested === true,
+          wallet20cSignatureRequestPreflight: boundary.wallet20cSignatureRequestPreflight || {},
+          wallet20cSignaturePreflightStatus: boundary.wallet20cSignaturePreflightStatus || "not-observed",
+          wallet20cSignaturePreflightStage: boundary.wallet20cSignaturePreflightStage || "not-observed",
+          wallet20cAllowedCapabilities: boundary.wallet20cAllowedCapabilities || [],
+          wallet20cLockedCapabilities: boundary.wallet20cLockedCapabilities || [],
+          wallet20cCanArmSignatureRequest: boundary.wallet20cCanArmSignatureRequest === true,
+          wallet20cProviderPromptBound: boundary.wallet20cProviderPromptBound === true,
+          wallet20cProviderSignatureRequested: boundary.wallet20cProviderSignatureRequested === true,
           canBuildDraft: boundary.canBuildDraft === true,
           canSimulate: boundary.canSimulate === true,
           canRequestSignature: boundary.canRequestSignature === true,
-          nextAction: boundary.nextAction || (observed ? "inspect MCEL 20A unlock contract and preflight/receipt" : "run MCEL Lab wallet proof"),
+          canArmSignatureRequest: boundary.canArmSignatureRequest === true,
+          canRequestProviderSignature: boundary.canRequestProviderSignature === true,
+          nextAction: boundary.nextAction || (observed ? "inspect MCEL 20C signature-request preflight and receipt; provider prompt remains locked" : "run MCEL Lab wallet proof"),
           raw: boundary
         });
       }
@@ -1713,7 +1745,7 @@
             "18N-K completion means the wallet boundary is complete while provider execution remains locked.",
             "19D carries txDraft identity/validity into Code Studio proof dock summaries.",
             "19E negative-path regression remains locked and no-mutation.",
-            "20A staged unlock contract is visible in Code Studio while signature and broadcast remain locked."
+            "20A staged unlock contract is visible in Code Studio while signature and broadcast remain locked. 20A staged unlock contract and 20B signed-intent gate and 20C signature-request preflight are visible in Code Studio while provider prompt, signature, and broadcast remain locked. 20B signed-intent gate are visible in Code Studio while provider signature and broadcast remain locked."
 
           ]
         });

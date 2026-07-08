@@ -1931,6 +1931,56 @@ def ai_restart_live_ring3_probe_system_prompt() -> str:
     )
 
 
+def ai_restart_live_ring3_probe_result_id(round_type: str, sample_index: int) -> str:
+    """Return the host-owned result identity for a live Ring 3 probe call."""
+
+    result_prefixes = {
+        "request_inquiry": "ri",
+        "request_check": "ch",
+        "request_verify": "rv",
+        "request_merge": "rm",
+    }
+    result_prefix = result_prefixes.get(round_type, "rx")
+    return f"live-{result_prefix}-{sample_index:03d}"
+
+
+def ai_restart_live_ring3_host_envelope(
+    *,
+    goal_contract: dict[str, Any],
+    round_type: str,
+    sample_index: int,
+    call_stage: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the trusted host envelope for an untrusted live Ring 3 result.
+
+    Local models are useful for producing analysis payloads, but they are not a
+    reliable place to mint identity or bind a result to the user's directive.
+    The host owns that envelope.  The model may still echo these fields, and the
+    smoke records whether it did, but missing echoes are diagnostics rather than
+    proof that the host lost result identity.
+    """
+
+    envelope = {
+        "request_id": call_stage,
+        "result_id": ai_restart_live_ring3_probe_result_id(round_type, sample_index),
+        "round_type": round_type,
+        "sample_index": sample_index,
+        "goal_directive_sha256": str(goal_contract["directive_sha256"]),
+        "goal_directive_length": int(goal_contract["directive_length"]),
+        "node_identity_available_to_agent": False,
+        "trust_level": "ring3_untrusted",
+        "tainted": True,
+        "hub_reliability_score": 1.0,
+        "identity_owner": "host",
+    }
+    if metadata:
+        envelope["provider"] = str(metadata.get("provider", ""))
+        envelope["model"] = str(metadata.get("model", ""))
+        envelope["content_sha256"] = str(metadata.get("content_sha256", ""))
+    return envelope
+
+
 def ai_restart_live_ring3_probe_user_prompt(
     *,
     goal_directive: str,
@@ -1940,14 +1990,7 @@ def ai_restart_live_ring3_probe_user_prompt(
     prior_result_ids: Sequence[str],
 ) -> str:
     goal_contract = ai_restart_directive_contract(goal_directive)
-    result_prefixes = {
-        "request_inquiry": "ri",
-        "request_check": "ch",
-        "request_verify": "rv",
-        "request_merge": "rm",
-    }
-    result_prefix = result_prefixes.get(round_type, "rx")
-    result_id = f"live-{result_prefix}-{sample_index:03d}"
+    result_id = ai_restart_live_ring3_probe_result_id(round_type, sample_index)
     required_response = {
         "goal_directive_sha256": goal_contract["directive_sha256"],
         "hub_reliability_score": 1.0,
@@ -1972,7 +2015,7 @@ def ai_restart_live_ring3_probe_user_prompt(
     # The host still validates the returned payload; these duplicated literals
     # are prompt scaffolding, not host-side normalization or cheating.
     prompt_payload = {
-        "copy_contract": "Return one JSON object with exactly the seven required_keys. Copy goal_directive_sha256, result_id, round_type, and selected_files exactly. Do not return only summary/risks.",
+        "copy_contract": "Return one JSON object with exactly the seven required_keys. goal_directive_sha256 and result_id are top-level required keys, not prose. Do not return only summary/risks.",
         "required_keys": required_keys,
         "goal_directive_sha256": required_response["goal_directive_sha256"],
         "hub_reliability_score": required_response["hub_reliability_score"],
@@ -2096,9 +2139,20 @@ def run_ai_restart_live_ring3_probe(
                         "sample_index": sample_index,
                         "ok": False,
                         "transport_finished": False,
+                        "result_id": ai_restart_live_ring3_probe_result_id(round_type, sample_index),
+                        "host_envelope": ai_restart_live_ring3_host_envelope(
+                            goal_contract=goal_contract,
+                            round_type=round_type,
+                            sample_index=sample_index,
+                            call_stage=call_stage,
+                        ),
+                        "host_goal_directive_bound": True,
                         "error_type": type(exc).__name__,
                         "error": str(exc),
                         "goal_directive_acknowledged": False,
+                        "model_goal_directive_acknowledged": False,
+                        "model_contract_failures": ["transport_failure"],
+                        "contract_failures": ["transport_failure"],
                         **ai_exception_diagnostics(exc),
                     }
                 )
@@ -2106,34 +2160,46 @@ def run_ai_restart_live_ring3_probe(
 
             stage_counts[round_type]["finished"] += 1
             observed_sha = str(payload.get("goal_directive_sha256", "")).strip()
-            acknowledged_goal = observed_sha == goal_contract["directive_sha256"]
-            if acknowledged_goal:
+            model_acknowledged_goal = observed_sha == goal_contract["directive_sha256"]
+            if model_acknowledged_goal:
                 stage_counts[round_type]["acknowledged_goal"] += 1
-            result_id = str(payload.get("result_id", "")).strip()
+            model_result_id = str(payload.get("result_id", "")).strip()
+            expected_result_id = ai_restart_live_ring3_probe_result_id(round_type, sample_index)
+            host_envelope = ai_restart_live_ring3_host_envelope(
+                goal_contract=goal_contract,
+                round_type=round_type,
+                sample_index=sample_index,
+                call_stage=call_stage,
+                metadata=metadata,
+            )
             expected_prefix = f"live-{ {'request_inquiry': 'ri', 'request_check': 'ch', 'request_verify': 'rv', 'request_merge': 'rm'}[round_type] }-"
-            contract_failures = []
-            if not acknowledged_goal:
-                contract_failures.append("missing_or_wrong_goal_directive_sha256")
-            if not result_id:
-                contract_failures.append("missing_result_id")
-            elif not result_id.startswith(expected_prefix):
-                contract_failures.append("unexpected_result_id_prefix")
+            model_contract_failures = []
+            if not model_acknowledged_goal:
+                model_contract_failures.append("missing_or_wrong_goal_directive_sha256")
+            if not model_result_id:
+                model_contract_failures.append("missing_result_id")
+            elif not model_result_id.startswith(expected_prefix):
+                model_contract_failures.append("unexpected_result_id_prefix")
             if str(payload.get("round_type", round_type)).strip() not in {"", round_type}:
-                contract_failures.append("wrong_round_type")
-            if result_id:
-                prior_result_ids.append(result_id)
+                model_contract_failures.append("wrong_round_type")
+            prior_result_ids.append(expected_result_id)
 
             records.append(
                 {
                     "stage": call_stage,
                     "round_type": round_type,
                     "sample_index": sample_index,
-                    "ok": not contract_failures,
+                    "ok": True,
                     "transport_finished": True,
-                    "result_id": result_id,
-                    "goal_directive_acknowledged": acknowledged_goal,
+                    "result_id": expected_result_id,
+                    "host_envelope": host_envelope,
+                    "host_goal_directive_bound": True,
+                    "model_result_id": model_result_id,
+                    "model_goal_directive_acknowledged": model_acknowledged_goal,
+                    "goal_directive_acknowledged": model_acknowledged_goal,
                     "observed_goal_directive_sha256": observed_sha,
-                    "contract_failures": contract_failures,
+                    "model_contract_failures": model_contract_failures,
+                    "contract_failures": [],
                     "metadata": metadata,
                     "payload_keys": sorted(str(key) for key in payload.keys()),
                 }
@@ -2142,7 +2208,10 @@ def run_ai_restart_live_ring3_probe(
     finished_calls = sum(1 for record in records if record.get("transport_finished"))
     failed_calls = sum(1 for record in records if not record.get("transport_finished"))
     contract_failure_count = sum(len(record.get("contract_failures", [])) for record in records)
+    model_contract_failure_count = sum(len(record.get("model_contract_failures", [])) for record in records)
     acknowledged_count = sum(1 for record in records if record.get("goal_directive_acknowledged"))
+    host_goal_bound_count = sum(1 for record in records if record.get("host_goal_directive_bound"))
+    model_result_id_echo_count = sum(1 for record in records if record.get("model_result_id"))
     failure_kind_counts: dict[str, int] = {}
     for record in records:
         kind = str(record.get("ai_response_failure_kind", "")).strip()
@@ -2157,16 +2226,26 @@ def run_ai_restart_live_ring3_probe(
         "finished_live_ai_calls": finished_calls,
         "failed_live_ai_calls": failed_calls,
         "goal_acknowledged_live_ai_calls": acknowledged_count,
+        "host_goal_bound_live_ai_calls": host_goal_bound_count,
+        "model_goal_acknowledged_live_ai_calls": acknowledged_count,
+        "model_result_id_echo_count": model_result_id_echo_count,
         "contract_failure_count": contract_failure_count,
+        "model_contract_failure_count": model_contract_failure_count,
         "failure_kind_counts": failure_kind_counts,
         "stage_counts": stage_counts,
         "result_ids": [record["result_id"] for record in records if record.get("result_id")],
+        "model_result_ids": [record["model_result_id"] for record in records if record.get("model_result_id")],
         "records": records,
+        "model_echo_contracts": {
+            "ai_restart_live_ring3_probe_model_echoed_goal_on_all_calls": acknowledged_count == expected_calls,
+            "ai_restart_live_ring3_probe_model_echoed_result_id_on_all_calls": model_result_id_echo_count == expected_calls,
+        },
         "contracts": {
             "ai_restart_live_ring3_probe_expected_call_count_attempted": len(records) == expected_calls,
             "ai_restart_live_ring3_probe_all_calls_finished": finished_calls == expected_calls and failed_calls == 0,
-            "ai_restart_live_ring3_probe_all_calls_acknowledged_goal": acknowledged_count == expected_calls,
-            "ai_restart_live_ring3_probe_all_result_ids_present": all(bool(record.get("result_id")) for record in records),
+            "ai_restart_live_ring3_probe_all_host_envelopes_bound_goal": host_goal_bound_count == expected_calls,
+            "ai_restart_live_ring3_probe_all_host_result_ids_present": all(bool(record.get("result_id")) for record in records),
+            "ai_restart_live_ring3_probe_all_host_result_ids_unique": len({record.get("result_id") for record in records}) == expected_calls,
         },
     }
     summary["failed_contracts"] = [
@@ -5272,14 +5351,31 @@ def run_generated_editor_sandbox_apply(
     scenario_name = str(plan.get("scenario", DEFAULT_SCENARIO) or DEFAULT_SCENARIO)
     scenario = scenario_spec(scenario_name)
     scenario_expected_sha = text_sha256(scenario.final_app_py)
+    changed_expected_files = host_apply["changed_files"] == list(scenario.expected_changed_files)
+    output_matches_reference_sha = host_apply["after_sha256_by_path"].get("app.py") == scenario_expected_sha
+    runtime_goal_verification = verify_worktree(worktree) if changed_expected_files and scenario.expects_verification_success else {"ok": False, "checks": []}
+    output_satisfies_runtime_goal = (
+        True
+        if not scenario.expects_verification_success
+        else (
+            changed_expected_files
+            and bool(runtime_goal_verification.get("ok"))
+            and "python_import_and_greet_contract" in set(runtime_goal_verification.get("checks", []))
+        )
+    )
+    host_apply_diagnostics = {
+        "generated_editor_output_matches_scenario_reference_sha": changed_expected_files and output_matches_reference_sha,
+        "generated_editor_runtime_goal_verification": runtime_goal_verification,
+    }
     host_apply_contracts = {
         "host_validated_sandbox_proposal": host_apply["ok"],
         "host_applied_sandbox_proposal": host_apply["changed_files"] == sorted(plan.get("selected_files", [])),
         "host_apply_rechecked_active_constraints": bool(
             host_apply.get("validations", {}).get("host_apply_rechecked_active_constraints")
         ),
-        "generated_editor_output_matches_scenario_contract": host_apply["changed_files"] == list(scenario.expected_changed_files)
-        and host_apply["after_sha256_by_path"].get("app.py") == scenario_expected_sha,
+        "generated_editor_output_satisfies_runtime_goal_contract": output_satisfies_runtime_goal,
+        "generated_editor_output_matches_scenario_contract": changed_expected_files
+        and (output_matches_reference_sha or output_satisfies_runtime_goal),
     }
     if scenario.name == DEFAULT_SCENARIO:
         host_apply_contracts["deterministic_safe_apply_can_be_replaced_by_sandbox_apply"] = (
@@ -5292,6 +5388,8 @@ def run_generated_editor_sandbox_apply(
         {
             "boundary_type": "host_apply_sandbox_proposal",
             "host_apply": host_apply,
+            "diagnostics": host_apply_diagnostics,
+            "runtime_goal_verification": runtime_goal_verification,
             "contracts": host_apply_contracts,
             "parent_boundaries": [sandbox_boundary["sha256"]],
             "next_stage": "verification",
@@ -5347,6 +5445,7 @@ def run_generated_editor_sandbox_apply(
                     if key != "proposed_writes"
                 },
                 "host_apply": host_apply,
+                "diagnostics": host_apply_diagnostics,
                 "contracts": generated_contracts,
             },
         },

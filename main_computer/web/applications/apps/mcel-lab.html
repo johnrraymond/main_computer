@@ -195,12 +195,12 @@
         <output id="mcel-18n-wallet-tool-status" class="mcel-tiny-contract-proof" data-status="locked" aria-live="polite">
           18N wallet tool is locked until a current MCEL commit draft is proven.
         </output>
-        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, and 20A staged unlock contract board">
+        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" data-mcel-20b-wallet-signed-intent-unlock="true" data-mcel-20c-wallet-signature-preflight="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, 20A staged unlock contract, 20B signed-intent gate, and 20C signature-request preflight board">
           <div class="mcel-18n-wallet-board-head">
-            <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof + 20A unlock contract</strong>
-            <span id="mcel-18n-wallet-tool-visible-phase">Locked before provider execution; 19A/B/C/D/E proof and 20A unlock contract waiting</span>
+            <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof + 20A unlock contract + 20B signed-intent gate + 20C signature preflight</strong>
+            <span id="mcel-18n-wallet-tool-visible-phase">Locked before provider execution; 19A/B/C/D/E proof plus 20A unlock contract, 20B signed-intent gate, and 20C signature preflight waiting</span>
           </div>
-          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N, 19A 19B 19C 19D 19E, and 20A visible status">
+          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N, 19A 19B 19C 19D 19E, 20A, 20B, and 20C visible status">
             <article>
               <span>19A guard</span>
               <strong id="mcel-19a-wallet-smoke-visible-status">waiting</strong>
@@ -230,6 +230,22 @@
               <strong id="mcel-20a-wallet-unlock-eligibility-visible-status">waiting</strong>
             </article>
             <article>
+              <span>20B signed intent</span>
+              <strong id="mcel-20b-wallet-signed-intent-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20B signature gate</span>
+              <strong id="mcel-20b-wallet-signature-gate-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20C signature preflight</span>
+              <strong id="mcel-20c-wallet-signature-preflight-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20C provider prompt</span>
+              <strong id="mcel-20c-wallet-provider-prompt-visible-status">locked</strong>
+            </article>
+            <article>
               <span>Invalidated by</span>
               <strong id="mcel-19c-wallet-tx-draft-invalidated-by">none observed</strong>
             </article>
@@ -254,7 +270,7 @@
               <strong id="mcel-18n-wallet-tool-visible-completion-status">not observed</strong>
             </article>
           </div>
-          <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Final locked wallet flow with 19D proof alignment, 19E negative path regression, and 20A staged unlock contract">
+          <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Final locked wallet flow with 19D proof alignment, 19E negative path regression, 20A staged unlock contract, 20B signed-intent gate, and 20C signature-request preflight">
             <li>create txDraft · waiting</li>
             <li>review draft · waiting</li>
             <li>run freshness · waiting</li>
@@ -270,7 +286,7 @@
               </ul>
             </div>
             <p id="mcel-18n-wallet-tool-visible-next">
-              Next action: inspect 20A staged unlock contract; signature and broadcast remain locked.
+              Next action: inspect 20C signature-request preflight; signature and broadcast remain locked; provider prompt, signature, send, and broadcast remain locked.
             </p>
           </div>
         </section>
@@ -281,6 +297,8 @@
         <pre id="mcel-18n-wallet-tool-ledger" class="mcel-tiny-contract-evidence">MCEL 18N wallet receipt ledger is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-negative-paths" class="mcel-tiny-contract-evidence">MCEL 18N wallet negative-path test wall is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-unlock-requirements" class="mcel-tiny-contract-evidence">Unlock requirements: incomplete.</pre>
+        <pre id="mcel-20b-wallet-signed-intent-unlock" class="mcel-tiny-contract-evidence">20B signed-intent unlock gate is waiting.</pre>
+        <pre id="mcel-20c-wallet-signature-request-preflight" class="mcel-tiny-contract-evidence">20C signature-request preflight is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-final-locked-specimen" class="mcel-tiny-contract-evidence">Final locked wallet specimen is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-completion-report" class="mcel-tiny-contract-evidence">18N completion report is waiting.</pre>
       </article>
