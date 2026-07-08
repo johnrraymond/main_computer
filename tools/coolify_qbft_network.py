@@ -1712,24 +1712,51 @@ def plan_with_only_services(plan: NetworkPlan, service_ids: list[str] | tuple[st
     return replace(plan, hosts=selected_hosts, services=selected_services)
 
 
-def plan_for_host_without_services(plan: NetworkPlan, host_id: str, retired_service_ids: set[str]) -> NetworkPlan:
+def plan_for_host_without_services(
+    plan: NetworkPlan,
+    host_id: str,
+    retired_service_ids: set[str],
+    *,
+    source_service_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> NetworkPlan:
     """Return a host-scoped target-state plan with retired services omitted.
 
     This is the retire-side sibling of ``plan_with_only_services``.  It never
     widens execution beyond the affected Coolify host, and it allows an empty
     service set so a host that only contained the retired RPC node can be
     redeployed with a cleanup-only compose.
+
+    ``source_service_ids`` is the active service set to preserve.  When omitted,
+    this helper keeps its historical behavior and starts from every private-state
+    service declared on the host.  Retire executors should pass the pre-mutation
+    live Coolify service set so a later retire cannot resurrect a service that
+    was already omitted from the currently deployed compose.
     """
 
     host_id = safe_id(host_id, kind="host")
     retired = {safe_id(service_id, kind="service") for service_id in retired_service_ids}
+    source: set[str] | None = (
+        {safe_id(service_id, kind="service") for service_id in source_service_ids}
+        if source_service_ids is not None
+        else None
+    )
     hosts = host_by_id(plan)
     if host_id not in hosts:
         raise PlanError(f"Cannot build retire target plan for unknown host: {host_id}")
+
+    host_service_ids = {service.id for service in plan.services if service.host == host_id}
+    if source is not None:
+        wrong_host = sorted(source - host_service_ids)
+        if wrong_host:
+            raise PlanError(
+                "Cannot build retire target plan; source service(s) are not declared on "
+                f"host {host_id}: {', '.join(wrong_host)}"
+            )
+
     selected_services = tuple(
         service
         for service in plan.services
-        if service.host == host_id and service.id not in retired
+        if service.host == host_id and service.id not in retired and (source is None or service.id in source)
     )
     return replace(plan, hosts=(hosts[host_id],), services=selected_services)
 
@@ -3203,10 +3230,17 @@ def restore_validator_retire_vote_topology(
     plan: NetworkPlan,
     args: argparse.Namespace,
     target_service: PlannedService,
+    *,
+    source_service_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Redeploy the pre-retire host compose after a failed temporary vote phase."""
 
-    restore_plan = plan_for_host_without_services(plan, target_service.host, set())
+    restore_plan = plan_for_host_without_services(
+        plan,
+        target_service.host,
+        set(),
+        source_service_ids=source_service_ids,
+    )
     restore_args = args_copy_with(
         args,
         host=target_service.host,
@@ -3545,7 +3579,37 @@ def apply_rpc_retire_mutation(plan: NetworkPlan, args: argparse.Namespace, packe
             }
 
     for host_id, retiring_host_services in services_by_host(target_services).items():
-        host_plan = plan_for_host_without_services(plan, host_id, retired_ids)
+        source_result = retire_source_service_ids_for_host(
+            plan,
+            args,
+            host_id,
+            dry_run=dry_run,
+            no_deploy=no_deploy,
+        )
+        phases.append(
+            {
+                "phase": "discover-active-host-services",
+                "host": host_id,
+                "result": source_result,
+            }
+        )
+        if not source_result.get("ok", False):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "error": source_result.get("error") or "Unable to discover active host services before RPC retire.",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": True,
+                    "message": "RPC-only retire refused because the active host service set could not be discovered safely.",
+                },
+                "apply_phases": phases,
+            }
+
+        source_service_ids = set(source_result.get("service_ids") or [])
+        host_plan = plan_for_host_without_services(plan, host_id, retired_ids, source_service_ids=source_service_ids)
         remaining_service_ids = [service.id for service in host_plan.services]
         deploy_args = args_copy_with(
             args,
@@ -3777,6 +3841,36 @@ def apply_validator_retire_mutation(plan: NetworkPlan, args: argparse.Namespace,
     phases: list[dict[str, Any]] = []
     retired_ids = {target_service.id}
 
+    pre_retire_source_result = retire_source_service_ids_for_host(
+        plan,
+        args,
+        target_service.host,
+        dry_run=dry_run,
+        no_deploy=no_deploy,
+    )
+    phases.append(
+        {
+            "phase": "discover-active-host-services",
+            "host": target_service.host,
+            "result": pre_retire_source_result,
+        }
+    )
+    if not pre_retire_source_result.get("ok", False):
+        return {
+            **packet,
+            "ok": False,
+            "mode": "apply",
+            "error": pre_retire_source_result.get("error") or "Unable to discover active host services before validator retire.",
+            "execution": {
+                "implemented": True,
+                "dry_run": dry_run,
+                "no_mutation_performed": True,
+                "message": "Validator retire refused because the active host service set could not be discovered safely.",
+            },
+            "apply_phases": phases,
+        }
+    pre_retire_service_ids = [safe_id(service_id, kind="service") for service_id in pre_retire_source_result.get("service_ids") or []]
+
     if dry_run or no_deploy:
         current_validators: list[str] = []
         target_address = "0x0000000000000000000000000000000000000000"
@@ -3887,7 +3981,8 @@ def apply_validator_retire_mutation(plan: NetworkPlan, args: argparse.Namespace,
 
             vote_services = validator_retire_vote_services_for_host(plan, target_service.host, target_service)
             vote_service_ids = [service.id for service in vote_services]
-            vote_plan = plan_with_only_services(plan, vote_service_ids)
+            vote_plan_service_ids = list(dict.fromkeys([*pre_retire_service_ids, *vote_service_ids]))
+            vote_plan = plan_with_only_services(plan, vote_plan_service_ids)
             vote_payload = {
                 "validator_address": target_address,
                 "proposal": False,
@@ -3910,7 +4005,7 @@ def apply_validator_retire_mutation(plan: NetworkPlan, args: argparse.Namespace,
                 }
             )
             if not sidecar_result.get("ok"):
-                restore_result = restore_validator_retire_vote_topology(plan, args, target_service)
+                restore_result = restore_validator_retire_vote_topology(plan, args, target_service, source_service_ids=pre_retire_service_ids)
                 phases.append(
                     {
                         "phase": "restore-pre-retire-topology",
@@ -3944,7 +4039,7 @@ def apply_validator_retire_mutation(plan: NetworkPlan, args: argparse.Namespace,
             )
             phases.append({"phase": "wait-validator-set-removal", "result": membership_result})
             if not membership_result.get("ok"):
-                restore_result = restore_validator_retire_vote_topology(plan, args, target_service)
+                restore_result = restore_validator_retire_vote_topology(plan, args, target_service, source_service_ids=pre_retire_service_ids)
                 phases.append(
                     {
                         "phase": "restore-pre-retire-topology",
@@ -3994,7 +4089,12 @@ def apply_validator_retire_mutation(plan: NetworkPlan, args: argparse.Namespace,
                 }
             )
 
-    host_plan = plan_for_host_without_services(plan, target_service.host, retired_ids)
+    host_plan = plan_for_host_without_services(
+        plan,
+        target_service.host,
+        retired_ids,
+        source_service_ids=pre_retire_service_ids,
+    )
     remaining_service_ids = [service.id for service in host_plan.services]
     deploy_args = args_copy_with(
         args,
@@ -8436,6 +8536,96 @@ def discover_coolify_topology(plan: NetworkPlan, args: argparse.Namespace) -> di
         "observed_missing_instances": sorted(set(available) - deployed),
         "warnings": warnings,
     }
+
+
+def discover_deployed_service_ids_for_host(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    host_id: str,
+) -> dict[str, Any]:
+    """Return the planned QBFT services currently present in a host's Coolify compose.
+
+    Private state is a catalog, not live topology.  Retire executors use this
+    before mutating a host so the replacement compose preserves only services
+    that are active immediately before the mutation.  If Coolify cannot report
+    per-compose service names for a multi-instance host, return a hard failure
+    instead of falling back to the full private-state catalog and risking service
+    resurrection.
+    """
+
+    host_id = safe_id(host_id, kind="host")
+    topology = discover_coolify_topology(plan, args)
+    host_result = mapping_get(topology, "hosts", host_id)
+    if not host_result:
+        return {
+            "ok": False,
+            "host": host_id,
+            "error": f"Coolify topology discovery did not include host {host_id!r}.",
+            "topology": {key: value for key, value in topology.items() if key != "hosts"},
+        }
+
+    if not host_result.get("ok", False):
+        return {
+            "ok": False,
+            "host": host_id,
+            "error": "Coolify topology discovery failed for target host.",
+            "host_result": host_result,
+        }
+
+    if not host_result.get("found", False):
+        return {
+            "ok": True,
+            "host": host_id,
+            "service_ids": [],
+            "source": "coolify-service-missing",
+            "host_result": host_result,
+        }
+
+    if host_result.get("unknown_instances"):
+        return {
+            "ok": False,
+            "host": host_id,
+            "error": (
+                "Coolify did not return enough compose detail to identify the live host service set; "
+                "refusing to build a retire target from full private state because that could resurrect "
+                "previously retired instances."
+            ),
+            "host_result": host_result,
+        }
+
+    service_ids = [
+        safe_id(service_id, kind="service")
+        for service_id in host_result.get("deployed_instances") or []
+    ]
+    return {
+        "ok": True,
+        "host": host_id,
+        "service_ids": service_ids,
+        "source": host_result.get("deployed_instance_source") or "coolify-compose-service-keys",
+        "host_result": {key: value for key, value in host_result.items() if key != "detail"},
+    }
+
+
+def retire_source_service_ids_for_host(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    host_id: str,
+    *,
+    dry_run: bool,
+    no_deploy: bool,
+) -> dict[str, Any]:
+    """Return the active host service ids to preserve during a retire mutation."""
+
+    host_id = safe_id(host_id, kind="host")
+    if dry_run or no_deploy:
+        return {
+            "ok": True,
+            "host": host_id,
+            "service_ids": [service.id for service in services_for_host(plan, host_id)],
+            "source": "private-state-fallback-for-dry-run" if dry_run else "private-state-fallback-for-no-deploy",
+            "skipped_live_discovery": True,
+        }
+    return discover_deployed_service_ids_for_host(plan, args, host_id)
 
 
 def discover_rpc_topology(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:

@@ -1485,7 +1485,9 @@
           allowedActions: uniqueScmReceiptList(source.allowedActions, consumerGate.allowedActions, preflight.allowedActions),
           blockedActions: uniqueScmReceiptList(source.blockedActions, preflight.blockedActions, blockers),
           proofDockSpecimens: source.mcelProofDockSpecimens || source.proofDockSpecimens || null,
-          nextAction: source.nextAction || preflight.summary || consumerGate.reason || "",
+          wallet18nCompletionReport: source.wallet18nCompletionReport || {},
+          wallet18nCompletionStatus: source.wallet18nCompletionReport?.status || "not-observed",
+          nextAction: source.wallet18nCompletionReport?.nextAction || source.nextAction || preflight.summary || consumerGate.reason || "",
           invariant: source.invariant || [],
           raw: source
         });
@@ -1639,7 +1641,8 @@
             "Unified MCEL proof dock specimens expose draft, provenance, freshness, consumer gate, preflight, and receipt.",
             "Code Studio and wallet specimens share one proof-dock shape.",
             "Wallet send/sign/broadcast remain locked.",
-            "Wallet unlock requirements remain incomplete until a separate explicit unlock design patch."
+            "Wallet unlock requirements remain incomplete until a separate explicit unlock design patch.",
+            "18N-K completion means the wallet boundary is complete while provider execution remains locked."
 
           ]
         });
@@ -1779,6 +1782,7 @@
           walletLocked: walletSpecimens.every((entry) => entry.locked === true && entry.preflight.canSend !== true && entry.preflight.canSign !== true && entry.preflight.canBroadcast !== true),
           walletUnlockStatus: walletBoundary.walletUnlockRequirements?.status || "incomplete",
           walletFinalLockedSpecimenStatus: walletBoundary.walletFinalLockedSpecimen?.finalStatus || "locked",
+          wallet18nCompletionStatus: walletBoundary.wallet18nCompletionReport?.status || walletBoundary.wallet18nCompletionStatus || "not-observed",
           mutationExecutedCount: specimens.filter((entry) => entry.receipt.mutationExecuted === true).length,
           blockedCount: specimens.filter((entry) => (entry.blockers || []).length || String(entry.status || "").includes("blocked") || entry.locked === true).length,
           blockers,

@@ -158,7 +158,7 @@
         <h5>5 · 18N wallet commit boundary</h5>
         <p>
           The MCEL wallet tool now crosses the general 18N boundary: draft intent, provenance,
-          freshness, consumer gate, preflight, and receipt. Send/sign/broadcast remains locked while txDraft provenance, stale simulation, rebuild, preflight, blocked-attempt receipts, negative-path checks, unlock requirements, and the final locked wallet specimen are visible.
+          freshness, consumer gate, preflight, and receipt. Send/sign/broadcast remains locked while txDraft provenance, stale simulation, rebuild, preflight, blocked-attempt receipts, negative-path checks, unlock requirements, the final locked wallet specimen, and the 18N completion report are visible.
         </p>
         <div class="mcel-tiny-contract-controls" data-mcel-18n-wallet-tool-controls="true">
           <button type="button" id="mcel-18n-wallet-tool-refresh">Refresh wallet 18N preflight</button>
@@ -197,7 +197,7 @@
         </output>
         <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" aria-label="18N final locked wallet specimen board">
           <div class="mcel-18n-wallet-board-head">
-            <strong>18N-J final locked wallet specimen</strong>
+            <strong>18N-K complete locked wallet boundary</strong>
             <span id="mcel-18n-wallet-tool-visible-phase">Locked before provider execution</span>
           </div>
           <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N visible status">
@@ -216,6 +216,10 @@
             <article>
               <span>Provider mutation</span>
               <strong id="mcel-18n-wallet-tool-visible-provider-status">refused</strong>
+            </article>
+            <article>
+              <span>18N closure</span>
+              <strong id="mcel-18n-wallet-tool-visible-completion-status">not observed</strong>
             </article>
           </div>
           <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Final locked wallet flow">
@@ -246,6 +250,7 @@
         <pre id="mcel-18n-wallet-tool-negative-paths" class="mcel-tiny-contract-evidence">MCEL 18N wallet negative-path test wall is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-unlock-requirements" class="mcel-tiny-contract-evidence">Unlock requirements: incomplete.</pre>
         <pre id="mcel-18n-wallet-tool-final-locked-specimen" class="mcel-tiny-contract-evidence">Final locked wallet specimen is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-completion-report" class="mcel-tiny-contract-evidence">18N completion report is waiting.</pre>
       </article>
     </div>
     <template id="mcel-tiny-contract-language-template">
