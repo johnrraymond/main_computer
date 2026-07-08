@@ -188,6 +188,321 @@
       return Array.isArray(sequence) && sequence.length ? sequence[sequence.length - 1] || {} : {};
     }
 
+    function mcelTinyContractSelectedReleaseSnapshot(source = {}) {
+      const release = source.devRelease || {};
+      const devNetwork = release.devNetwork || {};
+      const requests = Array.isArray(release.requests) ? release.requests : [];
+      return {
+        title: release.title || "",
+        contractAddress: release.contractAddress || "",
+        devNetwork: {
+          name: devNetwork.name || "",
+          chainId: devNetwork.chainId || "",
+          decimalChainId: devNetwork.decimalChainId || "",
+          rpcUrl: devNetwork.rpcUrl || ""
+        },
+        requests: requests.map((request) => ({
+          id: request.id || "",
+          status: request.status || "",
+          risk: request.risk || "",
+          contractMethod: request.contractMethod || "",
+          evidenceRequired: request.evidenceRequired === true
+        }))
+      };
+    }
+
+    function mcelTinyContractSelectedReleaseHash(source = {}) {
+      return mcelTinyContractObjectHash(mcelTinyContractSelectedReleaseSnapshot(source));
+    }
+
+    function mcelTinyContractProbeEvidenceHash(draftOrProbe = {}) {
+      return mcelTinyContractObjectHash({
+        nonce: draftOrProbe.nonce || {},
+        gasEstimate: draftOrProbe.gasEstimate || {},
+        ethCall: draftOrProbe.ethCall || {},
+        probeEnvelopeIds: Array.isArray(draftOrProbe.probeEnvelopeIds)
+          ? draftOrProbe.probeEnvelopeIds
+          : mcelTinyContractTxProbeEnvelopeIds(draftOrProbe)
+      });
+    }
+
+    function mcelTinyContractTxDraftIdentityEnvelope({
+      source = {},
+      state = {},
+      runtime = {},
+      request = null,
+      wallet = {},
+      network = {},
+      externalOutcome = {},
+      tx = {},
+      encoding = {},
+      draftProbe = null,
+      txDraft = {},
+      createdAt = ""
+    } = {}) {
+      const selectedRequestSnapshot = mcelTinyContractSelectedRequestSnapshot(request);
+      const sourceRequestHash = selectedRequestSnapshot ? mcelTinyContractObjectHash(selectedRequestSnapshot) : (txDraft.sourceRequestHash || "");
+      const releaseSnapshot = mcelTinyContractSelectedReleaseSnapshot(source);
+      const selectedReleaseHash = mcelTinyContractObjectHash(releaseSnapshot);
+      const expectedChainId = network.expectedChainId || source.devRelease?.devNetwork?.chainId || txDraft.expectedChainId || txDraft.chainProof?.expectedChainId || "0x28757b2";
+      const chainId = tx.chainId || network.chainId || txDraft.chainId || txDraft.chainProof?.chainId || "";
+      const account = tx.from || wallet.account || wallet.address || txDraft.from || "";
+      const walletAccountHash = txDraft.walletAccountHash || mcelTinyContractWalletAccountHash(account);
+      const calldata = tx.data || encoding.calldata || encoding.data || txDraft.calldata || txDraft.data || "";
+      const calldataHash = calldata ? mcelTinyContractHash(calldata) : "";
+      const target = tx.to || txDraft.to || source.devRelease?.contractAddress || "";
+      const value = tx.value || txDraft.value || "0x0";
+      const probeEnvelopeIds = draftProbe?.kind === "mcel-runtime-tx-draft-probe"
+        ? mcelTinyContractTxProbeEnvelopeIds(draftProbe)
+        : (Array.isArray(txDraft.probeEnvelopeIds) && txDraft.probeEnvelopeIds.length
+          ? txDraft.probeEnvelopeIds
+          : ["eth_getTransactionCount:not-probed", "eth_estimateGas:not-probed", "eth_call:not-probed"]);
+      const probeEvidenceHash = mcelTinyContractProbeEvidenceHash(draftProbe?.kind === "mcel-runtime-tx-draft-probe" ? draftProbe : txDraft);
+      const draftBuiltAt = createdAt || txDraft.draftBuiltAt || new Date().toISOString();
+      const draftTtlMs = Number(txDraft.draftTtlMs || 300000);
+      const draftExpiresAt = txDraft.draftExpiresAt || new Date(Date.parse(draftBuiltAt) + draftTtlMs).toISOString();
+      const payload = {
+        requestId: request?.id || state.selectedRequestId || txDraft.requestId || "",
+        selectedReleaseHash,
+        sourceRequestHash,
+        walletAccountHash,
+        chainId,
+        expectedChainId,
+        target,
+        value,
+        calldataHash,
+        probeEnvelopeIds,
+        probeEvidenceHash,
+        boundary: txDraft.boundary || "runtime-only-no-send",
+        mutationLocked: true
+      };
+      const txDraftHash = mcelTinyContractObjectHash(payload);
+      return {
+        kind: "mcelWalletTxDraftIdentityEnvelope.v1",
+        identityVersion: "19B-MCEL",
+        txDraftId: `mcelWalletTxDraft:${txDraftHash}`,
+        txDraftHash,
+        payload,
+        selectedReleaseHash,
+        selectedReleaseSnapshot: releaseSnapshot,
+        sourceRequestHash,
+        selectedRequestSnapshot,
+        walletAccountHash,
+        chainProof: {
+          expectedChainId,
+          chainId,
+          ok: Boolean(chainId && mcelTinyContractSameChainId(chainId, expectedChainId)),
+          status: chainId && mcelTinyContractSameChainId(chainId, expectedChainId) ? "matched" : "mismatch-or-missing"
+        },
+        target,
+        value,
+        calldataHash,
+        draftBuiltAt,
+        draftTtlMs,
+        draftExpiresAt,
+        probeEnvelopeIds,
+        probeEvidenceHash,
+        externalOutcomeSequence: externalOutcome?.kind === "mcel-external-outcome"
+          ? [{
+              sequence: externalOutcome.sequence || null,
+              operation: externalOutcome.operation || "",
+              status: externalOutcome.status || "",
+              reason: externalOutcome.reason || ""
+            }]
+          : [],
+        networkGateSequence: [{
+          status: network.status || "waiting",
+          ok: network.ok === true,
+          expectedChainId,
+          chainId
+        }],
+        mutationLocked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        invariant: [
+          "19B identity binds txDraft to selected release hash",
+          "19B identity binds txDraft to selected source request hash",
+          "19B identity binds txDraft to wallet account hash and chain proof",
+          "19B identity binds txDraft to calldata and probe evidence",
+          "wallet send/sign/broadcast remain locked"
+        ]
+      };
+    }
+
+    function mcelTinyContractTxDraftValidityEnvelope({
+      source = {},
+      state = {},
+      runtime = {},
+      request = null,
+      txDraft = {},
+      reason = "tx-draft-validity-check"
+    } = {}) {
+      const invalidations = [];
+      const addInvalidation = (entryReason, detail = {}) => {
+        invalidations.push(mcelTinyContractTxDraftInvalidation(entryReason, detail));
+      };
+      const hasDraft = Boolean(
+        txDraft.status && txDraft.status !== "empty"
+        || txDraft.calldata
+        || txDraft.data
+        || txDraft.sourceRequestHash
+        || txDraft.txDraftHash
+        || txDraft.txDraftId
+      );
+      const wallet = runtime.wallet || {};
+      const network = runtime.network || {};
+      const externalOutcome = runtime.externalOutcome || {};
+      const currentIdentity = mcelTinyContractTxDraftIdentityEnvelope({
+        source,
+        state,
+        runtime,
+        request,
+        wallet,
+        network,
+        externalOutcome,
+        tx: {
+          from: wallet.account || wallet.address || "",
+          to: txDraft.to || source.devRelease?.contractAddress || "",
+          value: txDraft.value || "0x0",
+          data: txDraft.data || txDraft.calldata || "",
+          chainId: network.chainId || wallet.chainId || ""
+        },
+        encoding: {
+          calldata: txDraft.calldata || txDraft.data || "",
+          data: txDraft.data || txDraft.calldata || ""
+        },
+        txDraft: {
+          ...txDraft,
+          draftBuiltAt: txDraft.draftBuiltAt || txDraft.identityEnvelope?.draftBuiltAt || "",
+          draftExpiresAt: txDraft.draftExpiresAt || txDraft.identityEnvelope?.draftExpiresAt || "",
+          probeEnvelopeIds: txDraft.probeEnvelopeIds || txDraft.identityEnvelope?.probeEnvelopeIds || []
+        },
+        createdAt: txDraft.draftBuiltAt || txDraft.identityEnvelope?.draftBuiltAt || ""
+      });
+      if (!hasDraft) {
+        return {
+          kind: "mcelWalletTxDraftValidityEnvelope.v1",
+          validityVersion: "19C-MCEL",
+          status: "no-draft",
+          valid: false,
+          reason,
+          currentIdentity,
+          invalidatedBy: [],
+          invalidationReasons: [],
+          mutationLocked: true,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false
+        };
+      }
+      const identity = txDraft.identityEnvelope || txDraft.txDraftIdentity || {};
+      const expectedIdentityHash = identity.txDraftHash || txDraft.txDraftHash || "";
+      const currentPayloadHash = currentIdentity.txDraftHash || "";
+      if (expectedIdentityHash && currentPayloadHash && expectedIdentityHash !== currentPayloadHash) {
+        addInvalidation("tx-draft-identity-changed", {
+          previousTxDraftHash: expectedIdentityHash,
+          currentTxDraftHash: currentPayloadHash
+        });
+      }
+      if ((txDraft.selectedReleaseHash || identity.selectedReleaseHash) && currentIdentity.selectedReleaseHash && (txDraft.selectedReleaseHash || identity.selectedReleaseHash) !== currentIdentity.selectedReleaseHash) {
+        addInvalidation("selected-release-changed", {
+          previousSelectedReleaseHash: txDraft.selectedReleaseHash || identity.selectedReleaseHash || "",
+          currentSelectedReleaseHash: currentIdentity.selectedReleaseHash
+        });
+      }
+      if ((txDraft.sourceRequestHash || identity.sourceRequestHash) && currentIdentity.sourceRequestHash && (txDraft.sourceRequestHash || identity.sourceRequestHash) !== currentIdentity.sourceRequestHash) {
+        addInvalidation("source-request-changed", {
+          previousHash: txDraft.sourceRequestHash || identity.sourceRequestHash || "",
+          currentHash: currentIdentity.sourceRequestHash,
+          previousRequestId: txDraft.requestId || txDraft.selectedRequestSnapshot?.id || "",
+          nextRequestId: request?.id || state.selectedRequestId || ""
+        });
+      }
+      if ((txDraft.walletAccountHash || identity.walletAccountHash) && currentIdentity.walletAccountHash && (txDraft.walletAccountHash || identity.walletAccountHash) !== currentIdentity.walletAccountHash) {
+        addInvalidation("account-changed", {
+          previousAccountHash: txDraft.walletAccountHash || identity.walletAccountHash || "",
+          currentAccountHash: currentIdentity.walletAccountHash
+        });
+      }
+      const draftChainId = txDraft.chainProof?.chainId || identity.chainProof?.chainId || txDraft.chainId || "";
+      if (draftChainId && currentIdentity.chainProof.chainId && !mcelTinyContractSameChainId(draftChainId, currentIdentity.chainProof.chainId)) {
+        addInvalidation("chain-changed", {
+          previousChainId: draftChainId,
+          chainId: currentIdentity.chainProof.chainId,
+          expectedChainId: currentIdentity.chainProof.expectedChainId
+        });
+      }
+      const draftCalldataHash = txDraft.calldataHash || identity.calldataHash || "";
+      if (draftCalldataHash && currentIdentity.calldataHash && draftCalldataHash !== currentIdentity.calldataHash) {
+        addInvalidation("calldata-changed", {
+          previousCalldataHash: draftCalldataHash,
+          currentCalldataHash: currentIdentity.calldataHash
+        });
+      }
+      const draftProbeHash = txDraft.probeEvidenceHash || identity.probeEvidenceHash || "";
+      if (draftProbeHash && currentIdentity.probeEvidenceHash && draftProbeHash !== currentIdentity.probeEvidenceHash) {
+        addInvalidation("probe-evidence-changed", {
+          previousProbeEvidenceHash: draftProbeHash,
+          currentProbeEvidenceHash: currentIdentity.probeEvidenceHash
+        });
+      }
+      const expiresAt = txDraft.draftExpiresAt || identity.draftExpiresAt || "";
+      const expiresMs = Date.parse(expiresAt);
+      if (Number.isFinite(expiresMs) && expiresMs > 0 && expiresMs < Date.now()) {
+        addInvalidation("draft-age-expired", {
+          draftBuiltAt: txDraft.draftBuiltAt || identity.draftBuiltAt || "",
+          draftExpiresAt: expiresAt,
+          draftTtlMs: txDraft.draftTtlMs || identity.draftTtlMs || 300000
+        });
+      }
+      if (txDraft.noSend !== true && txDraft.boundary !== "runtime-only-no-send") {
+        addInvalidation("no-send-boundary-missing", {
+          boundary: txDraft.boundary || "",
+          noSend: txDraft.noSend === true
+        });
+      }
+      const mergedInvalidations = mcelTinyContractMergeTxDraftInvalidations(txDraft.invalidatedBy || [], invalidations);
+      const valid = hasDraft && mergedInvalidations.length === 0 && txDraft.status === "ready" && txDraft.noSend === true;
+      return {
+        kind: "mcelWalletTxDraftValidityEnvelope.v1",
+        validityVersion: "19C-MCEL",
+        status: valid ? "valid" : (mergedInvalidations.length ? "invalidated" : "stale"),
+        valid,
+        reason,
+        identity,
+        currentIdentity,
+        txDraftId: txDraft.txDraftId || identity.txDraftId || "",
+        txDraftHash: txDraft.txDraftHash || identity.txDraftHash || "",
+        selectedReleaseHash: txDraft.selectedReleaseHash || identity.selectedReleaseHash || "",
+        currentSelectedReleaseHash: currentIdentity.selectedReleaseHash || "",
+        sourceRequestHash: txDraft.sourceRequestHash || identity.sourceRequestHash || "",
+        currentSourceRequestHash: currentIdentity.sourceRequestHash || "",
+        walletAccountHash: txDraft.walletAccountHash || identity.walletAccountHash || "",
+        currentWalletAccountHash: currentIdentity.walletAccountHash || "",
+        chainProof: txDraft.chainProof || identity.chainProof || {},
+        currentChainProof: currentIdentity.chainProof || {},
+        calldataHash: txDraft.calldataHash || identity.calldataHash || "",
+        currentCalldataHash: currentIdentity.calldataHash || "",
+        probeEvidenceHash: txDraft.probeEvidenceHash || identity.probeEvidenceHash || "",
+        currentProbeEvidenceHash: currentIdentity.probeEvidenceHash || "",
+        invalidatedBy: mergedInvalidations,
+        invalidationReasons: mergedInvalidations.map((entry) => entry.reason).filter(Boolean),
+        mutationLocked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        action: valid
+          ? "draft valid for inspection/simulation only; mutation remains locked"
+          : "rebuild draft from current wallet/source/chain/probe context",
+        invariant: [
+          "19C validity re-checks selected release, source request, account, chain, calldata, probe evidence, and draft age",
+          "valid txDraft does not unlock send/sign/broadcast",
+          "stale or invalidated txDraft must be rebuilt from current context"
+        ]
+      };
+    }
+
     function mcelCommitBoundaryDefault(action = "mcel.serious-action", reason = "waiting") {
       return {
         kind: "mcel-18n-commit-boundary.v1",
@@ -448,6 +763,8 @@
       const draftRequestSnapshot = txDraft.selectedRequestSnapshot || null;
       const currentSourceRequestHash = sourceRequestSnapshot ? mcelTinyContractObjectHash(sourceRequestSnapshot) : "";
       const draftSourceRequestHash = txDraft.sourceRequestHash || (draftRequestSnapshot ? mcelTinyContractObjectHash(draftRequestSnapshot) : "");
+      const currentSelectedReleaseHash = mcelTinyContractSelectedReleaseHash(source);
+      const draftSelectedReleaseHash = txDraft.selectedReleaseHash || txDraft.identityEnvelope?.selectedReleaseHash || "";
       const expectedChainId = network.expectedChainId || source.devRelease?.devNetwork?.chainId || txDraft.expectedChainId || txDraft.chainProof?.expectedChainId || "0x28757b2";
       const draftChainId = txDraft.chainId || txDraft.chainProof?.chainId || "";
       const currentChainId = network.chainId || wallet.chainId || "";
@@ -485,6 +802,8 @@
         draftRequestSnapshot,
         currentSourceRequestHash,
         draftSourceRequestHash,
+        currentSelectedReleaseHash,
+        draftSelectedReleaseHash,
         draftAccountHash,
         currentAccountHash,
         currentAccountLabel: currentAccount ? `${currentAccount.slice(0, 12)}…` : "not connected",
@@ -557,6 +876,7 @@
       );
       const txDraftPayload = {
         requestId: snapshot.selectedRequestId,
+        selectedReleaseHash: snapshot.draftSelectedReleaseHash,
         sourceRequestHash: snapshot.draftSourceRequestHash,
         walletAccountHash: snapshot.draftAccountHash,
         chainId: snapshot.draftChainId,
@@ -567,17 +887,19 @@
         boundary: txDraft.boundary || "runtime-only-no-send",
         status: txDraft.status || "empty"
       };
-      const txDraftHash = mcelTinyContractObjectHash(txDraftPayload);
+      const txDraftHash = txDraft.txDraftHash || mcelTinyContractObjectHash(txDraftPayload);
       return {
         kind: "mcelWalletTxDraft.v1",
         draftSpecimenVersion: "18N-MCEL-j",
-        txDraftId: `mcelWalletTxDraft:${txDraftHash}`,
+        txDraftId: txDraft.txDraftId || `mcelWalletTxDraft:${txDraftHash}`,
         txDraftHash,
         action: "wallet.send-sign",
         reviewed,
         reviewStatus: reviewed ? "reviewed-runtime-only-no-send" : "not-reviewed-or-blocked",
         status: txDraft.status || "empty",
         requestId: snapshot.selectedRequestId,
+        selectedReleaseHash: snapshot.draftSelectedReleaseHash,
+        currentSelectedReleaseHash: snapshot.currentSelectedReleaseHash,
         sourceRequestHash: snapshot.draftSourceRequestHash,
         currentSourceRequestHash: snapshot.currentSourceRequestHash,
         walletAccountHash: snapshot.draftAccountHash,
@@ -590,7 +912,7 @@
         currentTarget: snapshot.currentTarget,
         value: snapshot.draftValue,
         currentValue: snapshot.currentValue,
-        calldataHash: snapshot.draftCalldataHash,
+        calldataHash: txDraft.calldataHash || snapshot.draftCalldataHash,
         currentCalldataHash: snapshot.currentCalldataHash,
         targetHash: snapshot.draftTargetHash,
         currentTargetHash: snapshot.currentTargetHash,
@@ -598,6 +920,14 @@
         selectedRequestSnapshot: txDraft.selectedRequestSnapshot || snapshot.sourceRequestSnapshot || {},
         noSend: txDraft.noSend === true,
         runtimeBoundary: txDraft.boundary || "runtime-only-no-send",
+        identityEnvelope: txDraft.identityEnvelope || runtime.txDraftIdentity || null,
+        validityEnvelope: txDraft.validityEnvelope || runtime.txDraftValidity || null,
+        txDraftValidityStatus: txDraft.txDraftValidityStatus || txDraft.validityEnvelope?.status || "not-observed",
+        draftBuiltAt: txDraft.draftBuiltAt || txDraft.identityEnvelope?.draftBuiltAt || "",
+        draftExpiresAt: txDraft.draftExpiresAt || txDraft.identityEnvelope?.draftExpiresAt || "",
+        draftTtlMs: txDraft.draftTtlMs || txDraft.identityEnvelope?.draftTtlMs || 300000,
+        probeEnvelopeIds: Array.isArray(txDraft.probeEnvelopeIds) ? txDraft.probeEnvelopeIds : [],
+        probeEvidenceHash: txDraft.probeEvidenceHash || txDraft.identityEnvelope?.probeEvidenceHash || "",
         provenanceVersion: txDraft.provenanceVersion || "",
         freshnessStatus: txDraft.freshnessStatus || "not-observed",
         invalidatedBy: Array.isArray(txDraft.invalidatedBy) ? txDraft.invalidatedBy : [],
@@ -620,6 +950,8 @@
         provenanceVersion: "18N-MCEL-j",
         txDraftId: walletTxDraft.txDraftId || "",
         txDraftHash: walletTxDraft.txDraftHash || "",
+        selectedReleaseHash: walletTxDraft.selectedReleaseHash || "",
+        currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash || "",
         sourceRequestHash: walletTxDraft.sourceRequestHash || "",
         currentSourceRequestHash: walletTxDraft.currentSourceRequestHash || "",
         walletAccountHash: walletTxDraft.walletAccountHash || "",
@@ -632,6 +964,8 @@
         target: walletTxDraft.target || "",
         value: walletTxDraft.value || "0x0",
         calldataHash: walletTxDraft.calldataHash || "",
+        identityEnvelope: walletTxDraft.identityEnvelope || null,
+        validityEnvelope: walletTxDraft.validityEnvelope || null,
         reviewed: walletTxDraft.reviewed === true,
         simulation: walletTxDraft.simulation || null,
         invariant: [
@@ -654,6 +988,12 @@
       if (!walletTxDraft.txDraftHash) addBlocker("missing-wallet-tx-draft");
       if (!walletTxDraft.requestId || !walletTxDraft.currentSourceRequestHash) addBlocker("missing-source-request");
       if (!walletTxDraft.sourceRequestHash) addBlocker("missing-source-request-provenance");
+      if (walletTxDraft.selectedReleaseHash && walletTxDraft.currentSelectedReleaseHash && walletTxDraft.selectedReleaseHash !== walletTxDraft.currentSelectedReleaseHash) {
+        addBlocker("selected-release-changed-since-draft", {
+          previousSelectedReleaseHash: walletTxDraft.selectedReleaseHash,
+          currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash
+        });
+      }
       if (!walletTxDraft.walletAccountHash) addBlocker("missing-account-provenance");
       if (!walletTxDraft.currentWalletAccountHash) addBlocker("missing-account");
       if (!walletTxDraft.chainId) addBlocker("missing-chain-provenance");
@@ -687,6 +1027,10 @@
           currentTargetHash: walletTxDraft.currentTargetHash
         });
       }
+      (walletTxDraft.validityEnvelope?.invalidatedBy || []).forEach((entry) => {
+        const reason = entry?.reason || entry?.kind || "tx-draft-validity-invalidated";
+        addBlocker(reason, entry);
+      });
       (walletTxDraft.invalidatedBy || []).forEach((entry) => {
         const reason = entry?.reason || entry?.kind || "tx-draft-invalidated";
         addBlocker(reason, entry);
@@ -699,10 +1043,14 @@
         valid,
         blockers,
         invalidatedBy: mcelTinyContractMergeTxDraftInvalidations(invalidatedBy),
+        selectedReleaseHash: walletTxDraft.currentSelectedReleaseHash || "",
         sourceRequestHash: walletTxDraft.currentSourceRequestHash || "",
         walletAccountHash: walletTxDraft.currentWalletAccountHash || "",
         chainId: walletTxDraft.currentChainId || "",
         targetHash: walletTxDraft.currentTargetHash || "",
+        identityEnvelope: walletTxDraft.identityEnvelope || null,
+        validityEnvelope: walletTxDraft.validityEnvelope || null,
+        txDraftValidityStatus: walletTxDraft.txDraftValidityStatus || walletTxDraft.validityEnvelope?.status || "not-observed",
         simulation: walletTxDraft.simulation || null,
         action: valid
           ? "draft is fresh but wallet send/sign/broadcast remains locked"
@@ -748,6 +1096,13 @@
         canBroadcast: false,
         txDraftId: walletTxDraft.txDraftId || "",
         txDraftHash: walletTxDraft.txDraftHash || "",
+        selectedReleaseHash: walletTxDraft.selectedReleaseHash || "",
+        sourceRequestHash: walletTxDraft.sourceRequestHash || "",
+        walletAccountHash: walletTxDraft.walletAccountHash || "",
+        chainId: walletTxDraft.chainId || "",
+        calldataHash: walletTxDraft.calldataHash || "",
+        probeEvidenceHash: walletTxDraft.probeEvidenceHash || "",
+        txDraftValidityStatus: walletTxDraft.txDraftValidityStatus || walletFreshnessSnapshot.txDraftValidityStatus || "not-observed",
         freshnessStatus: walletFreshnessSnapshot.status || "not-observed",
         consumerGateStatus: consumerGate.status || "blocked",
         blockers: [...new Set([...(walletFreshnessSnapshot.blockers || []), ...(preflight.blockers || [])])],
@@ -802,6 +1157,8 @@
           expected: walletTxDraft.expectedChainId || ""
         },
         sourceRequestSnapshot: {
+          selectedReleaseHash: walletTxDraft.selectedReleaseHash || "",
+          currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash || "",
           reviewedHash: walletTxDraft.sourceRequestHash || "",
           currentHash: walletTxDraft.currentSourceRequestHash || "",
           requestId: walletTxDraft.requestId || ""
@@ -810,8 +1167,12 @@
           reviewedHash: walletTxDraft.targetHash || "",
           currentHash: walletTxDraft.currentTargetHash || "",
           target: walletTxDraft.target || "",
-          value: walletTxDraft.value || "0x0"
+          value: walletTxDraft.value || "0x0",
+          calldataHash: walletTxDraft.calldataHash || ""
         },
+        txDraftIdentityEnvelope: walletTxDraft.identityEnvelope || null,
+        txDraftValidityEnvelope: walletTxDraft.validityEnvelope || walletFreshnessSnapshot.validityEnvelope || null,
+        txDraftValidityStatus: walletTxDraft.txDraftValidityStatus || walletFreshnessSnapshot.txDraftValidityStatus || "not-observed",
         freshnessStatus: walletFreshnessSnapshot.status || baseReceipt.freshnessStatus || "not-observed",
         consumerGateStatus: walletPreflightReport.consumerGateStatus || baseReceipt.consumerGateStatus || "blocked",
         preflightStatus: walletPreflightReport.status || baseReceipt.preflightStatus || "locked",
@@ -972,6 +1333,82 @@
           "Proof dock treats wallet and Code Studio commit boundaries as specimens of the same 18N family.",
           "Every serious specimen exposes draft, provenance, freshness, consumer gate, preflight, and receipt.",
           "Wallet send/sign/broadcast remains locked until a future explicit unlock design."
+        ]
+      };
+    }
+
+    function mcelWallet19aSmokeRegressionGuard(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const freshness = boundary.walletFreshnessSnapshot || {};
+      const preflight = boundary.mcelCommitPreflight || boundary.walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const proofDockSpecimens = boundary.mcelProofDockSpecimens || boundary.proofDockSpecimens || {};
+      const walletSpecimens = Array.isArray(proofDockSpecimens.walletSpecimens) ? proofDockSpecimens.walletSpecimens : [];
+      const checks = [
+        {
+          id: "wallet-board-renders",
+          status: boundary.kind === "mcelWalletToolCommitBoundary.v1" ? "pass" : "fail",
+          evidence: boundary.kind || "missing-boundary"
+        },
+        {
+          id: "wallet-lifecycle-receipts-visible",
+          status: receipt.kind && receipt.mutationExecuted !== true ? "pass" : "fail",
+          evidence: receipt.walletReceiptKind || receipt.kind || "missing-receipt"
+        },
+        {
+          id: "proof-dock-wallet-specimens-present",
+          status: walletSpecimens.includes("wallet.txDraft") && walletSpecimens.includes("wallet.blockedSend") && walletSpecimens.includes("wallet.blockedSign") && walletSpecimens.includes("wallet.blockedBroadcast") ? "pass" : "fail",
+          evidence: walletSpecimens
+        },
+        {
+          id: "tx-draft-identity-envelope-present",
+          status: walletTxDraft.identityEnvelope?.kind === "mcelWalletTxDraftIdentityEnvelope.v1" || walletTxDraft.txDraftHash ? "pass" : "fail",
+          evidence: walletTxDraft.identityEnvelope?.kind || walletTxDraft.txDraftHash || "missing-identity"
+        },
+        {
+          id: "tx-draft-validity-envelope-present",
+          status: walletTxDraft.validityEnvelope?.kind === "mcelWalletTxDraftValidityEnvelope.v1" || freshness.validityEnvelope?.kind === "mcelWalletTxDraftValidityEnvelope.v1" ? "pass" : "fail",
+          evidence: walletTxDraft.validityEnvelope?.status || freshness.validityEnvelope?.status || "missing-validity"
+        },
+        {
+          id: "provider-mutation-flags-false",
+          status: boundary.canSend !== true && boundary.canSign !== true && boundary.canBroadcast !== true && receipt.mutationExecuted !== true ? "pass" : "fail",
+          evidence: {
+            canSend: boundary.canSend === true,
+            canSign: boundary.canSign === true,
+            canBroadcast: boundary.canBroadcast === true,
+            mutationExecuted: receipt.mutationExecuted === true
+          }
+        },
+        {
+          id: "preflight-stays-no-mutation",
+          status: preflight.canSend !== true && preflight.canSign !== true && preflight.canBroadcast !== true ? "pass" : "fail",
+          evidence: {
+            status: preflight.status || "locked",
+            canSend: preflight.canSend === true,
+            canSign: preflight.canSign === true,
+            canBroadcast: preflight.canBroadcast === true
+          }
+        }
+      ];
+      return {
+        kind: "mcelWallet19aSmokeRegressionGuard.v1",
+        smokeVersion: "19A-MCEL",
+        status: checks.some((entry) => entry.status === "fail") ? "failed" : "passed-no-mutation",
+        checks,
+        walletLifecycleObserved: Boolean(boundary.kind && receipt.kind),
+        proofSurfacesObserved: Boolean(proofDockSpecimens.kind && walletSpecimens.length),
+        txDraftIdentityObserved: Boolean(walletTxDraft.identityEnvelope?.kind || walletTxDraft.txDraftHash),
+        txDraftValidityObserved: Boolean(walletTxDraft.validityEnvelope?.kind || freshness.validityEnvelope?.kind),
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        invariant: [
+          "19A smoke guard protects the frozen 18N locked wallet baseline",
+          "connect/disconnect/revoke receipts remain observation surfaces only",
+          "proof dock and copied receipt must keep locked wallet proof visible",
+          "provider send/sign/broadcast methods remain absent"
         ]
       };
     }
@@ -1294,6 +1731,8 @@
         source: {
           walletTxDraftId: walletTxDraft.txDraftId,
           walletTxDraftHash: walletTxDraft.txDraftHash,
+          selectedReleaseHash: walletTxDraft.selectedReleaseHash,
+          currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash,
           selectedRequestHash: walletTxDraft.sourceRequestHash,
           currentSelectedRequestHash: walletTxDraft.currentSourceRequestHash,
           selectedRequestSnapshot: walletTxDraft.sourceRequestSnapshot || {},
@@ -1315,6 +1754,8 @@
         proposedChanges: {
           requestId: walletTxDraft.requestId || state.selectedRequestId || "",
           calldataHash: walletTxDraft.calldataHash || "",
+          probeEvidenceHash: walletTxDraft.probeEvidenceHash || "",
+          txDraftValidityStatus: walletTxDraft.txDraftValidityStatus || walletTxDraft.validityEnvelope?.status || "not-observed",
           value: walletTxDraft.value || "0x0",
           draftStatus: walletTxDraft.status || "empty",
           reviewed: walletTxDraft.reviewed === true,
@@ -1325,6 +1766,8 @@
           walletTxDraft.kind,
           walletTxProvenance.kind,
           walletFreshnessSnapshot.kind,
+          walletTxDraft.identityEnvelope?.kind || "mcelWalletTxDraftIdentityEnvelope.missing",
+          walletTxDraft.validityEnvelope?.kind || walletFreshnessSnapshot.validityEnvelope?.kind || "mcelWalletTxDraftValidityEnvelope.missing",
           txDraft.provenanceVersion || "txDraft.provenance.missing",
           txDraft.freshnessStatus || "freshness.not-observed",
           runtime.txDraftConsumerGate?.kind || "consumer-gate.not-observed",
@@ -1385,6 +1828,8 @@
         walletTxDraft,
         walletTxProvenance,
         walletFreshnessSnapshot,
+        txDraftIdentityEnvelope: walletTxDraft.identityEnvelope || runtime.txDraftIdentity || null,
+        txDraftValidityEnvelope: walletTxDraft.validityEnvelope || runtime.txDraftValidity || walletFreshnessSnapshot.validityEnvelope || null,
         preflight,
         consumerGate
       });
@@ -1442,6 +1887,8 @@
       boundary.walletFinalLockedSpecimen = mcelWalletFinalLockedSpecimen(boundary);
       boundary.mcelProofDockSpecimens = mcelWalletProofDockSpecimens(boundary);
       boundary.proofDockSpecimens = boundary.mcelProofDockSpecimens;
+      boundary.wallet19aSmokeRegressionGuard = mcelWallet19aSmokeRegressionGuard(boundary);
+      boundary.walletSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard;
       boundary.wallet18nCompletionReport = mcelWallet18nCompletionReport(boundary);
       return boundary;
     }
@@ -1483,6 +1930,17 @@
       );
       const noSendBoundaryPreserved = draft.noSend === true || draft.boundary === "runtime-only-no-send";
       const invalidations = [];
+      const validityEnvelope = mcelTinyContractTxDraftValidityEnvelope({
+        source,
+        state,
+        runtime,
+        request,
+        txDraft: draft,
+        reason
+      });
+      if (Array.isArray(validityEnvelope.invalidatedBy) && validityEnvelope.invalidatedBy.length) {
+        invalidations.push(...validityEnvelope.invalidatedBy);
+      }
 
       if (hasDraft && !noSendBoundaryPreserved) {
         invalidations.push(mcelTinyContractTxDraftInvalidation("no-send-boundary-missing", {
@@ -1600,7 +2058,9 @@
         action,
         reason,
         noSendBoundaryPreserved,
+        validityEnvelope,
         currentContext: {
+          selectedReleaseHash: mcelTinyContractSelectedReleaseHash(source),
           sourceRequestHash: currentSourceRequestHash,
           selectedRequestSnapshot,
           walletAccountHash: currentWalletAccountHash,
@@ -1634,6 +2094,8 @@
         status: nextStatus,
         invalidatedBy,
         valid: freshness.valid === true,
+        validityEnvelope: freshness.validityEnvelope || txDraft.validityEnvelope || null,
+        txDraftValidityStatus: freshness.validityEnvelope?.status || freshness.status || "not-observed",
         freshnessStatus: freshness.status || "not-observed",
         freshnessReason: invalidatedBy[0]?.reason || "",
         freshnessAction: freshness.action || "",
@@ -1659,6 +2121,8 @@
       });
       const nextTxDraft = mcelTinyContractApplyTxDraftFreshness(instance.runtime.txDraft, freshness);
       instance.runtime.txDraft = nextTxDraft;
+      instance.runtime.txDraftIdentity = nextTxDraft.identityEnvelope || nextTxDraft.txDraftIdentity || instance.runtime.txDraftIdentity || null;
+      instance.runtime.txDraftValidity = freshness.validityEnvelope || nextTxDraft.validityEnvelope || null;
       return {freshness, txDraft: nextTxDraft};
     }
 
@@ -2100,9 +2564,19 @@
           },
           noSend: true,
           boundary: "runtime-only-no-send",
+          txDraftId: "",
+          txDraftHash: "",
+          identityEnvelope: null,
+          validityEnvelope: null,
+          selectedReleaseHash: "",
           sourceRequestHash: "",
           selectedRequestSnapshot: null,
           walletAccountHash: "",
+          calldataHash: "",
+          draftBuiltAt: "",
+          draftExpiresAt: "",
+          draftTtlMs: 300000,
+          probeEvidenceHash: "",
           chainProof: {
             expectedChainId: "0x28757b2",
             chainId: "",
@@ -2126,6 +2600,16 @@
           ],
           valid: false,
           summary: "No transaction draft has been built."
+        },
+        txDraftIdentity: null,
+        txDraftValidity: null,
+        walletSmokeRegressionGuard: {
+          kind: "mcelWallet19aSmokeRegressionGuard.v1",
+          status: "not-observed",
+          canSend: false,
+          canSign: false,
+          canBroadcast: false,
+          mutationExecuted: false
         },
         txDraftConsumerGate: {
           kind: "mcel-tx-draft-consumer-gate.v1",
@@ -2393,7 +2877,11 @@
             "wallet",
             "network",
             "txDraft",
+            "txDraftIdentity",
+            "txDraftValidity",
             "txDraftConsumerGate",
+            "walletCommitBoundary",
+            "walletSmokeRegressionGuard",
             "walletAdapter",
             "walletEvents",
             "externalOutcome",
@@ -3231,13 +3719,14 @@
             triggers: ["runtime.network", "state.selectedRequestId"],
             reads: [
               "source.devRelease.contractAddress",
+              "source.devRelease.devNetwork",
               "source.devRelease.requests",
               "state.selectedRequestId",
               "runtime.wallet",
               "runtime.network",
               "runtime.externalOutcome"
             ],
-            writes: ["runtime.txDraft", "runtime.evidenceStrip"],
+            writes: ["runtime.txDraft", "runtime.txDraftIdentity", "runtime.txDraftValidity", "runtime.evidenceStrip"],
             external: {
               resource: "ethereum-transaction",
               operation: "draft-only-no-send"
@@ -3247,6 +3736,7 @@
             },
             run(ctx, payload = {}) {
               const contractAddress = ctx.get("source.devRelease.contractAddress");
+              const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
               const requests = ctx.get("source.devRelease.requests") || [];
               const selectedId = ctx.get("state.selectedRequestId") || requests[0]?.id || "";
               const request = requests.find((entry) => entry.id === selectedId) || requests[0] || null;
@@ -3308,8 +3798,15 @@
                     chainId: network.chainId || "",
                     noSend: true
                   };
+              const releaseSource = {
+                devRelease: {
+                  contractAddress,
+                  devNetwork,
+                  requests
+                }
+              };
               const txDraftProvenance = mcelTinyContractTxDraftProvenance({
-                source: {devRelease: {devNetwork: ctx.get("source.devRelease.devNetwork") || {}}},
+                source: releaseSource,
                 state: {selectedRequestId: selectedId},
                 runtime: {wallet, network, externalOutcome},
                 request,
@@ -3321,9 +3818,68 @@
                 ready,
                 invalidatedBy
               });
+              const draftBuiltAt = draftProbe?.createdAt || new Date().toISOString();
+              const txDraftIdentity = mcelTinyContractTxDraftIdentityEnvelope({
+                source: releaseSource,
+                state: {selectedRequestId: selectedId},
+                runtime: {wallet, network, externalOutcome},
+                request,
+                wallet,
+                network,
+                externalOutcome,
+                tx,
+                encoding,
+                draftProbe,
+                txDraft: {
+                  status: ready ? "ready" : "blocked",
+                  requestId: request?.id || "",
+                  boundary: "runtime-only-no-send",
+                  noSend: true
+                },
+                createdAt: draftBuiltAt
+              });
+              const txDraftValidity = mcelTinyContractTxDraftValidityEnvelope({
+                source: releaseSource,
+                state: {selectedRequestId: selectedId},
+                runtime: {wallet, network, externalOutcome},
+                request,
+                txDraft: {
+                  status: ready ? "ready" : "blocked",
+                  requestId: request?.id || "",
+                  txDraftId: txDraftIdentity.txDraftId,
+                  txDraftHash: txDraftIdentity.txDraftHash,
+                  identityEnvelope: txDraftIdentity,
+                  selectedReleaseHash: txDraftIdentity.selectedReleaseHash,
+                  sourceRequestHash: txDraftIdentity.sourceRequestHash,
+                  walletAccountHash: txDraftIdentity.walletAccountHash,
+                  chainProof: txDraftIdentity.chainProof,
+                  calldataHash: txDraftIdentity.calldataHash,
+                  probeEnvelopeIds: txDraftIdentity.probeEnvelopeIds,
+                  probeEvidenceHash: txDraftIdentity.probeEvidenceHash,
+                  draftBuiltAt: txDraftIdentity.draftBuiltAt,
+                  draftExpiresAt: txDraftIdentity.draftExpiresAt,
+                  draftTtlMs: txDraftIdentity.draftTtlMs,
+                  noSend: true,
+                  boundary: "runtime-only-no-send",
+                  from: tx.from || "",
+                  to: tx.to || "",
+                  value: tx.value || "0x0",
+                  data: tx.data || "",
+                  calldata: tx.data || encoding.calldata || "",
+                  nonce: draftProbe?.nonce || {},
+                  gasEstimate: draftProbe?.gasEstimate || {},
+                  ethCall: draftProbe?.ethCall || {}
+                },
+                reason: "release.draftTx-runtime-build"
+              });
               const txDraft = {
                 status: ready ? "ready" : "blocked",
                 requestId: request?.id || "",
+                txDraftId: txDraftIdentity.txDraftId,
+                txDraftHash: txDraftIdentity.txDraftHash,
+                identityEnvelope: txDraftIdentity,
+                validityEnvelope: txDraftValidity,
+                selectedReleaseHash: txDraftIdentity.selectedReleaseHash,
                 createdFrom: {
                   requestId: request?.id || "",
                   sourcePath: "source.devRelease.requests",
@@ -3334,16 +3890,22 @@
                 sourceRequestHash: txDraftProvenance.sourceRequestHash,
                 selectedRequestSnapshot: txDraftProvenance.selectedRequestSnapshot,
                 walletAccountHash: txDraftProvenance.walletAccountHash,
+                calldataHash: txDraftIdentity.calldataHash,
+                draftBuiltAt: txDraftIdentity.draftBuiltAt,
+                draftExpiresAt: txDraftIdentity.draftExpiresAt,
+                draftTtlMs: txDraftIdentity.draftTtlMs,
+                probeEvidenceHash: txDraftIdentity.probeEvidenceHash,
                 chainProof: txDraftProvenance.chainProof,
                 externalOutcomeSequence: txDraftProvenance.externalOutcomeSequence,
                 networkGateSequence: txDraftProvenance.networkGateSequence,
                 calldataSource: txDraftProvenance.calldataSource,
                 abiEncodingStatus: txDraftProvenance.abiEncodingStatus,
-                probeEnvelopeIds: txDraftProvenance.probeEnvelopeIds,
-                invalidatedBy: txDraftProvenance.invalidatedBy,
+                probeEnvelopeIds: txDraftIdentity.probeEnvelopeIds,
+                invalidatedBy: mcelTinyContractMergeTxDraftInvalidations(txDraftProvenance.invalidatedBy, txDraftValidity.invalidatedBy),
                 validityInvariant: txDraftProvenance.validityInvariant,
-                valid: txDraftProvenance.valid,
-                freshnessStatus: txDraftProvenance.freshnessStatus,
+                txDraftValidityStatus: txDraftValidity.status,
+                valid: txDraftValidity.valid === true && txDraftProvenance.valid === true,
+                freshnessStatus: txDraftValidity.status === "valid" ? txDraftProvenance.freshnessStatus : txDraftValidity.status,
                 freshnessAction: txDraftProvenance.freshnessAction,
                 noSendBoundaryPreserved: txDraftProvenance.noSendBoundaryPreserved,
                 provenanceEnforced: txDraftProvenance.provenanceEnforced,
@@ -3385,6 +3947,8 @@
                     : "Transaction draft blocked until wallet and dev-network gate are ready.")
               };
               ctx.set("runtime.txDraft", txDraft);
+              ctx.set("runtime.txDraftIdentity", txDraftIdentity);
+              ctx.set("runtime.txDraftValidity", txDraftValidity);
               ctx.set("runtime.evidenceStrip", [
                 `release.draftTx status=${txDraft.status}`,
                 `noSend=${txDraft.noSend}`,
@@ -3394,6 +3958,8 @@
                 `nonce=${txDraft.nonce?.status || "unknown"}`,
                 `gas=${txDraft.gasEstimate?.status || "unknown"}`,
                 `sourceRequestHash=${txDraft.sourceRequestHash || "missing"}`,
+                `txDraftId=${txDraft.txDraftId || "missing"}`,
+                `validity=${txDraft.txDraftValidityStatus || "not-observed"}`,
                 `invalidatedBy=${(txDraft.invalidatedBy || []).map((item) => item.reason).join("|") || "none"}`
               ]);
               ctx.evidence({
@@ -3412,9 +3978,14 @@
                 calldataEncoding: result?.calldataEncoding || "",
                 gasStatus: result?.gasEstimate?.status || "",
                 nonceStatus: result?.nonce?.status || "",
+                txDraftId: result?.txDraftId || "",
+                txDraftHash: result?.txDraftHash || "",
+                selectedReleaseHash: result?.selectedReleaseHash || "",
                 sourceRequestHash: result?.sourceRequestHash || "",
                 walletAccountHash: result?.walletAccountHash || "",
+                calldataHash: result?.calldataHash || "",
                 chainProofStatus: result?.chainProof?.status || "",
+                validityStatus: result?.validityEnvelope?.status || result?.txDraftValidityStatus || "",
                 invalidatedBy: (result?.invalidatedBy || []).map((entry) => entry.reason || "").filter(Boolean)
               };
             }
@@ -3993,6 +4564,7 @@
       const walletFreshnessSnapshot = boundary.walletFreshnessSnapshot || {};
       const walletPreflightReport = boundary.walletPreflightReport || {};
       const walletNegativePathTestWall = boundary.walletNegativePathTestWall || {};
+      const wallet19aSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || {};
       const walletUnlockRequirements = boundary.walletUnlockRequirements || {};
       const walletFinalLockedSpecimen = boundary.walletFinalLockedSpecimen || {};
       const wallet18nCompletionReport = boundary.wallet18nCompletionReport || {};
@@ -4046,6 +4618,7 @@
           walletFreshnessSnapshot,
           walletPreflightReport,
           walletNegativePathTestWall,
+          wallet19aSmokeRegressionGuard,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
           wallet18nCompletionReport,
@@ -4060,6 +4633,7 @@
           walletBlockedAttemptReceipt: boundary.walletBlockedAttemptReceipt || receipt,
           walletRebuildDraftAction: boundary.walletRebuildDraftAction || {},
           walletNegativePathTestWall,
+          wallet19aSmokeRegressionGuard,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
           wallet18nCompletionReport,
@@ -4221,6 +4795,7 @@
       });
       if (instance?.runtime) {
         instance.runtime.walletCommitBoundary = boundary;
+        instance.runtime.walletSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || null;
       }
       tinyState.lastWalletCommitBoundary = boundary;
       if (boundary.mcelCommitReceipt) {
@@ -4287,6 +4862,8 @@
         walletFreshnessSnapshot: boundary.walletFreshnessSnapshot || {},
         walletPreflightReport: boundary.walletPreflightReport || {},
         walletNegativePathTestWall: boundary.walletNegativePathTestWall || {},
+        wallet19aSmokeRegressionGuard: boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || {},
+        walletSmokeRegressionGuard: boundary.walletSmokeRegressionGuard || boundary.wallet19aSmokeRegressionGuard || {},
         walletUnlockRequirements: boundary.walletUnlockRequirements || {},
         walletFinalLockedSpecimen: boundary.walletFinalLockedSpecimen || {},
         wallet18nCompletionReport: boundary.wallet18nCompletionReport || {},
@@ -4330,6 +4907,7 @@
       });
       if (instance?.runtime) {
         instance.runtime.walletCommitBoundary = commitBoundary;
+        instance.runtime.walletSmokeRegressionGuard = commitBoundary.wallet19aSmokeRegressionGuard || commitBoundary.walletSmokeRegressionGuard || null;
       }
       tinyState.lastWalletCommitBoundary = commitBoundary;
       if (commitBoundary.mcelCommitReceipt) {
@@ -5172,6 +5750,7 @@
         kind: "mcel-runtime-tx-draft-probe",
         noSend: true,
         ready,
+        createdAt: new Date().toISOString(),
         createdFrom: {
           requestId: request?.id || "",
           sourcePath: "source.devRelease.requests",
@@ -6850,7 +7429,10 @@
         request: selectedMcelTinyContractItem(instance),
         reason: `render-proof:${reason}`
       });
-      if (instance?.runtime) instance.runtime.walletCommitBoundary = walletCommitBoundary;
+      if (instance?.runtime) {
+        instance.runtime.walletCommitBoundary = walletCommitBoundary;
+        instance.runtime.walletSmokeRegressionGuard = walletCommitBoundary.wallet19aSmokeRegressionGuard || walletCommitBoundary.walletSmokeRegressionGuard || null;
+      }
       tinyState.lastWalletCommitBoundary = walletCommitBoundary;
       if (walletCommitBoundary.mcelCommitReceipt) {
         tinyState.commitBoundaryReceipts = [
