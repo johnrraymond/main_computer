@@ -112,6 +112,7 @@ RESTARTABLE_STAGES = (
 )
 STOP_AFTER_STAGES = ("bootstrap", "guidance_compaction", "edit_plan")
 DEFAULT_TASK = "Make greet(name) trim surrounding whitespace before greeting."
+DEFAULT_AI_RESTART_DIRECTIVE = "Make greet(name) trim surrounding whitespace before greeting while preserving punctuation and the __main__ entrypoint."
 DEFAULT_GUIDANCE_WINDOW_SECONDS = 3.0
 DEFAULT_POLL_SECONDS = 0.05
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -318,6 +319,10 @@ def scenario_from_args(args: argparse.Namespace) -> ScenarioSpec:
 
 
 def task_for_scenario(args: argparse.Namespace, scenario: ScenarioSpec) -> str:
+    if scenario.name == AI_RESTART_RECOVERY_SCENARIO:
+        explicit_directive = str(getattr(args, "ai_restart_directive", "") or "").strip()
+        if explicit_directive:
+            return normalize_ai_restart_directive(explicit_directive, scenario)
     explicit_task = str(getattr(args, "task", DEFAULT_TASK) or DEFAULT_TASK)
     return scenario.task if explicit_task == DEFAULT_TASK else explicit_task
 
@@ -692,6 +697,63 @@ def text_sha256(text: str) -> str:
     import hashlib
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def normalize_ai_restart_directive(value: str, scenario: ScenarioSpec | None = None) -> str:
+    directive = str(value or "").strip()
+    if directive:
+        return directive
+    if scenario is not None and scenario.name == AI_RESTART_RECOVERY_SCENARIO:
+        return scenario.task
+    return DEFAULT_AI_RESTART_DIRECTIVE
+
+
+def ai_restart_directive_from_args(args: argparse.Namespace, scenario: ScenarioSpec) -> str:
+    explicit_directive = str(getattr(args, "ai_restart_directive", "") or "").strip()
+    if explicit_directive:
+        return normalize_ai_restart_directive(explicit_directive, scenario)
+    explicit_task = str(getattr(args, "task", DEFAULT_TASK) or DEFAULT_TASK).strip()
+    if explicit_task and explicit_task != DEFAULT_TASK:
+        return normalize_ai_restart_directive(explicit_task, scenario)
+    return normalize_ai_restart_directive("", scenario)
+
+
+def ai_restart_directive_contract(directive: str) -> dict[str, Any]:
+    normalized = normalize_ai_restart_directive(directive)
+    return {
+        "directive": normalized,
+        "directive_sha256": text_sha256(normalized),
+        "directive_length": len(normalized),
+    }
+
+
+def ai_restart_directive_guidance_command(directive: str) -> dict[str, Any]:
+    contract = ai_restart_directive_contract(directive)
+    return {
+        "type": "add_instruction",
+        "text": f"AI restart goal directive: {contract['directive']}",
+        "source": "cli_ai_restart_directive",
+        "id": "ai-restart-goal-directive",
+        "directive_sha256": contract["directive_sha256"],
+    }
+
+
+def validate_ai_goal_directive_ack(payload: dict[str, Any], *, task: str, stage: str) -> dict[str, Any]:
+    directive = normalize_ai_restart_directive(task)
+    expected_sha = text_sha256(directive)
+    observed_sha = str(payload.get("goal_directive_sha256", "")).strip()
+    acknowledged = observed_sha == expected_sha
+    if not acknowledged:
+        raise SmokeFailure(
+            f"live AI {stage} response did not acknowledge the runtime goal directive: "
+            f"expected goal_directive_sha256={expected_sha!r}, observed={observed_sha!r}"
+        )
+    return {
+        "directive": directive,
+        "directive_sha256": expected_sha,
+        "acknowledged": True,
+        "stage": stage,
+    }
 
 
 def file_sha256(path: Path) -> str:
@@ -1132,9 +1194,17 @@ def validate_plan_active_constraints(plan: dict[str, Any], active_constraints: d
     return contracts
 
 
-def guidance_commands_for_scenario(scenario: ScenarioSpec, guidance_text: str) -> list[dict[str, Any]]:
+def guidance_commands_for_scenario(
+    scenario: ScenarioSpec,
+    guidance_text: str,
+    *,
+    ai_restart_directive: str = "",
+) -> list[dict[str, Any]]:
     if scenario.name in {"structured_steering_constraints", AI_RESTART_RECOVERY_SCENARIO, RING3_POISONING_CONSENSUS_SCENARIO}:
-        return [dict(command) for command in STRUCTURED_STEERING_GUIDANCE_COMMANDS]
+        commands = [dict(command) for command in STRUCTURED_STEERING_GUIDANCE_COMMANDS]
+        if scenario.name == AI_RESTART_RECOVERY_SCENARIO:
+            commands.append(ai_restart_directive_guidance_command(normalize_ai_restart_directive(ai_restart_directive, scenario)))
+        return commands
     return [
         {
             "type": "add_instruction",
@@ -1741,6 +1811,251 @@ def call_live_ai_json(
     return payload, metadata
 
 
+
+def ai_restart_live_ring3_probe_system_prompt() -> str:
+    return (
+        "You are one isolated Ring 3 diagnostic worker inside a safety-harnessed "
+        "code-editing agent smoke. Return only one JSON object. Do not use markdown. "
+        "The host, not you, applies edits. Acknowledge the runtime goal directive by "
+        "copying the required goal_directive_sha256 exactly."
+    )
+
+
+def ai_restart_live_ring3_probe_user_prompt(
+    *,
+    goal_directive: str,
+    round_type: str,
+    sample_index: int,
+    sample_count: int,
+    prior_result_ids: Sequence[str],
+) -> str:
+    goal_contract = ai_restart_directive_contract(goal_directive)
+    result_prefixes = {
+        "request_inquiry": "ri",
+        "request_check": "ch",
+        "request_verify": "rv",
+        "request_merge": "rm",
+    }
+    result_prefix = result_prefixes.get(round_type, "rx")
+    result_id = f"live-{result_prefix}-{sample_index:03d}"
+    return json.dumps(
+        {
+            "stage": f"ring3_live_{round_type}",
+            "round_type": round_type,
+            "sample_index": sample_index,
+            "sample_count": sample_count,
+            "result_id": result_id,
+            "task": goal_contract["directive"],
+            "goal_directive": goal_contract,
+            "prior_result_ids": list(prior_result_ids),
+            "fixture_files": {
+                "app.py": APP_PY_INITIAL,
+                "tests/test_app.py": TEST_APP_PY,
+                "README.md": README_MD,
+            },
+            "contracts": {
+                "allowed_write_paths": ["app.py"],
+                "forbidden_files": ["README.md"],
+                "host_applies_edits": True,
+                "direct_worktree_mutation_allowed": False,
+            },
+            "required_response": {
+                "result_id": result_id,
+                "round_type": round_type,
+                "goal_directive_sha256": goal_contract["directive_sha256"],
+                "hub_reliability_score": "number from 0.0 to 1.0",
+                "summary": "brief string explaining this worker result",
+                "selected_files": ["app.py"],
+                "risks": ["brief strings"],
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def ai_restart_live_ring3_probe_counts(args: argparse.Namespace) -> dict[str, int]:
+    return {
+        "request_inquiry": normalize_ring3_parallel_count(getattr(args, "ring3_inquiry_count", DEFAULT_RING3_PARALLEL_COUNT), "inquiry"),
+        "request_check": normalize_ring3_parallel_count(getattr(args, "ring3_check_count", DEFAULT_RING3_PARALLEL_COUNT), "check"),
+        "request_verify": normalize_ring3_parallel_count(getattr(args, "ring3_verify_count", DEFAULT_RING3_PARALLEL_COUNT), "verify"),
+        "request_merge": normalize_ring3_parallel_count(getattr(args, "ring3_merge_count", DEFAULT_RING3_PARALLEL_COUNT), "merge"),
+    }
+
+
+def run_ai_restart_live_ring3_probe(
+    *,
+    args: argparse.Namespace,
+    run_id: str,
+    run_dir: Path,
+    goal_directive: str,
+) -> dict[str, Any]:
+    """Run an opt-in live-AI Ring 3 fanout probe for the restart smoke.
+
+    The deterministic Ring 3 evidence smoke reports modeled call units.  This probe
+    makes the corresponding live provider calls for inquiry/check/verify/merge so a
+    local model can fail in realistic ways without pretending modeled units were live
+    calls.  It records every attempted call and continues after per-call failures so
+    one malformed local-model response does not hide the rest of the surface.
+    """
+
+    if not bool(getattr(args, "ai_restart_live_ring3_probe", False)):
+        return {"enabled": False}
+
+    if bool(getattr(args, "scripted_ai_smoke", False)):
+        return {
+            "enabled": True,
+            "ok": False,
+            "skipped": True,
+            "reason": "--ai-restart-live-ring3-probe requires a live provider, not --scripted-ai-smoke",
+            "expected_live_ai_calls": 0,
+            "attempted_live_ai_calls": 0,
+            "finished_live_ai_calls": 0,
+            "failed_live_ai_calls": 0,
+            "contract_failure_count": 1,
+            "contracts": {
+                "ai_restart_live_ring3_probe_not_scripted": False,
+            },
+        }
+
+    goal_contract = ai_restart_directive_contract(goal_directive)
+    counts = ai_restart_live_ring3_probe_counts(args)
+    stage_order = ["request_inquiry", "request_check", "request_verify", "request_merge"]
+    expected_calls = sum(counts[stage] for stage in stage_order)
+    records: list[dict[str, Any]] = []
+    prior_result_ids: list[str] = []
+    stage_counts: dict[str, dict[str, int]] = {
+        stage: {"expected": counts[stage], "attempted": 0, "finished": 0, "failed": 0, "acknowledged_goal": 0}
+        for stage in stage_order
+    }
+
+    emit_event(
+        "ai_restart_live_ring3_probe_started",
+        run_id=run_id,
+        expected_live_ai_calls=expected_calls,
+        stage_counts={stage: counts[stage] for stage in stage_order},
+        goal_directive_sha256=goal_contract["directive_sha256"],
+    )
+
+    for round_type in stage_order:
+        sample_count = counts[round_type]
+        for sample_index in range(1, sample_count + 1):
+            call_stage = f"ring3_live_{round_type}_{sample_index:03d}"
+            stage_counts[round_type]["attempted"] += 1
+            try:
+                payload, metadata = call_live_ai_json(
+                    stage=call_stage,
+                    system_prompt=ai_restart_live_ring3_probe_system_prompt(),
+                    user_prompt=ai_restart_live_ring3_probe_user_prompt(
+                        goal_directive=goal_contract["directive"],
+                        round_type=round_type,
+                        sample_index=sample_index,
+                        sample_count=sample_count,
+                        prior_result_ids=prior_result_ids,
+                    ),
+                    requested_provider=str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
+                    requested_model=str(getattr(args, "ai_model", "") or ""),
+                    ai_command=str(getattr(args, "ai_command", "") or ""),
+                    timeout_seconds=float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS) or DEFAULT_AI_TIMEOUT_SECONDS),
+                    scripted_ai_smoke=False,
+                    run_id=run_id,
+                    trace_path=run_dir / "ai_calls.jsonl",
+                )
+            except Exception as exc:
+                stage_counts[round_type]["failed"] += 1
+                records.append(
+                    {
+                        "stage": call_stage,
+                        "round_type": round_type,
+                        "sample_index": sample_index,
+                        "ok": False,
+                        "transport_finished": False,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "goal_directive_acknowledged": False,
+                    }
+                )
+                continue
+
+            stage_counts[round_type]["finished"] += 1
+            observed_sha = str(payload.get("goal_directive_sha256", "")).strip()
+            acknowledged_goal = observed_sha == goal_contract["directive_sha256"]
+            if acknowledged_goal:
+                stage_counts[round_type]["acknowledged_goal"] += 1
+            result_id = str(payload.get("result_id", "")).strip()
+            expected_prefix = f"live-{ {'request_inquiry': 'ri', 'request_check': 'ch', 'request_verify': 'rv', 'request_merge': 'rm'}[round_type] }-"
+            contract_failures = []
+            if not acknowledged_goal:
+                contract_failures.append("missing_or_wrong_goal_directive_sha256")
+            if not result_id:
+                contract_failures.append("missing_result_id")
+            elif not result_id.startswith(expected_prefix):
+                contract_failures.append("unexpected_result_id_prefix")
+            if str(payload.get("round_type", round_type)).strip() not in {"", round_type}:
+                contract_failures.append("wrong_round_type")
+            if result_id:
+                prior_result_ids.append(result_id)
+
+            records.append(
+                {
+                    "stage": call_stage,
+                    "round_type": round_type,
+                    "sample_index": sample_index,
+                    "ok": not contract_failures,
+                    "transport_finished": True,
+                    "result_id": result_id,
+                    "goal_directive_acknowledged": acknowledged_goal,
+                    "observed_goal_directive_sha256": observed_sha,
+                    "contract_failures": contract_failures,
+                    "metadata": metadata,
+                    "payload_keys": sorted(str(key) for key in payload.keys()),
+                }
+            )
+
+    finished_calls = sum(1 for record in records if record.get("transport_finished"))
+    failed_calls = sum(1 for record in records if not record.get("transport_finished"))
+    contract_failure_count = sum(len(record.get("contract_failures", [])) for record in records)
+    acknowledged_count = sum(1 for record in records if record.get("goal_directive_acknowledged"))
+    summary = {
+        "enabled": True,
+        "ok": finished_calls == expected_calls and failed_calls == 0 and contract_failure_count == 0,
+        "goal_directive": goal_contract,
+        "expected_live_ai_calls": expected_calls,
+        "attempted_live_ai_calls": len(records),
+        "finished_live_ai_calls": finished_calls,
+        "failed_live_ai_calls": failed_calls,
+        "goal_acknowledged_live_ai_calls": acknowledged_count,
+        "contract_failure_count": contract_failure_count,
+        "stage_counts": stage_counts,
+        "result_ids": [record["result_id"] for record in records if record.get("result_id")],
+        "records": records,
+        "contracts": {
+            "ai_restart_live_ring3_probe_expected_call_count_attempted": len(records) == expected_calls,
+            "ai_restart_live_ring3_probe_all_calls_finished": finished_calls == expected_calls and failed_calls == 0,
+            "ai_restart_live_ring3_probe_all_calls_acknowledged_goal": acknowledged_count == expected_calls,
+            "ai_restart_live_ring3_probe_all_result_ids_present": all(bool(record.get("result_id")) for record in records),
+        },
+    }
+    summary["failed_contracts"] = [
+        name
+        for name, ok in summary["contracts"].items()
+        if not ok
+    ]
+    atomic_write_json(run_dir / "ai_restart_live_ring3_probe.json", summary)
+    emit_event(
+        "ai_restart_live_ring3_probe_finished",
+        run_id=run_id,
+        ok=summary["ok"],
+        expected_live_ai_calls=expected_calls,
+        finished_live_ai_calls=finished_calls,
+        failed_live_ai_calls=failed_calls,
+        contract_failure_count=contract_failure_count,
+        failed_contracts=summary["failed_contracts"],
+    )
+    return summary
+
+
 def ai_plan_system_prompt() -> str:
     return (
         "You are the planning stage of a safety-harnessed code editing agent. "
@@ -1750,10 +2065,12 @@ def ai_plan_system_prompt() -> str:
 
 
 def ai_plan_user_prompt(*, task: str, scenario: ScenarioSpec, active_constraints: dict[str, Any]) -> str:
+    goal_directive = ai_restart_directive_contract(task)
     return json.dumps(
         {
             "stage": "planning",
             "task": task,
+            "goal_directive": goal_directive,
             "fixture_files": {
                 "app.py": APP_PY_INITIAL,
                 "tests/test_app.py": TEST_APP_PY,
@@ -1770,6 +2087,7 @@ def ai_plan_user_prompt(*, task: str, scenario: ScenarioSpec, active_constraints
                 "allowed_write_paths": ["app.py"],
                 "active_constraints_ack": active_constraints,
                 "required_tests": active_constraints.get("required_tests", []),
+                "goal_directive_sha256": goal_directive["directive_sha256"],
                 "rationale": "brief string",
             },
         },
@@ -1789,10 +2107,12 @@ def ai_editor_system_prompt() -> str:
 
 
 def ai_editor_user_prompt(*, plan: dict[str, Any], rejection_feedback: dict[str, Any] | None = None) -> str:
+    goal_directive = ai_restart_directive_contract(str(plan.get("task", "")))
     return json.dumps(
         {
             "stage": "editor_generation",
             "task": plan.get("task"),
+            "goal_directive": goal_directive,
             "selected_files": plan.get("selected_files"),
             "allowed_write_paths": plan.get("allowed_write_paths"),
             "active_constraints": normalized_active_constraints(plan.get("active_constraints")),
@@ -1811,6 +2131,7 @@ def ai_editor_user_prompt(*, plan: dict[str, Any], rejection_feedback: dict[str,
             "rejection_feedback": rejection_feedback or {},
             "required_response": {
                 "final_app_py": "complete final app.py text only",
+                "goal_directive_sha256": goal_directive["directive_sha256"],
                 "rationale": "brief string",
             },
         },
@@ -1826,12 +2147,14 @@ def validate_ai_plan_payload(*, payload: dict[str, Any], task: str, scenario: Sc
     allowed_write_paths = [safe_relative_path(path) for path in payload.get("allowed_write_paths", selected_files)]
     ack = normalized_active_constraints(payload.get("active_constraints_ack", active_constraints))
     required_tests = sorted({str(name).strip() for name in payload.get("required_tests", active_constraints["required_tests"]) if str(name).strip()})
+    goal_ack = validate_ai_goal_directive_ack(payload, task=task, stage="planning")
     validations = {
         "ai_plan_selected_expected_files": selected_files == expected_files,
         "ai_plan_allowed_expected_files": allowed_write_paths == expected_files,
         "ai_plan_acknowledged_active_constraints": ack == active_constraints,
         "ai_plan_did_not_select_forbidden_files": not (set(selected_files) & set(active_constraints["forbidden_files"])),
         "ai_plan_includes_required_tests": set(active_constraints["required_tests"]).issubset(set(required_tests)),
+        "ai_plan_acknowledged_goal_directive": bool(goal_ack["acknowledged"]),
     }
     if not all(validations.values()):
         raise SmokeFailure(f"live AI plan failed host validation: {validations!r}; payload={payload!r}")
@@ -1855,6 +2178,7 @@ def validate_ai_plan_payload(*, payload: dict[str, Any], task: str, scenario: Sc
         "uses_live_ai": True,
         "ai_plan_generated": True,
         "active_constraints_ack": ack,
+        "goal_directive": goal_ack,
         "rationale": str(payload.get("rationale", "")).strip(),
         "ai_plan_validations": validations,
     }
@@ -2596,6 +2920,444 @@ def safe_filename(value: str) -> str:
     return text or "candidate"
 
 
+
+def ring3_ratio(in_count: int, out_count: int) -> dict[str, Any]:
+    return {
+        "in": int(in_count),
+        "out": int(out_count),
+        "label": f"{int(in_count)}:{int(out_count)}",
+    }
+
+
+def build_ring3_evidence_metrics(
+    *,
+    counts: dict[str, int],
+    inquiry_results: Sequence[dict[str, Any]],
+    check_packets: Sequence[dict[str, Any]],
+    verify_results: Sequence[dict[str, Any]],
+    merge_results: Sequence[dict[str, Any]],
+    validations: Sequence[dict[str, Any]],
+    all_forkable_candidates: Sequence[dict[str, Any]],
+    forkable_candidates: Sequence[dict[str, Any]],
+    fork_observations: Sequence[dict[str, Any]],
+    accepted_observations: Sequence[dict[str, Any]],
+    rejected_result_ids: Sequence[str],
+    selected_candidate_path_id: str,
+) -> dict[str, Any]:
+    inquiry_count = int(counts.get("request_inquiry", 0))
+    check_count = int(counts.get("request_check", 0))
+    verify_count = int(counts.get("request_verify", 0))
+    merge_count = int(counts.get("request_merge", 0))
+    fork_count = int(counts.get("candidate_fork", 0))
+    observation_count = int(counts.get("fork_observation", 0))
+    modeled_ai_response_samples = inquiry_count + verify_count + merge_count
+    modeled_ai_dispatch_requests = inquiry_count + check_count + verify_count + merge_count
+    total_modelled_units = modeled_ai_dispatch_requests + fork_count + observation_count
+    hard_rejected_result_ids = [
+        str(validation.get("result_id", ""))
+        for validation in validations
+        if validation.get("hard_rejected")
+    ]
+    return {
+        "format": "main_computer_ring3_evidence_metrics_v1",
+        "deterministic": True,
+        "actual_live_ai_calls": 0,
+        "modeled_ai_response_samples": modeled_ai_response_samples,
+        "modeled_ai_dispatch_requests": modeled_ai_dispatch_requests,
+        "modeled_check_requests": check_count,
+        "host_fork_trials": fork_count,
+        "host_verification_observations": observation_count,
+        "total_modeled_expansion_units": total_modelled_units,
+        "per_boundary": [
+            {
+                "boundary": "ring3_inquiry_batch_boundary",
+                "modeled_ai_response_samples": inquiry_count,
+                "modeled_ai_dispatch_requests": inquiry_count,
+                "host_fork_trials": 0,
+                "host_verification_observations": 0,
+                "input_state_count": 1,
+                "output_result_count": len(inquiry_results),
+            },
+            {
+                "boundary": "ring3_check_request_boundary",
+                "modeled_ai_response_samples": 0,
+                "modeled_ai_dispatch_requests": check_count,
+                "modeled_check_requests": check_count,
+                "host_fork_trials": 0,
+                "host_verification_observations": 0,
+                "input_result_count": len(inquiry_results),
+                "output_check_packet_count": len(check_packets),
+            },
+            {
+                "boundary": "ring3_verify_batch_boundary",
+                "modeled_ai_response_samples": verify_count,
+                "modeled_ai_dispatch_requests": verify_count,
+                "host_fork_trials": 0,
+                "host_verification_observations": 0,
+                "input_check_packet_count": len(check_packets),
+                "output_result_count": len(verify_results),
+            },
+            {
+                "boundary": "ring3_merge_candidate_boundary",
+                "modeled_ai_response_samples": merge_count,
+                "modeled_ai_dispatch_requests": merge_count,
+                "host_fork_trials": 0,
+                "host_verification_observations": 0,
+                "input_result_count": len(verify_results) + len(inquiry_results),
+                "output_result_count": len(merge_results),
+            },
+            {
+                "boundary": "ring3_candidate_fork_boundary",
+                "modeled_ai_response_samples": 0,
+                "modeled_ai_dispatch_requests": 0,
+                "host_fork_trials": fork_count,
+                "host_verification_observations": 0,
+                "candidate_count": len(validations),
+                "forkable_candidate_count": len(all_forkable_candidates),
+                "forked_candidate_count": len(forkable_candidates),
+                "hard_rejected_result_count": len(hard_rejected_result_ids),
+            },
+            {
+                "boundary": "ring3_fork_observation_boundary",
+                "modeled_ai_response_samples": 0,
+                "modeled_ai_dispatch_requests": 0,
+                "host_fork_trials": 0,
+                "host_verification_observations": observation_count,
+                "observed_candidate_count": len(fork_observations),
+                "accepted_observation_count": len(accepted_observations),
+            },
+            {
+                "boundary": "ring3_candidate_path_compaction_boundary",
+                "modeled_ai_response_samples": 0,
+                "modeled_ai_dispatch_requests": 0,
+                "host_fork_trials": 0,
+                "host_verification_observations": 0,
+                "observed_candidate_paths_in": len(fork_observations),
+                "compacted_candidate_paths_out": 1 if selected_candidate_path_id else 0,
+                "observed_compaction_ratio": ring3_ratio(len(fork_observations), 1 if selected_candidate_path_id else 0),
+                "policy_candidate_paths_in": len(all_forkable_candidates),
+                "policy_compaction_ratio": ring3_ratio(len(all_forkable_candidates), 1 if selected_candidate_path_id else 0),
+            },
+            {
+                "boundary": "ring3_hub_feedback_boundary",
+                "modeled_ai_response_samples": 0,
+                "modeled_ai_dispatch_requests": 0,
+                "host_fork_trials": 0,
+                "host_verification_observations": 0,
+                "accepted_result_count": 1 if selected_candidate_path_id else 0,
+                "rejected_result_count": len(rejected_result_ids),
+            },
+        ],
+        "result_counts": {
+            "inquiry": len(inquiry_results),
+            "check_packets": len(check_packets),
+            "verify": len(verify_results),
+            "merge": len(merge_results),
+            "candidate_samples": len(validations),
+            "hard_rejected_before_fork": len(hard_rejected_result_ids),
+            "all_forkable_candidates": len(all_forkable_candidates),
+            "forked_candidates": len(forkable_candidates),
+            "observed_candidates": len(fork_observations),
+            "accepted_observations": len(accepted_observations),
+            "rejected_results": len(rejected_result_ids),
+        },
+        "compaction": {
+            "selected_candidate_path_id": selected_candidate_path_id,
+            "observed_compaction_ratio": ring3_ratio(len(fork_observations), 1 if selected_candidate_path_id else 0),
+            "policy_compaction_ratio": ring3_ratio(len(all_forkable_candidates), 1 if selected_candidate_path_id else 0),
+            "hard_rejected_result_ids": hard_rejected_result_ids,
+            "rejected_result_ids": list(rejected_result_ids),
+        },
+    }
+
+
+def build_ring3_evidence_call_graph(
+    *,
+    inquiry_results: Sequence[dict[str, Any]],
+    check_packets: Sequence[dict[str, Any]],
+    verify_results: Sequence[dict[str, Any]],
+    merge_results: Sequence[dict[str, Any]],
+    validations: Sequence[dict[str, Any]],
+    fork_observations: Sequence[dict[str, Any]],
+    selected_candidate_path_id: str,
+    selected_lineage: Sequence[str],
+    rejected_result_ids: Sequence[str],
+) -> dict[str, Any]:
+    nodes: list[dict[str, Any]] = [
+        {"id": "initial_state", "type": "compact_state", "stage": "initial_state"},
+        {"id": "ring3_inquiry_batch_boundary", "type": "boundary", "stage": "request_inquiry"},
+        {"id": "ring3_check_request_boundary", "type": "boundary", "stage": "request_check"},
+        {"id": "ring3_verify_batch_boundary", "type": "boundary", "stage": "request_verify"},
+        {"id": "ring3_merge_candidate_boundary", "type": "boundary", "stage": "request_merge"},
+        {"id": "ring3_candidate_fork_boundary", "type": "boundary", "stage": "candidate_fork"},
+        {"id": "ring3_fork_observation_boundary", "type": "boundary", "stage": "fork_observation"},
+        {"id": "ring3_candidate_path_compaction_boundary", "type": "compaction_boundary", "stage": "candidate_path_compaction"},
+        {"id": "ring3_hub_feedback_boundary", "type": "boundary", "stage": "hub_feedback"},
+        {"id": "host_apply_boundary", "type": "host_boundary", "stage": "host_apply"},
+    ]
+    edges: list[dict[str, str]] = [
+        {"from": "initial_state", "to": "ring3_inquiry_batch_boundary", "kind": "expands_to"},
+        {"from": "ring3_inquiry_batch_boundary", "to": "ring3_check_request_boundary", "kind": "feeds"},
+        {"from": "ring3_check_request_boundary", "to": "ring3_verify_batch_boundary", "kind": "dispatches_to"},
+        {"from": "ring3_verify_batch_boundary", "to": "ring3_merge_candidate_boundary", "kind": "feeds"},
+        {"from": "ring3_merge_candidate_boundary", "to": "ring3_candidate_fork_boundary", "kind": "policy_filters_into"},
+        {"from": "ring3_candidate_fork_boundary", "to": "ring3_fork_observation_boundary", "kind": "forks_into"},
+        {"from": "ring3_fork_observation_boundary", "to": "ring3_candidate_path_compaction_boundary", "kind": "observations_feed"},
+        {"from": "ring3_candidate_path_compaction_boundary", "to": "ring3_hub_feedback_boundary", "kind": "reports_feedback_to"},
+        {"from": "ring3_hub_feedback_boundary", "to": "host_apply_boundary", "kind": "authorizes_compacted_state_for"},
+    ]
+    selected_set = set(str(result_id) for result_id in selected_lineage)
+    rejected_set = set(str(result_id) for result_id in rejected_result_ids)
+
+    for sample in inquiry_results:
+        result_id = str(sample.get("result_id", ""))
+        nodes.append(
+            {
+                "id": result_id,
+                "type": "result",
+                "round_type": "request_inquiry",
+                "selected_lineage": result_id in selected_set,
+                "rejected": result_id in rejected_set,
+            }
+        )
+        edges.append({"from": "ring3_inquiry_batch_boundary", "to": result_id, "kind": "produces"})
+
+    for check_packet in check_packets:
+        packet_id = str(check_packet.get("check_packet_id", ""))
+        nodes.append({"id": packet_id, "type": "check_packet", "round_type": "request_check"})
+        edges.append({"from": "ring3_check_request_boundary", "to": packet_id, "kind": "produces"})
+        for result_id in check_packet.get("inquiry_result_ids", []):
+            edges.append({"from": str(result_id), "to": packet_id, "kind": "checked_by"})
+
+    for sample in verify_results:
+        result_id = str(sample.get("result_id", ""))
+        nodes.append(
+            {
+                "id": result_id,
+                "type": "result",
+                "round_type": "request_verify",
+                "selected_lineage": result_id in selected_set,
+                "rejected": result_id in rejected_set,
+            }
+        )
+        edges.append({"from": "ring3_verify_batch_boundary", "to": result_id, "kind": "produces"})
+        for source_id in sample.get("source_result_ids", []):
+            edges.append({"from": str(source_id), "to": result_id, "kind": "verified_by"})
+
+    for sample in merge_results:
+        result_id = str(sample.get("result_id", ""))
+        payload = sample.get("payload", {}) if isinstance(sample.get("payload"), dict) else {}
+        candidate_path_id = str(payload.get("candidate_path_id") or f"path-{result_id}")
+        nodes.append(
+            {
+                "id": result_id,
+                "type": "result",
+                "round_type": "request_merge",
+                "selected_lineage": result_id in selected_set,
+                "rejected": result_id in rejected_set,
+            }
+        )
+        edges.append({"from": "ring3_merge_candidate_boundary", "to": result_id, "kind": "produces"})
+        for source_id in payload.get("merge_of_result_ids", []):
+            edges.append({"from": str(source_id), "to": result_id, "kind": "merged_into"})
+        nodes.append(
+            {
+                "id": candidate_path_id,
+                "type": "candidate_path",
+                "source_result_id": result_id,
+                "selected": candidate_path_id == selected_candidate_path_id,
+            }
+        )
+        edges.append({"from": result_id, "to": candidate_path_id, "kind": "proposes_candidate_path"})
+
+    for validation in validations:
+        result_id = str(validation.get("result_id", ""))
+        candidate_path_id = str(validation.get("candidate_path_id", ""))
+        if not candidate_path_id:
+            continue
+        if not any(node.get("id") == candidate_path_id for node in nodes):
+            nodes.append(
+                {
+                    "id": candidate_path_id,
+                    "type": "candidate_path",
+                    "source_result_id": result_id,
+                    "selected": candidate_path_id == selected_candidate_path_id,
+                }
+            )
+            edges.append({"from": result_id, "to": candidate_path_id, "kind": "proposes_candidate_path"})
+        edges.append(
+            {
+                "from": candidate_path_id,
+                "to": "ring3_candidate_fork_boundary",
+                "kind": "eligible_for_fork" if validation.get("can_fork") else "rejected_before_fork",
+            }
+        )
+
+    for observation in fork_observations:
+        candidate_path_id = str(observation.get("candidate_path_id", ""))
+        observation_id = f"obs-{candidate_path_id}"
+        accepted = observation.get("accepted_by_observation") is True
+        nodes.append(
+            {
+                "id": observation_id,
+                "type": "host_observation",
+                "candidate_path_id": candidate_path_id,
+                "accepted": accepted,
+                "selected": candidate_path_id == selected_candidate_path_id,
+            }
+        )
+        edges.append({"from": "ring3_fork_observation_boundary", "to": observation_id, "kind": "records"})
+        edges.append({"from": candidate_path_id, "to": observation_id, "kind": "observed_as"})
+        edges.append(
+            {
+                "from": observation_id,
+                "to": "ring3_candidate_path_compaction_boundary",
+                "kind": "selected_by_compaction" if candidate_path_id == selected_candidate_path_id else "discarded_by_compaction",
+            }
+        )
+
+    return {
+        "format": "main_computer_ring3_call_graph_v1",
+        "deterministic": True,
+        "nodes": nodes,
+        "edges": edges,
+        "summary": {
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "boundary_count": len([node for node in nodes if "boundary" in str(node.get("type", ""))]),
+            "result_count": len([node for node in nodes if node.get("type") == "result"]),
+            "candidate_path_count": len([node for node in nodes if node.get("type") == "candidate_path"]),
+            "host_observation_count": len([node for node in nodes if node.get("type") == "host_observation"]),
+            "selected_candidate_path_id": selected_candidate_path_id,
+            "selected_result_lineage": list(selected_lineage),
+            "rejected_result_ids": list(rejected_result_ids),
+        },
+    }
+
+
+def build_ring3_agent_workflow_trace(
+    *,
+    metrics: dict[str, Any],
+    call_graph: dict[str, Any],
+    selected_candidate_path_id: str,
+    selected_lineage: Sequence[str],
+    rejected_result_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Deterministic agent workflow trace patterned after the Website Builder smoke.
+
+    This does not call the Website Builder and does not add agent web routes.  It
+    captures the same open-ended workflow goals in the agent smoke itself:
+    grounded answer, edit proposal, validated host apply, stale rejection, and
+    unsafe rejection.  Each synthetic surface is backed by the Ring 3 evidence,
+    compaction, and host-apply boundaries rather than live AI.
+    """
+
+    workflow_steps = [
+        {
+            "surface": "agent.chat",
+            "intent": "grounded_info_answer",
+            "terminal_class": "info",
+            "writes_allowed": False,
+            "backing_boundary": "ring3_inquiry_batch_boundary",
+            "result": {
+                "ok": True,
+                "answer_scope": "active compact state and allowed write paths",
+                "replacement_payloads": [],
+                "live_write": False,
+            },
+        },
+        {
+            "surface": "agent.chat/edit",
+            "intent": "promotable_edit_artifact",
+            "terminal_class": "edit",
+            "writes_allowed": False,
+            "backing_boundary": "ring3_candidate_path_compaction_boundary",
+            "result": {
+                "ok": True,
+                "selected_candidate_path_id": selected_candidate_path_id,
+                "selected_result_lineage": list(selected_lineage),
+                "changed_files": ["app.py"],
+                "artifact_promotable": True,
+                "live_write": False,
+            },
+        },
+        {
+            "surface": "agent.apply-rag-proposal",
+            "intent": "validated_host_apply",
+            "terminal_class": "applied_edit",
+            "writes_allowed": True,
+            "backing_boundary": "host_apply_boundary",
+            "result": {
+                "ok": True,
+                "mode": "compacted-state-host-apply",
+                "changed_files": ["app.py"],
+                "source": "ring3_candidate_path_compaction_boundary",
+            },
+        },
+        {
+            "surface": "agent.apply-rag-proposal.stale",
+            "intent": "reject_stale_payload",
+            "terminal_class": "rejected",
+            "writes_allowed": False,
+            "backing_boundary": "ring3_candidate_fork_boundary",
+            "result": {
+                "ok": False,
+                "error": "original_sha256_mismatch",
+                "live_write": False,
+            },
+        },
+        {
+            "surface": "agent.apply-rag-proposal.unsafe",
+            "intent": "reject_unsafe_payload",
+            "terminal_class": "rejected",
+            "writes_allowed": False,
+            "backing_boundary": "ring3_candidate_fork_boundary",
+            "result": {
+                "ok": False,
+                "error": "forbidden_file_write",
+                "rejected_result_ids": list(rejected_result_ids),
+                "live_write": False,
+            },
+        },
+    ]
+    return {
+        "format": "main_computer_ring3_open_ended_agent_workflow_v1",
+        "reference_pattern": "website_builder_multi_endpoint_open_ended_smoke",
+        "deterministic": True,
+        "uses_live_ai": False,
+        "actual_live_ai_calls": metrics.get("actual_live_ai_calls", 0),
+        "workflow_steps": workflow_steps,
+        "contracts": {
+            "ring3_agent_workflow_has_grounded_answer_surface": any(
+                step.get("intent") == "grounded_info_answer" and step.get("terminal_class") == "info"
+                for step in workflow_steps
+            ),
+            "ring3_agent_workflow_has_promotable_edit_surface": any(
+                step.get("intent") == "promotable_edit_artifact"
+                and step.get("result", {}).get("artifact_promotable") is True
+                for step in workflow_steps
+            ),
+            "ring3_agent_workflow_has_validated_apply_surface": any(
+                step.get("intent") == "validated_host_apply"
+                and step.get("result", {}).get("ok") is True
+                and step.get("result", {}).get("changed_files") == ["app.py"]
+                for step in workflow_steps
+            ),
+            "ring3_agent_workflow_rejects_stale_payload": any(
+                step.get("intent") == "reject_stale_payload"
+                and step.get("result", {}).get("error") == "original_sha256_mismatch"
+                for step in workflow_steps
+            ),
+            "ring3_agent_workflow_rejects_unsafe_payload": any(
+                step.get("intent") == "reject_unsafe_payload"
+                and step.get("result", {}).get("error") == "forbidden_file_write"
+                for step in workflow_steps
+            ),
+            "ring3_agent_workflow_is_deterministic_no_live_ai": metrics.get("actual_live_ai_calls") == 0
+            and call_graph.get("deterministic") is True,
+        },
+    }
+
 def run_ring3_evidence_compaction_apply(
     *,
     run_dir: Path,
@@ -2613,6 +3375,14 @@ def run_ring3_evidence_compaction_apply(
     merge_count = normalize_ring3_parallel_count(counts.get("request_merge", DEFAULT_RING3_PARALLEL_COUNT), "merge")
     fork_count = normalize_ring3_parallel_count(counts.get("candidate_fork", DEFAULT_RING3_PARALLEL_COUNT), "fork")
     observation_count = normalize_ring3_parallel_count(counts.get("fork_observation", DEFAULT_RING3_PARALLEL_COUNT), "observation")
+    parallel_counts = ring3_parallel_counts(
+        inquiry_count=inquiry_count,
+        check_count=check_count,
+        verify_count=verify_count,
+        merge_count=merge_count,
+        fork_count=fork_count,
+        observation_count=observation_count,
+    )
     reasoning_records: list[dict[str, Any]] = []
     initial_state = ring3_initial_compact_state(active_constraints, scenario)
 
@@ -3079,6 +3849,51 @@ def run_ring3_evidence_compaction_apply(
         next_stage="generated_editor",
     )
 
+    ring3_metrics = build_ring3_evidence_metrics(
+        counts=parallel_counts,
+        inquiry_results=inquiry_results,
+        check_packets=check_packets,
+        verify_results=verify_results,
+        merge_results=merge_results,
+        validations=validations,
+        all_forkable_candidates=all_forkable_candidates,
+        forkable_candidates=forkable_candidates,
+        fork_observations=fork_observations,
+        accepted_observations=accepted_observations,
+        rejected_result_ids=rejected_result_ids,
+        selected_candidate_path_id=selected_candidate_path_id,
+    )
+    ring3_call_graph = build_ring3_evidence_call_graph(
+        inquiry_results=inquiry_results,
+        check_packets=check_packets,
+        verify_results=verify_results,
+        merge_results=merge_results,
+        validations=validations,
+        fork_observations=fork_observations,
+        selected_candidate_path_id=selected_candidate_path_id,
+        selected_lineage=selected_lineage,
+        rejected_result_ids=rejected_result_ids,
+    )
+    ring3_workflow_trace = build_ring3_agent_workflow_trace(
+        metrics=ring3_metrics,
+        call_graph=ring3_call_graph,
+        selected_candidate_path_id=selected_candidate_path_id,
+        selected_lineage=selected_lineage,
+        rejected_result_ids=rejected_result_ids,
+    )
+    metrics_and_workflow_contracts = {
+        "ring3_metrics_emit_call_budget_by_boundary": ring3_metrics["modeled_ai_response_samples"] == inquiry_count + verify_count + merge_count
+        and ring3_metrics["modeled_ai_dispatch_requests"] == inquiry_count + check_count + verify_count + merge_count
+        and len(ring3_metrics.get("per_boundary", [])) == 8,
+        "ring3_metrics_count_actual_live_ai_calls_zero": ring3_metrics.get("actual_live_ai_calls") == 0,
+        "ring3_metrics_emit_compaction_ratios": ring3_metrics.get("compaction", {}).get("observed_compaction_ratio", {}).get("label") == f"{len(fork_observations)}:1"
+        and ring3_metrics.get("compaction", {}).get("policy_compaction_ratio", {}).get("label") == f"{len(all_forkable_candidates)}:1",
+        "ring3_call_graph_emits_boundaries_results_paths": ring3_call_graph.get("summary", {}).get("result_count") == len(inquiry_results) + len(verify_results) + len(merge_results)
+        and ring3_call_graph.get("summary", {}).get("candidate_path_count", 0) >= len(merge_results),
+        "ring3_call_graph_preserves_selected_lineage": ring3_call_graph.get("summary", {}).get("selected_result_lineage") == selected_lineage,
+        **ring3_workflow_trace["contracts"],
+    }
+
     expected_reasoning_stages = {
         "initial_state",
         "ring3_inquiry_batch",
@@ -3108,6 +3923,7 @@ def run_ring3_evidence_compaction_apply(
         **compaction_contracts,
         **feedback_boundary["payload"]["contracts"],
         **reasoning_contracts,
+        **metrics_and_workflow_contracts,
         "host_apply_used_compacted_state_only": True,
     }
     if not all(ring3_contracts.values()):
@@ -3126,14 +3942,11 @@ def run_ring3_evidence_compaction_apply(
         "identity_model": "anonymous_dispatch_with_hub_result_feedback",
         "node_identity_available_to_agent": False,
         "default_hub_reliability_score": 1.0,
-        "parallel_counts": ring3_parallel_counts(
-            inquiry_count=inquiry_count,
-            check_count=check_count,
-            verify_count=verify_count,
-            merge_count=merge_count,
-            fork_count=fork_count,
-            observation_count=observation_count,
-        ),
+        "parallel_counts": parallel_counts,
+        "ring3_metrics": ring3_metrics,
+        "ring3_call_graph": ring3_call_graph,
+        "ring3_call_graph_summary": ring3_call_graph.get("summary", {}),
+        "ring3_agent_workflow_trace": ring3_workflow_trace,
         "initial_compact_state": initial_state,
         "check_packets": check_packets,
         "primary_check_packet": primary_check_packet,
@@ -3621,6 +4434,21 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         if self.scripted_ai_smoke:
             plan = super().plan(task, guidance_state)
             active_constraints = normalized_active_constraints(plan.get("active_constraints"))
+            goal_ack = {
+                **ai_restart_directive_contract(task),
+                "acknowledged": True,
+                "stage": "planning",
+            }
+            plan_validations = {
+                "ai_plan_selected_expected_files": plan.get("selected_files") == expected_files_from_active_constraints(self.scenario, active_constraints),
+                "ai_plan_allowed_expected_files": plan.get("allowed_write_paths") == expected_files_from_active_constraints(self.scenario, active_constraints),
+                "ai_plan_acknowledged_active_constraints": True,
+                "ai_plan_did_not_select_forbidden_files": not (
+                    set(plan.get("selected_files", [])) & set(active_constraints["forbidden_files"])
+                ),
+                "ai_plan_includes_required_tests": set(active_constraints["required_tests"]).issubset(set(plan.get("required_tests", []))),
+                "ai_plan_acknowledged_goal_directive": True,
+            }
             plan.update(
                 {
                     "agent_mode": self.agent_mode,
@@ -3632,6 +4460,8 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
                     "ai_model": "",
                     "ai_plan_generated": True,
                     "active_constraints_ack": active_constraints,
+                    "goal_directive": goal_ack,
+                    "ai_plan_validations": plan_validations,
                     "edit_strategy": "scripted_ai_generated_editor_with_host_validated_retry",
                 }
             )
@@ -3677,13 +4507,17 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         metadata: dict[str, Any],
         attempt: int,
     ) -> str:
+        goal_ack = validate_ai_goal_directive_ack(payload, task=str(plan.get("task", "")), stage=str(metadata.get("stage") or "editor_generation"))
         final_app_py = validate_ai_final_app_py(payload.get("final_app_py"))
         self.last_editor_ai_payload = {
             "attempt": attempt,
             "payload": {
                 "final_app_py_sha256": text_sha256(final_app_py),
                 "rationale": str(payload.get("rationale", "")).strip(),
+                "goal_directive_sha256": goal_ack["directive_sha256"],
             },
+            "goal_directive": goal_ack,
+            "goal_directive_acknowledged": bool(goal_ack["acknowledged"]),
             "metadata": metadata,
         }
         self.last_editor_ai_metadata = metadata
@@ -3707,9 +4541,20 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
                 "stage": "editor_generation",
                 "attempt": 1,
             }
+            goal_ack = {
+                **ai_restart_directive_contract(str(plan.get("task", ""))),
+                "acknowledged": True,
+                "stage": "editor_generation",
+            }
             self.last_editor_ai_payload = {
                 "attempt": 1,
-                "payload": {"final_app_py_sha256": text_sha256(self.scenario.final_app_py), "rationale": "scripted"},
+                "payload": {
+                    "final_app_py_sha256": text_sha256(self.scenario.final_app_py),
+                    "rationale": "scripted",
+                    "goal_directive_sha256": goal_ack["directive_sha256"],
+                },
+                "goal_directive": goal_ack,
+                "goal_directive_acknowledged": True,
                 "metadata": self.last_editor_ai_metadata,
             }
             return super().generate_editor(plan)
@@ -3738,9 +4583,20 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
                 "stage": "editor_generation_retry",
                 "attempt": 2,
             }
+            goal_ack = {
+                **ai_restart_directive_contract(str(plan.get("task", ""))),
+                "acknowledged": True,
+                "stage": "editor_generation_retry",
+            }
             self.last_editor_ai_payload = {
                 "attempt": 2,
-                "payload": {"final_app_py_sha256": text_sha256(self.scenario.final_app_py), "rationale": "scripted retry"},
+                "payload": {
+                    "final_app_py_sha256": text_sha256(self.scenario.final_app_py),
+                    "rationale": "scripted retry",
+                    "goal_directive_sha256": goal_ack["directive_sha256"],
+                },
+                "goal_directive": goal_ack,
+                "goal_directive_acknowledged": True,
                 "metadata": self.last_editor_ai_metadata,
             }
             return deterministic_generated_editor_source(self.scenario.final_app_py)
@@ -4093,6 +4949,7 @@ def run_ai_generated_editor_recovery_apply(
     active_constraints = normalized_active_constraints(plan.get("active_constraints"))
     rejected_paths = sorted(set(bad_sandbox.get("proposed_writes", {})) & set(active_constraints["forbidden_files"]))
     attempt_1_ai_metadata = dict(getattr(agent_adapter, "last_editor_ai_metadata", {}) or {})
+    attempt_1_ai_payload = dict(getattr(agent_adapter, "last_editor_ai_payload", {}) or {})
     recovery_contracts = {
         "ai_attempt_1_recorded": True,
         "bad_ai_result_injected": True,
@@ -4100,6 +4957,7 @@ def run_ai_generated_editor_recovery_apply(
         "no_files_changed_after_rejected_ai_attempt": status_before_rejection == status_after_rejection
         and sha_before_rejection == sha_after_rejection,
         "ai_retry_consumed_rejection_feedback": True,
+        "ai_attempt_1_acknowledged_goal_directive": bool(attempt_1_ai_payload.get("goal_directive_acknowledged")),
     }
     if getattr(agent_adapter, "scripted_ai_smoke", False):
         recovery_contracts["ai_attempt_1_used_scripted_ai_smoke"] = True
@@ -4144,11 +5002,13 @@ def run_ai_generated_editor_recovery_apply(
     )
     retry_sandbox = edit_result.get("generated_editor", {}).get("sandbox", {})
     attempt_2_ai_metadata = dict(getattr(agent_adapter, "last_editor_ai_metadata", {}) or {})
+    attempt_2_ai_payload = dict(getattr(agent_adapter, "last_editor_ai_payload", {}) or {})
     retry_contracts = {
         **recovery_contracts,
         "ai_attempt_2_recorded": True,
         "ai_retry_removed_forbidden_file": "README.md" not in set(retry_sandbox.get("proposed_write_sha256", {})),
         "host_apply_accepted_corrected_ai_output": edit_result.get("changed_files") == sorted(plan.get("selected_files", [])),
+        "ai_attempt_2_acknowledged_goal_directive": bool(attempt_2_ai_payload.get("goal_directive_acknowledged")),
     }
     if getattr(agent_adapter, "scripted_ai_smoke", False):
         retry_contracts["ai_attempt_2_used_scripted_ai_smoke"] = True
@@ -5416,6 +6276,27 @@ def run_agent(args: argparse.Namespace) -> int:
             and isinstance(edit_result.get("generated_editor", {}).get("contracts"), dict)
             else {}
         )
+        ai_plan_contracts = (
+            plan.get("ai_plan_validations", {})
+            if isinstance(plan.get("ai_plan_validations"), dict)
+            else {}
+        )
+        ai_restart_goal_contracts: dict[str, bool] = {}
+        if args.agent == "ai-generated-editor":
+            goal_directive = plan.get("goal_directive", {}) if isinstance(plan.get("goal_directive"), dict) else {}
+            goal_sha = str(goal_directive.get("directive_sha256", ""))
+            guidance_goal_records = [
+                record
+                for record in guidance_state.get("accepted", [])
+                if isinstance(record, dict) and record.get("id") == "ai-restart-goal-directive"
+            ]
+            ai_restart_goal_contracts = {
+                "ai_restart_goal_directive_present": bool(goal_directive.get("directive")),
+                "ai_restart_goal_directive_persisted_through_guidance": bool(guidance_goal_records),
+                "ai_restart_goal_directive_sha256_recorded": bool(goal_sha),
+                "ai_restart_goal_directive_matches_task": goal_sha == text_sha256(str(plan.get("task", ""))),
+                "final_report_records_goal_directive": True,
+            }
         policy_contracts = (
             commit_decision.get("contracts", {}) if isinstance(commit_decision.get("contracts"), dict) else {}
         )
@@ -5480,6 +6361,8 @@ def run_agent(args: argparse.Namespace) -> int:
             and edit_plan_boundary["payload"]["timestamp"] >= guidance_boundary["payload"]["timestamp"],
             **guidance_constraint_contracts,
             **plan_constraint_contracts,
+            **ai_plan_contracts,
+            **ai_restart_goal_contracts,
             "required_tests_satisfied": required_tests_satisfied,
             "branch_isolated": branch == target_branch and main_head == base_head,
             "changed_files_scoped": scoped_changed_files == expected_changed_files,
@@ -5588,6 +6471,11 @@ def run_agent(args: argparse.Namespace) -> int:
                 "local_agent_smoke_allowed": local_agent_smoke_allowed,
             },
             "edit_plan": plan,
+            "goal_directive": (
+                plan.get("goal_directive")
+                if isinstance(plan.get("goal_directive"), dict)
+                else (ai_restart_directive_contract(str(plan.get("task", ""))) if args.agent == "ai-generated-editor" else None)
+            ),
             "edit_result": edit_result,
             "ring3_worker_consensus": (
                 edit_result.get("ring3_worker_consensus")
@@ -5704,8 +6592,10 @@ def ai_restart_recovery_agent_args(
     restart: bool,
     stop_after: str,
     inject_bad_ai_result: str,
+    goal_directive: str,
 ) -> argparse.Namespace:
     values = dict(vars(args))
+    goal_directive = normalize_ai_restart_directive(goal_directive, scenario_spec(AI_RESTART_RECOVERY_SCENARIO))
     values.update(
         {
             "role": "agent",
@@ -5713,6 +6603,8 @@ def ai_restart_recovery_agent_args(
             "use_ai": True,
             "allow_local_agent_smoke": True,
             "scenario": AI_RESTART_RECOVERY_SCENARIO,
+            "task": goal_directive,
+            "ai_restart_directive": goal_directive,
             "run_id": run_id,
             "run_dir": str(run_dir),
             "commands_path": str(commands_path),
@@ -5748,11 +6640,17 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
     commands_path = Path(args.commands_path).resolve() if getattr(args, "commands_path", "") else run_dir / "commands.jsonl"
     report_path = Path(args.report_path).resolve() if getattr(args, "report_path", "") else run_dir / "report.json"
     scenario = scenario_spec(AI_RESTART_RECOVERY_SCENARIO)
+    goal_directive = ai_restart_directive_from_args(args, scenario)
+    goal_directive_contract = ai_restart_directive_contract(goal_directive)
 
     run_dir.mkdir(parents=True, exist_ok=True)
     write_guidance_commands_jsonl(
         commands_path,
-        guidance_commands_for_scenario(scenario, guidance_text_for_scenario(args, scenario)),
+        guidance_commands_for_scenario(
+            scenario,
+            guidance_text_for_scenario(args, scenario),
+            ai_restart_directive=goal_directive,
+        ),
     )
 
     emit_event(
@@ -5764,6 +6662,8 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
         ai_provider=str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
         ai_model=str(getattr(args, "ai_model", "") or ""),
         scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
+        goal_directive=goal_directive_contract["directive"],
+        goal_directive_sha256=goal_directive_contract["directive_sha256"],
         local_agent_smoke_allowed=True,
     )
 
@@ -5776,6 +6676,7 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
         restart=False,
         stop_after="guidance_compaction",
         inject_bad_ai_result="",
+        goal_directive=goal_directive,
     )
     first_code = run_agent(first_args)
     if first_code != 0:
@@ -5788,6 +6689,13 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
         )
         return first_code
 
+    live_ring3_probe = run_ai_restart_live_ring3_probe(
+        args=args,
+        run_id=run_id,
+        run_dir=run_dir,
+        goal_directive=goal_directive,
+    )
+
     second_args = ai_restart_recovery_agent_args(
         args,
         run_id=run_id,
@@ -5797,6 +6705,7 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
         restart=True,
         stop_after="",
         inject_bad_ai_result="forbidden_file_write",
+        goal_directive=goal_directive,
     )
     second_code = run_agent(second_args)
     report: dict[str, Any] = {}
@@ -5809,14 +6718,23 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
     ai_trace = read_jsonl(ai_trace_path)
     ai_call_summary = summarize_ai_trace(ai_trace)
 
+    live_ring3_probe_ok = not live_ring3_probe.get("enabled") or bool(live_ring3_probe.get("ok"))
     summary = {
-        "ok": second_code == 0 and bool(report.get("ok")),
+        "ok": second_code == 0 and bool(report.get("ok")) and live_ring3_probe_ok,
         "run_id": run_id,
         "run_dir": str(run_dir),
         "report_path": str(report_path),
         "ai_trace_path": str(ai_trace_path),
         "ai_call_summary": ai_call_summary,
         "live_ai_call_count": ai_call_summary["finished_live_call_count"],
+        "expected_live_ai_call_count": (
+            MIN_LIVE_AI_RESTART_RECOVERY_CALLS
+            + int(live_ring3_probe.get("expected_live_ai_calls", 0) or 0)
+            if not bool(getattr(args, "scripted_ai_smoke", False))
+            else 0
+        ),
+        "goal_directive": goal_directive_contract,
+        "ai_restart_live_ring3_probe": live_ring3_probe,
         "returncode": second_code,
         "agent_mode": report.get("agent_mode"),
         "ai_backend": (report.get("edit_plan") or {}).get("ai_backend") if isinstance(report.get("edit_plan"), dict) else None,
@@ -6122,6 +7040,22 @@ def run_ring3_evidence_compaction_smoke(args: argparse.Namespace) -> int:
             report = {"ok": False, "error": f"could not load final report: {exc}"}
 
     evidence = report.get("ring3_evidence_compaction") if isinstance(report.get("ring3_evidence_compaction"), dict) else {}
+    ring3_metrics = evidence.get("ring3_metrics", {}) if isinstance(evidence.get("ring3_metrics"), dict) else {}
+    ring3_call_graph = evidence.get("ring3_call_graph", {}) if isinstance(evidence.get("ring3_call_graph"), dict) else {}
+    ring3_workflow_trace = (
+        evidence.get("ring3_agent_workflow_trace", {})
+        if isinstance(evidence.get("ring3_agent_workflow_trace"), dict)
+        else {}
+    )
+    metrics_path = run_dir / "ring3_evidence_compaction_metrics.json"
+    call_graph_path = run_dir / "ring3_evidence_compaction_call_graph.json"
+    workflow_trace_path = run_dir / "ring3_evidence_compaction_agent_workflow_trace.json"
+    if ring3_metrics:
+        atomic_write_json(metrics_path, ring3_metrics)
+    if ring3_call_graph:
+        atomic_write_json(call_graph_path, ring3_call_graph)
+    if ring3_workflow_trace:
+        atomic_write_json(workflow_trace_path, ring3_workflow_trace)
     contracts = report.get("contracts") if isinstance(report.get("contracts"), dict) else {}
     summary = {
         "ok": second_code == 0 and bool(report.get("ok")),
@@ -6138,6 +7072,12 @@ def run_ring3_evidence_compaction_smoke(args: argparse.Namespace) -> int:
         "selected_result_lineage": evidence.get("selected_result_lineage", []),
         "rejected_result_ids": evidence.get("rejected_result_ids", []),
         "stage_reasoning_count": len(evidence.get("stage_reasoning", [])) if isinstance(evidence.get("stage_reasoning"), list) else 0,
+        "ring3_metrics": ring3_metrics,
+        "ring3_call_graph_summary": ring3_call_graph.get("summary", {}),
+        "ring3_agent_workflow_step_count": len(ring3_workflow_trace.get("workflow_steps", [])) if isinstance(ring3_workflow_trace.get("workflow_steps"), list) else 0,
+        "ring3_metrics_path": str(metrics_path),
+        "ring3_call_graph_path": str(call_graph_path),
+        "ring3_agent_workflow_trace_path": str(workflow_trace_path),
         "deterministic_poisoning": True,
         "live_ai_calls": False,
         "contracts": {
@@ -6152,6 +7092,17 @@ def run_ring3_evidence_compaction_smoke(args: argparse.Namespace) -> int:
                 "ring3_compaction_output_matches_initial_state_shape",
                 "ring3_hub_feedback_preserves_rejected_result_ids",
                 "stage_reasoning_emitted_for_every_ring3_compaction_stage",
+                "ring3_metrics_emit_call_budget_by_boundary",
+                "ring3_metrics_count_actual_live_ai_calls_zero",
+                "ring3_metrics_emit_compaction_ratios",
+                "ring3_call_graph_emits_boundaries_results_paths",
+                "ring3_call_graph_preserves_selected_lineage",
+                "ring3_agent_workflow_has_grounded_answer_surface",
+                "ring3_agent_workflow_has_promotable_edit_surface",
+                "ring3_agent_workflow_has_validated_apply_surface",
+                "ring3_agent_workflow_rejects_stale_payload",
+                "ring3_agent_workflow_rejects_unsafe_payload",
+                "ring3_agent_workflow_is_deterministic_no_live_ai",
                 "host_apply_used_compacted_state_only",
             ]
             if key in contracts
@@ -7283,6 +8234,27 @@ def build_parser() -> argparse.ArgumentParser:
             "Run the two-phase AI restart/recovery smoke directly: create a temp run dir, "
             "write structured guidance, stop after guidance compaction, restart, inject one "
             "bad AI/editor result, retry, verify, commit, and print the final report path."
+        ),
+    )
+    parser.add_argument(
+        "--ai-restart-directive",
+        "--goal-directive",
+        default="",
+        help=(
+            "Runtime goal directive for --ai-restart-recovery-smoke/--use-ai restart runs. "
+            "The directive becomes the agent task, is persisted through restart guidance, "
+            "and live AI payloads must echo its sha256 in goal_directive_sha256."
+        ),
+    )
+    parser.add_argument(
+        "--ai-restart-live-ring3-probe",
+        "--ai-restart-ring3-live-probe",
+        dest="ai_restart_live_ring3_probe",
+        action="store_true",
+        help=(
+            "Opt into real provider calls for the Ring 3 inquiry/check/verify/merge fanout "
+            "during --ai-restart-recovery-smoke. This distinguishes modeled deterministic "
+            "call units from actual live AI calls and writes ai_restart_live_ring3_probe.json."
         ),
     )
     parser.add_argument(

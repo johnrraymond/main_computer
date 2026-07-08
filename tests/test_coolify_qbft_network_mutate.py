@@ -274,8 +274,14 @@ def test_config_exporter_reports_validator_address_files(tmp_path: Path) -> None
     compose = module.render_qbft_config_exporter_compose(plan, "b", token="test-token", port=39080)
 
     assert "validator-address" in compose
+    assert "data/key.pub" in compose
+    assert "static-nodes.json" in compose
     assert "VALIDATOR_ADDRESSES_JSON" in compose
+    assert "VALIDATOR_PUBLIC_KEYS_JSON" in compose
+    assert "RUNTIME_STATIC_NODES_JSON" in compose
     assert '"validator_addresses": {$$VALIDATOR_ADDRESSES_JSON}' in compose
+    assert '"validator_public_keys": {$$VALIDATOR_PUBLIC_KEYS_JSON}' in compose
+    assert '"runtime_static_nodes": $$RUNTIME_STATIC_NODES_JSON' in compose
 
 
 def test_validator_add_preserves_same_host_config_source_services(tmp_path: Path) -> None:
@@ -501,6 +507,20 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
         assert kwargs["required_validators_present"] == (new_validator,)
         return {"ok": True, "canonical_rpc": "ok", "consensus": "ok", "chain": {"validator_count": 2}}
 
+    def fake_verify_post_add_static_runtime_topology(
+        verify_plan: Any,
+        verify_args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        calls.append(("verify-active-static-topology", verify_plan, verify_args, kwargs))
+        assert verify_plan is plan
+        services_by_host = kwargs["services_by_host"]
+        assert sorted(services_by_host) == ["a", "b"]
+        assert [service.id for service in services_by_host["a"]] == ["validator-rpc-1"]
+        assert [service.id for service in services_by_host["b"]] == ["validator-2"]
+        assert kwargs["static_refresh"]["target_enode"].endswith("@198.51.100.11:30312")
+        return {"ok": True, "hosts": {"a": {"ok": True}, "b": {"ok": True}}}
+
     monkeypatch.setattr(module, "discover_qbft_config_bundle", fake_discover_qbft_config_bundle)
     monkeypatch.setattr(module, "current_qbft_validators", fake_current_qbft_validators)
     monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
@@ -509,6 +529,7 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
     monkeypatch.setattr(module, "propose_qbft_validator_vote_until_ok", fake_propose_qbft_validator_vote_until_ok)
     monkeypatch.setattr(module, "wait_for_qbft_validator_membership", fake_wait_for_qbft_validator_membership)
     monkeypatch.setattr(module, "wait_for_stable_observable_chain", fake_wait_for_stable_observable_chain)
+    monkeypatch.setattr(module, "verify_post_add_static_runtime_topology", fake_verify_post_add_static_runtime_topology)
 
     packet = module.mutate_network(plan, _args(add="validator-2", apply=True, ack_consensus_change=True))
 
@@ -528,6 +549,7 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
         "prepare-post-add-static-topology",
         "refresh-target-static-topology",
         "refresh-source-static-topology",
+        "verify-active-static-topology",
         "verify-pre-vote-static-topology",
         "wait-new-validator-peer",
         "propose-validator-vote",
@@ -543,6 +565,7 @@ def test_mutate_apply_validator_add_deploys_votes_and_verifies(tmp_path: Path, m
         "fetch-validator-address",
         "coolify-sync",
         "coolify-sync",
+        "verify-active-static-topology",
         "stable-chain",
         "wait-new-validator-peer",
         "propose-vote-retry",
@@ -615,6 +638,12 @@ def test_mutate_apply_validator_add_refuses_vote_until_new_validator_peers(tmp_p
         module,
         "wait_for_stable_observable_chain",
         lambda stable_plan, stable_args, **kwargs: {"ok": True, "chain": {"validator_count": 1}},
+    )
+
+    monkeypatch.setattr(
+        module,
+        "verify_post_add_static_runtime_topology",
+        lambda verify_plan, verify_args, **kwargs: {"ok": True, "hosts": {"a": {"ok": True}, "b": {"ok": True}}},
     )
 
     def fake_propose(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -908,6 +937,121 @@ def test_mutate_apply_rpc_add_slurps_config_stages_public_entry_after_direct_rpc
         "update-public-rpc-entry",
         "verify-public-rpc",
     ]
+
+
+def test_mutate_apply_rpc_add_preserves_live_same_host_validator_from_runtime_metadata(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+    calls: list[tuple[str, Any]] = []
+    source_enode = "enode://" + ("1" * 128) + "@198.51.100.10:30321"
+    target_enode = "enode://" + ("2" * 128) + "@198.51.100.11:30312"
+    bundle = {
+        "ok": True,
+        "source_host": "a",
+        "lineage_hash": "abc123",
+        "files": {
+            "genesis_json": '{"config":{"chainId":42424241}}\n',
+            "static_nodes_all_json": json.dumps([source_enode, target_enode]) + "\n",
+            "network_metadata_json": json.dumps(
+                {
+                    "network": "testnet",
+                    "validators": [
+                        {"id": "validator-rpc-1", "enode": source_enode, "p2p": "198.51.100.10:30321"},
+                        {"id": "validator-2", "enode": target_enode, "p2p": "198.51.100.11:30312"},
+                    ],
+                    "rpc_nodes": [],
+                }
+            )
+            + "\n",
+        },
+        "sha256": {},
+    }
+
+    monkeypatch.setattr(
+        module,
+        "discover_qbft_config_bundle",
+        lambda discover_plan, discover_args, target_services: (bundle, {"ok": True, "selected_source_host": "a"}),
+    )
+
+    def fake_coolify_sync(sync_plan: Any, sync_args: Any, *, deploy: bool = False) -> dict[str, Any]:
+        calls.append(("coolify-sync", sync_plan, sync_args, deploy))
+        assert [host.id for host in sync_plan.hosts] == ["b"]
+        assert sorted(service.id for service in sync_plan.services) == ["rpc-2", "validator-2"]
+        assert sync_args.host == "b"
+        assert sync_args.no_bootstrap is True
+        assert sync_args._runtime_import_bundle is bundle
+        assert sync_args._qbft_static_refresh["static_nodes"] == [source_enode, target_enode]
+        assert sync_args._qbft_static_refresh["service_enodes"]["validator-2"] == target_enode
+        assert deploy is True
+        return {"ok": True, "service_uuid": "svc-b", "service_name": "main-computer-qbft-testnet-b"}
+
+    def fake_wait_for_rpc(wait_plan: Any, wait_args: Any) -> dict[str, Any]:
+        calls.append(("wait-rpc", wait_plan, wait_args))
+        assert wait_plan is plan
+        assert wait_args.rpc_url == "http://198.51.100.11:30012"
+        return {"ok": True, "rpc_url": wait_args.rpc_url, "chain_id": hex(plan.chain_id), "peer_count": 1}
+
+    monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
+    monkeypatch.setattr(module, "wait_for_rpc", fake_wait_for_rpc)
+    monkeypatch.setattr(
+        module,
+        "wait_for_stable_observable_chain",
+        lambda stable_plan, stable_args, **kwargs: {"ok": True, "chain": {"chain_id": hex(plan.chain_id), "block_number": 123}},
+    )
+
+    packet = module.mutate_network(plan, _args(add="rpc-2", apply=True))
+
+    assert packet["ok"] is True
+    preserve_phase = next(phase for phase in packet["apply_phases"] if phase["phase"] == "preserve-host-services")
+    assert preserve_phase["result"]["preserved_services"] == ["validator-2"]
+    assert sorted(preserve_phase["result"]["execution_services"]) == ["rpc-2", "validator-2"]
+    assert [call[0] for call in calls] == ["coolify-sync", "wait-rpc", "coolify-sync"]
+
+
+def test_mutate_apply_rpc_add_returns_structured_failure_when_wait_rpc_raises(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+    bundle = {
+        "ok": True,
+        "source_host": "a",
+        "lineage_hash": "abc123",
+        "files": {
+            "genesis_json": '{"config":{"chainId":42424241}}\n',
+            "static_nodes_all_json": "[]\n",
+            "network_metadata_json": '{"network":"testnet"}\n',
+        },
+        "sha256": {},
+    }
+
+    monkeypatch.setattr(
+        module,
+        "discover_qbft_config_bundle",
+        lambda discover_plan, discover_args, target_services: (bundle, {"ok": True, "selected_source_host": "a"}),
+    )
+    monkeypatch.setattr(
+        module,
+        "coolify_sync",
+        lambda sync_plan, sync_args, deploy=False: {"ok": True, "service_uuid": "svc-b", "service_name": "main-computer-qbft-testnet-b"},
+    )
+
+    def fail_wait_for_rpc(wait_plan: Any, wait_args: Any) -> dict[str, Any]:
+        raise TimeoutError("rpc port did not answer")
+
+    monkeypatch.setattr(module, "wait_for_rpc", fail_wait_for_rpc)
+
+    packet = module.mutate_network(plan, _args(add="rpc-2", apply=True))
+
+    assert packet["ok"] is False
+    assert packet["execution"]["message"] == (
+        "RPC-only add failed while waiting for rpc-2 direct RPC. The public RPC entry was not enabled for this host."
+    )
+    wait_phase = next(phase for phase in packet["apply_phases"] if phase["phase"] == "wait-direct-rpc")
+    assert wait_phase["result"]["ok"] is False
+    assert "TimeoutError: rpc port did not answer" == wait_phase["result"]["error"]
 
 
 def test_mutate_apply_rpc_add_dry_run_does_not_wait_or_probe(tmp_path: Path, monkeypatch: Any) -> None:

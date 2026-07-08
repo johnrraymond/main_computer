@@ -169,9 +169,75 @@
           <button type="button" id="mcel-18n-wallet-tool-simulate-target">Simulate target/value stale</button>
           <button type="button" id="mcel-18n-wallet-tool-copy-receipt">Copy wallet receipt</button>
         </div>
+        <fieldset class="mcel-wallet-backlog-schemes" data-mcel-wallet-backlog-remediation="true">
+          <legend>Wallet backlog remediation scheme</legend>
+          <p>
+            The wallet component chooses how its own connect/disconnect backlog is remediated.
+            SCM receipts the selected policy instead of guessing component intent.
+          </p>
+          <div class="mcel-wallet-backlog-scheme-grid">
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="ignore"> Ignore</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="disable-while-busy" checked> Disable while busy</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="single-flight"> Single flight</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="drop-while-busy"> Drop while busy</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="queue-serial"> Queue serial</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="latest-wins"> Latest wins / nuke backlog</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="coalesce"> Coalesce</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="debounce"> Debounce</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="throttle"> Throttle</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="cooldown"> Cooldown</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="block-before-external-provider"> Block before provider</label>
+          </div>
+          <output id="mcel-18n-wallet-backlog-scheme-status" data-status="disable-while-busy" aria-live="polite">
+            scheme=disable-while-busy · busy=false · queued=0 · suppressed=0
+          </output>
+        </fieldset>
         <output id="mcel-18n-wallet-tool-status" class="mcel-tiny-contract-proof" data-status="locked" aria-live="polite">
           18N wallet tool is locked until a current MCEL commit draft is proven.
         </output>
+        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" aria-label="18N final locked wallet specimen board">
+          <div class="mcel-18n-wallet-board-head">
+            <strong>18N-J final locked wallet specimen</strong>
+            <span id="mcel-18n-wallet-tool-visible-phase">Locked before provider execution</span>
+          </div>
+          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N visible status">
+            <article>
+              <span>txDraft</span>
+              <strong id="mcel-18n-wallet-tool-visible-tx-draft-status">waiting</strong>
+            </article>
+            <article>
+              <span>Freshness</span>
+              <strong id="mcel-18n-wallet-tool-visible-freshness-status">not observed</strong>
+            </article>
+            <article>
+              <span>Unlock</span>
+              <strong id="mcel-18n-wallet-tool-visible-unlock-status">incomplete</strong>
+            </article>
+            <article>
+              <span>Provider mutation</span>
+              <strong id="mcel-18n-wallet-tool-visible-provider-status">refused</strong>
+            </article>
+          </div>
+          <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Final locked wallet flow">
+            <li>create txDraft · waiting</li>
+            <li>review draft · waiting</li>
+            <li>run freshness · waiting</li>
+            <li>run preflight · locked</li>
+            <li>attempt send/sign/broadcast · refused before provider</li>
+            <li>receipt records blocked attempt · waiting</li>
+          </ol>
+          <div class="mcel-18n-wallet-board-foot">
+            <div>
+              <span class="mcel-18n-wallet-mini-label">Visible blockers</span>
+              <ul id="mcel-18n-wallet-tool-visible-blockers">
+                <li>wallet-send-sign-locked</li>
+              </ul>
+            </div>
+            <p id="mcel-18n-wallet-tool-visible-next">
+              Next action: rebuild draft or inspect receipt; wallet unlock remains a separate future patch.
+            </p>
+          </div>
+        </section>
         <pre id="mcel-18n-wallet-tool-tx-draft" class="mcel-tiny-contract-evidence">MCEL wallet txDraft specimen is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-freshness" class="mcel-tiny-contract-evidence">MCEL wallet freshness snapshot is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-preflight" class="mcel-tiny-contract-evidence">MCEL 18N preflight has not run yet.</pre>

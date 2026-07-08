@@ -6371,6 +6371,163 @@ body.mcel-modal-open {
   white-space: pre-wrap;
 }
 
+.mcel-wallet-backlog-schemes {
+  display: grid;
+  gap: 10px;
+  margin: 10px;
+  padding: 12px;
+  border: 1px solid rgba(115, 214, 255, 0.22);
+  border-radius: 12px;
+  background: rgba(115, 214, 255, 0.05);
+}
+
+.mcel-wallet-backlog-schemes legend {
+  color: var(--mint);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mcel-wallet-backlog-schemes p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mcel-wallet-backlog-scheme-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 7px;
+}
+
+.mcel-wallet-backlog-scheme-grid label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(246, 199, 91, 0.15);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.18);
+  color: #f7f3e8;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.mcel-wallet-backlog-scheme-grid input {
+  accent-color: var(--gold);
+}
+
+#mcel-18n-wallet-backlog-scheme-status {
+  padding: 8px;
+  border: 1px solid rgba(142, 255, 195, 0.14);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--gold);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.mcel-18n-wallet-visible-board {
+  display: grid;
+  gap: 10px;
+  margin: 10px;
+  padding: 12px;
+  border: 1px solid rgba(142, 255, 195, 0.24);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at top right, rgba(142, 255, 195, 0.12), transparent 36%),
+    rgba(115, 214, 255, 0.06);
+}
+
+.mcel-18n-wallet-board-head,
+.mcel-18n-wallet-board-foot {
+  display: grid;
+  gap: 8px;
+}
+
+.mcel-18n-wallet-board-head strong {
+  color: var(--mint);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.mcel-18n-wallet-board-head span,
+.mcel-18n-wallet-board-foot p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mcel-18n-wallet-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(88px, 1fr));
+  gap: 8px;
+}
+
+.mcel-18n-wallet-kpis article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(246, 199, 91, 0.16);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.mcel-18n-wallet-kpis span,
+.mcel-18n-wallet-mini-label {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mcel-18n-wallet-kpis strong {
+  color: var(--gold);
+  font-size: 12px;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.mcel-18n-wallet-flow {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcel-18n-wallet-flow li,
+#mcel-18n-wallet-tool-visible-blockers li {
+  padding: 6px 8px;
+  border: 1px solid rgba(115, 214, 255, 0.14);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.18);
+  color: #f7f3e8;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+#mcel-18n-wallet-tool-visible-blockers {
+  display: grid;
+  gap: 5px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (max-width: 980px) {
+  .mcel-18n-wallet-kpis,
+  .mcel-wallet-backlog-scheme-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+}
+
 .mcel-tiny-contract-runtime {
   display: grid;
   gap: 10px;

@@ -1770,6 +1770,9 @@
           walletStaleSimulation: null,
           walletRebuildDraftCount: 0,
           walletStaleSimulationCount: 0,
+          walletBacklogRemediationScheme: "disable-while-busy",
+          walletBacklogRuntime: null,
+          walletProviderEventBinding: null,
           evidence: [],
           walletAdapter: null,
           walletSubsystemMode: "unobserved",
@@ -1782,6 +1785,33 @@
       }
       if (!Array.isArray(mcelLabState.tinyContract.commitBoundaryReceipts)) {
         mcelLabState.tinyContract.commitBoundaryReceipts = [];
+      }
+      if (typeof mcelLabState.tinyContract.walletBacklogRemediationScheme !== "string" || !mcelLabState.tinyContract.walletBacklogRemediationScheme) {
+        mcelLabState.tinyContract.walletBacklogRemediationScheme = "disable-while-busy";
+      }
+      if (!mcelLabState.tinyContract.walletBacklogRuntime || typeof mcelLabState.tinyContract.walletBacklogRuntime !== "object") {
+        mcelLabState.tinyContract.walletBacklogRuntime = {
+          kind: "mcelWalletBacklogRuntime.v1",
+          active: false,
+          action: "",
+          reason: "",
+          sequence: 0,
+          queued: [],
+          latest: null,
+          timers: {},
+          inFlight: null,
+          cooldownUntil: 0,
+          providerPendingUntil: 0,
+          suppressedCount: 0,
+          queuedCount: 0,
+          coalescedCount: 0,
+          droppedCount: 0,
+          nukedCount: 0,
+          disabledCount: 0,
+          lastReceipt: null,
+          lastScheme: mcelLabState.tinyContract.walletBacklogRemediationScheme,
+          renderTimer: null
+        };
       }
       if (!mcelLabState.tinyContract.lastWalletCommitBoundary || typeof mcelLabState.tinyContract.lastWalletCommitBoundary !== "object") {
         mcelLabState.tinyContract.lastWalletCommitBoundary = mcelCommitBoundaryDefault("wallet.send-sign", "state-initialized");
@@ -3844,6 +3874,14 @@
       const negativePathsSlot = document.querySelector("#mcel-18n-wallet-tool-negative-paths");
       const unlockRequirementsSlot = document.querySelector("#mcel-18n-wallet-tool-unlock-requirements");
       const finalLockedSpecimenSlot = document.querySelector("#mcel-18n-wallet-tool-final-locked-specimen");
+      const visiblePhaseSlot = document.querySelector("#mcel-18n-wallet-tool-visible-phase");
+      const visibleTxDraftStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-tx-draft-status");
+      const visibleFreshnessStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-freshness-status");
+      const visibleUnlockStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-unlock-status");
+      const visibleProviderStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-provider-status");
+      const visibleFlowSlot = document.querySelector("#mcel-18n-wallet-tool-visible-flow");
+      const visibleBlockersSlot = document.querySelector("#mcel-18n-wallet-tool-visible-blockers");
+      const visibleNextSlot = document.querySelector("#mcel-18n-wallet-tool-visible-next");
       const preflight = boundary.mcelCommitPreflight || boundary.mcelCommitConsumerGate?.endgamePreflight || {};
       const receipt = boundary.mcelCommitReceipt || {};
       const walletTxDraft = boundary.walletTxDraft || {};
@@ -3853,6 +3891,8 @@
       const walletUnlockRequirements = boundary.walletUnlockRequirements || {};
       const walletFinalLockedSpecimen = boundary.walletFinalLockedSpecimen || {};
       const tinyState = ensureMcelTinyContractState();
+      const walletBacklogPolicy = mcelWalletBacklogDeclaredPolicy();
+      const walletBacklogRuntime = mcelWalletBacklogRuntimeSnapshot();
       const receiptLedger = (tinyState.commitBoundaryReceipts || []).slice(-8);
       if (statusSlot) {
         statusSlot.dataset.status = boundary.status || "locked";
@@ -3863,6 +3903,7 @@
           `simulation=${walletTxDraft.simulation?.kind || "none"}`,
           `canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`,
           `unlock=${walletUnlockRequirements.status || "incomplete"} final=${walletFinalLockedSpecimen.finalStatus || "locked"}`,
+          `backlogScheme=${walletBacklogPolicy.selectedScheme} queued=${walletBacklogRuntime.queuedCount} suppressed=${walletBacklogRuntime.suppressedCount} nuked=${walletBacklogRuntime.nukedCount}`,
           `next: ${boundary.nextAction || preflight.summary || "inspect MCEL commit receipt"}`
         ].join("\n");
       }
@@ -3900,7 +3941,9 @@
           walletPreflightReport,
           walletNegativePathTestWall,
           walletUnlockRequirements,
-          walletFinalLockedSpecimen
+          walletFinalLockedSpecimen,
+          walletBacklogPolicy,
+          walletBacklogRuntime
         }, null, 2);
       }
       if (receiptSlot) {
@@ -3912,6 +3955,8 @@
           walletNegativePathTestWall,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
+          walletBacklogPolicy,
+          walletBacklogRuntime,
           mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {},
           invariant: boundary.invariant || []
         }, null, 2);
@@ -3936,6 +3981,58 @@
           boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           walletFinalLockedSpecimen
         }, null, 2);
+      }
+      const visibleBlockers = [...new Set([
+        ...(walletFreshnessSnapshot.blockers || []),
+        ...(preflight.blockers || []),
+        ...(walletPreflightReport.blockers || []),
+        ...(boundary.mcelCommitConsumerGate?.blockers || []),
+        ...(walletNegativePathTestWall.blockers || []),
+        "wallet-send-sign-locked"
+      ].filter(Boolean))].slice(0, 6);
+      if (visiblePhaseSlot) {
+        visiblePhaseSlot.textContent = `18N-MCEL-j visible: ${walletFinalLockedSpecimen.finalStatus || "locked"} before provider execution`;
+      }
+      if (visibleTxDraftStatusSlot) {
+        visibleTxDraftStatusSlot.textContent = walletTxDraft.status || boundary.mcelCommitDraft?.status || "empty";
+      }
+      if (visibleFreshnessStatusSlot) {
+        visibleFreshnessStatusSlot.textContent = walletFreshnessSnapshot.status || boundary.mcelCommitFreshness?.status || "not-observed";
+      }
+      if (visibleUnlockStatusSlot) {
+        visibleUnlockStatusSlot.textContent = walletUnlockRequirements.status || "incomplete";
+      }
+      if (visibleProviderStatusSlot) {
+        visibleProviderStatusSlot.textContent = receipt.mutationExecuted === true ? "executed" : "refused";
+      }
+      if (visibleFlowSlot) {
+        visibleFlowSlot.innerHTML = "";
+        const visibleFlow = Array.isArray(walletFinalLockedSpecimen.flow) && walletFinalLockedSpecimen.flow.length
+          ? walletFinalLockedSpecimen.flow
+          : [
+              {step: "create txDraft", status: walletTxDraft.status || "empty"},
+              {step: "review draft", status: walletTxDraft.reviewed === true ? "reviewed" : "not-reviewed"},
+              {step: "run freshness", status: walletFreshnessSnapshot.status || "not-observed"},
+              {step: "run preflight", status: preflight.status || "locked"},
+              {step: "attempt send/sign/broadcast", status: "refused-before-provider"},
+              {step: "receipt records blocked attempt", status: receipt.status || "blocked"}
+            ];
+        visibleFlow.forEach((entry) => {
+          const item = document.createElement("li");
+          item.textContent = `${entry.step || "wallet boundary step"} · ${entry.status || "locked"}`;
+          visibleFlowSlot.appendChild(item);
+        });
+      }
+      if (visibleBlockersSlot) {
+        visibleBlockersSlot.innerHTML = "";
+        visibleBlockers.forEach((blocker) => {
+          const item = document.createElement("li");
+          item.textContent = String(blocker);
+          visibleBlockersSlot.appendChild(item);
+        });
+      }
+      if (visibleNextSlot) {
+        visibleNextSlot.textContent = `Next action: ${walletFinalLockedSpecimen.nextAction || boundary.nextAction || "stop here until a separate wallet unlock design is blessed"}`;
       }
       if (ledgerSlot) {
         ledgerSlot.textContent = JSON.stringify({
@@ -3968,6 +4065,8 @@
           walletNegativePathTestWall,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
+          walletBacklogPolicy,
+          walletBacklogRuntime,
           mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {}
         }, null, 2);
       }
@@ -3985,6 +4084,7 @@
         copyButton.dataset.receiptStatus = receipt.status || "blocked";
         copyButton.dataset.mutationExecuted = receipt.mutationExecuted === true ? "true" : "false";
       }
+      renderMcelWalletBacklogSchemeControls();
     }
 
 
@@ -4137,6 +4237,7 @@
           <dt>adapter</dt><dd>${liveLabel}</dd>
           <dt>rpc calls</dt><dd>${(adapter.calls || []).map((call) => call.method).slice(-4).join(", ") || "none"}</dd>
           <dt>provider events</dt><dd>accounts=${tinyState.providerAccountsChangedCount || 0} switches=${tinyState.providerAccountSwitchCount || 0}</dd>
+          <dt>backlog scheme</dt><dd>${mcelWalletBacklogDeclaredPolicy().selectedScheme} · queued=${mcelWalletBacklogRuntimeSnapshot().queuedCount} · suppressed=${mcelWalletBacklogRuntimeSnapshot().suppressedCount}</dd>
           <dt>account</dt><dd>${wallet.account ? wallet.account.slice(0, 12) + "…" : "not connected"}</dd>
           <dt>chain</dt><dd>${network.chainId || "missing"} / expected ${network.expectedChainId || "0x28757b2"}</dd>
           <dt>gate</dt><dd>${network.ok ? "dev network ready" : network.status || "waiting"}</dd>
@@ -4247,6 +4348,7 @@
       renderMcelTinyRuntimeBadge(app, instance);
       renderMcelTinyEvidenceStrip(app, instance);
       renderMcelTinyContractMap(app);
+      renderMcelWalletBacklogSchemeControls(app);
     }
 
     function mountMcelTinyContractRuntime(source, reason = "manual", options = {}) {
@@ -4283,6 +4385,8 @@
         tinyState.lastWalletActionOutcome = null;
         tinyState.lastWalletCommitBoundary = mcelCommitBoundaryDefault("wallet.send-sign", "mount-reset");
         tinyState.commitBoundaryReceipts = [];
+        tinyState.walletBacklogRuntime = null;
+        mcelWalletBacklogRuntimeState();
         tinyState.evidence = [];
         resetMcelTinyContractWalletAdapterState("mount-reset");
       }
@@ -4536,6 +4640,18 @@
       if (!Array.isArray(adapter.calls)) adapter.calls = [];
       if (!Array.isArray(adapter.events)) adapter.events = [];
       return adapter;
+    }
+
+    function mcelTinyContractWalletProviderRuntimeState() {
+      const tinyState = ensureMcelTinyContractState();
+      if (!tinyState.walletProviderRuntime || typeof tinyState.walletProviderRuntime !== "object") {
+        tinyState.walletProviderRuntime = {
+          kind: "mcelWalletProviderRuntime.v1",
+          duplicateProviderBindingBlockedCount: 0
+        };
+      }
+      tinyState.walletProviderRuntime.duplicateProviderBindingBlockedCount = Number(tinyState.walletProviderRuntime.duplicateProviderBindingBlockedCount || 0);
+      return tinyState.walletProviderRuntime;
     }
 
     function mcelTinyContractWalletError(error) {
@@ -4976,11 +5092,501 @@
       return event;
     }
 
+    const MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES = [
+      {
+        id: "ignore",
+        label: "Ignore backlog",
+        summary: "Run every requested wallet lifecycle action immediately; useful only as a control case."
+      },
+      {
+        id: "disable-while-busy",
+        label: "Disable while busy",
+        summary: "Disable connect/disconnect controls while one wallet lifecycle is active, then re-enable."
+      },
+      {
+        id: "single-flight",
+        label: "Single flight",
+        summary: "Share the current in-flight wallet lifecycle promise instead of starting duplicates."
+      },
+      {
+        id: "drop-while-busy",
+        label: "Drop while busy",
+        summary: "Drop duplicate wallet lifecycle requests while one is running and receipt the drop."
+      },
+      {
+        id: "queue-serial",
+        label: "Queue serial",
+        summary: "Queue wallet lifecycle requests and run them one at a time in order."
+      },
+      {
+        id: "latest-wins",
+        label: "Latest wins / nuke backlog",
+        summary: "Keep only the latest requested wallet lifecycle action and nuke older queued work."
+      },
+      {
+        id: "coalesce",
+        label: "Coalesce",
+        summary: "Merge rapid duplicate lifecycle requests into one delayed execution window."
+      },
+      {
+        id: "debounce",
+        label: "Debounce",
+        summary: "Wait for click noise to settle, then run the last requested lifecycle action."
+      },
+      {
+        id: "throttle",
+        label: "Throttle",
+        summary: "Allow one wallet lifecycle action per throttle window and receipt suppressed work."
+      },
+      {
+        id: "cooldown",
+        label: "Cooldown",
+        summary: "Run, then enforce a cooldown window before another lifecycle can start."
+      },
+      {
+        id: "block-before-external-provider",
+        label: "Block before provider",
+        summary: "Block duplicate work before issuing wallet provider requests when permission UI is pending."
+      }
+    ];
+
+    function mcelWalletBacklogRemediationSchemes() {
+      return MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES.map((entry) => ({...entry}));
+    }
+
+    function mcelWalletBacklogSchemeIds() {
+      return MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES.map((entry) => entry.id);
+    }
+
+    function mcelWalletBacklogRemediationScheme(id = "") {
+      return MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES.find((entry) => entry.id === id)
+        || MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES.find((entry) => entry.id === "disable-while-busy");
+    }
+
+    function mcelWalletBacklogRuntimeState() {
+      const tinyState = ensureMcelTinyContractState();
+      if (!tinyState.walletBacklogRuntime || typeof tinyState.walletBacklogRuntime !== "object") {
+        tinyState.walletBacklogRuntime = {
+          kind: "mcelWalletBacklogRuntime.v1",
+          active: false,
+          action: "",
+          reason: "",
+          sequence: 0,
+          queued: [],
+          latest: null,
+          timers: {},
+          inFlight: null,
+          cooldownUntil: 0,
+          providerPendingUntil: 0,
+          suppressedCount: 0,
+          queuedCount: 0,
+          coalescedCount: 0,
+          droppedCount: 0,
+          nukedCount: 0,
+          disabledCount: 0,
+          lastReceipt: null,
+          lastScheme: tinyState.walletBacklogRemediationScheme || "disable-while-busy",
+          renderTimer: null
+        };
+      }
+      if (!Array.isArray(tinyState.walletBacklogRuntime.queued)) tinyState.walletBacklogRuntime.queued = [];
+      if (!tinyState.walletBacklogRuntime.timers || typeof tinyState.walletBacklogRuntime.timers !== "object") tinyState.walletBacklogRuntime.timers = {};
+      return tinyState.walletBacklogRuntime;
+    }
+
+    function mcelWalletBacklogRuntimeSnapshot() {
+      const runtime = mcelWalletBacklogRuntimeState();
+      return {
+        kind: "mcelWalletBacklogRuntimeSnapshot.v1",
+        active: runtime.active === true,
+        action: runtime.action || "",
+        reason: runtime.reason || "",
+        scheme: ensureMcelTinyContractState().walletBacklogRemediationScheme || "disable-while-busy",
+        sequence: Number(runtime.sequence || 0),
+        queuedCount: (runtime.queued || []).length,
+        latestQueued: runtime.latest?.action || "",
+        cooldownActive: Number(runtime.cooldownUntil || 0) > Date.now(),
+        providerPending: Number(runtime.providerPendingUntil || 0) > Date.now(),
+        suppressedCount: Number(runtime.suppressedCount || 0),
+        coalescedCount: Number(runtime.coalescedCount || 0),
+        droppedCount: Number(runtime.droppedCount || 0),
+        nukedCount: Number(runtime.nukedCount || 0),
+        disabledCount: Number(runtime.disabledCount || 0),
+        lastReceipt: runtime.lastReceipt || null
+      };
+    }
+
+    function selectedMcelWalletBacklogRemediationScheme() {
+      const tinyState = ensureMcelTinyContractState();
+      const selected = mcelWalletBacklogRemediationScheme(tinyState.walletBacklogRemediationScheme || "disable-while-busy");
+      tinyState.walletBacklogRemediationScheme = selected.id;
+      return selected;
+    }
+
+    function setMcelWalletBacklogRemediationScheme(schemeId = "disable-while-busy", reason = "manual-wallet-backlog-scheme") {
+      const tinyState = ensureMcelTinyContractState();
+      const scheme = mcelWalletBacklogRemediationScheme(schemeId);
+      tinyState.walletBacklogRemediationScheme = scheme.id;
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.lastScheme = scheme.id;
+      runtime.latest = null;
+      runtime.queued = [];
+      runtime.lastReceipt = {
+        kind: "mcelWalletBacklogRemediationReceipt.v1",
+        action: "wallet.backlog.scheme.select",
+        scheme: scheme.id,
+        status: "selected",
+        reason
+      };
+      recordMcelTinyContractEvidence(
+        "wallet-backlog",
+        `Wallet backlog remediation scheme selected: ${scheme.label}.`,
+        "pass",
+        {
+          kind: "mcelWalletComponentBacklogRemediationPolicy.v1",
+          scheme,
+          runtime: mcelWalletBacklogRuntimeSnapshot()
+        }
+      );
+      renderMcelWalletBacklogSchemeControls();
+      refreshMcel18nWalletToolBoundary(reason);
+      return scheme;
+    }
+
+    function mcelWalletBacklogReceipt({action = "", scheme = null, status = "observed", reason = "", detail = {}} = {}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      const selected = scheme || selectedMcelWalletBacklogRemediationScheme();
+      const receipt = {
+        kind: "mcelWalletBacklogRemediationReceipt.v1",
+        remediationVersion: "18N-MCEL-j3",
+        component: "mcel.wallet-test",
+        action,
+        scheme: selected.id,
+        status,
+        reason,
+        detail,
+        runtime: mcelWalletBacklogRuntimeSnapshot(),
+        invariant: [
+          "component declares backlog remediation policy",
+          "SCM receipts the selected policy instead of guessing semantics",
+          "wallet send/sign/broadcast remain locked"
+        ]
+      };
+      runtime.lastReceipt = receipt;
+      recordMcelTinyContractEvidence(
+        "wallet-backlog",
+        `Wallet backlog remediation ${status}: ${action} via ${selected.id}.`,
+        ["executed", "queued", "already-satisfied"].includes(status) ? "pass" : "warn",
+        receipt
+      );
+      return receipt;
+    }
+
+    function mcelWalletBacklogDeclaredPolicy() {
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      return {
+        kind: "mcelWalletComponentBacklogRemediationPolicy.v1",
+        policyVersion: "18N-MCEL-j3",
+        component: "mcel.wallet-test",
+        selectedScheme: scheme.id,
+        selectedSchemeLabel: scheme.label,
+        availableSchemes: mcelWalletBacklogRemediationSchemes(),
+        operations: {
+          "wallet.connect": scheme.id,
+          "wallet.disconnect": scheme.id,
+          "wallet.provider.accountsChanged": scheme.id === "ignore" ? "ignore" : "coalesce",
+          "wallet.provider.chainChanged": scheme.id === "ignore" ? "ignore" : "coalesce",
+          "wallet.proof.render": scheme.id === "ignore" ? "ignore" : "coalesce"
+        },
+        scmRole: "observe-apply-and-receipt-declared-component-policy",
+        invariant: [
+          "SCM does not infer wallet backlog semantics",
+          "wallet component owns its backlog policy",
+          "MCEL supplies reusable remediation schemes",
+          "selected scheme is visible and receipted"
+        ]
+      };
+    }
+
+    function mcelWalletBacklogProofRenderPolicyForScheme(scheme) {
+      const selected = scheme || mcelWalletBacklogRemediationScheme();
+      return {
+        kind: "mcelWalletProofRenderPolicy.v1",
+        scheme: selected.id,
+        strategy: selected.id === "ignore" ? "immediate" : "coalesce",
+        coalesce: selected.id !== "ignore"
+      };
+    }
+
+    function mcelWalletBacklogExecutionOptionsForScheme(scheme, action = "") {
+      const selected = scheme || mcelWalletBacklogRemediationScheme();
+      return {
+        kind: "mcelWalletBacklogExecutionOptions.v1",
+        scheme: selected.id,
+        action,
+        providerRequest: {
+          guardPermissionRequest: selected.id === "block-before-external-provider" && action === "wallet.connect"
+        },
+        proofRender: mcelWalletBacklogProofRenderPolicyForScheme(selected)
+      };
+    }
+
+    function selectedMcelWalletBacklogExecutionOptions(action = "") {
+      return mcelWalletBacklogExecutionOptionsForScheme(selectedMcelWalletBacklogRemediationScheme(), action);
+    }
+
+    function mcelWalletBacklogButtonAction(button) {
+      const effect = button?.getAttribute?.("data-mc-effect") || "";
+      if (effect === "wallet.connect" || button?.id === "mcel-tiny-contract-wallet") return "wallet.connect";
+      if (effect === "wallet.disconnect" || button?.id === "mcel-tiny-contract-disconnect") return "wallet.disconnect";
+      return "";
+    }
+
+    function mcelWalletBacklogButtonDisabled(button, {scheme = null, runtime = null} = {}) {
+      const action = mcelWalletBacklogButtonAction(button);
+      const active = runtime?.active === true;
+      if (!action || !active) return false;
+      if (scheme?.id === "disable-while-busy") return true;
+      if (scheme?.id === "cooldown") return action === runtime.action;
+      return false;
+    }
+
+    function renderMcelWalletBacklogSchemeControls(app = null) {
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      const runtime = mcelWalletBacklogRuntimeState();
+      const snapshot = mcelWalletBacklogRuntimeSnapshot();
+      const busy = runtime.active === true || snapshot.providerPending;
+      [...document.querySelectorAll('input[name="mcel-wallet-backlog-remediation-scheme"]')].forEach((input) => {
+        input.checked = input.value === scheme.id;
+        input.dataset.selected = input.checked ? "true" : "false";
+      });
+      const status = document.querySelector("#mcel-18n-wallet-backlog-scheme-status");
+      if (status) {
+        status.dataset.scheme = scheme.id;
+        status.dataset.busy = busy ? "true" : "false";
+        status.textContent = [
+          `scheme=${scheme.id}`,
+          `busy=${busy}`,
+          `queued=${snapshot.queuedCount}`,
+          `suppressed=${snapshot.suppressedCount}`,
+          `nuked=${snapshot.nukedCount}`,
+          `cooldown=${snapshot.cooldownActive}`,
+          `providerPending=${snapshot.providerPending}`
+        ].join(" · ");
+      }
+      const roots = [app, document].filter(Boolean);
+      roots.forEach((root) => {
+        [...root.querySelectorAll('[data-mc-effect="wallet.connect"], [data-mc-effect="wallet.disconnect"], #mcel-tiny-contract-wallet, #mcel-tiny-contract-disconnect')].forEach((button) => {
+          const disabled = mcelWalletBacklogButtonDisabled(button, {scheme, runtime});
+          button.dataset.mcelWalletBacklogScheme = scheme.id;
+          button.disabled = disabled;
+          if (disabled) runtime.disabledCount = Number(runtime.disabledCount || 0) + 1;
+          button.title = disabled ? `Wallet backlog remediation '${scheme.id}' is settling ${runtime.action || "wallet lifecycle work"}.` : "";
+        });
+      });
+      return {scheme, busy, snapshot};
+    }
+
+    function scheduleMcelWalletBacklogProofRender(app = null, reason = "wallet-backlog-proof-render", renderPolicy = {coalesce: true, strategy: "coalesce"}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      const policy = renderPolicy || {coalesce: true, strategy: "coalesce"};
+      if (policy.coalesce === false || policy.strategy === "immediate") {
+        renderMcelTinyContractProof(app, reason);
+        renderMcelWalletBacklogSchemeControls(app);
+        return null;
+      }
+      runtime.coalescedCount = Number(runtime.coalescedCount || 0) + 1;
+      runtime.lastProofRenderReason = reason;
+      if (runtime.renderTimer) return runtime.renderTimer;
+      runtime.renderTimer = window.setTimeout(() => {
+        runtime.renderTimer = null;
+        const target = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        renderMcelTinyContractProof(target, runtime.lastProofRenderReason || reason);
+        renderMcelWalletBacklogSchemeControls(target);
+      }, 140);
+      return runtime.renderTimer;
+    }
+
+    function mcelWalletProviderPendingBackoffActive() {
+      return Number(mcelWalletBacklogRuntimeState().providerPendingUntil || 0) > Date.now();
+    }
+
+    function beginMcelWalletProviderPermissionRequest(detail = {}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.providerPendingUntil = Math.max(Number(runtime.providerPendingUntil || 0), Date.now() + 4500);
+      runtime.providerPendingDetail = detail;
+      renderMcelWalletBacklogSchemeControls();
+      return true;
+    }
+
+    function clearMcelWalletProviderPermissionRequest() {
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.providerPendingUntil = 0;
+      runtime.providerPendingDetail = null;
+      renderMcelWalletBacklogSchemeControls();
+    }
+
+    function markMcelWalletProviderPendingBackoff(detail = {}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.providerPendingUntil = Math.max(Number(runtime.providerPendingUntil || 0), Date.now() + 4500);
+      runtime.providerPendingDetail = detail;
+      runtime.lastReceipt = mcelWalletBacklogReceipt({
+        action: "wallet.provider.permission-request",
+        status: "blocked-before-provider",
+        reason: "provider-request-already-pending",
+        detail
+      });
+      renderMcelWalletBacklogSchemeControls();
+      return runtime.lastReceipt;
+    }
+
+    async function executeMcelWalletBacklogTask(action, reason, executor, scheme = selectedMcelWalletBacklogRemediationScheme()) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.active = true;
+      runtime.action = action;
+      runtime.reason = reason;
+      runtime.sequence = Number(runtime.sequence || 0) + 1;
+      runtime.lastScheme = scheme.id;
+      renderMcelWalletBacklogSchemeControls();
+      try {
+        const executionOptions = mcelWalletBacklogExecutionOptionsForScheme(scheme, action);
+        const result = await executor(executionOptions);
+        mcelWalletBacklogReceipt({action, scheme, status: "executed", reason, detail: {resultKind: result?.kind || ""}});
+        return result;
+      } finally {
+        runtime.active = false;
+        runtime.action = "";
+        runtime.reason = "";
+        if (scheme.id === "cooldown") {
+          runtime.cooldownUntil = Math.max(Number(runtime.cooldownUntil || 0), Date.now() + 900);
+        }
+        renderMcelWalletBacklogSchemeControls();
+        if (scheme.id === "latest-wins" && runtime.latest) {
+          const latest = runtime.latest;
+          runtime.latest = null;
+          window.setTimeout(() => {
+            void runMcelWalletBacklogRemediated(latest.action, latest.reason, latest.executor);
+          }, 0);
+        }
+        if (scheme.id === "queue-serial" && runtime.queued.length) {
+          const next = runtime.queued.shift();
+          window.setTimeout(() => {
+            void runMcelWalletBacklogRemediated(next.action, next.reason, next.executor);
+          }, 0);
+        }
+      }
+    }
+
+    async function runMcelWalletBacklogRemediated(action, reason, executor) {
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      const runtime = mcelWalletBacklogRuntimeState();
+      const executionOptions = mcelWalletBacklogExecutionOptionsForScheme(scheme, action);
+      const now = Date.now();
+      const providerPending = mcelWalletProviderPendingBackoffActive();
+      if (scheme.id === "ignore") {
+        return executor(executionOptions);
+      }
+      if (scheme.id === "single-flight" && runtime.inFlight) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        mcelWalletBacklogReceipt({action, scheme, status: "single-flight-shared", reason});
+        return runtime.inFlight;
+      }
+      if (scheme.id === "drop-while-busy" && runtime.active) {
+        runtime.droppedCount = Number(runtime.droppedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "dropped", reason, detail: {activeAction: runtime.action}});
+      }
+      if (scheme.id === "disable-while-busy" && runtime.active) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({
+          action,
+          scheme,
+          status: "suppressed",
+          reason: "wallet-backlog-active",
+          detail: {activeAction: runtime.action, providerPending}
+        });
+      }
+      if (scheme.id === "block-before-external-provider" && action === "wallet.connect" && (providerPending || (runtime.active && runtime.action === "wallet.connect"))) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({
+          action,
+          scheme,
+          status: "blocked-before-provider",
+          reason: providerPending ? "provider-request-already-pending" : "wallet-connect-already-active",
+          detail: {activeAction: runtime.action, providerPending}
+        });
+      }
+      if (scheme.id === "cooldown" && runtime.active) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "cooldown-active", reason, detail: {activeAction: runtime.action}});
+      }
+      if (scheme.id === "cooldown" && Number(runtime.cooldownUntil || 0) > now) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "cooldown-suppressed", reason, detail: {cooldownUntil: runtime.cooldownUntil}});
+      }
+      if (scheme.id === "throttle" && now - Number(runtime.lastThrottleRunAt || 0) < 900) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "throttled", reason, detail: {lastThrottleRunAt: runtime.lastThrottleRunAt}});
+      }
+      if (scheme.id === "queue-serial" && runtime.active) {
+        runtime.queued.push({action, reason, executor});
+        runtime.queuedCount = Number(runtime.queuedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "queued", reason, detail: {queuedCount: runtime.queued.length}});
+      }
+      if (scheme.id === "latest-wins" && runtime.active) {
+        runtime.latest = {action, reason, executor};
+        runtime.nukedCount = Number(runtime.nukedCount || 0) + 1;
+        runtime.queued = [];
+        return mcelWalletBacklogReceipt({action, scheme, status: "latest-wins-queued", reason, detail: {nukedBacklog: true}});
+      }
+      if (scheme.id === "coalesce" || scheme.id === "debounce") {
+        const key = `${scheme.id}:${action}`;
+        if (runtime.timers[key]) {
+          window.clearTimeout(runtime.timers[key]);
+          runtime.coalescedCount = Number(runtime.coalescedCount || 0) + 1;
+        }
+        return new Promise((resolve) => {
+          runtime.timers[key] = window.setTimeout(() => {
+            runtime.timers[key] = null;
+            resolve(executeMcelWalletBacklogTask(action, reason, executor, scheme));
+          }, scheme.id === "debounce" ? 320 : 160);
+        });
+      }
+      if (scheme.id === "throttle") {
+        runtime.lastThrottleRunAt = now;
+      }
+      const promise = executeMcelWalletBacklogTask(action, reason, executor, scheme);
+      if (scheme.id === "single-flight") {
+        runtime.inFlight = promise;
+        promise.finally(() => {
+          if (runtime.inFlight === promise) runtime.inFlight = null;
+        });
+      }
+      return promise;
+    }
+
     function mcelTinyContractInjectedProvider() {
       return window.ethereum && typeof window.ethereum.request === "function" ? window.ethereum : null;
     }
 
-    async function mcelTinyContractWalletRequest(provider, method, params = []) {
+    async function mcelTinyContractWalletRequest(provider, method, params = [], requestPolicy = {}) {
+      const guardProviderPermission = method === "eth_requestAccounts" && requestPolicy?.guardPermissionRequest === true;
+      if (guardProviderPermission && mcelWalletProviderPendingBackoffActive()) {
+        const detail = {
+          name: "McelWalletBacklogRemediation",
+          code: -32002,
+          message: "MCEL wallet component policy blocked duplicate provider permission request before SCM/provider backlog could grow; provider request was not re-issued."
+        };
+        recordMcelTinyContractWalletCall(method, "backlog-blocked", detail);
+        const error = new Error(detail.message);
+        error.name = detail.name;
+        error.code = detail.code;
+        throw error;
+      }
+      let permissionWindowOpened = false;
+      let keepProviderBackoff = false;
+      if (guardProviderPermission) {
+        permissionWindowOpened = beginMcelWalletProviderPermissionRequest({method, params});
+      }
       recordMcelTinyContractWalletCall(method, "start", {params});
       try {
         const value = await provider.request({method, params});
@@ -4992,7 +5598,15 @@
         const detail = mcelTinyContractWalletError(error);
         mcelTinyContractWalletAdapterState().lastError = detail.message;
         recordMcelTinyContractWalletCall(method, "fail", detail);
+        if (method === "eth_requestAccounts" && (String(detail.code || "") === "-32002" || /already pending/i.test(detail.message || ""))) {
+          keepProviderBackoff = true;
+          markMcelWalletProviderPendingBackoff(detail);
+        }
         throw error;
+      } finally {
+        if (permissionWindowOpened && !keepProviderBackoff) {
+          clearMcelWalletProviderPermissionRequest();
+        }
       }
     }
 
@@ -5000,6 +5614,7 @@
       const tinyState = ensureMcelTinyContractState();
       const instance = tinyState.scmInstance;
       const app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      const walletBacklogOptions = selectedMcelWalletBacklogExecutionOptions(effectName);
       if (!instance || !window.McelLabScm?.runEffect) {
         recordMcelTinyContractEvidence(
           "wallet-event",
@@ -5007,7 +5622,7 @@
           "warn",
           {effectName, payload, reason}
         );
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return null;
       }
       try {
@@ -5028,7 +5643,7 @@
           {effectName, payload, result}
         );
         syncMcelTinyContractDomFromScm(app, instance, reason);
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return result;
       } catch (error) {
         const detail = mcelTinyContractWalletError(error);
@@ -5039,12 +5654,34 @@
           {effectName, payload, error: detail}
         );
         syncMcelTinyContractDomFromScm(app, instance, `${reason} failed`);
-        renderMcelTinyContractProof(app, `${reason}-failed`);
+        scheduleMcelWalletBacklogProofRender(app, `${reason}-failed`, walletBacklogOptions.proofRender);
         return {error: detail};
       }
     }
 
+    function unbindMcelTinyContractWalletProviderEvents(binding = null) {
+      if (!binding?.provider || binding.bound !== true) return false;
+      const provider = binding.provider;
+      const off = typeof provider.removeListener === "function"
+        ? provider.removeListener.bind(provider)
+        : (typeof provider.off === "function" ? provider.off.bind(provider) : null);
+      if (!off) return false;
+      try {
+        off("accountsChanged", binding.accountsChanged);
+        off("chainChanged", binding.chainChanged);
+        off("disconnect", binding.disconnect);
+        off("error", binding.providerError);
+        binding.bound = false;
+        recordMcelTinyContractWalletEvent("provider.events.unbound", {kind: "mcelWalletProviderEventBinding.v1"});
+        return true;
+      } catch (error) {
+        recordMcelTinyContractWalletEvent("provider.events.unbind.failed", mcelTinyContractWalletError(error));
+        return false;
+      }
+    }
+
     function bindMcelTinyContractWalletProviderEvents(provider) {
+      const tinyState = ensureMcelTinyContractState();
       const adapter = mcelTinyContractWalletAdapterState();
       if (!provider || typeof provider.on !== "function") {
         adapter.eventsBound = false;
@@ -5053,7 +5690,24 @@
         });
         return false;
       }
-      if (adapter.eventsBound) return true;
+      const existing = tinyState.walletProviderEventBinding;
+      if (existing?.provider === provider && existing.bound === true) {
+        adapter.eventsBound = true;
+        adapter.accountsChanged = existing.accountsChanged;
+        adapter.chainChanged = existing.chainChanged;
+        adapter.disconnect = existing.disconnect;
+        adapter.providerError = existing.providerError;
+        const providerRuntime = mcelTinyContractWalletProviderRuntimeState();
+        providerRuntime.duplicateProviderBindingBlockedCount = Number(providerRuntime.duplicateProviderBindingBlockedCount || 0) + 1;
+        recordMcelTinyContractWalletEvent("provider.events.reused", {
+          kind: "mcelWalletProviderEventBinding.v1",
+          duplicateProviderBindingBlockedCount: providerRuntime.duplicateProviderBindingBlockedCount
+        });
+        return true;
+      }
+      if (existing?.provider && existing.bound === true && existing.provider !== provider) {
+        unbindMcelTinyContractWalletProviderEvents(existing);
+      }
       const accountsChanged = (accounts) => {
         const normalizedAccounts = Array.isArray(accounts) ? accounts : [];
         const outcome = recordMcelTinyContractExternalOutcome({
@@ -5136,19 +5790,30 @@
       provider.on("chainChanged", chainChanged);
       provider.on("disconnect", disconnect);
       provider.on("error", providerError);
+      tinyState.walletProviderEventBinding = {
+        kind: "mcelWalletProviderEventBinding.v1",
+        provider,
+        bound: true,
+        accountsChanged,
+        chainChanged,
+        disconnect,
+        providerError
+      };
       adapter.eventsBound = true;
       adapter.accountsChanged = accountsChanged;
       adapter.chainChanged = chainChanged;
       adapter.disconnect = disconnect;
       adapter.providerError = providerError;
       recordMcelTinyContractWalletEvent("provider.events.bound", {
+        kind: "mcelWalletProviderEventBinding.v1",
         events: ["accountsChanged", "chainChanged", "disconnect", "error"]
       });
       return true;
     }
 
-    async function readMcelTinyContractWalletProvider(interactive = false) {
+    async function readMcelTinyContractWalletProvider(interactive = false, walletBacklogOptions = {}) {
       const adapter = resetMcelTinyContractWalletAdapterState(interactive ? "interactive-connect" : "passive-connect");
+      const walletRequestPolicy = walletBacklogOptions?.providerRequest || {};
       adapter.ethersReady = Boolean(window.ethers?.BrowserProvider);
       adapter.walletSubsystemReady = Boolean(mcelTinyContractWalletSubsystem());
 
@@ -5242,7 +5907,7 @@
         chainId = "";
       }
       try {
-        accounts = await mcelTinyContractWalletRequest(provider, interactive ? "eth_requestAccounts" : "eth_accounts");
+        accounts = await mcelTinyContractWalletRequest(provider, interactive ? "eth_requestAccounts" : "eth_accounts", [], walletRequestPolicy);
       } catch (error) {
         accountRequestError = mcelTinyContractWalletError(error);
         accounts = [];
@@ -5376,7 +6041,68 @@
       }
     }
 
+    function mcelTinyContractConnectedWalletSnapshot() {
+      const instance = ensureMcelTinyContractState().scmInstance;
+      const wallet = instance?.runtime?.wallet || {};
+      const network = instance?.runtime?.network || {};
+      if (wallet.connected === true && wallet.account) {
+        return {
+          connected: true,
+          source: "mcel-scm-runtime",
+          account: wallet.account,
+          chainId: network.chainId || wallet.chainId || "",
+          networkOk: network.ok === true
+        };
+      }
+      const subsystemSnapshot = snapshotMcelTinyContractWalletSubsystemState();
+      if (subsystemSnapshot?.connected === true && subsystemSnapshot.address) {
+        return {
+          connected: true,
+          source: "wallet-subsystem",
+          account: subsystemSnapshot.address,
+          chainId: subsystemSnapshot.chainId || "",
+          networkOk: false
+        };
+      }
+      return {
+        connected: false,
+        source: instance ? "mcel-scm-runtime" : "unmounted",
+        account: "",
+        chainId: "",
+        networkOk: false
+      };
+    }
+
+    function mcelWalletBacklogAlreadySatisfied(action, reason, detail = {}) {
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      const receipt = mcelWalletBacklogReceipt({
+        action,
+        scheme,
+        status: "already-satisfied",
+        reason,
+        detail
+      });
+      renderMcelWalletBacklogSchemeControls();
+      refreshMcel18nWalletToolBoundary(`${reason}-already-satisfied`);
+      return {
+        kind: "mcelWalletBacklogAlreadySatisfied.v1",
+        action,
+        status: "already-satisfied",
+        reason,
+        detail,
+        receipt
+      };
+    }
+
     async function connectMcelTinyContractWallet(reason = "manual-wallet-connect") {
+      const connectedSnapshot = mcelTinyContractConnectedWalletSnapshot();
+      if (connectedSnapshot.connected === true) {
+        return mcelWalletBacklogAlreadySatisfied("wallet.connect", reason, connectedSnapshot);
+      }
+      return runMcelWalletBacklogRemediated("wallet.connect", reason, (walletBacklogOptions) => performMcelTinyContractWalletConnect(reason, walletBacklogOptions));
+    }
+
+    async function performMcelTinyContractWalletConnect(reason = "manual-wallet-connect", walletBacklogOptions = selectedMcelWalletBacklogExecutionOptions("wallet.connect")) {
       const tinyState = ensureMcelTinyContractState();
       let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
       if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
@@ -5385,7 +6111,7 @@
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return null;
       try {
-        const walletPayload = await readMcelTinyContractWalletProvider(true);
+        const walletPayload = await readMcelTinyContractWalletProvider(true, walletBacklogOptions);
         const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractOutcomeFromWalletPayload(walletPayload));
         walletPayload.outcome = outcome;
         const result = window.McelLabScm.runEffect(instance, "wallet.connect", walletPayload);
@@ -5409,7 +6135,7 @@
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet/dev-network state captured through declared runtime effect.");
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return {result, networkResult, walletPayload};
       } catch (error) {
         const detail = mcelTinyContractWalletError(error);
@@ -5442,13 +6168,17 @@
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet connect/check failed.");
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return {error: detail, outcome, effectEnvelope};
       }
     }
 
 
     async function disconnectMcelTinyContractWallet(reason = "manual-wallet-disconnect") {
+      return runMcelWalletBacklogRemediated("wallet.disconnect", reason, (walletBacklogOptions) => performMcelTinyContractWalletDisconnect(reason, walletBacklogOptions));
+    }
+
+    async function performMcelTinyContractWalletDisconnect(reason = "manual-wallet-disconnect", walletBacklogOptions = selectedMcelWalletBacklogExecutionOptions("wallet.disconnect")) {
       const tinyState = ensureMcelTinyContractState();
       let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
       if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
@@ -5498,7 +6228,7 @@
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet runtime state disconnected and transaction draft reset.");
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return {revoke, effectEnvelope, effectResult};
       } catch (error) {
         tinyState.lastWalletResetClean = false;
@@ -5512,7 +6242,7 @@
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet disconnect/reset failed.");
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return {revoke, error: detail};
       }
     }
@@ -5849,9 +6579,34 @@
       const externalOutcome = mcelTinyContractLatestWalletActionOutcome(instance);
       const actionOutcome = externalOutcome.status || "waiting";
       const externalOutcomeCaptured = externalOutcome.kind === "mcel-external-outcome" && actionOutcome !== "waiting";
+      const externalOutcomeOperation = String(externalOutcome.operation || "");
+      const externalOutcomePhase = String(externalOutcome.phase || "");
+      const externalOutcomeReason = String(externalOutcome.reason || "");
+      const externalOutcomeRpcMethods = Array.isArray(externalOutcome.rpc) ? externalOutcome.rpc.filter(Boolean) : [];
+      const walletProofRpcMethods = externalOutcomeRpcMethods.length ? externalOutcomeRpcMethods : walletRpcMethods;
       const externalBlockedOrException = ["blocked", "exception"].includes(actionOutcome);
       const txDraftBlockedAfterExternalOutcome = !externalBlockedOrException || instance?.runtime?.txDraft?.status !== "ready";
       const sourceSafeAfterExternalOutcome = true; // Source mutation safety is enforced by SCM declared writes and serialization; blocked outcomes must not be inferred from historical source state.
+      const walletConnectProviderEvidenceCaptured = externalOutcomeOperation === "wallet.connect" && (
+        walletProofRpcMethods.includes("eth_requestAccounts") ||
+        walletProofRpcMethods.includes("eth_accounts") ||
+        walletProofRpcMethods.includes("provider.detect") ||
+        walletProofRpcMethods.includes("MainComputerWalletApp.requestConnect") ||
+        externalOutcomePhase === "eth_requestAccounts" ||
+        externalOutcomeReason === "account-request-rejected" ||
+        externalOutcomeReason === "account-grant-missing" ||
+        Boolean(externalOutcome.error)
+      );
+      const walletPermissionRevokeEvidenceCaptured = externalOutcomeOperation === "wallet.disconnect" && (
+        walletProofRpcMethods.includes("wallet_revokePermissions") ||
+        walletProofRpcMethods.includes("MainComputerWalletApp.requestDisconnect") ||
+        externalOutcomePhase === "permission-revoke" ||
+        externalOutcomeReason === "permission-revoked" ||
+        externalOutcomeReason === "permission-revoke-unavailable" ||
+        externalOutcomeReason === "permission-revoke-not-completed" ||
+        externalOutcome.value?.attempted === true ||
+        externalOutcome.value?.revoked === true
+      );
       const checks = {
         contractLanguageParsed: language.kind === "mcel.scm.app" && language.name === "DevNetworkReleaseConsole",
         elementRegistryAvailable: Number(registryPacket?.elementCount || 0) > 0,
@@ -5873,6 +6628,10 @@
         walletMockFallbackDegraded: walletAdapter.mockFallback === true,
         externalOutcomeCaptured,
         externalOutcomeContained: externalOutcomeCaptured && ["pass", "blocked", "exception"].includes(actionOutcome),
+        walletConnectOutcomeCaptured: externalOutcomeCaptured && externalOutcomeOperation === "wallet.connect",
+        walletDisconnectOutcomeCaptured: externalOutcomeCaptured && externalOutcomeOperation === "wallet.disconnect",
+        walletConnectProviderEvidenceCaptured,
+        walletPermissionRevokeEvidenceCaptured,
         txDraftBlockedAfterExternalOutcome,
         sourceSafeAfterExternalOutcome,
         walletDisconnectReset: walletResetClean,
@@ -5925,25 +6684,46 @@
         checks.layoutContractChecked,
         checks.styleContractChecked
       ];
-      const walletLifecycleRequiredChecks = [
+      const walletLifecycleCommonRequiredChecks = [
         checks.contractLanguageParsed,
         checks.componentManifestResolved,
         checks.routeManifestResolved,
         checks.routeLoaderCommitted,
-        checks.walletEffectRan,
-        checks.walletAdapterExercised,
-        checks.walletEventsSubscribed,
-        checks.walletProviderEventsGoverned,
         checks.externalOutcomeContained,
         checks.txDraftBlockedAfterExternalOutcome,
         checks.sourceSafeAfterExternalOutcome,
-        checks.walletDisconnectReset,
-        checks.walletPermissionRevokeAttempted,
-        checks.networkVerified,
         checks.serializationClean,
         checks.layoutContractChecked,
         checks.styleContractChecked
       ];
+      const walletLifecycleConnectPassRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletConnectOutcomeCaptured,
+        checks.walletEffectRan,
+        checks.walletAdapterExercised,
+        checks.walletEventsSubscribed,
+        checks.walletProviderEventsGoverned,
+        checks.networkVerified
+      ];
+      const walletLifecycleConnectBlockedRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletConnectOutcomeCaptured,
+        checks.walletConnectProviderEvidenceCaptured,
+        checks.walletEventsSubscribed,
+        checks.walletProviderEventsGoverned
+      ];
+      const walletLifecycleDisconnectRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletDisconnectOutcomeCaptured,
+        checks.walletDisconnectReset,
+        checks.walletPermissionRevokeAttempted,
+        checks.walletPermissionRevokeEvidenceCaptured
+      ];
+      const walletLifecycleRequiredChecks = externalOutcomeOperation === "wallet.disconnect"
+        ? walletLifecycleDisconnectRequiredChecks
+        : (externalOutcomeOperation === "wallet.connect" && ["blocked", "exception"].includes(actionOutcome)
+          ? walletLifecycleConnectBlockedRequiredChecks
+          : walletLifecycleConnectPassRequiredChecks);
       const fullBatteryRequiredChecks = [
         checks.contractLanguageParsed,
         checks.elementRegistryAvailable,
@@ -6286,6 +7066,14 @@
       document.querySelector("#mcel-18n-wallet-tool-copy-receipt")?.addEventListener("click", () => {
         void copyMcel18nWalletToolReceipt();
       });
+      [...document.querySelectorAll('input[name="mcel-wallet-backlog-remediation-scheme"]')].forEach((input) => {
+        input.addEventListener("change", () => {
+          if (input.checked) {
+            setMcelWalletBacklogRemediationScheme(input.value, "manual-wallet-backlog-remediation-scheme");
+          }
+        });
+      });
+      renderMcelWalletBacklogSchemeControls();
       mcelTinyContractRepair?.addEventListener("click", () => repairMcelTinyContractRuntimeChrome("manual-repair"));
       mcelTinyContractBlockWrite?.addEventListener("click", () => attemptMcelTinyContractForbiddenWrite("manual-blocked-write"));
       mcelTinyContractLoadSource?.addEventListener("click", loadMcelTinyContractIntoSourceEditor);

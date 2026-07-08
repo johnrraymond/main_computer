@@ -680,25 +680,38 @@ import sys
 request = json.loads(sys.stdin.read())
 user = json.loads(request["user"])
 stage = user.get("stage")
-if stage == "planning":
+goal_directive_sha256 = user.get("goal_directive", {{}}).get("directive_sha256", "")
+if str(stage).startswith("ring3_live_"):
+    response = {{
+        "result_id": user.get("result_id", "live-rx-000"),
+        "round_type": user.get("round_type", ""),
+        "selected_files": ["app.py"],
+        "goal_directive_sha256": goal_directive_sha256,
+        "hub_reliability_score": 1.0,
+        "summary": "fake command provider completed " + str(stage),
+        "risks": [],
+    }}
+elif stage == "planning":
     active_constraints = user["active_constraints"]
     response = {{
         "selected_files": ["app.py"],
         "allowed_write_paths": ["app.py"],
         "active_constraints_ack": active_constraints,
         "required_tests": active_constraints.get("required_tests", []),
+        "goal_directive_sha256": goal_directive_sha256,
         "rationale": "fake command provider selected the pinned app.py file",
     }}
 else:
     response = {{
         "final_app_py": {final_app_py!r},
+        "goal_directive_sha256": goal_directive_sha256,
         "rationale": "fake command provider returned final app.py for " + str(stage),
     }}
 print(json.dumps(response))
 """,
         encoding="utf-8",
     )
-    return subprocess.list2cmdline([sys.executable, str(script_path)])
+    return subprocess.list2cmdline([sys.executable, "-S", str(script_path)])
 
 
 def _run_ai_restart_recovery(
@@ -709,6 +722,7 @@ def _run_ai_restart_recovery(
 ) -> dict[str, object]:
     run_dir = tmp_path / ("scripted_ai_restart_run" if scripted_ai_smoke else "live_ai_restart_run")
     run_dir.mkdir()
+    directive = "Runtime directive: make greet(name) strip leading/trailing whitespace before greeting and preserve punctuation."
     commands_path = run_dir / "commands.jsonl"
     commands_path.write_text(
         "\n".join(
@@ -716,6 +730,7 @@ def _run_ai_restart_recovery(
             for command in smoke.guidance_commands_for_scenario(
                 smoke.scenario_spec(smoke.AI_RESTART_RECOVERY_SCENARIO),
                 "Keep greeting punctuation unchanged.",
+                ai_restart_directive=directive,
             )
         )
         + "\n",
@@ -730,6 +745,8 @@ def _run_ai_restart_recovery(
         "--role",
         "agent",
         "--use-ai",
+        "--ai-restart-directive",
+        directive,
         "--scenario",
         smoke.AI_RESTART_RECOVERY_SCENARIO,
         "--run-id",
@@ -752,6 +769,8 @@ def _run_ai_restart_recovery(
         "agent",
         "--use-ai",
         "--restart",
+        "--ai-restart-directive",
+        directive,
         "--scenario",
         smoke.AI_RESTART_RECOVERY_SCENARIO,
         "--run-id",
@@ -794,6 +813,10 @@ def _run_ai_restart_recovery(
     recovery = report["edit_result"]["generated_editor"]["recovery"]
 
     assert report["agent_mode"] == "ai-generated-editor"
+    assert report["goal_directive"]["directive"] == directive
+    assert report["goal_directive"]["directive_sha256"] == smoke.text_sha256(directive)
+    assert report["edit_plan"]["task"] == directive
+    assert report["edit_plan"]["goal_directive"]["acknowledged"] is True
     assert report["restart"]["enabled"] is True
     assert report["restart"]["resumed_from_stage"] == "edit_plan"
     assert report["restart"]["reused_boundaries"] == ["bootstrap_boundary", "guidance_boundary"]
@@ -822,6 +845,13 @@ def _run_ai_restart_recovery(
         "ai_attempt_2_recorded",
         "ai_retry_removed_forbidden_file",
         "host_apply_accepted_corrected_ai_output",
+        "ai_plan_acknowledged_goal_directive",
+        "ai_restart_goal_directive_present",
+        "ai_restart_goal_directive_persisted_through_guidance",
+        "ai_restart_goal_directive_sha256_recorded",
+        "ai_restart_goal_directive_matches_task",
+        "ai_attempt_1_acknowledged_goal_directive",
+        "ai_attempt_2_acknowledged_goal_directive",
         "host_apply_rechecked_active_constraints",
         "verification_passed",
         "commit_created",
@@ -851,10 +881,13 @@ def test_ai_restart_recovery_smoke_script_has_simple_direct_surface(
     tmp_path: Path,
 ) -> None:
     run_dir = tmp_path / "direct-ai-restart-recovery-smoke"
+    directive = "CLI directive: trim greet input whitespace while keeping punctuation stable."
 
     assert smoke.main([
         "--ai-restart-recovery-smoke",
         "--scripted-ai-smoke",
+        "--ai-restart-directive",
+        directive,
         "--run-dir",
         str(run_dir),
     ]) == 0
@@ -865,6 +898,11 @@ def test_ai_restart_recovery_smoke_script_has_simple_direct_surface(
     assert report["ok"] is True
     assert summary["ok"] is True
     assert summary["live_ai_call_count"] == 0
+    assert summary["goal_directive"]["directive"] == directive
+    assert report["goal_directive"]["directive"] == directive
+    assert report["edit_plan"]["task"] == directive
+    assert report["contracts"]["ai_restart_goal_directive_present"] is True
+    assert report["contracts"]["ai_plan_acknowledged_goal_directive"] is True
     assert report["agent_mode"] == "ai-generated-editor"
     assert report["scenario"] == smoke.AI_RESTART_RECOVERY_SCENARIO
     assert report["commands_path"].endswith("commands.jsonl")
@@ -883,6 +921,7 @@ def test_ai_restart_recovery_smoke_live_command_surface_records_three_ai_calls(
     tmp_path: Path,
 ) -> None:
     run_dir = tmp_path / "direct-live-ai-command-restart-recovery-smoke"
+    directive = "CLI live directive: update greet so names are stripped before formatting the hello message."
     ai_command = _write_fake_ai_command(tmp_path)
 
     assert smoke.main([
@@ -891,6 +930,8 @@ def test_ai_restart_recovery_smoke_live_command_surface_records_three_ai_calls(
         "command",
         "--ai-command",
         ai_command,
+        "--ai-restart-directive",
+        directive,
         "--run-dir",
         str(run_dir),
     ]) == 0
@@ -902,6 +943,13 @@ def test_ai_restart_recovery_smoke_live_command_surface_records_three_ai_calls(
     assert report["ok"] is True
     assert summary["ok"] is True
     assert summary["live_ai_call_count"] == 3
+    assert summary["goal_directive"]["directive"] == directive
+    assert report["goal_directive"]["directive"] == directive
+    assert report["edit_plan"]["task"] == directive
+    assert report["contracts"]["ai_restart_goal_directive_present"] is True
+    assert report["contracts"]["ai_plan_acknowledged_goal_directive"] is True
+    assert report["contracts"]["ai_attempt_1_acknowledged_goal_directive"] is True
+    assert report["contracts"]["ai_attempt_2_acknowledged_goal_directive"] is True
     assert summary["ai_call_summary"]["finished_live_stages"] == [
         "planning",
         "editor_generation",
@@ -914,6 +962,56 @@ def test_ai_restart_recovery_smoke_live_command_surface_records_three_ai_calls(
     assert report["contracts"]["ai_attempt_1_used_live_ai"] is True
     assert report["contracts"]["ai_attempt_2_used_live_ai"] is True
     assert report["failed_contracts"] == []
+
+
+def test_ai_restart_recovery_smoke_live_ring3_probe_records_actual_provider_calls(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "direct-live-ai-command-restart-ring3-probe-smoke"
+    directive = "CLI live directive: update greet so names are stripped before formatting the hello message."
+    ai_command = _write_fake_ai_command(tmp_path)
+
+    assert smoke.main([
+        "--ai-restart-recovery-smoke",
+        "--ai-provider",
+        "command",
+        "--ai-command",
+        ai_command,
+        "--ai-restart-live-ring3-probe",
+        "--ai-restart-directive",
+        directive,
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    summary = json.loads((run_dir / "ai_restart_recovery_smoke_summary.json").read_text(encoding="utf-8"))
+    probe = json.loads((run_dir / "ai_restart_live_ring3_probe.json").read_text(encoding="utf-8"))
+    ai_calls = smoke.read_jsonl(run_dir / "ai_calls.jsonl")
+
+    assert summary["ok"] is True
+    assert probe["ok"] is True
+    assert summary["ai_restart_live_ring3_probe"]["ok"] is True
+    assert probe["expected_live_ai_calls"] == 12
+    assert probe["finished_live_ai_calls"] == 12
+    assert probe["failed_live_ai_calls"] == 0
+    assert probe["goal_acknowledged_live_ai_calls"] == 12
+    assert probe["stage_counts"]["request_inquiry"]["finished"] == 3
+    assert probe["stage_counts"]["request_check"]["finished"] == 3
+    assert probe["stage_counts"]["request_verify"]["finished"] == 3
+    assert probe["stage_counts"]["request_merge"]["finished"] == 3
+    assert summary["expected_live_ai_call_count"] == 15
+    assert summary["live_ai_call_count"] == 15
+    finished_stages = summary["ai_call_summary"]["finished_live_stages"]
+    assert "ring3_live_request_inquiry_001" in finished_stages
+    assert "ring3_live_request_check_001" in finished_stages
+    assert "ring3_live_request_verify_001" in finished_stages
+    assert "ring3_live_request_merge_001" in finished_stages
+    assert "planning" in finished_stages
+    assert "editor_generation" in finished_stages
+    assert "editor_generation_retry" in finished_stages
+    assert [record["event"] for record in ai_calls].count("ai_call_started") == 15
+    assert [record["event"] for record in ai_calls].count("ai_call_finished") == 15
+
 
 
 def test_ai_restart_recovers_from_bad_generated_editor_result_with_live_ai(
@@ -1054,6 +1152,9 @@ def test_ring3_evidence_compaction_smoke_expands_forks_and_compacts_with_audit_r
     assert report["changed_files"] == ["app.py"]
 
     evidence = report["ring3_evidence_compaction"]
+    metrics = evidence["ring3_metrics"]
+    call_graph = evidence["ring3_call_graph"]
+    workflow_trace = evidence["ring3_agent_workflow_trace"]
     assert evidence["identity_model"] == "anonymous_dispatch_with_hub_result_feedback"
     assert evidence["node_identity_available_to_agent"] is False
     assert evidence["default_hub_reliability_score"] == 1.0
@@ -1072,6 +1173,66 @@ def test_ring3_evidence_compaction_smoke_expands_forks_and_compacts_with_audit_r
     assert evidence["compacted_state"]["known_good_state"]["changed_files"] == ["app.py"]
     assert evidence["compacted_state"]["known_good_state"]["verification"]["success"] is True
     assert evidence["compacted_state"]["remaining_uncertainty"] == []
+
+    assert metrics["format"] == "main_computer_ring3_evidence_metrics_v1"
+    assert metrics["deterministic"] is True
+    assert metrics["actual_live_ai_calls"] == 0
+    assert metrics["modeled_ai_response_samples"] == 14
+    assert metrics["modeled_ai_dispatch_requests"] == 18
+    assert metrics["modeled_check_requests"] == 4
+    assert metrics["host_fork_trials"] == 4
+    assert metrics["host_verification_observations"] == 3
+    assert metrics["total_modeled_expansion_units"] == 25
+    assert len(metrics["per_boundary"]) == 8
+    assert {
+        boundary["boundary"] for boundary in metrics["per_boundary"]
+    } >= {
+        "ring3_inquiry_batch_boundary",
+        "ring3_check_request_boundary",
+        "ring3_verify_batch_boundary",
+        "ring3_merge_candidate_boundary",
+        "ring3_candidate_fork_boundary",
+        "ring3_fork_observation_boundary",
+        "ring3_candidate_path_compaction_boundary",
+        "ring3_hub_feedback_boundary",
+    }
+    assert metrics["compaction"]["observed_compaction_ratio"] == {"in": 3, "out": 1, "label": "3:1"}
+    assert metrics["compaction"]["policy_compaction_ratio"] == {"in": 7, "out": 1, "label": "7:1"}
+
+    assert call_graph["format"] == "main_computer_ring3_call_graph_v1"
+    assert call_graph["deterministic"] is True
+    assert call_graph["summary"]["result_count"] == 14
+    assert call_graph["summary"]["selected_candidate_path_id"] == "path-rm-001"
+    assert call_graph["summary"]["selected_result_lineage"] == evidence["selected_result_lineage"]
+    assert any(node["id"] == "ring3_candidate_path_compaction_boundary" for node in call_graph["nodes"])
+    assert any(
+        edge["from"] == "ring3_hub_feedback_boundary"
+        and edge["to"] == "host_apply_boundary"
+        and edge["kind"] == "authorizes_compacted_state_for"
+        for edge in call_graph["edges"]
+    )
+
+    assert workflow_trace["format"] == "main_computer_ring3_open_ended_agent_workflow_v1"
+    assert workflow_trace["reference_pattern"] == "website_builder_multi_endpoint_open_ended_smoke"
+    assert workflow_trace["deterministic"] is True
+    assert workflow_trace["uses_live_ai"] is False
+    workflow_intents = {step["intent"] for step in workflow_trace["workflow_steps"]}
+    assert workflow_intents >= {
+        "grounded_info_answer",
+        "promotable_edit_artifact",
+        "validated_host_apply",
+        "reject_stale_payload",
+        "reject_unsafe_payload",
+    }
+    assert all(workflow_trace["contracts"].values())
+
+    assert summary["ring3_metrics"]["modeled_ai_response_samples"] == 14
+    assert summary["ring3_metrics"]["modeled_ai_dispatch_requests"] == 18
+    assert summary["ring3_call_graph_summary"]["selected_candidate_path_id"] == "path-rm-001"
+    assert summary["ring3_agent_workflow_step_count"] == 5
+    assert Path(summary["ring3_metrics_path"]).exists()
+    assert Path(summary["ring3_call_graph_path"]).exists()
+    assert Path(summary["ring3_agent_workflow_trace_path"]).exists()
 
     feedback = evidence["hub_feedback"]
     assert feedback["identity_model"] == "hub_result_id_not_node_id"
@@ -1128,6 +1289,17 @@ def test_ring3_evidence_compaction_smoke_expands_forks_and_compacts_with_audit_r
         "ring3_hub_feedback_preserves_rejected_result_ids",
         "stage_reasoning_emitted_for_every_ring3_compaction_stage",
         "stage_reasoning_records_inputs_observations_decision_uncertainty_and_next_stage",
+        "ring3_metrics_emit_call_budget_by_boundary",
+        "ring3_metrics_count_actual_live_ai_calls_zero",
+        "ring3_metrics_emit_compaction_ratios",
+        "ring3_call_graph_emits_boundaries_results_paths",
+        "ring3_call_graph_preserves_selected_lineage",
+        "ring3_agent_workflow_has_grounded_answer_surface",
+        "ring3_agent_workflow_has_promotable_edit_surface",
+        "ring3_agent_workflow_has_validated_apply_surface",
+        "ring3_agent_workflow_rejects_stale_payload",
+        "ring3_agent_workflow_rejects_unsafe_payload",
+        "ring3_agent_workflow_is_deterministic_no_live_ai",
         "host_apply_used_compacted_state_only",
         "verification_passed",
         "commit_created",

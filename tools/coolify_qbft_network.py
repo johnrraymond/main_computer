@@ -497,6 +497,39 @@ def normalize_validator_public_key_map(value: object) -> dict[str, str]:
     return result
 
 
+def normalize_runtime_static_nodes_map(value: object) -> dict[str, list[str]]:
+    """Normalize exported per-runtime static-node files.
+
+    The exporter only emits non-secret ``static-nodes.json`` contents. Mutation
+    code uses this to verify the active mounted runtime, not merely the generated
+    compose payload, before any QBFT vote is submitted.
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, list[str]] = {}
+    for raw_key, raw_nodes in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        runtime_dir = safe_id(key, kind="runtime_dir")
+        nodes: list[str] = []
+        if isinstance(raw_nodes, str):
+            try:
+                parsed = json.loads(raw_nodes)
+            except json.JSONDecodeError:
+                parsed = []
+        else:
+            parsed = raw_nodes
+        if isinstance(parsed, list):
+            for item in parsed:
+                node = str(item or "").strip()
+                if node.startswith("enode://") and node not in nodes:
+                    nodes.append(node)
+        result[runtime_dir] = nodes
+    return result
+
+
 def require_int(value: object, *, name: str, minimum: int = 1, maximum: int = 65535) -> int:
     try:
         number = int(value)
@@ -3293,13 +3326,30 @@ def apply_rpc_add_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: 
             "apply_phases": phases,
         }
 
+    runtime_static_refresh = build_runtime_static_refresh_from_bundle(plan, runtime_bundle or {})
     for host_id, host_services in services_by_host(target_services).items():
-        host_plan = plan_with_only_services(plan, [service.id for service in host_services])
+        execution_service_ids = rpc_add_execution_service_ids_for_host(plan, host_id, host_services, runtime_bundle or {})
+        host_plan = plan_with_only_services(plan, execution_service_ids)
+        preserved_service_ids = [service_id for service_id in execution_service_ids if service_id not in {service.id for service in host_services}]
+        if preserved_service_ids:
+            phases.append(
+                {
+                    "phase": "preserve-host-services",
+                    "host": host_id,
+                    "result": {
+                        "ok": True,
+                        "target_services": [service.id for service in host_services],
+                        "preserved_services": preserved_service_ids,
+                        "execution_services": execution_service_ids,
+                    },
+                }
+            )
         deploy_args = args_copy_with(
             args,
             host=host_id,
             no_bootstrap=True,
             _runtime_import_bundle=runtime_bundle,
+            _qbft_static_refresh=runtime_static_refresh if preserved_service_ids else None,
             _include_rpc_public_entry=False,
         )
         sync_result = coolify_sync(host_plan, deploy_args, deploy=not no_deploy)
@@ -3335,7 +3385,14 @@ def apply_rpc_add_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: 
             for service in host_services:
                 backend_url = rpc_public_entry_backend_url(plan, hosts[service.host], service)
                 wait_args = mutate_rpc_wait_args(args, rpc_url=backend_url)
-                wait_result = wait_for_rpc(plan, wait_args)
+                try:
+                    wait_result = wait_for_rpc(plan, wait_args)
+                except Exception as exc:  # noqa: BLE001 - return a structured mutation packet instead of stderr-only failure.
+                    wait_result = {
+                        "ok": False,
+                        "rpc_url": backend_url,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
                 phases.append({"phase": "wait-direct-rpc", "host": host_id, "instance": service.id, "result": wait_result})
                 if not wait_result.get("ok", False):
                     return {
@@ -3359,6 +3416,7 @@ def apply_rpc_add_mutation(plan: NetworkPlan, args: argparse.Namespace, packet: 
             host=host_id,
             no_bootstrap=True,
             _runtime_import_bundle=runtime_bundle,
+            _qbft_static_refresh=runtime_static_refresh if preserved_service_ids else None,
             _include_rpc_public_entry=True,
         )
         publish_result = coolify_sync(host_plan, publish_args, deploy=not no_deploy)
@@ -4327,6 +4385,8 @@ def apply_validator_add_mutation(plan: NetworkPlan, args: argparse.Namespace, pa
             }
         )
 
+        static_verify_services_by_host: dict[str, list[PlannedService]] = {host_id: [target_service]}
+
         target_static_args = args_copy_with(
             args,
             host=host_id,
@@ -4360,6 +4420,8 @@ def apply_validator_add_mutation(plan: NetworkPlan, args: argparse.Namespace, pa
             source_host=source_host_id,
         )
         source_refresh_ids = [service.id for service in source_refresh_services]
+        if source_host_id and source_refresh_ids:
+            static_verify_services_by_host[source_host_id] = list(source_refresh_services)
         if source_host_id and (source_host_id != host_id or set(source_refresh_ids) != set(deploy_service_ids)):
             if not source_refresh_ids:
                 return {
@@ -4398,26 +4460,48 @@ def apply_validator_add_mutation(plan: NetworkPlan, args: argparse.Namespace, pa
                     },
                     "apply_phases": phases,
                 }
-            pre_vote_result = wait_for_stable_observable_chain(
-                plan,
-                args,
-                expected_validator_count=len(current_validators) if "current_validators" in locals() else None,
-                label="verify-pre-vote-static-topology",
-            )
-            phases.append({"phase": "verify-pre-vote-static-topology", "result": pre_vote_result})
-            if not pre_vote_result.get("ok"):
-                return {
-                    **packet,
-                    "ok": False,
-                    "mode": "apply",
-                    "execution": {
-                        "implemented": True,
-                        "dry_run": dry_run,
-                        "no_mutation_performed": False,
-                        "message": "Validator add refreshed static-node topology but the existing chain was not stable before the QBFT vote; consensus vote was not submitted.",
-                    },
-                    "apply_phases": phases,
-                }
+
+        runtime_topology_result = verify_post_add_static_runtime_topology(
+            plan,
+            args,
+            static_refresh=static_refresh,
+            services_by_host=static_verify_services_by_host,
+        )
+        phases.append({"phase": "verify-active-static-topology", "result": runtime_topology_result})
+        if not runtime_topology_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator add refreshed static-node topology but active runtime files did not prove the post-add topology; consensus vote was not submitted.",
+                },
+                "apply_phases": phases,
+            }
+
+        pre_vote_result = wait_for_stable_observable_chain(
+            plan,
+            args,
+            expected_validator_count=len(current_validators) if "current_validators" in locals() else None,
+            label="verify-pre-vote-static-topology",
+        )
+        phases.append({"phase": "verify-pre-vote-static-topology", "result": pre_vote_result})
+        if not pre_vote_result.get("ok"):
+            return {
+                **packet,
+                "ok": False,
+                "mode": "apply",
+                "execution": {
+                    "implemented": True,
+                    "dry_run": dry_run,
+                    "no_mutation_performed": False,
+                    "message": "Validator add refreshed static-node topology but the existing chain was not stable before the QBFT vote; consensus vote was not submitted.",
+                },
+                "apply_phases": phases,
+            }
 
     if dry_run or no_deploy:
         phases.append(
@@ -5569,6 +5653,8 @@ def render_qbft_config_exporter_compose(
             "STATIC_SHA=",
             "METADATA_SHA=",
             "VALIDATOR_ADDRESSES_JSON=",
+            "VALIDATOR_PUBLIC_KEYS_JSON=",
+            "RUNTIME_STATIC_NODES_JSON='{}'",
             "i=0",
             "while [ \"$i\" -lt \"$SOURCE_COUNT\" ]; do",
             "  eval label=\"\\${SRC_LABEL_$i}\"",
@@ -5587,9 +5673,11 @@ def render_qbft_config_exporter_compose(
             "    STATIC_SHA=$(file_sha256 \"$root/static-nodes-all.json\")",
             "    METADATA_SHA=$(file_sha256 \"$root/network-metadata.json\")",
             "    VALIDATOR_ADDRESSES_JSON=",
+            "    VALIDATOR_PUBLIC_KEYS_JSON=",
             "    for addr_file in \"$root\"/*/validator-address; do",
             "      [ -f \"$addr_file\" ] || continue",
             "      runtime_dir=$(basename \"$(dirname \"$addr_file\")\")",
+            "      runtime_root=$(dirname \"$addr_file\")",
             "      addr=$(tr -d '\\r\\n ' < \"$addr_file\")",
             "      case \"$addr\" in 0x*) ;; *) addr=\"0x$addr\" ;; esac",
             "      if printf '%s' \"$addr\" | grep -Eq '^0x[0-9a-fA-F]{40}$'; then",
@@ -5597,7 +5685,44 @@ def render_qbft_config_exporter_compose(
             "        addr_esc=$(json_string \"$addr\")",
             "        if [ -z \"$VALIDATOR_ADDRESSES_JSON\" ]; then VALIDATOR_ADDRESSES_JSON=\"\\\"$key_esc\\\":\\\"$addr_esc\\\"\"; else VALIDATOR_ADDRESSES_JSON=\"$VALIDATOR_ADDRESSES_JSON,\\\"$key_esc\\\":\\\"$addr_esc\\\"\"; fi",
             "      fi",
+            "      if [ -f \"$runtime_root/data/key.pub\" ]; then",
+            "        pub=$(tr -d '\\r\\n ' < \"$runtime_root/data/key.pub\")",
+            "        pub=${pub#0x}",
+            "        case \"$pub\" in 04*) if [ \"${#pub}\" -eq 130 ]; then pub=${pub#04}; fi;; esac",
+            "        if printf '%s' \"$pub\" | grep -Eq '^[0-9a-fA-F]{128}$'; then",
+            "          key_esc=$(json_string \"$runtime_dir\")",
+            "          pub_esc=$(json_string \"$pub\")",
+            "          if [ -z \"$VALIDATOR_PUBLIC_KEYS_JSON\" ]; then VALIDATOR_PUBLIC_KEYS_JSON=\"\\\"$key_esc\\\":\\\"$pub_esc\\\"\"; else VALIDATOR_PUBLIC_KEYS_JSON=\"$VALIDATOR_PUBLIC_KEYS_JSON,\\\"$key_esc\\\":\\\"$pub_esc\\\"\"; fi",
+            "        fi",
+            "      fi",
             "    done",
+            "    RUNTIME_STATIC_NODES_JSON=$(python3 - \"$root\" <<'PY'",
+            "import json, os, sys",
+            "root = sys.argv[1]",
+            "result = {}",
+            "try:",
+            "    names = sorted(os.listdir(root))",
+            "except OSError:",
+            "    names = []",
+            "for name in names:",
+            "    path = os.path.join(root, name, 'static-nodes.json')",
+            "    if not os.path.isfile(path):",
+            "        continue",
+            "    try:",
+            "        with open(path, encoding='utf-8') as fh:",
+            "            parsed = json.load(fh)",
+            "    except Exception:",
+            "        continue",
+            "    if isinstance(parsed, list):",
+            "        nodes = []",
+            "        for item in parsed:",
+            "            node = str(item).strip()",
+            "            if node.startswith('enode://') and node not in nodes:",
+            "                nodes.append(node)",
+            "        result[name] = nodes",
+            "print(json.dumps(result, sort_keys=True))",
+            "PY",
+            "    )",
             "    break",
             "  fi",
             "  for item in $missing; do",
@@ -5627,7 +5752,9 @@ def render_qbft_config_exporter_compose(
             "    \"static_nodes_all_json\": \"$STATIC_SHA\",",
             "    \"network_metadata_json\": \"$METADATA_SHA\"",
             "  },",
-            "  \"validator_addresses\": {$VALIDATOR_ADDRESSES_JSON}",
+            "  \"validator_addresses\": {$VALIDATOR_ADDRESSES_JSON},",
+            "  \"validator_public_keys\": {$VALIDATOR_PUBLIC_KEYS_JSON},",
+            "  \"runtime_static_nodes\": $RUNTIME_STATIC_NODES_JSON",
             "}",
             "JSON",
             "mkdir -p \"$(dirname \"$PUBLIC_EXPORT_FILE\")\"",
@@ -5758,51 +5885,42 @@ def normalize_qbft_config_bundle(payload: Mapping[str, Any], *, source_host: str
     sha256 = payload.get("sha256") if isinstance(payload.get("sha256"), Mapping) else {}
     validator_addresses = normalize_validator_address_map(payload.get("validator_addresses"))
     validator_public_keys = normalize_validator_public_key_map(payload.get("validator_public_keys"))
+    runtime_static_nodes = normalize_runtime_static_nodes_map(payload.get("runtime_static_nodes"))
     missing = [str(item) for item in payload.get("missing_files") or []]
     source_mount = str(payload.get("source_mount") or "")
     raw_candidates = payload.get("source_candidates") if isinstance(payload.get("source_candidates"), list) else []
     source_candidates = [item for item in raw_candidates if isinstance(item, Mapping)]
+
+    base = {
+        "source_host": source_host,
+        "source_url": source_url,
+        "source_mount": source_mount,
+        "source_candidates": source_candidates,
+        "sha256": {str(key): str(value) for key, value in sha256.items()},
+        "validator_addresses": validator_addresses,
+        "validator_public_keys": validator_public_keys,
+        "runtime_static_nodes": runtime_static_nodes,
+    }
     if not bool(payload.get("ok")):
         return {
             "ok": False,
-            "source_host": source_host,
-            "source_url": source_url,
-            "source_mount": source_mount,
-            "source_candidates": source_candidates,
+            **base,
             "missing_files": missing,
-            "sha256": {str(key): str(value) for key, value in sha256.items()},
-            "validator_addresses": validator_addresses,
-        "validator_public_keys": validator_public_keys,
-            "validator_public_keys": validator_public_keys,
         }
     required = sorted(QBFT_RUNTIME_CONFIG_FILES)
     missing_keys = [key for key in required if not str(files.get(key) or "").strip()]
     if missing_keys:
         return {
             "ok": False,
-            "source_host": source_host,
-            "source_url": source_url,
-            "source_mount": source_mount,
-            "source_candidates": source_candidates,
+            **base,
             "missing_files": missing + missing_keys,
-            "sha256": {str(key): str(value) for key, value in sha256.items()},
-            "validator_addresses": validator_addresses,
-        "validator_public_keys": validator_public_keys,
-            "validator_public_keys": validator_public_keys,
         }
     return {
         "ok": True,
-        "source_host": source_host,
-        "source_url": source_url,
-        "source_mount": source_mount,
-        "source_candidates": source_candidates,
+        **base,
         "files": {key: str(files.get(key) or "") for key in required},
-        "sha256": {str(key): str(value) for key, value in sha256.items()},
         "lineage_hash": str(sha256.get("genesis_json") or ""),
-        "validator_addresses": validator_addresses,
-        "validator_public_keys": validator_public_keys,
     }
-
 
 def fetch_json_url(
     url: str,
@@ -5942,6 +6060,87 @@ def runtime_bundle_metadata(bundle: Mapping[str, Any]) -> dict[str, Any]:
     return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 
+def build_runtime_static_refresh_from_bundle(plan: NetworkPlan, bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a static-refresh payload from already-live runtime metadata.
+
+    RPC-only mutations must preserve live same-host validators without changing
+    the QBFT validator set.  Runtime import writes ``static-nodes-all.json`` to
+    every selected runtime directory; when validators are included in the
+    preserved host service set, follow it with a static refresh so each validator
+    excludes its own enode while RPC-only nodes keep the full peer list.
+    """
+
+    nodes = runtime_bundle_static_nodes(bundle)
+    metadata = runtime_bundle_metadata(bundle)
+    if not metadata:
+        metadata = {
+            "schema": "main-computer.coolify-qbft-network.v1",
+            "network": plan.name,
+            "chain_id": plan.chain_id,
+            "compose_project": plan.compose_project,
+            "docker_network": plan.docker_network,
+            "docker_subnet": plan.docker_subnet,
+            "validators": [],
+            "rpc_nodes": [],
+        }
+    metadata["network"] = plan.name
+    metadata["chain_id"] = plan.chain_id
+    metadata["compose_project"] = plan.compose_project
+    metadata["docker_network"] = plan.docker_network
+    metadata["docker_subnet"] = plan.docker_subnet
+
+    service_enodes: dict[str, str] = {}
+    validators = metadata.get("validators") if isinstance(metadata.get("validators"), list) else []
+    for item in validators:
+        if not isinstance(item, Mapping):
+            continue
+        service_id = str(item.get("id") or "").strip()
+        enode = str(item.get("enode") or "").strip()
+        if service_id and enode:
+            service_enodes[service_id] = enode
+            if enode not in nodes:
+                nodes.append(enode)
+
+    return {
+        "static_nodes": nodes,
+        "network_metadata_json": json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        "service_enodes": service_enodes,
+    }
+
+
+def rpc_add_execution_service_ids_for_host(
+    plan: NetworkPlan,
+    host_id: str,
+    target_services: list[PlannedService] | tuple[PlannedService, ...],
+    runtime_bundle: Mapping[str, Any],
+) -> list[str]:
+    """Return the host target-state for an RPC-only add.
+
+    Keep the mutation narrow, but do not clobber already-live same-host validators
+    that are present in the exported runtime metadata.  This is the recovery path
+    for a partial ``mutate --add rpc-*`` run where the host compose was rewritten
+    with only the new RPC node while a validator on that host remained in the
+    on-chain QBFT validator set.
+    """
+
+    host_id = safe_id(host_id, kind="host")
+    ordered: list[str] = []
+    metadata = runtime_bundle_metadata(runtime_bundle)
+    validators = metadata.get("validators") if isinstance(metadata.get("validators"), list) else []
+    live_ids = {
+        str(item.get("id") or "").strip()
+        for item in validators
+        if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+    }
+    for service in services_for_host(plan, host_id):
+        if service.id in live_ids and "validator" in service.roles and service.id not in ordered:
+            ordered.append(service.id)
+    for service in target_services:
+        if service.host == host_id and service.id not in ordered:
+            ordered.append(service.id)
+    return ordered
+
+
 def validator_public_key_from_export(export: Mapping[str, Any], service: PlannedService) -> str:
     public_keys = normalize_validator_public_key_map(export.get("validator_public_keys"))
     for key in (service_runtime_dir(service), service.id):
@@ -5975,6 +6174,35 @@ def live_validator_services_from_export(
             if address and address in current:
                 services.append(service)
                 break
+    if services:
+        return services
+
+    # Older live services can be missing validator-address metadata in the
+    # config-export sidecar even though network-metadata.json identifies the
+    # active validator runtime.  Validator add currently supports only the
+    # one-current-validator bootstrap case, so falling back to metadata/service
+    # identity is safer than skipping the source-host refresh and voting with an
+    # unrefreshed static-node file.
+    metadata = runtime_bundle_metadata(export)
+    raw_validators = metadata.get("validators") if isinstance(metadata.get("validators"), list) else []
+    metadata_ids = {
+        str(item.get("id") or "").strip()
+        for item in raw_validators
+        if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+    }
+    if metadata_ids:
+        for service in plan.services:
+            if service.role != "validator":
+                continue
+            if source_host and service.host != source_host:
+                continue
+            if service.id in metadata_ids and service not in services:
+                services.append(service)
+    if services:
+        return services
+
+    if source_host and len(current) == 1:
+        return [service for service in plan.services if service.role == "validator" and service.host == source_host]
     return services
 
 
@@ -6039,6 +6267,123 @@ def build_post_add_static_refresh(
         "target_enode": target_enode,
         "network_metadata_json": json.dumps(metadata, indent=2, sort_keys=True) + "\n",
         "service_enodes": service_enodes,
+    }
+
+
+def verify_post_add_static_runtime_topology(
+    plan: NetworkPlan,
+    args: argparse.Namespace,
+    *,
+    static_refresh: Mapping[str, Any],
+    services_by_host: Mapping[str, list[PlannedService] | tuple[PlannedService, ...]],
+) -> dict[str, Any]:
+    """Re-export active runtime files and prove static-node topology before voting.
+
+    This is intentionally stricter than peer_count.  A peer can appear because
+    the new node dials the old validator while the old validator's mounted
+    ``static-nodes.json`` still omits the new enode.  The QBFT add vote is only
+    safe after the source and target runtime files both carry the intended
+    post-add static topology.
+    """
+
+    expected_nodes = [str(item).strip() for item in static_refresh.get("static_nodes") or [] if str(item).strip()]
+    service_enodes = {str(key): str(value) for key, value in (static_refresh.get("service_enodes") or {}).items()}
+    target_enode = str(static_refresh.get("target_enode") or "").strip()
+    if not target_enode:
+        return {"ok": False, "error": "post-add static topology has no target enode"}
+    if len(expected_nodes) < 2:
+        return {
+            "ok": False,
+            "error": "post-add static topology must contain at least two enodes before a validator-add vote",
+            "static_node_count": len(expected_nodes),
+            "expected_nodes": expected_nodes,
+        }
+
+    host_results: dict[str, Any] = {}
+    errors: list[str] = []
+    for raw_host_id, raw_services in services_by_host.items():
+        host_id = safe_id(str(raw_host_id), kind="host")
+        services = list(raw_services or [])
+        try:
+            export = export_qbft_config_from_host(plan, args, host_id)
+        except Exception as exc:  # noqa: BLE001
+            export = {"ok": False, "source_host": host_id, "error": f"{type(exc).__name__}: {exc}"}
+        summary = {key: value for key, value in export.items() if key not in {"files", "sync"}}
+        host_entry: dict[str, Any] = {
+            "ok": bool(export.get("ok")),
+            "export": summary,
+            "services": [service.id for service in services],
+        }
+        if not export.get("ok"):
+            errors.append(f"{host_id}: active runtime export failed: {export.get('error') or export.get('missing_files')}")
+            host_results[host_id] = host_entry
+            continue
+
+        all_nodes = runtime_bundle_static_nodes(export)
+        runtime_static_nodes = normalize_runtime_static_nodes_map(export.get("runtime_static_nodes"))
+        metadata = runtime_bundle_metadata(export)
+        metadata_validators = metadata.get("validators") if isinstance(metadata.get("validators"), list) else []
+        metadata_validator_ids = [
+            str(item.get("id") or "").strip()
+            for item in metadata_validators
+            if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+        ]
+
+        missing_all = [node for node in expected_nodes if node not in all_nodes]
+        if missing_all:
+            errors.append(f"{host_id}: static-nodes-all.json is missing expected post-add enodes")
+        service_checks: dict[str, Any] = {}
+        for service in services:
+            runtime_dir = service_runtime_dir(service)
+            actual_nodes = runtime_static_nodes.get(runtime_dir)
+            own_enode = service_enodes.get(service.id, "")
+            expected_runtime_nodes = [node for node in expected_nodes if node != own_enode]
+            service_missing = [node for node in expected_runtime_nodes if actual_nodes is None or node not in actual_nodes]
+            service_errors: list[str] = []
+            if actual_nodes is None:
+                service_errors.append(f"{runtime_dir}/static-nodes.json was not exported")
+            if service_missing:
+                service_errors.append("runtime static-nodes.json is missing expected peer enodes")
+            if own_enode and actual_nodes is not None and own_enode in actual_nodes:
+                service_errors.append("runtime static-nodes.json still includes the service's own enode")
+            if service_errors:
+                errors.append(f"{host_id}/{service.id}: " + "; ".join(service_errors))
+            service_checks[service.id] = {
+                "runtime_dir": runtime_dir,
+                "ok": not service_errors,
+                "actual_static_node_count": None if actual_nodes is None else len(actual_nodes),
+                "expected_static_node_count": len(expected_runtime_nodes),
+                "missing_expected_enodes": service_missing,
+                "self_enode_present": bool(own_enode and actual_nodes is not None and own_enode in actual_nodes),
+            }
+
+        required_metadata_ids = [service_id for service_id in service_enodes if service_id not in metadata_validator_ids]
+        if required_metadata_ids:
+            errors.append(f"{host_id}: network-metadata.json is missing validators {required_metadata_ids}")
+
+        host_entry.update(
+            {
+                "static_nodes_all_count": len(all_nodes),
+                "missing_static_nodes_all": missing_all,
+                "runtime_static_nodes": {
+                    key: {"count": len(value), "nodes": value}
+                    for key, value in sorted(runtime_static_nodes.items())
+                },
+                "metadata_validator_ids": metadata_validator_ids,
+                "missing_metadata_validator_ids": required_metadata_ids,
+                "service_checks": service_checks,
+                "ok": not (missing_all or required_metadata_ids or any(not item.get("ok") for item in service_checks.values())),
+            }
+        )
+        host_results[host_id] = host_entry
+
+    return {
+        "ok": not errors,
+        "expected_static_node_count": len(expected_nodes),
+        "target_enode": target_enode,
+        "service_enodes": service_enodes,
+        "hosts": host_results,
+        "errors": errors,
     }
 
 
