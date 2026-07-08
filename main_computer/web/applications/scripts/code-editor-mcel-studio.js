@@ -1507,13 +1507,21 @@
           wallet19dProofSurfaceAlignmentStatus: source.wallet19dProofSurfaceAlignment?.status || "not-observed",
           wallet19eNegativePathRegression: source.wallet19eNegativePathRegression || {},
           wallet19eNegativePathRegressionStatus: source.wallet19eNegativePathRegression?.status || "not-observed",
+          wallet20aUnlockContract: source.wallet20aUnlockContract || source.walletUnlockContract || {},
+          wallet20aUnlockContractStatus: source.wallet20aUnlockContract?.status || source.walletUnlockContract?.status || "not-observed",
+          wallet20aUnlockContractStage: source.wallet20aUnlockContract?.stage || source.walletUnlockContract?.stage || "not-observed",
+          wallet20aAllowedCapabilities: source.wallet20aUnlockContract?.allowedCapabilities || source.walletUnlockContract?.allowedCapabilities || [],
+          wallet20aLockedCapabilities: source.wallet20aUnlockContract?.lockedCapabilities || source.walletUnlockContract?.lockedCapabilities || [],
+          canBuildDraft: source.wallet20aUnlockContract?.canBuildDraft === true || source.walletUnlockContract?.canBuildDraft === true,
+          canSimulate: source.wallet20aUnlockContract?.canSimulate === true || source.walletUnlockContract?.canSimulate === true,
+          canRequestSignature: source.wallet20aUnlockContract?.canRequestSignature === true || source.walletUnlockContract?.canRequestSignature === true,
           blockers,
           allowedActions: uniqueScmReceiptList(source.allowedActions, consumerGate.allowedActions, preflight.allowedActions),
           blockedActions: uniqueScmReceiptList(source.blockedActions, preflight.blockedActions, blockers),
           proofDockSpecimens: source.mcelProofDockSpecimens || source.proofDockSpecimens || null,
           wallet18nCompletionReport: source.wallet18nCompletionReport || {},
           wallet18nCompletionStatus: source.wallet18nCompletionReport?.status || "not-observed",
-          nextAction: source.wallet18nCompletionReport?.nextAction || source.nextAction || preflight.summary || consumerGate.reason || "",
+          nextAction: source.wallet20aUnlockContract?.nextAction || source.walletUnlockContract?.nextAction || source.wallet18nCompletionReport?.nextAction || source.nextAction || preflight.summary || consumerGate.reason || "",
           invariant: source.invariant || [],
           raw: source
         });
@@ -1527,7 +1535,7 @@
           ? (boundary.status || (locked ? "locked" : "needs inspection"))
           : "not observed";
         const label = observed
-          ? `${status} · ${boundary.action || "wallet.send-sign"} · validity=${boundary.txDraftValidityStatus || "not-observed"} · 19D=${boundary.wallet19dProofSurfaceAlignmentStatus || "not-observed"} · 19E=${boundary.wallet19eNegativePathRegressionStatus || "not-observed"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
+          ? `${status} · ${boundary.action || "wallet.send-sign"} · validity=${boundary.txDraftValidityStatus || "not-observed"} · 19D=${boundary.wallet19dProofSurfaceAlignmentStatus || "not-observed"} · 19E=${boundary.wallet19eNegativePathRegressionStatus || "not-observed"} · 20A=${boundary.wallet20aUnlockContractStage || "not-observed"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
           : "not observed";
         return jsonSafeClone({
           kind: "mcel-code-studio-18n-commit-boundary-workbench-summary",
@@ -1552,7 +1560,15 @@
           allowedActions: boundary.allowedActions || [],
           blockedActions: boundary.blockedActions || [],
           proofDockSpecimens: boundary.proofDockSpecimens || null,
-          nextAction: boundary.nextAction || (observed ? "inspect MCEL 18N preflight/receipt" : "run MCEL Lab wallet proof"),
+          wallet20aUnlockContract: boundary.wallet20aUnlockContract || {},
+          wallet20aUnlockContractStatus: boundary.wallet20aUnlockContractStatus || "not-observed",
+          wallet20aUnlockContractStage: boundary.wallet20aUnlockContractStage || "not-observed",
+          wallet20aAllowedCapabilities: boundary.wallet20aAllowedCapabilities || [],
+          wallet20aLockedCapabilities: boundary.wallet20aLockedCapabilities || [],
+          canBuildDraft: boundary.canBuildDraft === true,
+          canSimulate: boundary.canSimulate === true,
+          canRequestSignature: boundary.canRequestSignature === true,
+          nextAction: boundary.nextAction || (observed ? "inspect MCEL 20A unlock contract and preflight/receipt" : "run MCEL Lab wallet proof"),
           raw: boundary
         });
       }
@@ -1670,6 +1686,16 @@
             readyForProviderExecution: boundary.walletUnlockRequirements?.readyForProviderExecution === true,
             missing: boundary.walletUnlockRequirements?.missing || []
           },
+          unlockContract: {
+            kind: boundary.wallet20aUnlockContract?.kind || "",
+            status: boundary.wallet20aUnlockContractStatus || boundary.wallet20aUnlockContract?.status || "",
+            stage: boundary.wallet20aUnlockContractStage || boundary.wallet20aUnlockContract?.stage || "",
+            canBuildDraft: boundary.canBuildDraft === true || boundary.wallet20aUnlockContract?.canBuildDraft === true,
+            canSimulate: boundary.canSimulate === true || boundary.wallet20aUnlockContract?.canSimulate === true,
+            canRequestSignature: boundary.canRequestSignature === true || boundary.wallet20aUnlockContract?.canRequestSignature === true,
+            canBroadcast: boundary.canBroadcast === true,
+            readyForProviderExecution: boundary.wallet20aUnlockContract?.readyForProviderExecution === true
+          },
           finalLockedSpecimen: {
             kind: boundary.walletFinalLockedSpecimen?.kind || "",
             status: boundary.walletFinalLockedSpecimen?.status || "",
@@ -1686,7 +1712,8 @@
             "Wallet unlock requirements remain incomplete until a separate explicit unlock design patch.",
             "18N-K completion means the wallet boundary is complete while provider execution remains locked.",
             "19D carries txDraft identity/validity into Code Studio proof dock summaries.",
-            "19E negative-path regression remains locked and no-mutation."
+            "19E negative-path regression remains locked and no-mutation.",
+            "20A staged unlock contract is visible in Code Studio while signature and broadcast remain locked."
 
           ]
         });

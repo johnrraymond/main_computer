@@ -1952,30 +1952,51 @@ def ai_restart_live_ring3_probe_user_prompt(
         "goal_directive_sha256": goal_contract["directive_sha256"],
         "hub_reliability_score": 1.0,
         "result_id": result_id,
-        "risks": [],
+        "risks": ["none"],
         "round_type": round_type,
         "selected_files": ["app.py"],
         "summary": f"{round_type} sample {sample_index} for app.py whitespace stripping.",
     }
+    required_keys = [
+        "goal_directive_sha256",
+        "hub_reliability_score",
+        "result_id",
+        "risks",
+        "round_type",
+        "selected_files",
+        "summary",
+    ]
+    # Keep the response contract at the top level as well as in the template.
+    # Gemma-class local models sometimes obey the semantic task but drop nested
+    # contract fields when the schema is only described inside required_response.
+    # The host still validates the returned payload; these duplicated literals
+    # are prompt scaffolding, not host-side normalization or cheating.
+    prompt_payload = {
+        "copy_contract": "Return one JSON object with exactly the seven required_keys. Copy goal_directive_sha256, result_id, round_type, and selected_files exactly. Do not return only summary/risks.",
+        "required_keys": required_keys,
+        "goal_directive_sha256": required_response["goal_directive_sha256"],
+        "hub_reliability_score": required_response["hub_reliability_score"],
+        "result_id": required_response["result_id"],
+        "risks": required_response["risks"],
+        "round_type": required_response["round_type"],
+        "selected_files": required_response["selected_files"],
+        "summary": required_response["summary"],
+        "required_response": required_response,
+        "stage": f"ring3_live_{round_type}",
+        "goal": goal_contract["directive"],
+        "goal_directive": goal_contract,
+        "task_context": "app.py greet(name) currently formats the raw name; the runtime goal requires stripping surrounding whitespace while preserving Hello punctuation and the __main__ entrypoint.",
+        "allowed_write_paths": ["app.py"],
+        "forbidden_files": ["README.md", "tests/test_app.py"],
+        "sample_index": sample_index,
+        "sample_count": sample_count,
+        "prior_result_ids": list(prior_result_ids)[-5:],
+    }
     return json.dumps(
-        {
-            "instruction": "Return exactly the required_response JSON object, with a short summary and risks array. No extra keys.",
-            "stage": f"ring3_live_{round_type}",
-            "goal": goal_contract["directive"],
-            "goal_directive": goal_contract,
-            "context": "app.py greet(name) currently formats the raw name; tests require stripping surrounding whitespace while preserving Hello punctuation and __main__.",
-            "allowed_write_paths": ["app.py"],
-            "forbidden_files": ["README.md", "tests/test_app.py"],
-            "round_type": round_type,
-            "result_id": result_id,
-            "sample_index": sample_index,
-            "sample_count": sample_count,
-            "prior_result_ids": list(prior_result_ids)[-5:],
-            "required_response": required_response,
-        },
+        prompt_payload,
         ensure_ascii=False,
         separators=(",", ":"),
-        sort_keys=True,
+        sort_keys=False,
     )
 
 
@@ -6990,7 +7011,7 @@ def run_ring3_poisoning_smoke(args: argparse.Namespace) -> int:
         "agent_mode": report.get("agent_mode"),
         "scenario": report.get("scenario"),
         "changed_files": report.get("changed_files", []),
-        "failed_contracts": combined_failed_contracts,
+        "failed_contracts": list(report.get("failed_contracts", [])) if isinstance(report.get("failed_contracts"), list) else [],
         "selected_worker_id": consensus.get("selected_worker_id"),
         "rejected_worker_ids": consensus.get("rejected_worker_ids", []),
         "worker_result_count": consensus.get("worker_result_count", 0),
@@ -7185,7 +7206,7 @@ def run_ring3_evidence_compaction_smoke(args: argparse.Namespace) -> int:
         "agent_mode": report.get("agent_mode"),
         "scenario": report.get("scenario"),
         "changed_files": report.get("changed_files", []),
-        "failed_contracts": combined_failed_contracts,
+        "failed_contracts": list(report.get("failed_contracts", [])) if isinstance(report.get("failed_contracts"), list) else [],
         "parallel_counts": evidence.get("parallel_counts", {}),
         "selected_candidate_path_id": evidence.get("selected_candidate_path_id"),
         "selected_result_lineage": evidence.get("selected_result_lineage", []),

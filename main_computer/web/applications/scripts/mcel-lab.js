@@ -1286,6 +1286,16 @@
           readyForProviderExecution: boundary.walletUnlockRequirements?.readyForProviderExecution === true,
           missing: boundary.walletUnlockRequirements?.missing || []
         },
+        unlockContract: {
+          kind: boundary.wallet20aUnlockContract?.kind || boundary.walletUnlockContract?.kind || "",
+          status: boundary.wallet20aUnlockContract?.status || boundary.walletUnlockContract?.status || "",
+          stage: boundary.wallet20aUnlockContract?.stage || boundary.walletUnlockContract?.stage || "",
+          canBuildDraft: boundary.wallet20aUnlockContract?.canBuildDraft === true,
+          canSimulate: boundary.wallet20aUnlockContract?.canSimulate === true,
+          canRequestSignature: boundary.wallet20aUnlockContract?.canRequestSignature === true,
+          canBroadcast: boundary.wallet20aUnlockContract?.canBroadcast === true,
+          readyForProviderExecution: boundary.wallet20aUnlockContract?.readyForProviderExecution === true
+        },
         finalLockedSpecimen: {
           kind: boundary.walletFinalLockedSpecimen?.kind || "",
           status: boundary.walletFinalLockedSpecimen?.status || "",
@@ -1299,7 +1309,8 @@
           "MCEL proof dock unifies draft, provenance, freshness, gate, preflight, and receipt for each serious action specimen.",
           "wallet txDraft, blocked send, blocked sign, and blocked broadcast share the same proof-dock shape.",
           "wallet provider execution remains locked.",
-          "19D proof alignment carries txDraft identity and validity into every serious wallet specimen."
+          "19D proof alignment carries txDraft identity and validity into every serious wallet specimen.",
+          "20A unlock contract exposes staged capability eligibility without signature or broadcast authority."
         ]
       };
     }
@@ -1838,6 +1849,7 @@
         missing: requirements.filter((entry) => entry.status === "incomplete").map((entry) => entry.id),
         invariant: [
           "Unlock requirements: incomplete",
+          "wallet unlock requirements are incomplete in 18N-MCEL-j",
           "No wallet unlock is available until account, chain, draft hash, source request, preflight, gate, explicit confirmation, and receipt requirements are all complete.",
           "A future unlock must be a separate explicit patch.",
           "Wallet provider mutation calls remain absent."
@@ -1992,6 +2004,179 @@
 
 
 
+    function mcelWallet20aUnlockContract(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const walletFreshnessSnapshot = boundary.walletFreshnessSnapshot || {};
+      const walletPreflightReport = boundary.walletPreflightReport || {};
+      const preflight = boundary.mcelCommitPreflight || walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const identity = walletTxDraft.identityEnvelope
+        || walletTxDraft.txDraftIdentity
+        || walletPreflightReport.txDraftIdentityEnvelope
+        || receipt.txDraftIdentityEnvelope
+        || {};
+      const validity = walletTxDraft.validityEnvelope
+        || walletPreflightReport.txDraftValidityEnvelope
+        || receipt.txDraftValidityEnvelope
+        || walletFreshnessSnapshot.validityEnvelope
+        || {};
+      const alignment = boundary.wallet19dProofSurfaceAlignment || {};
+      const negativePath = boundary.wallet19eNegativePathRegression || {};
+      const completion = boundary.wallet18nCompletionReport || {};
+      const unlockRequirements = boundary.walletUnlockRequirements || {};
+      const validityStatus = validity.status || walletTxDraft.txDraftValidityStatus || "not-observed";
+      const invalidationReasons = [...new Set([
+        ...(validity.invalidationReasons || []),
+        ...(validity.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletTxDraft.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletFreshnessSnapshot.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletPreflightReport.txDraftInvalidationReasons || [])
+      ].filter(Boolean))];
+      const prerequisite = (id, label, passed, evidence = {}) => ({
+        id,
+        label,
+        status: passed ? "pass" : "blocked",
+        evidence
+      });
+      const prerequisites = [
+        prerequisite("18n-complete-locked", "18N locked boundary complete", completion.status === "complete-locked" || completion.finishedLocked === true, {
+          completionStatus: completion.status || "not-observed"
+        }),
+        prerequisite("19b-identity-present", "19B txDraft identity present", identity.kind === "mcelWalletTxDraftIdentityEnvelope.v1", {
+          identityKind: identity.kind || "missing",
+          txDraftHash: identity.txDraftHash || walletTxDraft.txDraftHash || ""
+        }),
+        prerequisite("19c-validity-current", "19C txDraft validity current", validityStatus === "valid" && validity.valid === true && invalidationReasons.length === 0, {
+          validityStatus,
+          valid: validity.valid === true,
+          invalidationReasons
+        }),
+        prerequisite("19d-proof-aligned", "19D proof surfaces aligned", alignment.status === "aligned-locked", {
+          alignmentStatus: alignment.status || "not-observed"
+        }),
+        prerequisite("19e-negative-paths-passed", "19E negative paths passed", negativePath.status === "passed-no-mutation-regression", {
+          regressionStatus: negativePath.status || "not-observed"
+        }),
+        prerequisite("preflight-no-provider-mutation", "preflight remains no-provider-mutation", preflight.canSend !== true && preflight.canSign !== true && preflight.canBroadcast !== true && receipt.mutationExecuted !== true, {
+          canSend: preflight.canSend === true,
+          canSign: preflight.canSign === true,
+          canBroadcast: preflight.canBroadcast === true,
+          mutationExecuted: receipt.mutationExecuted === true
+        }),
+        prerequisite("legacy-unlock-requirements-not-provider-ready", "legacy unlock requirements remain separated from provider execution", unlockRequirements.readyForProviderExecution !== true, {
+          legacyUnlockStatus: unlockRequirements.status || "not-observed"
+        })
+      ];
+      const missing = prerequisites.filter((entry) => entry.status !== "pass").map((entry) => entry.id);
+      const draftEligible = identity.kind === "mcelWalletTxDraftIdentityEnvelope.v1";
+      const simulationEligible = missing.length === 0;
+      const capabilities = {
+        buildDraft: {
+          capability: "wallet.buildDraft",
+          status: draftEligible ? "eligible" : "blocked",
+          canExecute: draftEligible,
+          providerMutation: false,
+          evidence: identity.txDraftId || walletTxDraft.txDraftId || ""
+        },
+        simulate: {
+          capability: "wallet.simulateDraft",
+          status: simulationEligible ? "eligible" : "blocked",
+          canExecute: simulationEligible,
+          providerMutation: false,
+          evidence: validityStatus
+        },
+        requestSignature: {
+          capability: "wallet.requestSignature",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20A-signature-capability-lock"
+        },
+        broadcast: {
+          capability: "wallet.broadcast",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20A-broadcast-capability-lock"
+        },
+        providerMutation: {
+          capability: "wallet.providerMutation",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20A-no-provider-mutation"
+        }
+      };
+      const allowedCapabilities = Object.values(capabilities)
+        .filter((entry) => entry.canExecute === true && entry.providerMutation !== true)
+        .map((entry) => entry.capability);
+      const lockedCapabilities = Object.values(capabilities)
+        .filter((entry) => entry.canExecute !== true || entry.providerMutation === true)
+        .map((entry) => entry.capability);
+      const contractHash = mcelTinyContractObjectHash({
+        unlockVersion: "20A-MCEL",
+        txDraftHash: walletTxDraft.txDraftHash || identity.txDraftHash || "",
+        validityStatus,
+        invalidationReasons,
+        missing,
+        allowedCapabilities,
+        lockedCapabilities
+      });
+      const decisionReceipt = {
+        kind: "mcelWallet20aUnlockDecisionReceipt.v1",
+        unlockVersion: "20A-MCEL",
+        contractHash,
+        status: simulationEligible ? "draft-and-simulation-eligible" : "contract-present-blocked",
+        mutationExecuted: false,
+        readyForProviderExecution: false,
+        allowedCapabilities,
+        lockedCapabilities,
+        missing,
+        invariant: [
+          "20A receipts capability eligibility without provider mutation.",
+          "Draft and simulation eligibility do not imply signature or broadcast eligibility.",
+          "Signature and broadcast remain separate future unlock patches."
+        ]
+      };
+      return {
+        kind: "mcelWallet20aUnlockContract.v1",
+        unlockVersion: "20A-MCEL",
+        unlockEvent: "staged-provider-capability-contract",
+        status: "staged-capability-contract-present",
+        stage: simulationEligible ? "draft-and-simulation-eligible" : "contract-present-blocked",
+        contractHash,
+        txDraftId: walletTxDraft.txDraftId || identity.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || identity.txDraftHash || "",
+        txDraftValidityStatus: validityStatus,
+        invalidationReasons,
+        prerequisites,
+        missing,
+        capabilityContract: capabilities,
+        allowedCapabilities,
+        lockedCapabilities,
+        canBuildDraft: capabilities.buildDraft.canExecute === true,
+        canSimulate: capabilities.simulate.canExecute === true,
+        canRequestSignature: false,
+        canBroadcast: false,
+        canSend: false,
+        canSign: false,
+        mutationExecuted: false,
+        readyForProviderExecution: false,
+        decisionReceipt,
+        nextAction: simulationEligible
+          ? "20A permits draft/simulation eligibility only; define a separate signed-intent unlock before any provider mutation."
+          : "satisfy the missing 20A prerequisites before considering any signed-intent unlock.",
+        invariant: [
+          "20A is the first unlock development event: capability-specific eligibility exists as a contract.",
+          "20A separates build/simulate eligibility from signature and broadcast authority.",
+          "20A does not call, expose, or enable provider mutation.",
+          "Provider mutation remains locked until a later explicit signed-intent and broadcast patch."
+        ]
+      };
+    }
+
+
+
 
     function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, request = null, reason = "wallet-tool-preflight", simulation = null} = {}) {
       const txDraft = runtime.txDraft || {};
@@ -2141,7 +2326,7 @@
         mcelCommitReceipt: receipt,
         nextAction: walletFreshnessSnapshot.status !== "valid"
           ? "rebuild draft from current wallet state; refresh preflight only reports stale intent"
-          : "hold lock; wallet unlock requirements are incomplete in 18N-MCEL-j",
+          : "20A staged unlock contract may mark draft/simulation eligible; signature and broadcast remain locked",
         invariant: [
           "wallet tool is a commit-boundary specimen",
           "walletTxDraft is first-class",
@@ -2151,6 +2336,7 @@
           "preflight and receipt are visible before any future mutation",
           "negative-path tests wall off stale, unproven, and mismatched wallet intent",
           "unlock requirements remain incomplete by design",
+          "20A staged unlock contract separates draft/simulation eligibility from signature and broadcast authority",
           "final locked wallet specimen refuses before provider execution",
           "18N completion report closes this patch set at a locked no-provider boundary",
           "send/sign/broadcast remains locked"
@@ -2166,6 +2352,8 @@
       boundary.walletSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard;
       boundary.wallet19eNegativePathRegression = mcelWallet19eNegativePathRegression(boundary);
       boundary.wallet18nCompletionReport = mcelWallet18nCompletionReport(boundary);
+      boundary.wallet20aUnlockContract = mcelWallet20aUnlockContract(boundary);
+      boundary.walletUnlockContract = boundary.wallet20aUnlockContract;
       return boundary;
     }
 
@@ -2939,6 +3127,8 @@
           }
         },
         walletCommitBoundary: mcelCommitBoundaryDefault("wallet.send-sign", "runtime-defaults"),
+        wallet20aUnlockContract: null,
+        walletUnlockContract: null,
         walletAdapter: {
           providerKind: "unknown",
           liveProvider: false,
@@ -3179,6 +3369,8 @@
             "walletSmokeRegressionGuard",
             "wallet19dProofSurfaceAlignment",
             "wallet19eNegativePathRegression",
+            "wallet20aUnlockContract",
+            "walletUnlockContract",
             "walletAdapter",
             "walletEvents",
             "externalOutcome",
@@ -4506,6 +4698,8 @@
             "runtime.wallet",
             "runtime.network",
             "runtime.txDraft",
+            "runtime.wallet20aUnlockContract",
+            "runtime.walletUnlockContract",
             "runtime.walletAdapter",
             "runtime.walletEvents",
             "runtime.externalOutcome",
@@ -4852,6 +5046,8 @@
       const visible19cValiditySlot = document.querySelector("#mcel-19c-wallet-tx-draft-validity-visible-status");
       const visible19dAlignmentSlot = document.querySelector("#mcel-19d-wallet-proof-alignment-visible-status");
       const visible19eNegativePathSlot = document.querySelector("#mcel-19e-wallet-negative-path-visible-status");
+      const visible20aUnlockContractSlot = document.querySelector("#mcel-20a-wallet-unlock-contract-visible-status");
+      const visible20aEligibilitySlot = document.querySelector("#mcel-20a-wallet-unlock-eligibility-visible-status");
       const visible19cInvalidatedSlot = document.querySelector("#mcel-19c-wallet-tx-draft-invalidated-by");
       const visibleTxDraftStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-tx-draft-status");
       const visibleFreshnessStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-freshness-status");
@@ -4873,6 +5069,7 @@
       const walletUnlockRequirements = boundary.walletUnlockRequirements || {};
       const walletFinalLockedSpecimen = boundary.walletFinalLockedSpecimen || {};
       const wallet18nCompletionReport = boundary.wallet18nCompletionReport || {};
+      const wallet20aUnlockContract = boundary.wallet20aUnlockContract || boundary.walletUnlockContract || {};
       const txDraftIdentityEnvelope = walletTxDraft.identityEnvelope
         || walletTxDraft.txDraftIdentity
         || walletPreflightReport.txDraftIdentityEnvelope
@@ -4900,10 +5097,10 @@
           `18N wallet tool: ${boundary.status || "locked"}`,
           `action: ${boundary.action || "wallet.send-sign"}`,
           `txDraft=${walletTxDraft.status || "empty"} freshness=${walletFreshnessSnapshot.status || "not-observed"}`,
-          `19A=${wallet19aSmokeRegressionGuard.status || "not-observed"} 19B=${txDraftIdentityEnvelope.kind || "missing"} 19C=${txDraftValidityEnvelope.status || "not-observed"} 19D=${wallet19dProofSurfaceAlignment.status || "not-observed"} 19E=${wallet19eNegativePathRegression.status || "not-observed"}`,
+          `19A=${wallet19aSmokeRegressionGuard.status || "not-observed"} 19B=${txDraftIdentityEnvelope.kind || "missing"} 19C=${txDraftValidityEnvelope.status || "not-observed"} 19D=${wallet19dProofSurfaceAlignment.status || "not-observed"} 19E=${wallet19eNegativePathRegression.status || "not-observed"} 20A=${wallet20aUnlockContract.stage || wallet20aUnlockContract.status || "not-observed"}`,
           `simulation=${walletTxDraft.simulation?.kind || "none"}`,
           `canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`,
-          `unlock=${walletUnlockRequirements.status || "incomplete"} final=${walletFinalLockedSpecimen.finalStatus || "locked"} completion=${wallet18nCompletionReport.status || "not-observed"}`,
+          `unlock=${wallet20aUnlockContract.stage || walletUnlockRequirements.status || "incomplete"} final=${walletFinalLockedSpecimen.finalStatus || "locked"} completion=${wallet18nCompletionReport.status || "not-observed"}`,
           `backlogScheme=${walletBacklogPolicy.selectedScheme} queued=${walletBacklogRuntime.queuedCount} suppressed=${walletBacklogRuntime.suppressedCount} nuked=${walletBacklogRuntime.nukedCount}`,
           `next: ${boundary.nextAction || preflight.summary || "inspect MCEL commit receipt"}`
         ].join("\n");
@@ -4918,6 +5115,7 @@
           txDraftInvalidationReasons,
           wallet19dProofSurfaceAlignment,
           wallet19eNegativePathRegression,
+          wallet20aUnlockContract,
           walletTxProvenance: boundary.walletTxProvenance || {},
           rebuildDraftAction: boundary.walletRebuildDraftAction || {}
         }, null, 2);
@@ -4952,6 +5150,7 @@
           txDraftInvalidationReasons,
           wallet19dProofSurfaceAlignment,
           wallet19eNegativePathRegression,
+          wallet20aUnlockContract,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
           wallet18nCompletionReport,
@@ -4972,6 +5171,7 @@
           txDraftInvalidationReasons,
           wallet19dProofSurfaceAlignment,
           wallet19eNegativePathRegression,
+          wallet20aUnlockContract,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
           wallet18nCompletionReport,
@@ -4993,7 +5193,8 @@
         unlockRequirementsSlot.textContent = JSON.stringify({
           kind: "mcel-18n-wallet-tool-unlock-requirements-view",
           boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
-          walletUnlockRequirements
+          walletUnlockRequirements,
+          wallet20aUnlockContract
         }, null, 2);
       }
       if (finalLockedSpecimenSlot) {
@@ -5020,7 +5221,7 @@
         "wallet-send-sign-locked"
       ].filter(Boolean))].slice(0, 6);
       if (visiblePhaseSlot) {
-        visiblePhaseSlot.textContent = `${wallet18nCompletionReport.completionVersion || "18N-MCEL-k"} + 19A/B/C/D/E visible: ${wallet18nCompletionReport.status || walletFinalLockedSpecimen.finalStatus || "locked"} before provider execution`;
+        visiblePhaseSlot.textContent = `${wallet18nCompletionReport.completionVersion || "18N-MCEL-k"} + 19A/B/C/D/E + 20A visible: ${wallet20aUnlockContract.stage || wallet18nCompletionReport.status || walletFinalLockedSpecimen.finalStatus || "locked"} before provider execution`;
       }
       if (visible19aSmokeSlot) {
         visible19aSmokeSlot.textContent = `${wallet19aSmokeRegressionGuard.smokeVersion || "19A-MCEL"} · ${wallet19aSmokeRegressionGuard.status || "not-observed"}`;
@@ -5037,6 +5238,17 @@
       if (visible19eNegativePathSlot) {
         visible19eNegativePathSlot.textContent = `${wallet19eNegativePathRegression.regressionVersion || "19E-MCEL"} · ${wallet19eNegativePathRegression.status || "not-observed"}`;
       }
+      if (visible20aUnlockContractSlot) {
+        visible20aUnlockContractSlot.textContent = `${wallet20aUnlockContract.unlockVersion || "20A-MCEL"} · ${wallet20aUnlockContract.stage || wallet20aUnlockContract.status || "not-observed"}`;
+      }
+      if (visible20aEligibilitySlot) {
+        visible20aEligibilitySlot.textContent = [
+          `build=${wallet20aUnlockContract.canBuildDraft === true}`,
+          `simulate=${wallet20aUnlockContract.canSimulate === true}`,
+          `signature=${wallet20aUnlockContract.canRequestSignature === true}`,
+          `broadcast=${wallet20aUnlockContract.canBroadcast === true}`
+        ].join(" ");
+      }
       if (visible19cInvalidatedSlot) {
         visible19cInvalidatedSlot.textContent = txDraftInvalidationReasons.slice(0, 3).join(", ") || "none";
       }
@@ -5047,7 +5259,7 @@
         visibleFreshnessStatusSlot.textContent = walletFreshnessSnapshot.status || boundary.mcelCommitFreshness?.status || "not-observed";
       }
       if (visibleUnlockStatusSlot) {
-        visibleUnlockStatusSlot.textContent = walletUnlockRequirements.status || "incomplete";
+        visibleUnlockStatusSlot.textContent = wallet20aUnlockContract.stage || walletUnlockRequirements.status || "incomplete";
       }
       if (visibleProviderStatusSlot) {
         visibleProviderStatusSlot.textContent = receipt.mutationExecuted === true ? "executed" : "refused";
@@ -5073,7 +5285,8 @@
           {step: "19C validate txDraft context", status: txDraftValidityEnvelope.status || "not-observed"},
           {step: "19D align proof surfaces", status: wallet19dProofSurfaceAlignment.status || "not-observed"},
           {step: "19E guard negative paths", status: wallet19eNegativePathRegression.status || "not-observed"},
-          ...baseVisibleFlow.filter((entry) => !String(entry.step || "").startsWith("19"))
+          {step: "20A stage unlock contract", status: wallet20aUnlockContract.stage || wallet20aUnlockContract.status || "not-observed"},
+          ...baseVisibleFlow.filter((entry) => !String(entry.step || "").startsWith("19") && !String(entry.step || "").startsWith("20"))
         ];
         visibleFlow.forEach((entry) => {
           const item = document.createElement("li");
@@ -5096,7 +5309,10 @@
         const proofAlignmentNext = wallet19dProofSurfaceAlignment.status && wallet19dProofSurfaceAlignment.status !== "aligned-locked"
           ? `19D says ${wallet19dProofSurfaceAlignment.status}; align wallet board, receipt, and Code Studio proof surfaces before unlock design`
           : "";
-        visibleNextSlot.textContent = `Next action: ${validityNext || proofAlignmentNext || wallet18nCompletionReport.nextAction || walletFinalLockedSpecimen.nextAction || boundary.nextAction || "stop here until a separate wallet unlock design is blessed"}`;
+        const unlockContractNext = wallet20aUnlockContract.nextAction
+          ? `20A says ${wallet20aUnlockContract.stage || wallet20aUnlockContract.status}: ${wallet20aUnlockContract.nextAction}`
+          : "";
+        visibleNextSlot.textContent = `Next action: ${validityNext || proofAlignmentNext || unlockContractNext || wallet18nCompletionReport.nextAction || walletFinalLockedSpecimen.nextAction || boundary.nextAction || "stop here until a separate wallet unlock design is blessed"}`;
       }
       if (ledgerSlot) {
         ledgerSlot.textContent = JSON.stringify({
@@ -5129,6 +5345,7 @@
           walletNegativePathTestWall,
           wallet19dProofSurfaceAlignment,
           wallet19eNegativePathRegression,
+          wallet20aUnlockContract,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
           wallet18nCompletionReport,
@@ -5172,6 +5389,8 @@
         instance.runtime.walletSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || null;
         instance.runtime.wallet19dProofSurfaceAlignment = boundary.wallet19dProofSurfaceAlignment || null;
         instance.runtime.wallet19eNegativePathRegression = boundary.wallet19eNegativePathRegression || null;
+        instance.runtime.wallet20aUnlockContract = boundary.wallet20aUnlockContract || null;
+        instance.runtime.walletUnlockContract = boundary.walletUnlockContract || boundary.wallet20aUnlockContract || null;
       }
       tinyState.lastWalletCommitBoundary = boundary;
       if (boundary.mcelCommitReceipt) {
@@ -5242,6 +5461,8 @@
         walletSmokeRegressionGuard: boundary.walletSmokeRegressionGuard || boundary.wallet19aSmokeRegressionGuard || {},
         wallet19dProofSurfaceAlignment: boundary.wallet19dProofSurfaceAlignment || {},
         wallet19eNegativePathRegression: boundary.wallet19eNegativePathRegression || {},
+        wallet20aUnlockContract: boundary.wallet20aUnlockContract || boundary.walletUnlockContract || {},
+        walletUnlockContract: boundary.walletUnlockContract || boundary.wallet20aUnlockContract || {},
         walletUnlockRequirements: boundary.walletUnlockRequirements || {},
         walletFinalLockedSpecimen: boundary.walletFinalLockedSpecimen || {},
         wallet18nCompletionReport: boundary.wallet18nCompletionReport || {},

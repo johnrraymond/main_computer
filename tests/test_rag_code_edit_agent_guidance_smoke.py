@@ -675,11 +675,22 @@ def test_ai_restart_live_ring3_probe_prompt_is_compact_and_goal_locked() -> None
     payload = json.loads(prompt)
     contract = smoke.ai_restart_directive_contract(directive)
 
-    assert len(prompt) < 1600
+    assert len(prompt) < 1800
     assert smoke.TEST_APP_PY not in prompt
     assert payload["stage"] == "ring3_live_request_verify"
     assert payload["result_id"] == "live-rv-002"
+    assert payload["goal_directive_sha256"] == contract["directive_sha256"]
     assert payload["goal_directive"]["directive_sha256"] == contract["directive_sha256"]
+    assert payload["required_keys"] == [
+        "goal_directive_sha256",
+        "hub_reliability_score",
+        "result_id",
+        "risks",
+        "round_type",
+        "selected_files",
+        "summary",
+    ]
+    assert "Do not return only summary/risks" in payload["copy_contract"]
     assert payload["required_response"]["goal_directive_sha256"] == contract["directive_sha256"]
     assert payload["required_response"]["result_id"] == "live-rv-002"
     assert payload["required_response"]["round_type"] == "request_verify"
