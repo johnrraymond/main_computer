@@ -1240,6 +1240,21 @@ def test_rpc_retire_with_remaining_host_nodes_includes_orphan_cleanup_sidecar(tm
     assert "docker rm -f" in compose
     assert "30013" in compose
 
+def test_retire_target_plan_preserves_only_active_source_services(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_rpc_retire_with_remaining_private_state(tmp_path))
+
+    host_plan = module.plan_for_host_without_services(
+        plan,
+        "b",
+        {"validator-2"},
+        source_service_ids={"validator-2"},
+    )
+
+    assert [service.id for service in host_plan.services] == []
+    assert [host.id for host in host_plan.hosts] == ["b"]
+
+
 def test_mutate_apply_rpc_retire_redeploys_cleanup_compose_and_verifies_public_rpc(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -1298,10 +1313,25 @@ def test_mutate_apply_rpc_retire_redeploys_cleanup_compose_and_verifies_public_r
         assert [service.id for service in services] == ["rpc-1"]
         return {"ok": True, "checks": [{"ok": True, "instance": "rpc-1", "unreachable": True}]}
 
+    def fake_retire_source_service_ids_for_host(
+        source_plan: Any,
+        source_args: Any,
+        host_id: str,
+        *,
+        dry_run: bool,
+        no_deploy: bool,
+    ) -> dict[str, Any]:
+        assert source_plan is plan
+        assert host_id == "b"
+        assert dry_run is False
+        assert no_deploy is False
+        return {"ok": True, "host": host_id, "service_ids": ["rpc-1"], "source": "test-live-compose"}
+
     monkeypatch.setattr(module, "observe_chain_state", fake_observe_chain_state)
     monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
     monkeypatch.setattr(module, "wait_for_stable_observable_chain", fake_wait_for_stable_observable_chain)
     monkeypatch.setattr(module, "verify_retired_rpc_unreachable", fake_verify_retired_rpc_unreachable)
+    monkeypatch.setattr(module, "retire_source_service_ids_for_host", fake_retire_source_service_ids_for_host)
 
     packet = module.mutate_network(plan, _args(retire="rpc-1", apply=True))
 
@@ -1318,6 +1348,7 @@ def test_mutate_apply_rpc_retire_redeploys_cleanup_compose_and_verifies_public_r
     ]
     assert [phase["phase"] for phase in packet["apply_phases"]] == [
         "observe-chain",
+        "discover-active-host-services",
         "remove-public-rpc-entry",
         "redeploy-service-without-target",
         "stop-coolify-service",
@@ -2056,12 +2087,27 @@ def test_mutate_apply_validator_retire_votes_out_then_omits_target(tmp_path: Pat
         assert kwargs["label"] == "verify-block-production"
         return {"ok": True, "canonical_rpc": "ok", "consensus": "ok", "chain": {"validator_count": 1}}
 
+    def fake_retire_source_service_ids_for_host(
+        source_plan: Any,
+        source_args: Any,
+        host_id: str,
+        *,
+        dry_run: bool,
+        no_deploy: bool,
+    ) -> dict[str, Any]:
+        assert source_plan is plan
+        assert host_id == "a"
+        assert dry_run is False
+        assert no_deploy is False
+        return {"ok": True, "host": host_id, "service_ids": ["validator-rpc-1", "validator-1"], "source": "test-live-compose"}
+
     monkeypatch.setattr(module, "current_qbft_validators", fake_current_qbft_validators)
     monkeypatch.setattr(module, "fetch_validator_address_from_host", fake_fetch_validator_address_from_host)
     monkeypatch.setattr(module, "propose_qbft_validator_vote_to_all", fake_propose_qbft_validator_vote_to_all)
     monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
     monkeypatch.setattr(module, "wait_for_qbft_validator_membership", fake_wait_for_qbft_validator_membership)
     monkeypatch.setattr(module, "wait_for_stable_observable_chain", fake_wait_for_stable_observable_chain)
+    monkeypatch.setattr(module, "retire_source_service_ids_for_host", fake_retire_source_service_ids_for_host)
 
     packet = module.mutate_network(plan, _args(retire="validator-1", apply=True, ack_consensus_change=True))
 
@@ -2070,6 +2116,7 @@ def test_mutate_apply_validator_retire_votes_out_then_omits_target(tmp_path: Pat
     assert packet["mutation"] == "retire-validator"
     assert packet["execution"]["no_mutation_performed"] is False
     assert [phase["phase"] for phase in packet["apply_phases"]] == [
+        "discover-active-host-services",
         "verify-current-validator-set",
         "verify-node-identity",
         "propose-validator-vote",
@@ -2082,6 +2129,91 @@ def test_mutate_apply_validator_retire_votes_out_then_omits_target(tmp_path: Pat
     ]
     assert packet["apply_phases"][-1]["result"]["validator_address"] == target_address
     assert [item[0] for item in calls].count("coolify-sync") == 2
+
+def test_mutate_apply_validator_retire_does_not_resurrect_previously_retired_rpc(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_rpc_retire_with_remaining_private_state(tmp_path))
+    target_address = "0x2222222222222222222222222222222222222222"
+    incumbent_address = "0x1111111111111111111111111111111111111111"
+    final_sync_services: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "retire_source_service_ids_for_host",
+        lambda source_plan, source_args, host_id, *, dry_run, no_deploy: {
+            "ok": True,
+            "host": host_id,
+            "service_ids": ["validator-2"],
+            "source": "test-live-compose",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "current_qbft_validators",
+        lambda vote_plan, vote_args, *, block="latest": [incumbent_address, target_address],
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_validator_address_from_host",
+        lambda fetch_plan, fetch_args, host_id, service: (
+            target_address,
+            {"ok": True, "validator_addresses": {"validator-2": target_address}},
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "propose_qbft_validator_vote_to_all",
+        lambda vote_plan, vote_args, address, proposal, **kwargs: {
+            "ok": True,
+            "validator_address": address,
+            "proposal": proposal,
+            "votes_submitted": 1,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "wait_for_qbft_validator_membership",
+        lambda wait_plan, wait_args, address, *, should_contain: {
+            "ok": True,
+            "validator_address": address,
+            "validators": [incumbent_address],
+            "validator_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "wait_for_stable_observable_chain",
+        lambda stable_plan, stable_args, **kwargs: {"ok": True, "chain": {"validator_count": 1}},
+    )
+
+    def fake_coolify_sync(sync_plan: Any, sync_args: Any, *, deploy: bool = False) -> dict[str, Any]:
+        assert deploy is True
+        assert sync_args.host == "b"
+        service_ids = [service.id for service in sync_plan.services]
+        if getattr(sync_args, "_validator_vote", None):
+            assert service_ids == ["validator-2"]
+            return {"ok": True, "stage": "vote-sidecar"}
+        final_sync_services.append(service_ids)
+        assert service_ids == []
+        assert sync_args._compose_override
+        assert "validator-2:" not in sync_args._compose_override
+        assert "rpc-1:" not in sync_args._compose_override
+        return {"ok": True, "stage": "retire-redeploy"}
+
+    monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
+
+    packet = module.mutate_network(plan, _args(retire="validator-2", apply=True, ack_consensus_change=True))
+
+    assert packet["ok"] is True
+    assert packet["apply_phases"][0]["phase"] == "discover-active-host-services"
+    assert packet["apply_phases"][0]["result"]["service_ids"] == ["validator-2"]
+    assert final_sync_services == [[]]
+    stop_phase = next(phase for phase in packet["apply_phases"] if phase["phase"] == "stop-coolify-service")
+    assert stop_phase["remaining_instances"] == []
+
 
 
 def test_mutate_apply_validator_retire_restores_topology_when_membership_wait_times_out(tmp_path: Path, monkeypatch: Any) -> None:
@@ -2138,12 +2270,23 @@ def test_mutate_apply_validator_retire_restores_topology_when_membership_wait_ti
 
     monkeypatch.setattr(module, "coolify_sync", fake_coolify_sync)
     monkeypatch.setattr(module, "wait_for_qbft_validator_membership", fake_wait_for_qbft_validator_membership)
+    monkeypatch.setattr(
+        module,
+        "retire_source_service_ids_for_host",
+        lambda source_plan, source_args, host_id, *, dry_run, no_deploy: {
+            "ok": True,
+            "host": host_id,
+            "service_ids": ["validator-rpc-1", "validator-1"],
+            "source": "test-live-compose",
+        },
+    )
 
     packet = module.mutate_network(plan, _args(retire="validator-1", apply=True, ack_consensus_change=True))
 
     assert packet["ok"] is False
     assert "pre-retire topology restore was attempted" in packet["execution"]["message"]
     assert [phase["phase"] for phase in packet["apply_phases"]] == [
+        "discover-active-host-services",
         "verify-current-validator-set",
         "verify-node-identity",
         "propose-validator-vote",

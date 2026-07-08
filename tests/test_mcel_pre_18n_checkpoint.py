@@ -429,6 +429,7 @@ def test_18n_mcel_h_i_j_wallet_negative_paths_unlock_requirements_and_final_lock
         "mcelWalletNegativePathTestWall.v1",
         "mcelWalletUnlockRequirements.v1",
         "mcelWalletFinalLockedSpecimen.v1",
+        "mcelWallet18nCompletionReport.v1",
         "negative-path tests prove no wallet mutation path unlocks by accident",
         "stale wallet draft blocks",
         "missing provenance blocks",
@@ -452,6 +453,7 @@ def test_18n_mcel_h_i_j_wallet_negative_paths_unlock_requirements_and_final_lock
         "walletNegativePathTestWall",
         "walletUnlockRequirements",
         "walletFinalLockedSpecimen",
+        "wallet18nCompletionReport",
     ]
     for marker in lab_markers:
         assert marker in lab
@@ -460,9 +462,11 @@ def test_18n_mcel_h_i_j_wallet_negative_paths_unlock_requirements_and_final_lock
         'id="mcel-18n-wallet-tool-negative-paths"',
         'id="mcel-18n-wallet-tool-unlock-requirements"',
         'id="mcel-18n-wallet-tool-final-locked-specimen"',
+        'id="mcel-18n-wallet-tool-completion-report"',
         "MCEL 18N wallet negative-path test wall is waiting",
         "Unlock requirements: incomplete",
         "Final locked wallet specimen is waiting",
+        "18N completion report is waiting",
     ]
     for marker in html_markers:
         assert marker in lab_html
@@ -531,10 +535,11 @@ def test_18n_mcel_j_visible_wallet_specimen_board_makes_locked_state_obvious() -
         'id="mcel-18n-wallet-tool-visible-freshness-status"',
         'id="mcel-18n-wallet-tool-visible-unlock-status"',
         'id="mcel-18n-wallet-tool-visible-provider-status"',
+        'id="mcel-18n-wallet-tool-visible-completion-status"',
         'id="mcel-18n-wallet-tool-visible-flow"',
         'id="mcel-18n-wallet-tool-visible-blockers"',
         'id="mcel-18n-wallet-tool-visible-next"',
-        "18N-J final locked wallet specimen",
+        "18N-K complete locked wallet boundary",
         "Provider mutation",
         "refused before provider",
     ]
@@ -548,7 +553,7 @@ def test_18n_mcel_j_visible_wallet_specimen_board_makes_locked_state_obvious() -
         "visibleBlockers",
         "walletFinalLockedSpecimen.flow",
         "refused-before-provider",
-        "18N-MCEL-j visible",
+        "18N-MCEL-k",
         "stop here until a separate wallet unlock design is blessed",
     ]
     for marker in script_markers:
@@ -568,6 +573,55 @@ def test_18n_mcel_j_visible_wallet_specimen_board_makes_locked_state_obvious() -
     assert re.search(r"canSign\s*:\s*false", lab)
     assert re.search(r"canBroadcast\s*:\s*false", lab)
 
+
+
+def test_18n_mcel_k_completion_report_closes_locked_wallet_boundary() -> None:
+    lab_html = read_app("mcel-lab.html")
+    lab = read_script("mcel-lab.js")
+    studio = read_script("code-editor-mcel-studio.js")
+
+    lab_markers = [
+        "mcelWallet18nCompletionReport.v1",
+        "18N-MCEL-k",
+        "complete-locked",
+        "finishedLocked",
+        "readyForSeparateUnlockDesign",
+        "commit-boundary-chain-present",
+        "wallet-draft-provenance-visible",
+        "negative-path-wall-present",
+        "unlock-remains-separated",
+        "final-locked-specimen-present",
+        "proof-dock-unified",
+        "provider-mutation-absent",
+        "18N completion means the locked proof boundary is complete, not that provider execution is enabled.",
+        "18N is complete at the locked wallet boundary; any provider unlock must be a separate explicit patch.",
+        "boundary.wallet18nCompletionReport = mcelWallet18nCompletionReport(boundary)",
+    ]
+    for marker in lab_markers:
+        assert marker in lab
+
+    html_markers = [
+        'id="mcel-18n-wallet-tool-completion-report"',
+        'id="mcel-18n-wallet-tool-visible-completion-status"',
+        "18N-K complete locked wallet boundary",
+        "18N completion report is waiting",
+        "18N closure",
+    ]
+    for marker in html_markers:
+        assert marker in lab_html
+
+    studio_markers = [
+        "wallet18nCompletionReport",
+        "wallet18nCompletionStatus",
+        "18N-K completion means the wallet boundary is complete while provider execution remains locked.",
+    ]
+    for marker in studio_markers:
+        assert marker in studio
+
+    assert lab.index("function mcelWalletFinalLockedSpecimen") < lab.index("function mcelWallet18nCompletionReport")
+    assert lab.index("boundary.mcelProofDockSpecimens = mcelWalletProofDockSpecimens(boundary)") < lab.index("boundary.wallet18nCompletionReport = mcelWallet18nCompletionReport(boundary)")
+    assert re.search(r"readyForProviderExecution\s*:\s*false", lab)
+    assert re.search(r"mutationExecuted\s*:\s*false", lab)
 
 
 def test_18n_mcel_wallet_declares_selectable_backlog_remediation_schemes() -> None:
