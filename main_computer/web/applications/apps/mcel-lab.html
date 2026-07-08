@@ -167,6 +167,8 @@
           <button type="button" id="mcel-18n-wallet-tool-simulate-chain">Simulate chain stale</button>
           <button type="button" id="mcel-18n-wallet-tool-simulate-source">Simulate source request stale</button>
           <button type="button" id="mcel-18n-wallet-tool-simulate-target">Simulate target/value stale</button>
+          <button type="button" id="mcel-20d-wallet-request-intent-signature" data-mc-effect="wallet.requestIntentSignature">Request 20D intent signature</button>
+          <button type="button" id="mcel-21a-wallet-send-policy-bound" data-mc-effect="wallet.sendPolicyBoundTransaction">Request 21A policy-bound send</button>
           <button type="button" id="mcel-18n-wallet-tool-copy-receipt">Copy wallet receipt</button>
         </div>
         <fieldset class="mcel-wallet-backlog-schemes" data-mcel-wallet-backlog-remediation="true">
@@ -195,12 +197,12 @@
         <output id="mcel-18n-wallet-tool-status" class="mcel-tiny-contract-proof" data-status="locked" aria-live="polite">
           18N wallet tool is locked until a current MCEL commit draft is proven.
         </output>
-        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" data-mcel-20b-wallet-signed-intent-unlock="true" data-mcel-20c-wallet-signature-preflight="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, 20A staged unlock contract, 20B signed-intent gate, and 20C signature-request preflight board">
+        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" data-mcel-20b-wallet-signed-intent-unlock="true" data-mcel-20c-wallet-signature-preflight="true" data-mcel-20def-wallet-provider-review="true" data-mcel-20g-wallet-provider-hardening="true" data-mcel-21abc-wallet-transaction-execution="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, 20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D intent signature, 20E verification, 20F pre-send review, and 20G provider hardening, 21A policy-bound send, 21B provider outcome ledger, and 21C transaction watcher board">
           <div class="mcel-18n-wallet-board-head">
-            <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof + 20A unlock contract + 20B signed-intent gate + 20C signature preflight</strong>
-            <span id="mcel-18n-wallet-tool-visible-phase">Locked before provider execution; 19A/B/C/D/E proof plus 20A unlock contract, 20B signed-intent gate, and 20C signature preflight waiting</span>
+            <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof + 20A/B/C unlock + 20D/E/F/G provider intent review + 21A/B/C transaction execution</strong>
+            <span id="mcel-18n-wallet-tool-visible-phase">21A can request a policy-bound network-agnostic provider send when current signed evidence matches; 21B ledgers provider outcome and 21C watches receipts.</span>
           </div>
-          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N, 19A 19B 19C 19D 19E, 20A, 20B, and 20C visible status">
+          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N, 19A 19B 19C 19D 19E, 20A, 20B, 20C, 20D, 20E, 20F, 20G, 21A, 21B, and 21C visible status">
             <article>
               <span>19A guard</span>
               <strong id="mcel-19a-wallet-smoke-visible-status">waiting</strong>
@@ -246,6 +248,34 @@
               <strong id="mcel-20c-wallet-provider-prompt-visible-status">locked</strong>
             </article>
             <article>
+              <span>20D intent signature</span>
+              <strong id="mcel-20d-wallet-intent-signature-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20E signature verify</span>
+              <strong id="mcel-20e-wallet-signature-verification-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20F pre-send review</span>
+              <strong id="mcel-20f-wallet-pre-send-review-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20G provider hardening</span>
+              <strong id="mcel-20g-wallet-provider-hardening-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21A policy send</span>
+              <strong id="mcel-21a-wallet-policy-send-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21B provider outcome</span>
+              <strong id="mcel-21b-wallet-provider-outcome-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21C tx watcher</span>
+              <strong id="mcel-21c-wallet-transaction-watcher-visible-status">waiting</strong>
+            </article>
+            <article>
               <span>Invalidated by</span>
               <strong id="mcel-19c-wallet-tx-draft-invalidated-by">none observed</strong>
             </article>
@@ -270,12 +300,12 @@
               <strong id="mcel-18n-wallet-tool-visible-completion-status">not observed</strong>
             </article>
           </div>
-          <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Final locked wallet flow with 19D proof alignment, 19E negative path regression, 20A staged unlock contract, 20B signed-intent gate, and 20C signature-request preflight">
+          <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Wallet flow with 19D proof alignment, 19E negative path regression, 20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D intent signature, 20E verification, 20F pre-send review, 20G provider hardening, 21A policy-bound send, 21B provider outcome ledger, and 21C transaction watcher">
             <li>create txDraft · waiting</li>
             <li>review draft · waiting</li>
             <li>run freshness · waiting</li>
             <li>run preflight · locked</li>
-            <li>attempt send/sign/broadcast · refused before provider</li>
+            <li>attempt policy-bound send · blocked until 21A evidence matches</li>
             <li>receipt records blocked attempt · waiting</li>
           </ol>
           <div class="mcel-18n-wallet-board-foot">
@@ -286,7 +316,7 @@
               </ul>
             </div>
             <p id="mcel-18n-wallet-tool-visible-next">
-              Next action: inspect 20C signature-request preflight; signature and broadcast remain locked; provider prompt, signature, send, and broadcast remain locked.
+              Next action: request 21A policy-bound network-agnostic send only after current signed evidence, policy, and pre-send review match; 21B ledgers outcome and 21C watches receipts.
             </p>
           </div>
         </section>
@@ -299,6 +329,13 @@
         <pre id="mcel-18n-wallet-tool-unlock-requirements" class="mcel-tiny-contract-evidence">Unlock requirements: incomplete.</pre>
         <pre id="mcel-20b-wallet-signed-intent-unlock" class="mcel-tiny-contract-evidence">20B signed-intent unlock gate is waiting.</pre>
         <pre id="mcel-20c-wallet-signature-request-preflight" class="mcel-tiny-contract-evidence">20C signature-request preflight is waiting.</pre>
+        <pre id="mcel-20d-wallet-provider-intent-signature" class="mcel-tiny-contract-evidence">20D provider intent signature is waiting.</pre>
+        <pre id="mcel-20e-wallet-signed-intent-verification" class="mcel-tiny-contract-evidence">20E signed-intent verification is waiting.</pre>
+        <pre id="mcel-20f-wallet-pre-send-review" class="mcel-tiny-contract-evidence">20F pre-send review is waiting.</pre>
+        <pre id="mcel-20g-wallet-provider-intent-hardening" class="mcel-tiny-contract-evidence">20G provider intent hardening is waiting.</pre>
+        <pre id="mcel-21a-wallet-policy-bound-send-gate" class="mcel-tiny-contract-evidence">21A policy-bound network-agnostic send gate is waiting.</pre>
+        <pre id="mcel-21b-wallet-provider-outcome-ledger" class="mcel-tiny-contract-evidence">21B provider outcome ledger is waiting.</pre>
+        <pre id="mcel-21c-wallet-transaction-watcher" class="mcel-tiny-contract-evidence">21C transaction watcher is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-final-locked-specimen" class="mcel-tiny-contract-evidence">Final locked wallet specimen is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-completion-report" class="mcel-tiny-contract-evidence">18N completion report is waiting.</pre>
       </article>
@@ -330,6 +367,12 @@
       "txDraft",
       "walletAdapter",
       "walletEvents",
+      "wallet21aPolicyBoundSendGate",
+      "walletTransactionSendGate",
+      "wallet21bProviderOutcomeLedger",
+      "walletProviderOutcomeLedger",
+      "wallet21cTransactionWatcher",
+      "walletTransactionWatcher",
       "proofChip",
       "repairPacket",
       "assistantRepairPrompt",

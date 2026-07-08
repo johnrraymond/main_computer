@@ -1823,122 +1823,6 @@ def test_observe_chain_prefers_canonical_rpc_and_reads_qbft_validators(tmp_path:
     ]
 
 
-
-
-def test_observe_chain_command_mode_probes_all_known_rpcs_and_coolify(tmp_path: Path, monkeypatch: Any) -> None:
-    module = _load_module()
-    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
-    calls: list[tuple[str, str]] = []
-
-    def fake_json_rpc(url: str, method: str, params: list[Any] | None = None, **kwargs: Any) -> Any:
-        calls.append((url, method))
-        if method == "eth_chainId":
-            return hex(plan.chain_id)
-        if method == "eth_blockNumber":
-            return "0x2a" if "30010" in url else "0x2b"
-        if method == "net_peerCount":
-            return "0x3"
-        if method == "qbft_getValidatorsByBlockNumber":
-            return ["0x1111111111111111111111111111111111111111"]
-        raise AssertionError(f"unexpected JSON-RPC method: {method}")
-
-    def fake_discover_coolify_topology(observe_plan: Any, observe_args: Any) -> dict[str, Any]:
-        assert observe_plan is plan
-        return {
-            "ok": True,
-            "hosts": {
-                "a": {
-                    "ok": True,
-                    "found": True,
-                    "deployed_instances": ["validator-rpc-1", "validator-1"],
-                    "service_name": "main-computer-qbft-testnet-a",
-                },
-                "b": {
-                    "ok": True,
-                    "found": True,
-                    "deployed_instances": ["rpc-1", "validator-2"],
-                    "service_name": "main-computer-qbft-testnet-b",
-                },
-            },
-            "observed_deployed_instances": ["rpc-1", "validator-1", "validator-2", "validator-rpc-1"],
-            "observed_missing_instances": [],
-        }
-
-    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
-    monkeypatch.setattr(module, "discover_coolify_topology", fake_discover_coolify_topology)
-
-    observation = module.observe_chain_state(plan, _args(), include_all_rpcs=True, include_coolify=True)
-
-    probed_urls = {url for url, method in calls if method == "eth_chainId"}
-    assert "https://testnet-rpc.greatlibrary.io" in probed_urls
-    assert "http://198.51.100.10:30010" in probed_urls
-    assert "http://198.51.100.11:30011" in probed_urls
-    assert "http://198.51.100.11:30012" in probed_urls
-    assert observation["ok"] is True
-    assert observation["coolify"] == "ok"
-    assert observation["canonical_rpc"] == "ok"
-    assert observation["direct_rpc"] == "ok"
-    assert {probe.get("source") for probe in observation["probes"]} == {"configured-network-rpc", "direct-host-port"}
-
-
-def test_observe_chain_report_labels_live_observation_vs_template(tmp_path: Path, monkeypatch: Any) -> None:
-    module = _load_module()
-    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
-
-    observation = {
-        "ok": True,
-        "status": "ok",
-        "network": "testnet",
-        "environment": "testnet",
-        "expected_chain_id": hex(plan.chain_id),
-        "canonical_rpc": "ok",
-        "direct_rpc": "ok",
-        "explicit_rpc": "not-inspected",
-        "coolify": "ok",
-        "consensus": "ok",
-        "chain": {
-            "source_url": "https://testnet-rpc.greatlibrary.io",
-            "source": "configured-network-rpc",
-            "chain_id": hex(plan.chain_id),
-            "chain_id_matches_plan": True,
-            "block_number": 42,
-            "peer_count": 3,
-            "validator_count": 1,
-        },
-        "probes": [
-            {
-                "ok": True,
-                "url": "https://testnet-rpc.greatlibrary.io",
-                "source": "configured-network-rpc",
-                "label": "canonical",
-                "chain_id": hex(plan.chain_id),
-                "block_number": 42,
-                "peer_count": 3,
-                "validator_count": 1,
-            }
-        ],
-        "coolify_topology": {
-            "ok": True,
-            "hosts": {
-                "a": {"ok": True, "found": True, "deployed_instances": ["validator-rpc-1"]},
-                "b": {"ok": True, "found": False, "stage": "missing"},
-            },
-            "observed_deployed_instances": ["validator-rpc-1"],
-            "observed_missing_instances": ["rpc-1", "validator-1", "validator-2"],
-        },
-    }
-
-    report = module.format_chain_observation_report(plan, observation, _args(verbose=False))
-
-    assert "mode: live observation; private state is used only as a decoding template" in report
-    assert "rpc probes (live):" in report
-    assert "coolify api: ok" in report
-    assert "observed deployed instances: validator-rpc-1" in report
-    assert "topology template (private-state/plan; not proof of deployment):" in report
-    assert "template services:" in report
-    assert "planned services:" not in report
-
-
 def test_mutate_observe_chain_embeds_read_only_observed_state(tmp_path: Path, monkeypatch: Any) -> None:
     module = _load_module()
     plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
@@ -2462,3 +2346,121 @@ def test_twiddle_consensus_hosts_can_be_selected_from_instances(tmp_path: Path) 
     hosts = module.qbft_consensus_twiddle_hosts(plan, _args(instances="validator-rpc-1,validator-2", twiddle_hosts=""))
 
     assert hosts == ["a", "b"]
+
+
+def test_observe_chain_reality_report_is_sectioned_and_reality_last(tmp_path: Path, monkeypatch: Any) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+
+    def fake_json_rpc(url: str, method: str, params: list[Any] | None = None, **kwargs: Any) -> Any:
+        if url == "http://198.51.100.11:30012":
+            raise RuntimeError("rpc-2 not reachable")
+        if method == "eth_chainId":
+            return hex(plan.chain_id)
+        if method == "eth_blockNumber":
+            return "0x2a"
+        if method == "net_peerCount":
+            return "0x0"
+        if method == "qbft_getValidatorsByBlockNumber":
+            return ["0x1111111111111111111111111111111111111111"]
+        raise AssertionError(f"unexpected JSON-RPC method: {method}")
+
+    def fake_discover_coolify_topology(discover_plan: Any, discover_args: Any) -> dict[str, Any]:
+        assert discover_plan is plan
+        return {
+            "ok": True,
+            "hosts": {
+                "a": {
+                    "ok": True,
+                    "found": True,
+                    "deployed_instances": ["validator-rpc-1"],
+                },
+                "b": {
+                    "ok": True,
+                    "found": False,
+                    "stage": "missing",
+                    "deployed_instances": [],
+                },
+            },
+            "observed_deployed_instances": ["validator-rpc-1"],
+            "observed_missing_instances": ["rpc-2", "validator-2", "validator-rpc-2"],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
+    monkeypatch.setattr(module, "discover_coolify_topology", fake_discover_coolify_topology)
+
+    observation = module.observe_chain_reality(plan, _args())
+    report = module.format_chain_observation_report(plan, observation)
+
+    assert observation["status"] == "degraded"
+    assert observation["ok"] is True
+    assert "==== SUMMARY ====" in report
+    assert "status: degraded" in report
+    assert "==== STATUS REASONS ====" in report
+    assert "==== ERRORS ====" in report
+    assert "==== WARNINGS ====" in report
+    assert "==== TEMPLATE DECODER (PRIVATE STATE / PLAN; NOT PROOF OF DEPLOYMENT) ====" in report
+    assert "==== REALITY (LIVE RPC + COOLIFY OBSERVATIONS) ====" in report
+    assert "private state is used only as a decoding template" in report
+    assert "template services:" in report
+    assert "RPC probes:" in report
+    assert "Coolify observations:" in report
+    assert "Template-only direct RPC probe(s) failed" in report
+    assert "template RPC probes excluded from live reality:" in report
+    assert "rpc-2@b: rpc-2 was not observed in Coolify" in report
+    assert "Template RPC probe rpc-2@b failed" in report
+    reality = report.split("==== REALITY (LIVE RPC + COOLIFY OBSERVATIONS) ====", 1)[1]
+    assert "rpc-2@b: error" not in reality
+    assert "template instances not observed in Coolify" not in reality
+    assert "validator-rpc-1@a: ok" in reality
+    assert report.rfind("==== REALITY (LIVE RPC + COOLIFY OBSERVATIONS) ====") > report.rfind("==== TEMPLATE DECODER")
+    assert "raw observation JSON:" not in report
+
+
+def test_observe_chain_reality_probes_canonical_and_each_direct_rpc(tmp_path: Path, monkeypatch: Any) -> None:
+    module = _load_module()
+    plan = module.build_plan("testnet", private_state_path=write_mutation_private_state(tmp_path))
+    probed_urls: list[str] = []
+
+    def fake_json_rpc(url: str, method: str, params: list[Any] | None = None, **kwargs: Any) -> Any:
+        if method == "eth_chainId":
+            probed_urls.append(url)
+            return hex(plan.chain_id)
+        if method == "eth_blockNumber":
+            return "0x1"
+        if method == "net_peerCount":
+            return "0x1"
+        if method == "qbft_getValidatorsByBlockNumber":
+            return ["0x1111111111111111111111111111111111111111"]
+        raise AssertionError(f"unexpected JSON-RPC method: {method}")
+
+    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
+    monkeypatch.setattr(
+        module,
+        "discover_coolify_topology",
+        lambda _plan, _args: {
+            "ok": True,
+            "hosts": {},
+            "observed_deployed_instances": [service.id for service in plan.services],
+            "observed_missing_instances": [],
+            "warnings": [],
+        },
+    )
+
+    observation = module.observe_chain_reality(plan, _args())
+
+    assert observation["canonical_rpc"] == "ok"
+    assert observation["direct_rpc"] == "ok"
+    assert set(probed_urls) == {
+        "https://testnet-rpc.greatlibrary.io",
+        "http://198.51.100.10:30010",
+        "http://198.51.100.11:30011",
+        "http://198.51.100.11:30012",
+    }
+    assert {probe["label"] for probe in observation["probes"]} >= {
+        "canonical",
+        "validator-rpc-1@a",
+        "validator-rpc-2@b",
+        "rpc-2@b",
+    }

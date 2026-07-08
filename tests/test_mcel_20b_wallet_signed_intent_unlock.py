@@ -48,23 +48,27 @@ def test_20b_signed_intent_gate_is_present_and_provider_safe() -> None:
         assert marker in lab
 
     dangerous_methods = [
-        "eth_sendTransaction",
         "eth_signTransaction",
         "personal_sign",
-        "signTypedData",
-        "sendTransaction",
         "broadcastTransaction",
     ]
     for method in dangerous_methods:
         assert method not in lab
         assert method not in studio
 
+    assert "eth_sendTransaction" in lab
+    assert "function mcelWallet21aPolicyBoundSendGate" in lab
+    assert "eth_sendTransaction" not in studio
+    assert not re.search(r"\.sendTransaction\s*\(", lab)
+    assert not re.search(r"\.sendTransaction\s*\(", studio)
+
     unlock20a_index = lab.index("function mcelWallet20aUnlockContract")
     unlock20b_index = lab.index("function mcelWallet20bSignedIntentUnlock")
+    unlock21a_index = lab.index("function mcelWallet21aPolicyBoundSendGate")
     boundary_index = lab.index("function mcelWalletToolCommitBoundary")
-    assert unlock20a_index < unlock20b_index < boundary_index
+    assert unlock20a_index < unlock20b_index < unlock21a_index < boundary_index
 
-    unlock_block = lab[unlock20b_index:boundary_index]
+    unlock_block = lab[unlock20b_index:unlock21a_index]
     assert "providerSignatureRequested: false" in unlock_block
     assert "wallet.requestSignatureIntent" in unlock_block
     assert "wallet.providerSignatureRequest" in unlock_block
@@ -153,8 +157,8 @@ def test_20b_signed_intent_gate_is_visible_on_wallet_board_and_code_studio() -> 
         "wallet20bAllowedCapabilities",
         "wallet20bLockedCapabilities",
         "wallet20bProviderSignatureRequested",
-        "20B signed-intent gate are visible in Code Studio",
-        "provider signature and broadcast remain locked",
+        "20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D off-chain provider intent signature, 20E signed-intent verification, and 20F pre-send review are visible in Code Studio",
+        "transaction send and broadcast remain locked",
     ]
     for marker in studio_markers:
         assert marker in studio

@@ -2064,3 +2064,231 @@ def test_scenario_matrix_orchestrates_initial_scenarios(
     failure_result = matrix_report["scenario_results"]["verification_failure_blocks_commit"]
     assert failure_result["contracts"]["verification_failed_as_expected"] is True
     assert failure_result["contracts"]["verification_failure_blocks_commit"] is True
+
+
+
+def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_path: Path) -> None:
+    run_dir = tmp_path / "open-battery"
+
+    assert smoke.main([
+        "--open-battery",
+        "--run-dir",
+        str(run_dir),
+        "--poll-seconds",
+        "0.01",
+    ]) == 0
+
+    report = json.loads((run_dir / "open_battery_report.json").read_text(encoding="utf-8"))
+
+    assert report["ok"] is True
+    assert report["deterministic"] is True
+    assert report["uses_live_ai"] is False
+    assert report["failed_contracts"] == []
+    assert report["contracts"]["open_battery_all_cases_passed"] is True
+    assert report["contracts"]["open_battery_all_target_endstates_reached"] is True
+    assert report["contracts"]["open_battery_rag_artifacts_written"] is True
+    assert report["contracts"]["open_battery_retrieval_traces_written"] is True
+    assert report["contracts"]["open_battery_pathway_traces_written"] is True
+    assert report["contracts"]["open_battery_every_case_executed_required_pathway_stages"] is True
+    assert report["contracts"]["open_battery_minimum_pathway_depth_exercised"] is True
+    assert report["contracts"]["open_battery_agent_backed_pathways_exercised"] is True
+    assert report["contracts"]["open_battery_strict_suspicious_node_mode"] is True
+    assert report["contracts"]["open_battery_suspicious_nodes_exercised"] is True
+    assert report["contracts"]["open_battery_untrusted_nodes_never_authoritative"] is True
+    assert report["contracts"]["open_battery_host_policy_retrieved_for_every_case"] is True
+    assert report["contracts"]["open_battery_trust_boundaries_checked_for_every_case"] is True
+    assert report["contracts"]["open_battery_all_target_endstates_exercised"] is True
+    assert report["contracts"]["open_battery_byzantine_result_selection_exercised"] is True
+    assert report["contracts"]["open_battery_byzantine_round_1_three_results_returned"] is True
+    assert report["contracts"]["open_battery_byzantine_round_2_all_results_sent_to_all_reviewers"] is True
+    assert report["contracts"]["open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
+    assert report["contracts"]["open_battery_byzantine_final_rejects_at_most_one"] is True
+    assert report["contracts"]["open_battery_byzantine_final_uses_simple_majority_rejection"] is True
+    assert report["contracts"]["open_battery_byzantine_survivors_ranked"] is True
+    assert report["contracts"]["open_battery_byzantine_clear_winner_selected_when_present"] is True
+    assert report["contracts"]["open_battery_byzantine_tie_uses_host_seeded_random_survivor_selection"] is True
+    assert report["contracts"]["open_battery_byzantine_tie_random_pool_has_two_candidates"] is True
+    assert report["contracts"]["open_battery_byzantine_tie_random_choice_from_ranked_survivor_pair"] is True
+    assert report["contracts"]["open_battery_byzantine_tie_random_path_exercised"] is True
+    assert report["contracts"]["open_battery_byzantine_agreed_result_is_original_worker_result"] is True
+    assert report["contracts"]["open_battery_byzantine_agreed_result_is_survivor"] is True
+    assert report["contracts"]["open_battery_byzantine_malicious_result_not_selected_when_majority_rejects_it"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_emits_single_result"] is True
+
+    expected_endstates = {
+        "answer_only",
+        "needs_clarification",
+        "proposal_created",
+        "proposal_rejected_unsafe",
+        "proposal_rejected_stale",
+        "applied_verified",
+        "applied_verification_failed",
+        "retry_required",
+        "retry_succeeded",
+        "already_satisfied",
+        "diagnostic_failure",
+    }
+    assert set(report["target_endstates"].values()) == expected_endstates
+    assert set(report["observed_endstates"].values()) == expected_endstates
+
+    for case_id in report["cases"]:
+        case_dir = run_dir / case_id
+        assert (case_dir / "run_state_manifest.json").exists()
+        assert (case_dir / "run_state_rag_corpus.json").exists()
+        assert (case_dir / "run_state_retrieval_trace.json").exists()
+        assert (case_dir / "open_pathway_trace.json").exists()
+        assert (case_dir / "open_agent_decision.json").exists()
+        assert (case_dir / "byzantine_round_1_results.json").exists()
+        assert (case_dir / "byzantine_round_2_reviews.json").exists()
+        assert (case_dir / "byzantine_final_selection.json").exists()
+        assert (case_dir / "byzantine_agreement_trace.json").exists()
+        pathway_trace = json.loads((case_dir / "open_pathway_trace.json").read_text(encoding="utf-8"))
+        decision = json.loads((case_dir / "open_agent_decision.json").read_text(encoding="utf-8"))
+        retrieval_trace = json.loads((case_dir / "run_state_retrieval_trace.json").read_text(encoding="utf-8"))
+        corpus = json.loads((case_dir / "run_state_rag_corpus.json").read_text(encoding="utf-8"))
+        round_1 = json.loads((case_dir / "byzantine_round_1_results.json").read_text(encoding="utf-8"))
+        round_2 = json.loads((case_dir / "byzantine_round_2_reviews.json").read_text(encoding="utf-8"))
+        final_selection = json.loads((case_dir / "byzantine_final_selection.json").read_text(encoding="utf-8"))
+        suspicious_docs = [
+            doc for doc in corpus["documents"]
+            if doc.get("kind") == "suspicious_node_output"
+        ]
+
+        assert pathway_trace["summary"]["stage_count"] >= 8
+        assert pathway_trace["summary"]["missing_required_stages"] == []
+        assert "prompt_ingested" in pathway_trace["summary"]["observed_stages"]
+        assert "suspicious_node_evidence_injected" in pathway_trace["summary"]["observed_stages"]
+        assert "trust_boundary_evaluated" in pathway_trace["summary"]["observed_stages"]
+        assert "host_authority_bound" in pathway_trace["summary"]["observed_stages"]
+        assert "byzantine_round_1_results_returned" in pathway_trace["summary"]["observed_stages"]
+        assert "byzantine_round_2_reviews_completed" in pathway_trace["summary"]["observed_stages"]
+        assert "byzantine_final_selection_recorded" in pathway_trace["summary"]["observed_stages"]
+        assert "final_endstate_recorded" in pathway_trace["summary"]["observed_stages"]
+        assert suspicious_docs
+        assert all(doc["trusted"] is False and doc["tainted"] is True for doc in suspicious_docs)
+        assert retrieval_trace["suspicious_node_doc_selected"] is True
+        assert retrieval_trace["selected_untrusted_doc_ids"]
+        assert retrieval_trace["host_policy_doc_selected"] is True
+        assert decision["ok"] is True
+        assert decision["observed_endstate"] == decision["target_endstate"]
+        assert decision["authority_resolution"]["host_authority"] == "authoritative"
+        assert decision["authority_resolution"]["suspicious_node_authority"] == "ignored"
+        assert decision["authority_resolution"]["model_output_is_policy_source"] is False
+        assert decision["contracts"]["retrieval_trace_recorded"] is True
+        assert decision["contracts"]["no_live_ai_calls"] is True
+        assert decision["contracts"]["strict_suspicious_node_mode"] is True
+        assert decision["contracts"]["suspicious_node_context_retrieved"] is True
+        assert decision["contracts"]["suspicious_node_not_authoritative"] is True
+        assert decision["contracts"]["host_policy_context_retrieved"] is True
+        assert decision["contracts"]["retrieved_docs_carry_trust_labels"] is True
+        assert decision["contracts"]["pathway_trace_recorded"] is True
+        assert decision["contracts"]["required_pathway_stages_executed"] is True
+        assert decision["contracts"]["observed_endstate_matches_target"] is True
+        assert decision["contracts"]["case_report_written"] is True
+        assert decision["contracts"]["byzantine_round_1_three_results_returned"] is True
+        assert decision["contracts"]["byzantine_round_2_all_results_sent_to_all_reviewers"] is True
+        assert decision["contracts"]["byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
+        assert decision["contracts"]["byzantine_final_rejects_at_most_one"] is True
+        assert decision["contracts"]["byzantine_agreed_result_is_original_worker_result"] is True
+        assert decision["contracts"]["byzantine_agreed_result_is_survivor"] is True
+        assert decision["contracts"]["byzantine_boundary_emits_single_result"] is True
+        assert len(round_1["results"]) == 3
+        assert len(round_2["reviews"]) == 3
+        assert all(len(review["input_result_ids"]) == 3 for review in round_2["reviews"])
+        assert all(review["reject_count"] <= 1 for review in round_2["reviews"])
+        assert final_selection["agreed_result_id"] in final_selection["round_1_result_ids"]
+        assert final_selection["agreed_result_id"] in final_selection["surviving_results"]
+        assert final_selection["consensus"] is True
+        assert decision["byzantine_agreement"]["agreed_result_id"] == final_selection["agreed_result_id"]
+
+    clear_selection = json.loads((run_dir / "proposal_created" / "byzantine_final_selection.json").read_text(encoding="utf-8"))
+    assert clear_selection["selection_method"] == "clear_majority"
+    assert clear_selection["rejected_result"] == "r3"
+    assert clear_selection["agreed_result_id"] == "r2"
+    assert clear_selection["agreed_result"]["malicious"] is False
+
+    tie_selection = json.loads((run_dir / "answer_only" / "byzantine_final_selection.json").read_text(encoding="utf-8"))
+    assert tie_selection["selection_method"] == "host_seeded_random_among_ranked_survivor_pair"
+    assert tie_selection["rejected_result"] == ""
+    assert len(tie_selection["surviving_results"]) == 3
+    assert len(tie_selection["host_random_survivor_pool"]) == 2
+    assert set(tie_selection["host_random_survivor_pool"]).issubset(set(tie_selection["surviving_results"]))
+    assert tie_selection["agreed_result_id"] in tie_selection["host_random_survivor_pool"]
+    assert tie_selection["host_random_seed"]
+
+    retry_decision = json.loads((run_dir / "retry_succeeded" / "open_agent_decision.json").read_text(encoding="utf-8"))
+    assert retry_decision["observed_endstate"] == "retry_succeeded"
+    assert retry_decision["contracts"]["host_rejection_recorded"] is True
+    assert retry_decision["contracts"]["verification_passed_after_retry"] is True
+
+    failed_decision = json.loads((run_dir / "applied_verification_failed" / "open_agent_decision.json").read_text(encoding="utf-8"))
+    assert failed_decision["observed_endstate"] == "applied_verification_failed"
+    assert failed_decision["contracts"]["verification_failed"] is True
+    assert failed_decision["contracts"]["commit_blocked"] is True
+
+
+def test_open_battery_case_filter_runs_single_endstate(tmp_path: Path) -> None:
+    run_dir = tmp_path / "single-open-battery-case"
+
+    assert smoke.main([
+        "--open-battery",
+        "--open-battery-case",
+        "proposal_rejected_stale",
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    report = json.loads((run_dir / "open_battery_report.json").read_text(encoding="utf-8"))
+
+    assert report["ok"] is True
+    assert report["cases"] == ["proposal_rejected_stale"]
+    assert report["target_endstates"] == {"proposal_rejected_stale": "proposal_rejected_stale"}
+    assert report["observed_endstates"] == {"proposal_rejected_stale": "proposal_rejected_stale"}
+    decision = json.loads((run_dir / "proposal_rejected_stale" / "open_agent_decision.json").read_text(encoding="utf-8"))
+    pathway_trace = json.loads((run_dir / "proposal_rejected_stale" / "open_pathway_trace.json").read_text(encoding="utf-8"))
+    retrieval_trace = json.loads((run_dir / "proposal_rejected_stale" / "run_state_retrieval_trace.json").read_text(encoding="utf-8"))
+    final_selection = json.loads((run_dir / "proposal_rejected_stale" / "byzantine_final_selection.json").read_text(encoding="utf-8"))
+    assert decision["contracts"]["stale_proposal_rejected"] is True
+    assert decision["contracts"]["boundary_mismatch_detected"] is True
+    assert decision["contracts"]["required_pathway_stages_executed"] is True
+    assert decision["contracts"]["suspicious_node_context_retrieved"] is True
+    assert decision["contracts"]["suspicious_node_not_authoritative"] is True
+    assert decision["contracts"]["host_policy_context_retrieved"] is True
+    assert retrieval_trace["selected_untrusted_doc_ids"]
+    assert retrieval_trace["host_policy_doc_selected"] is True
+    assert final_selection["selection_method"] == "clear_majority"
+    assert final_selection["rejected_result"] == "r3"
+    assert final_selection["agreed_result"]["target_endstate"] == "proposal_rejected_stale"
+    assert "trust_boundary_evaluated" in pathway_trace["summary"]["observed_stages"]
+    assert "byzantine_final_selection_recorded" in pathway_trace["summary"]["observed_stages"]
+    assert "boundary_freshness_checked" in pathway_trace["summary"]["observed_stages"]
+    assert "host_rejection_recorded" in pathway_trace["summary"]["observed_stages"]
+
+
+def test_open_battery_retrieves_but_never_trusts_suspicious_node_context(tmp_path: Path) -> None:
+    run_dir = tmp_path / "strict-open-battery"
+
+    assert smoke.main([
+        "--open-battery",
+        "--open-battery-case",
+        "proposal_created",
+        "--run-dir",
+        str(run_dir),
+    ]) == 0
+
+    decision = json.loads((run_dir / "proposal_created" / "open_agent_decision.json").read_text(encoding="utf-8"))
+    proposal = json.loads((run_dir / "proposal_created" / "proposal.json").read_text(encoding="utf-8"))
+    review = json.loads((run_dir / "proposal_created" / "host_policy_review.json").read_text(encoding="utf-8"))
+    final_selection = json.loads((run_dir / "proposal_created" / "byzantine_final_selection.json").read_text(encoding="utf-8"))
+
+    assert decision["contracts"]["suspicious_node_context_retrieved"] is True
+    assert decision["contracts"]["suspicious_node_not_authoritative"] is True
+    assert decision["contracts"]["model_output_not_policy_source"] is True
+    assert decision["authority_resolution"]["selected_suspicious_doc_ids"]
+    assert final_selection["rejected_result"] == "r3"
+    assert final_selection["agreed_result"]["malicious"] is False
+    assert final_selection["agreed_result"]["suspicious_context_authority"] == "ignored"
+    assert proposal["host_apply_authority"] == "pending"
+    assert proposal["applied"] is False
+    assert review["accepted"] is True
+    assert review["host_policy_enforced"] is True

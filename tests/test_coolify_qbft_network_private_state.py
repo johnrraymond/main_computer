@@ -682,3 +682,21 @@ def test_fake_private_state_fixture_drives_testnet_and_mainnet_qbft_plans() -> N
     assert module.rpc_target_service(mainnet).id == "rpc-1"
     assert "single-validator" not in "\n".join(mainnet.warnings)
     assert "Topology has 3 validators" in "\n".join(mainnet.warnings)
+
+
+def test_filtered_mainnet_validator_rpc_instance_satisfies_rpc_topology_policy() -> None:
+    module = _load_module()
+
+    plan = module.build_plan(
+        "mainnet",
+        private_state_path=FAKE_PRIVATE_STATE_FIXTURE,
+        allow_mainnet=True,
+        instances="validator-rpc-1",
+    )
+
+    assert [service.id for service in plan.services] == ["validator-rpc-1"]
+    service = plan.services[0]
+    assert service.role == "validator"
+    assert service.roles == ("rpc", "validator")
+    assert service.rpc_host_port == 31110
+    assert module.rpc_target_service(plan).id == "validator-rpc-1"

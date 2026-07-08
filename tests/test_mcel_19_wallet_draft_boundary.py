@@ -40,16 +40,19 @@ def test_19a_wallet_smoke_guard_freezes_18n_no_mutation_baseline() -> None:
         assert marker in lab
 
     dangerous_methods = [
-        "eth_sendTransaction",
         "eth_signTransaction",
         "personal_sign",
-        "signTypedData",
-        "sendTransaction",
         "broadcastTransaction",
     ]
     for method in dangerous_methods:
         assert method not in lab
         assert method not in studio
+
+    assert "eth_sendTransaction" in lab
+    assert "function mcelWallet21aPolicyBoundSendGate" in lab
+    assert "eth_sendTransaction" not in studio
+    assert not re.search(r"\.sendTransaction\s*\(", lab)
+    assert not re.search(r"\.sendTransaction\s*\(", studio)
 
     assert re.search(r"canSend\s*:\s*false", lab)
     assert re.search(r"canSign\s*:\s*false", lab)
@@ -195,7 +198,7 @@ def test_19abc_visible_wallet_board_surfaces_guard_identity_and_validity() -> No
         assert marker in lab
 
     render_index = lab.index("function renderMcel18nWalletToolSurface")
-    render_block = lab[render_index:render_index + 18000]
+    render_block = lab[render_index:render_index + 36000]
     assert "visible19aSmokeSlot.textContent" in render_block
     assert "visible19bIdentitySlot.textContent" in render_block
     assert "visible19cValiditySlot.textContent" in render_block
@@ -320,13 +323,16 @@ def test_19e_negative_path_regression_covers_stale_contexts_without_unlocking_mu
     assert "mutationExecuted: false" in regression_block
 
     dangerous_methods = [
-        "eth_sendTransaction",
         "eth_signTransaction",
         "personal_sign",
-        "signTypedData",
-        "sendTransaction",
         "broadcastTransaction",
     ]
     for method in dangerous_methods:
         assert method not in lab
         assert method not in studio
+
+    assert "eth_sendTransaction" in lab
+    assert "function mcelWallet21aPolicyBoundSendGate" in lab
+    assert "eth_sendTransaction" not in studio
+    assert not re.search(r"\.sendTransaction\s*\(", lab)
+    assert not re.search(r"\.sendTransaction\s*\(", studio)

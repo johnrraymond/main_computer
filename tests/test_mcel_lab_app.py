@@ -2315,7 +2315,7 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "MetaMask/dev-network state" in app
     assert "tx draft provenance" in app
     assert "Run SCM + wallet proof" in app
-    assert "Connect/check MetaMask devnet" in app
+    assert "Check wallet + 18N preflight" in app or "Connect/check MetaMask devnet" in app
     assert "Disconnect/reset wallet" in app
     assert "0x28757b2" in app
     assert "Main Computer Dev Chain" in app
@@ -2665,11 +2665,14 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "instance.runtime.network.providerEvent" not in ui
     assert "instance.runtime.wallet.account =" not in ui
     assert "instance.runtime.network.chainId =" not in ui
-    assert "eth_sendTransaction" not in ui
+    assert "eth_sendTransaction" in ui
+    assert "mcelWallet21aPolicyBoundSendGate" in ui
+    assert "policy-bound-network-agnostic-transaction-send" in ui
     assert "eth_signTransaction" not in ui
     assert "personal_sign" not in ui
-    assert "signTypedData" not in ui
-    assert "sendTransaction" not in ui
+    assert "eth_signTypedData_v4" in ui
+    assert "mcelWallet20dProviderIntentEnvelope" in ui
+    assert not re.search(r"\.sendTransaction\s*\(", ui)
 
     assert "explicit-wallet-connect" not in ui
     assert "explicit-draft" not in ui

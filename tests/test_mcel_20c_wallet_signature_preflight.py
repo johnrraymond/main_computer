@@ -49,23 +49,27 @@ def test_20c_signature_request_preflight_is_armed_without_provider_prompt() -> N
         assert marker in lab
 
     dangerous_methods = [
-        "eth_sendTransaction",
         "eth_signTransaction",
         "personal_sign",
-        "signTypedData",
-        "sendTransaction",
         "broadcastTransaction",
     ]
     for method in dangerous_methods:
         assert method not in lab
         assert method not in studio
 
+    assert "eth_sendTransaction" in lab
+    assert "function mcelWallet21aPolicyBoundSendGate" in lab
+    assert "eth_sendTransaction" not in studio
+    assert not re.search(r"\.sendTransaction\s*\(", lab)
+    assert not re.search(r"\.sendTransaction\s*\(", studio)
+
     unlock20b_index = lab.index("function mcelWallet20bSignedIntentUnlock")
     unlock20c_index = lab.index("function mcelWallet20cSignatureRequestPreflight")
+    unlock21a_index = lab.index("function mcelWallet21aPolicyBoundSendGate")
     boundary_index = lab.index("function mcelWalletToolCommitBoundary")
-    assert unlock20b_index < unlock20c_index < boundary_index
+    assert unlock20b_index < unlock20c_index < unlock21a_index < boundary_index
 
-    unlock_block = lab[unlock20c_index:boundary_index]
+    unlock_block = lab[unlock20c_index:unlock21a_index]
     assert "providerPromptBound: false" in unlock_block
     assert "providerSignatureRequested: false" in unlock_block
     assert "wallet.signatureRequestPreflight" in unlock_block
@@ -135,7 +139,7 @@ def test_20c_signature_preflight_is_visible_on_wallet_board_and_code_studio() ->
         'id="mcel-20c-wallet-provider-prompt-visible-status"',
         'id="mcel-20c-wallet-signature-request-preflight"',
         "20C provider prompt",
-        "provider prompt, signature, send, and broadcast remain locked",
+        "21A can request a policy-bound network-agnostic provider send",
     ]
     for marker in html_markers:
         assert marker in html
@@ -166,8 +170,8 @@ def test_20c_signature_preflight_is_visible_on_wallet_board_and_code_studio() ->
         "wallet20cProviderSignatureRequested",
         "canArmSignatureRequest",
         "canRequestProviderSignature",
-        "20C signature-request preflight are visible in Code Studio",
-        "provider prompt, signature, and broadcast remain locked",
+        "20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D off-chain provider intent signature, 20E signed-intent verification, and 20F pre-send review are visible in Code Studio",
+        "transaction send and broadcast remain locked",
     ]
     for marker in studio_markers:
         assert marker in studio

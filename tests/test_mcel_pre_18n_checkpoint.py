@@ -38,19 +38,19 @@ def test_pre_18n_checkpoint_keeps_lab_and_studio_send_sign_locked() -> None:
         assert "txDraftEndgamePreflight" in source
 
     lab_only_dangerous_methods = [
-        "eth_sendTransaction",
         "eth_signTransaction",
         "personal_sign",
-        "signTypedData",
-        "sendTransaction",
         "broadcastTransaction",
     ]
     for method in lab_only_dangerous_methods:
         assert method not in lab
         assert method not in studio
 
+    assert "eth_sendTransaction" in lab
+    assert "function mcelWallet21aPolicyBoundSendGate" in lab
+    assert "eth_sendTransaction" not in studio
+
     dangerous_call_patterns = [
-        r"\.request\s*\(\s*\{\s*method\s*:\s*['\"]eth_sendTransaction['\"]",
         r"\.request\s*\(\s*\{\s*method\s*:\s*['\"]eth_signTransaction['\"]",
         r"\.request\s*\(\s*\{\s*method\s*:\s*['\"]personal_sign['\"]",
         r"\.sendTransaction\s*\(",
@@ -495,19 +495,19 @@ def test_18n_mcel_h_negative_wall_still_has_no_wallet_mutation_rpc_paths() -> No
     studio = read_script("code-editor-mcel-studio.js")
 
     dangerous_methods = [
-        "eth_sendTransaction",
         "eth_signTransaction",
         "personal_sign",
-        "signTypedData",
-        "sendTransaction",
         "broadcastTransaction",
     ]
     for method in dangerous_methods:
         assert method not in lab
         assert method not in studio
 
+    assert "eth_sendTransaction" in lab
+    assert "function mcelWallet21aPolicyBoundSendGate" in lab
+    assert "eth_sendTransaction" not in studio
+
     dangerous_call_patterns = [
-        r"\.request\s*\(\s*\{\s*method\s*:\s*['\"]eth_sendTransaction['\"]",
         r"\.request\s*\(\s*\{\s*method\s*:\s*['\"]eth_signTransaction['\"]",
         r"\.request\s*\(\s*\{\s*method\s*:\s*['\"]personal_sign['\"]",
         r"\.sendTransaction\s*\(",
@@ -541,7 +541,7 @@ def test_18n_mcel_j_visible_wallet_specimen_board_makes_locked_state_obvious() -
         'id="mcel-18n-wallet-tool-visible-next"',
         "18N-K complete locked wallet boundary",
         "Provider mutation",
-        "refused before provider",
+        "policy-bound network-agnostic provider send",
     ]
     for marker in html_markers:
         assert marker in lab_html

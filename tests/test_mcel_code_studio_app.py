@@ -1158,7 +1158,10 @@ class McelCodeStudioAppTests(unittest.TestCase):
         self.assertNotIn("eth_signTransaction", script)
         self.assertNotIn("personal_sign", script)
         self.assertNotIn("signTypedData", script)
-        self.assertNotIn("sendTransaction", script)
+        self.assertNotRegex(script, r"\.sendTransaction\s*\(")
+        self.assertIn("wallet21aPolicyBoundSendGate", script)
+        self.assertIn("wallet21bProviderOutcomeLedger", script)
+        self.assertIn("wallet21cTransactionWatcher", script)
 
 
     def test_code_studio_flagship_workbench_regions_are_hard_split(self) -> None:

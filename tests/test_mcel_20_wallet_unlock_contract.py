@@ -49,22 +49,26 @@ def test_20a_unlock_contract_is_staged_and_no_provider_mutation() -> None:
         assert marker in lab
 
     dangerous_methods = [
-        "eth_sendTransaction",
         "eth_signTransaction",
         "personal_sign",
-        "signTypedData",
-        "sendTransaction",
         "broadcastTransaction",
     ]
     for method in dangerous_methods:
         assert method not in lab
         assert method not in studio
 
-    unlock_index = lab.index("function mcelWallet20aUnlockContract")
-    boundary_index = lab.index("function mcelWalletToolCommitBoundary")
-    assert unlock_index < boundary_index
+    assert "eth_sendTransaction" in lab
+    assert "function mcelWallet21aPolicyBoundSendGate" in lab
+    assert "eth_sendTransaction" not in studio
+    assert not re.search(r"\.sendTransaction\s*\(", lab)
+    assert not re.search(r"\.sendTransaction\s*\(", studio)
 
-    unlock_block = lab[unlock_index:boundary_index]
+    unlock_index = lab.index("function mcelWallet20aUnlockContract")
+    unlock21a_index = lab.index("function mcelWallet21aPolicyBoundSendGate")
+    boundary_index = lab.index("function mcelWalletToolCommitBoundary")
+    assert unlock_index < unlock21a_index < boundary_index
+
+    unlock_block = lab[unlock_index:unlock21a_index]
     assert "capabilityContract: capabilities" in unlock_block
     assert "allowedCapabilities" in unlock_block
     assert "lockedCapabilities" in unlock_block
@@ -109,12 +113,12 @@ def test_20a_unlock_contract_is_visible_on_wallet_board_and_code_studio() -> Non
 
     html_markers = [
         'data-mcel-20a-wallet-unlock-contract="true"',
-        "20A unlock contract",
+        "20A contract",
         'id="mcel-20a-wallet-unlock-contract-visible-status"',
         'id="mcel-20a-wallet-unlock-eligibility-visible-status"',
         "20A contract",
         "20A eligibility",
-        "signature and broadcast remain locked",
+        "policy-bound network-agnostic provider send",
     ]
     for marker in html_markers:
         assert marker in html
@@ -141,7 +145,7 @@ def test_20a_unlock_contract_is_visible_on_wallet_board_and_code_studio() -> Non
         "canBuildDraft",
         "canSimulate",
         "canRequestSignature",
-        "20A staged unlock contract is visible in Code Studio while signature and broadcast remain locked.",
+        "20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D off-chain provider intent signature, 20E signed-intent verification, and 20F pre-send review are visible in Code Studio while transaction send and broadcast remain locked.",
     ]
     for marker in studio_markers:
         assert marker in studio
