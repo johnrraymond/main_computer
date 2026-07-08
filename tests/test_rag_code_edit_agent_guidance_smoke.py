@@ -662,6 +662,71 @@ def test_generated_editor_structured_steering_constraints_flow(
         assert contracts[contract_name] is True
 
 
+
+def test_ai_restart_live_ring3_probe_prompt_is_compact_and_goal_locked() -> None:
+    directive = "Runtime directive: strip names before formatting."
+    prompt = smoke.ai_restart_live_ring3_probe_user_prompt(
+        goal_directive=directive,
+        round_type="request_verify",
+        sample_index=2,
+        sample_count=3,
+        prior_result_ids=["live-ri-001", "live-ri-002"],
+    )
+    payload = json.loads(prompt)
+    contract = smoke.ai_restart_directive_contract(directive)
+
+    assert len(prompt) < 1600
+    assert smoke.TEST_APP_PY not in prompt
+    assert payload["stage"] == "ring3_live_request_verify"
+    assert payload["result_id"] == "live-rv-002"
+    assert payload["goal_directive"]["directive_sha256"] == contract["directive_sha256"]
+    assert payload["required_response"]["goal_directive_sha256"] == contract["directive_sha256"]
+    assert payload["required_response"]["result_id"] == "live-rv-002"
+    assert payload["required_response"]["round_type"] == "request_verify"
+
+
+def test_ollama_json_adapter_reports_empty_thinking_without_dumping_raw_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_thinking = "PRIVATE_CHAIN_OF_THOUGHT " * 100
+
+    def fake_open_url_json(url: str, payload: dict[str, object], *, timeout_seconds: float, headers: dict[str, str] | None = None) -> dict[str, object]:
+        return {
+            "model": "gemma4:26b",
+            "done": True,
+            "done_reason": "length",
+            "total_duration": 123,
+            "prompt_eval_count": 42,
+            "eval_count": 1024,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "thinking": raw_thinking,
+            },
+        }
+
+    monkeypatch.setattr(smoke, "_open_url_json", fake_open_url_json)
+
+    with pytest.raises(smoke.AIResponseContractFailure) as exc_info:
+        smoke.call_ollama_ai_json(
+            system_prompt="Return JSON.",
+            user_prompt="{}",
+            model="gemma4:26b",
+            timeout_seconds=1,
+        )
+
+    message = str(exc_info.value)
+    diagnostics = exc_info.value.diagnostics
+    assert "thinking_present=True" in message
+    assert "thinking_char_count=" in message
+    assert "PRIVATE_CHAIN_OF_THOUGHT" not in message
+    assert diagnostics["ai_response_failure_kind"] == "truncated_response"
+    assert diagnostics["done_reason"] == "length"
+    assert diagnostics["thinking_present"] is True
+    assert diagnostics["thinking_char_count"] == len(raw_thinking)
+    assert diagnostics["content_char_count"] == 0
+
+
 def _write_fake_ai_command(tmp_path: Path) -> str:
     script_path = tmp_path / "fake_ai_provider.py"
     final_app_py = """def greet(name: str) -> str:

@@ -391,27 +391,45 @@
 
   <section data-mc-component="dev-release.wallet" data-mc-owner="runtime">
     <h2>Wallet + network gate</h2>
-    <button
-      type="button"
-      data-mc-effect="wallet.connect"
-      data-mc-reads="source.devRelease.devNetwork"
-      data-mc-writes="runtime.wallet runtime.network runtime.evidenceStrip"
-      data-mc-trigger="state.walletGate"
-    >Connect dev wallet</button>
-    <button
-      type="button"
-      data-mc-effect="wallet.disconnect"
-      data-mc-reads="runtime.wallet runtime.network runtime.txDraft"
-      data-mc-writes="runtime.wallet runtime.network runtime.txDraft runtime.evidenceStrip"
-      data-mc-trigger="state.walletGate"
-    >Disconnect/reset wallet</button>
-    <button
-      type="button"
-      data-mc-effect="network.verify"
-      data-mc-reads="source.devRelease.devNetwork runtime.network"
-      data-mc-writes="runtime.network runtime.evidenceStrip"
-      data-mc-trigger="state.walletGate"
-    >Verify dev network</button>
+    <div class="mcel-golden-wallet-control" data-mcel-wallet-golden-control="true">
+      <button
+        type="button"
+        id="mcel-golden-wallet-toggle"
+        data-mc-effect="wallet.toggle"
+        data-mc-reads="runtime.wallet runtime.network source.devRelease.devNetwork"
+        data-mc-writes="runtime.wallet runtime.network runtime.txDraft runtime.evidenceStrip"
+        data-mc-trigger="state.walletGate"
+        data-mcel-wallet-golden="true"
+        aria-live="polite"
+      >
+        <span class="mcel-golden-wallet-control__chrome" aria-hidden="true"></span>
+        <span class="mcel-golden-wallet-control__label" data-mcel-wallet-golden-label>Connect wallet</span>
+        <span class="mcel-golden-wallet-control__status" data-mcel-wallet-golden-status>not connected</span>
+      </button>
+    </div>
+    <div class="mcel-wallet-split-controls" aria-label="Split wallet controls for remediation testing">
+      <button
+        type="button"
+        data-mc-effect="wallet.connect"
+        data-mc-reads="source.devRelease.devNetwork"
+        data-mc-writes="runtime.wallet runtime.network runtime.evidenceStrip"
+        data-mc-trigger="state.walletGate"
+      >Connect dev wallet</button>
+      <button
+        type="button"
+        data-mc-effect="wallet.disconnect"
+        data-mc-reads="runtime.wallet runtime.network runtime.txDraft"
+        data-mc-writes="runtime.wallet runtime.network runtime.txDraft runtime.evidenceStrip"
+        data-mc-trigger="state.walletGate"
+      >Disconnect/reset wallet</button>
+      <button
+        type="button"
+        data-mc-effect="network.verify"
+        data-mc-reads="source.devRelease.devNetwork runtime.network"
+        data-mc-writes="runtime.network runtime.evidenceStrip"
+        data-mc-trigger="state.walletGate"
+      >Verify dev network</button>
+    </div>
     <aside data-mc-slot="runtime.wallet" data-mc-owner="runtime"></aside>
   </section>
 

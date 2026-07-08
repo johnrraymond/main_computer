@@ -122,6 +122,7 @@ COMMIT_POLICIES = ("auto-after-verification", "require-approval", "never")
 AI_PROVIDERS = ("auto", "openai", "ollama", "command", "scripted")
 DEFAULT_AI_PROVIDER = "auto"
 DEFAULT_AI_TIMEOUT_SECONDS = 300.0
+DEFAULT_OLLAMA_AI_JSON_NUM_PREDICT = 2048
 MIN_LIVE_AI_RESTART_RECOVERY_CALLS = 3
 DEFAULT_OPENAI_AI_MODEL = "gpt-5.2"
 DEFAULT_OLLAMA_AI_MODEL = "gemma4:26b"
@@ -421,6 +422,18 @@ class LiveAIResult:
 
 class SmokeFailure(RuntimeError):
     """Raised when a smoke contract is not satisfied."""
+
+
+class AIResponseContractFailure(SmokeFailure):
+    """Raised when a live AI response fails the JSON/transport contract.
+
+    The message stays concise for terminal output while diagnostics are preserved
+    in ai_calls.jsonl and the smoke summary.
+    """
+
+    def __init__(self, message: str, *, diagnostics: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
 
 
 def utc_now() -> str:
@@ -1485,6 +1498,46 @@ def env_truthy(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_falsey(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int, *, minimum: int = 1, maximum: int = 32768) -> int:
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def ai_response_failure_kind(exc: BaseException) -> str:
+    diagnostics = getattr(exc, "diagnostics", None)
+    if isinstance(diagnostics, dict):
+        kind = str(diagnostics.get("ai_response_failure_kind", "")).strip()
+        if kind:
+            return kind
+    message = str(exc)
+    if "done_reason=length" in message:
+        return "truncated_response"
+    if "message.content" in message:
+        return "empty_final_content"
+    if "did not contain a JSON object" in message:
+        return "malformed_json"
+    if "HTTP" in message or "request failed" in message:
+        return "provider_transport_error"
+    return type(exc).__name__
+
+
+def ai_exception_diagnostics(exc: BaseException) -> dict[str, Any]:
+    diagnostics = getattr(exc, "diagnostics", None)
+    payload = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    payload.setdefault("ai_response_failure_kind", ai_response_failure_kind(exc))
+    return payload
+
+
 def extract_json_object_from_ai_text(text: str) -> dict[str, Any]:
     stripped = str(text or "").strip()
     if stripped.startswith("```"):
@@ -1502,7 +1555,14 @@ def extract_json_object_from_ai_text(text: str) -> dict[str, Any]:
             continue
         if isinstance(payload, dict):
             return payload
-    raise SmokeFailure(f"AI response did not contain a JSON object: {stripped[:500]!r}")
+    raise AIResponseContractFailure(
+        f"AI response did not contain a JSON object: {stripped[:300]!r}",
+        diagnostics={
+            "ai_response_failure_kind": "malformed_json",
+            "response_char_count": len(stripped),
+            "response_prefix": stripped[:300],
+        },
+    )
 
 
 def resolve_ai_provider(*, requested_provider: str, ai_command: str, scripted_ai_smoke: bool) -> str:
@@ -1619,6 +1679,17 @@ def call_openai_ai_json(*, system_prompt: str, user_prompt: str, model: str, tim
 def call_ollama_ai_json(*, system_prompt: str, user_prompt: str, model: str, timeout_seconds: float) -> LiveAIResult:
     host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     resolved_model = model or DEFAULT_OLLAMA_AI_MODEL
+    num_predict = env_int(
+        "MAIN_COMPUTER_AI_SMOKE_OLLAMA_NUM_PREDICT",
+        DEFAULT_OLLAMA_AI_JSON_NUM_PREDICT,
+        minimum=64,
+        maximum=32768,
+    )
+    think = False
+    if env_truthy("MAIN_COMPUTER_AI_SMOKE_OLLAMA_THINK"):
+        think = True
+    if env_falsey("MAIN_COMPUTER_AI_SMOKE_OLLAMA_THINK"):
+        think = False
     payload = {
         "model": resolved_model,
         "messages": [
@@ -1628,18 +1699,56 @@ def call_ollama_ai_json(*, system_prompt: str, user_prompt: str, model: str, tim
         "stream": False,
         "format": "json",
         "keep_alive": "10m",
-        "options": {"temperature": 0, "num_predict": 1024},
+        "think": think,
+        "options": {"temperature": 0, "num_predict": num_predict},
     }
     parsed = _open_url_json(f"{host}/api/chat", payload, timeout_seconds=timeout_seconds)
     message = parsed.get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, str) or not content.strip():
-        raise SmokeFailure(f"Ollama response did not include message.content: {parsed!r}")
+    if not isinstance(message, dict):
+        raise AIResponseContractFailure(
+            "Ollama response did not include a message object",
+            diagnostics={
+                "ai_response_failure_kind": "missing_message",
+                "done": parsed.get("done"),
+                "done_reason": parsed.get("done_reason"),
+                "model": resolved_model,
+            },
+        )
+    content = message.get("content")
+    thinking = message.get("thinking")
+    content_text = content if isinstance(content, str) else ""
+    thinking_text = thinking if isinstance(thinking, str) else ""
+    diagnostics = {
+        "done": parsed.get("done"),
+        "done_reason": parsed.get("done_reason"),
+        "model": resolved_model,
+        "total_duration": parsed.get("total_duration"),
+        "load_duration": parsed.get("load_duration"),
+        "prompt_eval_count": parsed.get("prompt_eval_count"),
+        "eval_count": parsed.get("eval_count"),
+        "content_char_count": len(content_text),
+        "thinking_present": bool(thinking_text),
+        "thinking_char_count": len(thinking_text),
+        "ollama_num_predict": num_predict,
+        "ollama_think": think,
+    }
+    if not content_text.strip():
+        failure_kind = "truncated_response" if str(parsed.get("done_reason", "")).lower() == "length" else "empty_final_content"
+        raise AIResponseContractFailure(
+            (
+                "Ollama response did not include final message.content"
+                f"; done_reason={parsed.get('done_reason')!r}"
+                f"; thinking_present={bool(thinking_text)}"
+                f"; thinking_char_count={len(thinking_text)}"
+                f"; eval_count={parsed.get('eval_count')!r}"
+            ),
+            diagnostics={**diagnostics, "ai_response_failure_kind": failure_kind},
+        )
     return LiveAIResult(
         provider="ollama",
         model=resolved_model,
-        content=content,
-        metadata={"done": parsed.get("done"), "total_duration": parsed.get("total_duration")},
+        content=content_text,
+        metadata=diagnostics,
     )
 
 
@@ -1779,6 +1888,7 @@ def call_live_ai_json(
             "duration_ms": duration_ms,
             "error_type": type(exc).__name__,
             "error": str(exc),
+            **ai_exception_diagnostics(exc),
         }
         emit_event("ai_call_failed", **{key: value for key, value in failed_payload.items() if key != "event"})
         write_ai_trace_event(trace_path, failed_payload)
@@ -1814,10 +1924,10 @@ def call_live_ai_json(
 
 def ai_restart_live_ring3_probe_system_prompt() -> str:
     return (
-        "You are one isolated Ring 3 diagnostic worker inside a safety-harnessed "
-        "code-editing agent smoke. Return only one JSON object. Do not use markdown. "
-        "The host, not you, applies edits. Acknowledge the runtime goal directive by "
-        "copying the required goal_directive_sha256 exactly."
+        "Return exactly one compact JSON object and nothing else. "
+        "The first character must be { and the last character must be }. "
+        "Do not use markdown, prose, code fences, comments, or explanations. "
+        "Copy required exact string fields exactly. The host applies edits."
     )
 
 
@@ -1838,39 +1948,33 @@ def ai_restart_live_ring3_probe_user_prompt(
     }
     result_prefix = result_prefixes.get(round_type, "rx")
     result_id = f"live-{result_prefix}-{sample_index:03d}"
+    required_response = {
+        "goal_directive_sha256": goal_contract["directive_sha256"],
+        "hub_reliability_score": 1.0,
+        "result_id": result_id,
+        "risks": [],
+        "round_type": round_type,
+        "selected_files": ["app.py"],
+        "summary": f"{round_type} sample {sample_index} for app.py whitespace stripping.",
+    }
     return json.dumps(
         {
+            "instruction": "Return exactly the required_response JSON object, with a short summary and risks array. No extra keys.",
             "stage": f"ring3_live_{round_type}",
+            "goal": goal_contract["directive"],
+            "goal_directive": goal_contract,
+            "context": "app.py greet(name) currently formats the raw name; tests require stripping surrounding whitespace while preserving Hello punctuation and __main__.",
+            "allowed_write_paths": ["app.py"],
+            "forbidden_files": ["README.md", "tests/test_app.py"],
             "round_type": round_type,
+            "result_id": result_id,
             "sample_index": sample_index,
             "sample_count": sample_count,
-            "result_id": result_id,
-            "task": goal_contract["directive"],
-            "goal_directive": goal_contract,
-            "prior_result_ids": list(prior_result_ids),
-            "fixture_files": {
-                "app.py": APP_PY_INITIAL,
-                "tests/test_app.py": TEST_APP_PY,
-                "README.md": README_MD,
-            },
-            "contracts": {
-                "allowed_write_paths": ["app.py"],
-                "forbidden_files": ["README.md"],
-                "host_applies_edits": True,
-                "direct_worktree_mutation_allowed": False,
-            },
-            "required_response": {
-                "result_id": result_id,
-                "round_type": round_type,
-                "goal_directive_sha256": goal_contract["directive_sha256"],
-                "hub_reliability_score": "number from 0.0 to 1.0",
-                "summary": "brief string explaining this worker result",
-                "selected_files": ["app.py"],
-                "risks": ["brief strings"],
-            },
+            "prior_result_ids": list(prior_result_ids)[-5:],
+            "required_response": required_response,
         },
         ensure_ascii=False,
-        indent=2,
+        separators=(",", ":"),
         sort_keys=True,
     )
 
@@ -1974,6 +2078,7 @@ def run_ai_restart_live_ring3_probe(
                         "error_type": type(exc).__name__,
                         "error": str(exc),
                         "goal_directive_acknowledged": False,
+                        **ai_exception_diagnostics(exc),
                     }
                 )
                 continue
@@ -2017,6 +2122,11 @@ def run_ai_restart_live_ring3_probe(
     failed_calls = sum(1 for record in records if not record.get("transport_finished"))
     contract_failure_count = sum(len(record.get("contract_failures", [])) for record in records)
     acknowledged_count = sum(1 for record in records if record.get("goal_directive_acknowledged"))
+    failure_kind_counts: dict[str, int] = {}
+    for record in records:
+        kind = str(record.get("ai_response_failure_kind", "")).strip()
+        if kind:
+            failure_kind_counts[kind] = failure_kind_counts.get(kind, 0) + 1
     summary = {
         "enabled": True,
         "ok": finished_calls == expected_calls and failed_calls == 0 and contract_failure_count == 0,
@@ -2027,6 +2137,7 @@ def run_ai_restart_live_ring3_probe(
         "failed_live_ai_calls": failed_calls,
         "goal_acknowledged_live_ai_calls": acknowledged_count,
         "contract_failure_count": contract_failure_count,
+        "failure_kind_counts": failure_kind_counts,
         "stage_counts": stage_counts,
         "result_ids": [record["result_id"] for record in records if record.get("result_id")],
         "records": records,
@@ -2059,8 +2170,9 @@ def run_ai_restart_live_ring3_probe(
 def ai_plan_system_prompt() -> str:
     return (
         "You are the planning stage of a safety-harnessed code editing agent. "
-        "Return only one JSON object. Do not use markdown. "
-        "The host, not you, applies edits. You must acknowledge and obey active_constraints."
+        "Return exactly one compact JSON object. Do not use markdown or explanations. "
+        "The host, not you, applies edits. You must acknowledge and obey active_constraints. "
+        "You must include the exact required goal_directive_sha256 field."
     )
 
 
@@ -2100,8 +2212,9 @@ def ai_plan_user_prompt(*, task: str, scenario: ScenarioSpec, active_constraints
 def ai_editor_system_prompt() -> str:
     return (
         "You are the editor-generation stage of a safety-harnessed code editing agent. "
-        "Return only one JSON object. Do not use markdown. "
+        "Return exactly one compact JSON object. Do not use markdown or explanations. "
         "Return the complete final text for app.py in final_app_py. "
+        "Include the exact required goal_directive_sha256 field. "
         "Do not propose edits to README.md or tests."
     )
 
@@ -6719,6 +6832,12 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
     ai_call_summary = summarize_ai_trace(ai_trace)
 
     live_ring3_probe_ok = not live_ring3_probe.get("enabled") or bool(live_ring3_probe.get("ok"))
+    combined_failed_contracts = list(report.get("failed_contracts", [])) if isinstance(report.get("failed_contracts"), list) else []
+    if live_ring3_probe.get("enabled") and not live_ring3_probe_ok:
+        for contract_name in live_ring3_probe.get("failed_contracts", []):
+            combined_failed_contracts.append(f"ai_restart_live_ring3_probe:{contract_name}")
+    if second_code != 0 and not combined_failed_contracts:
+        combined_failed_contracts.append("ai_restart_recovery_restart_run_failed")
     summary = {
         "ok": second_code == 0 and bool(report.get("ok")) and live_ring3_probe_ok,
         "run_id": run_id,
@@ -6740,7 +6859,7 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
         "ai_backend": (report.get("edit_plan") or {}).get("ai_backend") if isinstance(report.get("edit_plan"), dict) else None,
         "ai_model": (report.get("edit_plan") or {}).get("ai_model") if isinstance(report.get("edit_plan"), dict) else None,
         "changed_files": report.get("changed_files", []),
-        "failed_contracts": report.get("failed_contracts", []),
+        "failed_contracts": combined_failed_contracts,
         "recovery": (
             ((report.get("edit_result") or {}).get("generated_editor") or {}).get("recovery")
             if isinstance(report.get("edit_result"), dict)
@@ -6871,7 +6990,7 @@ def run_ring3_poisoning_smoke(args: argparse.Namespace) -> int:
         "agent_mode": report.get("agent_mode"),
         "scenario": report.get("scenario"),
         "changed_files": report.get("changed_files", []),
-        "failed_contracts": report.get("failed_contracts", []),
+        "failed_contracts": combined_failed_contracts,
         "selected_worker_id": consensus.get("selected_worker_id"),
         "rejected_worker_ids": consensus.get("rejected_worker_ids", []),
         "worker_result_count": consensus.get("worker_result_count", 0),
@@ -7066,7 +7185,7 @@ def run_ring3_evidence_compaction_smoke(args: argparse.Namespace) -> int:
         "agent_mode": report.get("agent_mode"),
         "scenario": report.get("scenario"),
         "changed_files": report.get("changed_files", []),
-        "failed_contracts": report.get("failed_contracts", []),
+        "failed_contracts": combined_failed_contracts,
         "parallel_counts": evidence.get("parallel_counts", {}),
         "selected_candidate_path_id": evidence.get("selected_candidate_path_id"),
         "selected_result_lineage": evidence.get("selected_result_lineage", []),

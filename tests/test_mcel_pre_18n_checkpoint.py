@@ -628,6 +628,8 @@ def test_18n_mcel_wallet_declares_selectable_backlog_remediation_schemes() -> No
     css_markers = [
         ".mcel-wallet-backlog-schemes",
         ".mcel-wallet-backlog-scheme-grid",
+        "grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr));",
+        "overflow-wrap: anywhere;",
         "#mcel-18n-wallet-backlog-scheme-status",
     ]
     for marker in css_markers:
@@ -675,6 +677,59 @@ def test_18n_mcel_wallet_backlog_controls_do_not_sticky_gray_buttons() -> None:
     assert "mcelTinyContractConnectedWalletSnapshot" in lab
     assert "beginMcelWalletProviderPermissionRequest" in lab
     assert "clearMcelWalletProviderPermissionRequest" in lab
+
+
+def test_18n_mcel_wallet_golden_toggle_wraps_validated_lifecycle_paths() -> None:
+    lab = read_script("mcel-lab.js")
+    lab_html = read_app("mcel-lab.html")
+    lab_css = read_style("mcel-lab.css")
+
+    html_markers = [
+        'data-mcel-wallet-golden-control="true"',
+        'id="mcel-golden-wallet-toggle"',
+        'data-mc-effect="wallet.toggle"',
+        'data-mcel-wallet-golden-label',
+        'data-mcel-wallet-golden-status',
+        'mcel-wallet-split-controls',
+    ]
+    for marker in html_markers:
+        assert marker in lab_html
+
+    script_markers = [
+        "mcelGoldenWalletControlState.v1",
+        "mcelGoldenWalletControlIntendedAction",
+        "syncMcelGoldenWalletControl",
+        "toggleMcelGoldenWalletControl",
+        "goldenWalletButton?.addEventListener",
+        'effect === "wallet.toggle"',
+        '[data-mc-effect="wallet.toggle"]',
+        "button.dataset.mcelWalletAction = state.action",
+    ]
+    for marker in script_markers:
+        assert marker in lab
+
+    toggle_index = lab.index("async function toggleMcelGoldenWalletControl")
+    toggle_end = lab.index("async function performMcelTinyContractWalletDisconnect", toggle_index)
+    toggle_body = lab[toggle_index:toggle_end]
+    assert 'action === "wallet.disconnect"' in toggle_body
+    assert "disconnectMcelTinyContractWallet(reason)" in toggle_body
+    assert "connectMcelTinyContractWallet(reason)" in toggle_body
+    assert "readMcelTinyContractWalletProvider" not in toggle_body
+    assert "runEffect" not in toggle_body
+
+    css_markers = [
+        ".mcel-golden-wallet-control",
+        '--mcel-wallet-golden-width',
+        "inline-size: var(--mcel-wallet-golden-width);",
+        "text-overflow: ellipsis;",
+        '[data-mcel-wallet-mode="connected"]',
+        '[data-mcel-wallet-mode="disconnecting"]',
+        '[data-mcel-wallet-busy="true"]',
+        "@keyframes mcel-golden-wallet-pulse",
+        "@media (prefers-reduced-motion: reduce)",
+    ]
+    for marker in css_markers:
+        assert marker in lab_css
 
 
 def test_18n_mcel_wallet_lifecycle_governance_is_action_specific() -> None:
