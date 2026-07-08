@@ -195,12 +195,36 @@
         <output id="mcel-18n-wallet-tool-status" class="mcel-tiny-contract-proof" data-status="locked" aria-live="polite">
           18N wallet tool is locked until a current MCEL commit draft is proven.
         </output>
-        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" aria-label="18N final locked wallet specimen board">
+        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity and 19D 19E proof alignment board">
           <div class="mcel-18n-wallet-board-head">
-            <strong>18N-K complete locked wallet boundary</strong>
-            <span id="mcel-18n-wallet-tool-visible-phase">Locked before provider execution</span>
+            <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof</strong>
+            <span id="mcel-18n-wallet-tool-visible-phase">Locked before provider execution; 19A/B/C/D/E proof waiting</span>
           </div>
-          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N visible status">
+          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N and 19A 19B 19C 19D 19E visible status">
+            <article>
+              <span>19A guard</span>
+              <strong id="mcel-19a-wallet-smoke-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>19B identity</span>
+              <strong id="mcel-19b-wallet-tx-draft-identity-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>19C validity</span>
+              <strong id="mcel-19c-wallet-tx-draft-validity-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>19D alignment</span>
+              <strong id="mcel-19d-wallet-proof-alignment-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>19E negative paths</span>
+              <strong id="mcel-19e-wallet-negative-path-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>Invalidated by</span>
+              <strong id="mcel-19c-wallet-tx-draft-invalidated-by">none observed</strong>
+            </article>
             <article>
               <span>txDraft</span>
               <strong id="mcel-18n-wallet-tool-visible-tx-draft-status">waiting</strong>
@@ -222,7 +246,7 @@
               <strong id="mcel-18n-wallet-tool-visible-completion-status">not observed</strong>
             </article>
           </div>
-          <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Final locked wallet flow">
+          <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Final locked wallet flow with 19D proof alignment and 19E negative path regression">
             <li>create txDraft · waiting</li>
             <li>review draft · waiting</li>
             <li>run freshness · waiting</li>

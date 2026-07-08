@@ -1454,6 +1454,24 @@
         const canSend = source.canSend === true || preflight.canSend === true;
         const canSign = source.canSign === true || preflight.canSign === true;
         const canBroadcast = source.canBroadcast === true || preflight.canBroadcast === true;
+        const walletTxDraft = source.walletTxDraft || {};
+        const walletFreshnessSnapshot = source.walletFreshnessSnapshot || {};
+        const walletPreflightReport = source.walletPreflightReport || {};
+        const txDraftIdentityEnvelope = walletTxDraft.identityEnvelope
+          || walletTxDraft.txDraftIdentity
+          || walletPreflightReport.txDraftIdentityEnvelope
+          || receipt.txDraftIdentityEnvelope
+          || {};
+        const txDraftValidityEnvelope = walletTxDraft.validityEnvelope
+          || walletPreflightReport.txDraftValidityEnvelope
+          || receipt.txDraftValidityEnvelope
+          || walletFreshnessSnapshot.validityEnvelope
+          || {};
+        const txDraftInvalidationReasons = uniqueScmReceiptList(
+          txDraftValidityEnvelope.invalidationReasons,
+          (txDraftValidityEnvelope.invalidatedBy || []).map((entry) => entry?.reason || entry),
+          (walletFreshnessSnapshot.invalidatedBy || []).map((entry) => entry?.reason || entry)
+        );
         const locked = source.locked !== false && (canSend !== true && canSign !== true && canBroadcast !== true);
         return jsonSafeClone({
           kind: "mcel-code-studio-18n-commit-boundary-summary",
@@ -1481,6 +1499,14 @@
           receiptKind: receipt.kind || "",
           receiptStatus: receipt.status || "",
           mutationExecuted: receipt.mutationExecuted === true,
+          txDraftIdentityEnvelope,
+          txDraftValidityEnvelope,
+          txDraftValidityStatus: txDraftValidityEnvelope.status || walletTxDraft.txDraftValidityStatus || receipt.txDraftValidityStatus || "not-observed",
+          txDraftInvalidationReasons,
+          wallet19dProofSurfaceAlignment: source.wallet19dProofSurfaceAlignment || {},
+          wallet19dProofSurfaceAlignmentStatus: source.wallet19dProofSurfaceAlignment?.status || "not-observed",
+          wallet19eNegativePathRegression: source.wallet19eNegativePathRegression || {},
+          wallet19eNegativePathRegressionStatus: source.wallet19eNegativePathRegression?.status || "not-observed",
           blockers,
           allowedActions: uniqueScmReceiptList(source.allowedActions, consumerGate.allowedActions, preflight.allowedActions),
           blockedActions: uniqueScmReceiptList(source.blockedActions, preflight.blockedActions, blockers),
@@ -1501,7 +1527,7 @@
           ? (boundary.status || (locked ? "locked" : "needs inspection"))
           : "not observed";
         const label = observed
-          ? `${status} · ${boundary.action || "wallet.send-sign"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
+          ? `${status} · ${boundary.action || "wallet.send-sign"} · validity=${boundary.txDraftValidityStatus || "not-observed"} · 19D=${boundary.wallet19dProofSurfaceAlignmentStatus || "not-observed"} · 19E=${boundary.wallet19eNegativePathRegressionStatus || "not-observed"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
           : "not observed";
         return jsonSafeClone({
           kind: "mcel-code-studio-18n-commit-boundary-workbench-summary",
@@ -1622,6 +1648,22 @@
             receiptId: commitReceipt.receiptId || "",
             mutationExecuted: commitReceipt.mutationExecuted === true || boundary.mutationExecuted === true
           },
+          txDraftProof: {
+            identityKind: boundary.txDraftIdentityEnvelope?.kind || commitReceipt.txDraftIdentityEnvelope?.kind || "",
+            identityVersion: boundary.txDraftIdentityEnvelope?.identityVersion || commitReceipt.txDraftIdentityEnvelope?.identityVersion || "",
+            validityKind: boundary.txDraftValidityEnvelope?.kind || commitReceipt.txDraftValidityEnvelope?.kind || "",
+            validityVersion: boundary.txDraftValidityEnvelope?.validityVersion || commitReceipt.txDraftValidityEnvelope?.validityVersion || "",
+            validityStatus: boundary.txDraftValidityStatus || commitReceipt.txDraftValidityStatus || "",
+            invalidationReasons: boundary.txDraftInvalidationReasons || []
+          },
+          proofSurfaceAlignment: {
+            kind: boundary.wallet19dProofSurfaceAlignment?.kind || "",
+            status: boundary.wallet19dProofSurfaceAlignmentStatus || boundary.wallet19dProofSurfaceAlignment?.status || ""
+          },
+          negativePathRegression: {
+            kind: boundary.wallet19eNegativePathRegression?.kind || "",
+            status: boundary.wallet19eNegativePathRegressionStatus || boundary.wallet19eNegativePathRegression?.status || ""
+          },
           unlockRequirements: {
             kind: boundary.walletUnlockRequirements?.kind || "",
             status: boundary.walletUnlockRequirements?.status || "",
@@ -1642,7 +1684,9 @@
             "Code Studio and wallet specimens share one proof-dock shape.",
             "Wallet send/sign/broadcast remain locked.",
             "Wallet unlock requirements remain incomplete until a separate explicit unlock design patch.",
-            "18N-K completion means the wallet boundary is complete while provider execution remains locked."
+            "18N-K completion means the wallet boundary is complete while provider execution remains locked.",
+            "19D carries txDraft identity/validity into Code Studio proof dock summaries.",
+            "19E negative-path regression remains locked and no-mutation."
 
           ]
         });
