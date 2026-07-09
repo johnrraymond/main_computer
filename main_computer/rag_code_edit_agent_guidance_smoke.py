@@ -7547,32 +7547,31 @@ def open_battery_deterministic_survivor_choice(
     return ordered_survivors[index], seed, index
 
 
-def open_battery_two_result_random_survivor_pool(
+def open_battery_random_survivor_pool_derivation(
     *,
     survivors: Sequence[str],
     first_place_votes: Mapping[str, int],
     survivor_rankings: Sequence[Mapping[str, Any]],
-) -> list[str]:
-    """Return the host-owned fallback pool for no-clear-winner selection.
+) -> dict[str, Any]:
+    """Explain how the no-clear-winner fallback pool is concentrated.
 
-    The final agreement boundary should not invent a fourth result or randomly
-    select from an unbounded/raw worker set.  When ranking does not produce a
-    clear result, concentrate the remaining candidates down to two ranked
-    survivors and let the host-owned deterministic seed choose between those
-    two.  If there are already only two survivors, keep both.
+    The random fallback is still a boundary decision, so it should be auditable:
+    given the survivor rankings from Round 2, the host deterministically scores
+    the survivors, reduces them to a ranked pair, and only then uses the
+    host-owned deterministic seed to choose one.
     """
 
     unique_survivors = sorted({str(result_id) for result_id in survivors if str(result_id)})
-    if len(unique_survivors) <= 2:
-        return unique_survivors
-
     rank_position_totals = {result_id: 0 for result_id in unique_survivors}
+    ranking_observation_count = 0
     for ranking_record in survivor_rankings:
         ranking = [
             str(result_id)
             for result_id in (ranking_record.get("ranking_after_final_rejection") or [])
             if str(result_id) in rank_position_totals
         ]
+        if ranking:
+            ranking_observation_count += 1
         for position, result_id in enumerate(ranking):
             rank_position_totals[result_id] += position
 
@@ -7584,7 +7583,39 @@ def open_battery_two_result_random_survivor_pool(
             result_id,
         ),
     )
-    return ranked_survivors[:2]
+    score_by_result = {
+        result_id: {
+            "first_place_votes": int(first_place_votes.get(result_id, 0)),
+            "rank_position_total": int(rank_position_totals.get(result_id, 0)),
+            "rank_order": ranked_survivors.index(result_id) + 1 if result_id in ranked_survivors else 0,
+        }
+        for result_id in ranked_survivors
+    }
+    selected_pool = ranked_survivors[:2]
+    return {
+        "survivors": unique_survivors,
+        "ranking_observation_count": ranking_observation_count,
+        "score_by_result": score_by_result,
+        "ranked_survivors": ranked_survivors,
+        "selected_pool": selected_pool,
+    }
+
+
+def open_battery_two_result_random_survivor_pool(
+    *,
+    survivors: Sequence[str],
+    first_place_votes: Mapping[str, int],
+    survivor_rankings: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Return the host-owned fallback pair for no-clear-winner selection."""
+
+    return list(
+        open_battery_random_survivor_pool_derivation(
+            survivors=survivors,
+            first_place_votes=first_place_votes,
+            survivor_rankings=survivor_rankings,
+        ).get("selected_pool", [])
+    )
 
 
 def open_battery_byzantine_final_selection(
@@ -7646,17 +7677,19 @@ def open_battery_byzantine_final_selection(
         if count >= majority_threshold
     ]
     host_random_survivor_pool: list[str] = []
+    host_random_survivor_pool_derivation: dict[str, Any] = {}
     if len(clear_winners) == 1:
         agreed_result_id = clear_winners[0]
         selection_method = "clear_majority"
         deterministic_seed = ""
         deterministic_index = -1
     else:
-        host_random_survivor_pool = open_battery_two_result_random_survivor_pool(
+        host_random_survivor_pool_derivation = open_battery_random_survivor_pool_derivation(
             survivors=survivors,
             first_place_votes=first_place_votes,
             survivor_rankings=survivor_rankings,
         )
+        host_random_survivor_pool = list(host_random_survivor_pool_derivation.get("selected_pool", []))
         agreed_result_id, deterministic_seed, deterministic_index = open_battery_deterministic_survivor_choice(
             case=case,
             survivors=host_random_survivor_pool,
@@ -7664,6 +7697,16 @@ def open_battery_byzantine_final_selection(
         selection_method = "host_seeded_random_among_ranked_survivor_pair"
 
     agreed_result = dict(result_by_id.get(agreed_result_id, {}))
+    agreed_result_sha256 = round_1_payload_sha256_by_id.get(agreed_result_id, "")
+    rejected_result_sha256 = round_1_payload_sha256_by_id.get(rejected_result, "") if rejected_result else ""
+    surviving_result_sha256_by_id = {
+        result_id: round_1_payload_sha256_by_id.get(result_id, "")
+        for result_id in survivors
+    }
+    host_random_survivor_sha256_by_id = {
+        result_id: round_1_payload_sha256_by_id.get(result_id, "")
+        for result_id in host_random_survivor_pool
+    }
     rejected_results = [rejected_result] if rejected_result else []
     profile = open_battery_byzantine_result_selection_profile(case)
     malicious_rejected = [
@@ -7742,8 +7785,39 @@ def open_battery_byzantine_final_selection(
         "byzantine_tie_random_choice_from_ranked_survivor_pair": (
             len(clear_winners) == 1 or agreed_result_id in set(host_random_survivor_pool)
         ),
+        "byzantine_tie_random_pool_derived_from_survivor_rankings": (
+            len(clear_winners) == 1
+            or (
+                host_random_survivor_pool_derivation.get("selected_pool") == host_random_survivor_pool
+                and set(host_random_survivor_pool_derivation.get("score_by_result", {})) == set(survivors)
+                and host_random_survivor_pool
+                == list(host_random_survivor_pool_derivation.get("ranked_survivors", []))[:2]
+            )
+        ),
+        "byzantine_boundary_exposes_random_pool_derivation": (
+            len(clear_winners) == 1
+            or (
+                bool(host_random_survivor_pool_derivation.get("score_by_result"))
+                and bool(host_random_survivor_pool_derivation.get("ranked_survivors"))
+            )
+        ),
         "byzantine_agreed_result_is_original_worker_result": agreed_result_id in result_id_set,
         "byzantine_agreed_result_is_survivor": agreed_result_id in set(survivors),
+        "byzantine_agreed_result_hash_matches_round_1": (
+            bool(agreed_result_sha256)
+            and len(agreed_result_sha256) == 64
+            and agreed_result_sha256 == round_1_payload_sha256_by_id.get(agreed_result_id, "")
+            and open_battery_payload_sha256(agreed_result) == agreed_result_sha256
+        ),
+        "byzantine_survivor_result_hashes_match_round_1": (
+            bool(survivors)
+            and set(surviving_result_sha256_by_id) == set(survivors)
+            and all(
+                len(str(value)) == 64
+                and str(value) == round_1_payload_sha256_by_id.get(result_id, "")
+                for result_id, value in surviving_result_sha256_by_id.items()
+            )
+        ),
         "byzantine_agreed_result_matches_case_target": agreed_result.get("target_endstate") == case.target_endstate,
         "byzantine_agreed_result_matches_case_action": agreed_result.get("expected_action") == case.expected_action,
         "byzantine_malicious_result_not_selected_when_majority_rejects_it": (
@@ -7762,6 +7836,10 @@ def open_battery_byzantine_final_selection(
         ),
         "byzantine_boundary_payload_hashes_recorded": bool(round_1_payloads_set_sha256)
         and bool(round_2_reviews_set_sha256),
+        "byzantine_boundary_agreed_result_hash_recorded": (
+            bool(agreed_result_sha256)
+            and len(agreed_result_sha256) == 64
+        ),
         "byzantine_boundary_emits_single_result": bool(agreed_result_id) and len([agreed_result_id]) == 1,
     }
     return {
@@ -7788,8 +7866,15 @@ def open_battery_byzantine_final_selection(
         "clear_winners": clear_winners,
         "agreed_result_id": agreed_result_id,
         "agreed_result": agreed_result,
+        "agreed_result_sha256": agreed_result_sha256,
+        "rejected_result_sha256": rejected_result_sha256,
+        "surviving_result_sha256_by_id": surviving_result_sha256_by_id,
+        "host_random_survivor_sha256_by_id": host_random_survivor_sha256_by_id,
         "selection_method": selection_method,
         "host_random_survivor_pool": host_random_survivor_pool,
+        "host_random_survivor_pool_derivation": host_random_survivor_pool_derivation,
+        "host_random_ranked_survivors": list(host_random_survivor_pool_derivation.get("ranked_survivors", [])),
+        "host_random_score_by_result": dict(host_random_survivor_pool_derivation.get("score_by_result", {})),
         "host_random_pool_size": len(host_random_survivor_pool),
         "host_random_seed": deterministic_seed,
         "host_random_seed_sha256": deterministic_seed,
@@ -7926,12 +8011,14 @@ def open_battery_run_byzantine_result_selection(
                     "input_reviewers": final_selection.get("input_reviewers", []),
                     "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
                     "agreed_result_id": final_selection.get("agreed_result_id"),
+                    "agreed_result_sha256": final_selection.get("agreed_result_sha256", ""),
                     "selection_method": final_selection.get("selection_method"),
                 },
             ],
             "boundary_output": {
                 "agreed_result_id": final_selection.get("agreed_result_id"),
                 "agreed_result": final_selection.get("agreed_result"),
+                "agreed_result_sha256": final_selection.get("agreed_result_sha256", ""),
                 "round_1_results_set_sha256": final_selection.get("round_1_results_set_sha256", ""),
                 "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
                 "consensus": final_selection.get("consensus"),
@@ -7944,12 +8031,14 @@ def open_battery_run_byzantine_result_selection(
         case=case,
         stage="byzantine_final_selection_recorded",
         agreed_result_id=final_selection.get("agreed_result_id"),
+        agreed_result_sha256=final_selection.get("agreed_result_sha256", ""),
         selection_method=final_selection.get("selection_method"),
         rejected_result=final_selection.get("rejected_result"),
         input_reviewers=final_selection.get("input_reviewers", []),
         input_reviews_set_sha256=final_selection.get("input_reviews_set_sha256", ""),
         round_1_results_set_sha256=final_selection.get("round_1_results_set_sha256", ""),
         host_random_survivor_pool=final_selection.get("host_random_survivor_pool", []),
+        host_random_survivor_pool_derivation=final_selection.get("host_random_survivor_pool_derivation", {}),
         consensus=final_selection.get("consensus"),
     )
     return {
@@ -7965,12 +8054,18 @@ def open_battery_run_byzantine_result_selection(
         "summary": {
             "agreed_result_id": final_selection.get("agreed_result_id"),
             "agreed_result": final_selection.get("agreed_result"),
+            "agreed_result_sha256": final_selection.get("agreed_result_sha256", ""),
+            "surviving_result_sha256_by_id": final_selection.get("surviving_result_sha256_by_id", {}),
+            "host_random_survivor_sha256_by_id": final_selection.get("host_random_survivor_sha256_by_id", {}),
             "selection_method": final_selection.get("selection_method"),
             "rejected_result": final_selection.get("rejected_result"),
             "surviving_results": final_selection.get("surviving_results", []),
             "round_1_results_set_sha256": final_selection.get("round_1_results_set_sha256", ""),
             "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
             "host_random_survivor_pool": final_selection.get("host_random_survivor_pool", []),
+            "host_random_survivor_pool_derivation": final_selection.get("host_random_survivor_pool_derivation", {}),
+            "host_random_ranked_survivors": final_selection.get("host_random_ranked_survivors", []),
+            "host_random_score_by_result": final_selection.get("host_random_score_by_result", {}),
             "host_random_pool_size": final_selection.get("host_random_pool_size", 0),
             "host_random_seed_sha256": final_selection.get("host_random_seed_sha256", ""),
             "host_random_index": final_selection.get("host_random_index", -1),
@@ -9273,6 +9368,18 @@ def run_open_battery(args: argparse.Namespace) -> int:
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_payload_hashes_recorded"))
             for case in cases
         ),
+        "open_battery_byzantine_agreed_result_hash_matches_round_1": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_agreed_result_hash_matches_round_1"))
+            for case in cases
+        ),
+        "open_battery_byzantine_survivor_result_hashes_match_round_1": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_survivor_result_hashes_match_round_1"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_agreed_result_hash_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_agreed_result_hash_recorded"))
+            for case in cases
+        ),
         "open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_2_each_reviewer_rejects_at_most_one"))
             for case in cases
@@ -9303,6 +9410,14 @@ def run_open_battery(args: argparse.Namespace) -> int:
         ),
         "open_battery_byzantine_tie_random_choice_from_ranked_survivor_pair": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_tie_random_choice_from_ranked_survivor_pair"))
+            for case in cases
+        ),
+        "open_battery_byzantine_tie_random_pool_derived_from_survivor_rankings": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_tie_random_pool_derived_from_survivor_rankings"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_random_pool_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_random_pool_derivation"))
             for case in cases
         ),
         "open_battery_byzantine_boundary_exposes_random_survivor_pair": all(

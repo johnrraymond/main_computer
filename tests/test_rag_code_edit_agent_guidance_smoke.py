@@ -2107,6 +2107,9 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_final_round_received_all_round_2_reviews"] is True
     assert report["contracts"]["open_battery_byzantine_final_input_review_hashes_match_round_2"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_payload_hashes_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_agreed_result_hash_matches_round_1"] is True
+    assert report["contracts"]["open_battery_byzantine_survivor_result_hashes_match_round_1"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_agreed_result_hash_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_uses_simple_majority_rejection"] is True
@@ -2115,6 +2118,8 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_tie_uses_host_seeded_random_survivor_selection"] is True
     assert report["contracts"]["open_battery_byzantine_tie_random_pool_has_two_candidates"] is True
     assert report["contracts"]["open_battery_byzantine_tie_random_choice_from_ranked_survivor_pair"] is True
+    assert report["contracts"]["open_battery_byzantine_tie_random_pool_derived_from_survivor_rankings"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_random_pool_derivation"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_exposes_random_survivor_pair"] is True
     assert report["contracts"]["open_battery_byzantine_tie_random_path_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_agreed_result_is_original_worker_result"] is True
@@ -2200,12 +2205,17 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_final_round_received_all_round_2_reviews"] is True
         assert decision["contracts"]["byzantine_final_input_review_hashes_match_round_2"] is True
         assert decision["contracts"]["byzantine_boundary_payload_hashes_recorded"] is True
+        assert decision["contracts"]["byzantine_agreed_result_hash_matches_round_1"] is True
+        assert decision["contracts"]["byzantine_survivor_result_hashes_match_round_1"] is True
+        assert decision["contracts"]["byzantine_boundary_agreed_result_hash_recorded"] is True
         assert decision["contracts"]["byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_final_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_original_worker_result"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_survivor"] is True
         assert decision["contracts"]["byzantine_boundary_emits_single_result"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_random_survivor_pair"] is True
+        assert decision["contracts"]["byzantine_tie_random_pool_derived_from_survivor_rankings"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_random_pool_derivation"] is True
         assert len(round_1["results"]) == 3
         assert len(round_2["reviews"]) == 3
         assert final_selection["input_reviewers"] == [review["reviewer"] for review in round_2["reviews"]]
@@ -2234,6 +2244,21 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert round_2["reviews_set_sha256"] == expected_round_2_set_hash
         assert final_selection["input_review_sha256_by_reviewer"] == expected_round_2_hashes
         assert final_selection["input_reviews_set_sha256"] == expected_round_2_set_hash
+        agreed_result_id = final_selection["agreed_result_id"]
+        assert final_selection["agreed_result_sha256"] == expected_round_1_hashes[agreed_result_id]
+        assert smoke.open_battery_payload_sha256(final_selection["agreed_result"]) == final_selection["agreed_result_sha256"]
+        assert final_selection["surviving_result_sha256_by_id"] == {
+            result_id: expected_round_1_hashes[result_id]
+            for result_id in final_selection["surviving_results"]
+        }
+        assert set(final_selection["host_random_survivor_sha256_by_id"]) == set(final_selection["host_random_survivor_pool"])
+        assert all(
+            final_selection["host_random_survivor_sha256_by_id"][result_id] == expected_round_1_hashes[result_id]
+            for result_id in final_selection["host_random_survivor_pool"]
+        )
+        assert decision["byzantine_agreement"]["agreed_result_sha256"] == final_selection["agreed_result_sha256"]
+        assert decision["byzantine_agreement"]["surviving_result_sha256_by_id"] == final_selection["surviving_result_sha256_by_id"]
+        assert decision["byzantine_agreement"]["host_random_survivor_pool_derivation"] == final_selection["host_random_survivor_pool_derivation"]
         assert all(len(value) == 64 for value in expected_round_1_hashes.values())
         assert all(len(value) == 64 for value in expected_round_2_hashes.values())
         assert all(review["reject_count"] <= 1 for review in round_2["reviews"])
@@ -2256,16 +2281,29 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert set(tie_selection["host_random_survivor_pool"]).issubset(set(tie_selection["surviving_results"]))
     assert tie_selection["agreed_result_id"] in tie_selection["host_random_survivor_pool"]
     assert tie_selection["host_random_pool_size"] == 2
+    derivation = tie_selection["host_random_survivor_pool_derivation"]
+    assert derivation["selected_pool"] == tie_selection["host_random_survivor_pool"]
+    assert derivation["ranked_survivors"][:2] == tie_selection["host_random_survivor_pool"]
+    assert set(derivation["score_by_result"]) == set(tie_selection["surviving_results"])
+    assert tie_selection["host_random_ranked_survivors"] == derivation["ranked_survivors"]
+    assert tie_selection["host_random_score_by_result"] == derivation["score_by_result"]
+    assert all(
+        set(score) == {"first_place_votes", "rank_position_total", "rank_order"}
+        for score in derivation["score_by_result"].values()
+    )
     assert tie_selection["host_random_seed"]
     assert tie_selection["host_random_seed_sha256"] == tie_selection["host_random_seed"]
 
     tie_decision = json.loads((run_dir / "answer_only" / "open_agent_decision.json").read_text(encoding="utf-8"))
     assert tie_decision["byzantine_agreement"]["host_random_survivor_pool"] == tie_selection["host_random_survivor_pool"]
+    assert tie_decision["byzantine_agreement"]["host_random_survivor_sha256_by_id"] == tie_selection["host_random_survivor_sha256_by_id"]
+    assert tie_decision["byzantine_agreement"]["host_random_survivor_pool_derivation"] == tie_selection["host_random_survivor_pool_derivation"]
     assert tie_decision["byzantine_agreement"]["host_random_pool_size"] == 2
     assert tie_decision["byzantine_agreement"]["agreed_result_id"] in tie_decision["byzantine_agreement"]["host_random_survivor_pool"]
 
     tie_case_report = report["case_reports"]["answer_only"]
     assert tie_case_report["byzantine_agreement"]["host_random_survivor_pool"] == tie_selection["host_random_survivor_pool"]
+    assert tie_case_report["byzantine_agreement"]["host_random_survivor_pool_derivation"] == tie_selection["host_random_survivor_pool_derivation"]
     assert tie_case_report["byzantine_agreement"]["host_random_pool_size"] == 2
 
     retry_decision = json.loads((run_dir / "retry_succeeded" / "open_agent_decision.json").read_text(encoding="utf-8"))
