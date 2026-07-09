@@ -293,6 +293,46 @@ class CoolifyClusterOrchestratorTests(unittest.TestCase):
         self.assertFalse(blocked["ready"])
         self.assertIn("unhealthy", blocked["blocked_tokens"])
 
+    def test_service_state_ignores_coolify_excluded_status_resources(self) -> None:
+        state = coolify_cluster.coolify_service_state(
+            {
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": "mainnet-fdb-port-guard",
+                        "status": "exited",
+                        "exclude_from_status": True,
+                    },
+                    {
+                        "name": "mainnet-fdb-configure",
+                        "status": "running:healthy",
+                        "exclude_from_status": False,
+                    },
+                ],
+            }
+        )
+
+        self.assertTrue(state["ready"])
+        self.assertNotIn("exited", state["tokens"])
+        self.assertEqual(state["blocked_tokens"], [])
+
+    def test_service_state_blocks_non_excluded_exited_resources(self) -> None:
+        state = coolify_cluster.coolify_service_state(
+            {
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": "mainnet-fdb-configure",
+                        "status": "exited",
+                        "exclude_from_status": False,
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(state["ready"])
+        self.assertIn("exited", state["blocked_tokens"])
+
     def test_apply_waits_for_fdb_ready_before_hub_stage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             packet_path = Path(tmp) / "testnet-packet.json"

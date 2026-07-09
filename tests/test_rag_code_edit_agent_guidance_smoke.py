@@ -2193,6 +2193,9 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_retry_chain_derivation_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_retry_chain_bound_to_selected_action"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_exposes_retry_chain_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_terminal_noop_diagnostic_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_terminal_noop_or_diagnostic_bound_to_selected_action"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_terminal_noop_diagnostic_derivation"] is True
 
     profile_coverage = report["byzantine_profile_coverage_derivation"]
     assert profile_coverage["rule"] == "exercise_fault_free_tie_and_faulty_clear_majority_byzantine_profiles"
@@ -2771,6 +2774,85 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
             assert retry_chain["scripted_completed_stage_count"] == 0
             assert retry_chain["artifact_records"] == []
             assert retry_chain["artifact_sha256_by_name"] == {}
+        assert decision["contracts"]["byzantine_terminal_noop_diagnostic_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_terminal_noop_or_diagnostic_bound_to_selected_action"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_terminal_noop_diagnostic_derivation"] is True
+        terminal_noop_diagnostic = decision["byzantine_terminal_noop_diagnostic_derivation"]
+        assert terminal_noop_diagnostic == report["case_reports"][case_id]["byzantine_terminal_noop_diagnostic_derivation"]
+        assert terminal_noop_diagnostic["rule"] == "bind_terminal_noop_and_diagnostic_failure_to_byzantine_selected_action"
+        assert terminal_noop_diagnostic["case_id"] == case_id
+        assert terminal_noop_diagnostic["target_endstate"] == decision["target_endstate"]
+        assert terminal_noop_diagnostic["observed_endstate"] == decision["observed_endstate"]
+        assert terminal_noop_diagnostic["selected_action"] == decision["action"]
+        assert terminal_noop_diagnostic["decision_action"] == decision["action"]
+        assert terminal_noop_diagnostic["decision_expected_action"] == decision["expected_action"]
+        assert terminal_noop_diagnostic["action_matches_selected_action"] is True
+        assert terminal_noop_diagnostic["expected_action_matches_selected_action"] is True
+        assert terminal_noop_diagnostic["action_selection_derivation_recorded"] is True
+        assert terminal_noop_diagnostic["retry_chain_derivation_recorded"] is True
+        assert terminal_noop_diagnostic["terminal_presence_matches_case"] is True
+        assert terminal_noop_diagnostic["terminal_artifacts_available"] is True
+        assert terminal_noop_diagnostic["already_satisfied_check_matches_state"] is True
+        assert terminal_noop_diagnostic["diagnostic_failure_matches_missing_artifact"] is True
+        assert terminal_noop_diagnostic["no_op_reason_matches_state"] is True
+        assert terminal_noop_diagnostic["mutation_suppressed_matches_terminal"] is True
+        assert terminal_noop_diagnostic["final_endstate_stage_matches_terminal"] is True
+        assert terminal_noop_diagnostic["no_unexpected_terminal_boundary"] is True
+        assert terminal_noop_diagnostic["terminal_noop_diagnostic_preserved"] is True
+        assert len(terminal_noop_diagnostic["terminal_noop_diagnostic_surface_sha256"]) == 64
+        assert len(terminal_noop_diagnostic["terminal_noop_diagnostic_derivation_sha256"]) == 64
+        if case_id == "already_satisfied":
+            assert terminal_noop_diagnostic["terminal_boundary_required"] is True
+            assert terminal_noop_diagnostic["terminal_boundary_kind"] == "already_satisfied_noop"
+            assert terminal_noop_diagnostic["mutation_intent"] == "none"
+            assert terminal_noop_diagnostic["decision_verified"] is True
+            assert terminal_noop_diagnostic["expected_verified"] is True
+            assert terminal_noop_diagnostic["current_state_checked_stage_count"] == 1
+            assert terminal_noop_diagnostic["no_op_recorded_stage_count"] == 1
+            assert terminal_noop_diagnostic["required_artifact_checked_stage_count"] == 0
+            assert terminal_noop_diagnostic["diagnostic_recorded_stage_count"] == 0
+            assert terminal_noop_diagnostic["mutation_suppressed_reasons"] == ["already_satisfied"]
+            assert terminal_noop_diagnostic["satisfaction_payload"]["format"] == "main_computer_open_battery_already_satisfied_check_v1"
+            assert terminal_noop_diagnostic["satisfaction_payload"]["already_satisfied"] is True
+            assert terminal_noop_diagnostic["satisfaction_payload"]["app_py_sha256"] == terminal_noop_diagnostic["satisfaction_payload"]["expected_sha256"]
+            assert len(terminal_noop_diagnostic["satisfaction_payload"]["app_py_sha256"]) == 64
+            assert terminal_noop_diagnostic["diagnostic_payload"]["format"] == ""
+            assert all(record["exists"] is True for record in terminal_noop_diagnostic["artifact_records"])
+            assert {record["name"] for record in terminal_noop_diagnostic["artifact_records"]} == {"already_satisfied_check_json"}
+            assert all(len(record["sha256"]) == 64 for record in terminal_noop_diagnostic["artifact_records"])
+            assert len(terminal_noop_diagnostic["artifact_sha256_by_name"]) == 1
+        elif case_id == "diagnostic_failure":
+            assert terminal_noop_diagnostic["terminal_boundary_required"] is True
+            assert terminal_noop_diagnostic["terminal_boundary_kind"] == "fail_closed_diagnostic"
+            assert terminal_noop_diagnostic["mutation_intent"] == "none"
+            assert terminal_noop_diagnostic["decision_verified"] is False
+            assert terminal_noop_diagnostic["expected_verified"] is False
+            assert terminal_noop_diagnostic["decision_rejection_reason"] == "missing_required_artifact: report.json"
+            assert terminal_noop_diagnostic["expected_diagnostic_reason"] == "missing_required_artifact: report.json"
+            assert terminal_noop_diagnostic["current_state_checked_stage_count"] == 0
+            assert terminal_noop_diagnostic["no_op_recorded_stage_count"] == 0
+            assert terminal_noop_diagnostic["required_artifact_checked_stage_count"] == 1
+            assert terminal_noop_diagnostic["diagnostic_recorded_stage_count"] == 1
+            assert terminal_noop_diagnostic["mutation_suppressed_reasons"] == ["required_artifact_missing"]
+            assert terminal_noop_diagnostic["satisfaction_payload"]["format"] == ""
+            assert terminal_noop_diagnostic["diagnostic_payload"]["format"] == "main_computer_open_battery_diagnostic_failure_v1"
+            assert terminal_noop_diagnostic["diagnostic_payload"]["reason"] == "missing_required_artifact: report.json"
+            assert terminal_noop_diagnostic["diagnostic_payload"]["safe_to_continue"] is False
+            assert all(record["exists"] is True for record in terminal_noop_diagnostic["artifact_records"])
+            assert {record["name"] for record in terminal_noop_diagnostic["artifact_records"]} == {"diagnostic_json"}
+            assert all(len(record["sha256"]) == 64 for record in terminal_noop_diagnostic["artifact_records"])
+            assert len(terminal_noop_diagnostic["artifact_sha256_by_name"]) == 1
+        else:
+            assert terminal_noop_diagnostic["terminal_boundary_required"] is False
+            assert terminal_noop_diagnostic["terminal_boundary_kind"] == "none"
+            assert terminal_noop_diagnostic["current_state_checked_stage_count"] == 0
+            assert terminal_noop_diagnostic["no_op_recorded_stage_count"] == 0
+            assert terminal_noop_diagnostic["required_artifact_checked_stage_count"] == 0
+            assert terminal_noop_diagnostic["diagnostic_recorded_stage_count"] == 0
+            assert terminal_noop_diagnostic["already_satisfied_check_path"] == ""
+            assert terminal_noop_diagnostic["diagnostic_path"] == ""
+            assert terminal_noop_diagnostic["artifact_records"] == []
+            assert terminal_noop_diagnostic["artifact_sha256_by_name"] == {}
         assert decision["contracts"]["byzantine_input_context_derivation_recorded"] is True
         assert decision["contracts"]["byzantine_round_1_results_bound_to_host_context"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_input_context_derivation"] is True

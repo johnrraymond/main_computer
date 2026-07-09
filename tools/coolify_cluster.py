@@ -947,11 +947,21 @@ BLOCKED_STATUS_TOKENS = {
 }
 
 
+def _truthy_status_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _status_values_from_body(value: Any) -> list[str]:
     values: list[str] = []
     if isinstance(value, Mapping):
+        if _truthy_status_flag(value.get("exclude_from_status")):
+            return values
         for key, item in value.items():
             clean_key = str(key or "").strip().lower()
+            if clean_key == "exclude_from_status":
+                continue
             if any(marker in clean_key for marker in ("status", "health", "state")) and not isinstance(item, (dict, list)):
                 text = str(item or "").strip()
                 if text:

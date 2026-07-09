@@ -11667,6 +11667,343 @@ def open_battery_retry_chain_derivation(
     payload["retry_chain_derivation_sha256"] = open_battery_payload_sha256(payload)
     return payload
 
+
+def open_battery_terminal_noop_diagnostic_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    decision: Mapping[str, Any],
+    action_selection_derivation: Mapping[str, Any],
+    retry_chain_derivation: Mapping[str, Any],
+    selected_action: str,
+    pathway_trace: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind terminal no-op and fail-closed diagnostics to host-owned evidence.
+
+    The base battery already reaches ``already_satisfied`` and
+    ``diagnostic_failure``. This derivation proves those terminal outcomes are
+    not just stamped labels: the host inspected the current state or missing
+    artifact, recorded the matching boundary artifact, suppressed mutation, and
+    then recorded the final endstate selected by the Byzantine agreement chain.
+    """
+
+    terminal_specs: dict[str, dict[str, Any]] = {
+        "already_satisfied": {
+            "terminal_kind": "already_satisfied_noop",
+            "expected_action": "no_op",
+            "expected_mutation_intent": "none",
+            "expected_artifact_key": "already_satisfied_check_path",
+            "expected_artifact_name": "already_satisfied_check_json",
+            "expected_format": "main_computer_open_battery_already_satisfied_check_v1",
+            "expected_stage_reason": "already_satisfied",
+            "expected_no_op_reason": "goal_already_true",
+            "expected_verified": True,
+        },
+        "diagnostic_failure": {
+            "terminal_kind": "fail_closed_diagnostic",
+            "expected_action": "emit_diagnostic_failure",
+            "expected_mutation_intent": "none",
+            "expected_artifact_key": "diagnostic_path",
+            "expected_artifact_name": "diagnostic_json",
+            "expected_format": "main_computer_open_battery_diagnostic_failure_v1",
+            "expected_stage_reason": "required_artifact_missing",
+            "expected_diagnostic_reason": "missing_required_artifact: report.json",
+            "expected_required_artifact": "report.json",
+            "expected_verified": False,
+        },
+    }
+    terminal_required = case.target_endstate in terminal_specs
+    expected_spec = terminal_specs.get(case.target_endstate, {})
+
+    def records_for(stage_name: str) -> list[dict[str, Any]]:
+        return [
+            dict(record)
+            for record in pathway_trace
+            if isinstance(record, Mapping)
+            and str(record.get("stage", "") or "") == stage_name
+        ]
+
+    def details(record: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        if not isinstance(record, Mapping):
+            return {}
+        value = record.get("details", {})
+        return value if isinstance(value, Mapping) else {}
+
+    def load_json_artifact(path_text: str) -> dict[str, Any]:
+        if not path_text:
+            return {}
+        artifact_path = Path(path_text)
+        if not artifact_path.exists() or not artifact_path.is_file():
+            return {}
+        try:
+            loaded = json.loads(artifact_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def artifact_record(name: str, path_text: str) -> dict[str, Any]:
+        artifact_path = Path(path_text) if path_text else None
+        exists = bool(artifact_path is not None and artifact_path.exists() and artifact_path.is_file())
+        return {
+            "name": name,
+            "path": str(artifact_path) if artifact_path is not None else "",
+            "exists": exists,
+            "sha256": open_battery_file_sha256(artifact_path) if exists and artifact_path is not None else "",
+        }
+
+    artifacts = decision.get("artifacts", {})
+    if not isinstance(artifacts, Mapping):
+        artifacts = {}
+
+    satisfaction_path_text = str(artifacts.get("already_satisfied_check_path", "") or "")
+    diagnostic_path_text = str(artifacts.get("diagnostic_path", "") or "")
+    expected_artifact_key = str(expected_spec.get("expected_artifact_key", "") or "")
+    expected_artifact_path = str(artifacts.get(expected_artifact_key, "") or "") if expected_artifact_key else ""
+
+    current_state_records = records_for("current_state_checked")
+    no_op_records = records_for("no_op_recorded")
+    required_artifact_records = records_for("required_artifact_checked")
+    diagnostic_records = records_for("diagnostic_recorded")
+    mutation_suppressed_records = records_for("mutation_suppressed")
+    final_endstate_records = records_for("final_endstate_recorded")
+
+    current_state_details = details(current_state_records[-1] if current_state_records else None)
+    no_op_details = details(no_op_records[-1] if no_op_records else None)
+    required_artifact_details = details(required_artifact_records[-1] if required_artifact_records else None)
+    diagnostic_details = details(diagnostic_records[-1] if diagnostic_records else None)
+    mutation_suppressed_details = details(mutation_suppressed_records[-1] if mutation_suppressed_records else None)
+    final_endstate_values = [
+        str(details(record).get("observed_endstate", "") or "")
+        for record in final_endstate_records
+    ]
+
+    satisfaction_payload = load_json_artifact(satisfaction_path_text)
+    diagnostic_payload = load_json_artifact(diagnostic_path_text)
+
+    artifact_records: list[dict[str, Any]] = []
+    if terminal_required:
+        artifact_records = [
+            artifact_record(
+                str(expected_spec.get("expected_artifact_name", "") or "terminal_boundary_json"),
+                expected_artifact_path,
+            )
+        ]
+    artifact_sha256_by_name = {
+        str(record["name"]): str(record["sha256"])
+        for record in artifact_records
+        if bool(record.get("exists"))
+    }
+
+    decision_action = str(decision.get("action", "") or "")
+    decision_expected_action = str(decision.get("expected_action", "") or "")
+    observed_endstate = str(decision.get("observed_endstate", "") or "")
+    mutation_intent = str(decision.get("mutation_intent", "") or "")
+    decision_answer = str(decision.get("answer", "") or "")
+    decision_rejection_reason = str(decision.get("rejection_reason", "") or "")
+
+    action_selection_derivation_sha256 = str(
+        action_selection_derivation.get("action_selection_derivation_sha256", "") or ""
+    )
+    retry_chain_derivation_sha256 = str(
+        retry_chain_derivation.get("retry_chain_derivation_sha256", "") or ""
+    )
+
+    if case.target_endstate == "already_satisfied":
+        terminal_artifacts_available = (
+            len(artifact_records) == 1
+            and artifact_records[0]["exists"] is True
+            and len(str(artifact_records[0]["sha256"])) == 64
+        )
+        already_satisfied_check_matches_state = (
+            len(current_state_records) == 1
+            and current_state_details.get("already_satisfied") is True
+            and satisfaction_payload.get("format") == expected_spec.get("expected_format")
+            and satisfaction_payload.get("case_id") == case.case_id
+            and satisfaction_payload.get("already_satisfied") is True
+            and satisfaction_payload.get("app_py_sha256") == satisfaction_payload.get("expected_sha256")
+            and len(str(satisfaction_payload.get("app_py_sha256", "") or "")) == 64
+        )
+        diagnostic_failure_matches_missing_artifact = (
+            len(required_artifact_records) == 0
+            and len(diagnostic_records) == 0
+            and diagnostic_path_text == ""
+        )
+        no_op_reason_matches_state = (
+            len(no_op_records) == 1
+            and str(no_op_details.get("reason", "") or "") == str(expected_spec.get("expected_no_op_reason", "") or "")
+            and decision.get("verified") is True
+            and "already satisfied" in decision_answer
+        )
+        mutation_suppressed_matches_terminal = (
+            len(mutation_suppressed_records) == 1
+            and str(mutation_suppressed_details.get("reason", "") or "") == str(expected_spec.get("expected_stage_reason", "") or "")
+            and decision.get("applied") is False
+            and decision.get("committed") is False
+            and mutation_intent == str(expected_spec.get("expected_mutation_intent", "") or "")
+        )
+        terminal_presence_matches_case = (
+            satisfaction_path_text == expected_artifact_path
+            and diagnostic_path_text == ""
+        )
+        no_unexpected_terminal_boundary = True
+    elif case.target_endstate == "diagnostic_failure":
+        terminal_artifacts_available = (
+            len(artifact_records) == 1
+            and artifact_records[0]["exists"] is True
+            and len(str(artifact_records[0]["sha256"])) == 64
+        )
+        already_satisfied_check_matches_state = (
+            len(current_state_records) == 0
+            and len(no_op_records) == 0
+            and satisfaction_path_text == ""
+        )
+        diagnostic_failure_matches_missing_artifact = (
+            len(required_artifact_records) == 1
+            and str(required_artifact_details.get("required_artifact", "") or "") == str(expected_spec.get("expected_required_artifact", "") or "")
+            and required_artifact_details.get("present") is False
+            and len(diagnostic_records) == 1
+            and str(diagnostic_details.get("reason", "") or "") == str(expected_spec.get("expected_diagnostic_reason", "") or "")
+            and diagnostic_payload.get("format") == expected_spec.get("expected_format")
+            and diagnostic_payload.get("case_id") == case.case_id
+            and str(diagnostic_payload.get("reason", "") or "") == str(expected_spec.get("expected_diagnostic_reason", "") or "")
+            and diagnostic_payload.get("safe_to_continue") is False
+        )
+        no_op_reason_matches_state = True
+        mutation_suppressed_matches_terminal = (
+            len(mutation_suppressed_records) == 1
+            and str(mutation_suppressed_details.get("reason", "") or "") == str(expected_spec.get("expected_stage_reason", "") or "")
+            and decision.get("applied") is False
+            and decision.get("committed") is False
+            and decision.get("verified") is False
+            and mutation_intent == str(expected_spec.get("expected_mutation_intent", "") or "")
+            and decision_rejection_reason == str(expected_spec.get("expected_diagnostic_reason", "") or "")
+        )
+        terminal_presence_matches_case = (
+            diagnostic_path_text == expected_artifact_path
+            and satisfaction_path_text == ""
+        )
+        no_unexpected_terminal_boundary = True
+    else:
+        terminal_artifacts_available = True
+        already_satisfied_check_matches_state = (
+            len(current_state_records) == 0
+            and len(no_op_records) == 0
+            and satisfaction_path_text == ""
+        )
+        diagnostic_failure_matches_missing_artifact = (
+            len(required_artifact_records) == 0
+            and len(diagnostic_records) == 0
+            and diagnostic_path_text == ""
+        )
+        no_op_reason_matches_state = True
+        mutation_suppressed_matches_terminal = True
+        terminal_presence_matches_case = True
+        no_unexpected_terminal_boundary = (
+            satisfaction_path_text == ""
+            and diagnostic_path_text == ""
+        )
+
+    final_endstate_stage_matches_terminal = (
+        bool(final_endstate_values)
+        and final_endstate_values[-1] == observed_endstate == case.target_endstate
+    )
+    expected_verified = expected_spec.get("expected_verified") if terminal_required else decision.get("verified")
+
+    payload: dict[str, Any] = {
+        "rule": "bind_terminal_noop_and_diagnostic_failure_to_byzantine_selected_action",
+        "case_id": case.case_id,
+        "target_endstate": case.target_endstate,
+        "observed_endstate": observed_endstate,
+        "terminal_boundary_required": terminal_required,
+        "terminal_boundary_endstates": sorted(terminal_specs),
+        "terminal_boundary_kind": str(expected_spec.get("terminal_kind", "none") or "none"),
+        "selected_action": str(selected_action),
+        "decision_action": decision_action,
+        "decision_expected_action": decision_expected_action,
+        "mutation_intent": mutation_intent,
+        "decision_verified": decision.get("verified"),
+        "expected_verified": expected_verified,
+        "decision_rejection_reason": decision_rejection_reason,
+        "expected_diagnostic_reason": str(expected_spec.get("expected_diagnostic_reason", "") or ""),
+        "already_satisfied_check_path": satisfaction_path_text,
+        "diagnostic_path": diagnostic_path_text,
+        "current_state_checked_stage_count": len(current_state_records),
+        "no_op_recorded_stage_count": len(no_op_records),
+        "required_artifact_checked_stage_count": len(required_artifact_records),
+        "diagnostic_recorded_stage_count": len(diagnostic_records),
+        "mutation_suppressed_stage_count": len(mutation_suppressed_records),
+        "mutation_suppressed_reasons": [
+            str(details(record).get("reason", "") or "")
+            for record in mutation_suppressed_records
+        ],
+        "final_endstate_values": final_endstate_values,
+        "satisfaction_payload": {
+            "format": satisfaction_payload.get("format", ""),
+            "already_satisfied": satisfaction_payload.get("already_satisfied"),
+            "app_py_sha256": satisfaction_payload.get("app_py_sha256", ""),
+            "expected_sha256": satisfaction_payload.get("expected_sha256", ""),
+        },
+        "diagnostic_payload": {
+            "format": diagnostic_payload.get("format", ""),
+            "reason": diagnostic_payload.get("reason", ""),
+            "safe_to_continue": diagnostic_payload.get("safe_to_continue"),
+        },
+        "artifact_records": artifact_records,
+        "artifact_sha256_by_name": artifact_sha256_by_name,
+        "action_selection_derivation_sha256": action_selection_derivation_sha256,
+        "retry_chain_derivation_sha256": retry_chain_derivation_sha256,
+        "action_matches_selected_action": decision_action == str(selected_action),
+        "expected_action_matches_selected_action": decision_expected_action == str(selected_action),
+        "action_selection_derivation_recorded": len(action_selection_derivation_sha256) == 64,
+        "retry_chain_derivation_recorded": len(retry_chain_derivation_sha256) == 64,
+        "terminal_presence_matches_case": terminal_presence_matches_case,
+        "terminal_artifacts_available": terminal_artifacts_available,
+        "already_satisfied_check_matches_state": already_satisfied_check_matches_state,
+        "diagnostic_failure_matches_missing_artifact": diagnostic_failure_matches_missing_artifact,
+        "no_op_reason_matches_state": no_op_reason_matches_state,
+        "mutation_suppressed_matches_terminal": mutation_suppressed_matches_terminal,
+        "final_endstate_stage_matches_terminal": final_endstate_stage_matches_terminal,
+        "no_unexpected_terminal_boundary": no_unexpected_terminal_boundary,
+    }
+    payload["terminal_noop_diagnostic_surface_sha256"] = text_sha256(json_dumps({
+        "case_id": payload["case_id"],
+        "target_endstate": payload["target_endstate"],
+        "terminal_boundary_required": payload["terminal_boundary_required"],
+        "terminal_boundary_kind": payload["terminal_boundary_kind"],
+        "selected_action": payload["selected_action"],
+        "mutation_intent": payload["mutation_intent"],
+        "decision_verified": payload["decision_verified"],
+        "decision_rejection_reason": payload["decision_rejection_reason"],
+        "already_satisfied_check_path": payload["already_satisfied_check_path"],
+        "diagnostic_path": payload["diagnostic_path"],
+        "current_state_checked_stage_count": payload["current_state_checked_stage_count"],
+        "no_op_recorded_stage_count": payload["no_op_recorded_stage_count"],
+        "required_artifact_checked_stage_count": payload["required_artifact_checked_stage_count"],
+        "diagnostic_recorded_stage_count": payload["diagnostic_recorded_stage_count"],
+        "mutation_suppressed_reasons": payload["mutation_suppressed_reasons"],
+        "artifact_sha256_by_name": payload["artifact_sha256_by_name"],
+        "satisfaction_payload": payload["satisfaction_payload"],
+        "diagnostic_payload": payload["diagnostic_payload"],
+    }))
+    payload["terminal_noop_diagnostic_preserved"] = all(
+        bool(payload[key])
+        for key in (
+            "action_matches_selected_action",
+            "expected_action_matches_selected_action",
+            "action_selection_derivation_recorded",
+            "retry_chain_derivation_recorded",
+            "terminal_presence_matches_case",
+            "terminal_artifacts_available",
+            "already_satisfied_check_matches_state",
+            "diagnostic_failure_matches_missing_artifact",
+            "no_op_reason_matches_state",
+            "mutation_suppressed_matches_terminal",
+            "final_endstate_stage_matches_terminal",
+            "no_unexpected_terminal_boundary",
+        )
+    )
+    payload["terminal_noop_diagnostic_derivation_sha256"] = open_battery_payload_sha256(payload)
+    return payload
+
 def run_open_battery_case(
     *,
     args: argparse.Namespace,
@@ -12082,12 +12419,21 @@ def run_open_battery_case(
         selected_action=selected_action,
         pathway_trace=pathway_trace,
     )
+    terminal_noop_diagnostic_derivation = open_battery_terminal_noop_diagnostic_derivation(
+        case=case,
+        decision=decision,
+        action_selection_derivation=action_selection_derivation,
+        retry_chain_derivation=retry_chain_derivation,
+        selected_action=selected_action,
+        pathway_trace=pathway_trace,
+    )
     decision["byzantine_output_rendering_derivation"] = output_rendering_derivation
     decision["byzantine_workspace_materialization_derivation"] = workspace_materialization_derivation
     decision["byzantine_agent_delegation_derivation"] = agent_delegation_derivation
     decision["byzantine_verification_result_derivation"] = verification_result_derivation
     decision["byzantine_host_policy_rejection_derivation"] = host_policy_rejection_derivation
     decision["byzantine_retry_chain_derivation"] = retry_chain_derivation
+    decision["byzantine_terminal_noop_diagnostic_derivation"] = terminal_noop_diagnostic_derivation
     decision["byzantine_agreement"] = byzantine_agreement.get("summary", {})
     decision["byzantine_artifacts"] = {
         "round_1_results_path": byzantine_agreement.get("round_1_path", ""),
@@ -12238,6 +12584,23 @@ def run_open_battery_case(
             == host_policy_rejection_derivation.get("host_policy_rejection_derivation_sha256")
             and len(str(retry_chain_derivation.get("retry_chain_surface_sha256", "") or "")) == 64
         )
+        decision_contracts["byzantine_terminal_noop_diagnostic_derivation_recorded"] = (
+            terminal_noop_diagnostic_derivation.get("rule")
+            == "bind_terminal_noop_and_diagnostic_failure_to_byzantine_selected_action"
+            and bool(terminal_noop_diagnostic_derivation.get("terminal_noop_diagnostic_derivation_sha256"))
+        )
+        decision_contracts["byzantine_terminal_noop_or_diagnostic_bound_to_selected_action"] = (
+            bool(terminal_noop_diagnostic_derivation.get("terminal_noop_diagnostic_preserved"))
+            and terminal_noop_diagnostic_derivation.get("selected_action") == selected_action
+            and terminal_noop_diagnostic_derivation.get("decision_action") == decision.get("action")
+        )
+        decision_contracts["byzantine_boundary_exposes_terminal_noop_diagnostic_derivation"] = (
+            terminal_noop_diagnostic_derivation.get("action_selection_derivation_sha256")
+            == action_selection_derivation.get("action_selection_derivation_sha256")
+            and terminal_noop_diagnostic_derivation.get("retry_chain_derivation_sha256")
+            == retry_chain_derivation.get("retry_chain_derivation_sha256")
+            and len(str(terminal_noop_diagnostic_derivation.get("terminal_noop_diagnostic_surface_sha256", "") or "")) == 64
+        )
         decision_contracts["observed_endstate_matches_target"] = decision.get("observed_endstate") == case.target_endstate
         decision_contracts["case_report_written"] = True
         decision_contracts.update(pathway_contracts)
@@ -12269,6 +12632,7 @@ def run_open_battery_case(
         "byzantine_verification_result_derivation": verification_result_derivation,
         "byzantine_host_policy_rejection_derivation": host_policy_rejection_derivation,
         "byzantine_retry_chain_derivation": retry_chain_derivation,
+        "byzantine_terminal_noop_diagnostic_derivation": terminal_noop_diagnostic_derivation,
         "byzantine_agreement_trace_path": byzantine_agreement.get("agreement_trace_path", ""),
         "byzantine_final_selection_path": byzantine_agreement.get("final_selection_path", ""),
         "byzantine_artifact_manifest_path": byzantine_agreement.get("artifact_manifest_path", ""),
@@ -13228,6 +13592,18 @@ def run_open_battery(args: argparse.Namespace) -> int:
         ),
         "open_battery_byzantine_boundary_exposes_retry_chain_derivation": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_retry_chain_derivation"))
+            for case in cases
+        ),
+        "open_battery_byzantine_terminal_noop_diagnostic_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_terminal_noop_diagnostic_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_terminal_noop_or_diagnostic_bound_to_selected_action": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_terminal_noop_or_diagnostic_bound_to_selected_action"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_terminal_noop_diagnostic_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_terminal_noop_diagnostic_derivation"))
             for case in cases
         ),
     }
