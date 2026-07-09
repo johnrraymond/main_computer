@@ -1439,6 +1439,13 @@
 
       function findMcelLabReceiptPayload() {
         const node = document.querySelector("#mcel-tiny-contract-evidence");
+        const nodePayload = node?.__mcelReceiptPayload || node?.__mcelFullPayload;
+        if (nodePayload && typeof nodePayload === "object") {
+          return nodePayload;
+        }
+        if (window.__mcelLabReceiptPayload && typeof window.__mcelLabReceiptPayload === "object") {
+          return window.__mcelLabReceiptPayload;
+        }
         if (!node) return null;
         return parseScmReceiptJsonCandidate(node.textContent || "");
       }

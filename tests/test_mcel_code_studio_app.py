@@ -1080,6 +1080,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             "function formatNormalizedScmReceiptVectorDetail",
             "function renderScmReceiptVectorInProofDock",
             'document.querySelector("#mcel-tiny-contract-evidence")',
+            "node?.__mcelReceiptPayload",
+            "window.__mcelLabReceiptPayload",
             "actionOutcome",
             "externalOutcome",
             "governanceOutcome",

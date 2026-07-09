@@ -2695,6 +2695,12 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "overflow-wrap: anywhere" in style
     assert "#mcel-tiny-contract-map" in style
     assert "#mcel-tiny-contract-evidence" in style
+    assert "mcelRenderLabReceiptSummary" in ui
+    assert "mcelRenderCompactJsonSurface" in ui
+    assert "window.__mcelLabReceiptPayload" in ui
+    assert "compactRenderGuards" in ui
+    assert "fallback-full-json" in ui
+    assert "mcel-18n-wallet-tool-preflight-view" in ui
 
 def test_mcel_lab_runtime_fields_written_by_effects_are_owned_and_defaulted() -> None:
     """Guard the SCM runtime mount against undeclared runtime fields.

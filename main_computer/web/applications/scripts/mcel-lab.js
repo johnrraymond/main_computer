@@ -5813,6 +5813,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           lastExternalOutcome: null,
           lastWalletActionOutcome: null,
           lastProof: null,
+          lastReceiptPayload: null,
+          lastReceiptPayloadKind: "",
+          compactRenderGuards: [],
           lastWalletCommitBoundary: null,
           commitBoundaryReceipts: [],
           walletStaleSimulation: null,
@@ -5833,6 +5836,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       }
       if (!Array.isArray(mcelLabState.tinyContract.commitBoundaryReceipts)) {
         mcelLabState.tinyContract.commitBoundaryReceipts = [];
+      }
+      if (!Array.isArray(mcelLabState.tinyContract.compactRenderGuards)) {
+        mcelLabState.tinyContract.compactRenderGuards = [];
       }
       if (typeof mcelLabState.tinyContract.walletBacklogRemediationScheme !== "string" || !mcelLabState.tinyContract.walletBacklogRemediationScheme) {
         mcelLabState.tinyContract.walletBacklogRemediationScheme = "disable-while-busy";
@@ -9024,6 +9030,180 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       return chip;
     }
 
+    const MCEL_COMPACT_RENDER_HISTORY_LIMIT = 24;
+
+    function mcelCompactRenderArrayLength(value) {
+      return Array.isArray(value) ? value.length : 0;
+    }
+
+    function mcelCompactRenderPathValue(source, path) {
+      return String(path || "").split(".").filter(Boolean).reduce((current, key) => {
+        if (current && typeof current === "object" && key in current) return current[key];
+        return undefined;
+      }, source);
+    }
+
+    function mcelCompactRenderGuard(payload, options = {}) {
+      const failures = [];
+      if (!payload || typeof payload !== "object") {
+        failures.push("payload-object-missing");
+      }
+      const requiredPaths = Array.isArray(options.requiredPaths) ? options.requiredPaths : [];
+      requiredPaths.forEach((path) => {
+        if (typeof mcelCompactRenderPathValue(payload, path) === "undefined") {
+          failures.push(`missing:${path}`);
+        }
+      });
+      (Array.isArray(options.expectedRefs) ? options.expectedRefs : []).forEach((entry) => {
+        if (!entry || !entry.path) return;
+        if (mcelCompactRenderPathValue(payload, entry.path) !== entry.value) {
+          failures.push(`reference-changed:${entry.path}`);
+        }
+      });
+      if (options.expectedKind && payload?.kind !== options.expectedKind) {
+        failures.push(`kind:${payload?.kind || "missing"}`);
+      }
+      if (options.expectedStatus && payload?.status !== options.expectedStatus) {
+        failures.push(`status:${payload?.status || "missing"}`);
+      }
+      return {
+        kind: options.expectedKind || payload?.kind || "unknown",
+        status: failures.length ? "fail" : "pass",
+        ok: failures.length === 0,
+        failures,
+        checkedAt: new Date().toISOString()
+      };
+    }
+
+    function mcelRememberCompactRenderGuard(kind, guard) {
+      const tinyState = ensureMcelTinyContractState();
+      tinyState.compactRenderGuards = [
+        ...(Array.isArray(tinyState.compactRenderGuards) ? tinyState.compactRenderGuards : []),
+        {
+          kind,
+          status: guard.status,
+          failures: guard.failures || [],
+          checkedAt: guard.checkedAt
+        }
+      ].slice(-MCEL_COMPACT_RENDER_HISTORY_LIMIT);
+      window.__mcelLabCompactRenderGuards = tinyState.compactRenderGuards;
+    }
+
+    function mcelRenderCompactJsonSurface(node, options = {}) {
+      if (!node) return null;
+      const payload = options.payload || {};
+      const kind = options.kind || payload.kind || "mcel-compact-json-surface";
+      const guard = mcelCompactRenderGuard(payload, {
+        expectedKind: options.expectedKind || kind,
+        expectedStatus: options.expectedStatus,
+        requiredPaths: options.requiredPaths || ["kind"],
+        expectedRefs: options.expectedRefs || []
+      });
+
+      node.__mcelFullPayload = payload;
+      node.__mcelCompactRenderGuard = guard;
+      if (options.payloadProperty) {
+        node[options.payloadProperty] = payload;
+      }
+      if (options.windowProperty) {
+        window[options.windowProperty] = payload;
+      }
+
+      node.dataset.mcelCompactRender = "true";
+      node.dataset.mcelCompactKind = kind;
+      node.dataset.mcelCompactGuard = guard.status;
+      node.dataset.mcelFullPayload = "memory";
+      node.dataset.mcelFullPayloadAvailable = "true";
+      node.dataset.mcelCompactCheckedAt = guard.checkedAt;
+      if (payload.status) node.dataset.status = String(payload.status);
+      if (options.expectedStatus) node.dataset.mcelCompactExpectedStatus = String(options.expectedStatus);
+
+      mcelRememberCompactRenderGuard(kind, guard);
+
+      if (!guard.ok) {
+        node.dataset.mcelCompactRender = "fallback-full-json";
+        node.dataset.mcelCompactFailures = guard.failures.join(",");
+        node.textContent = JSON.stringify(payload, null, 2);
+        return guard;
+      }
+
+      const summaryLines = Array.isArray(options.summaryLines) ? options.summaryLines.filter(Boolean) : [];
+      node.textContent = [
+        `${kind}: compact render`,
+        `guard: ${guard.status}`,
+        `full payload: retained in memory${options.windowProperty ? ` at window.${options.windowProperty}` : ""}${options.payloadProperty ? ` and node.${options.payloadProperty}` : ""}`,
+        ...summaryLines
+      ].join("\n");
+      return guard;
+    }
+
+    function mcelRenderLabReceiptSummary(node, receiptPayload, context = {}) {
+      const tinyState = ensureMcelTinyContractState();
+      tinyState.lastReceiptPayload = receiptPayload;
+      tinyState.lastReceiptPayloadKind = receiptPayload?.kind || "";
+      window.__mcelLabReceiptPayload = receiptPayload;
+
+      const proof = receiptPayload?.proof || {};
+      const routeEvidence = receiptPayload?.routeEvidence || {};
+      const componentEvidence = receiptPayload?.componentEvidence || {};
+      const localEvidence = receiptPayload?.localEvidence || [];
+      const registry = receiptPayload?.registry || {};
+
+      const summaryLines = [
+        `status: ${receiptPayload?.status || proof.status || "unknown"}`,
+        `reason: ${receiptPayload?.reason || context.reason || "unknown"}`,
+        `proof mode: ${proof.mode || "unknown"}`,
+        `action outcome: ${proof.actionOutcome || "unknown"}`,
+        `governance/safety/completeness: ${proof.governanceOutcome || "unknown"} / ${proof.safetyOutcome || "unknown"} / ${proof.proofCompleteness || "unknown"}`,
+        `source hash: ${proof.sourceHash || "missing"}`,
+        `live serialized hash: ${proof.liveSerializedHtmlHash || "missing"}`,
+        `scm serialized hash: ${proof.scmSerializedSourceHash || "missing"}`,
+        `route evidence entries: ${mcelCompactRenderArrayLength(routeEvidence.evidence)}`,
+        `component evidence entries: ${mcelCompactRenderArrayLength(componentEvidence.evidence)}`,
+        `local evidence entries: ${mcelCompactRenderArrayLength(localEvidence)}`,
+        `registry element count: ${registry.elementCount ?? proof.registryElementCount ?? 0}`,
+        "Contract guard note: compact DOM rendering does not replace the receipt object; it only avoids multi-megabyte live text."
+      ];
+
+      return mcelRenderCompactJsonSurface(node, {
+        kind: "mcel-lab-medium-scm-proven-dev-network-app-receipt",
+        expectedKind: "mcel-lab-medium-scm-proven-dev-network-app-receipt",
+        expectedStatus: receiptPayload?.status || proof.status || "",
+        payload: receiptPayload,
+        payloadProperty: "__mcelReceiptPayload",
+        windowProperty: "__mcelLabReceiptPayload",
+        requiredPaths: [
+          "kind",
+          "status",
+          "reason",
+          "proof",
+          "routeEvidence",
+          "componentEvidence",
+          "localEvidence",
+          "registry"
+        ],
+        expectedRefs: [
+          {path: "proof", value: context.proof},
+          {path: "routeEvidence", value: context.routeEvidence},
+          {path: "componentEvidence", value: context.componentEvidence},
+          {path: "localEvidence", value: context.localEvidence},
+          {path: "registry", value: context.registry}
+        ],
+        summaryLines
+      });
+    }
+
+    function mcelRenderWalletToolCompactSurface(node, kind, payload, summaryLines = [], requiredPaths = ["kind"]) {
+      return mcelRenderCompactJsonSurface(node, {
+        kind,
+        expectedKind: kind,
+        payload,
+        requiredPaths,
+        summaryLines
+      });
+    }
+
+
     function renderMcel18nWalletToolSurface(commitBoundary = null) {
       const boundary = commitBoundary || ensureMcelTinyContractState().lastWalletCommitBoundary || mcelCommitBoundaryDefault("wallet.send-sign", "wallet-tool-surface");
       const statusSlot = typeof mcel18nWalletToolStatus !== "undefined"
@@ -9178,7 +9358,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         ].join("\n");
       }
       if (txDraftSlot) {
-        txDraftSlot.textContent = JSON.stringify({
+        const txDraftViewPayload = {
           kind: "mcel-18n-wallet-tool-tx-draft-view",
           boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           walletTxDraft,
@@ -9205,30 +9385,39 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           wallet22aNetworkExecutionPolicyReceipt,
           wallet22bPolicyProfileImportSurface,
           wallet22cTargetRegistryContractBinding,
-          wallet21dRetryRecoverySafety,
-          wallet21ePostConfirmationMcelReceiptIntegration,
-          wallet21fRelockResetLifecycle,
-          wallet22aNetworkExecutionPolicyRegistry,
-          wallet22aNetworkExecutionPolicyDecision,
-          wallet22aNetworkExecutionPolicyReceipt,
-          wallet22bPolicyProfileImportSurface,
-          wallet22cTargetRegistryContractBinding,
           walletTxProvenance: boundary.walletTxProvenance || {},
           rebuildDraftAction: boundary.walletRebuildDraftAction || {}
-        }, null, 2);
+        };
+        mcelRenderWalletToolCompactSurface(txDraftSlot, "mcel-18n-wallet-tool-tx-draft-view", txDraftViewPayload, [
+          `boundary version: ${txDraftViewPayload.boundaryVersion}`,
+          `tx draft status: ${walletTxDraft.status || "empty"}`,
+          `identity: ${txDraftIdentityShort}`,
+          `validity: ${txDraftValidityEnvelope.status || "not-observed"}`,
+          `invalidations: ${txDraftInvalidationReasons.join(", ") || "none"}`,
+          `rebuild action: ${boundary.walletRebuildDraftAction?.action || boundary.walletRebuildDraftAction?.status || "not required"}`
+        ], ["kind", "boundaryVersion", "walletTxDraft"]);
       }
+
       if (freshnessSlot) {
-        freshnessSlot.textContent = JSON.stringify({
+        const freshnessViewPayload = {
           kind: "mcel-18n-wallet-tool-freshness-view",
           boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           walletFreshnessSnapshot,
           blockers: walletFreshnessSnapshot.blockers || [],
           simulation: walletTxDraft.simulation || null,
           rule: "Refresh preflight does not silently make stale draft usable."
-        }, null, 2);
+        };
+        mcelRenderWalletToolCompactSurface(freshnessSlot, "mcel-18n-wallet-tool-freshness-view", freshnessViewPayload, [
+          `boundary version: ${freshnessViewPayload.boundaryVersion}`,
+          `freshness: ${walletFreshnessSnapshot.status || "not-observed"}`,
+          `blockers: ${(walletFreshnessSnapshot.blockers || []).join(", ") || "none"}`,
+          `simulation: ${walletTxDraft.simulation?.kind || "none"}`,
+          freshnessViewPayload.rule
+        ], ["kind", "boundaryVersion", "walletFreshnessSnapshot"]);
       }
+
       if (preflightSlot) {
-        preflightSlot.textContent = JSON.stringify({
+        const preflightViewPayload = {
           kind: "mcel-18n-wallet-tool-preflight-view",
           boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           draft: boundary.mcelCommitDraft,
@@ -9277,10 +9466,19 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           wallet18nCompletionReport,
           walletBacklogPolicy,
           walletBacklogRuntime
-        }, null, 2);
+        };
+        mcelRenderWalletToolCompactSurface(preflightSlot, "mcel-18n-wallet-tool-preflight-view", preflightViewPayload, [
+          `boundary version: ${preflightViewPayload.boundaryVersion}`,
+          `preflight: ${preflight.status || "locked"} · canSend=${preflight.canSend === true} canSign=${preflight.canSign === true} canBroadcast=${preflight.canBroadcast === true}`,
+          `consumer gate: ${boundary.mcelCommitConsumerGate?.status || "blocked"}`,
+          `freshness: ${walletFreshnessSnapshot.status || boundary.mcelCommitFreshness?.status || "not-observed"}`,
+          `blockers: ${(preflight.blockers || boundary.mcelCommitConsumerGate?.blockers || []).join(", ") || "none"}`,
+          `backlog: ${walletBacklogPolicy.selectedScheme} · queued=${walletBacklogRuntime.queuedCount} suppressed=${walletBacklogRuntime.suppressedCount}`
+        ], ["kind", "boundaryVersion", "preflight"]);
       }
+
       if (receiptSlot) {
-        receiptSlot.textContent = JSON.stringify({
+        const receiptViewPayload = {
           kind: "mcel-18n-wallet-tool-receipt-view",
           receipt,
           walletBlockedAttemptReceipt: boundary.walletBlockedAttemptReceipt || receipt,
@@ -9324,8 +9522,17 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           walletBacklogRuntime,
           mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {},
           invariant: boundary.invariant || []
-        }, null, 2);
+        };
+        mcelRenderWalletToolCompactSurface(receiptSlot, "mcel-18n-wallet-tool-receipt-view", receiptViewPayload, [
+          `receipt: ${receipt.status || "blocked"} · mutationExecuted=${receipt.mutationExecuted === true}`,
+          `action: ${receipt.action || boundary.action || "wallet.send-sign"}`,
+          `blockers: ${(receipt.blockers || preflight.blockers || []).join(", ") || "none"}`,
+          `negative path: ${walletNegativePathTestWall.status || "not-observed"}`,
+          `smoke guard: ${wallet19aSmokeRegressionGuard.status || "not-observed"}`,
+          `proof dock specimens: ${(boundary.mcelProofDockSpecimens?.specimens || []).length}`
+        ], ["kind", "receipt"]);
       }
+
       if (negativePathsSlot) {
         negativePathsSlot.textContent = JSON.stringify({
           kind: "mcel-18n-wallet-tool-negative-path-test-wall-view",
@@ -9886,7 +10093,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         visibleNextSlot.textContent = `Next action: ${validityNext || proofAlignmentNext || auditExportNext || recoveryPlannerNext || liveRouteNext || executionReadinessNext || policyActivationNext || productionHardeningNext || targetBindingNext || policyImportNext || networkPolicyNext || finalityObserverNext || relockLifecycleNext || receiptIntegrationNext || retryRecoveryNext || transactionWatcherNext || providerOutcomeNext || policySendNext || providerIntentHardeningNext || preSendReviewNext || signedIntentVerificationNext || providerIntentNext || signaturePreflightNext || signedIntentNext || unlockContractNext || wallet18nCompletionReport.nextAction || walletFinalLockedSpecimen.nextAction || boundary.nextAction || "stop here until a separate wallet unlock design is blessed"}`;
       }
       if (ledgerSlot) {
-        ledgerSlot.textContent = JSON.stringify({
+        const ledgerViewPayload = {
           kind: "mcel-18n-wallet-tool-receipt-ledger-view",
           boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
           receiptCount: receiptLedger.length,
@@ -9947,8 +10154,16 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           walletBacklogPolicy,
           walletBacklogRuntime,
           mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {}
-        }, null, 2);
+        };
+        mcelRenderWalletToolCompactSurface(ledgerSlot, "mcel-18n-wallet-tool-receipt-ledger-view", ledgerViewPayload, [
+          `boundary version: ${ledgerViewPayload.boundaryVersion}`,
+          `receipt count: ${receiptLedger.length}`,
+          `latest status: ${receipt.status || "blocked"}`,
+          `latest blockers: ${(preflight.blockers || []).join(", ") || "none"}`,
+          `wallet lock: canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true} mutationExecuted=${receipt.mutationExecuted === true}`
+        ], ["kind", "boundaryVersion", "receipts"]);
       }
+
       const refreshButton = document.querySelector("#mcel-18n-wallet-tool-refresh");
       const copyButton = document.querySelector("#mcel-18n-wallet-tool-copy-receipt");
       if (refreshButton) {
@@ -13886,17 +14101,28 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         ].join("\n");
       }
       renderMcel18nWalletToolSurface(walletCommitBoundary);
+      const labReceiptPayload = {
+        kind: "mcel-lab-medium-scm-proven-dev-network-app-receipt",
+        status: proof.status,
+        reason,
+        proof,
+        routeEvidence,
+        componentEvidence,
+        localEvidence: tinyState.evidence,
+        registry: registryPacket
+      };
       if (mcelTinyContractEvidence) {
-        mcelTinyContractEvidence.textContent = JSON.stringify({
-          kind: "mcel-lab-medium-scm-proven-dev-network-app-receipt",
-          status: proof.status,
+        mcelRenderLabReceiptSummary(mcelTinyContractEvidence, labReceiptPayload, {
           reason,
           proof,
           routeEvidence,
           componentEvidence,
           localEvidence: tinyState.evidence,
           registry: registryPacket
-        }, null, 2);
+        });
+      } else {
+        tinyState.lastReceiptPayload = labReceiptPayload;
+        window.__mcelLabReceiptPayload = labReceiptPayload;
       }
       return proof;
     }
