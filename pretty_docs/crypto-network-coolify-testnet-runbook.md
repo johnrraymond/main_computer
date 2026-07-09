@@ -1,16 +1,16 @@
-# Crypto network Coolify testnet runbook
+# Crypto network Coolify QBFT runbook
 
-Status: operator draft, updated 2026-07-05.
+Status: operator runbook, stabilized 2026-07-08.
 
-This document records the forward Coolify API path for deploying the
-Besu/QBFT testnet. Remote Coolify deploys are API-driven. They do not require an
-SSH-shaped deploy command, and the runbook should not teach `--single-host` as a
-normal path.
+This document records the forward Coolify API path for deploying Besu/QBFT
+testnet and mainnet-shaped networks. Remote Coolify deploys are API-driven. They
+do not require an SSH-shaped deploy command, and the runbook should not teach
+`--single-host` as a normal path.
 
 ## Source of truth
 
-Use `runtime/state/main_computer.private.yaml` for remote Coolify placement and
-logical QBFT instances:
+Use `runtime/state/main_computer.private.yaml` for private Coolify placement,
+private tokens, wallet private material, and logical QBFT instances:
 
 ```yaml
 networks:
@@ -32,6 +32,16 @@ networks:
 The operator names the logical instance. The deployer infers the Coolify host
 from `qbft.instances.<instance>.coolify_host`.
 
+Do not use private state as the source of deployed contract addresses or wallet
+credit balances. Those are public deployment/application facts. Contract
+addresses belong in:
+
+```text
+runtime/deployments/<network>/latest.json
+runtime/deployments/<network>/runs/<run_id>/deployment.json
+main_computer/config/<network>_contracts.json
+```
+
 ## One-node testnet deploy
 
 Deploy just the current one-node service topology:
@@ -50,6 +60,30 @@ python .\tools\coolify_qbft_network.py deploy-contracts testnet
 Do not add `--host A`; the selected instance already contains that mapping. Do
 not add an SSH target; Coolify create/update/deploy uses the Coolify HTTP API
 context from private state.
+
+
+## Minimal mainnet bring-up
+
+Mainnet requires an explicit acknowledgement flag. For a deliberate reset or
+fresh bring-up of the current minimal RPC/validator surface:
+
+```powershell
+python .\tools\coolify_qbft_network.py apply mainnet `
+  --allow-mainnet `
+  --instances validator-rpc-1
+```
+
+Observe live reality before deploying contracts:
+
+```powershell
+python .\tools\coolify_qbft_network.py observe-chain mainnet --allow-mainnet
+```
+
+A one-observed-validator report with `peers: 0` is degraded. It may be enough to
+deploy contracts on a deliberately reset chain if the expected chain id is
+reported and blocks are advancing, but it is not the target persistent mainnet
+topology. The contract deploy and private-state cleanup procedure is documented
+in `pretty_docs/mainnet-chain-redeploy-runbook.md`.
 
 ## Read-only checks
 
@@ -90,6 +124,10 @@ python .\tools\coolify_qbft_network.py discover-topology testnet `
 * `--host` is only a low-level compose/debug override.
 * `--single-host` is deprecated compatibility plumbing and is not the remote
   Coolify deploy path.
+* `observe-chain` treats private state as a template/decoder; live truth comes
+  from RPC and Coolify observations.
 * Deleting an old Coolify service before redeploy is acceptable when changing to
   the canonical service name, but omission from a selected instance list never
   means "delete this node."
+* Contract deployment is explicit and writes public deployment/config files.
+  Private state should not mirror contract addresses back into YAML.

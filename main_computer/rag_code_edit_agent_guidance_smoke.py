@@ -7547,6 +7547,127 @@ def open_battery_deterministic_survivor_choice(
     return ordered_survivors[index], seed, index
 
 
+def open_battery_rejection_derivation(
+    *,
+    result_ids: Sequence[str],
+    rejection_votes: Mapping[str, int],
+    majority_threshold: int,
+) -> dict[str, Any]:
+    """Explain the reject-at-most-one boundary reduction.
+
+    Round 2 reviewers may each reject at most one candidate.  The final round
+    then reduces those rejection votes to a single boundary fact: either exactly
+    one Round 1 result is rejected by simple majority, or no result is rejected.
+    This derivation is recorded so the survivor set is auditable instead of
+    being inferred from the selected winner.
+    """
+
+    ordered_result_ids = [str(result_id) for result_id in result_ids]
+    normalized_votes = {
+        result_id: int(rejection_votes.get(result_id, 0))
+        for result_id in ordered_result_ids
+    }
+    majority_rejection_candidates = [
+        result_id
+        for result_id in ordered_result_ids
+        if normalized_votes.get(result_id, 0) >= majority_threshold
+    ]
+    rejected_result = majority_rejection_candidates[0] if len(majority_rejection_candidates) == 1 else ""
+    if rejected_result:
+        outcome = "single_simple_majority_rejection"
+    elif majority_rejection_candidates:
+        outcome = "ambiguous_multiple_majorities_no_rejection"
+    else:
+        outcome = "no_simple_majority_rejection"
+    survivors = [result_id for result_id in ordered_result_ids if result_id != rejected_result]
+    return {
+        "rule": "simple_majority_reject_at_most_one",
+        "result_ids": ordered_result_ids,
+        "rejection_votes": normalized_votes,
+        "majority_threshold": majority_threshold,
+        "majority_rejection_candidates": majority_rejection_candidates,
+        "rejected_result": rejected_result,
+        "rejected_vote_count": normalized_votes.get(rejected_result, 0) if rejected_result else 0,
+        "survivors": survivors,
+        "rejected_result_count": 1 if rejected_result else 0,
+        "outcome": outcome,
+    }
+
+
+
+
+def open_battery_survivor_ranking_completion_derivation(
+    *,
+    round_2_reviews: Sequence[Mapping[str, Any]],
+    survivors: Sequence[str],
+) -> dict[str, Any]:
+    """Explain how final-survivor rankings are derived from reviewer outputs.
+
+    Reviewers rank the candidates surviving their own reject-at-most-one output.
+    After the final round applies the majority rejection, a Byzantine reviewer may
+    have omitted a final survivor because it rejected a different candidate.  The
+    host completes those partial rankings by appending omitted final survivors at
+    the end, and records that completion instead of treating it as invisible
+    reviewer evidence.
+    """
+
+    ordered_survivors = [str(result_id) for result_id in survivors if str(result_id)]
+    survivor_set = set(ordered_survivors)
+    first_place_votes = {result_id: 0 for result_id in ordered_survivors}
+    records: list[dict[str, Any]] = []
+    completion_count = 0
+    observed_first_place_vote_count = 0
+
+    for review in round_2_reviews:
+        original_ranking = [str(result_id) for result_id in (review.get("ranking") or [])]
+        observed_survivor_ranking = [
+            result_id
+            for result_id in original_ranking
+            if result_id in survivor_set
+        ]
+        omitted_final_survivors = [
+            result_id
+            for result_id in ordered_survivors
+            if result_id not in observed_survivor_ranking
+        ]
+        completed_survivor_ranking = observed_survivor_ranking + omitted_final_survivors
+        completion_applied = bool(omitted_final_survivors)
+        if completion_applied:
+            completion_count += 1
+
+        if observed_survivor_ranking:
+            first_place_result = observed_survivor_ranking[0]
+            first_place_source = "observed_survivor_ranking"
+            first_place_votes[first_place_result] = first_place_votes.get(first_place_result, 0) + 1
+            observed_first_place_vote_count += 1
+        else:
+            first_place_result = ""
+            first_place_source = "no_observed_final_survivor"
+
+        records.append(
+            {
+                "reviewer": str(review.get("reviewer", "")),
+                "reviewer_rejected_result": str(review.get("reject", "") or ""),
+                "original_ranking": original_ranking,
+                "observed_survivor_ranking": observed_survivor_ranking,
+                "omitted_final_survivors": omitted_final_survivors,
+                "completed_survivor_ranking": completed_survivor_ranking,
+                "completion_applied": completion_applied,
+                "first_place_result": first_place_result,
+                "first_place_source": first_place_source,
+            }
+        )
+
+    return {
+        "rule": "preserve_observed_survivor_order_append_omitted_final_survivors",
+        "final_survivors": ordered_survivors,
+        "completion_count": completion_count,
+        "ranking_observation_count": len(records),
+        "observed_first_place_vote_count": observed_first_place_vote_count,
+        "first_place_votes": first_place_votes,
+        "records": records,
+    }
+
 def open_battery_random_survivor_pool_derivation(
     *,
     survivors: Sequence[str],
@@ -7618,6 +7739,38 @@ def open_battery_two_result_random_survivor_pool(
     )
 
 
+def open_battery_clear_majority_derivation(
+    *,
+    survivors: Sequence[str],
+    first_place_votes: Mapping[str, int],
+    survivor_rankings: Sequence[Mapping[str, Any]],
+    clear_winners: Sequence[str],
+    majority_threshold: int,
+) -> dict[str, Any]:
+    """Explain how a clear majority winner was selected from survivor rankings."""
+
+    ordered_survivors = [str(result_id) for result_id in survivors if str(result_id)]
+    normalized_first_place_votes = {
+        result_id: int(first_place_votes.get(result_id, 0))
+        for result_id in ordered_survivors
+    }
+    normalized_clear_winners = [
+        str(result_id)
+        for result_id in clear_winners
+        if str(result_id) in normalized_first_place_votes
+    ]
+    winning_result = normalized_clear_winners[0] if len(normalized_clear_winners) == 1 else ""
+    return {
+        "survivors": ordered_survivors,
+        "majority_threshold": int(majority_threshold),
+        "first_place_votes": normalized_first_place_votes,
+        "clear_winners": normalized_clear_winners,
+        "winning_result": winning_result,
+        "winning_vote_count": int(normalized_first_place_votes.get(winning_result, 0)) if winning_result else 0,
+        "survivor_rankings": [dict(ranking) for ranking in survivor_rankings],
+    }
+
+
 def open_battery_byzantine_final_selection(
     *,
     case: OpenBatteryCaseSpec,
@@ -7646,36 +7799,44 @@ def open_battery_byzantine_final_selection(
         rejected = str(review.get("reject", "") or "")
         if rejected in rejection_votes:
             rejection_votes[rejected] += 1
-    rejection_majority_candidates = [
-        result_id
-        for result_id, count in rejection_votes.items()
-        if count >= majority_threshold
-    ]
-    rejected_result = rejection_majority_candidates[0] if len(rejection_majority_candidates) == 1 else ""
-    survivors = [result_id for result_id in result_ids if result_id != rejected_result]
+    rejection_derivation = open_battery_rejection_derivation(
+        result_ids=result_ids,
+        rejection_votes=rejection_votes,
+        majority_threshold=majority_threshold,
+    )
+    rejection_majority_candidates = list(rejection_derivation.get("majority_rejection_candidates", []))
+    rejected_result = str(rejection_derivation.get("rejected_result", "") or "")
+    survivors = [str(result_id) for result_id in (rejection_derivation.get("survivors") or [])]
 
-    survivor_rankings: list[dict[str, Any]] = []
-    first_place_votes = {result_id: 0 for result_id in survivors}
-    for review in round_2_reviews:
-        ranking = [str(result_id) for result_id in (review.get("ranking") or [])]
-        ranking_survivors = [result_id for result_id in ranking if result_id in survivors]
-        omitted = [result_id for result_id in survivors if result_id not in ranking_survivors]
-        full_survivor_ranking = ranking_survivors + omitted
-        if full_survivor_ranking:
-            first_place_votes[full_survivor_ranking[0]] = first_place_votes.get(full_survivor_ranking[0], 0) + 1
-        survivor_rankings.append(
-            {
-                "reviewer": review.get("reviewer", ""),
-                "ranking_after_final_rejection": full_survivor_ranking,
-                "omitted_survivors": omitted,
-            }
-        )
+    survivor_ranking_completion_derivation = open_battery_survivor_ranking_completion_derivation(
+        round_2_reviews=round_2_reviews,
+        survivors=survivors,
+    )
+    survivor_rankings = [
+        {
+            "reviewer": record.get("reviewer", ""),
+            "ranking_after_final_rejection": list(record.get("completed_survivor_ranking", [])),
+            "omitted_survivors": list(record.get("omitted_final_survivors", [])),
+            "completion_applied": bool(record.get("completion_applied")),
+            "first_place_result": record.get("first_place_result", ""),
+            "first_place_source": record.get("first_place_source", ""),
+        }
+        for record in survivor_ranking_completion_derivation.get("records", [])
+    ]
+    first_place_votes = dict(survivor_ranking_completion_derivation.get("first_place_votes") or {})
 
     clear_winners = [
         result_id
         for result_id, count in first_place_votes.items()
         if count >= majority_threshold
     ]
+    clear_majority_derivation = open_battery_clear_majority_derivation(
+        survivors=survivors,
+        first_place_votes=first_place_votes,
+        survivor_rankings=survivor_rankings,
+        clear_winners=clear_winners,
+        majority_threshold=majority_threshold,
+    )
     host_random_survivor_pool: list[str] = []
     host_random_survivor_pool_derivation: dict[str, Any] = {}
     if len(clear_winners) == 1:
@@ -7764,12 +7925,77 @@ def open_battery_byzantine_final_selection(
             (not rejected_result and not any(count >= majority_threshold for count in rejection_votes.values()))
             or (bool(rejected_result) and rejection_votes.get(rejected_result, 0) >= majority_threshold)
         ),
+        "byzantine_rejection_derivation_recorded": (
+            rejection_derivation.get("rule") == "simple_majority_reject_at_most_one"
+            and dict(rejection_derivation.get("rejection_votes") or {}) == rejection_votes
+            and int(rejection_derivation.get("majority_threshold", 0)) == majority_threshold
+            and list(rejection_derivation.get("result_ids") or []) == result_ids
+        ),
+        "byzantine_rejected_result_derived_from_simple_majority": (
+            str(rejection_derivation.get("rejected_result", "") or "") == rejected_result
+            and list(rejection_derivation.get("survivors") or []) == survivors
+            and int(rejection_derivation.get("rejected_result_count", 0)) <= 1
+            and (
+                (not rejected_result and not any(count >= majority_threshold for count in rejection_votes.values()))
+                or (bool(rejected_result) and rejection_votes.get(rejected_result, 0) >= majority_threshold)
+            )
+        ),
+        "byzantine_boundary_exposes_rejection_derivation": (
+            bool(rejection_derivation.get("outcome"))
+            and list(rejection_derivation.get("survivors") or []) == survivors
+            and int(rejection_derivation.get("rejected_result_count", 0)) == len(rejected_results)
+        ),
+        "byzantine_survivor_ranking_completion_recorded": (
+            survivor_ranking_completion_derivation.get("rule")
+            == "preserve_observed_survivor_order_append_omitted_final_survivors"
+            and list(survivor_ranking_completion_derivation.get("final_survivors") or []) == survivors
+            and len(survivor_ranking_completion_derivation.get("records") or []) == len(round_2_reviews)
+        ),
+        "byzantine_first_place_votes_derived_from_completed_survivor_rankings": (
+            dict(survivor_ranking_completion_derivation.get("first_place_votes") or {}) == first_place_votes
+            and all(
+                (
+                    record.get("first_place_source") == "observed_survivor_ranking"
+                    and record.get("first_place_result")
+                    == (record.get("observed_survivor_ranking") or [""])[0]
+                )
+                or (
+                    record.get("first_place_source") == "no_observed_final_survivor"
+                    and not record.get("first_place_result")
+                )
+                for record in (survivor_ranking_completion_derivation.get("records") or [])
+            )
+        ),
+        "byzantine_boundary_exposes_survivor_ranking_completion": (
+            isinstance(survivor_ranking_completion_derivation.get("completion_count", None), int)
+            and all(
+                set(record.get("completed_survivor_ranking") or []) == set(survivors)
+                for record in (survivor_ranking_completion_derivation.get("records") or [])
+            )
+        ),
         "byzantine_survivors_ranked": all(
             set(ranking.get("ranking_after_final_rejection", [])) == set(survivors)
             for ranking in survivor_rankings
         ),
         "byzantine_clear_winner_selected_when_present": (
             len(clear_winners) != 1 or agreed_result_id == clear_winners[0]
+        ),
+        "byzantine_clear_winner_derived_from_first_place_votes": (
+            len(clear_winners) != 1
+            or (
+                clear_majority_derivation.get("winning_result") == agreed_result_id
+                and clear_majority_derivation.get("winning_vote_count") == first_place_votes.get(agreed_result_id, 0)
+                and int(clear_majority_derivation.get("winning_vote_count", 0)) >= majority_threshold
+                and dict(clear_majority_derivation.get("first_place_votes") or {}) == first_place_votes
+            )
+        ),
+        "byzantine_boundary_exposes_clear_winner_derivation": (
+            len(clear_winners) != 1
+            or (
+                clear_majority_derivation.get("winning_result") == agreed_result_id
+                and bool(clear_majority_derivation.get("survivor_rankings"))
+                and set(clear_majority_derivation.get("first_place_votes", {})) == set(survivors)
+            )
         ),
         "byzantine_tie_uses_host_seeded_random_survivor_selection": (
             len(clear_winners) == 1
@@ -7858,12 +8084,17 @@ def open_battery_byzantine_final_selection(
         "input_review_sha256_by_reviewer": round_2_review_sha256_by_reviewer,
         "input_reviews_set_sha256": round_2_reviews_set_sha256,
         "rejection_votes": rejection_votes,
+        "rejection_derivation": rejection_derivation,
         "rejected_result": rejected_result,
         "rejected_results": rejected_results,
         "surviving_results": survivors,
         "survivor_rankings": survivor_rankings,
+        "survivor_ranking_completion_derivation": survivor_ranking_completion_derivation,
         "first_place_votes": first_place_votes,
         "clear_winners": clear_winners,
+        "clear_majority_derivation": clear_majority_derivation,
+        "clear_majority_winning_result": clear_majority_derivation.get("winning_result", ""),
+        "clear_majority_winning_vote_count": clear_majority_derivation.get("winning_vote_count", 0),
         "agreed_result_id": agreed_result_id,
         "agreed_result": agreed_result,
         "agreed_result_sha256": agreed_result_sha256,
@@ -8010,15 +8241,21 @@ def open_battery_run_byzantine_result_selection(
                     "artifact": str(final_path),
                     "input_reviewers": final_selection.get("input_reviewers", []),
                     "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
+                    "rejection_derivation": final_selection.get("rejection_derivation", {}),
+                    "survivor_ranking_completion_derivation": final_selection.get("survivor_ranking_completion_derivation", {}),
                     "agreed_result_id": final_selection.get("agreed_result_id"),
                     "agreed_result_sha256": final_selection.get("agreed_result_sha256", ""),
                     "selection_method": final_selection.get("selection_method"),
+                    "clear_majority_derivation": final_selection.get("clear_majority_derivation", {}),
                 },
             ],
             "boundary_output": {
                 "agreed_result_id": final_selection.get("agreed_result_id"),
                 "agreed_result": final_selection.get("agreed_result"),
                 "agreed_result_sha256": final_selection.get("agreed_result_sha256", ""),
+                "rejection_derivation": final_selection.get("rejection_derivation", {}),
+                "survivor_ranking_completion_derivation": final_selection.get("survivor_ranking_completion_derivation", {}),
+                "clear_majority_derivation": final_selection.get("clear_majority_derivation", {}),
                 "round_1_results_set_sha256": final_selection.get("round_1_results_set_sha256", ""),
                 "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
                 "consensus": final_selection.get("consensus"),
@@ -8033,6 +8270,9 @@ def open_battery_run_byzantine_result_selection(
         agreed_result_id=final_selection.get("agreed_result_id"),
         agreed_result_sha256=final_selection.get("agreed_result_sha256", ""),
         selection_method=final_selection.get("selection_method"),
+        rejection_derivation=final_selection.get("rejection_derivation", {}),
+        survivor_ranking_completion_derivation=final_selection.get("survivor_ranking_completion_derivation", {}),
+        clear_majority_derivation=final_selection.get("clear_majority_derivation", {}),
         rejected_result=final_selection.get("rejected_result"),
         input_reviewers=final_selection.get("input_reviewers", []),
         input_reviews_set_sha256=final_selection.get("input_reviews_set_sha256", ""),
@@ -8058,6 +8298,11 @@ def open_battery_run_byzantine_result_selection(
             "surviving_result_sha256_by_id": final_selection.get("surviving_result_sha256_by_id", {}),
             "host_random_survivor_sha256_by_id": final_selection.get("host_random_survivor_sha256_by_id", {}),
             "selection_method": final_selection.get("selection_method"),
+            "rejection_derivation": final_selection.get("rejection_derivation", {}),
+            "survivor_ranking_completion_derivation": final_selection.get("survivor_ranking_completion_derivation", {}),
+            "clear_majority_derivation": final_selection.get("clear_majority_derivation", {}),
+            "clear_majority_winning_result": final_selection.get("clear_majority_winning_result", ""),
+            "clear_majority_winning_vote_count": final_selection.get("clear_majority_winning_vote_count", 0),
             "rejected_result": final_selection.get("rejected_result"),
             "surviving_results": final_selection.get("surviving_results", []),
             "round_1_results_set_sha256": final_selection.get("round_1_results_set_sha256", ""),
@@ -9392,12 +9637,44 @@ def run_open_battery(args: argparse.Namespace) -> int:
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_final_uses_simple_majority_rejection"))
             for case in cases
         ),
+        "open_battery_byzantine_rejection_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_rejection_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_rejected_result_derived_from_simple_majority": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_rejected_result_derived_from_simple_majority"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_rejection_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_rejection_derivation"))
+            for case in cases
+        ),
+        "open_battery_byzantine_survivor_ranking_completion_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_survivor_ranking_completion_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_first_place_votes_derived_from_completed_survivor_rankings": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_first_place_votes_derived_from_completed_survivor_rankings"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_survivor_ranking_completion": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_survivor_ranking_completion"))
+            for case in cases
+        ),
         "open_battery_byzantine_survivors_ranked": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_survivors_ranked"))
             for case in cases
         ),
         "open_battery_byzantine_clear_winner_selected_when_present": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_clear_winner_selected_when_present"))
+            for case in cases
+        ),
+        "open_battery_byzantine_clear_winner_derived_from_first_place_votes": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_clear_winner_derived_from_first_place_votes"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_clear_winner_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_clear_winner_derivation"))
             for case in cases
         ),
         "open_battery_byzantine_tie_uses_host_seeded_random_survivor_selection": all(

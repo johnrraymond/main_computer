@@ -325,6 +325,42 @@ public RPC host(s)          ->  Hub site / browser wallets
 The Hub should not hold validator keys. The Hub should not be required for
 validators to produce blocks. The Hub should not be the only path into the chain.
 
+
+### Current mainnet operator rule
+
+The current operator rule is now stable:
+
+```text
+private state is for secrets, private keys, and operator topology
+public deployment state is for contract addresses and deployment manifests
+```
+
+Mainnet contract addresses should be read from:
+
+```text
+runtime/deployments/mainnet/latest.json
+runtime/deployments/mainnet/runs/<run_id>/deployment.json
+main_computer/config/mainnet_contracts.json
+```
+
+They should not be copied into
+`runtime/state/main_computer.private.yaml`. The private YAML may contain the
+deployer and office wallet private material, Coolify API tokens, and host
+placement, but deployed contract addresses and wallet credit balances are not
+private-state authority.
+
+A deliberately reset/dead mainnet can be brought back through the operator path:
+bring up enough QBFT RPC surface to report the expected chain id and advancing
+blocks, deploy contracts with `tools/mainnet-operator.py deploy-contracts`, and
+then sync private state so public contract facts stay in the public deployment
+files. The detailed procedure lives in
+`pretty_docs/mainnet-chain-redeploy-runbook.md`.
+
+A one-observed-validator mainnet is acceptable only as an emergency or early
+bring-up state. It proves the RPC/deploy path, not persistent mainnet health.
+Persistent operation still requires the multi-validator topology, separated RPC
+surface, non-zero peer count, and pinned production image tags.
+
 ## Chain profiles
 
 The long-term interface between the Hub and any chain should be a chain profile,
@@ -519,5 +555,7 @@ For now:
 ```text
 Use Anvil devnet for speed.
 Use QBFT lab for architecture truth.
-Do not merge QBFT deeply into Hub until the RPC-node and contract-deployment path is proven.
+Use the mainnet operator path for remote chain contract publication.
+Keep contract addresses in public deployment/config artifacts, not private YAML.
+Treat a single observed validator as degraded until the intended validator/RPC topology is live.
 ```

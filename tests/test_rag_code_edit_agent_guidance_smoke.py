@@ -2113,8 +2113,16 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_uses_simple_majority_rejection"] is True
+    assert report["contracts"]["open_battery_byzantine_rejection_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_rejected_result_derived_from_simple_majority"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_rejection_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_survivor_ranking_completion_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_first_place_votes_derived_from_completed_survivor_rankings"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_survivor_ranking_completion"] is True
     assert report["contracts"]["open_battery_byzantine_survivors_ranked"] is True
     assert report["contracts"]["open_battery_byzantine_clear_winner_selected_when_present"] is True
+    assert report["contracts"]["open_battery_byzantine_clear_winner_derived_from_first_place_votes"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_clear_winner_derivation"] is True
     assert report["contracts"]["open_battery_byzantine_tie_uses_host_seeded_random_survivor_selection"] is True
     assert report["contracts"]["open_battery_byzantine_tie_random_pool_has_two_candidates"] is True
     assert report["contracts"]["open_battery_byzantine_tie_random_choice_from_ranked_survivor_pair"] is True
@@ -2210,10 +2218,18 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_boundary_agreed_result_hash_recorded"] is True
         assert decision["contracts"]["byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_final_rejects_at_most_one"] is True
+        assert decision["contracts"]["byzantine_rejection_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_rejected_result_derived_from_simple_majority"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_rejection_derivation"] is True
+        assert decision["contracts"]["byzantine_survivor_ranking_completion_recorded"] is True
+        assert decision["contracts"]["byzantine_first_place_votes_derived_from_completed_survivor_rankings"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_survivor_ranking_completion"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_original_worker_result"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_survivor"] is True
         assert decision["contracts"]["byzantine_boundary_emits_single_result"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_random_survivor_pair"] is True
+        assert decision["contracts"]["byzantine_clear_winner_derived_from_first_place_votes"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_clear_winner_derivation"] is True
         assert decision["contracts"]["byzantine_tie_random_pool_derived_from_survivor_rankings"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_random_pool_derivation"] is True
         assert len(round_1["results"]) == 3
@@ -2258,29 +2274,104 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         )
         assert decision["byzantine_agreement"]["agreed_result_sha256"] == final_selection["agreed_result_sha256"]
         assert decision["byzantine_agreement"]["surviving_result_sha256_by_id"] == final_selection["surviving_result_sha256_by_id"]
+        assert decision["byzantine_agreement"]["survivor_ranking_completion_derivation"] == final_selection["survivor_ranking_completion_derivation"]
+        assert decision["byzantine_agreement"]["clear_majority_derivation"] == final_selection["clear_majority_derivation"]
         assert decision["byzantine_agreement"]["host_random_survivor_pool_derivation"] == final_selection["host_random_survivor_pool_derivation"]
         assert all(len(value) == 64 for value in expected_round_1_hashes.values())
         assert all(len(value) == 64 for value in expected_round_2_hashes.values())
         assert all(review["reject_count"] <= 1 for review in round_2["reviews"])
         assert final_selection["agreed_result_id"] in final_selection["round_1_result_ids"]
         assert final_selection["agreed_result_id"] in final_selection["surviving_results"]
+        rejection_derivation = final_selection["rejection_derivation"]
+        assert rejection_derivation["rule"] == "simple_majority_reject_at_most_one"
+        assert rejection_derivation["rejection_votes"] == final_selection["rejection_votes"]
+        assert rejection_derivation["majority_threshold"] == final_selection["majority_threshold"]
+        assert rejection_derivation["result_ids"] == final_selection["round_1_result_ids"]
+        assert rejection_derivation["rejected_result"] == final_selection["rejected_result"]
+        assert rejection_derivation["survivors"] == final_selection["surviving_results"]
+        assert rejection_derivation["rejected_result_count"] == len(final_selection["rejected_results"])
+        ranking_completion = final_selection["survivor_ranking_completion_derivation"]
+        assert ranking_completion["rule"] == "preserve_observed_survivor_order_append_omitted_final_survivors"
+        assert ranking_completion["final_survivors"] == final_selection["surviving_results"]
+        assert ranking_completion["first_place_votes"] == final_selection["first_place_votes"]
+        assert len(ranking_completion["records"]) == len(round_2["reviews"])
+        assert all(
+            set(record["completed_survivor_ranking"]) == set(final_selection["surviving_results"])
+            for record in ranking_completion["records"]
+        )
+        assert all(
+            (
+                record["first_place_source"] == "observed_survivor_ranking"
+                and record["first_place_result"] == record["observed_survivor_ranking"][0]
+            )
+            or (
+                record["first_place_source"] == "no_observed_final_survivor"
+                and record["first_place_result"] == ""
+            )
+            for record in ranking_completion["records"]
+        )
         assert final_selection["consensus"] is True
         assert decision["byzantine_agreement"]["agreed_result_id"] == final_selection["agreed_result_id"]
+        assert decision["byzantine_agreement"]["rejection_derivation"] == rejection_derivation
+        assert decision["byzantine_agreement"]["survivor_ranking_completion_derivation"] == ranking_completion
 
     clear_selection = json.loads((run_dir / "proposal_created" / "byzantine_final_selection.json").read_text(encoding="utf-8"))
     assert clear_selection["selection_method"] == "clear_majority"
     assert clear_selection["rejected_result"] == "r3"
+    clear_rejection = clear_selection["rejection_derivation"]
+    assert clear_rejection["rejected_result"] == "r3"
+    assert clear_rejection["rejected_vote_count"] == 2
+    assert clear_rejection["majority_rejection_candidates"] == ["r3"]
+    assert clear_rejection["survivors"] == clear_selection["surviving_results"]
+    assert clear_rejection["outcome"] == "single_simple_majority_rejection"
     assert clear_selection["agreed_result_id"] == "r2"
     assert clear_selection["agreed_result"]["malicious"] is False
+    clear_ranking_completion = clear_selection["survivor_ranking_completion_derivation"]
+    assert clear_ranking_completion["completion_count"] == 1
+    malicious_completion = [
+        record
+        for record in clear_ranking_completion["records"]
+        if record["reviewer"] == "reviewer_3_malicious"
+    ][0]
+    assert malicious_completion["omitted_final_survivors"] == ["r1"]
+    assert malicious_completion["completed_survivor_ranking"] == ["r2", "r1"]
+    assert malicious_completion["completion_applied"] is True
+    clear_derivation = clear_selection["clear_majority_derivation"]
+    assert clear_derivation["winning_result"] == clear_selection["agreed_result_id"]
+    assert clear_derivation["winning_vote_count"] == clear_selection["first_place_votes"][clear_selection["agreed_result_id"]]
+    assert clear_derivation["winning_vote_count"] >= clear_selection["majority_threshold"]
+    assert clear_derivation["first_place_votes"] == clear_selection["first_place_votes"]
+    assert clear_derivation["clear_winners"] == clear_selection["clear_winners"]
+    assert clear_derivation["survivor_rankings"] == clear_selection["survivor_rankings"]
+
+    clear_decision = json.loads((run_dir / "proposal_created" / "open_agent_decision.json").read_text(encoding="utf-8"))
+    assert clear_decision["byzantine_agreement"]["rejection_derivation"] == clear_rejection
+    assert clear_decision["byzantine_agreement"]["survivor_ranking_completion_derivation"] == clear_ranking_completion
+    assert clear_decision["byzantine_agreement"]["clear_majority_derivation"] == clear_derivation
+    assert clear_decision["byzantine_agreement"]["clear_majority_winning_result"] == "r2"
+    assert clear_decision["byzantine_agreement"]["clear_majority_winning_vote_count"] == clear_derivation["winning_vote_count"]
+    assert report["case_reports"]["proposal_created"]["byzantine_agreement"]["rejection_derivation"] == clear_rejection
+    assert report["case_reports"]["proposal_created"]["byzantine_agreement"]["survivor_ranking_completion_derivation"] == clear_ranking_completion
+    assert report["case_reports"]["proposal_created"]["byzantine_agreement"]["clear_majority_derivation"] == clear_derivation
 
     tie_selection = json.loads((run_dir / "answer_only" / "byzantine_final_selection.json").read_text(encoding="utf-8"))
     assert tie_selection["selection_method"] == "host_seeded_random_among_ranked_survivor_pair"
     assert tie_selection["rejected_result"] == ""
+    tie_rejection = tie_selection["rejection_derivation"]
+    assert tie_rejection["rejected_result"] == ""
+    assert tie_rejection["rejected_result_count"] == 0
+    assert tie_rejection["majority_rejection_candidates"] == []
+    assert tie_rejection["survivors"] == tie_selection["surviving_results"]
+    assert tie_rejection["outcome"] == "no_simple_majority_rejection"
     assert len(tie_selection["surviving_results"]) == 3
     assert len(tie_selection["host_random_survivor_pool"]) == 2
     assert set(tie_selection["host_random_survivor_pool"]).issubset(set(tie_selection["surviving_results"]))
     assert tie_selection["agreed_result_id"] in tie_selection["host_random_survivor_pool"]
     assert tie_selection["host_random_pool_size"] == 2
+    tie_ranking_completion = tie_selection["survivor_ranking_completion_derivation"]
+    assert tie_ranking_completion["completion_count"] == 0
+    assert tie_ranking_completion["final_survivors"] == tie_selection["surviving_results"]
+    assert tie_ranking_completion["first_place_votes"] == tie_selection["first_place_votes"]
     derivation = tie_selection["host_random_survivor_pool_derivation"]
     assert derivation["selected_pool"] == tie_selection["host_random_survivor_pool"]
     assert derivation["ranked_survivors"][:2] == tie_selection["host_random_survivor_pool"]
@@ -2295,6 +2386,8 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert tie_selection["host_random_seed_sha256"] == tie_selection["host_random_seed"]
 
     tie_decision = json.loads((run_dir / "answer_only" / "open_agent_decision.json").read_text(encoding="utf-8"))
+    assert tie_decision["byzantine_agreement"]["rejection_derivation"] == tie_rejection
+    assert tie_decision["byzantine_agreement"]["survivor_ranking_completion_derivation"] == tie_ranking_completion
     assert tie_decision["byzantine_agreement"]["host_random_survivor_pool"] == tie_selection["host_random_survivor_pool"]
     assert tie_decision["byzantine_agreement"]["host_random_survivor_sha256_by_id"] == tie_selection["host_random_survivor_sha256_by_id"]
     assert tie_decision["byzantine_agreement"]["host_random_survivor_pool_derivation"] == tie_selection["host_random_survivor_pool_derivation"]
@@ -2302,6 +2395,8 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert tie_decision["byzantine_agreement"]["agreed_result_id"] in tie_decision["byzantine_agreement"]["host_random_survivor_pool"]
 
     tie_case_report = report["case_reports"]["answer_only"]
+    assert tie_case_report["byzantine_agreement"]["rejection_derivation"] == tie_rejection
+    assert tie_case_report["byzantine_agreement"]["survivor_ranking_completion_derivation"] == tie_ranking_completion
     assert tie_case_report["byzantine_agreement"]["host_random_survivor_pool"] == tie_selection["host_random_survivor_pool"]
     assert tie_case_report["byzantine_agreement"]["host_random_survivor_pool_derivation"] == tie_selection["host_random_survivor_pool_derivation"]
     assert tie_case_report["byzantine_agreement"]["host_random_pool_size"] == 2
@@ -2348,6 +2443,8 @@ def test_open_battery_case_filter_runs_single_endstate(tmp_path: Path) -> None:
     assert retrieval_trace["host_policy_doc_selected"] is True
     assert final_selection["selection_method"] == "clear_majority"
     assert final_selection["rejected_result"] == "r3"
+    assert final_selection["rejection_derivation"]["rejected_result"] == "r3"
+    assert final_selection["rejection_derivation"]["survivors"] == final_selection["surviving_results"]
     assert final_selection["agreed_result"]["target_endstate"] == "proposal_rejected_stale"
     assert "trust_boundary_evaluated" in pathway_trace["summary"]["observed_stages"]
     assert "byzantine_final_selection_recorded" in pathway_trace["summary"]["observed_stages"]

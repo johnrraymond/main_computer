@@ -616,6 +616,20 @@ service with that same stable name instead of using `/api/v1/applications/public
 That mirrors the local Besu/QBFT Coolify path and avoids local application-create
 500s.
 
+Hosted application deploys consume the public chain deployment profile for the
+selected network. Do not feed deployed contract addresses through
+`runtime/state/main_computer.private.yaml`. The Hub and bridge code should use
+the public deployment/config artifacts written by the contract deployer:
+
+```text
+runtime/deployments/<network>/latest.json
+runtime/deployments/<network>/runs/<run_id>/deployment.json
+main_computer/config/<network>_contracts.json
+```
+
+Private state remains the place for Coolify API tokens, private host placement,
+wallet private material, and operator-only topology.
+
 Hosted application deploys also ensure the Hub state volume is present unless
 `--no-create-storage` is passed. Local `test` service deploys carry their volume
 inside the generated Compose file. Both paths trigger a deploy unless
