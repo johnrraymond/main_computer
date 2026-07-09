@@ -197,12 +197,12 @@
         <output id="mcel-18n-wallet-tool-status" class="mcel-tiny-contract-proof" data-status="locked" aria-live="polite">
           18N wallet tool is locked until a current MCEL commit draft is proven.
         </output>
-        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" data-mcel-20b-wallet-signed-intent-unlock="true" data-mcel-20c-wallet-signature-preflight="true" data-mcel-20def-wallet-provider-review="true" data-mcel-20g-wallet-provider-hardening="true" data-mcel-21abc-wallet-transaction-execution="true" data-mcel-21def-wallet-recovery-receipts-relock="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, 20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D intent signature, 20E verification, 20F pre-send review, and 20G provider hardening, 21A policy-bound send, 21B provider outcome ledger, 21C transaction watcher, 21D retry safety, 21E receipt integration, and 21F relock lifecycle board">
+        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" data-mcel-20b-wallet-signed-intent-unlock="true" data-mcel-20c-wallet-signature-preflight="true" data-mcel-20def-wallet-provider-review="true" data-mcel-20g-wallet-provider-hardening="true" data-mcel-21abc-wallet-transaction-execution="true" data-mcel-21def-wallet-recovery-receipts-relock="true" data-mcel-22abc-network-policy-registry="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, 20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D intent signature, 20E verification, 20F pre-send review, and 20G provider hardening, 21A policy-bound send, 21B provider outcome ledger, 21C transaction watcher, 21D retry safety, 21E receipt integration, 21F relock lifecycle, 22A policy decision, 22B policy profile import, and 22C target binding, 22A policy registry, 22B profile import, and 22C target binding board">
           <div class="mcel-18n-wallet-board-head">
-            <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof + 20A/B/C unlock + 20D/E/F/G provider intent review + 21A/B/C/D/E/F transaction execution lifecycle</strong>
-            <span id="mcel-18n-wallet-tool-visible-phase">21A can request a policy-bound network-agnostic provider send when current signed evidence matches; 21B ledgers provider outcome and 21C watches receipts; 21D blocks duplicate retries, 21E integrates chain outcome, and 21F relocks.</span>
+            <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof + 20A/B/C unlock + 20D/E/F/G provider intent review + 21A/B/C/D/E/F transaction execution lifecycle + 22A/B/C configurable network policy</strong>
+            <span id="mcel-18n-wallet-tool-visible-phase">21A can request a policy-bound network-agnostic provider send when current signed evidence matches; 21B ledgers provider outcome and 21C watches receipts; 21D blocks duplicate retries, 21E integrates chain outcome, and 21F relocks; 22A/B/C formalize configurable network policy, importable profiles, and per-network target bindings.</span>
           </div>
-          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N, 19A 19B 19C 19D 19E, 20A, 20B, 20C, 20D, 20E, 20F, 20G, 21A, 21B, 21C, 21D, 21E, and 21F visible status">
+          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N, 19A 19B 19C 19D 19E, 20A, 20B, 20C, 20D, 20E, 20F, 20G, 21A, 21B, 21C, 21D, 21E, 21F, 22A, 22B, and 22C visible status">
             <article>
               <span>19A guard</span>
               <strong id="mcel-19a-wallet-smoke-visible-status">waiting</strong>
@@ -288,6 +288,18 @@
               <strong id="mcel-21f-wallet-relock-lifecycle-visible-status">waiting</strong>
             </article>
             <article>
+              <span>22A policy decision</span>
+              <strong id="mcel-22a-wallet-policy-decision-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>22B profile import</span>
+              <strong id="mcel-22b-wallet-policy-import-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>22C target binding</span>
+              <strong id="mcel-22c-wallet-target-binding-visible-status">waiting</strong>
+            </article>
+            <article>
               <span>Invalidated by</span>
               <strong id="mcel-19c-wallet-tx-draft-invalidated-by">none observed</strong>
             </article>
@@ -321,6 +333,9 @@
             <li>block duplicate/retry send · waiting</li>
             <li>integrate chain outcome · waiting</li>
             <li>relock/reset lifecycle · waiting</li>
+            <li>configurable network policy · waiting</li>
+            <li>policy profile import/editor · waiting</li>
+            <li>per-network target binding · waiting</li>
           </ol>
           <div class="mcel-18n-wallet-board-foot">
             <div>
@@ -353,6 +368,9 @@
         <pre id="mcel-21d-wallet-retry-recovery-safety" class="mcel-tiny-contract-evidence">21D retry/recovery duplicate-send safety is waiting.</pre>
         <pre id="mcel-21e-wallet-post-confirmation-integration" class="mcel-tiny-contract-evidence">21E post-confirmation MCEL receipt integration is waiting.</pre>
         <pre id="mcel-21f-wallet-relock-reset-lifecycle" class="mcel-tiny-contract-evidence">21F relock/reset lifecycle is waiting.</pre>
+        <pre id="mcel-22a-wallet-network-policy-decision" class="mcel-tiny-contract-evidence">22A configurable network policy decision is waiting.</pre>
+        <pre id="mcel-22b-wallet-policy-profile-import" class="mcel-tiny-contract-evidence">22B policy profile import/editor surface is waiting.</pre>
+        <pre id="mcel-22c-wallet-target-registry-binding" class="mcel-tiny-contract-evidence">22C per-network target registry binding is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-final-locked-specimen" class="mcel-tiny-contract-evidence">Final locked wallet specimen is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-completion-report" class="mcel-tiny-contract-evidence">18N completion report is waiting.</pre>
       </article>

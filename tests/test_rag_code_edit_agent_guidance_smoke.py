@@ -2102,6 +2102,7 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_round_1_three_results_returned"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_all_results_sent_to_all_reviewers"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
+    assert report["contracts"]["open_battery_byzantine_final_round_received_all_round_2_reviews"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_uses_simple_majority_rejection"] is True
@@ -2190,6 +2191,7 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_round_1_three_results_returned"] is True
         assert decision["contracts"]["byzantine_round_2_all_results_sent_to_all_reviewers"] is True
         assert decision["contracts"]["byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
+        assert decision["contracts"]["byzantine_final_round_received_all_round_2_reviews"] is True
         assert decision["contracts"]["byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_final_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_original_worker_result"] is True
@@ -2198,6 +2200,8 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_boundary_exposes_random_survivor_pair"] is True
         assert len(round_1["results"]) == 3
         assert len(round_2["reviews"]) == 3
+        assert final_selection["input_reviewers"] == [review["reviewer"] for review in round_2["reviews"]]
+        assert final_selection["input_reviews"] == round_2["reviews"]
         assert all(len(review["input_result_ids"]) == 3 for review in round_2["reviews"])
         assert all(len(review["input_results"]) == 3 for review in round_2["reviews"])
         assert all(

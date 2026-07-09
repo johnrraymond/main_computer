@@ -37,7 +37,7 @@ import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -382,6 +382,7 @@ class NetworkPlan:
     hosts: tuple[PlannedHost, ...]
     services: tuple[PlannedService, ...]
     warnings: tuple[str, ...]
+    funded_accounts: tuple[str, ...] = ()
     external_rpc_url: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -400,6 +401,7 @@ class NetworkPlan:
             "topology_policy": asdict(self.topology_policy),
             "hosts": [planned_host_to_dict(host) for host in self.hosts],
             "services": [asdict(service) for service in self.services],
+            **({"funded_accounts": list(self.funded_accounts)} if self.funded_accounts else {}),
             "warnings": list(self.warnings),
             "operator_checks": operator_checks(self),
         }
@@ -469,6 +471,49 @@ def normalize_validator_address_map(value: object) -> dict[str, str]:
         except PlanError:
             continue
     return result
+
+
+def normalize_funded_account_addresses(value: object, *, field: str = "funded_accounts") -> tuple[str, ...]:
+    """Return duplicate-free 0x-prefixed account addresses for genesis funding."""
+
+    if value in (None, ""):
+        return ()
+    if not isinstance(value, (list, tuple, set)):
+        raise PlanError(f"{field} must be a list of Ethereum addresses when present")
+    funded: list[str] = []
+    seen: set[str] = set()
+    for index, raw_address in enumerate(value):
+        if not private_value_is_known(raw_address):
+            continue
+        address = normalize_validator_address(raw_address, field=f"{field}[{index}]")
+        if address in seen:
+            continue
+        seen.add(address)
+        funded.append(address)
+    return tuple(funded)
+
+
+def private_state_funded_wallet_addresses(network: Mapping[str, Any], *, network_name: str) -> tuple[str, ...]:
+    """Return private-state wallet addresses that should be prefunded in QBFT genesis."""
+
+    wallets = network.get("wallets")
+    if not isinstance(wallets, Mapping):
+        return ()
+    funded: list[str] = []
+    seen: set[str] = set()
+    for raw_role, wallet in wallets.items():
+        if not isinstance(wallet, Mapping):
+            continue
+        address_value = wallet.get("address")
+        if not private_value_is_known(address_value):
+            continue
+        role = str(raw_role or "").strip() or "<unknown>"
+        address = normalize_validator_address(address_value, field=f"networks.{network_name}.wallets.{role}.address")
+        if address in seen:
+            continue
+        seen.add(address)
+        funded.append(address)
+    return tuple(funded)
 
 
 def normalize_validator_public_key(value: object, *, field: str = "validator public key") -> str:
@@ -779,6 +824,7 @@ def private_state_seed(
         )
 
     external_rpc_url = first_known(network.get("rpc"), network.get("rpc_url"), default_seed.get("external_rpc_url"))
+    funded_accounts = private_state_funded_wallet_addresses(network, network_name=network_name)
     qbft_public_rpc = mapping_get(network, "qbft", "public_rpc")
     if private_value_is_known(qbft_public_rpc):
         public_rpc = bool(qbft_public_rpc)
@@ -798,6 +844,7 @@ def private_state_seed(
             "runtime_root": first_known(default_seed.get("runtime_root"), f"/srv/main-computer/qbft-{network_name}/runtime"),
             "public_rpc": public_rpc,
             "external_rpc_url": external_rpc_url,
+            **({"funded_accounts": list(funded_accounts)} if funded_accounts else {}),
             "hosts": hosts,
             "services": services,
             "source": f"private-state:{path.as_posix()}",
@@ -1041,6 +1088,10 @@ def build_plan(
             f"{topology_policy.minimum_rpc_nodes}; found {len(rpc_nodes)} rpc nodes"
         )
 
+    funded_accounts = normalize_funded_account_addresses(seed.get("funded_accounts"), field="seed.funded_accounts")
+    if not funded_accounts:
+        funded_accounts = tuple(normalize_validator_address(address, field="DEFAULT_FUNDED_ACCOUNTS") for address in DEFAULT_FUNDED_ACCOUNTS)
+
     warnings: list[str] = []
     image = str(besu_image or seed.get("besu_image") or DEFAULT_BESU_IMAGE).strip()
     if image.endswith(":latest"):
@@ -1090,6 +1141,7 @@ def build_plan(
         ),
         services=tuple(sorted(services, key=lambda item: item.id)),
         warnings=tuple(warnings),
+        funded_accounts=funded_accounts,
     )
 
 
@@ -5396,8 +5448,8 @@ def service_runtime_dir(service: PlannedService) -> str:
 
 
 
-def genesis_alloc() -> dict[str, dict[str, str]]:
-    return {address.lower().removeprefix("0x"): {"balance": DEFAULT_FUNDED_ACCOUNT_BALANCE} for address in DEFAULT_FUNDED_ACCOUNTS}
+def genesis_alloc(funded_accounts: Iterable[str]) -> dict[str, dict[str, str]]:
+    return {address.lower().removeprefix("0x"): {"balance": DEFAULT_FUNDED_ACCOUNT_BALANCE} for address in funded_accounts}
 
 
 def qbft_config(plan: NetworkPlan) -> dict[str, Any]:
@@ -5422,7 +5474,7 @@ def qbft_config(plan: NetworkPlan) -> dict[str, Any]:
             "baseFeePerGas": DEFAULT_GENESIS_BASE_FEE_PER_GAS,
             "mixHash": "0x63746963616c2062797a616e74696e65206661756c7420746f6c6572616e6365",
             "coinbase": "0x0000000000000000000000000000000000000000",
-            "alloc": genesis_alloc(),
+            "alloc": genesis_alloc(plan.funded_accounts),
         },
         "blockchain": {
             "nodes": {

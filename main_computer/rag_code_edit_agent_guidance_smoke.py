@@ -79,8 +79,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
-from main_computer.container_runtime import resolve_container_runtime
-
 
 MODE = "rag_code_edit_agent_guidance_smoke"
 DEFAULT_SCENARIO = "single_file_python_edit"
@@ -133,7 +131,7 @@ CONTAINER_RUN_DIR = "/smoke_run"
 CONTAINER_SOURCE_DIR = "/smoke_src"
 CONTAINER_REPLAY_REPORT_PATH = f"{CONTAINER_RUN_DIR}/replay_source_report.json"
 CONTAINER_LIVE_PLAN_PATH = f"{CONTAINER_RUN_DIR}/live_plan.json"
-DOCKER_IMAGE_BUILD_HINT = "docker compose -f docker-compose.executor.yml build executor-image (or set MAIN_COMPUTER_CONTAINER_RUNTIME=podman and use the equivalent Podman Compose command)"
+DOCKER_IMAGE_BUILD_HINT = "docker compose -f docker-compose.executor.yml build executor-image"
 APP_PY_INITIAL = """\
 def greet(name: str) -> str:
     return f"Hello, {name}!"
@@ -686,29 +684,15 @@ def require_git_available() -> None:
         raise SmokeFailure("git is required for this smoke but was not found on PATH")
 
 
-def container_runtime_command() -> list[str]:
-    return list(resolve_container_runtime(cwd=Path.cwd(), probe=False).container_command)
-
-
-def container_command_available() -> bool:
-    command = container_runtime_command()
-    return bool(command) and (shutil.which(command[0]) is not None or Path(command[0]).exists())
-
-
-def container_args(*args: object) -> list[str]:
-    return resolve_container_runtime(cwd=Path.cwd(), probe=False).container_args(*args)
-
-
 def require_docker_available() -> None:
-    if not container_command_available():
-        runtime_name = resolve_container_runtime(cwd=Path.cwd(), probe=False).runtime
-        raise SmokeFailure(f"{runtime_name} is required for this smoke because the agent must run inside a container.")
+    if shutil.which("docker") is None:
+        raise SmokeFailure("Docker is required for this smoke because the agent must run inside a container.")
 
 
 def docker_image_available(image: str) -> bool:
-    if not container_command_available():
+    if shutil.which("docker") is None:
         return False
-    result = run_command(Path.cwd(), container_args("image", "inspect", image), timeout_seconds=10.0)
+    result = run_command(Path.cwd(), ["docker", "image", "inspect", image], timeout_seconds=10.0)
     return result.returncode == 0 and not result.timed_out
 
 
@@ -716,7 +700,7 @@ def require_docker_image(image: str) -> None:
     require_docker_available()
     if not docker_image_available(image):
         raise SmokeFailure(
-            f"Container image {image!r} is required for the agent container boundary. "
+            f"Docker image {image!r} is required for the agent container boundary. "
             f"Build it with: {DOCKER_IMAGE_BUILD_HINT}"
         )
 
@@ -765,7 +749,8 @@ def build_docker_agent_command(
     ring3_observation_count: int = DEFAULT_RING3_PARALLEL_COUNT,
 ) -> list[str]:
     command = [
-        *resolve_container_runtime(cwd=repo_root, probe=False).container_args("run"),
+        "docker",
+        "run",
         "--rm",
         "--network",
         "none",
@@ -7585,6 +7570,8 @@ def open_battery_byzantine_final_selection(
 ) -> dict[str, Any]:
     result_ids = [str(result.get("result_id", "")) for result in round_1_results]
     result_id_set = set(result_ids)
+    reviewer_ids = [str(review.get("reviewer", "")) for review in round_2_reviews]
+    reviewer_id_set = set(reviewer_ids)
     result_by_id = {str(result.get("result_id", "")): result for result in round_1_results}
     round_1_payloads_by_id = {
         result_id: json_dumps(dict(result_by_id.get(result_id, {})))
@@ -7656,6 +7643,11 @@ def open_battery_byzantine_final_selection(
         "byzantine_result_selection_exercised": True,
         "byzantine_worker_count_is_three": len(round_1_results) == 3,
         "byzantine_reviewer_count_is_three": len(round_2_reviews) == 3,
+        "byzantine_final_round_received_all_round_2_reviews": (
+            len(round_2_reviews) == 3
+            and len(reviewer_id_set) == 3
+            and all(isinstance(review, dict) for review in round_2_reviews)
+        ),
         "byzantine_round_1_three_results_returned": len(round_1_results) == 3,
         "byzantine_round_1_result_ids_unique": len(result_id_set) == 3,
         "byzantine_round_2_all_results_sent_to_all_reviewers": all(
@@ -7726,6 +7718,8 @@ def open_battery_byzantine_final_selection(
         "max_rejections_per_reviewer": 1,
         "majority_threshold": majority_threshold,
         "round_1_result_ids": result_ids,
+        "input_reviewers": reviewer_ids,
+        "input_reviews": [dict(review) for review in round_2_reviews],
         "rejection_votes": rejection_votes,
         "rejected_result": rejected_result,
         "rejected_results": rejected_results,
@@ -7849,6 +7843,7 @@ def open_battery_run_byzantine_result_selection(
                     "round": 3,
                     "type": "aggregate_rejection_rank_and_emit_single_result",
                     "artifact": str(final_path),
+                    "input_reviewers": final_selection.get("input_reviewers", []),
                     "agreed_result_id": final_selection.get("agreed_result_id"),
                     "selection_method": final_selection.get("selection_method"),
                 },
@@ -7868,6 +7863,7 @@ def open_battery_run_byzantine_result_selection(
         agreed_result_id=final_selection.get("agreed_result_id"),
         selection_method=final_selection.get("selection_method"),
         rejected_result=final_selection.get("rejected_result"),
+        input_reviewers=final_selection.get("input_reviewers", []),
         host_random_survivor_pool=final_selection.get("host_random_survivor_pool", []),
         consensus=final_selection.get("consensus"),
     )
@@ -9168,6 +9164,10 @@ def run_open_battery(args: argparse.Namespace) -> int:
         ),
         "open_battery_byzantine_round_2_full_result_payloads_sent_to_all_reviewers": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_2_full_result_payloads_sent_to_all_reviewers"))
+            for case in cases
+        ),
+        "open_battery_byzantine_final_round_received_all_round_2_reviews": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_final_round_received_all_round_2_reviews"))
             for case in cases
         ),
         "open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one": all(

@@ -684,6 +684,92 @@ def test_fake_private_state_fixture_drives_testnet_and_mainnet_qbft_plans() -> N
     assert "Topology has 3 validators" in "\n".join(mainnet.warnings)
 
 
+
+def test_mainnet_private_state_wallets_prefund_qbft_genesis(tmp_path: Path) -> None:
+    module = _load_module()
+    state_path = tmp_path / "main_computer.private.yaml"
+    state_path.write_text(
+        """
+coolify:
+  project_name: Main Computer
+  hosts:
+    A:
+      name: coolify-a
+      public_ip: 198.51.100.10
+      url: http://198.51.100.10:8000/
+      api_token: secret-a
+      server_uuid: server-a
+      destination_uuid: destination-a
+
+networks:
+  mainnet:
+    display_name: Main Computer Mainnet
+    kind: mainnet
+    chain_id: 42424240
+    rpc: https://mainnet-rpc.greatlibrary.io
+    wallets:
+      deployer:
+        address: "0x2000000000000000000000000000000000000001"
+        private_key: "0x1111111111111111111111111111111111111111111111111111111111111111"
+      captain:
+        address: "0x2000000000000000000000000000000000000002"
+        private_key: "0x2222222222222222222222222222222222222222222222222222222222222222"
+      o1:
+        address: "0x2000000000000000000000000000000000000003"
+        private_key: "0x3333333333333333333333333333333333333333333333333333333333333333"
+      o2:
+        address: "0x2000000000000000000000000000000000000004"
+        private_key: "0x4444444444444444444444444444444444444444444444444444444444444444"
+      o3:
+        address: "0x2000000000000000000000000000000000000005"
+        private_key: "0x5555555555555555555555555555555555555555555555555555555555555555"
+      hub_admin:
+        address: "0x2000000000000000000000000000000000000006"
+        private_key: "0x6666666666666666666666666666666666666666666666666666666666666666"
+      escrow_owner:
+        address: "0x2000000000000000000000000000000000000007"
+        private_key: "0x7777777777777777777777777777777777777777777777777777777777777777"
+    qbft:
+      instances:
+        validator-rpc-1:
+          coolify_host: A
+          roles: [rpc, validator]
+          rpc_host_port: 40010
+          p2p_host_port: 40321
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    plan = module.build_plan(
+        "mainnet",
+        private_state_path=state_path,
+        allow_mainnet=True,
+        instances="validator-rpc-1",
+    )
+    alloc = module.qbft_config(plan)["genesis"]["alloc"]
+
+    expected = {
+        "2000000000000000000000000000000000000001",
+        "2000000000000000000000000000000000000002",
+        "2000000000000000000000000000000000000003",
+        "2000000000000000000000000000000000000004",
+        "2000000000000000000000000000000000000005",
+        "2000000000000000000000000000000000000006",
+        "2000000000000000000000000000000000000007",
+    }
+    assert set(alloc) == expected
+    assert all(entry["balance"] == module.DEFAULT_FUNDED_ACCOUNT_BALANCE for entry in alloc.values())
+    assert "f39fd6e51aad88f6f4ce6ab8827279cfffb92266" not in alloc
+    assert plan.funded_accounts == (
+        "0x2000000000000000000000000000000000000001",
+        "0x2000000000000000000000000000000000000002",
+        "0x2000000000000000000000000000000000000003",
+        "0x2000000000000000000000000000000000000004",
+        "0x2000000000000000000000000000000000000005",
+        "0x2000000000000000000000000000000000000006",
+        "0x2000000000000000000000000000000000000007",
+    )
+
 def test_filtered_mainnet_validator_rpc_instance_satisfies_rpc_topology_policy() -> None:
     module = _load_module()
 
