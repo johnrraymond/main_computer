@@ -555,7 +555,13 @@ def semantic_contract_audit(hierarchy: dict[str, Any]) -> dict[str, Any]:
         inferred_grammar.append("hard-soft-contract-split")
 
     layout_pressures = semantic_layout_pressures(hierarchy)
-    contract_confidence = min(1.0, ((len(layout_pressures) + len(presentation_sets)) / 11.0) if layout_pressures else 0.0)
+    affordance_expectations = semantic_affordance_expectations(hierarchy)
+    if not affordance_expectations:
+        missing.append("generic layout affordances describe how semantic roles should be spatially realized")
+    contract_confidence = min(
+        1.0,
+        ((len(layout_pressures) + len(presentation_sets) + min(6, len(affordance_expectations))) / 17.0) if layout_pressures else 0.0,
+    )
 
     if not missing and contract_confidence >= 0.80:
         state = "complete"
@@ -576,6 +582,8 @@ def semantic_contract_audit(hierarchy: dict[str, Any]) -> dict[str, Any]:
         "inferredLayoutGrammar": inferred_grammar,
         "layoutPressures": [pressure["kind"] for pressure in layout_pressures],
         "layoutPressureCount": len(layout_pressures),
+        "affordanceExpectations": [expectation["expectation"] for expectation in affordance_expectations],
+        "affordanceExpectationCount": len(affordance_expectations),
         "presentationSets": presentation_sets,
         "presentationSetCount": len(presentation_sets),
         "contractConfidence": round(contract_confidence, 3),
@@ -970,6 +978,221 @@ def _score_presentation_set_contract(
     return int(score), reason, {"missingSlots": missing_slots, "relations": relation_details}
 
 
+def _record_area_share(record: dict[str, Any] | None, root_rect: dict[str, float] | None) -> float:
+    rect = _record_rect(record)
+    if not rect or not root_rect or root_rect.get("area", 0) <= 0:
+        return 0.0
+    return max(0.0, min(1.0, rect["area"] / max(1.0, root_rect["area"])))
+
+
+def _affordance_expectation_for_node(node: dict[str, Any]) -> str:
+    semantics = node.get("semantics") or {}
+    affordances = set(_as_list(semantics.get("layoutAffordance")))
+    growth = set(_as_list(semantics.get("growth")))
+    role = node.get("role", "support")
+    if "dominant-surface" in affordances or role == "focus":
+        if "large-output-stream" in growth:
+            return "dominant-output"
+        if "large-dense-grid" in growth:
+            return "dominant-dense-grid"
+        if "large-spatial-surface" in growth:
+            return "dominant-spatial-surface"
+        return "dominant-surface"
+    if "command-rail" in affordances:
+        return "command-rail"
+    if "rail" in affordances:
+        return "selection-rail"
+    if "support-collection" in affordances:
+        return "support-collection"
+    if "inspector" in affordances:
+        return "inspector-dock"
+    if "status-rail" in affordances:
+        return "persistent-status-strip"
+    if "proof-region" in affordances:
+        return "secondary-proof-dock"
+    return "visible-support"
+
+
+def semantic_affordance_expectations(hierarchy: dict[str, Any]) -> list[dict[str, Any]]:
+    focus_slot = hierarchy["focusSlot"]
+    expectations: list[dict[str, Any]] = []
+    for node in hierarchy.get("nodes", []):
+        semantics = node.get("semantics") or {}
+        affordances = _as_list(semantics.get("layoutAffordance"))
+        growth = _as_list(semantics.get("growth"))
+        if not affordances and not growth:
+            continue
+        expectation = _affordance_expectation_for_node(node)
+        hard = node.get("slot") == focus_slot or _is_hard_semantic_requirement(node)
+        if expectation in {"dominant-output", "dominant-dense-grid", "dominant-spatial-surface"}:
+            hard = True
+        expectations.append(
+            {
+                "slot": node["slot"],
+                "role": node.get("role", "support"),
+                "expectation": expectation,
+                "affordances": affordances,
+                "growth": growth,
+                "hard": hard,
+                "weight": 18 if node.get("slot") == focus_slot else (11 if hard else 7),
+            }
+        )
+    return expectations
+
+
+def _score_affordance_realization(
+    hierarchy: dict[str, Any],
+    expectation: dict[str, Any],
+    records: dict[str, dict[str, Any]],
+    root_rect: dict[str, float] | None,
+    focus_record: dict[str, Any] | None,
+    measurement: dict[str, Any],
+) -> tuple[int, str, dict[str, Any]]:
+    slot = expectation["slot"]
+    record = records.get(slot)
+    if not root_rect or not record:
+        return 0, f"{slot} declared {expectation['expectation']} but was not measured as visible", {"visible": False}
+
+    area_share = _record_area_share(record, root_rect)
+    target = expectation["expectation"]
+    relation: dict[str, Any] = {}
+    if slot == hierarchy["focusSlot"]:
+        facts = measurement.get("geometryFacts") or {}
+        focus_share = float(facts.get("focusShare", area_share) or area_share)
+        desired = float(facts.get("desiredFocusShare", hierarchy.get("desiredFocusShare", 0.5)) or 0.5)
+        min_share = float(facts.get("minFocusShare", hierarchy.get("minFocusShare", max(0.0, desired - 0.14))) or 0.0)
+        miss = max(0.0, desired - focus_share)
+        if target in {"dominant-output", "dominant-dense-grid"}:
+            tolerance = 0.045
+        elif target == "dominant-spatial-surface":
+            tolerance = 0.055
+        else:
+            tolerance = 0.075
+        score = 100 - round(min(1.0, miss / max(0.001, tolerance * 2.6)) * 50)
+        if focus_share < min_share:
+            score -= 28
+        score = max(0, min(100, score))
+        return (
+            int(score),
+            f"{slot} realizes {target} at {focus_share:.0%} against target {desired:.0%}",
+            {"areaShare": round(focus_share, 4), "desiredShare": round(desired, 4), "minShare": round(min_share, 4)},
+        )
+
+    if not focus_record:
+        return 24, f"{slot} declared {target} but focus geometry was missing", {"areaShare": round(area_share, 4)}
+
+    relation = _spatial_relation(record, focus_record, root_rect)
+    side = bool(relation.get("sideDocked"))
+    band = bool(relation.get("bandDocked"))
+    near = bool(relation.get("near"))
+
+    if target == "command-rail":
+        base = 100 if band else 94 if side else 74 if near else 40
+        if area_share > 0.18:
+            base -= 12
+    elif target == "selection-rail":
+        base = 100 if side else 78 if band else 60 if near else 32
+        if area_share > 0.24:
+            base -= 10
+    elif target == "support-collection":
+        base = 94 if side or band else 72 if near else 38
+        if area_share > 0.30:
+            base -= 8
+    elif target == "inspector-dock":
+        base = 100 if side else 82 if band else 62 if near else 34
+        if area_share > 0.26:
+            base -= 10
+    elif target == "persistent-status-strip":
+        base = 100 if band else 88 if side else 66 if near else 38
+        if area_share > 0.16:
+            base -= 16
+    elif target == "secondary-proof-dock":
+        base = 92 if side or band else 70 if near else 42
+        if area_share > 0.22:
+            base -= 12
+    else:
+        base = 80 if near or side or band else 48
+
+    score = max(0, min(100, int(base)))
+    relation_words: list[str] = []
+    if side:
+        relation_words.append("side-docked")
+    if band:
+        relation_words.append("band-docked")
+    if near:
+        relation_words.append("near")
+    if not relation_words:
+        relation_words.append("visible but weakly placed")
+    return (
+        score,
+        f"{slot} realizes {target} as {', '.join(relation_words)}",
+        {"areaShare": round(area_share, 4), "relation": relation},
+    )
+
+
+def semantic_affordance_realization_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
+    expectations = semantic_affordance_expectations(hierarchy)
+    root_rect = _root_rect_from_measurement(measurement)
+    records = _slot_records_by_slot(measurement)
+    focus_record = records.get(hierarchy["focusSlot"])
+    evaluated: list[dict[str, Any]] = []
+    weighted_total = 0.0
+    weight_total = 0.0
+
+    for expectation in expectations:
+        score, reason, details = _score_affordance_realization(
+            hierarchy,
+            expectation,
+            records,
+            root_rect,
+            focus_record,
+            measurement,
+        )
+        weight = float(expectation.get("weight", 1) or 1)
+        weighted_total += score * weight
+        weight_total += weight
+        evaluated.append({**expectation, "score": int(score), "met": score >= 74, "reason": reason, "details": details})
+
+    raw_score = round(weighted_total / weight_total) if weight_total else 0
+    hard_misses = [item for item in evaluated if item.get("hard") and item["score"] < 74]
+    missed = [item for item in evaluated if item["score"] < 68]
+    score = raw_score
+    limits: list[str] = []
+    if any(item["score"] < 56 for item in hard_misses):
+        score = min(score, 58)
+        limits.append("severe affordance miss capped fit")
+    elif hard_misses:
+        score = min(score, 76)
+        limits.append("hard affordance miss capped fit")
+
+    if score >= 86 and not hard_misses:
+        state = "strongAffordanceFit"
+    elif score >= 72 and not any(item["score"] < 56 for item in hard_misses):
+        state = "usableAffordanceFit"
+    elif score >= 56:
+        state = "weakAffordanceFit"
+    else:
+        state = "affordanceRisk"
+
+    positives = [item["reason"] for item in evaluated if item["score"] >= 84]
+    risk_reasons = [item["reason"] for item in sorted(missed, key=lambda item: item["score"])[:4]]
+    hard_risk_reasons = [item["reason"] for item in sorted(hard_misses, key=lambda item: item["score"])[:4]]
+    return {
+        "score": int(score),
+        "rawScore": int(raw_score),
+        "state": state,
+        "expectationCount": len(evaluated),
+        "expectations": evaluated,
+        "missedAffordanceCount": len(missed),
+        "hardMissCount": len(hard_misses),
+        "positiveReasons": positives[:4],
+        "riskReasons": risk_reasons,
+        "hardRiskReasons": hard_risk_reasons,
+        "limits": limits,
+        "note": "Affordance realization is inferred from generic MCEL tags such as rail, inspector, status strip, proof region, and dominant owned surface; it guides FLOG ranking without declaring a perfect layout.",
+    }
+
+
 def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
     pressures = semantic_layout_pressures(hierarchy)
     root_rect = _root_rect_from_measurement(measurement)
@@ -1094,18 +1317,20 @@ def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]
 
 def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
     fit = semantic_contract_fit(hierarchy, measurement)
+    affordance_fit = semantic_affordance_realization_fit(hierarchy, measurement)
     classification = measurement.setdefault("classification", {})
     geometry_score = int(classification.get("score", 0) or 0)
-    selection_score = round((geometry_score * 0.68) + (fit["score"] * 0.32))
+    selection_score = round((geometry_score * 0.54) + (fit["score"] * 0.26) + (affordance_fit["score"] * 0.20))
 
     original_status = str(classification.get("status") or "fail")
     warnings = list(classification.get("warnings") or [])
     hard_risk_count = int(fit.get("hardRiskCount", 0) or 0)
+    hard_affordance_miss_count = int(affordance_fit.get("hardMissCount", 0) or 0)
     if original_status == "fail":
         status = "fail"
-    elif hard_risk_count and selection_score >= 82:
+    elif (hard_risk_count or hard_affordance_miss_count) and selection_score >= 82:
         status = "watch"
-    elif selection_score >= 82 and len(warnings) <= 1 and fit["score"] >= 72:
+    elif selection_score >= 82 and len(warnings) <= 1 and fit["score"] >= 72 and affordance_fit["score"] >= 72:
         status = "pass"
     elif selection_score >= 64:
         status = "watch"
@@ -1118,6 +1343,11 @@ def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str
     classification["contractFitState"] = fit["state"]
     classification["hardContractRiskCount"] = hard_risk_count
     classification["softContractRiskCount"] = int(fit.get("softRiskCount", 0) or 0)
+    classification["affordanceFitScore"] = affordance_fit["score"]
+    classification["affordanceFitRawScore"] = affordance_fit.get("rawScore", affordance_fit["score"])
+    classification["affordanceFitState"] = affordance_fit["state"]
+    classification["hardAffordanceMissCount"] = hard_affordance_miss_count
+    classification["missedAffordanceCount"] = int(affordance_fit.get("missedAffordanceCount", 0) or 0)
     classification["selectionScore"] = selection_score
     classification["score"] = selection_score
     classification["status"] = status
@@ -1126,23 +1356,36 @@ def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str
     failure_reasons = classification.setdefault("failureReasons", [])
     review_notes = classification.setdefault("reviewNotes", [])
 
+    if affordance_fit["positiveReasons"]:
+        positive_reasons.insert(0, f"generic affordance fit is {affordance_fit['score']}%: {affordance_fit['positiveReasons'][0]}")
     if fit["positiveReasons"]:
         positive_reasons.insert(0, f"generic contract fit is {fit['score']}%: {fit['positiveReasons'][0]}")
     if fit.get("presentationSetReasons"):
         positive_reasons.insert(0, f"phase co-presence: {fit['presentationSetReasons'][0]}")
+    if affordance_fit.get("hardRiskReasons"):
+        review_notes.insert(0, f"hard affordance review: {affordance_fit['hardRiskReasons'][0]}")
     if fit.get("hardRiskReasons"):
         review_notes.insert(0, f"hard contract review: {fit['hardRiskReasons'][0]}")
     elif fit["riskReasons"]:
         review_notes.insert(0, f"contract-fit review: {fit['riskReasons'][0]}")
+    if affordance_fit.get("riskReasons") and not affordance_fit.get("hardRiskReasons"):
+        review_notes.insert(0, f"affordance-fit review: {affordance_fit['riskReasons'][0]}")
     if fit.get("contractLimits"):
         review_notes.insert(0, "; ".join(fit["contractLimits"]))
+    if affordance_fit.get("limits"):
+        review_notes.insert(0, "; ".join(affordance_fit["limits"]))
     if fit["state"] in {"weakContractFit", "contractRisk"} and original_status != "fail":
         failure_reasons.append(f"generic contract fit is only {fit['score']}%; layout preserves rectangles better than behavior relationships")
+    if affordance_fit["state"] in {"weakAffordanceFit", "affordanceRisk"} and original_status != "fail":
+        failure_reasons.append(f"generic affordance fit is only {affordance_fit['score']}%; tagged spatial affordances are not clearly realized")
     if hard_risk_count and original_status != "fail":
         failure_reasons.append("hard semantic contract pressure needs review before promotion")
-    review_notes.append("Contract fit is inferred from generic semantic tags, phase sets, and hard/soft constraints; FLOG still keeps multiple candidates for human review.")
+    if hard_affordance_miss_count and original_status != "fail":
+        failure_reasons.append("hard affordance realization needs review before promotion")
+    review_notes.append("Contract and affordance fit are inferred from generic semantic tags, phase sets, hard/soft constraints, and realized geometry; FLOG still keeps multiple candidates for human review.")
 
     measurement["contractFit"] = fit
+    measurement["affordanceFit"] = affordance_fit
     return measurement
 
 
@@ -2798,11 +3041,16 @@ def measurement_selection_row(
         "selectionScore": classification.get("selectionScore", classification.get("score", 0)),
         "contractFitScore": classification.get("contractFitScore", 0),
         "contractFitState": classification.get("contractFitState", "notEvaluated"),
+        "affordanceFitScore": classification.get("affordanceFitScore", 0),
+        "affordanceFitState": classification.get("affordanceFitState", "notEvaluated"),
         "contractFitReasons": (item.get("contractFit") or {}).get("positiveReasons", []),
         "contractFitRisks": (item.get("contractFit") or {}).get("riskReasons", []),
         "hardContractRisks": (item.get("contractFit") or {}).get("hardRiskReasons", []),
         "softContractRisks": (item.get("contractFit") or {}).get("softRiskReasons", []),
         "presentationSetReasons": (item.get("contractFit") or {}).get("presentationSetReasons", []),
+        "affordanceFitReasons": (item.get("affordanceFit") or {}).get("positiveReasons", []),
+        "affordanceFitRisks": (item.get("affordanceFit") or {}).get("riskReasons", []),
+        "hardAffordanceRisks": (item.get("affordanceFit") or {}).get("hardRiskReasons", []),
         "reasons": classification.get("positiveReasons", []),
         "failureReasons": classification.get("failureReasons", []),
         "reviewNotes": classification.get("reviewNotes", []),
@@ -3012,13 +3260,20 @@ def preferred_snapshot_rel(item: dict[str, Any]) -> str:
 def _rollup_short_reason(item: dict[str, Any], limit: int = 72) -> str:
     classification = item.get("classification") or {}
     fit = item.get("contractFit") or {}
+    affordance_fit = item.get("affordanceFit") or {}
     reasons: list[str] = []
-    if fit.get("hardRiskReasons"):
+    if affordance_fit.get("hardRiskReasons"):
+        reasons = [f"hard affordance risk: {text}" for text in (affordance_fit.get("hardRiskReasons") or [])]
+    if not reasons and fit.get("hardRiskReasons"):
         reasons = [f"hard contract risk: {text}" for text in (fit.get("hardRiskReasons") or [])]
+    if not reasons and affordance_fit.get("state") in {"weakAffordanceFit", "affordanceRisk"}:
+        reasons = [f"affordance risk: {text}" for text in (affordance_fit.get("riskReasons") or [])]
     if not reasons and fit.get("state") in {"weakContractFit", "contractRisk"}:
         reasons = [f"contract risk: {text}" for text in (fit.get("riskReasons") or [])]
     if not reasons and fit.get("presentationSetReasons"):
         reasons = [f"phase: {text}" for text in fit.get("presentationSetReasons", [])]
+    if not reasons and affordance_fit.get("positiveReasons"):
+        reasons = [f"affordance: {text}" for text in affordance_fit.get("positiveReasons", [])]
     if not reasons and fit.get("positiveReasons"):
         reasons = [f"contract: {text}" for text in fit.get("positiveReasons", [])]
     if not reasons:
@@ -3130,7 +3385,8 @@ def generate_rollup_pngs(
             target_share = float(facts.get("desiredFocusShare", 0.0) or 0.0)
             status = classification.get("status", "fail")
             contract_score = classification.get("contractFitScore", 0)
-            meta = f"score {classification.get('score', 0)} · {status} · contract {contract_score}% · focus {focus_share:.0%}/{target_share:.0%}"
+            affordance_score = classification.get("affordanceFitScore", 0)
+            meta = f"score {classification.get('score', 0)} · {status} · contract {contract_score}% · afford {affordance_score}% · focus {focus_share:.0%}/{target_share:.0%}"
             draw.text((x + 8, y + 8 + ROLLUP_IMAGE_HEIGHT + 20), meta, fill=(32, 32, 32))
 
             reason = _rollup_short_reason(item)
@@ -3226,7 +3482,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
             lines.append(
                 f"- `{audit['hierarchyId']}`: state=`{audit['state']}` "
                 f"focus=`{audit['focusSlot']}` primitiveEdges=`{audit.get('primitiveEdgeCount', 0)}` "
-                f"layoutPressures=`{audit.get('layoutPressureCount', 0)}` confidence=`{audit.get('contractConfidence', 0):.3f}` grammar=`{grammar}`"
+                f"layoutPressures=`{audit.get('layoutPressureCount', 0)}` affordances=`{audit.get('affordanceExpectationCount', 0)}` confidence=`{audit.get('contractConfidence', 0):.3f}` grammar=`{grammar}`"
             )
             if audit.get("missingPrimitives"):
                 lines.append("  - Missing primitives:")
@@ -3249,6 +3505,9 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                 keys = ["phase", "availability", "presentationSet", "relationshipStrength", "hardConstraints", "softPreferences"]
                 quality_text = ", ".join(f"{key}={quality_counts.get(key, 0)}" for key in keys)
                 lines.append(f"  - Generic quality tags: `{quality_text}`")
+            affordances = audit.get("affordanceExpectations", [])[:8]
+            if affordances:
+                lines.append(f"  - Affordance expectations: `{', '.join(affordances)}`")
         lines.append("")
 
     lines.append("## Best candidate by hierarchy and viewport")
@@ -3258,7 +3517,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
     for item in report["bestByHierarchyViewport"]:
         selection_state = item.get("selectionState", "bestPassingCandidate")
         no_passing = bool(item.get("noPassingCandidate"))
-        lines.append(f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['candidate']}` score=`{item['score']}` status=`{item['status']}` selectionState=`{selection_state}` unclaimed=`{item['unclaimedAreaRatio']:.4f}` focus=`{item['focusShare']:.4f}` target=`{item['desiredFocusShare']:.2f}` occupancy=`{item.get('usefulFocusOccupancy', 0):.4f}` proximity=`{item.get('companionProximityScore', 1):.4f}` contractFit=`{item.get('contractFitScore', 0)}` contractState=`{item.get('contractFitState', 'notEvaluated')}`")
+        lines.append(f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['candidate']}` score=`{item['score']}` status=`{item['status']}` selectionState=`{selection_state}` unclaimed=`{item['unclaimedAreaRatio']:.4f}` focus=`{item['focusShare']:.4f}` target=`{item['desiredFocusShare']:.2f}` occupancy=`{item.get('usefulFocusOccupancy', 0):.4f}` proximity=`{item.get('companionProximityScore', 1):.4f}` contractFit=`{item.get('contractFitScore', 0)}` affordanceFit=`{item.get('affordanceFitScore', 0)}` contractState=`{item.get('contractFitState', 'notEvaluated')}` affordanceState=`{item.get('affordanceFitState', 'notEvaluated')}`")
         if no_passing:
             highest = item.get("highestScoringFailure") or item.get("highestScoringCandidate") or {}
             lines.append(f"  - No passing candidate: showing highest-scoring failure `{highest.get('candidate', item['candidate'])}` score=`{highest.get('score', item['score'])}` status=`{highest.get('status', item['status'])}`.")
@@ -3272,6 +3531,18 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
         if item.get("contractFitReasons"):
             lines.append("  - Contract fit evidence:")
             for reason in item.get("contractFitReasons", [])[:4]:
+                lines.append(f"    - {reason}")
+        if item.get("affordanceFitReasons"):
+            lines.append("  - Affordance realization evidence:")
+            for reason in item.get("affordanceFitReasons", [])[:4]:
+                lines.append(f"    - {reason}")
+        if item.get("hardAffordanceRisks"):
+            lines.append("  - Hard affordance risks:")
+            for reason in item.get("hardAffordanceRisks", [])[:4]:
+                lines.append(f"    - {reason}")
+        if item.get("affordanceFitRisks"):
+            lines.append("  - Affordance fit risks:")
+            for reason in item.get("affordanceFitRisks", [])[:4]:
                 lines.append(f"    - {reason}")
         if item.get("hardContractRisks"):
             lines.append("  - Hard contract risks:")
@@ -3326,6 +3597,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
         lines.append(f"- Score: `{classification.get('score')}`")
         lines.append(f"- Geometry score: `{classification.get('geometryScore', classification.get('score'))}`")
         lines.append(f"- Contract fit score: `{classification.get('contractFitScore', 0)}` state=`{classification.get('contractFitState', 'notEvaluated')}`")
+        lines.append(f"- Affordance fit score: `{classification.get('affordanceFitScore', 0)}` state=`{classification.get('affordanceFitState', 'notEvaluated')}`")
         lines.append(f"- Focus slot: `{item.get('focusSlot')}`")
         lines.append(f"- Unclaimed layout area ratio: `{facts.get('unclaimedAreaRatio', 0):.4f}`")
         lines.append(f"- Node coverage ratio: `{facts.get('nodeCoverageRatio', 0):.4f}`")
@@ -3368,6 +3640,19 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
             for reason in contract_fit.get("hardRiskReasons", [])[:4]:
                 lines.append(f"  - Hard risk: {reason}")
             for reason in contract_fit.get("riskReasons", [])[:4]:
+                lines.append(f"  - Risk: {reason}")
+        affordance_fit = item.get("affordanceFit") or {}
+        if affordance_fit:
+            lines.append("- Generic affordance realization:")
+            lines.append(f"  - Score: `{affordance_fit.get('score', 0)}` raw=`{affordance_fit.get('rawScore', affordance_fit.get('score', 0))}` state=`{affordance_fit.get('state', 'unknown')}`")
+            if affordance_fit.get("limits"):
+                for limit in affordance_fit.get("limits", [])[:4]:
+                    lines.append(f"  - Affordance limit: {limit}")
+            for reason in affordance_fit.get("positiveReasons", [])[:4]:
+                lines.append(f"  - Realized: {reason}")
+            for reason in affordance_fit.get("hardRiskReasons", [])[:4]:
+                lines.append(f"  - Hard risk: {reason}")
+            for reason in affordance_fit.get("riskReasons", [])[:4]:
                 lines.append(f"  - Risk: {reason}")
         reasons = classification.get("positiveReasons") or []
         if reasons:

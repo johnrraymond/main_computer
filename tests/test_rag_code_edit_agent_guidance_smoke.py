@@ -2190,6 +2190,9 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_host_policy_rejection_derivation_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_host_policy_rejection_bound_to_selected_action"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_exposes_host_policy_rejection_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_retry_chain_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_retry_chain_bound_to_selected_action"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_retry_chain_derivation"] is True
 
     profile_coverage = report["byzantine_profile_coverage_derivation"]
     assert profile_coverage["rule"] == "exercise_fault_free_tie_and_faulty_clear_majority_byzantine_profiles"
@@ -2661,6 +2664,113 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
                 "missing_required_artifact: report.json",
             }
             assert host_policy_rejection["host_rejection_stage_count"] == 0
+        assert decision["contracts"]["byzantine_retry_chain_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_retry_chain_bound_to_selected_action"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_retry_chain_derivation"] is True
+        retry_chain = decision["byzantine_retry_chain_derivation"]
+        assert retry_chain == report["case_reports"][case_id]["byzantine_retry_chain_derivation"]
+        assert retry_chain["rule"] == "bind_retry_chain_to_byzantine_selected_action"
+        assert retry_chain["case_id"] == case_id
+        assert retry_chain["target_endstate"] == decision["target_endstate"]
+        assert retry_chain["observed_endstate"] == decision["observed_endstate"]
+        assert retry_chain["selected_action"] == decision["action"]
+        assert retry_chain["decision_action"] == decision["action"]
+        assert retry_chain["decision_expected_action"] == decision["expected_action"]
+        assert retry_chain["action_matches_selected_action"] is True
+        assert retry_chain["expected_action_matches_selected_action"] is True
+        assert retry_chain["action_selection_derivation_recorded"] is True
+        assert retry_chain["verification_result_derivation_recorded"] is True
+        assert retry_chain["host_policy_rejection_derivation_recorded"] is True
+        assert retry_chain["retry_artifacts_available"] is True
+        assert retry_chain["first_failure_evidence_recorded"] is True
+        assert retry_chain["retry_decision_matches_evidence"] is True
+        assert retry_chain["retry_attempt_matches_requirement"] is True
+        assert retry_chain["scripted_retry_artifacts_match_chain"] is True
+        assert retry_chain["retry_terminal_state_matches_chain"] is True
+        assert retry_chain["final_endstate_stage_matches_chain"] is True
+        assert retry_chain["no_unexpected_retry_chain"] is True
+        assert retry_chain["retry_chain_preserved"] is True
+        assert len(retry_chain["retry_chain_surface_sha256"]) == 64
+        assert len(retry_chain["retry_chain_derivation_sha256"]) == 64
+        if case_id == "retry_required":
+            assert retry_chain["retry_required"] is True
+            assert retry_chain["retry_kind"] == "retry_required_without_attempt"
+            assert retry_chain["attempt_required"] is False
+            assert retry_chain["mutation_intent"] == "retry_pending"
+            assert retry_chain["decision_rejection_reason"] == "first proposal rejected; retry required with host rejection evidence"
+            assert retry_chain["expected_previous_rejection"] == "forbidden_file_write: README.md"
+            assert retry_chain["retry_evidence_stage_count"] == 1
+            assert retry_chain["retry_evidence_reasons"] == ["forbidden_file_write: README.md"]
+            assert retry_chain["retry_plan_stage_count"] == 1
+            assert retry_chain["retry_attempt_stage_count"] == 0
+            assert retry_chain["verification_stage_count"] == 0
+            assert retry_chain["verification_stage_ok_values"] == []
+            assert retry_chain["host_apply_deferred_stage_count"] == 1
+            assert retry_chain["scripted_delegated_stage_count"] == 0
+            assert retry_chain["scripted_completed_stage_count"] == 0
+            assert retry_chain["retry_required_payload"]["format"] == "main_computer_open_battery_retry_required_v1"
+            assert retry_chain["retry_required_payload"]["previous_rejection"] == "forbidden_file_write: README.md"
+            assert retry_chain["retry_required_payload"]["retry_allowed"] is True
+            assert retry_chain["retry_required_payload"]["applied"] is False
+            assert retry_chain["retry_plan_payload"]["format"] == "main_computer_open_battery_retry_plan_v1"
+            assert retry_chain["retry_plan_payload"]["retry_allowed"] is True
+            assert retry_chain["retry_plan_payload"]["next_action"] == "retry_with_host_rejection_evidence"
+            assert retry_chain["retry_plan_payload"]["apply_now"] is False
+            assert all(record["exists"] is True for record in retry_chain["artifact_records"])
+            assert {record["name"] for record in retry_chain["artifact_records"]} == {
+                "retry_required_evidence_json",
+                "retry_plan_json",
+            }
+            assert all(len(record["sha256"]) == 64 for record in retry_chain["artifact_records"])
+            assert len(retry_chain["artifact_sha256_by_name"]) == 2
+        elif case_id == "retry_succeeded":
+            assert retry_chain["retry_required"] is True
+            assert retry_chain["retry_kind"] == "scripted_restart_recovery_success"
+            assert retry_chain["attempt_required"] is True
+            assert retry_chain["mutation_intent"] == "retry_host_apply"
+            assert retry_chain["expected_previous_rejection"] == "host_apply_rejection_boundary"
+            assert retry_chain["retry_evidence_stage_count"] == 1
+            assert retry_chain["retry_evidence_reasons"] == ["host_apply_rejection_boundary"]
+            assert retry_chain["retry_plan_stage_count"] == 0
+            assert retry_chain["retry_attempt_stage_count"] == 1
+            assert retry_chain["verification_stage_count"] == 1
+            assert retry_chain["verification_stage_ok_values"] == [True]
+            assert retry_chain["scripted_delegated_stage_count"] == 1
+            assert retry_chain["scripted_completed_stage_count"] == 1
+            assert retry_chain["scripted_summary_ok"] is True
+            assert retry_chain["scripted_summary_returncode"] == 0
+            assert retry_chain["scripted_recovery_attempts"] >= 2
+            assert retry_chain["scripted_recovery_injected_bad_result"] == "forbidden_file_write"
+            assert retry_chain["scripted_recovery_rejected_paths"] == ["README.md"]
+            assert retry_chain["scripted_recovery_rejection_boundary"] == "host_apply_rejection_boundary"
+            assert {"generated_editor_boundary", "generated_editor_static_preflight_boundary", "generated_editor_sandbox_boundary", "host_apply_boundary"} <= set(retry_chain["scripted_recovery_retry_boundary_names"])
+            assert {"host_apply_rejection_boundary", "host_apply_boundary", "verification_boundary", "commit_boundary"} <= set(retry_chain["scripted_report_boundary_names"])
+            assert retry_chain["scripted_report_changed_files"] == ["app.py"]
+            assert retry_chain["scripted_report_verification_ok"] is True
+            assert retry_chain["scripted_report_commit_created"] is True
+            assert all(record["exists"] is True for record in retry_chain["artifact_records"])
+            assert {record["name"] for record in retry_chain["artifact_records"]} == {
+                "scripted_retry_summary_json",
+                "scripted_retry_report_json",
+                "host_apply_rejection_boundary_json",
+                "host_apply_boundary_json",
+                "verification_boundary_json",
+                "commit_boundary_json",
+            }
+            assert all(len(record["sha256"]) == 64 for record in retry_chain["artifact_records"])
+            assert len(retry_chain["artifact_sha256_by_name"]) == 6
+        else:
+            assert retry_chain["retry_required"] is False
+            assert retry_chain["retry_kind"] == "none"
+            assert retry_chain["attempt_required"] is False
+            assert retry_chain["retry_evidence_stage_count"] == 0
+            assert retry_chain["retry_plan_stage_count"] == 0
+            assert retry_chain["retry_attempt_stage_count"] == 0
+            assert retry_chain["verification_stage_count"] in {0, 1}
+            assert retry_chain["scripted_delegated_stage_count"] == 0
+            assert retry_chain["scripted_completed_stage_count"] == 0
+            assert retry_chain["artifact_records"] == []
+            assert retry_chain["artifact_sha256_by_name"] == {}
         assert decision["contracts"]["byzantine_input_context_derivation_recorded"] is True
         assert decision["contracts"]["byzantine_round_1_results_bound_to_host_context"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_input_context_derivation"] is True

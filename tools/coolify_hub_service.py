@@ -752,13 +752,7 @@ def bridge_signer_source_manifest_available(profile: HubNetworkProfile, args: ar
 
 
 def apply_bridge_signer_defaults(profile: HubNetworkProfile, args: argparse.Namespace) -> None:
-    """Default contract Hub deploys into signer-enabled mode when local signer metadata exists.
-
-    The private ``runtime/deployments/<network>/latest.json`` manifest is still
-    validated later by ``build_bridge_signer_bundle`` before any deploy is
-    triggered.  This helper only chooses the safer default mode for operators
-    who already have local ``hub_admin`` signer metadata.
-    """
+    """Default contract Hub deploys into signer-enabled mode when local signer metadata exists."""
 
     if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
         return
@@ -843,7 +837,6 @@ def _build_bridge_signer_bundle_payload(profile: HubNetworkProfile, args: argpar
     explicit_wallet = str(getattr(args, "bridge_controller_wallet_path", "") or "").strip()
     wallet_path_text = explicit_wallet or str(hub_admin.get("wallet_path") or "").strip()
     inline_private_key = str(hub_admin.get("private_key") or "").strip()
-    wallet_path: Path | None = None
     wallet_source = "hub_admin.private_key"
     if wallet_path_text:
         wallet_path = _resolve_local_runtime_path(wallet_path_text, manifest_path=manifest_path)

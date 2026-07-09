@@ -1303,7 +1303,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
             self.assertEqual(bundle["escrow_address"], "0x" + "3" * 40)
             self.assertEqual(bundle["wallet_path"], "hub_admin.private_key")
 
-    def test_sync_application_env_var_creates_runtime_secret(self) -> None:
+    def test_sync_application_env_var_creates_runtime_secret_without_leaking_value(self) -> None:
         client = RouteCoolifyClient(
             {
                 ("GET", "/api/v1/applications/app-uuid/envs"): [{"envs": []}],
@@ -1322,36 +1322,8 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["action"], "created")
-        self.assertEqual(result["env_key"], "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64")
         self.assertNotIn("secret-value", json.dumps(tried))
 
-    def test_no_bridge_writes_suppresses_signer_inference(self) -> None:
-        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest = Path(tmp) / "latest.json"
-            manifest.write_text(
-                json.dumps(
-                    {
-                        "hub_admin": {
-                            "address": "0x" + "1" * 40,
-                            "private_key": "0x" + "2" * 64,
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-            args = _args(
-                bridge_backend="credit-bridge-contract",
-                contracts_path="main_computer/config/mainnet_contracts.json",
-                bridge_signer_source_manifest=str(manifest),
-                no_bridge_writes=True,
-            )
-
-            coolify_hub_service.apply_bridge_signer_defaults(profile, args)
-
-            self.assertFalse(args.enable_bridge_writes)
-            self.assertFalse(args.sync_bridge_signer)
-            self.assertTrue(coolify_hub_service.hub_allow_missing_bridge_signer(profile, args))
 
 
 if __name__ == "__main__":

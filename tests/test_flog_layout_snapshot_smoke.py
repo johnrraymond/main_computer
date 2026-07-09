@@ -737,9 +737,12 @@ def test_apply_semantic_contract_fit_updates_selection_score_without_claiming_pe
     assert measurement["contractFit"]["note"].endswith("not a claim of perfect inference.")
     assert classification["geometryScore"] == 84
     assert classification["contractFitScore"] >= 80
+    assert classification["affordanceFitScore"] >= 80
     assert classification["selectionScore"] == classification["score"]
     assert classification["contractFitState"] in {"strongContractFit", "usableContractFit"}
+    assert classification["affordanceFitState"] in {"strongAffordanceFit", "usableAffordanceFit"}
     assert any("generic contract fit" in reason for reason in classification["positiveReasons"])
+    assert any("generic affordance fit" in reason for reason in classification["positiveReasons"])
 
 
 def test_presentation_sets_are_generic_phase_contracts():
@@ -817,3 +820,230 @@ def test_hard_contract_risks_cap_contract_fit_without_eliminating_flog_options()
     assert fit["contractLimits"]
     assert weak_measurement["classification"]["status"] in {"watch", "fail"}
     assert weak_measurement["classification"]["hardContractRiskCount"] >= 1
+    assert weak_measurement["classification"]["hardAffordanceMissCount"] >= 1
+
+
+def test_affordance_expectations_are_generic_not_app_archetypes():
+    module = load_module()
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "spreadsheet-workbook")
+
+    expectations = module.semantic_affordance_expectations(hierarchy)
+    by_slot = {item["slot"]: item for item in expectations}
+
+    assert by_slot["grid"]["expectation"] == "dominant-dense-grid"
+    assert by_slot["formula"]["expectation"] == "command-rail"
+    assert by_slot["tabs"]["expectation"] == "selection-rail"
+    assert by_slot["inspector"]["expectation"] == "inspector-dock"
+    assert by_slot["status"]["expectation"] == "persistent-status-strip"
+    assert "spreadsheet" not in str(expectations).lower()
+    assert "appArchetype" not in str(expectations)
+
+
+def test_affordance_realization_scores_realized_spatial_forms_over_weak_geometry():
+    module = load_module()
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "document-workbench")
+
+    def record(slot, left, top, width, height):
+        return {
+            "slot": slot,
+            "rect": {
+                "left": left,
+                "top": top,
+                "right": left + width,
+                "bottom": top + height,
+                "width": width,
+                "height": height,
+                "area": width * height,
+            },
+        }
+
+    root = {
+        "left": 0,
+        "top": 0,
+        "right": 1000,
+        "bottom": 600,
+        "width": 1000,
+        "height": 600,
+        "area": 600000,
+    }
+    good = {
+        "geometryFacts": {
+            "root": {"clipped": root},
+            "focusShare": 0.56,
+            "desiredFocusShare": 0.58,
+            "minFocusShare": 0.48,
+        },
+        "examples": {
+            "nodes": [
+                record("toolbar", 210, 10, 580, 48),
+                record("outline", 20, 72, 176, 430),
+                record("editor", 210, 72, 580, 430),
+                record("inspector", 804, 72, 176, 430),
+                record("status", 210, 516, 580, 38),
+                record("evidence", 804, 516, 176, 38),
+            ]
+        },
+    }
+    weak = {
+        "geometryFacts": {
+            "root": {"clipped": root},
+            "focusShare": 0.34,
+            "desiredFocusShare": 0.58,
+            "minFocusShare": 0.48,
+        },
+        "examples": {
+            "nodes": [
+                record("toolbar", 0, 0, 1000, 100),
+                record("outline", 0, 110, 1000, 80),
+                record("editor", 0, 200, 1000, 170),
+                record("inspector", 0, 380, 1000, 80),
+                record("status", 0, 470, 1000, 80),
+                record("evidence", 0, 560, 1000, 30),
+            ]
+        },
+    }
+
+    good_fit = module.semantic_affordance_realization_fit(hierarchy, good)
+    weak_fit = module.semantic_affordance_realization_fit(hierarchy, weak)
+
+    assert good_fit["score"] > weak_fit["score"] + 15
+    assert good_fit["state"] in {"strongAffordanceFit", "usableAffordanceFit"}
+    assert weak_fit["hardMissCount"] >= 1
+    assert any("editor realizes" in reason for reason in good_fit["positiveReasons"])
+    assert "perfect layout" in good_fit["note"]
+
+
+def test_write_reports_lists_affordance_fit(tmp_path):
+    module = load_module()
+    report = {
+        "generatedAt": "2026-07-09T00:00:00+00:00",
+        "smokeLevel": "synthetic-hierarchy-layout-trials",
+        "geometryEngine": "playwright-chromium",
+        "hierarchySource": "generated-mcel-like-html",
+        "chrome": "mcel-realistic",
+        "candidates": ["focus-priority"],
+        "hierarchies": [
+            {
+                "id": "document-workbench",
+                "title": "Document Workbench",
+                "sourceApp": "document",
+                "rootConcern": "document.authoring",
+                "focusSlot": "editor",
+                "desiredFocusShare": 0.58,
+                "roleContract": {
+                    "requiredCompanions": ["toolbar", "status"],
+                    "nearbyCompanions": ["outline", "inspector"],
+                    "deferableSlots": ["evidence"],
+                    "forbiddenDefaultHidden": ["toolbar", "editor", "status"],
+                    "preferredFamilies": ["focus-priority"],
+                },
+                "nodeSlots": ["toolbar", "outline", "editor", "inspector", "status", "evidence"],
+                "nodeRoles": {"editor": "focus"},
+            }
+        ],
+        "viewports": [{"name": "desktop", "width": 1440, "height": 900}],
+        "screenshotMode": "viewport",
+        "snapshotDirectory": ".",
+        "snapshotFiles": ["document-workbench--desktop--focus-priority--viewport.png"],
+        "semanticContracts": [
+            {
+                "hierarchyId": "document-workbench",
+                "state": "complete",
+                "focusSlot": "editor",
+                "primitiveEdgeCount": 8,
+                "layoutPressureCount": 6,
+                "affordanceExpectationCount": 6,
+                "contractConfidence": 0.94,
+                "inferredLayoutGrammar": ["selector-focus"],
+                "missingPrimitives": [],
+                "relationships": ["toolbar controls editor"],
+                "presentationSets": [{"phase": "default", "requiredSlots": ["toolbar", "editor", "status"]}],
+                "qualityCounts": {},
+                "affordanceExpectations": ["dominant-surface", "command-rail"],
+            }
+        ],
+        "bestByHierarchyViewport": [
+            {
+                "hierarchyId": "document-workbench",
+                "viewportProfile": "desktop",
+                "candidate": "focus-priority",
+                "score": 89,
+                "status": "pass",
+                "selectionState": "bestPassingCandidate",
+                "noPassingCandidate": False,
+                "unclaimedAreaRatio": 0.17,
+                "focusShare": 0.51,
+                "desiredFocusShare": 0.58,
+                "usefulFocusOccupancy": 0.42,
+                "companionProximityScore": 0.63,
+                "contractFitScore": 91,
+                "contractFitState": "strongContractFit",
+                "affordanceFitScore": 88,
+                "affordanceFitState": "strongAffordanceFit",
+                "affordanceFitReasons": ["editor realizes dominant-surface at 51% against target 58%"],
+                "affordanceFitRisks": [],
+                "hardAffordanceRisks": [],
+                "snapshots": {"viewport": "document-workbench--desktop--focus-priority--viewport.png"},
+                "reasons": [],
+                "failureReasons": [],
+                "reviewNotes": [],
+            }
+        ],
+        "humanLoop": {"required": True, "reason": "human review required"},
+        "measurements": [
+            {
+                "hierarchyId": "document-workbench",
+                "viewportProfile": "desktop",
+                "candidate": "focus-priority",
+                "focusSlot": "editor",
+                "geometryFacts": {
+                    "unclaimedAreaRatio": 0.17,
+                    "nodeCoverageRatio": 0.83,
+                    "focusShare": 0.51,
+                    "desiredFocusShare": 0.58,
+                    "focusDeviation": 0.07,
+                    "usefulFocusOccupancy": 0.42,
+                    "focusContentCount": 8,
+                    "companionVisibilityRatio": 1,
+                    "nearbyCompanionRatio": 1,
+                    "companionProximityScore": 0.63,
+                    "clippedCriticalControlCount": 0,
+                    "hiddenCriticalControlCount": 0,
+                    "scrollOwnerCount": 0,
+                },
+                "classification": {
+                    "score": 89,
+                    "status": "pass",
+                    "geometryScore": 88,
+                    "contractFitScore": 91,
+                    "contractFitState": "strongContractFit",
+                    "affordanceFitScore": 88,
+                    "affordanceFitState": "strongAffordanceFit",
+                    "positiveReasons": [],
+                    "failureReasons": [],
+                    "reviewNotes": [],
+                    "warnings": [],
+                },
+                "contractFit": {},
+                "affordanceFit": {
+                    "score": 88,
+                    "rawScore": 88,
+                    "state": "strongAffordanceFit",
+                    "positiveReasons": ["editor realizes dominant-surface at 51% against target 58%"],
+                    "riskReasons": [],
+                    "hardRiskReasons": [],
+                },
+                "snapshots": {"viewport": "document-workbench--desktop--focus-priority--viewport.png"},
+                "humanLoop": {"proved": [], "inferred": [], "unknowns": []},
+            }
+        ],
+        "rollups": [],
+    }
+
+    _, md_path = module.write_reports(report, tmp_path)
+    text = md_path.read_text(encoding="utf-8")
+
+    assert "affordances=`6`" in text
+    assert "Affordance realization evidence" in text
+    assert "Generic affordance realization" in text
+    assert "editor realizes dominant-surface" in text

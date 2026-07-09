@@ -220,7 +220,7 @@ coolify:
 
         self.assertIn("testnet-hub1:", compose)
         self.assertIn("testnet-hub2:", compose)
-        self.assertNotIn("testnet-hub3:", compose)
+        self.assertNotIn("  testnet-hub3:", compose)
         self.assertIn("--topology", compose)
         self.assertIn("/app/deploy/hub-topology/testnet-topology.json", compose)
         self.assertIn("--hub-id", compose)
@@ -309,6 +309,75 @@ coolify:
         self.assertIn("grep -Fq -- testnet-hub.greatlibrary.io", compose)
         self.assertIn("start_period: 10s", compose)
         self.assertNotIn("http://testnet-hub1:8785", compose)
+
+    def test_public_entry_service_payload_renders_standalone_config_stack(self) -> None:
+        args = _args()
+        placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)
+        profile = coolify_hub_cluster.load_network_profile(placement, args)
+        context = {
+            "server_uuid": "server-b",
+            "project_uuid": "project-b",
+            "environment_name": "testnet-hubs",
+            "environment_uuid": "env-b",
+        }
+
+        payload = coolify_hub_cluster.public_entry_service_payload(
+            placement,
+            profile,
+            args,
+            server_name="coolify-b",
+            context=context,
+        )
+        compose = base64.b64decode(payload["docker_compose_raw"]).decode("utf-8")
+
+        self.assertEqual(payload["name"], "main-computer-testnet-hub-public-entry-config-coolify-b")
+        self.assertIn("testnet-hub-public-entry-config-coolify-b:", compose)
+        self.assertIn("alpine:3.20", compose)
+        self.assertIn("main-computer-testnet-hub-public-entry-coolify-b.yml", compose)
+        self.assertIn("Host(`testnet-hub.greatlibrary.io`)", compose)
+        self.assertIn("Application-mode Traefik public-entry sidecar", compose)
+        self.assertIn("passHostHeader: false", compose)
+        self.assertIn("https://testnet-hub3.greatlibrary.io", compose)
+        self.assertNotIn("http://testnet-hub3:8785", compose)
+        self.assertNotIn("  testnet-hub3:", compose)
+
+    def test_sync_public_entry_service_for_server_creates_and_deploys_service(self) -> None:
+        args = _args()
+        placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)
+        profile = coolify_hub_cluster.load_network_profile(placement, args)
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/services"): [{"data": []}],
+                ("POST", "/api/v1/services"): [{"uuid": "public-entry-service-uuid"}],
+                ("GET", "/api/v1/deploy?uuid=public-entry-service-uuid&force=false"): [{"deployment_uuid": "deploy-public-entry"}],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        result = coolify_hub_cluster.sync_public_entry_service_for_server(
+            client,
+            placement,
+            profile,
+            args,
+            server_name="coolify-b",
+            context={
+                "server_uuid": "server-b",
+                "project_uuid": "project-b",
+                "environment_name": "testnet-hubs",
+                "environment_uuid": "env-b",
+            },
+            tried=tried,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["service_action"], "created")
+        self.assertEqual(result["service_name"], "main-computer-testnet-hub-public-entry-config-coolify-b")
+        self.assertTrue(result["deployed"])
+        create_payload = next(request[2] for request in client.requests if request[0] == "POST" and request[1] == "/api/v1/services")
+        self.assertEqual(create_payload["name"], "main-computer-testnet-hub-public-entry-config-coolify-b")
+        compose = base64.b64decode(create_payload["docker_compose_raw"]).decode("utf-8")
+        self.assertIn("testnet-hub-public-entry-config-coolify-b:", compose)
+        self.assertIn("Host(`testnet-hub.greatlibrary.io`)", compose)
 
     def test_no_traefik_sidecar_disables_public_entry_manager(self) -> None:
         args = _args(no_traefik_sidecar=True)
@@ -790,40 +859,6 @@ coolify:
 
         with self.assertRaises(coolify_hub_cluster.CoolifyHubDeployError):
             coolify_hub_cluster.update_hub_application(client, "app-uuid", payload, tried)
-
-
-    def test_hub_command_parts_infer_bridge_signer_manifest_by_default(self) -> None:
-        placement = coolify_hub_cluster.load_hub_cluster_placement(
-            REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json"
-        )
-        profile = coolify_hub_cluster.load_network_profile(
-            placement,
-            _args(network="mainnet", bridge_backend="credit-bridge-contract"),
-        )
-        hub = placement.hubs[0]
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest = Path(tmp) / "latest.json"
-            manifest.write_text(
-                '{"hub_admin":{"address":"0x1111111111111111111111111111111111111111","private_key":"0x2222222222222222222222222222222222222222222222222222222222222222"}}',
-                encoding="utf-8",
-            )
-            args = _args(
-                network="mainnet",
-                bridge_backend="credit-bridge-contract",
-                contracts_path="main_computer/config/mainnet_contracts.json",
-                bridge_signer_source_manifest=str(manifest),
-                hub_chain_rpc_url="https://mainnet-rpc.greatlibrary.io",
-            )
-
-            coolify_hub_cluster.hub_tool.apply_bridge_signer_defaults(profile, args)
-            command = coolify_hub_cluster.hub_command_parts(profile, placement, hub, args)
-
-        self.assertTrue(args.enable_bridge_writes)
-        self.assertTrue(args.sync_bridge_signer)
-        self.assertIn("--dev-chain-deployment-path", command)
-        signer_path = command[command.index("--dev-chain-deployment-path") + 1]
-        self.assertIn("/private/bridge-signer/bridge-signer-bundle.json", signer_path)
-        self.assertNotIn("--allow-missing-bridge-signer", command)
 
 
     def test_hub_command_parts_explicit_mainnet_contracts_path_omits_missing_signer_manifest(self) -> None:

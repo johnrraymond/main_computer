@@ -11233,6 +11233,440 @@ def open_battery_host_policy_rejection_derivation(
     payload["host_policy_rejection_derivation_sha256"] = open_battery_payload_sha256(payload)
     return payload
 
+def open_battery_retry_chain_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    decision: Mapping[str, Any],
+    action_selection_derivation: Mapping[str, Any],
+    verification_result_derivation: Mapping[str, Any],
+    host_policy_rejection_derivation: Mapping[str, Any],
+    selected_action: str,
+    pathway_trace: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind retry-required and retry-succeeded terminal states to retry evidence.
+
+    Verification proves the terminal verification result. Host-policy rejection
+    proves proposal rejection. This derivation ties those facts into the retry
+    chain itself: first bad result/rejection evidence, retry decision, retry
+    attempt when applicable, terminal verification, and final retry endstate.
+    """
+
+    retry_specs: dict[str, dict[str, Any]] = {
+        "retry_required": {
+            "retry_kind": "retry_required_without_attempt",
+            "expected_mutation_intent": "retry_pending",
+            "expected_action": "record_retry_required",
+            "expected_previous_rejection": "forbidden_file_write: README.md",
+            "expected_rejection_reason": "first proposal rejected; retry required with host rejection evidence",
+            "expected_retry_plan_next_action": "retry_with_host_rejection_evidence",
+            "expected_retry_allowed": True,
+            "attempt_required": False,
+            "expected_applied": False,
+            "expected_verified": False,
+            "expected_committed": False,
+        },
+        "retry_succeeded": {
+            "retry_kind": "scripted_restart_recovery_success",
+            "expected_mutation_intent": "retry_host_apply",
+            "expected_action": "retry_apply_verify_commit",
+            "expected_previous_rejection": "host_apply_rejection_boundary",
+            "expected_rejection_reason": "host_apply_rejection_boundary",
+            "expected_retry_plan_next_action": "scripted_restart_recovery",
+            "expected_retry_allowed": True,
+            "attempt_required": True,
+            "expected_attempts_min": 2,
+            "expected_applied": True,
+            "expected_verified": True,
+            "expected_committed": True,
+        },
+    }
+    retry_required = case.target_endstate in retry_specs
+    expected_spec = retry_specs.get(case.target_endstate, {})
+    attempt_required = bool(expected_spec.get("attempt_required"))
+
+    def records_for(stage_name: str) -> list[dict[str, Any]]:
+        return [
+            dict(record)
+            for record in pathway_trace
+            if isinstance(record, Mapping)
+            and str(record.get("stage", "")) == stage_name
+        ]
+
+    def details(record: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        if not isinstance(record, Mapping):
+            return {}
+        value = record.get("details", {})
+        return value if isinstance(value, Mapping) else {}
+
+    def load_json_artifact(path_text: str) -> dict[str, Any]:
+        if not path_text:
+            return {}
+        artifact_path = Path(path_text)
+        if not artifact_path.exists() or not artifact_path.is_file():
+            return {}
+        try:
+            loaded = json.loads(artifact_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def artifact_record(name: str, path_text: str) -> dict[str, Any]:
+        artifact_path = Path(path_text) if path_text else None
+        exists = bool(artifact_path is not None and artifact_path.exists() and artifact_path.is_file())
+        return {
+            "name": name,
+            "path": str(artifact_path) if artifact_path is not None else "",
+            "exists": exists,
+            "sha256": open_battery_file_sha256(artifact_path) if exists and artifact_path is not None else "",
+        }
+
+    artifacts = decision.get("artifacts", {})
+    if not isinstance(artifacts, Mapping):
+        artifacts = {}
+
+    retry_evidence_records = records_for("rejection_evidence_loaded")
+    retry_plan_records = records_for("retry_plan_materialized")
+    retry_attempt_records = records_for("retry_attempt_observed")
+    verification_records = records_for("verification_observed")
+    final_endstate_records = records_for("final_endstate_recorded")
+    host_apply_deferred_records = records_for("host_apply_deferred")
+    scripted_delegated_records = records_for("scripted_restart_recovery_delegated")
+    scripted_completed_records = records_for("scripted_restart_recovery_completed")
+
+    retry_evidence_details = details(retry_evidence_records[-1] if retry_evidence_records else None)
+    retry_plan_details = details(retry_plan_records[-1] if retry_plan_records else None)
+    retry_attempt_details = details(retry_attempt_records[-1] if retry_attempt_records else None)
+    verification_details = details(verification_records[-1] if verification_records else None)
+    final_endstate_values = [
+        str(details(record).get("observed_endstate", "") or "")
+        for record in final_endstate_records
+    ]
+
+    rejection_path_text = str(artifacts.get("rejection_path", "") or "")
+    retry_plan_path_text = str(artifacts.get("retry_plan_path", "") or "")
+    scripted_summary_path_text = str(decision.get("scripted_retry_summary_path", "") or "")
+    scripted_report_path_text = str(decision.get("scripted_retry_report_path", "") or "")
+
+    retry_required_payload = load_json_artifact(rejection_path_text)
+    retry_plan_payload = load_json_artifact(retry_plan_path_text)
+    scripted_summary = load_json_artifact(scripted_summary_path_text)
+    scripted_report = load_json_artifact(scripted_report_path_text)
+
+    recovery = scripted_summary.get("recovery", {})
+    if not isinstance(recovery, Mapping):
+        recovery = {}
+    ai_summary = scripted_summary.get("ai_call_summary", {})
+    if not isinstance(ai_summary, Mapping):
+        ai_summary = {}
+    scripted_verification = scripted_report.get("verification", {})
+    if not isinstance(scripted_verification, Mapping):
+        scripted_verification = {}
+    scripted_commit = scripted_report.get("commit", {})
+    if not isinstance(scripted_commit, Mapping):
+        scripted_commit = {}
+
+    report_boundaries = [
+        boundary
+        for boundary in (scripted_report.get("boundaries") or [])
+        if isinstance(boundary, Mapping)
+    ]
+    report_boundary_names = [
+        str(boundary.get("name", "") or "")
+        for boundary in report_boundaries
+    ]
+    report_boundary_path_by_name = {
+        str(boundary.get("name", "") or ""): str(boundary.get("path", "") or "")
+        for boundary in report_boundaries
+    }
+    recovery_retry_boundary_names = [
+        str(name)
+        for name in (recovery.get("retry_boundary_names") or [])
+    ]
+
+    artifact_records: list[dict[str, Any]] = []
+    if case.target_endstate == "retry_required":
+        artifact_records = [
+            artifact_record("retry_required_evidence_json", rejection_path_text),
+            artifact_record("retry_plan_json", retry_plan_path_text),
+        ]
+    elif case.target_endstate == "retry_succeeded":
+        artifact_records = [
+            artifact_record("scripted_retry_summary_json", scripted_summary_path_text),
+            artifact_record("scripted_retry_report_json", scripted_report_path_text),
+            artifact_record(
+                "host_apply_rejection_boundary_json",
+                report_boundary_path_by_name.get("host_apply_rejection_boundary", ""),
+            ),
+            artifact_record(
+                "host_apply_boundary_json",
+                report_boundary_path_by_name.get("host_apply_boundary", ""),
+            ),
+            artifact_record(
+                "verification_boundary_json",
+                report_boundary_path_by_name.get("verification_boundary", ""),
+            ),
+            artifact_record(
+                "commit_boundary_json",
+                report_boundary_path_by_name.get("commit_boundary", ""),
+            ),
+        ]
+
+    artifact_sha256_by_name = {
+        str(record["name"]): str(record["sha256"])
+        for record in artifact_records
+        if bool(record.get("exists"))
+    }
+
+    decision_action = str(decision.get("action", "") or "")
+    decision_expected_action = str(decision.get("expected_action", "") or "")
+    observed_endstate = str(decision.get("observed_endstate", "") or "")
+    mutation_intent = str(decision.get("mutation_intent", "") or "")
+    decision_rejection_reason = str(decision.get("rejection_reason", "") or "")
+    action_selection_derivation_sha256 = str(
+        action_selection_derivation.get("action_selection_derivation_sha256", "") or ""
+    )
+    verification_result_derivation_sha256 = str(
+        verification_result_derivation.get("verification_result_derivation_sha256", "") or ""
+    )
+    host_policy_rejection_derivation_sha256 = str(
+        host_policy_rejection_derivation.get("host_policy_rejection_derivation_sha256", "") or ""
+    )
+
+    if retry_required and not attempt_required:
+        retry_artifacts_available = all(
+            bool(record.get("exists")) and len(str(record.get("sha256", ""))) == 64
+            for record in artifact_records
+        )
+        first_failure_evidence_recorded = (
+            len(retry_evidence_records) == 1
+            and str(retry_evidence_details.get("reason", "") or "") == str(expected_spec.get("expected_previous_rejection", "") or "")
+            and retry_required_payload.get("format") == "main_computer_open_battery_retry_required_v1"
+            and retry_required_payload.get("case_id") == case.case_id
+            and str(retry_required_payload.get("previous_rejection", "") or "") == str(expected_spec.get("expected_previous_rejection", "") or "")
+            and str(retry_required_payload.get("reason", "") or "") == str(expected_spec.get("expected_rejection_reason", "") or "")
+            and retry_required_payload.get("retry_allowed") is True
+            and retry_required_payload.get("applied") is False
+        )
+        retry_decision_matches_evidence = (
+            mutation_intent == str(expected_spec.get("expected_mutation_intent", "") or "")
+            and decision_rejection_reason == str(expected_spec.get("expected_rejection_reason", "") or "")
+            and len(retry_plan_records) == 1
+            and str(retry_plan_details.get("retry_plan_path", "") or "") == retry_plan_path_text
+            and retry_plan_payload.get("format") == "main_computer_open_battery_retry_plan_v1"
+            and retry_plan_payload.get("case_id") == case.case_id
+            and retry_plan_payload.get("retry_allowed") is True
+            and retry_plan_payload.get("apply_now") is False
+            and str(retry_plan_payload.get("next_action", "") or "") == str(expected_spec.get("expected_retry_plan_next_action", "") or "")
+        )
+        retry_attempt_matches_requirement = (
+            len(retry_attempt_records) == 0
+            and len(verification_records) == 0
+            and len(host_apply_deferred_records) == 1
+            and decision.get("applied") is False
+            and decision.get("verified") is False
+            and decision.get("committed") is False
+        )
+        retry_terminal_state_matches_chain = observed_endstate == case.target_endstate == "retry_required"
+        scripted_retry_artifacts_match_chain = True
+        no_unexpected_retry_chain = True
+    elif retry_required and attempt_required:
+        summary_ok = scripted_summary.get("ok") is True
+        recovery_attempts = int(recovery.get("attempts", 0) or 0)
+        report_changed_files = list(scripted_report.get("changed_files", []) or [])
+        expected_retry_boundaries = {
+            "host_apply_rejection_boundary",
+            "host_apply_boundary",
+            "verification_boundary",
+            "commit_boundary",
+        }
+        retry_artifacts_available = all(
+            bool(record.get("exists")) and len(str(record.get("sha256", ""))) == 64
+            for record in artifact_records
+        )
+        first_failure_evidence_recorded = (
+            len(retry_evidence_records) == 1
+            and str(retry_evidence_details.get("reason", "") or "") == str(expected_spec.get("expected_previous_rejection", "") or "")
+            and str(recovery.get("injected_bad_result", "") or "") == "forbidden_file_write"
+            and list(recovery.get("rejected_paths", []) or []) == ["README.md"]
+            and str(recovery.get("rejection_boundary", "") or "") == "host_apply_rejection_boundary"
+            and "host_apply_rejection_boundary" in set(report_boundary_names)
+        )
+        retry_decision_matches_evidence = (
+            mutation_intent == str(expected_spec.get("expected_mutation_intent", "") or "")
+            and len(scripted_delegated_records) == 1
+            and len(scripted_completed_records) == 1
+            and details(scripted_completed_records[-1]).get("ok") is True
+            and summary_ok
+            and int(scripted_summary.get("returncode", 1)) == 0
+            and int(ai_summary.get("finished_live_call_count", 0) or 0) == 0
+        )
+        retry_attempt_matches_requirement = (
+            len(retry_attempt_records) == 1
+            and recovery_attempts >= int(expected_spec.get("expected_attempts_min", 2) or 2)
+            and (
+                retry_attempt_details.get("attempts") is None
+                or int(retry_attempt_details.get("attempts", 0) or 0) >= int(expected_spec.get("expected_attempts_min", 2) or 2)
+            )
+            and expected_retry_boundaries <= set(report_boundary_names)
+            and {"generated_editor_boundary", "generated_editor_static_preflight_boundary", "generated_editor_sandbox_boundary", "host_apply_boundary"} <= set(recovery_retry_boundary_names)
+        )
+        scripted_retry_artifacts_match_chain = (
+            report_changed_files == ["app.py"]
+            and scripted_verification.get("ok") is True
+            and scripted_commit.get("created") is True
+            and len(verification_records) == 1
+            and verification_details.get("verification_ok") is True
+            and decision.get("applied") is True
+            and decision.get("verified") is True
+            and decision.get("committed") is True
+        )
+        retry_terminal_state_matches_chain = observed_endstate == case.target_endstate == "retry_succeeded"
+        no_unexpected_retry_chain = True
+    else:
+        retry_artifacts_available = True
+        first_failure_evidence_recorded = len(retry_evidence_records) == 0
+        retry_decision_matches_evidence = True
+        retry_attempt_matches_requirement = (
+            len(retry_plan_records) == 0
+            and len(retry_attempt_records) == 0
+            and len(scripted_delegated_records) == 0
+            and len(scripted_completed_records) == 0
+        )
+        scripted_retry_artifacts_match_chain = True
+        retry_terminal_state_matches_chain = observed_endstate == case.target_endstate
+        no_unexpected_retry_chain = (
+            str(decision.get("scripted_retry_summary_path", "") or "") == ""
+            and str(decision.get("scripted_retry_report_path", "") or "") == ""
+            and retry_plan_path_text == ""
+        )
+
+    final_endstate_stage_matches_chain = (
+        bool(final_endstate_values)
+        and final_endstate_values[-1] == observed_endstate == case.target_endstate
+    )
+
+    payload: dict[str, Any] = {
+        "rule": "bind_retry_chain_to_byzantine_selected_action",
+        "case_id": case.case_id,
+        "target_endstate": case.target_endstate,
+        "observed_endstate": observed_endstate,
+        "retry_required": retry_required,
+        "retry_required_endstates": sorted(retry_specs),
+        "retry_kind": str(expected_spec.get("retry_kind", "none") or "none"),
+        "attempt_required": attempt_required,
+        "selected_action": str(selected_action),
+        "decision_action": decision_action,
+        "decision_expected_action": decision_expected_action,
+        "mutation_intent": mutation_intent,
+        "decision_rejection_reason": decision_rejection_reason,
+        "expected_previous_rejection": str(expected_spec.get("expected_previous_rejection", "") or ""),
+        "retry_required_evidence_path": rejection_path_text if case.target_endstate == "retry_required" else "",
+        "retry_plan_path": retry_plan_path_text,
+        "scripted_retry_summary_path": scripted_summary_path_text,
+        "scripted_retry_report_path": scripted_report_path_text,
+        "retry_evidence_stage_count": len(retry_evidence_records),
+        "retry_evidence_reasons": [
+            str(details(record).get("reason", "") or "")
+            for record in retry_evidence_records
+        ],
+        "retry_plan_stage_count": len(retry_plan_records),
+        "retry_attempt_stage_count": len(retry_attempt_records),
+        "retry_attempt_values": [
+            details(record).get("attempts")
+            for record in retry_attempt_records
+        ],
+        "verification_stage_count": len(verification_records),
+        "verification_stage_ok_values": [
+            details(record).get("verification_ok")
+            for record in verification_records
+        ],
+        "host_apply_deferred_stage_count": len(host_apply_deferred_records),
+        "scripted_delegated_stage_count": len(scripted_delegated_records),
+        "scripted_completed_stage_count": len(scripted_completed_records),
+        "final_endstate_values": final_endstate_values,
+        "retry_required_payload": {
+            "format": retry_required_payload.get("format", ""),
+            "previous_rejection": retry_required_payload.get("previous_rejection", ""),
+            "retry_allowed": retry_required_payload.get("retry_allowed"),
+            "applied": retry_required_payload.get("applied"),
+        },
+        "retry_plan_payload": {
+            "format": retry_plan_payload.get("format", ""),
+            "retry_allowed": retry_plan_payload.get("retry_allowed"),
+            "next_action": retry_plan_payload.get("next_action", ""),
+            "apply_now": retry_plan_payload.get("apply_now"),
+        },
+        "scripted_summary_ok": scripted_summary.get("ok"),
+        "scripted_summary_returncode": scripted_summary.get("returncode"),
+        "scripted_recovery_attempts": int(recovery.get("attempts", 0) or 0),
+        "scripted_recovery_injected_bad_result": str(recovery.get("injected_bad_result", "") or ""),
+        "scripted_recovery_rejected_paths": list(recovery.get("rejected_paths", []) or []),
+        "scripted_recovery_rejection_boundary": str(recovery.get("rejection_boundary", "") or ""),
+        "scripted_recovery_retry_boundary_names": recovery_retry_boundary_names,
+        "scripted_report_boundary_names": report_boundary_names,
+        "scripted_report_changed_files": list(scripted_report.get("changed_files", []) or []),
+        "scripted_report_verification_ok": scripted_verification.get("ok"),
+        "scripted_report_commit_created": scripted_commit.get("created"),
+        "scripted_report_failed_contracts": list(scripted_report.get("failed_contracts", []) or []),
+        "artifact_records": artifact_records,
+        "artifact_sha256_by_name": artifact_sha256_by_name,
+        "action_selection_derivation_sha256": action_selection_derivation_sha256,
+        "verification_result_derivation_sha256": verification_result_derivation_sha256,
+        "host_policy_rejection_derivation_sha256": host_policy_rejection_derivation_sha256,
+        "action_matches_selected_action": decision_action == str(selected_action),
+        "expected_action_matches_selected_action": decision_expected_action == str(selected_action),
+        "action_selection_derivation_recorded": len(action_selection_derivation_sha256) == 64,
+        "verification_result_derivation_recorded": len(verification_result_derivation_sha256) == 64,
+        "host_policy_rejection_derivation_recorded": len(host_policy_rejection_derivation_sha256) == 64,
+        "retry_artifacts_available": retry_artifacts_available,
+        "first_failure_evidence_recorded": first_failure_evidence_recorded,
+        "retry_decision_matches_evidence": retry_decision_matches_evidence,
+        "retry_attempt_matches_requirement": retry_attempt_matches_requirement,
+        "scripted_retry_artifacts_match_chain": scripted_retry_artifacts_match_chain,
+        "retry_terminal_state_matches_chain": retry_terminal_state_matches_chain,
+        "final_endstate_stage_matches_chain": final_endstate_stage_matches_chain,
+        "no_unexpected_retry_chain": no_unexpected_retry_chain,
+    }
+    payload["retry_chain_surface_sha256"] = text_sha256(json_dumps({
+        "case_id": payload["case_id"],
+        "target_endstate": payload["target_endstate"],
+        "retry_required": payload["retry_required"],
+        "retry_kind": payload["retry_kind"],
+        "selected_action": payload["selected_action"],
+        "mutation_intent": payload["mutation_intent"],
+        "decision_rejection_reason": payload["decision_rejection_reason"],
+        "retry_evidence_reasons": payload["retry_evidence_reasons"],
+        "retry_attempt_values": payload["retry_attempt_values"],
+        "verification_stage_ok_values": payload["verification_stage_ok_values"],
+        "artifact_sha256_by_name": payload["artifact_sha256_by_name"],
+        "scripted_recovery_attempts": payload["scripted_recovery_attempts"],
+        "scripted_recovery_rejection_boundary": payload["scripted_recovery_rejection_boundary"],
+        "scripted_report_boundary_names": payload["scripted_report_boundary_names"],
+        "scripted_report_changed_files": payload["scripted_report_changed_files"],
+        "scripted_report_verification_ok": payload["scripted_report_verification_ok"],
+        "scripted_report_commit_created": payload["scripted_report_commit_created"],
+    }))
+    payload["retry_chain_preserved"] = all(
+        bool(payload[key])
+        for key in (
+            "action_matches_selected_action",
+            "expected_action_matches_selected_action",
+            "action_selection_derivation_recorded",
+            "verification_result_derivation_recorded",
+            "host_policy_rejection_derivation_recorded",
+            "retry_artifacts_available",
+            "first_failure_evidence_recorded",
+            "retry_decision_matches_evidence",
+            "retry_attempt_matches_requirement",
+            "scripted_retry_artifacts_match_chain",
+            "retry_terminal_state_matches_chain",
+            "final_endstate_stage_matches_chain",
+            "no_unexpected_retry_chain",
+        )
+    )
+    payload["retry_chain_derivation_sha256"] = open_battery_payload_sha256(payload)
+    return payload
+
 def run_open_battery_case(
     *,
     args: argparse.Namespace,
@@ -11639,11 +12073,21 @@ def run_open_battery_case(
         selected_action=selected_action,
         pathway_trace=pathway_trace,
     )
+    retry_chain_derivation = open_battery_retry_chain_derivation(
+        case=case,
+        decision=decision,
+        action_selection_derivation=action_selection_derivation,
+        verification_result_derivation=verification_result_derivation,
+        host_policy_rejection_derivation=host_policy_rejection_derivation,
+        selected_action=selected_action,
+        pathway_trace=pathway_trace,
+    )
     decision["byzantine_output_rendering_derivation"] = output_rendering_derivation
     decision["byzantine_workspace_materialization_derivation"] = workspace_materialization_derivation
     decision["byzantine_agent_delegation_derivation"] = agent_delegation_derivation
     decision["byzantine_verification_result_derivation"] = verification_result_derivation
     decision["byzantine_host_policy_rejection_derivation"] = host_policy_rejection_derivation
+    decision["byzantine_retry_chain_derivation"] = retry_chain_derivation
     decision["byzantine_agreement"] = byzantine_agreement.get("summary", {})
     decision["byzantine_artifacts"] = {
         "round_1_results_path": byzantine_agreement.get("round_1_path", ""),
@@ -11775,6 +12219,25 @@ def run_open_battery_case(
             == verification_result_derivation.get("verification_result_derivation_sha256")
             and len(str(host_policy_rejection_derivation.get("policy_rejection_surface_sha256", "") or "")) == 64
         )
+        decision_contracts["byzantine_retry_chain_derivation_recorded"] = (
+            retry_chain_derivation.get("rule")
+            == "bind_retry_chain_to_byzantine_selected_action"
+            and bool(retry_chain_derivation.get("retry_chain_derivation_sha256"))
+        )
+        decision_contracts["byzantine_retry_chain_bound_to_selected_action"] = (
+            bool(retry_chain_derivation.get("retry_chain_preserved"))
+            and retry_chain_derivation.get("selected_action") == selected_action
+            and retry_chain_derivation.get("decision_action") == decision.get("action")
+        )
+        decision_contracts["byzantine_boundary_exposes_retry_chain_derivation"] = (
+            retry_chain_derivation.get("action_selection_derivation_sha256")
+            == action_selection_derivation.get("action_selection_derivation_sha256")
+            and retry_chain_derivation.get("verification_result_derivation_sha256")
+            == verification_result_derivation.get("verification_result_derivation_sha256")
+            and retry_chain_derivation.get("host_policy_rejection_derivation_sha256")
+            == host_policy_rejection_derivation.get("host_policy_rejection_derivation_sha256")
+            and len(str(retry_chain_derivation.get("retry_chain_surface_sha256", "") or "")) == 64
+        )
         decision_contracts["observed_endstate_matches_target"] = decision.get("observed_endstate") == case.target_endstate
         decision_contracts["case_report_written"] = True
         decision_contracts.update(pathway_contracts)
@@ -11805,6 +12268,7 @@ def run_open_battery_case(
         "byzantine_agent_delegation_derivation": agent_delegation_derivation,
         "byzantine_verification_result_derivation": verification_result_derivation,
         "byzantine_host_policy_rejection_derivation": host_policy_rejection_derivation,
+        "byzantine_retry_chain_derivation": retry_chain_derivation,
         "byzantine_agreement_trace_path": byzantine_agreement.get("agreement_trace_path", ""),
         "byzantine_final_selection_path": byzantine_agreement.get("final_selection_path", ""),
         "byzantine_artifact_manifest_path": byzantine_agreement.get("artifact_manifest_path", ""),
@@ -12752,6 +13216,18 @@ def run_open_battery(args: argparse.Namespace) -> int:
         ),
         "open_battery_byzantine_boundary_exposes_host_policy_rejection_derivation": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_host_policy_rejection_derivation"))
+            for case in cases
+        ),
+        "open_battery_byzantine_retry_chain_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_retry_chain_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_retry_chain_bound_to_selected_action": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_retry_chain_bound_to_selected_action"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_retry_chain_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_retry_chain_derivation"))
             for case in cases
         ),
     }
