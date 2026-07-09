@@ -42,6 +42,8 @@ class FakeRunner:
             cluster_file.parent.mkdir(parents=True, exist_ok=True)
             cluster_file.write_text("docker:docker@127.0.0.1:4550\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, 0, stdout="FoundationDB smoke bootstrap ok\n", stderr="")
+        if command[:2] == ["podman", "build"]:
+            return subprocess.CompletedProcess(command, 0, stdout="built executor image with podman\n", stderr="")
         if "compose" in command and "build" in command and "executor-image" in command:
             return subprocess.CompletedProcess(command, 0, stdout="built executor image\n", stderr="")
         if command[:3] and command[0].endswith(("docker", "podman")) and command[1:3] == ["image", "inspect"]:
@@ -67,14 +69,17 @@ def test_executor_service_uses_podman_runtime_when_requested(monkeypatch, tmp_pa
 
     assert state["docker"]["container_runtime"]["runtime"] == "podman"
     assert ["podman", "version"] in runner.calls
-    compose_build_calls = [call for call in runner.calls if call[:2] == ["podman", "compose"] and "build" in call]
-    assert compose_build_calls
+    podman_build_calls = [call for call in runner.calls if call[:2] == ["podman", "build"] and "main-computer-executor:latest" in call]
+    assert podman_build_calls
+    assert not [call for call in runner.calls if call[:2] == ["podman", "compose"] and "build" in call]
 
 def make_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     executor = repo / "docker" / "executor" / "main-computer-exec"
     executor.parent.mkdir(parents=True)
     executor.write_text("#!/usr/bin/env bash\necho main-computer-exec 1\n", encoding="utf-8")
+    dockerfile = repo / "docker" / "executor" / "Dockerfile"
+    dockerfile.write_text("FROM python:3.12-slim\n", encoding="utf-8")
     compose = repo / "docker-compose.dev.yml"
     compose.write_text(
         "services:\n"

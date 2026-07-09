@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from main_computer.container_runtime import resolve_container_runtime
+from main_computer.container_runtime import podman_command_cwd, resolve_container_runtime
 from main_computer.local_platform_compose import (
     LocalPlatformComposeError,
     compose_project_name,
@@ -266,9 +266,11 @@ def _ensure_generated_compose(
 
 
 def _run_command(command: list[str], repo_root: Path, timeout_s: float) -> subprocess.CompletedProcess[str]:
+    runtime = resolve_container_runtime(cwd=repo_root, probe=False)
+    run_cwd = podman_command_cwd(repo_root) if runtime.runtime == "podman" else repo_root
     return subprocess.run(
         command,
-        cwd=repo_root,
+        cwd=run_cwd or repo_root,
         text=True,
         capture_output=True,
         timeout=timeout_s,

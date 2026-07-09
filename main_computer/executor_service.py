@@ -17,7 +17,7 @@ import time
 from typing import Any, Callable
 from main_computer.main_log_hooks import install_main_log_hooks_from_env
 from main_computer.main_log_client import emit_main_log_text
-from main_computer.container_runtime import command_display as _container_command_display, legacy_docker_command_override, resolve_container_runtime
+from main_computer.container_runtime import command_display as _container_command_display, legacy_docker_command_override, podman_command_cwd, resolve_container_runtime
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -471,6 +471,7 @@ class ExecutorService:
             runner=self.runner,
             container_command=legacy_docker_command_override(docker_command),
             probe=True,
+            require_compose=False,
         )
         self.docker_command = _container_command_display(self.container_runtime.container_command)
         self.sleep = sleep_func or time.sleep
@@ -492,6 +493,17 @@ class ExecutorService:
     @property
     def repo_executor_path(self) -> Path:
         return self.root / "docker" / "executor" / "main-computer-exec"
+
+    def _container_command_cwd(self) -> Path:
+        if self.container_runtime.runtime == "podman":
+            return podman_command_cwd(self.root) or self.root.parent
+        return self.root
+
+    def _executor_dockerfile(self) -> Path:
+        primary = self.root / "docker" / "executor" / "Dockerfile"
+        if primary.exists():
+            return primary
+        return self.root / "Dockerfile.executor"
 
     def boot(self, *, watch: bool = False, max_watch_loops: int | None = None) -> dict[str, Any]:
         """Run one full boot reconciliation, then optionally enter keepalive."""
@@ -1928,31 +1940,38 @@ class ExecutorService:
                 error=_truncate(version.stderr or version.stdout or ""),
             )
 
-        compose = self._run(self.container_runtime.compose_args("version"), timeout=12)
-        if compose.returncode != 0:
-            return self._component(
-                ok=False,
-                state="missing-compose",
-                message="container engine is available but compose is not",
-                docker_command=self.docker_command,
-                docker_path=docker_path,
-                container_runtime=self.container_runtime.as_dict(),
-                engine_available=True,
-                error=_truncate(compose.stderr or compose.stdout or ""),
-            )
+        compose = None
+        if self.container_runtime.runtime != "podman":
+            compose = self._run(self.container_runtime.compose_args("version"), timeout=12)
+            if compose.returncode != 0:
+                return self._component(
+                    ok=False,
+                    state="missing-compose",
+                    message="container engine is available but compose is not",
+                    docker_command=self.docker_command,
+                    docker_path=docker_path,
+                    container_runtime=self.container_runtime.as_dict(),
+                    engine_available=True,
+                    error=_truncate(compose.stderr or compose.stdout or ""),
+                )
 
         return self._component(
             ok=True,
             state="ready",
-            message="Container engine and compose are available",
+            message=(
+                "Podman engine is available; Compose is not required for the executor image"
+                if self.container_runtime.runtime == "podman"
+                else "Container engine and compose are available"
+            ),
             docker_command=self.docker_command,
             docker_path=docker_path,
             container_runtime=self.container_runtime.as_dict(),
             engine_available=True,
-            compose_available=True,
+            compose_available=True if compose is not None else False,
+            compose_required=False if self.container_runtime.runtime == "podman" else True,
             start_attempted=started,
             version_stdout=_truncate(version.stdout or "", 1000),
-            compose_stdout=_truncate(compose.stdout or "", 1000),
+            compose_stdout=_truncate(compose.stdout or "", 1000) if compose is not None else "",
         )
 
     def _try_start_docker_desktop(self) -> bool:
@@ -2004,6 +2023,53 @@ class ExecutorService:
                 compose_project=self.compose_project or None,
                 image=self.executor_image,
             )
+
+        if self.container_runtime.runtime == "podman":
+            dockerfile = self._executor_dockerfile()
+            if not dockerfile.exists():
+                return self._component(
+                    ok=False,
+                    state="missing-dockerfile",
+                    message="executor image Dockerfile is missing",
+                    compose_file=str(self.compose_file),
+                    compose_project=self.compose_project or None,
+                    image=self.executor_image,
+                    dockerfile=str(dockerfile),
+                )
+            command = self.container_runtime.container_args(
+                "build",
+                "-t",
+                self.executor_image,
+                "-f",
+                str(dockerfile),
+                str(self.root),
+            )
+            result = self._run(command, timeout=300, cwd=self._container_command_cwd())
+            ok = result.returncode == 0
+            output = result.stderr or result.stdout or ""
+            payload = self._component(
+                ok=ok,
+                state="ready" if ok else "down",
+                message="executor Podman image is built" if ok else "executor Podman image build failed",
+                compose_file=str(self.compose_file),
+                compose_project=self.compose_project or None,
+                image=self.executor_image,
+                dockerfile=str(dockerfile),
+                built=ok,
+                started=False,
+                stdout=_truncate(result.stdout or "", 2000),
+                error="" if ok else _truncate(output),
+            )
+            if not ok:
+                payload.update(
+                    {
+                        "warning": f"Podman could not build the executor image: {_first_nonempty_line(output)}",
+                        "remediation": "Inspect the direct podman build output, then retry the executor service boot check.",
+                        "returncode": result.returncode,
+                        "failed_command": _command_display(command),
+                    }
+                )
+            return payload
 
         command = self._compose_command("--profile", "executor", "build", "executor-image")
         result = self._run(

@@ -483,6 +483,54 @@ function Get-LaunchEnvironmentValue([object]$LaunchContext, [string]$Name, [stri
   return $Default
 }
 
+function Get-MainComputerCallerContainerRuntimeOverride {
+  $value = [Environment]::GetEnvironmentVariable("MAIN_COMPUTER_CONTAINER_RUNTIME")
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return ""
+  }
+
+  $normalized = $value.Trim().ToLowerInvariant()
+  if ($normalized -in @("podman", "podman-desktop")) {
+    return "podman"
+  }
+  if ($normalized -in @("docker", "docker-desktop")) {
+    return "docker"
+  }
+
+  return ""
+}
+
+function Set-MainComputerLaunchEnvironmentValue([object]$LaunchContext, [string]$Name, [string]$Value) {
+  $environment = Get-ObjectPropertyValue $LaunchContext "environment" $null
+  if ($null -eq $environment -or [string]::IsNullOrWhiteSpace($Name)) {
+    return
+  }
+
+  if ($environment -is [System.Collections.IDictionary]) {
+    $environment[$Name] = $Value
+    return
+  }
+
+  $property = $environment.PSObject.Properties[$Name]
+  if ($null -ne $property) {
+    $property.Value = $Value
+    return
+  }
+
+  Add-Member -InputObject $environment -NotePropertyName $Name -NotePropertyValue $Value -Force
+}
+
+function Restore-MainComputerCallerContainerRuntimeOverride([object]$LaunchContext, [string]$RuntimeOverride) {
+  if ([string]::IsNullOrWhiteSpace($RuntimeOverride)) {
+    return
+  }
+
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_CONTAINER_RUNTIME", $RuntimeOverride, "Process")
+  Set-MainComputerLaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTAINER_RUNTIME" $RuntimeOverride
+  Write-Host ("Caller container runtime override preserved: MAIN_COMPUTER_CONTAINER_RUNTIME={0}" -f $RuntimeOverride)
+}
+
+
 function Get-ControlRoot([string]$RootPath, [object]$LaunchContext) {
   $controlRoot = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_ROOT" ""
   if ([string]::IsNullOrWhiteSpace($controlRoot)) {
@@ -615,6 +663,189 @@ function Invoke-MainComputerRuntimeCommand {
   & $executable @allArgs
 }
 
+function Get-MainComputerRequestedContainerRuntime([object]$LaunchContext) {
+  $requested = (Get-EnvFirstValue @("MAIN_COMPUTER_CONTAINER_RUNTIME") (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTAINER_RUNTIME" "")).Trim().ToLowerInvariant()
+  if ($requested -in @("podman", "podman-desktop")) {
+    return "podman"
+  }
+  if ($requested -in @("docker", "docker-desktop")) {
+    return "docker"
+  }
+  return ""
+}
+
+function Resolve-MainComputerPodmanCommand {
+  $candidates = @()
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $candidates += (Join-Path $env:LOCALAPPDATA "Programs\Podman\podman.exe")
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+    $candidates += (Join-Path $env:ProgramFiles "RedHat\Podman\podman.exe")
+    $candidates += (Join-Path $env:ProgramFiles "Podman\podman.exe")
+  }
+  $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+  if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
+    $candidates += (Join-Path $programFilesX86 "RedHat\Podman\podman.exe")
+    $candidates += (Join-Path $programFilesX86 "Podman\podman.exe")
+  }
+
+  foreach ($candidate in $candidates) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return $candidate
+    }
+  }
+
+  $command = Get-Command "podman" -ErrorAction SilentlyContinue
+  if ($command) {
+    return $command.Source
+  }
+
+  return ""
+}
+
+function Invoke-MainComputerPodmanTool {
+  param(
+    [Parameter(Mandatory = $true)][string]$PodmanCommand,
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [int]$TimeoutSeconds = 90
+  )
+
+  $psi = [System.Diagnostics.ProcessStartInfo]::new()
+  $psi.FileName = $PodmanCommand
+  $psi.Arguments = Join-CommandLine $Arguments
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+
+  $workdir = $env:USERPROFILE
+  if ([string]::IsNullOrWhiteSpace($workdir) -or -not (Test-Path -LiteralPath $workdir -PathType Container)) {
+    $workdir = [System.IO.Path]::GetTempPath()
+  }
+  $psi.WorkingDirectory = $workdir
+
+  $process = [System.Diagnostics.Process]::new()
+  $process.StartInfo = $psi
+  try {
+    [void]$process.Start()
+  } catch {
+    return [ordered]@{
+      ok = $false
+      exit_code = $null
+      stdout = ""
+      stderr = $_.Exception.Message
+      command = @($PodmanCommand) + $Arguments
+    }
+  }
+
+  $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+  $stderrTask = $process.StandardError.ReadToEndAsync()
+
+  if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    try { $process.Kill() } catch {}
+    try { $process.WaitForExit() } catch {}
+    return [ordered]@{
+      ok = $false
+      exit_code = 124
+      stdout = $stdoutTask.Result
+      stderr = "Timed out after $TimeoutSeconds seconds."
+      command = @($PodmanCommand) + $Arguments
+    }
+  }
+
+  return [ordered]@{
+    ok = ($process.ExitCode -eq 0)
+    exit_code = $process.ExitCode
+    stdout = $stdoutTask.Result
+    stderr = $stderrTask.Result
+    command = @($PodmanCommand) + $Arguments
+  }
+}
+
+function Get-MainComputerPodmanMachineNames([string]$PodmanCommand) {
+  $result = Invoke-MainComputerPodmanTool -PodmanCommand $PodmanCommand -Arguments @("machine", "list", "--format", "{{.Name}}") -TimeoutSeconds 30
+  if (-not $result.ok) {
+    return @()
+  }
+
+  return @(
+    $result.stdout -split "(`r`n|`n|`r)" |
+      ForEach-Object { ([string]$_).Trim() } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  )
+}
+
+function Get-MainComputerPodmanFailureText([object]$Result) {
+  if ($null -eq $Result) {
+    return ""
+  }
+
+  $parts = @()
+  $exitCode = Get-ObjectPropertyValue $Result "exit_code" $null
+  if ($null -ne $exitCode) {
+    $parts += "exit code $exitCode"
+  }
+  $stderr = ConvertTo-StringValue (Get-ObjectPropertyValue $Result "stderr" "") ""
+  $stdout = ConvertTo-StringValue (Get-ObjectPropertyValue $Result "stdout" "") ""
+  if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+    $parts += ($stderr.Trim())
+  }
+  if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+    $parts += ($stdout.Trim())
+  }
+  return ($parts -join "; ")
+}
+
+function Ensure-MainComputerPodmanMachineStarted([object]$LaunchContext) {
+  $requested = Get-MainComputerRequestedContainerRuntime $LaunchContext
+  if ($requested -ne "podman") {
+    return
+  }
+
+  $podman = Resolve-MainComputerPodmanCommand
+  if ([string]::IsNullOrWhiteSpace($podman)) {
+    throw "Podman was selected for Main Computer startup, but podman.exe was not found."
+  }
+
+  Write-Host "Podman runtime selected; ensuring the Podman machine is running."
+
+  $probe = Invoke-MainComputerPodmanTool -PodmanCommand $podman -Arguments @("ps") -TimeoutSeconds 30
+  if ($probe.ok) {
+    Write-Host "Podman runtime is reachable."
+    return
+  }
+
+  Write-Host "Podman is installed but not reachable; attempting 'podman machine start'."
+  $start = Invoke-MainComputerPodmanTool -PodmanCommand $podman -Arguments @("machine", "start") -TimeoutSeconds 180
+  $probe = Invoke-MainComputerPodmanTool -PodmanCommand $podman -Arguments @("ps") -TimeoutSeconds 30
+  if ($probe.ok) {
+    Write-Host "Podman machine started and runtime is reachable."
+    return
+  }
+
+  $machineNames = @(Get-MainComputerPodmanMachineNames $podman)
+  if ($machineNames.Count -eq 0) {
+    Write-Host "No Podman machine was found; attempting 'podman machine init' then 'podman machine start'."
+    $init = Invoke-MainComputerPodmanTool -PodmanCommand $podman -Arguments @("machine", "init") -TimeoutSeconds 180
+    if (-not $init.ok) {
+      throw ("Podman was selected, but 'podman machine init' failed: {0}" -f (Get-MainComputerPodmanFailureText $init))
+    }
+
+    $start = Invoke-MainComputerPodmanTool -PodmanCommand $podman -Arguments @("machine", "start") -TimeoutSeconds 180
+    $probe = Invoke-MainComputerPodmanTool -PodmanCommand $podman -Arguments @("ps") -TimeoutSeconds 30
+    if ($probe.ok) {
+      Write-Host "Podman machine initialized, started, and runtime is reachable."
+      return
+    }
+  }
+
+  $detail = Get-MainComputerPodmanFailureText $probe
+  $startDetail = Get-MainComputerPodmanFailureText $start
+  if (-not [string]::IsNullOrWhiteSpace($startDetail)) {
+    $detail = "$detail; start detail: $startDetail"
+  }
+  throw ("Podman was selected, but the Podman runtime is still not reachable after attempting to start its machine: {0}" -f $detail)
+}
+
 function Assert-MainComputerExplicitContainerRuntimeAvailable([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
   $requested = (Get-EnvFirstValue @("MAIN_COMPUTER_CONTAINER_RUNTIME") (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTAINER_RUNTIME" "")).Trim().ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($requested) -or @("auto", "default", "detect", "container", "containers") -contains $requested) {
@@ -623,6 +854,10 @@ function Assert-MainComputerExplicitContainerRuntimeAvailable([string]$RootPath,
 
   if ($requested -notin @("docker", "docker-desktop", "podman", "podman-desktop")) {
     return
+  }
+
+  if ((Get-MainComputerRequestedContainerRuntime $LaunchContext) -eq "podman") {
+    Ensure-MainComputerPodmanMachineStarted $LaunchContext
   }
 
   $runtime = Get-MainComputerContainerRuntime $RootPath $PythonCommand
@@ -1999,8 +2234,13 @@ function Invoke-MainComputerOnlyOfficeControl {
   $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS" "true"
   $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS" "true"
 
+  $runtimeDisplay = Get-MainComputerRequestedContainerRuntime $LaunchContext
+  if ([string]::IsNullOrWhiteSpace($runtimeDisplay)) {
+    $runtimeDisplay = ConvertTo-StringValue ([Environment]::GetEnvironmentVariable("MAIN_COMPUTER_CONTAINER_RUNTIME")) "auto"
+  }
+
   Write-Host ""
-  Write-Host ("ONLYOFFICE Docker control: {0} mode={1} port={2} appPort={3}" -f $OnlyOfficeAction, $mode, $onlyOfficePort, $appPort)
+  Write-Host ("ONLYOFFICE container control: {0} mode={1} runtime={2} port={3} appPort={4}" -f $OnlyOfficeAction, $mode, $runtimeDisplay, $onlyOfficePort, $appPort)
   try {
     $controlArgs = @(
       "-NoProfile",
@@ -2028,11 +2268,14 @@ function Invoke-MainComputerOnlyOfficeControl {
 }
 
 function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested) {
+  $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
+
   Write-Host "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone..."
   Stop-MainComputer $RootPath $true | Out-Null
 
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
   Set-MainComputerLaunchEnvironment $launchContext
+  Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride
   $controlRoot = Get-ControlRoot $RootPath $launchContext
   $pythonCommand = [string]$launchContext.python
 
@@ -2192,6 +2435,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
 function Start-MainComputerDevHubOnly([string]$RootPath, [string]$StartedByName) {
   Write-Host "Starting only the Main Computer dev Hub; app/supervisor startup is not requested."
 
+  $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
   $environment = Get-ObjectPropertyValue $launchContext "environment" $null
   $callerTimeout = [Environment]::GetEnvironmentVariable("MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS")
@@ -2203,7 +2447,10 @@ function Start-MainComputerDevHubOnly([string]$RootPath, [string]$StartedByName)
     Write-Host "Dev-Hub-only startup uses MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS=20 by default; set it before launch to wait longer."
   }
   Set-MainComputerLaunchEnvironment $launchContext
+  Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride
   $pythonCommand = [string]$launchContext.python
+
+  Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand
 
   try {
     $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand
@@ -2252,8 +2499,10 @@ function Start-MainComputerDevHubOnly([string]$RootPath, [string]$StartedByName)
 
 
 function Show-MainComputerStatus([string]$RootPath) {
+  $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
   Set-MainComputerLaunchEnvironment $launchContext
+  Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride
 
   $statusArgs = @(
     "-m",
@@ -3015,11 +3264,13 @@ function Invoke-DockerComposeDown([object]$Stack) {
 }
 
 function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
+  $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
   $runtime = Get-StartStopRuntime $RootPath
   Ensure-Directory $runtime
 
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
   Set-MainComputerLaunchEnvironment $launchContext
+  Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride
   $controlRoot = Get-ControlRoot $RootPath $launchContext
 
   $stopOnlyOfficeOnStop = Get-LaunchEnvironmentValue $launchContext "MAIN_COMPUTER_ONLYOFFICE_STOP_ON_STOP" "0"

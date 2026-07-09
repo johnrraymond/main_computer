@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import main_computer.website_project_manifest as website_project_manifest
+from main_computer.container_runtime import ContainerRuntime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1759,7 +1760,11 @@ def test_directus_runtime_action_uses_podman_for_container_removal_when_requeste
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    monkeypatch.setattr(
+        website_project_manifest,
+        "resolve_container_runtime",
+        lambda **_kwargs: ContainerRuntime("podman", ("podman",), ("podman-compose",), "test"),
+    )
     _configure_directus_connection_for_publish(tmp_path, mode="use_existing")
     monkeypatch.setattr(
         website_project_manifest,

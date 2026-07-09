@@ -24,7 +24,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 
 try:
-    from main_computer.container_runtime import resolve_container_runtime
+    from main_computer.container_runtime import podman_command_cwd, resolve_container_runtime
 except Exception:  # pragma: no cover - fallback for standalone tool copies
     def _split_container_command(value: str | None) -> list[str]:
         text = str(value or "").strip()
@@ -61,6 +61,15 @@ except Exception:  # pragma: no cover - fallback for standalone tool copies
 
         def compose_args(self, *args: object) -> list[str]:
             return [*self.compose_command, *map(str, args)]
+
+    def podman_command_cwd(cwd=None, **_kwargs):
+        if cwd is None:
+            return None
+        path = Path(cwd).resolve()
+        safe = path.parent
+        safe.mkdir(parents=True, exist_ok=True)
+        return safe
+
 
     def resolve_container_runtime(**_kwargs):
         return _FallbackContainerRuntime()
@@ -762,6 +771,17 @@ def container_runtime(root: Path | None = None):
     return resolve_container_runtime(cwd=root, probe=False)
 
 
+def command_uses_podman(command: list[str]) -> bool:
+    if not command:
+        return False
+    executable = Path(str(command[0])).name.lower()
+    return executable in {"podman", "podman.exe", "podman-compose", "podman-compose.exe"}
+
+
+def podman_subprocess_cwd(root: Path | None = None) -> Path | None:
+    return podman_command_cwd(root or repo_root())
+
+
 def container_command(root: Path | None, *args: object) -> list[str]:
     return container_runtime(root).container_args(*args)
 
@@ -781,7 +801,11 @@ def run(
     capture: bool = False,
     input_text: str | None = None,
     timeout_seconds: int | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    run_cwd = cwd
+    if run_cwd is None and command_uses_podman(command):
+        run_cwd = podman_subprocess_cwd(repo_root())
     try:
         completed = subprocess.run(
             command,
@@ -791,6 +815,7 @@ def run(
             timeout=timeout_seconds,
             stdout=subprocess.PIPE if capture else None,
             stderr=subprocess.STDOUT if capture else None,
+            cwd=str(run_cwd) if run_cwd is not None else None,
         )
     except subprocess.TimeoutExpired as exc:
         captured = "\n".join(

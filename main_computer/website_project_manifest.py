@@ -19,7 +19,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import urlopen
 
-from main_computer.container_runtime import resolve_container_runtime
+from main_computer.container_runtime import podman_command_cwd, resolve_container_runtime
 from main_computer.local_platform_compose import (
     cms_dependency_service_names_for_site,
     compose_project_name,
@@ -62,6 +62,13 @@ SITE_RUNTIME_SOURCE = Path("deploy") / "local-platform" / "site-server" / "app.p
 
 def _container_args(*args: object) -> list[str]:
     return resolve_container_runtime(probe=False).container_args(*args)
+
+
+def _container_subprocess_cwd(repo_root: Path) -> Path:
+    runtime = resolve_container_runtime(cwd=repo_root, probe=False)
+    if runtime.runtime == "podman":
+        return podman_command_cwd(repo_root) or repo_root.parent
+    return repo_root
 
 SITE_RUNTIME_DIR = Path(".main-computer") / "runtime"
 SITE_RUNTIME_ENTRYPOINT = SITE_RUNTIME_DIR / "app.py"
@@ -5173,7 +5180,7 @@ def configure_website_directus_runtime(
     if command:
         completed = subprocess.run(
             command,
-            cwd=repo_root,
+            cwd=_container_subprocess_cwd(repo_root),
             text=True,
             capture_output=True,
             timeout=timeout_s,
@@ -5860,7 +5867,7 @@ def publish_website(
 
     completed = subprocess.run(
         plan["command"],
-        cwd=repo_root,
+        cwd=_container_subprocess_cwd(repo_root),
         text=True,
         capture_output=True,
         timeout=timeout_s,

@@ -351,3 +351,92 @@ def test_dev_hub_start_bat_launches_dev_hub_only() -> None:
     assert '-Action dev-hub-start -Root' in dev_hub_start
     assert 'MAIN_COMPUTER_DEV_HUB_START_TIMEOUT_SECONDS=20' in dev_hub_start
     assert 'start_v2.bat' not in dev_hub_start
+
+def test_start_path_starts_explicit_podman_machine_without_docker_host_bridge() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert "function Ensure-MainComputerPodmanMachineStarted" in helper
+    assert "function Resolve-MainComputerPodmanCommand" in helper
+    assert 'Join-Path $env:LOCALAPPDATA "Programs\\Podman\\podman.exe"' in helper
+    assert '-Arguments @("ps")' in helper
+    assert '-Arguments @("machine", "start")' in helper
+    assert '-Arguments @("machine", "init")' in helper
+
+    assert "$env:DOCKER_HOST" not in helper
+    assert "DOCKER_HOST =" not in helper
+
+    assert helper.index("Ensure-MainComputerPodmanMachineStarted $LaunchContext") < helper.index(
+        "$runtime = Get-MainComputerContainerRuntime $RootPath $PythonCommand"
+    )
+    assert "Podman runtime selected; ensuring the Podman machine is running." in helper
+    assert "Podman was selected, but the Podman runtime is still not reachable after attempting to start its machine" in helper
+
+
+def test_dev_hub_only_path_preflights_explicit_podman_runtime() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    dev_hub_only = helper[
+        helper.index("function Start-MainComputerDevHubOnly"):
+        helper.index("function Show-MainComputerStatus")
+    ]
+    assert "Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride" in dev_hub_only
+    assert "Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand" in dev_hub_only
+    assert dev_hub_only.index(
+        "Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride"
+    ) < dev_hub_only.index(
+        "Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand"
+    )
+    assert dev_hub_only.index(
+        "Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand"
+    ) < dev_hub_only.index("Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand")
+
+
+def test_start_path_preserves_caller_container_runtime_override_after_launcher_env() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert "function Get-MainComputerCallerContainerRuntimeOverride" in helper
+    assert "function Restore-MainComputerCallerContainerRuntimeOverride" in helper
+    assert 'Set-MainComputerLaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTAINER_RUNTIME" $RuntimeOverride' in helper
+
+    start_function = helper[
+        helper.index("function Start-MainComputer("):
+        helper.index("function Start-MainComputerDevHubOnly")
+    ]
+    assert start_function.index("$callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride") < start_function.index(
+        "Set-MainComputerLaunchEnvironment $launchContext"
+    )
+    assert start_function.index("Set-MainComputerLaunchEnvironment $launchContext") < start_function.index(
+        "Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride"
+    )
+    assert start_function.index("Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride") < start_function.index(
+        "Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand"
+    )
+
+
+def test_status_and_stop_preserve_caller_container_runtime_override_for_onlyoffice() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    status_function = helper[
+        helper.index("function Show-MainComputerStatus"):
+        helper.index("function Get-PidFromPayload")
+    ]
+    assert "Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride" in status_function
+    assert status_function.index("Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride") < status_function.index(
+        'Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "status"'
+    )
+
+    stop_function = helper[helper.index("function Stop-MainComputer("):]
+    assert "Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride" in stop_function
+    assert stop_function.index("Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride") < stop_function.index(
+        'Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "stop"'
+    )
+
+
+def test_onlyoffice_status_reports_container_runtime_not_docker_bridge() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert "ONLYOFFICE container control:" in helper
+    assert "runtime={2}" in helper
+    assert "ONLYOFFICE Docker control:" not in helper
+    assert "$env:DOCKER_HOST" not in helper
+

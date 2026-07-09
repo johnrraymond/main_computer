@@ -16,11 +16,13 @@ from main_computer.applications_service import (
 class FakeApplicationsRunner:
     def __init__(self, *, docker_failures_before_ready: int = 0) -> None:
         self.calls: list[list[str]] = []
+        self.kwargs_list: list[dict[str, object]] = []
         self.docker_failures_before_ready = docker_failures_before_ready
         self.docker_version_attempts = 0
 
     def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(command)
+        self.kwargs_list.append(dict(kwargs))
         if len(command) >= 2 and command[0] in {"docker", "podman"} and command[1] == "version":
             self.docker_version_attempts += 1
             if self.docker_version_attempts <= self.docker_failures_before_ready:
@@ -161,6 +163,31 @@ def test_applications_service_uses_podman_runtime_when_requested(monkeypatch, tm
     assert ["podman", "version"] in runner.calls
     compose_up_calls = [call for call in runner.calls if call[:2] == ["podman", "compose"] and "up" in call]
     assert compose_up_calls
+
+def test_applications_service_runs_podman_subprocesses_outside_install_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    repo = make_repo(tmp_path)
+    runner = FakeApplicationsRunner()
+
+    service = ApplicationsService(root=repo, runner=runner, sleep_func=lambda _: None, output_func=None)
+    state = service.boot()
+
+    assert state["ok"] is True
+    protected_cwd_calls = [
+        (command, kwargs)
+        for command, kwargs in zip(runner.calls, runner.kwargs_list)
+        if Path(str(kwargs.get("cwd"))) == repo
+    ]
+    assert protected_cwd_calls == []
+    podman_or_helper_cwds = [
+        Path(str(kwargs.get("cwd")))
+        for command, kwargs in zip(runner.calls, runner.kwargs_list)
+        if (command and command[0] == "podman")
+        or (len(command) >= 2 and str(command[1]).endswith("coolify-local-docker.py"))
+    ]
+    assert podman_or_helper_cwds
+    assert all(cwd == repo.parent for cwd in podman_or_helper_cwds)
+
 
 def test_boot_does_not_start_docker_onlyoffice_after_coolify(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)

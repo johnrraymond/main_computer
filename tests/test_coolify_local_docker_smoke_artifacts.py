@@ -91,6 +91,42 @@ def load_local_docker_module():
     return module
 
 
+
+
+def test_local_docker_run_launches_podman_from_repo_parent(monkeypatch) -> None:
+    module = load_local_docker_module()
+    captured: dict[str, object] = {}
+
+    def fake_subprocess_run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return module.subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_subprocess_run)
+
+    module.run(["podman", "version"], check=False)
+
+    assert captured["command"] == ["podman", "version"]
+    assert Path(str(captured.get("cwd"))) == module.repo_root().parent
+
+
+def test_local_docker_run_leaves_docker_cwd_inherited(monkeypatch) -> None:
+    module = load_local_docker_module()
+    captured: dict[str, object] = {}
+
+    def fake_subprocess_run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return module.subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_subprocess_run)
+
+    module.run(["docker", "version"], check=False)
+
+    assert captured["command"] == ["docker", "version"]
+    assert captured.get("cwd") is None
+
+
 def test_local_docker_compose_up_retries_stale_name_conflict_without_deleting_volumes(monkeypatch, tmp_path: Path) -> None:
     module = load_local_docker_module()
     conflict_output = """

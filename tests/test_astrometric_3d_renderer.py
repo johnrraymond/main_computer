@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 
 from main_computer.astrometric_renderer_service import AstrometricRendererService
+from main_computer.container_runtime import ContainerRuntime
 from main_computer.viewport_route_dispatch import APPLICATION_ROUTE_NAMES, _application_route_target
 from main_computer.viewport_routes_astrometric import ViewportAstrometricRoutesMixin
 
@@ -38,15 +39,31 @@ def test_astrometric_docker_lifecycle_is_page_scoped(tmp_path: Path):
     assert str(tmp_path / "docker-compose.astrometric.yml") in command
 
 
-def test_astrometric_container_runtime_can_use_podman_for_compose_and_direct_calls(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+def test_astrometric_container_runtime_can_use_podman_for_direct_calls(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "main_computer.astrometric_renderer_service.resolve_container_runtime",
+        lambda **_kwargs: ContainerRuntime("podman", ("podman",), ("podman-compose",), "test"),
+    )
     service = AstrometricRendererService(tmp_path)
 
-    compose = service._compose_command("ps", "-a")
     direct = service._docker_base()
 
-    assert compose[:2] == ["podman", "compose"]
     assert direct == ["podman"]
+
+
+def test_astrometric_runtime_resolution_does_not_require_compose_for_direct_podman(tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    def fake_resolve(**kwargs):
+        calls.append(kwargs)
+        return ContainerRuntime("podman", ("podman",), ("podman-compose",), "test")
+
+    monkeypatch.setattr("main_computer.astrometric_renderer_service.resolve_container_runtime", fake_resolve)
+    service = AstrometricRendererService(tmp_path)
+
+    assert service._docker_base() == ["podman"]
+    assert calls
+    assert calls[-1]["require_compose"] is False
 
 
 def test_astrometric_compose_override_infers_podman_direct_command(tmp_path: Path, monkeypatch):
@@ -61,7 +78,10 @@ def test_astrometric_compose_override_infers_podman_direct_command(tmp_path: Pat
 def test_astrometric_status_reports_container_runtime_without_breaking_docker_key(tmp_path: Path, monkeypatch):
     service = AstrometricRendererService(tmp_path)
     (tmp_path / "docker-compose.astrometric.yml").write_text("services: {}\n", encoding="utf-8")
-    monkeypatch.setenv("MAIN_COMPUTER_CONTAINER_RUNTIME", "podman")
+    monkeypatch.setattr(
+        "main_computer.astrometric_renderer_service.resolve_container_runtime",
+        lambda **_kwargs: ContainerRuntime("podman", ("podman",), ("podman-compose",), "test"),
+    )
     monkeypatch.setattr(service, "renderer_health", lambda **_kwargs: {"reachable": False, "stream_ready": False})
     monkeypatch.setattr(
         service,
@@ -89,7 +109,7 @@ def test_astrometric_status_reports_container_runtime_without_breaking_docker_ke
 
     assert status["docker"]["runtime"] == "podman"
     assert status["docker"]["container_command"] == ["podman"]
-    assert status["docker"]["compose_command"][:2] == ["podman", "compose"]
+    assert status["docker"]["compose_command"] == ["podman-compose"]
     assert status["container_runtime"]["runtime"] == "podman"
     assert status["docker"]["container"]["controlled_by_page"] is True
 
@@ -483,3 +503,99 @@ def test_astrometric_stop_detaches_mjpeg_with_blank_image():
     assert "const ASTROMETRIC_BLANK_IMAGE =" in script
     assert "astrometricStream.src = ASTROMETRIC_BLANK_IMAGE;" in script
     assert 'astrometricDetachStream("stopping renderer")' in script
+
+
+
+def test_astrometric_podman_gpu_start_uses_nvidia_cdi_device(tmp_path: Path, monkeypatch):
+    service = AstrometricRendererService(tmp_path)
+    (tmp_path / "docker-compose.astrometric.yml").write_text("services: {}\n", encoding="utf-8")
+    (tmp_path / "docker" / "astrometric-renderer").mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "main_computer.astrometric_renderer_service.resolve_container_runtime",
+        lambda **_kwargs: ContainerRuntime("podman", ("podman",), ("podman-compose",), "test"),
+    )
+
+    calls: list[list[str]] = []
+
+    def fake_run_direct(command, *, timeout=12.0, env_overrides=None):
+        calls.append(command)
+        joined = " ".join(command)
+        if "machine ssh" in joined:
+            return {"command": command, "returncode": 0, "stdout": "nvidia.com/gpu=all", "stderr": ""}
+        if "build" in command:
+            return {"command": command, "returncode": 0, "stdout": "", "stderr": ""}
+        if "rm" in command and "-f" in command:
+            return {"command": command, "returncode": 0, "stdout": "main-computer-astrometric-renderer", "stderr": ""}
+        if "run" in command:
+            return {"command": command, "returncode": 0, "stdout": "container-id", "stderr": ""}
+        return {"command": command, "returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(service, "_run_direct", fake_run_direct)
+
+    result = service._start_podman_renderer(
+        env_overrides={"ASTROMETRIC_RENDERER_MODE": "gpu", "ASTROMETRIC_RENDERER_BACKEND": "cuda"}
+    )
+
+    run_command = next(command for command in calls if "run" in command)
+    assert result["returncode"] == 0
+    assert "--device" in run_command
+    assert run_command[run_command.index("--device") + 1] == "nvidia.com/gpu=all"
+    assert "--security-opt" in run_command
+    assert run_command[run_command.index("--security-opt") + 1] == "label=disable"
+    assert "/dev/dxg" not in run_command
+    assert "/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" not in run_command
+
+
+def test_astrometric_podman_smoke_start_does_not_require_wsl_gpu_files(tmp_path: Path, monkeypatch):
+    service = AstrometricRendererService(tmp_path)
+    (tmp_path / "docker-compose.astrometric.yml").write_text("services: {}\n", encoding="utf-8")
+    (tmp_path / "docker" / "astrometric-renderer").mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "main_computer.astrometric_renderer_service.resolve_container_runtime",
+        lambda **_kwargs: ContainerRuntime("podman", ("podman",), ("podman-compose",), "test"),
+    )
+
+    calls: list[list[str]] = []
+
+    def fake_run_direct(command, *, timeout=12.0, env_overrides=None):
+        calls.append(command)
+        if "machine" in command and "ssh" in command:
+            raise AssertionError("smoke mode must not probe or require Podman CDI GPU support")
+        return {"command": command, "returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(service, "_run_direct", fake_run_direct)
+
+    result = service._start_podman_renderer(env_overrides={"ASTROMETRIC_RENDERER_MODE": "smoke"})
+    run_command = next(command for command in calls if "run" in command)
+
+    assert result["returncode"] == 0
+    assert "nvidia.com/gpu=all" not in run_command
+    assert "/dev/dxg" not in run_command
+    assert "/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" not in run_command
+
+
+def test_astrometric_podman_cdi_gpu_args_are_default_even_when_probe_is_not_available(tmp_path: Path, monkeypatch):
+    service = AstrometricRendererService(tmp_path)
+
+    monkeypatch.setattr(
+        service,
+        "_podman_wsl_gpu_probe",
+        lambda: {"returncode": 1, "stderr": "nvidia-ctk cdi list not reachable from service"},
+    )
+
+    assert service._podman_wsl_gpu_run_args() == [
+        "--device",
+        "nvidia.com/gpu=all",
+        "--security-opt",
+        "label=disable",
+    ]
+
+
+def test_astrometric_podman_cdi_gpu_args_can_be_disabled(tmp_path: Path, monkeypatch):
+    service = AstrometricRendererService(tmp_path)
+    monkeypatch.setenv("ASTROMETRIC_RENDERER_PODMAN_CDI_GPU_ARGS", "off")
+    monkeypatch.setattr(service, "_run_direct", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled probe should not run")))
+
+    assert service._podman_wsl_gpu_run_args() == []

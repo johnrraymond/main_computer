@@ -16,7 +16,7 @@ import time
 from typing import Any, Callable
 from main_computer.main_log_hooks import install_main_log_hooks_from_env
 from main_computer.main_log_client import emit_main_log_text
-from main_computer.container_runtime import legacy_docker_command_override, resolve_container_runtime
+from main_computer.container_runtime import legacy_docker_command_override, podman_command_cwd, resolve_container_runtime
 
 from main_computer.service_control import complete_control_request, control_status, pending_control_requests
 
@@ -356,6 +356,7 @@ class ApplicationsService:
             container_command=legacy_docker_command_override(docker_command),
             probe=True,
         )
+        self.container_command_cwd = podman_command_cwd(self.root) if self.container_runtime.runtime == "podman" else self.root
         self.docker_command = " ".join(self.container_runtime.container_command)
         self.sleep = sleep_func or time.sleep
         self.time = time_func or time.monotonic
@@ -1146,7 +1147,7 @@ class ApplicationsService:
         cwd: Path | None = None,
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        run_cwd = cwd or self.root
+        run_cwd = cwd or self.container_command_cwd
         try:
             result = self.runner(
                 command,
@@ -1168,7 +1169,7 @@ class ApplicationsService:
             else:
                 stderr = timeout_message
             result = subprocess.CompletedProcess(command, 124, stdout=stdout, stderr=stderr)
-            self._emit_completed_process_to_main_log(result, cwd=cwd or self.root)
+            self._emit_completed_process_to_main_log(result, cwd=run_cwd)
             return result
         except OSError as exc:
             result = subprocess.CompletedProcess(
@@ -1177,7 +1178,7 @@ class ApplicationsService:
                 stdout="",
                 stderr=f"command failed to start: {_command_display(command)}: {exc}",
             )
-            self._emit_completed_process_to_main_log(result, cwd=cwd or self.root)
+            self._emit_completed_process_to_main_log(result, cwd=run_cwd)
             return result
         except subprocess.SubprocessError as exc:
             result = subprocess.CompletedProcess(
@@ -1186,7 +1187,7 @@ class ApplicationsService:
                 stdout="",
                 stderr=f"command failed: {_command_display(command)}: {exc}",
             )
-            self._emit_completed_process_to_main_log(result, cwd=cwd or self.root)
+            self._emit_completed_process_to_main_log(result, cwd=run_cwd)
             return result
 
     def _component(self, *, ok: bool, state: str, message: str, **extra: Any) -> dict[str, Any]:

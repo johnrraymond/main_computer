@@ -11,7 +11,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from main_computer.container_runtime import resolve_container_runtime, split_command_override
+from main_computer.container_runtime import podman_command_cwd, resolve_container_runtime, split_command_override
 
 
 DEFAULT_RENDERER_PORT = 8794
@@ -19,6 +19,7 @@ DEFAULT_RENDERER_HOST = "127.0.0.1"
 COMPOSE_FILENAME = "docker-compose.astrometric.yml"
 COMPOSE_PROJECT_NAME = "main-computer-astrometric"
 CONTAINER_NAME = "main-computer-astrometric-renderer"
+IMAGE_NAME = "main-computer/astrometric-renderer:local"
 
 
 @dataclass(frozen=True)
@@ -52,10 +53,91 @@ class AstrometricRendererService:
         return f"http://{self.host}:{self.port}"
 
     def _container_runtime(self):
-        return resolve_container_runtime(cwd=self.repo_root)
+        # Podman Astrometric uses direct build/run/inspect commands, not Compose.
+        # Do not reject an otherwise working Podman CLI just because
+        # podman-compose is absent from this caller's PATH.
+        return resolve_container_runtime(cwd=self.repo_root, require_compose=False)
+
+    def _container_command_cwd(self):
+        runtime = self._container_runtime()
+        if runtime.runtime == "podman":
+            return podman_command_cwd(self.repo_root) or self.repo_root.parent
+        return self.repo_root
+
+    def _podman_build_context(self) -> Path:
+        return self.repo_root / "docker" / "astrometric-renderer"
+
+    def _podman_extra_run_args(self, render_env: dict[str, str] | None = None) -> list[str]:
+        value = os.environ.get("ASTROMETRIC_RENDERER_PODMAN_ARGS", "")
+        args = [*self._split_command_override(value)]
+        effective_env = render_env or self._renderer_env()
+        renderer_mode = str(effective_env.get("ASTROMETRIC_RENDERER_MODE", "gpu")).strip().lower()
+        if renderer_mode == "gpu":
+            args.extend(self._podman_wsl_gpu_run_args())
+            gpu_value = os.environ.get("ASTROMETRIC_RENDERER_PODMAN_GPU_ARGS", "")
+            args.extend(self._split_command_override(gpu_value))
+        return args
 
     def _split_command_override(self, value: str) -> list[str]:
         return split_command_override(value)
+
+    def _podman_wsl_gpu_probe(self) -> dict[str, Any]:
+        """Detect NVIDIA CDI GPU support inside the Podman machine.
+
+        A plain WSL ``/dev/dxg`` bind mount is not enough for CUDA containers on
+        Windows Podman.  The Podman machine needs the NVIDIA Container Toolkit to
+        generate a CDI spec, and GPU containers should be started with
+        ``--device nvidia.com/gpu=all``.  Probe for that CDI spec without pulling
+        images or involving Docker.
+        """
+
+        override = self._podman_auto_gpu_args_override().lower()
+        if override in {"0", "false", "no", "off", "disable", "disabled"}:
+            return {"available": False, "disabled": True}
+
+        return self._run_direct(
+            [
+                *self._docker_base(),
+                "machine",
+                "ssh",
+                "--",
+                "bash",
+                "-lc",
+                "test -r /etc/cdi/nvidia.yaml || test -r /var/run/cdi/nvidia.yaml || "
+                "(command -v nvidia-ctk >/dev/null 2>&1 && nvidia-ctk cdi list 2>/dev/null | grep -Fxq 'nvidia.com/gpu=all')",
+            ],
+            timeout=8.0,
+        )
+
+    def _podman_auto_gpu_args_override(self) -> str:
+        """Return the configured automatic Podman GPU arg override, if any."""
+
+        return (
+            os.environ.get("ASTROMETRIC_RENDERER_PODMAN_CDI_GPU_ARGS")
+            or os.environ.get("ASTROMETRIC_RENDERER_PODMAN_WSL_GPU_ARGS")
+            or ""
+        ).strip()
+
+    def _podman_wsl_gpu_run_args(self) -> list[str]:
+        override = self._podman_auto_gpu_args_override()
+        if override:
+            if override.lower() in {"0", "false", "no", "off", "disable", "disabled"}:
+                return []
+            if override.lower() != "auto":
+                return self._split_command_override(override)
+
+        # Podman GPU support on Windows/WSL is a CDI contract, not a best-effort
+        # bind mount.  Do not silently fall back to starting a CUDA container
+        # without CDI when the probe is unavailable from the service process: that
+        # creates a healthy HTTP container whose render thread immediately dies
+        # with cudaErrorInsufficientDriver.  Start with the boring, explicit CDI
+        # args by default and let Podman fail the start action if CDI is missing.
+        return [
+            "--device",
+            "nvidia.com/gpu=all",
+            "--security-opt",
+            "label=disable",
+        ]
 
     def _docker_compose_base(self) -> list[str]:
         return list(self._container_runtime().compose_command)
@@ -99,7 +181,7 @@ class AstrometricRendererService:
         try:
             completed = subprocess.run(
                 command,
-                cwd=self.repo_root,
+                cwd=self._container_command_cwd(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -145,7 +227,7 @@ class AstrometricRendererService:
         try:
             completed = subprocess.run(
                 command,
-                cwd=self.repo_root,
+                cwd=self._container_command_cwd(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -261,6 +343,63 @@ class AstrometricRendererService:
             time.sleep(0.25)
         return best
 
+    def _start_podman_renderer(self, env_overrides: dict[str, str] | None = None) -> dict[str, Any]:
+        context = self._podman_build_context()
+        if not context.exists():
+            return {"returncode": 1, "error": f"missing astrometric renderer build context: {context}"}
+
+        build = self._run_direct(
+            [*self._docker_base(), "build", "-t", IMAGE_NAME, str(context)],
+            timeout=300.0,
+            env_overrides=env_overrides,
+        )
+        if build.get("returncode") != 0:
+            return {"returncode": build.get("returncode", 1), "build": build, "stage": "build"}
+
+        remove = self._try_docker("rm", "-f", CONTAINER_NAME, timeout=30)
+        render_env = self._renderer_env(env_overrides)
+        container_env = {
+            "ASTROMETRIC_RENDERER_BIND": "0.0.0.0",
+            "ASTROMETRIC_RENDERER_PORT": "8794",
+            "ASTROMETRIC_RENDERER_WIDTH": str(render_env.get("ASTROMETRIC_RENDERER_WIDTH", "640")),
+            "ASTROMETRIC_RENDERER_HEIGHT": str(render_env.get("ASTROMETRIC_RENDERER_HEIGHT", "360")),
+            "ASTROMETRIC_RENDERER_FPS": str(render_env.get("ASTROMETRIC_RENDERER_FPS", "10")),
+            "ASTROMETRIC_RENDERER_JPEG_QUALITY": str(render_env.get("ASTROMETRIC_RENDERER_JPEG_QUALITY", "86")),
+            "ASTROMETRIC_RENDERER_MODE": str(render_env.get("ASTROMETRIC_RENDERER_MODE", "gpu")),
+            "ASTROMETRIC_RENDERER_BACKEND": str(render_env.get("ASTROMETRIC_RENDERER_BACKEND", "cuda")),
+            "ASTROMETRIC_RENDERER_IDLE_STEPS": str(render_env.get("ASTROMETRIC_RENDERER_IDLE_STEPS", "1900")),
+            "ASTROMETRIC_RENDERER_MOVING_STEPS": str(render_env.get("ASTROMETRIC_RENDERER_MOVING_STEPS", "800")),
+            "ASTROMETRIC_RENDERER_IDLE_STEP_LENGTH": str(render_env.get("ASTROMETRIC_RENDERER_IDLE_STEP_LENGTH", "1.5e8")),
+            "ASTROMETRIC_RENDERER_MOVING_STEP_LENGTH": str(render_env.get("ASTROMETRIC_RENDERER_MOVING_STEP_LENGTH", "1.8e8")),
+            "NVIDIA_VISIBLE_DEVICES": str(render_env.get("NVIDIA_VISIBLE_DEVICES", "all")),
+            "NVIDIA_DRIVER_CAPABILITIES": str(render_env.get("NVIDIA_DRIVER_CAPABILITIES", "compute,utility")),
+            "CUDA_CACHE_PATH": "/tmp/nv/ComputeCache",
+        }
+        run_command = [
+            *self._docker_base(),
+            "run",
+            "-d",
+            "--name",
+            CONTAINER_NAME,
+            "--restart",
+            "no",
+            "-p",
+            f"{self.host}:{self.port}:8794",
+        ]
+        for key, value in container_env.items():
+            run_command.extend(["-e", f"{key}={value}"])
+        run_command.extend([*self._podman_extra_run_args(render_env), IMAGE_NAME])
+
+        run = self._run_direct(run_command, timeout=90.0, env_overrides=env_overrides)
+        return {
+            "returncode": run.get("returncode", 1),
+            "build": build,
+            "force_remove_container": remove,
+            "run": run,
+            "container_runtime": "podman-direct",
+        }
+
+
     def _stop_renderer_container(self) -> dict[str, Any]:
         """Stop the Astrometric renderer even if it was started by an older project name.
 
@@ -270,6 +409,18 @@ class AstrometricRendererService:
         mismatched project container, so follow it with a direct ``docker rm -f``
         for the single fixed Astrometric renderer container name.
         """
+
+        if self._container_runtime().runtime == "podman":
+            force_remove = self._try_docker("rm", "-f", CONTAINER_NAME, timeout=30)
+            stopped = self._wait_for_renderer_stopped(timeout=10.0)
+            remove_ok = force_remove.get("returncode") == 0 or self._container_absent_error(force_remove)
+            returncode = 0 if remove_ok and stopped.get("stopped") else 1
+            return {
+                "returncode": returncode,
+                "force_remove_container": force_remove,
+                "stopped": stopped,
+                "container_runtime": "podman-direct",
+            }
 
         compose_down = self._try_compose("down", "--remove-orphans", timeout=90)
         force_remove = self._try_docker("rm", "-f", CONTAINER_NAME, timeout=30)
@@ -383,10 +534,14 @@ class AstrometricRendererService:
         if not self.compose_file.exists():
             return diagnostics
 
+        runtime = self._container_runtime()
+        compose_ps = {"returncode": 0, "skipped": True, "reason": "podman direct mode does not use Compose"} if runtime.runtime == "podman" else self._try_compose("ps", "-a", "astrometric-renderer", timeout=10)
+        compose_logs = {"returncode": 0, "skipped": True, "reason": "podman direct mode does not use Compose"} if runtime.runtime == "podman" else self._try_compose("logs", "--tail", "220", "astrometric-renderer", timeout=10)
+        podman_wsl_gpu_probe = self._podman_wsl_gpu_probe() if runtime.runtime == "podman" else {"skipped": True, "reason": "docker runtime does not use WSL GPU passthrough args"}
         diagnostics.update(
             {
-                "compose_ps": self._try_compose("ps", "-a", "astrometric-renderer", timeout=10),
-                "compose_logs": self._try_compose("logs", "--tail", "220", "astrometric-renderer", timeout=10),
+                "compose_ps": compose_ps,
+                "compose_logs": compose_logs,
                 "docker_ps": self._try_docker(
                     "ps",
                     "-a",
@@ -413,6 +568,7 @@ class AstrometricRendererService:
                 ),
                 "docker_image": self._try_docker("image", "inspect", "main-computer/astrometric-renderer:local", timeout=8),
                 "docker_info": self._try_docker("info", "--format", "{{json .Runtimes}}", timeout=8),
+                "podman_wsl_gpu_probe": podman_wsl_gpu_probe,
             }
         )
         diagnostics.update(
@@ -427,7 +583,10 @@ class AstrometricRendererService:
             }
         )
         if include_config:
-            diagnostics["compose_config"] = self._try_compose("config", timeout=12)
+            if self._container_runtime().runtime == "podman":
+                diagnostics["compose_config"] = {"returncode": 0, "skipped": True, "reason": "podman direct mode does not use Compose"}
+            else:
+                diagnostics["compose_config"] = self._try_compose("config", timeout=12)
         if include_exec_probe:
             diagnostics["container_probe"] = self._try_docker(
                 "exec",
@@ -435,8 +594,10 @@ class AstrometricRendererService:
                 "sh",
                 "-lc",
                 "set -x; pwd; id; printenv | sort | grep -E 'ASTROMETRIC|NVIDIA|CUDA' || true; "
-                "ls -l /dev/nvidia* 2>&1 || true; "
-                "nvidia-smi -L 2>&1 || true; "
+                "printf 'LD_LIBRARY_PATH=%s\\n' \"$LD_LIBRARY_PATH\"; "
+                "ls -l /dev/dxg /dev/nvidia* 2>&1 || true; "
+                "ls -l /usr/lib/wsl/lib/libcuda.so.1 /usr/lib/wsl/lib/nvidia-smi 2>&1 || true; "
+                "/usr/lib/wsl/lib/nvidia-smi -L 2>&1 || nvidia-smi -L 2>&1 || true; "
                 "python3 - <<'PY' 2>/dev/null || true\nimport ctypes\nfor lib in ['libcuda.so.1', 'libcudart.so']:\n    try:\n        ctypes.CDLL(lib); print(lib, 'ok')\n    except Exception as exc:\n        print(lib, exc)\nPY\n"
                 "ldconfig -p 2>/dev/null | grep -E 'libcuda|libcudart|libnvidia' | head -80 || true; "
                 "ps -ef",
@@ -467,9 +628,10 @@ class AstrometricRendererService:
         compose_base = list(runtime.compose_command)
         container_base = list(runtime.container_command)
         try:
+            version_command = [*container_base, "version"] if runtime.runtime == "podman" else [*compose_base, "version"]
             completed = subprocess.run(
-                [*compose_base, "version"],
-                cwd=self.repo_root,
+                version_command,
+                cwd=self._container_command_cwd(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -525,13 +687,17 @@ class AstrometricRendererService:
         if action in {"start", "start-gpu"}:
             action = "start"
             start_env = {"ASTROMETRIC_RENDERER_MODE": "gpu", "ASTROMETRIC_RENDERER_BACKEND": "cuda"}
-            result = self._run_compose(
-                "up",
-                "-d",
-                "--build",
-                "--force-recreate",
-                "astrometric-renderer",
-                env_overrides=start_env,
+            result = (
+                self._start_podman_renderer(env_overrides=start_env)
+                if self._container_runtime().runtime == "podman"
+                else self._run_compose(
+                    "up",
+                    "-d",
+                    "--build",
+                    "--force-recreate",
+                    "astrometric-renderer",
+                    env_overrides=start_env,
+                )
             )
             if result.get("returncode", 1) == 0:
                 wait_health = self._wait_for_renderer(timeout=75.0)
@@ -543,28 +709,38 @@ class AstrometricRendererService:
                 "ASTROMETRIC_RENDERER_HEIGHT": "270",
                 "ASTROMETRIC_RENDERER_FPS": "6",
             }
-            result = self._run_compose(
-                "up",
-                "-d",
-                "--build",
-                "--force-recreate",
-                "astrometric-renderer",
-                env_overrides=start_env,
+            result = (
+                self._start_podman_renderer(env_overrides=start_env)
+                if self._container_runtime().runtime == "podman"
+                else self._run_compose(
+                    "up",
+                    "-d",
+                    "--build",
+                    "--force-recreate",
+                    "astrometric-renderer",
+                    env_overrides=start_env,
+                )
             )
             if result.get("returncode", 1) == 0:
                 wait_health = self._wait_for_renderer(timeout=40.0)
         elif action == "stop":
             result = self._stop_renderer_container()
         elif action == "restart":
-            down = self._run_compose("down", "--remove-orphans", timeout=90)
-            up = self._run_compose(
-                "up",
-                "-d",
-                "--build",
-                "--force-recreate",
-                "astrometric-renderer",
-                env_overrides={"ASTROMETRIC_RENDERER_MODE": "gpu", "ASTROMETRIC_RENDERER_BACKEND": "cuda"},
-            )
+            if self._container_runtime().runtime == "podman":
+                down = self._stop_renderer_container()
+                up = self._start_podman_renderer(
+                    env_overrides={"ASTROMETRIC_RENDERER_MODE": "gpu", "ASTROMETRIC_RENDERER_BACKEND": "cuda"}
+                )
+            else:
+                down = self._run_compose("down", "--remove-orphans", timeout=90)
+                up = self._run_compose(
+                    "up",
+                    "-d",
+                    "--build",
+                    "--force-recreate",
+                    "astrometric-renderer",
+                    env_overrides={"ASTROMETRIC_RENDERER_MODE": "gpu", "ASTROMETRIC_RENDERER_BACKEND": "cuda"},
+                )
             result = {"down": down, "up": up, "returncode": up.get("returncode", 1)}
             if result.get("returncode", 1) == 0:
                 wait_health = self._wait_for_renderer(timeout=75.0)
@@ -599,7 +775,7 @@ class AstrometricRendererService:
             else:
                 message = "Stop command ran, but Docker still reports the Astrometric renderer container as running."
         elif not compose_ok:
-            message = "Docker Compose command failed."
+            message = "Container command failed."
 
         return {
             "ok": ok,

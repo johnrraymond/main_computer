@@ -659,6 +659,12 @@ def test_python_windows_bootstrapper_is_boring_stage0_launcher() -> None:
     assert "[ValidateSet(\"docker\", \"podman\")]" in script
     assert "[string]$ContainerRuntime = \"docker\"" in script
     assert '"--container-runtime", $ContainerRuntime' in script
+    assert "$env:MAIN_COMPUTER_CONTAINER_RUNTIME = $ContainerRuntime" in script
+    assert "MAIN_COMPUTER_CONTAINER_COMMAND" in script
+    assert "MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND" in script
+    assert "MAIN_COMPUTER_DOCKER_COMMAND" in script
+    assert 'Remove-Item -LiteralPath "Env:\\$containerOverrideName" -ErrorAction SilentlyContinue' in script
+    assert script.index("$env:MAIN_COMPUTER_CONTAINER_RUNTIME = $ContainerRuntime") < script.index("& $pythonExe @driverArgs")
 
     forbidden = [
         "ensurepip",
@@ -672,6 +678,20 @@ def test_python_windows_bootstrapper_is_boring_stage0_launcher() -> None:
     ]
     for value in forbidden:
         assert value not in script
+
+
+def test_python_golden_path_installs_and_pins_native_podman_compose_provider() -> None:
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    cli = (ROOT / "main_computer" / "bootstrap" / "cli.py").read_text(encoding="utf-8")
+
+    assert "podman-compose" in requirements
+    assert "def podman_compose_provider_path" in cli
+    assert "def apply_podman_compose_provider_env" in cli
+    assert "PODMAN_COMPOSE_PROVIDER" in cli
+    assert '"podman-compose.exe"' in cli
+    assert 'env["PODMAN_COMPOSE_PROVIDER"] = str(podman_compose_provider_path(venv_python))' in cli
+    assert '$env:PODMAN_COMPOSE_PROVIDER = Join-Path (Split-Path -Parent $SelectedMode.PythonPath) "podman-compose.exe"' in cli
+    assert '"podman_compose_provider": str(podman_compose_provider_path(venv_python)) if args.container_runtime == "podman" else ""' in cli
 
 
 def test_python_windows_bootstrapper_rehomes_from_clean_export_by_default() -> None:
@@ -779,6 +799,21 @@ def test_python_bootstrap_installs_from_clean_archive_and_handles_long_windows_p
     assert "source_root.rglob" not in install_root
     assert "shutil.copy2(path, target)" not in install_root
 
+
+def test_install_archive_failure_twiddle_mirrors_python_archive_verify_without_move() -> None:
+    twiddle = (ROOT / "tools" / "twiddle-install-root-archive-failure.py").read_text(encoding="utf-8")
+
+    assert "Mirror the installer install-root archive step without moving the install root" in twiddle
+    assert "write_install_root_archive" in twiddle
+    assert 'zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED)' in twiddle
+    assert "verify_install_root_archive" in twiddle
+    assert "archive contains {len(entries)} file entries, expected {expected_file_count}" in twiddle
+    assert "archive reports {entry_bytes} uncompressed bytes, expected {expected_total_bytes}" in twiddle
+    assert "archive stream read returned {read_bytes} bytes, expected {expected_total_bytes}" in twiddle
+    assert "Archive verification failed; leaving existing install root in place" in twiddle
+    assert "Move step: skipped intentionally" in twiddle
+    assert "twiddle-probes" in twiddle
+    assert "shutil.move" not in twiddle
 
 def test_python_bootstrap_prunes_nested_install_artifacts_and_refuses_child_install_root(tmp_path) -> None:
     from main_computer.bootstrap.install_root import copy_clean_tree, iter_clean_tree_files, repo_path_allowed

@@ -113,6 +113,18 @@ ALLOWED_DIR_PATHS = {
     "runtime",
 }
 
+# Existing managed install roots can contain legacy runtime state from older
+# launchers. Those files are intentionally volatile: logs, service supervisor
+# state, and blockchain state may be updated by a still-running app while the
+# installer is preserving the old code tree. The installer still moves the full
+# old tree aside after the archive is verified; this list only controls the
+# safety zip used before that move.
+INSTALL_ROOT_ARCHIVE_BLOCKED_PREFIXES = (
+    "runtime/",
+)
+
+INSTALL_ROOT_ARCHIVE_ALLOWED_EXACT_PATHS: set[str] = set()
+
 
 def normalize_repo_path(path: str | os.PathLike[str]) -> str:
     return os.fspath(path).replace("\\", "/").strip("/")
@@ -155,6 +167,25 @@ def repo_path_allowed(repo_path: str, *, is_dir: bool) -> bool:
         if name in BLOCKED_FILE_NAMES:
             return False
         if Path(name).suffix in BLOCKED_EXTENSIONS:
+            return False
+
+    return True
+
+
+
+
+def install_root_archive_path_allowed(repo_path: str, *, is_dir: bool) -> bool:
+    """Return True for existing-install paths safe to include in preservation zips."""
+
+    del is_dir
+    repo_path = normalize_repo_path(repo_path)
+    if not repo_path:
+        return True
+    if repo_path in INSTALL_ROOT_ARCHIVE_ALLOWED_EXACT_PATHS:
+        return True
+
+    for prefix in INSTALL_ROOT_ARCHIVE_BLOCKED_PREFIXES:
+        if repo_path == prefix.rstrip("/") or repo_path.startswith(prefix):
             return False
 
     return True
@@ -306,37 +337,63 @@ def install_archive_root(destination_root: Path) -> Path:
     return destination_root.parent / ".main-computer-install-archives" / destination_root.name
 
 
+def iter_install_root_archive_files(source_root: Path):
+    """Yield stable files to include in an existing-install preservation zip."""
+
+    source_root = source_root.resolve()
+
+    for dirpath, dirnames, filenames in os.walk(source_root):
+        current_dir = Path(dirpath)
+        if current_dir == source_root:
+            current_relative = ""
+        else:
+            current_relative = normalize_repo_path(current_dir.relative_to(source_root))
+
+        if current_relative and not install_root_archive_path_allowed(current_relative, is_dir=True):
+            dirnames[:] = []
+            continue
+
+        kept_dirnames = []
+        for dirname in sorted(dirnames):
+            child_relative = normalize_repo_path(
+                f"{current_relative}/{dirname}" if current_relative else dirname
+            )
+            if install_root_archive_path_allowed(child_relative, is_dir=True):
+                kept_dirnames.append(dirname)
+        dirnames[:] = kept_dirnames
+
+        for filename in sorted(filenames):
+            relative = normalize_repo_path(
+                f"{current_relative}/{filename}" if current_relative else filename
+            )
+            if not install_root_archive_path_allowed(relative, is_dir=False):
+                continue
+
+            path = current_dir / filename
+            if path.is_file():
+                yield path, relative
+
+
 def install_tree_file_summary(root: Path) -> tuple[int, int]:
-    """Return the file count and total bytes for an existing install tree."""
+    """Return the preservable file count and total bytes for an existing install tree."""
 
     file_count = 0
     total_bytes = 0
-    for dirpath, _dirnames, filenames in os.walk(root):
-        current_dir = Path(dirpath)
-        for filename in filenames:
-            path = current_dir / filename
-            if path.is_file():
-                file_count += 1
-                total_bytes += path.stat().st_size
+    for path, _relative in iter_install_root_archive_files(root):
+        file_count += 1
+        total_bytes += path.stat().st_size
 
     return file_count, total_bytes
 
 
 def write_install_root_archive(source_root: Path, archive_path: Path) -> None:
-    """Write a complete backup archive of an existing install root."""
+    """Write a stable preservation archive of an existing install root."""
 
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    source_root = source_root.resolve()
 
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for dirpath, _dirnames, filenames in os.walk(source_root):
-            current_dir = Path(dirpath)
-            for filename in sorted(filenames):
-                path = current_dir / filename
-                if not path.is_file():
-                    continue
-                relative = normalize_repo_path(path.relative_to(source_root))
-                archive.write(windows_long_path(path), relative)
+        for path, relative in iter_install_root_archive_files(source_root):
+            archive.write(windows_long_path(path), relative)
 
 
 def verify_install_root_archive(archive_path: Path, *, expected_file_count: int, expected_total_bytes: int) -> str:
@@ -400,6 +457,11 @@ def protect_existing_install_root(destination_root: Path) -> dict[str, object] |
     print(f"  Source:  {destination_root}", flush=True)
     print(f"  Archive: {zip_path}", flush=True)
     print(f"  Move to: {moved_path}", flush=True)
+    print(
+        "  Archive note: volatile install-root runtime paths are excluded from the pre-move safety zip; "
+        "the full old tree is still moved aside after verification.",
+        flush=True,
+    )
 
     try:
         write_install_root_archive(destination_root, zip_path)

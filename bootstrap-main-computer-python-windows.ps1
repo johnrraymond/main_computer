@@ -663,6 +663,22 @@ try {
     }
     Write-Host ""
 
+    # The installer-selected runtime must win over stale user/machine
+    # environment from prior dev sessions.  Otherwise a machine with
+    # MAIN_COMPUTER_CONTAINER_RUNTIME=podman can fail even when the installer
+    # selected and verified Docker.
+    $env:MAIN_COMPUTER_CONTAINER_RUNTIME = $ContainerRuntime
+    foreach ($containerOverrideName in @(
+        "MAIN_COMPUTER_CONTAINER_COMMAND",
+        "MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND",
+        "MAIN_COMPUTER_DOCKER_COMMAND",
+        "MAIN_COMPUTER_DOCKER",
+        "MAIN_COMPUTER_DOCKER_COMPOSE",
+        "MAIN_COMPUTER_DOCKER_COMPOSE_COMMAND"
+    )) {
+        Remove-Item -LiteralPath "Env:\$containerOverrideName" -ErrorAction SilentlyContinue
+    }
+
     & $pythonExe @driverArgs
     $driverExitCode = $LASTEXITCODE
     if ($null -eq $driverExitCode) {

@@ -345,6 +345,127 @@ function Copy-RepoPayload {
     Copy-DirectoryFiltered -SourceDir $RepoRoot -DestinationDir $PayloadRoot -RepoRoot $RepoRoot
 }
 
+function Assert-PayloadFileStagedFromRepo {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$PayloadRoot,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [string[]]$RequiredMarkers = @()
+    )
+
+    $nativeRelativePath = $RelativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    $repoFile = Join-Path $RepoRoot $nativeRelativePath
+    $payloadFile = Join-Path $PayloadRoot $nativeRelativePath
+
+    if (-not (Test-Path -LiteralPath $repoFile -PathType Leaf)) {
+        Fail "NSIS payload staging source is missing: $RelativePath ($repoFile)"
+    }
+    if (-not (Test-Path -LiteralPath $payloadFile -PathType Leaf)) {
+        Fail "NSIS payload staging missing staged copy: $RelativePath ($payloadFile). The installer would package incomplete payload. Aborting."
+    }
+
+    $repoHash = (Get-FileHash -LiteralPath $repoFile -Algorithm SHA256).Hash
+    $payloadHash = (Get-FileHash -LiteralPath $payloadFile -Algorithm SHA256).Hash
+    if ($repoHash -ne $payloadHash) {
+        Fail "NSIS payload staging mismatch for ${RelativePath}: repo hash ${repoHash}; stage hash ${payloadHash}. The installer would package stale payload. Aborting."
+    }
+
+    if ($RequiredMarkers.Count -gt 0) {
+        $payloadText = [System.IO.File]::ReadAllText($payloadFile)
+        foreach ($marker in $RequiredMarkers) {
+            if (-not $payloadText.Contains($marker)) {
+                Fail "NSIS payload staging marker missing for ${RelativePath}: ${marker}. The installer would package stale or incomplete payload. Aborting."
+            }
+        }
+    }
+
+    return [ordered]@{
+        relativePath = $RelativePath
+        sha256 = $payloadHash
+    }
+}
+
+function Assert-RepoPayloadStagingIntegrity {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$PayloadRoot
+    )
+
+    $criticalPayloadFiles = @(
+        @{
+            RelativePath = "scripts/main-computer-start-stop.ps1"
+            RequiredMarkers = @(
+                "Ensure-MainComputerPodmanMachineStarted",
+                "podman machine start",
+                "MAIN_COMPUTER_CONTAINER_RUNTIME"
+            )
+        },
+        @{
+            RelativePath = "bootstrap-main-computer-python-windows.ps1"
+            RequiredMarkers = @(
+                "The installer-selected runtime must win over stale user/machine",
+                "MAIN_COMPUTER_CONTAINER_RUNTIME",
+                "MAIN_COMPUTER_CONTAINER_COMMAND"
+            )
+        },
+        @{
+            RelativePath = "requirements.txt"
+            RequiredMarkers = @(
+                "podman-compose"
+            )
+        },
+        @{
+            RelativePath = "main_computer/bootstrap/cli.py"
+            RequiredMarkers = @(
+                "podman_compose_provider_path",
+                "PODMAN_COMPOSE_PROVIDER",
+                "apply_podman_compose_provider_env"
+            )
+        },
+        @{
+            RelativePath = "main_computer/bootstrap/install_root.py"
+            RequiredMarkers = @(
+                "INSTALL_ROOT_ARCHIVE_BLOCKED_PREFIXES",
+                "iter_install_root_archive_files",
+                "Archive note"
+            )
+        },
+        @{
+            RelativePath = "main_computer/container_runtime.py"
+            RequiredMarkers = @(
+                "podman_command_cwd",
+                "MAIN_COMPUTER_PODMAN_COMMAND_CWD",
+                "win-sshproxy.exe"
+            )
+        },
+        @{
+            RelativePath = "scripts/windows/build-main-computer-nsis-installer.experimental-v7.ps1"
+            RequiredMarkers = @(
+                "Assert-RepoPayloadStagingIntegrity",
+                "NSIS payload staging mismatch",
+                "The installer would package stale payload. Aborting."
+            )
+        }
+    )
+
+    $verified = @()
+    foreach ($file in $criticalPayloadFiles) {
+        $verified += Assert-PayloadFileStagedFromRepo `
+            -RepoRoot $RepoRoot `
+            -PayloadRoot $PayloadRoot `
+            -RelativePath $file["RelativePath"] `
+            -RequiredMarkers $file["RequiredMarkers"]
+    }
+
+    Write-Host "Verified NSIS payload staging integrity for critical files:"
+    foreach ($file in $verified) {
+        Write-Host ("  {0} sha256={1}" -f $file["relativePath"], $file["sha256"])
+    }
+
+    return $verified
+}
+
+
 function Write-PackageWrapper {
     param([Parameter(Mandatory = $true)][string]$WrapperPath)
 
@@ -487,6 +608,7 @@ function Refresh-CommonToolPaths {
     Add-ProcessPathIfPresent -Directory "${env:ProgramFiles(x86)}\Git\bin"
     Add-ProcessPathIfPresent -Directory "$env:LOCALAPPDATA\Programs\Ollama"
     Add-ProcessPathIfPresent -Directory "$env:ProgramFiles\Ollama"
+    Add-ProcessPathIfPresent -Directory "$env:LOCALAPPDATA\Programs\Podman"
     Add-ProcessPathIfPresent -Directory "$env:SystemRoot\System32\OpenSSH"
     Add-ProcessPathIfPresent -Directory "$env:SystemRoot\Sysnative\OpenSSH"
     Add-ProcessPathIfPresent -Directory "$env:LOCALAPPDATA\Microsoft\WindowsApps"
@@ -570,6 +692,7 @@ function Resolve-ContainerRuntimeCli {
 
     if ($Runtime -eq "podman") {
         return Resolve-ApplicationCommand -Name "podman" -CandidatePaths @(
+            "$env:LOCALAPPDATA\Programs\Podman\podman.exe",
             "$env:ProgramFiles\RedHat\Podman\podman.exe",
             "$env:ProgramFiles\Podman\podman.exe",
             "${env:ProgramFiles(x86)}\RedHat\Podman\podman.exe",
@@ -722,18 +845,19 @@ function Fail-ContainerRuntimeRequirement {
         Write-RequirementLog -LogPath $LogPath -Message "After installing one runtime, one of these command sets should work:"
         Write-RequirementLog -LogPath $LogPath -Message "  docker version ; docker compose version ; docker ps"
         Write-RequirementLog -LogPath $LogPath -Message "  podman version ; podman compose version ; podman ps"
-        throw "No working Docker-compatible container runtime was auto-detected. Install/start Docker Desktop or install/initialize Podman, then rerun this installer."
+        Write-RequirementLog -LogPath $LogPath -Message "No working Docker-compatible container runtime was auto-detected."
+        exit 43
     }
 
     if ($Runtime -eq "podman") {
-        Write-RequirementLog -LogPath $LogPath -Message "The installer Podman runtime choice requires Podman to be installed and available on PATH."
+        Write-RequirementLog -LogPath $LogPath -Message "The installer Podman runtime choice requires Podman to be installed and resolvable on PATH or in the standard per-user Podman install directory."
         Write-RequirementLog -LogPath $LogPath -Message "Install guide: $podmanInstallUrl"
         Write-RequirementLog -LogPath $LogPath -Message ""
         Write-RequirementLog -LogPath $LogPath -Message "After installing Podman, these commands should work:"
         Write-RequirementLog -LogPath $LogPath -Message "  podman version"
         Write-RequirementLog -LogPath $LogPath -Message "  podman compose version   # or: podman-compose version"
         Write-RequirementLog -LogPath $LogPath -Message "  podman ps"
-        throw "The installer Podman runtime choice requires a working Podman CLI. Install Podman from $podmanInstallUrl, start/initialize it once, then rerun this installer."
+        exit 43
     }
 
     Write-RequirementLog -LogPath $LogPath -Message "Docker Desktop is the default container runtime for the NSIS installer unless Podman is selected on the installer runtime page."
@@ -744,7 +868,7 @@ function Fail-ContainerRuntimeRequirement {
     Write-RequirementLog -LogPath $LogPath -Message "  docker version"
     Write-RequirementLog -LogPath $LogPath -Message "  docker compose version"
     Write-RequirementLog -LogPath $LogPath -Message "  docker ps"
-    throw "Docker Desktop is required by default. Install Docker Desktop from $dockerInstallUrl, start it once, or rerun this installer and select Podman after installing/initializing Podman."
+    exit 43
 }
 
 function Assert-ContainerRuntimeRequirement {
@@ -795,6 +919,57 @@ function Install-WingetPackage {
         "--accept-source-agreements",
         "--silent"
     ) -Check | Out-Null
+
+    Refresh-CommonToolPaths
+}
+
+function Install-PodmanWithWinget {
+    param([Parameter(Mandatory = $true)][string]$LogPath)
+
+    $errors = New-Object System.Collections.Generic.List[string]
+    foreach ($packageId in @("Podman.CLI", "RedHat.Podman")) {
+        try {
+            Install-WingetPackage -LogPath $LogPath -PackageId $packageId -DisplayName "Podman"
+            return
+        }
+        catch {
+            $message = $_.Exception.Message
+            $errors.Add("${packageId}: ${message}") | Out-Null
+            Write-RequirementLog -LogPath $LogPath -Message "Podman winget package attempt failed for ${packageId}: ${message}"
+        }
+    }
+
+    throw "Podman could not be installed with winget. Attempts: $($errors -join ' ; ')"
+}
+
+function Ensure-PodmanRequirement {
+    param([Parameter(Mandatory = $true)][string]$LogPath)
+
+    $podman = Resolve-ContainerRuntimeCli -Runtime "podman"
+    if ([string]::IsNullOrWhiteSpace($podman)) {
+        Write-RequirementLog -LogPath $LogPath -Message "Podman was selected but podman.exe was not found. Attempting winget install."
+        Install-PodmanWithWinget -LogPath $LogPath
+        Refresh-CommonToolPaths
+        $podman = Resolve-ContainerRuntimeCli -Runtime "podman"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($podman)) {
+        Write-RequirementLog -LogPath $LogPath -Message "Podman was installed or requested, but podman.exe could not be found afterward. Expected locations include `%LOCALAPPDATA%\Programs\Podman\podman.exe`."
+        exit 43
+    }
+
+    Write-RequirementLog -LogPath $LogPath -Message "Podman CLI: $podman"
+
+    $inspect = Invoke-ToolCapture -LogPath $LogPath -FilePath $podman -Arguments @("machine", "inspect")
+    if ([int]$inspect.ExitCode -ne 0) {
+        Write-RequirementLog -LogPath $LogPath -Message "No initialized Podman machine was detected. Running podman machine init."
+        Invoke-ToolCapture -LogPath $LogPath -FilePath $podman -Arguments @("machine", "init") -Check | Out-Null
+    }
+
+    $start = Invoke-ToolCapture -LogPath $LogPath -FilePath $podman -Arguments @("machine", "start")
+    if ([int]$start.ExitCode -ne 0) {
+        Write-RequirementLog -LogPath $LogPath -Message "podman machine start did not complete cleanly. The final runtime check will report whether Podman is usable."
+    }
 
     Refresh-CommonToolPaths
 }
@@ -959,6 +1134,9 @@ function Invoke-HostRequirementPreparation {
         Write-RequirementLog -LogPath $LogPath -Message "Skipping container runtime requirement check because -SkipDockerRequirement was set."
     }
     else {
+        if ($SelectedRuntime -eq "podman") {
+            Ensure-PodmanRequirement -LogPath $LogPath
+        }
         Assert-ContainerRuntimeRequirement -LogPath $LogPath -SelectedRuntime $SelectedRuntime
     }
 
@@ -1050,6 +1228,26 @@ if ($null -eq $powershellCommand -or [string]::IsNullOrWhiteSpace($powershellCom
 
 $argumentLine = ($bootstrapArgs | ForEach-Object { Quote-ProcessArgument ([string]$_) }) -join " "
 
+# The installer-selected runtime must win over stale inherited environment
+# variables.  The Python bootstrap and installed services still receive an
+# explicit --container-runtime argument, but the lower-level resolver also
+# honors MAIN_COMPUTER_CONTAINER_RUNTIME for spawned helpers.
+Write-LogLine -LogPath $logPath -Message "Fencing container runtime environment for Python bootstrap child: MAIN_COMPUTER_CONTAINER_RUNTIME=$EffectiveContainerRuntime"
+$env:MAIN_COMPUTER_CONTAINER_RUNTIME = $EffectiveContainerRuntime
+foreach ($containerOverrideName in @(
+    "MAIN_COMPUTER_CONTAINER_COMMAND",
+    "MAIN_COMPUTER_CONTAINER_COMPOSE_COMMAND",
+    "MAIN_COMPUTER_DOCKER_COMMAND",
+    "MAIN_COMPUTER_DOCKER",
+    "MAIN_COMPUTER_DOCKER_COMPOSE",
+    "MAIN_COMPUTER_DOCKER_COMPOSE_COMMAND"
+)) {
+    if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($containerOverrideName, "Process"))) {
+        Write-LogLine -LogPath $logPath -Message "Ignoring inherited $containerOverrideName because installer selected container runtime $EffectiveContainerRuntime."
+    }
+    [Environment]::SetEnvironmentVariable($containerOverrideName, $null, "Process")
+}
+
 Write-Host "Running packaged Main Computer Python installer from:"
 Write-Host "  $payloadRoot"
 Write-Host "Python bootstrap log:"
@@ -1080,6 +1278,32 @@ if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
 }
 if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
     $stderrText = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+}
+
+$combinedBootstrapOutput = "$stdoutText`n$stderrText"
+if ($exitCode -ne 0 -and $combinedBootstrapOutput.IndexOf("Archive verification failed", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    Write-Host ""
+    Write-Host "Detected install-root archive verification failure; returning installer-specific exit code 61."
+    Write-LogLine -LogPath $logPath -Message "Detected install-root archive verification failure; returning installer-specific exit code 61."
+    $exitCode = 61
+}
+elseif ($exitCode -ne 0 -and $combinedBootstrapOutput.IndexOf("Could not archive existing install root", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    Write-Host ""
+    Write-Host "Detected install-root archive preservation failure; returning installer-specific exit code 61."
+    Write-LogLine -LogPath $logPath -Message "Detected install-root archive preservation failure; returning installer-specific exit code 61."
+    $exitCode = 61
+}
+elseif ($exitCode -ne 0 -and $combinedBootstrapOutput.IndexOf("ContainerRuntimeResolutionError", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    Write-Host ""
+    Write-Host "Detected container runtime resolution failure; returning installer-specific exit code 43."
+    Write-LogLine -LogPath $logPath -Message "Detected container runtime resolution failure; returning installer-specific exit code 43."
+    $exitCode = 43
+}
+elseif ($exitCode -ne 0 -and $combinedBootstrapOutput.IndexOf("MAIN_COMPUTER_CONTAINER_RUNTIME=", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    Write-Host ""
+    Write-Host "Detected container runtime selection failure; returning installer-specific exit code 43."
+    Write-LogLine -LogPath $logPath -Message "Detected container runtime selection failure; returning installer-specific exit code 43."
+    $exitCode = 43
 }
 
 Write-LogBlock -LogPath $logPath -Title "stdout" -Text $stdoutText
@@ -1172,7 +1396,6 @@ Var ContainerRuntimeArg
 Var ContainerRuntimeName
 
 Page custom ModePage ModePageLeave
-Page custom ContainerRuntimePage ContainerRuntimePageLeave
 Page instfiles
 
 Function .onInit
@@ -1197,26 +1420,35 @@ Function ModePage
     Abort
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 0 100% 24u "Choose which Main Computer mode to install."
+  ${NSD_CreateLabel} 0 0 100% 16u "Choose the Main Computer install mode and container runtime."
   Pop $0
 
-  ${NSD_CreateRadioButton} 0 32u 100% 12u "Main Computer - Unleashed"
+  ${NSD_CreateLabel} 0 20u 100% 10u "Install mode"
+  Pop $0
+
+  ${NSD_CreateRadioButton} 0 34u 100% 12u "Main Computer - Unleashed"
   Pop $ModeRadioUnleashed
-  ${NSD_CreateLabel} 16u 46u 92% 18u "Full normal mode for regular local use."
-  Pop $0
 
-  ${NSD_CreateRadioButton} 0 70u 100% 12u "Main Computer - Debug"
+  ${NSD_CreateRadioButton} 0 52u 100% 12u "Main Computer - Debug"
   Pop $ModeRadioDebug
-  ${NSD_CreateLabel} 16u 84u 92% 18u "Debug-oriented mode with separate ports and state."
-  Pop $0
 
-  ${NSD_CreateRadioButton} 0 108u 100% 12u "Main Computer - Safe"
+  ${NSD_CreateRadioButton} 0 70u 100% 12u "Main Computer - Safe"
   Pop $ModeRadioSafe
-  ${NSD_CreateLabel} 16u 122u 92% 18u "Conservative mode with separate safe ports and state."
+
+  ${NSD_CreateCheckbox} 0 92u 100% 12u "Create a desktop shortcut that starts Main Computer and opens the browser"
+  Pop $DesktopShortcutCheckbox
+
+  ${NSD_CreateLabel} 0 120u 100% 10u "Docker-compatible container runtime"
   Pop $0
 
-  ${NSD_CreateCheckbox} 0 154u 100% 12u "Create a desktop shortcut that starts Main Computer and opens the browser"
-  Pop $DesktopShortcutCheckbox
+  ${NSD_CreateRadioButton} 0 134u 100% 12u "Auto-detect on this computer"
+  Pop $ContainerRuntimeRadioAuto
+
+  ${NSD_CreateRadioButton} 0 152u 100% 12u "Docker Desktop"
+  Pop $ContainerRuntimeRadioDocker
+
+  ${NSD_CreateRadioButton} 0 170u 100% 12u "Podman"
+  Pop $ContainerRuntimeRadioPodman
 
   ${If} $InstallModeKey == "debug"
     ${NSD_Check} $ModeRadioDebug
@@ -1228,6 +1460,14 @@ Function ModePage
 
   ${If} $ShouldCreateDesktopShortcut == "1"
     ${NSD_Check} $DesktopShortcutCheckbox
+  ${EndIf}
+
+  ${If} $ContainerRuntimeArg == "podman"
+    ${NSD_Check} $ContainerRuntimeRadioPodman
+  ${ElseIf} $ContainerRuntimeArg == "docker"
+    ${NSD_Check} $ContainerRuntimeRadioDocker
+  ${Else}
+    ${NSD_Check} $ContainerRuntimeRadioAuto
   ${EndIf}
 
   nsDialogs::Show
@@ -1259,43 +1499,6 @@ Function ModePageLeave
     StrCpy $ShouldCreateDesktopShortcut "0"
   ${EndIf}
 
-  Call ResolveSelectedInstallRoot
-FunctionEnd
-
-Function ContainerRuntimePage
-  nsDialogs::Create 1018
-  Pop $ContainerRuntimeDialog
-
-  ${If} $ContainerRuntimeDialog == error
-    Abort
-  ${EndIf}
-
-  ${NSD_CreateLabel} 0 0 100% 22u "Choose the Docker-compatible container runtime for this install."
-
-  ${NSD_CreateRadioButton} 0 28u 100% 12u "Auto-detect on this computer"
-  Pop $ContainerRuntimeRadioAuto
-  ${NSD_CreateLabel} 16u 42u 92% 22u "Recommended. The installer probes this machine and uses Docker Desktop or Podman only if it is working."
-
-  ${NSD_CreateRadioButton} 0 74u 100% 12u "Docker Desktop"
-  Pop $ContainerRuntimeRadioDocker
-  ${NSD_CreateLabel} 16u 88u 92% 20u "Require Docker Desktop installed, initialized, and running."
-
-  ${NSD_CreateRadioButton} 0 116u 100% 12u "Podman"
-  Pop $ContainerRuntimeRadioPodman
-  ${NSD_CreateLabel} 16u 130u 92% 24u "Require Podman installed, initialized, and available through podman compose or podman-compose."
-
-  ${If} $ContainerRuntimeArg == "podman"
-    ${NSD_Check} $ContainerRuntimeRadioPodman
-  ${ElseIf} $ContainerRuntimeArg == "docker"
-    ${NSD_Check} $ContainerRuntimeRadioDocker
-  ${Else}
-    ${NSD_Check} $ContainerRuntimeRadioAuto
-  ${EndIf}
-
-  nsDialogs::Show
-FunctionEnd
-
-Function ContainerRuntimePageLeave
   ${NSD_GetState} $ContainerRuntimeRadioPodman $0
   ${If} $0 == ${BST_CHECKED}
     StrCpy $ContainerRuntimeArg "podman"
@@ -1310,6 +1513,31 @@ Function ContainerRuntimePageLeave
       StrCpy $ContainerRuntimeName "Auto-detect"
     ${EndIf}
   ${EndIf}
+
+  Call ResolveSelectedInstallRoot
+FunctionEnd
+
+Function CreateMainComputerModeShortcuts
+  SetShellVarContext current
+
+  CreateDirectory "$SMPROGRAMS\Main Computer"
+  CreateShortCut "$SMPROGRAMS\Main Computer\Main Computer - $ShortcutModeName.lnk" "$ResolvedInstallRoot\start_v2.bat" "-OpenBrowser" "$ResolvedInstallRoot\start_v2.bat" 0
+
+  ${If} $ShouldCreateDesktopShortcut == "1"
+    CreateShortCut "$DESKTOP\Main Computer - $ShortcutModeName.lnk" "$ResolvedInstallRoot\start_v2.bat" "-OpenBrowser" "$ResolvedInstallRoot\start_v2.bat" 0
+  ${EndIf}
+FunctionEnd
+
+Function un.RemoveMainComputerModeShortcuts
+  SetShellVarContext current
+
+  Delete "$SMPROGRAMS\Main Computer\Main Computer - Unleashed.lnk"
+  Delete "$SMPROGRAMS\Main Computer\Main Computer - Debug.lnk"
+  Delete "$SMPROGRAMS\Main Computer\Main Computer - Safe.lnk"
+
+  Delete "$DESKTOP\Main Computer - Unleashed.lnk"
+  Delete "$DESKTOP\Main Computer - Debug.lnk"
+  Delete "$DESKTOP\Main Computer - Safe.lnk"
 FunctionEnd
 
 Section "Install Main Computer package files" SecInstall
@@ -1351,8 +1579,19 @@ Section "Run Main Computer Python installer" SecBootstrap
   Pop $0
 
   StrCmp $0 "0" bootstrap_ok
+  StrCmp $0 "43" bootstrap_runtime_failed
+  StrCmp $0 "61" bootstrap_archive_failed
+    MessageBox MB_ICONSTOP "Main Computer installer failed with exit code $0.$\r$\n$\r$\nThis was not classified as a container runtime failure. See installer details and log files under:$\r$\n$INSTDIR\logs"
+    Abort "Main Computer installer failed with exit code $0. See $INSTDIR\logs."
+
+  bootstrap_runtime_failed:
     MessageBox MB_ICONSTOP "Main Computer installer failed with exit code $0.$\r$\n$\r$\nContainer runtime selection: $ContainerRuntimeName.$\r$\nNo selected or auto-detected Docker-compatible container runtime is ready.$\r$\n$\r$\nDocker Desktop: install/start Docker Desktop for Windows.$\r$\nPodman: install/initialize Podman or select Podman explicitly on the runtime page.$\r$\n$\r$\nSee installer details and log files under:$\r$\n$INSTDIR\logs"
     Abort "Main Computer installer failed with exit code $0. See $INSTDIR\logs."
+
+  bootstrap_archive_failed:
+    MessageBox MB_ICONSTOP "Main Computer installer failed with exit code $0.$\r$\n$\r$\nThe existing install root could not be archived and verified before replacement, so it was left in place.$\r$\n$\r$\nThis is not a Docker/Podman runtime failure. Close running Main Computer windows and rerun the installer, or remove the managed install slot manually after backing up anything you need.$\r$\n$\r$\nSee installer details and log files under:$\r$\n$INSTDIR\logs"
+    Abort "Main Computer installer failed with exit code $0. See $INSTDIR\logs."
+
   bootstrap_ok:
 
   DetailPrint "Creating shortcut: Main Computer - $ShortcutModeName"
@@ -1404,7 +1643,7 @@ $wrapperPath = Join-Path $stageRootFull "Install-MainComputer-from-Package.nsis-
 
 $compiler = Resolve-MakeNsisCompiler -RequestedCompiler $MakeNsisCompiler
 
-Write-Section "Preparing experimental NSIS installer payload (v6)"
+Write-Section "Preparing experimental NSIS installer payload (v7)"
 if (Test-Path -LiteralPath $stageRootFull) {
     Remove-DirectoryLongPath -Path $stageRootFull
 }
@@ -1412,6 +1651,7 @@ New-DirectoryLongPath -Path $stageRootFull
 New-DirectoryLongPath -Path $outputRootFull
 
 Copy-RepoPayload -RepoRoot $repoRoot -PayloadRoot $payloadRoot
+$payloadIntegrity = Assert-RepoPayloadStagingIntegrity -RepoRoot $repoRoot -PayloadRoot $payloadRoot
 Write-PackageWrapper -WrapperPath $wrapperPath
 Write-NsisDefinition -NsiPath $nsiDefinition
 
@@ -1424,8 +1664,10 @@ $packageJson = [ordered]@{
     nsisCompiler = $compiler.Path
     nsisVersion = $compiler.Version
     payloadRoot = "payload/main_computer_test"
+    payloadIntegrityVerified = $payloadIntegrity
     hostRequirementsPolicy = [ordered]@{
         containerRuntime = "required; installer defaults to target-machine auto-detect; Docker Desktop and Podman can be selected explicitly; setup-maker environment variables are ignored; fail with runtime-specific install guidance when unusable"
+        podmanCompose = "installed into the Main Computer Python venv from requirements.txt and pinned through PODMAN_COMPOSE_PROVIDER when Podman is selected so Podman does not delegate Compose to Docker Desktop"
         git = "install or repair with winget when missing"
         opensshClient = "install or repair Windows OpenSSH Client capability when ssh/scp/ssh-keygen are missing"
         ollama = "install or repair with winget when missing; warn if local API is not reachable after install"
@@ -1444,14 +1686,20 @@ $packageJson = [ordered]@{
         "runtime",
         "energy_credits"
     )
-} | ConvertTo-Json -Depth 4
+} | ConvertTo-Json -Depth 6
 $packageJson | Set-Content -LiteralPath (Join-Path $stageRootFull "installer-package.json") -Encoding UTF8
 
-Write-Section "Compiling experimental NSIS setup EXE (v6)"
+Write-Section "Compiling experimental NSIS setup EXE (v7)"
 Write-Host "NSIS compiler: $($compiler.Path)"
 Write-Host "NSIS version:  $($compiler.Version)"
 Write-Host "Definition:    $nsiDefinition"
 Write-Host "Output root:   $outputRootFull"
+
+$expectedExe = Join-Path $outputRootFull "MainComputer-$Version-Setup.exe"
+if (Test-Path -LiteralPath $expectedExe -PathType Leaf) {
+    Write-Host "Removing stale setup EXE before compile: $expectedExe"
+    Remove-Item -LiteralPath $expectedExe -Force
+}
 
 $nsisArgs = @(
     "/V2",
@@ -1466,10 +1714,9 @@ if ($LASTEXITCODE -ne 0) {
     Fail "makensis failed with exit code $LASTEXITCODE"
 }
 
-$expectedExe = Join-Path $outputRootFull "MainComputer-$Version-Setup.exe"
 if (-not (Test-Path -LiteralPath $expectedExe -PathType Leaf)) {
     Fail "NSIS completed but the expected setup EXE was not found: $expectedExe"
 }
 
-Write-Section "Experimental NSIS installer ready (v6)"
+Write-Section "Experimental NSIS installer ready (v7)"
 Write-Host $expectedExe
