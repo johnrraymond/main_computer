@@ -447,7 +447,11 @@ def test_semantic_primitives_are_generic_and_composable():
         assert audit["missingPrimitives"] == []
         assert audit["primitiveEdgeCount"] >= 5
         assert audit["inferredLayoutGrammar"]
-        assert audit["note"] == "Inferred from generic MCEL primitives; no high-level app archetype was used."
+        assert "no high-level app archetype" in audit["note"]
+        assert audit["presentationSets"]
+        assert audit["presentationSetCount"] >= 2
+        assert audit["qualityCounts"]["phase"] >= 1
+        assert audit["qualityCounts"]["relationshipStrength"] >= 1
 
         for node in hierarchy["nodes"]:
             semantics = node.get("semantics", {})
@@ -461,6 +465,11 @@ def test_semantic_primitives_are_generic_and_composable():
     assert "data-mc-proves=" in html
     assert "data-mc-growth=" in html
     assert "data-mc-scroll-policy=" in html
+    assert "data-mc-phase=" in html
+    assert "data-mc-presentation-set=" in html
+    assert "data-mc-relationship-strength=" in html
+    assert "data-mc-hard-constraints=" in html
+    assert "data-mc-soft-preferences=" in html
     assert "data-mc-app-archetype" not in html
     assert "data-mc-primary-grammar" not in html
 
@@ -500,6 +509,8 @@ def test_semantic_contract_audit_marks_missing_generic_primitives():
     assert "workspace declares generic growth/density behavior" in audit["missingPrimitives"]
     assert "command controls workspace" in audit["missingPrimitives"]
     assert "status confirms workspace.state" in audit["missingPrimitives"]
+    assert any("presentation sets" in item for item in audit["missingPrimitives"])
+    assert any("relationship edges declare generic strength" in item for item in audit["missingPrimitives"])
 
 
 def test_write_reports_lists_generic_semantic_contract_audit(tmp_path):
@@ -553,6 +564,18 @@ def test_write_reports_lists_generic_semantic_contract_audit(tmp_path):
                     "status confirms workspace.state",
                     "evidence proves workspace.claim",
                 ],
+                "presentationSets": [
+                    {"phase": "default", "requiredSlots": ["command", "workspace", "status"]},
+                    {"phase": "confirmation", "requiredSlots": ["command", "workspace", "status", "evidence"]},
+                ],
+                "qualityCounts": {
+                    "phase": 3,
+                    "availability": 3,
+                    "presentationSet": 3,
+                    "relationshipStrength": 3,
+                    "hardConstraints": 2,
+                    "softPreferences": 3,
+                },
             }
         ],
         "bestByHierarchyViewport": [],
@@ -568,6 +591,8 @@ def test_write_reports_lists_generic_semantic_contract_audit(tmp_path):
     assert "state=`complete`" in text
     assert "Missing primitives: `none`" in text
     assert "command controls workspace" in text
+    assert "Presentation sets" in text
+    assert "Generic quality tags" in text
 
 
 def test_semantic_contract_fit_rewards_generic_spatial_relationships():
@@ -715,3 +740,80 @@ def test_apply_semantic_contract_fit_updates_selection_score_without_claiming_pe
     assert classification["selectionScore"] == classification["score"]
     assert classification["contractFitState"] in {"strongContractFit", "usableContractFit"}
     assert any("generic contract fit" in reason for reason in classification["positiveReasons"])
+
+
+def test_presentation_sets_are_generic_phase_contracts():
+    module = load_module()
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "terminal-console-workbench")
+
+    sets = module.semantic_presentation_sets(hierarchy)
+    by_phase = {item["phase"]: item for item in sets}
+
+    assert "default" in by_phase
+    assert "confirmation" in by_phase
+    assert "proof-review" in by_phase
+    assert hierarchy["focusSlot"] in by_phase["default"]["requiredSlots"]
+    assert "status" in by_phase["confirmation"]["requiredSlots"]
+    assert all("app" not in item["phase"] for item in sets)
+
+
+def test_hard_contract_risks_cap_contract_fit_without_eliminating_flog_options():
+    module = load_module()
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "terminal-console-workbench")
+
+    def record(slot, left, top, width, height):
+        return {
+            "slot": slot,
+            "rect": {
+                "left": left,
+                "top": top,
+                "right": left + width,
+                "bottom": top + height,
+                "width": width,
+                "height": height,
+                "area": width * height,
+            },
+        }
+
+    weak_measurement = {
+        "hierarchyId": "terminal-console-workbench",
+        "candidate": "synthetic-weak",
+        "viewportProfile": "desktop",
+        "geometryFacts": {
+            "root": {
+                "clipped": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 1000,
+                    "bottom": 600,
+                    "width": 1000,
+                    "height": 600,
+                    "area": 600000,
+                }
+            },
+            "focusShare": 0.20,
+            "desiredFocusShare": 0.62,
+            "minFocusShare": 0.50,
+        },
+        "examples": {
+            "nodes": [
+                record("command", 0, 0, 180, 50),
+                record("terminal", 760, 470, 200, 80),
+                record("records", 0, 520, 180, 60),
+                record("detail", 240, 0, 200, 60),
+                record("status", 0, 560, 180, 30),
+                record("evidence", 470, 0, 200, 60),
+            ]
+        },
+        "classification": {"score": 86, "status": "pass", "warnings": [], "positiveReasons": [], "failureReasons": [], "reviewNotes": []},
+        "snapshots": {},
+    }
+
+    module.apply_semantic_contract_fit(hierarchy, weak_measurement)
+    fit = weak_measurement["contractFit"]
+
+    assert fit["hardRiskCount"] >= 1
+    assert fit["score"] <= 62
+    assert fit["contractLimits"]
+    assert weak_measurement["classification"]["status"] in {"watch", "fail"}
+    assert weak_measurement["classification"]["hardContractRiskCount"] >= 1

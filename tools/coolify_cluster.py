@@ -560,6 +560,7 @@ def hub_args_for_cluster(args: argparse.Namespace, packet_path: Path) -> argpars
         allow_missing_bridge_signer=args.allow_missing_bridge_signer,
         enable_smoke_bridge=args.enable_smoke_bridge,
         enable_bridge_writes=args.enable_bridge_writes,
+        no_bridge_writes=args.no_bridge_writes,
         sync_bridge_signer=args.sync_bridge_signer,
         bridge_signer_source_manifest=args.bridge_signer_source_manifest,
         bridge_controller_wallet_path=args.bridge_controller_wallet_path,
@@ -1198,6 +1199,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-missing-bridge-signer", action="store_true")
     parser.add_argument("--enable-smoke-bridge", action="store_true")
     parser.add_argument("--enable-bridge-writes", action="store_true")
+    parser.add_argument("--no-bridge-writes", action="store_true", help="Do not infer or sync bridge signer material even when a local hub_admin manifest exists.")
     parser.add_argument("--sync-bridge-signer", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--bridge-signer-source-manifest", default="", help=argparse.SUPPRESS)
     parser.add_argument("--bridge-controller-wallet-path", default="", help=argparse.SUPPRESS)

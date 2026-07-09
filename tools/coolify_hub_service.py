@@ -685,6 +685,8 @@ def hub_enable_bridge_writes(args: argparse.Namespace | None = None) -> bool:
 
     if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
         return False
+    if bool(getattr(args, "no_bridge_writes", False)):
+        return False
     if bool(getattr(args, "enable_bridge_writes", False)):
         return True
     return str(os.environ.get("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES") or "").strip().lower() in {
@@ -699,6 +701,8 @@ def bridge_signer_sync_requested(args: argparse.Namespace | None = None) -> bool
     """Return whether the standard deploy path should push signer material through Coolify."""
 
     if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
+        return False
+    if bool(getattr(args, "no_bridge_writes", False)):
         return False
     return bool(getattr(args, "sync_bridge_signer", False)) or hub_enable_bridge_writes(args)
 
@@ -730,6 +734,48 @@ def bridge_signer_source_manifest_path(profile: HubNetworkProfile, args: argpars
     explicit = str(getattr(args, "bridge_signer_source_manifest", "") or "").strip()
     path = Path(explicit) if explicit else REPO_ROOT / "runtime" / "deployments" / profile.network_key / "latest.json"
     return path if path.is_absolute() else REPO_ROOT / path
+
+
+def _source_manifest_has_hub_admin(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and isinstance(payload.get("hub_admin"), dict)
+
+
+def bridge_signer_source_manifest_available(profile: HubNetworkProfile, args: argparse.Namespace) -> bool:
+    """Return whether the default/private source manifest is present enough to infer signer sync."""
+
+    path = bridge_signer_source_manifest_path(profile, args)
+    return path.is_file() and _source_manifest_has_hub_admin(path)
+
+
+def apply_bridge_signer_defaults(profile: HubNetworkProfile, args: argparse.Namespace) -> None:
+    """Default contract Hub deploys into signer-enabled mode when local signer metadata exists.
+
+    The private ``runtime/deployments/<network>/latest.json`` manifest is still
+    validated later by ``build_bridge_signer_bundle`` before any deploy is
+    triggered.  This helper only chooses the safer default mode for operators
+    who already have local ``hub_admin`` signer metadata.
+    """
+
+    if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
+        return
+    if bool(getattr(args, "no_bridge_writes", False)):
+        return
+    if hub_enable_smoke_bridge(args):
+        return
+    if bool(getattr(args, "allow_missing_bridge_signer", False)):
+        return
+    if hub_enable_bridge_writes(args):
+        args.sync_bridge_signer = True
+        return
+    if bridge_signer_source_manifest_available(profile, args):
+        args.enable_bridge_writes = True
+        args.sync_bridge_signer = True
+        if not str(getattr(args, "bridge_signer_source_manifest", "") or "").strip():
+            args.bridge_signer_source_manifest = str(Path("runtime") / "deployments" / profile.network_key / "latest.json")
 
 
 def _looks_like_address(value: object) -> bool:
@@ -796,20 +842,34 @@ def _build_bridge_signer_bundle_payload(profile: HubNetworkProfile, args: argpar
 
     explicit_wallet = str(getattr(args, "bridge_controller_wallet_path", "") or "").strip()
     wallet_path_text = explicit_wallet or str(hub_admin.get("wallet_path") or "").strip()
-    if not wallet_path_text:
-        raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_admin.wallet_path: {manifest_path}")
-    wallet_path = _resolve_local_runtime_path(wallet_path_text, manifest_path=manifest_path)
-    wallet = _load_json_object(wallet_path, label="bridge controller wallet")
-    wallet_address = str(wallet.get("address") or "").strip()
-    private_key = str(wallet.get("private_key") or "").strip()
-    if not _looks_like_address(wallet_address):
-        raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid address: {wallet_path}")
-    if wallet_address.lower() != controller_address.lower():
-        raise CoolifyHubDeployError(
-            f"bridge controller wallet address does not match hub_admin.address: {wallet_address} != {controller_address}"
-        )
+    inline_private_key = str(hub_admin.get("private_key") or "").strip()
+    wallet_path: Path | None = None
+    wallet_source = "hub_admin.private_key"
+    if wallet_path_text:
+        wallet_path = _resolve_local_runtime_path(wallet_path_text, manifest_path=manifest_path)
+        if wallet_path.exists():
+            wallet = _load_json_object(wallet_path, label="bridge controller wallet")
+            wallet_address = str(wallet.get("address") or "").strip()
+            private_key = str(wallet.get("private_key") or "").strip()
+            if not _looks_like_address(wallet_address):
+                raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid address: {wallet_path}")
+            if wallet_address.lower() != controller_address.lower():
+                raise CoolifyHubDeployError(
+                    f"bridge controller wallet address does not match hub_admin.address: {wallet_address} != {controller_address}"
+                )
+            if not _looks_like_private_key(private_key):
+                raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid private_key: {wallet_path}")
+            wallet_source = str(wallet_path)
+        elif inline_private_key:
+            private_key = inline_private_key
+        else:
+            raise CoolifyHubDeployError(f"missing bridge controller wallet file: {wallet_path}")
+    elif inline_private_key:
+        private_key = inline_private_key
+    else:
+        raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_admin.wallet_path or hub_admin.private_key: {manifest_path}")
     if not _looks_like_private_key(private_key):
-        raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid private_key: {wallet_path}")
+        raise CoolifyHubDeployError(f"hub_admin.private_key in bridge signer source manifest is not a valid private key: {manifest_path}")
 
     chain = manifest.get("chain") if isinstance(manifest.get("chain"), dict) else {}
     escrow = _contract_record_from_payload(manifest, "hub_credit_bridge_escrow")
@@ -856,7 +916,7 @@ def _build_bridge_signer_bundle_payload(profile: HubNetworkProfile, args: argpar
         },
         "source": {
             "manifest_path": str(manifest_path),
-            "wallet_path": str(wallet_path),
+            "wallet_path": wallet_source,
             "run_id": str(manifest.get("run_id") or ""),
             "schema": str(manifest.get("schema") or ""),
         },
@@ -2364,6 +2424,162 @@ def sync_service_env_var(
     raise CoolifyHubDeployError("Coolify service env sync failed on all known endpoints.")
 
 
+
+def list_application_envs(client: CoolifyClient, *, application_uuid: str, tried: list[dict[str, Any]]) -> tuple[CoolifyResponse, list[dict[str, Any]]]:
+    path = f"/api/v1/applications/{urllib.parse.quote(application_uuid)}/envs"
+    response = client.request("GET", path)
+    items = body_items(response.body, "envs", "environment_variables", "variables")
+    tried.append({"operation": "list-application-envs", "path": path, "response": redacted_response_to_dict(response), "count": len(items)})
+    return response, items
+
+
+def sync_application_env_var(
+    client: CoolifyClient,
+    *,
+    application_uuid: str,
+    key: str,
+    value: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create or update a Coolify Application runtime env variable without leaking its value to diagnostics."""
+
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise CoolifyHubDeployError("bridge signer env key must not be empty.")
+    list_response, env_items = list_application_envs(client, application_uuid=application_uuid, tried=tried)
+    existing_uuid = ""
+    for item in env_items:
+        if _env_item_key(item) == clean_key:
+            existing_uuid = _env_item_uuid(item)
+            break
+
+    base_payloads = [
+        {
+            "key": clean_key,
+            "value": value,
+            "is_build_time": False,
+            "is_runtime": True,
+            "is_literal": True,
+            "is_multiline": False,
+        },
+        {
+            "key": clean_key,
+            "value": value,
+            "is_build_time": False,
+            "is_preview": False,
+            "is_literal": True,
+            "is_multiline": False,
+        },
+        {"key": clean_key, "value": value},
+    ]
+    value_hash = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    value_bytes = len(value.encode("utf-8"))
+    create_path = f"/api/v1/applications/{urllib.parse.quote(application_uuid)}/envs"
+    key_update_path = f"{create_path}/{urllib.parse.quote(clean_key)}"
+
+    def try_update_env(update_paths: list[str], *, reason: str) -> dict[str, Any] | None:
+        seen_paths: set[str] = set()
+        for path in update_paths:
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            for payload in base_payloads:
+                response = client.request("PATCH", path, payload)
+                tried.append(
+                    {
+                        "operation": "update-application-env",
+                        "reason": reason,
+                        "method": "PATCH",
+                        "path": path,
+                        "payload_keys": sorted(payload),
+                        "response": redacted_response_to_dict(response),
+                    }
+                )
+                if response.ok:
+                    return {"ok": True, "action": "updated", "env_key": clean_key, "value_sha256": value_hash, "value_bytes": value_bytes}
+                if response.status == 405:
+                    response = client.request("PUT", path, payload)
+                    tried.append(
+                        {
+                            "operation": "update-application-env",
+                            "reason": reason,
+                            "method": "PUT",
+                            "path": path,
+                            "payload_keys": sorted(payload),
+                            "response": redacted_response_to_dict(response),
+                        }
+                    )
+                    if response.ok:
+                        return {"ok": True, "action": "updated", "env_key": clean_key, "value_sha256": value_hash, "value_bytes": value_bytes}
+                if response.status not in {400, 404, 405, 409, 422}:
+                    raise CoolifyHubDeployError(f"Coolify application env update failed with HTTP {response.status}: {response.body}")
+        return None
+
+    if list_response.ok and existing_uuid:
+        uuid_update_path = f"{create_path}/{urllib.parse.quote(existing_uuid)}"
+        result = try_update_env([uuid_update_path, key_update_path, create_path], reason="listed-existing-env")
+        if result is not None:
+            return result
+
+    saw_conflict = False
+    for payload in base_payloads:
+        response = client.request("POST", create_path, payload)
+        tried.append(
+            {
+                "operation": "create-application-env",
+                "method": "POST",
+                "path": create_path,
+                "payload_keys": sorted(payload),
+                "response": redacted_response_to_dict(response),
+            }
+        )
+        if response.ok:
+            return {"ok": True, "action": "created", "env_key": clean_key, "value_sha256": value_hash, "value_bytes": value_bytes}
+        if response.status == 409:
+            saw_conflict = True
+            result = try_update_env([key_update_path, create_path], reason="create-conflict")
+            if result is not None:
+                return result
+            continue
+        if response.status not in {400, 404, 405, 422}:
+            raise CoolifyHubDeployError(f"Coolify application env create failed with HTTP {response.status}: {response.body}")
+
+    if saw_conflict:
+        raise CoolifyHubDeployError("Coolify application env exists, but update failed on all known endpoints.")
+    raise CoolifyHubDeployError("Coolify application env sync failed on all known endpoints.")
+
+
+def sync_bridge_signer_application_env(
+    client: CoolifyClient,
+    profile: HubNetworkProfile,
+    args: argparse.Namespace,
+    *,
+    application_uuid: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    bundle = build_bridge_signer_bundle(profile, args)
+    sync = sync_application_env_var(
+        client,
+        application_uuid=application_uuid,
+        key=bundle["env_key"],
+        value=bundle["bundle_b64"],
+        tried=tried,
+    )
+    return {
+        "ok": True,
+        "env_key": bundle["env_key"],
+        "action": sync["action"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "bundle_bytes": bundle["bundle_bytes"],
+        "source_manifest": bundle["source_manifest"],
+        "wallet_path": bundle["wallet_path"],
+        "escrow_address": bundle["escrow_address"],
+        "bridge_controller_address": bundle["bridge_controller_address"],
+        "coolify_env_value_sha256": sync["value_sha256"],
+        "coolify_env_value_bytes": sync["value_bytes"],
+    }
+
+
 def sync_bridge_signer_env(
     client: CoolifyClient,
     profile: HubNetworkProfile,
@@ -2545,6 +2761,7 @@ def load_profile(args: argparse.Namespace, *, validate_deploy_args: bool = True)
 
 
 def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
+    apply_bridge_signer_defaults(profile, args)
     implementation = hub_implementation(args)
     runtime_dir = args.hub_runtime_dir or hub_state_mount_path(profile.network_key, implementation=implementation)
     service_name = args.coolify_application_name or hub_service_name(
@@ -3054,6 +3271,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Enable the non-smoke bridge signer path. The deployer syncs the bridge controller signer "
             "through Coolify service environment variables and the Hub fails closed if the signer is absent."
         ),
+    )
+    parser.add_argument(
+        "--no-bridge-writes",
+        action="store_true",
+        help="Do not infer or sync bridge signer material even when a local hub_admin manifest exists.",
     )
     parser.add_argument(
         "--sync-bridge-signer",

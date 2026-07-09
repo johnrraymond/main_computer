@@ -72,6 +72,12 @@ SEMANTIC_QUALITY_KEYS = (
     "layoutAffordance",
     "deferability",
     "scrollPolicy",
+    "phase",
+    "availability",
+    "presentationSet",
+    "relationshipStrength",
+    "hardConstraints",
+    "softPreferences",
 )
 
 LAYOUT_CANDIDATES = [
@@ -171,6 +177,118 @@ def _semantic_attr_name(key: str) -> str:
     return "data-mc-" + re.sub(r"(?<!^)([A-Z])", r"-\1", key).lower()
 
 
+def _relationship_strength_for_primitive(semantics: dict[str, Any], primitive: str) -> str:
+    """Return the declared generic strength for a primitive edge.
+
+    Strength is intentionally primitive-level, not app-level.  A node can say
+    that a `controls` edge is hard or a `proves` edge is conditional without
+    saying what application family it belongs to.
+    """
+
+    for value in _as_list(semantics.get("relationshipStrength")):
+        if ":" in value:
+            name, strength = value.split(":", 1)
+            if name == primitive:
+                return strength
+        elif value in {"hard", "strong", "medium", "weak", "conditional"}:
+            return value
+    if primitive in {"controls", "confirms"}:
+        return "strong"
+    if primitive in {"selects", "navigates", "scopes", "reflects"}:
+        return "medium"
+    if primitive == "proves":
+        return "conditional"
+    return "weak"
+
+
+def _strength_multiplier(strength: str) -> float:
+    return {
+        "hard": 1.45,
+        "strong": 1.22,
+        "medium": 1.0,
+        "conditional": 0.82,
+        "weak": 0.68,
+    }.get(strength, 1.0)
+
+
+def _is_hard_semantic_requirement(node: dict[str, Any], primitive: str | None = None) -> bool:
+    semantics = node.get("semantics") or {}
+    hard_constraints = set(_as_list(semantics.get("hardConstraints")))
+    if "must-remain-visible" in hard_constraints or "persistent-visibility" in hard_constraints:
+        return True
+    if "must-own-readable-space" in hard_constraints and primitive is None:
+        return True
+    if primitive:
+        strength = _relationship_strength_for_primitive(semantics, primitive)
+        return strength == "hard" or f"{primitive}:hard" in set(_as_list(semantics.get("relationshipStrength")))
+    return False
+
+
+def semantic_presentation_sets(hierarchy: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compose generic presentation sets from phase/availability tags.
+
+    This is the MBUI/PUC-style layer: it says which generic interaction pieces
+    must be co-present during a phase, without declaring an app archetype or a
+    final layout family.
+    """
+
+    focus_slot = hierarchy["focusSlot"]
+    phase_slots: dict[str, list[str]] = defaultdict(list)
+    required_by_phase: dict[str, list[str]] = defaultdict(list)
+    reasons: dict[str, list[str]] = defaultdict(list)
+
+    def add_unique(bucket: dict[str, list[str]], key: str, value: str) -> None:
+        if value not in bucket[key]:
+            bucket[key].append(value)
+
+    nodes = hierarchy.get("nodes", [])
+    always_visible = {
+        node["slot"]
+        for node in nodes
+        if "always-visible" in _as_list((node.get("semantics") or {}).get("persistence"))
+        or "must-remain-visible" in _as_list((node.get("semantics") or {}).get("hardConstraints"))
+    }
+
+    for node in nodes:
+        slot = node["slot"]
+        semantics = node.get("semantics") or {}
+        phases = _as_list(semantics.get("presentationSet")) or _as_list(semantics.get("phase")) or ["default"]
+        for phase in phases:
+            add_unique(phase_slots, phase, slot)
+            if (
+                slot == focus_slot
+                or slot in always_visible
+                or node.get("visibility") == "required"
+                or _is_hard_semantic_requirement(node)
+            ):
+                add_unique(required_by_phase, phase, slot)
+            availability = ", ".join(_as_list(semantics.get("availability")) or ["available"])
+            reasons[phase].append(f"{slot} is {availability} during {phase}")
+
+    all_phases = sorted(phase_slots)
+    for phase in all_phases:
+        add_unique(phase_slots, phase, focus_slot)
+        add_unique(required_by_phase, phase, focus_slot)
+        for slot in sorted(always_visible):
+            add_unique(phase_slots, phase, slot)
+            add_unique(required_by_phase, phase, slot)
+
+    sets: list[dict[str, Any]] = []
+    for phase in all_phases:
+        slots = phase_slots.get(phase, [])
+        required = required_by_phase.get(phase, [])
+        sets.append(
+            {
+                "phase": phase,
+                "slots": slots,
+                "requiredSlots": required,
+                "optionalSlots": [slot for slot in slots if slot not in required],
+                "reason": "; ".join(reasons.get(phase, [])[:4]),
+            }
+        )
+    return sets
+
+
 def enrich_nodes_with_semantic_primitives(nodes: list[dict[str, Any]], focus_slot: str) -> list[dict[str, Any]]:
     """Attach generic semantic relationship tags without hard-coding app archetypes.
 
@@ -248,6 +366,55 @@ def enrich_nodes_with_semantic_primitives(nodes: list[dict[str, Any]], focus_slo
             _add_semantic(semantics, "deferability", "deferable")
         elif node.get("visibility") == "required":
             _add_semantic(semantics, "deferability", "not-deferable")
+
+        if role == "command":
+            _add_semantic(semantics, "phase", ["prepare", "commit"])
+            _add_semantic(semantics, "presentationSet", ["default", "operation", "confirmation"])
+            _add_semantic(semantics, "availability", "active-control")
+            _add_semantic(semantics, "relationshipStrength", "controls:strong")
+            _add_semantic(semantics, "softPreferences", ["near-controlled-focus", "command-band-or-rail"])
+        elif role == "focus":
+            _add_semantic(semantics, "phase", ["work", "selection", "review"])
+            _add_semantic(semantics, "presentationSet", ["default", "operation", "selection", "confirmation", "proof-review"])
+            _add_semantic(semantics, "availability", "primary")
+            _add_semantic(semantics, "hardConstraints", "must-own-readable-space")
+            _add_semantic(semantics, "softPreferences", "dominant-owned-surface")
+        elif role == "navigation":
+            _add_semantic(semantics, "phase", ["scope", "selection"])
+            _add_semantic(semantics, "presentationSet", ["default", "selection"])
+            _add_semantic(semantics, "availability", "selection-scope")
+            _add_semantic(semantics, "relationshipStrength", ["navigates:strong", "scopes:strong", "selects:strong"])
+            _add_semantic(semantics, "softPreferences", ["side-rail-adjacency", "selection-near-focus"])
+        elif role == "collection":
+            _add_semantic(semantics, "phase", ["selection", "review"])
+            _add_semantic(semantics, "presentationSet", ["selection", "review"])
+            _add_semantic(semantics, "availability", "selection-source")
+            _add_semantic(semantics, "relationshipStrength", "selects:medium")
+            _add_semantic(semantics, "softPreferences", ["supporting-collection-adjacent", "selection-near-focus"])
+        elif role in {"detail", "inspector"}:
+            _add_semantic(semantics, "phase", ["selection-review", "inspection"])
+            _add_semantic(semantics, "presentationSet", ["selection", "review"])
+            _add_semantic(semantics, "availability", "selection-dependent")
+            _add_semantic(semantics, "relationshipStrength", ["reflects:medium", "consumes:medium"])
+            _add_semantic(semantics, "softPreferences", ["inspector-adjacent", "reflection-near-source"])
+        elif role == "status":
+            _add_semantic(semantics, "phase", ["confirmation", "state-review"])
+            _add_semantic(semantics, "presentationSet", ["default", "confirmation", "proof-review"])
+            _add_semantic(semantics, "availability", "always")
+            _add_semantic(semantics, "relationshipStrength", ["confirms:hard", "consumes:strong"])
+            _add_semantic(semantics, "hardConstraints", ["must-remain-visible", "persistent-visibility"])
+            _add_semantic(semantics, "softPreferences", "persistent-status-strip")
+        elif role == "evidence":
+            _add_semantic(semantics, "phase", ["proof-review", "confirmation"])
+            _add_semantic(semantics, "presentationSet", ["proof-review", "confirmation"])
+            _add_semantic(semantics, "availability", "claim-dependent")
+            _add_semantic(semantics, "relationshipStrength", ["proves:conditional", "consumes:conditional"])
+            _add_semantic(semantics, "softPreferences", ["secondary-proof-dock", "proof-near-claim"])
+
+        if node.get("visibility") == "required":
+            _add_semantic(semantics, "hardConstraints", "must-remain-visible")
+        elif node.get("visibility") == "companion":
+            _add_semantic(semantics, "softPreferences", "default-visible-companion")
 
         node["semantics"] = semantics
         enriched.append(node)
@@ -338,6 +505,25 @@ def semantic_contract_audit(hierarchy: dict[str, Any]) -> dict[str, Any]:
         primitive: sum(1 for edge in edges if edge["primitive"] == primitive)
         for primitive in SEMANTIC_RELATION_KEYS
     }
+    quality_counts = {
+        key: sum(1 for node in nodes if _as_list((node.get("semantics") or {}).get(key)))
+        for key in SEMANTIC_QUALITY_KEYS
+    }
+
+    presentation_sets = semantic_presentation_sets(hierarchy)
+    if not presentation_sets or not any(_as_list((node.get("semantics") or {}).get("presentationSet")) for node in nodes):
+        missing.append("generic presentation sets describe which regions co-exist during interaction phases")
+    if not any(_as_list((node.get("semantics") or {}).get("phase")) for node in nodes):
+        missing.append("nodes declare generic interaction phases")
+    if not any(_as_list((node.get("semantics") or {}).get("availability")) for node in nodes):
+        missing.append("nodes declare generic availability/dependency state")
+    if not any(_as_list((node.get("semantics") or {}).get("relationshipStrength")) for node in nodes):
+        missing.append("relationship edges declare generic strength")
+    if not any(_as_list((node.get("semantics") or {}).get("hardConstraints")) for node in nodes):
+        missing.append("hard visibility/ownership constraints are declared")
+    if not any(_as_list((node.get("semantics") or {}).get("softPreferences")) for node in nodes):
+        missing.append("soft layout preferences are declared")
+
     inferred_grammar: list[str] = []
     if has_edge("controls", focus_target=True) and has_edge("confirms", focus_target=True):
         inferred_grammar.append("controller-focus-confirmation")
@@ -359,13 +545,21 @@ def semantic_contract_audit(hierarchy: dict[str, Any]) -> dict[str, Any]:
         inferred_grammar.append("persistent-state-confirmation")
     if has_edge("emits", source=focus_slot) and has_edge("consumes"):
         inferred_grammar.append("emitted-state-consumption")
+    if presentation_sets:
+        inferred_grammar.append("phase-based-presentation-sets")
+    if any(
+        "hard" in " ".join(_as_list((node.get("semantics") or {}).get("relationshipStrength")))
+        or _as_list((node.get("semantics") or {}).get("hardConstraints"))
+        for node in nodes
+    ):
+        inferred_grammar.append("hard-soft-contract-split")
 
     layout_pressures = semantic_layout_pressures(hierarchy)
-    contract_confidence = min(1.0, (len(layout_pressures) / 7.0) if layout_pressures else 0.0)
+    contract_confidence = min(1.0, ((len(layout_pressures) + len(presentation_sets)) / 11.0) if layout_pressures else 0.0)
 
-    if not missing and contract_confidence >= 0.72:
+    if not missing and contract_confidence >= 0.80:
         state = "complete"
-    elif len(missing) <= 2 and len(edges) >= 4:
+    elif len(missing) <= 3 and len(edges) >= 4 and presentation_sets:
         state = "partial"
     else:
         state = "underspecified"
@@ -375,14 +569,17 @@ def semantic_contract_audit(hierarchy: dict[str, Any]) -> dict[str, Any]:
         "focusSlot": focus_slot,
         "state": state,
         "primitiveCounts": primitive_counts,
+        "qualityCounts": quality_counts,
         "primitiveEdgeCount": len(edges),
         "relationships": edge_text,
         "missingPrimitives": missing,
         "inferredLayoutGrammar": inferred_grammar,
         "layoutPressures": [pressure["kind"] for pressure in layout_pressures],
         "layoutPressureCount": len(layout_pressures),
+        "presentationSets": presentation_sets,
+        "presentationSetCount": len(presentation_sets),
         "contractConfidence": round(contract_confidence, 3),
-        "note": "Inferred from generic MCEL primitives; no high-level app archetype was used.",
+        "note": "Inferred from generic MCEL primitives, phase sets, and hard/soft constraints; no high-level app archetype was used.",
     }
 
 
@@ -400,7 +597,9 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
 
     This still does not declare an app archetype.  It turns relationships such as
     "controls focus", "selects focus.selection", and "confirms focus.state" into
-    spatial questions that candidate layouts can be tested against.
+    spatial questions that candidate layouts can be tested against.  The pressure
+    layer also preserves the MBUI/PUC distinction between hard constraints,
+    soft preferences, and phase/presentation-set co-presence.
     """
 
     focus_slot = hierarchy["focusSlot"]
@@ -409,7 +608,8 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
     seen: set[tuple[str, str, str]] = set()
 
     focus_node = nodes_by_slot.get(focus_slot, {})
-    focus_growth = _as_list((focus_node.get("semantics") or {}).get("growth"))
+    focus_semantics = focus_node.get("semantics") or {}
+    focus_growth = _as_list(focus_semantics.get("growth"))
     if focus_growth:
         pressures.append(
             {
@@ -417,8 +617,13 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
                 "source": focus_slot,
                 "target": focus_slot,
                 "expectation": "dominant-owned-work-surface",
-                "weight": 18,
+                "weight": 24 if any(item in {"large-dense-grid", "large-output-stream", "large-text-surface"} for item in focus_growth) else 20,
                 "details": focus_growth,
+                "phase": _as_list(focus_semantics.get("phase")),
+                "requirement": "hard",
+                "hard": True,
+                "primitive": "growth",
+                "strength": "hard",
             }
         )
 
@@ -429,6 +634,8 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
         source_node = nodes_by_slot.get(source, {})
         source_semantics = source_node.get("semantics") or {}
         source_affordances = _as_list(source_semantics.get("layoutAffordance"))
+        strength = _relationship_strength_for_primitive(source_semantics, primitive)
+        hard = _is_hard_semantic_requirement(source_node, primitive)
 
         kind = ""
         expectation = ""
@@ -437,11 +644,11 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
         if primitive == "controls" and target_slot == focus_slot:
             kind = "control-focus-adjacency"
             expectation = "control-adjacent"
-            weight = 11
+            weight = 12
         elif primitive in {"selects", "navigates", "scopes"} and _targets_focus(edge["target"], focus_slot):
             kind = f"{primitive}-focus-adjacency"
             expectation = "selector-adjacent"
-            weight = 13 if primitive in {"navigates", "scopes"} else 11
+            weight = 14 if primitive in {"navigates", "scopes"} else 12
         elif primitive == "reflects" and _targets_focus(edge["target"], focus_slot):
             kind = "reflection-adjacency"
             expectation = "reflection-adjacent"
@@ -449,7 +656,8 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
         elif primitive == "confirms" and _targets_focus(edge["target"], focus_slot):
             kind = "persistent-confirmation"
             expectation = "persistent-visible"
-            weight = 10
+            weight = 12
+            hard = True
         elif primitive == "proves" and _targets_focus(edge["target"], focus_slot):
             kind = "proof-support"
             expectation = "proof-visible"
@@ -457,7 +665,7 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
         elif primitive == "consumes" and _targets_focus(edge["target"], focus_slot) and source != focus_slot:
             kind = "emitted-state-consumption"
             expectation = "consumer-visible"
-            weight = 6
+            weight = 7
 
         if not kind:
             continue
@@ -472,9 +680,49 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
                 "source": source,
                 "target": target_slot,
                 "expectation": expectation,
-                "weight": weight,
+                "weight": round(weight * _strength_multiplier(strength), 2),
                 "affordances": source_affordances,
+                "softPreferences": _as_list(source_semantics.get("softPreferences")),
+                "hardConstraints": _as_list(source_semantics.get("hardConstraints")),
+                "phase": _as_list(source_semantics.get("phase")),
+                "presentationSet": _as_list(source_semantics.get("presentationSet")),
+                "availability": _as_list(source_semantics.get("availability")),
+                "strength": strength,
+                "requirement": "hard" if hard else "soft",
+                "hard": hard,
                 "primitive": primitive,
+            }
+        )
+
+    for presentation_set in semantic_presentation_sets(hierarchy):
+        required_slots = presentation_set.get("requiredSlots", [])
+        if len(required_slots) <= 1:
+            continue
+        phase = presentation_set["phase"]
+        key = ("presentation-set-co-presence", phase, focus_slot)
+        if key in seen:
+            continue
+        seen.add(key)
+        hard = phase in {"default", "confirmation"} or any(
+            _is_hard_semantic_requirement(nodes_by_slot.get(slot, {}))
+            for slot in required_slots
+        )
+        pressures.append(
+            {
+                "kind": "presentation-set-co-presence",
+                "source": phase,
+                "target": focus_slot,
+                "expectation": "phase-copresence",
+                "weight": 14 if hard else 9,
+                "slots": presentation_set.get("slots", []),
+                "requiredSlots": required_slots,
+                "optionalSlots": presentation_set.get("optionalSlots", []),
+                "phase": [phase],
+                "strength": "hard" if hard else "medium",
+                "requirement": "hard" if hard else "soft",
+                "hard": hard,
+                "primitive": "presentation-set",
+                "reason": presentation_set.get("reason", ""),
             }
         )
 
@@ -659,6 +907,69 @@ def _score_focus_growth_contract(hierarchy: dict[str, Any], measurement: dict[st
     return score, f"focus {hierarchy['focusSlot']} is {focus_share:.0%} against contract target {desired:.0%}"
 
 
+def _role_expectation_for_slot(hierarchy: dict[str, Any], slot: str) -> str:
+    node = _node_by_slot(hierarchy).get(slot, {})
+    role = node.get("role", "support")
+    if role in {"navigation", "collection"}:
+        return "selector-adjacent"
+    if role in {"detail", "inspector"}:
+        return "reflection-adjacent"
+    if role == "status":
+        return "persistent-visible"
+    if role == "evidence":
+        return "proof-visible"
+    if role == "command":
+        return "control-adjacent"
+    return "consumer-visible"
+
+
+def _score_presentation_set_contract(
+    hierarchy: dict[str, Any],
+    pressure: dict[str, Any],
+    records: dict[str, dict[str, Any]],
+    root_rect: dict[str, float] | None,
+    focus_record: dict[str, Any] | None,
+) -> tuple[int, str, dict[str, Any]]:
+    required_slots = list(pressure.get("requiredSlots") or [])
+    if not required_slots:
+        return 100, f"presentation set {pressure['source']} has no required slots", {"missingSlots": []}
+    missing_slots = [slot for slot in required_slots if slot not in records]
+    if missing_slots or not root_rect or not focus_record:
+        score = 0 if missing_slots else 28
+        return (
+            score,
+            f"presentation set {pressure['source']} missing required co-present slot(s): {', '.join(missing_slots) or 'root/focus geometry'}",
+            {"missingSlots": missing_slots},
+        )
+
+    relation_scores: list[int] = []
+    relation_details: list[dict[str, Any]] = []
+    for slot in required_slots:
+        if slot == hierarchy["focusSlot"]:
+            relation_scores.append(100)
+            relation_details.append({"slot": slot, "score": 100, "relation": {"self": True}})
+            continue
+        record = records.get(slot)
+        if not record:
+            relation_scores.append(0)
+            relation_details.append({"slot": slot, "score": 0, "relation": {"visible": False}})
+            continue
+        relation = _spatial_relation(record, focus_record, root_rect)
+        expectation = _role_expectation_for_slot(hierarchy, slot)
+        affordances = _as_list((_node_by_slot(hierarchy).get(slot, {}).get("semantics") or {}).get("layoutAffordance"))
+        relation_score = _score_spatial_expectation(expectation, relation, affordances=affordances)
+        relation_scores.append(relation_score)
+        relation_details.append({"slot": slot, "score": relation_score, "expectation": expectation, "relation": relation})
+
+    score = round(sum(relation_scores) / max(1, len(relation_scores)))
+    weak = [item["slot"] for item in relation_details if item["score"] < 68]
+    if weak:
+        reason = f"presentation set {pressure['source']} has weak co-presence for {', '.join(weak)}"
+    else:
+        reason = f"presentation set {pressure['source']} keeps required regions co-present"
+    return int(score), reason, {"missingSlots": missing_slots, "relations": relation_details}
+
+
 def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
     pressures = semantic_layout_pressures(hierarchy)
     root_rect = _root_rect_from_measurement(measurement)
@@ -676,6 +987,14 @@ def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]
         if kind == "focus-growth":
             score, reason = _score_focus_growth_contract(hierarchy, measurement)
             relation = {}
+        elif kind == "presentation-set-co-presence":
+            score, reason, relation = _score_presentation_set_contract(
+                hierarchy,
+                pressure,
+                records,
+                root_rect,
+                focus_record,
+            )
         else:
             if not root_rect or not focus_record:
                 score = 0
@@ -704,7 +1023,8 @@ def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]
                         relation_words.append("near")
                     if not relation_words:
                         relation_words.append("visible but weakly related" if relation.get("visible") else "not visible")
-                    reason = f"{pressure['source']} {pressure['primitive']} {pressure['target']} is {', '.join(relation_words)}"
+                    requirement = "hard" if pressure.get("hard") else "soft"
+                    reason = f"{requirement} {pressure['source']} {pressure['primitive']} {pressure['target']} is {', '.join(relation_words)}"
 
         weighted_total += score * weight
         weight_total += weight
@@ -718,17 +1038,34 @@ def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]
             }
         )
 
-    score = round(weighted_total / weight_total) if weight_total else 0
-    confidence = min(1.0, (len(pressures) / 7.0) if pressures else 0.0)
+    raw_score = round(weighted_total / weight_total) if weight_total else 0
+    hard_risks = [item for item in evaluated if item.get("hard") and item["score"] < 72]
+    severe_hard_risks = [item for item in hard_risks if item["score"] < 56]
+    soft_risks = [item for item in evaluated if not item.get("hard") and item["score"] < 68]
+    contract_limits: list[str] = []
+    score = raw_score
+    if severe_hard_risks:
+        score = min(score, 62)
+        contract_limits.append("severe hard contract risk capped contract fit")
+    elif hard_risks:
+        score = min(score, 78)
+        contract_limits.append("hard contract risk capped contract fit")
+
+    confidence = min(1.0, ((len(pressures) + len(semantic_presentation_sets(hierarchy))) / 12.0) if pressures else 0.0)
 
     risks = [item for item in evaluated if item["score"] < 68]
     positives = [item for item in evaluated if item["score"] >= 82]
+    presentation_reasons = [
+        item["reason"]
+        for item in evaluated
+        if item["kind"] == "presentation-set-co-presence" and item["score"] >= 72
+    ]
 
     if confidence < 0.45:
         state = "geometryOnly"
-    elif score >= 86 and len(risks) <= 1:
+    elif score >= 86 and len(hard_risks) == 0 and len(risks) <= 1:
         state = "strongContractFit"
-    elif score >= 72:
+    elif score >= 72 and len(severe_hard_risks) == 0:
         state = "usableContractFit"
     elif score >= 56:
         state = "weakContractFit"
@@ -737,26 +1074,37 @@ def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]
 
     return {
         "score": int(score),
+        "rawScore": int(raw_score),
         "state": state,
         "confidence": round(confidence, 3),
         "pressureCount": len(evaluated),
         "pressures": evaluated,
+        "hardRiskCount": len(hard_risks),
+        "softRiskCount": len(soft_risks),
+        "hardRiskReasons": [item["reason"] for item in sorted(hard_risks, key=lambda item: item["score"])[:4]],
+        "softRiskReasons": [item["reason"] for item in sorted(soft_risks, key=lambda item: item["score"])[:4]],
+        "presentationSetReasons": presentation_reasons[:4],
+        "contractLimits": contract_limits,
         "positiveReasons": [item["reason"] for item in positives[:4]],
         "riskReasons": [item["reason"] for item in sorted(risks, key=lambda item: item["score"])[:4]],
-        "note": "Contract fit is inferred from generic MCEL primitives and measured geometry; it is evidence for FLOG ranking, not a claim of perfect inference.",
+        "note": "Contract fit is inferred from generic MCEL primitives, phase co-presence, and hard/soft constraints; it is evidence for FLOG ranking, not a claim of perfect inference.",
     }
+
 
 
 def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
     fit = semantic_contract_fit(hierarchy, measurement)
     classification = measurement.setdefault("classification", {})
     geometry_score = int(classification.get("score", 0) or 0)
-    selection_score = round((geometry_score * 0.70) + (fit["score"] * 0.30))
+    selection_score = round((geometry_score * 0.68) + (fit["score"] * 0.32))
 
     original_status = str(classification.get("status") or "fail")
     warnings = list(classification.get("warnings") or [])
+    hard_risk_count = int(fit.get("hardRiskCount", 0) or 0)
     if original_status == "fail":
         status = "fail"
+    elif hard_risk_count and selection_score >= 82:
+        status = "watch"
     elif selection_score >= 82 and len(warnings) <= 1 and fit["score"] >= 72:
         status = "pass"
     elif selection_score >= 64:
@@ -766,7 +1114,10 @@ def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str
 
     classification["geometryScore"] = geometry_score
     classification["contractFitScore"] = fit["score"]
+    classification["contractFitRawScore"] = fit.get("rawScore", fit["score"])
     classification["contractFitState"] = fit["state"]
+    classification["hardContractRiskCount"] = hard_risk_count
+    classification["softContractRiskCount"] = int(fit.get("softRiskCount", 0) or 0)
     classification["selectionScore"] = selection_score
     classification["score"] = selection_score
     classification["status"] = status
@@ -777,11 +1128,19 @@ def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str
 
     if fit["positiveReasons"]:
         positive_reasons.insert(0, f"generic contract fit is {fit['score']}%: {fit['positiveReasons'][0]}")
-    if fit["riskReasons"]:
+    if fit.get("presentationSetReasons"):
+        positive_reasons.insert(0, f"phase co-presence: {fit['presentationSetReasons'][0]}")
+    if fit.get("hardRiskReasons"):
+        review_notes.insert(0, f"hard contract review: {fit['hardRiskReasons'][0]}")
+    elif fit["riskReasons"]:
         review_notes.insert(0, f"contract-fit review: {fit['riskReasons'][0]}")
+    if fit.get("contractLimits"):
+        review_notes.insert(0, "; ".join(fit["contractLimits"]))
     if fit["state"] in {"weakContractFit", "contractRisk"} and original_status != "fail":
         failure_reasons.append(f"generic contract fit is only {fit['score']}%; layout preserves rectangles better than behavior relationships")
-    review_notes.append("Contract fit is inferred from generic semantic tags; FLOG still keeps multiple candidates for human review.")
+    if hard_risk_count and original_status != "fail":
+        failure_reasons.append("hard semantic contract pressure needs review before promotion")
+    review_notes.append("Contract fit is inferred from generic semantic tags, phase sets, and hard/soft constraints; FLOG still keeps multiple candidates for human review.")
 
     measurement["contractFit"] = fit
     return measurement
@@ -2441,6 +2800,9 @@ def measurement_selection_row(
         "contractFitState": classification.get("contractFitState", "notEvaluated"),
         "contractFitReasons": (item.get("contractFit") or {}).get("positiveReasons", []),
         "contractFitRisks": (item.get("contractFit") or {}).get("riskReasons", []),
+        "hardContractRisks": (item.get("contractFit") or {}).get("hardRiskReasons", []),
+        "softContractRisks": (item.get("contractFit") or {}).get("softRiskReasons", []),
+        "presentationSetReasons": (item.get("contractFit") or {}).get("presentationSetReasons", []),
         "reasons": classification.get("positiveReasons", []),
         "failureReasons": classification.get("failureReasons", []),
         "reviewNotes": classification.get("reviewNotes", []),
@@ -2651,8 +3013,12 @@ def _rollup_short_reason(item: dict[str, Any], limit: int = 72) -> str:
     classification = item.get("classification") or {}
     fit = item.get("contractFit") or {}
     reasons: list[str] = []
-    if fit.get("state") in {"weakContractFit", "contractRisk"}:
+    if fit.get("hardRiskReasons"):
+        reasons = [f"hard contract risk: {text}" for text in (fit.get("hardRiskReasons") or [])]
+    if not reasons and fit.get("state") in {"weakContractFit", "contractRisk"}:
         reasons = [f"contract risk: {text}" for text in (fit.get("riskReasons") or [])]
+    if not reasons and fit.get("presentationSetReasons"):
+        reasons = [f"phase: {text}" for text in fit.get("presentationSetReasons", [])]
     if not reasons and fit.get("positiveReasons"):
         reasons = [f"contract: {text}" for text in fit.get("positiveReasons", [])]
     if not reasons:
@@ -2871,6 +3237,18 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
             sample = audit.get("relationships", [])[:6]
             if sample:
                 lines.append(f"  - Relationship sample: `{'; '.join(sample)}`")
+            phase_sets = audit.get("presentationSets", [])[:4]
+            if phase_sets:
+                phase_text = "; ".join(
+                    f"{item['phase']}=[{', '.join(item.get('requiredSlots', []))}]"
+                    for item in phase_sets
+                )
+                lines.append(f"  - Presentation sets: `{phase_text}`")
+            quality_counts = audit.get("qualityCounts", {})
+            if quality_counts:
+                keys = ["phase", "availability", "presentationSet", "relationshipStrength", "hardConstraints", "softPreferences"]
+                quality_text = ", ".join(f"{key}={quality_counts.get(key, 0)}" for key in keys)
+                lines.append(f"  - Generic quality tags: `{quality_text}`")
         lines.append("")
 
     lines.append("## Best candidate by hierarchy and viewport")
@@ -2895,9 +3273,17 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
             lines.append("  - Contract fit evidence:")
             for reason in item.get("contractFitReasons", [])[:4]:
                 lines.append(f"    - {reason}")
+        if item.get("hardContractRisks"):
+            lines.append("  - Hard contract risks:")
+            for reason in item.get("hardContractRisks", [])[:4]:
+                lines.append(f"    - {reason}")
         if item.get("contractFitRisks"):
             lines.append("  - Contract fit risks:")
             for reason in item.get("contractFitRisks", [])[:4]:
+                lines.append(f"    - {reason}")
+        if item.get("presentationSetReasons"):
+            lines.append("  - Phase co-presence evidence:")
+            for reason in item.get("presentationSetReasons", [])[:4]:
                 lines.append(f"    - {reason}")
         if item.get("reasons"):
             lines.append("  - Why it ranked well:")
@@ -2971,9 +3357,16 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
         contract_fit = item.get("contractFit") or {}
         if contract_fit:
             lines.append("- Generic contract fit:")
-            lines.append(f"  - Score: `{contract_fit.get('score', 0)}` state=`{contract_fit.get('state', 'unknown')}` confidence=`{contract_fit.get('confidence', 0):.3f}`")
+            lines.append(f"  - Score: `{contract_fit.get('score', 0)}` raw=`{contract_fit.get('rawScore', contract_fit.get('score', 0))}` state=`{contract_fit.get('state', 'unknown')}` confidence=`{contract_fit.get('confidence', 0):.3f}`")
+            if contract_fit.get("contractLimits"):
+                for limit in contract_fit.get("contractLimits", [])[:4]:
+                    lines.append(f"  - Contract limit: {limit}")
+            for reason in contract_fit.get("presentationSetReasons", [])[:4]:
+                lines.append(f"  - Phase co-presence: {reason}")
             for reason in contract_fit.get("positiveReasons", [])[:4]:
                 lines.append(f"  - Preserved: {reason}")
+            for reason in contract_fit.get("hardRiskReasons", [])[:4]:
+                lines.append(f"  - Hard risk: {reason}")
             for reason in contract_fit.get("riskReasons", [])[:4]:
                 lines.append(f"  - Risk: {reason}")
         reasons = classification.get("positiveReasons") or []

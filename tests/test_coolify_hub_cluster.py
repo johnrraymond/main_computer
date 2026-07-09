@@ -62,6 +62,7 @@ def _args(**overrides):
         "allow_missing_bridge_signer": False,
         "enable_smoke_bridge": False,
         "enable_bridge_writes": False,
+        "no_bridge_writes": False,
         "sync_bridge_signer": False,
         "bridge_signer_source_manifest": "",
         "bridge_controller_wallet_path": "",
@@ -789,6 +790,40 @@ coolify:
 
         with self.assertRaises(coolify_hub_cluster.CoolifyHubDeployError):
             coolify_hub_cluster.update_hub_application(client, "app-uuid", payload, tried)
+
+
+    def test_hub_command_parts_infer_bridge_signer_manifest_by_default(self) -> None:
+        placement = coolify_hub_cluster.load_hub_cluster_placement(
+            REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json"
+        )
+        profile = coolify_hub_cluster.load_network_profile(
+            placement,
+            _args(network="mainnet", bridge_backend="credit-bridge-contract"),
+        )
+        hub = placement.hubs[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "latest.json"
+            manifest.write_text(
+                '{"hub_admin":{"address":"0x1111111111111111111111111111111111111111","private_key":"0x2222222222222222222222222222222222222222222222222222222222222222"}}',
+                encoding="utf-8",
+            )
+            args = _args(
+                network="mainnet",
+                bridge_backend="credit-bridge-contract",
+                contracts_path="main_computer/config/mainnet_contracts.json",
+                bridge_signer_source_manifest=str(manifest),
+                hub_chain_rpc_url="https://mainnet-rpc.greatlibrary.io",
+            )
+
+            coolify_hub_cluster.hub_tool.apply_bridge_signer_defaults(profile, args)
+            command = coolify_hub_cluster.hub_command_parts(profile, placement, hub, args)
+
+        self.assertTrue(args.enable_bridge_writes)
+        self.assertTrue(args.sync_bridge_signer)
+        self.assertIn("--dev-chain-deployment-path", command)
+        signer_path = command[command.index("--dev-chain-deployment-path") + 1]
+        self.assertIn("/private/bridge-signer/bridge-signer-bundle.json", signer_path)
+        self.assertNotIn("--allow-missing-bridge-signer", command)
 
 
     def test_hub_command_parts_explicit_mainnet_contracts_path_omits_missing_signer_manifest(self) -> None:

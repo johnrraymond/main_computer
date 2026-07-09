@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -71,6 +72,7 @@ def _args(**overrides):
         "allow_missing_bridge_signer": False,
         "enable_smoke_bridge": False,
         "enable_bridge_writes": False,
+        "no_bridge_writes": False,
         "sync_bridge_signer": False,
         "bridge_signer_source_manifest": "",
         "bridge_controller_wallet_path": "",
@@ -1231,6 +1233,125 @@ class CoolifyHubServiceTests(unittest.TestCase):
         )
 
         self.assertFalse(coolify_hub_service.hub_allow_missing_bridge_signer(profile, args))
+
+
+    def test_bridge_signer_defaults_infer_writes_from_hub_admin_manifest(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "latest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "hub_admin": {
+                            "address": "0x" + "1" * 40,
+                            "private_key": "0x" + "2" * 64,
+                        },
+                        "contracts": {
+                            "hub_credit_bridge_escrow": {
+                                "address": "0x" + "3" * 40,
+                                "bridge_controller_address": "0x" + "1" * 40,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = _args(
+                bridge_backend="credit-bridge-contract",
+                contracts_path="main_computer/config/mainnet_contracts.json",
+                bridge_signer_source_manifest=str(manifest),
+                hub_chain_rpc_url="https://mainnet-rpc.greatlibrary.io",
+            )
+
+            coolify_hub_service.apply_bridge_signer_defaults(profile, args)
+
+            self.assertTrue(args.enable_bridge_writes)
+            self.assertTrue(args.sync_bridge_signer)
+            self.assertFalse(coolify_hub_service.hub_allow_missing_bridge_signer(profile, args))
+
+    def test_bridge_signer_bundle_accepts_inline_hub_admin_private_key(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "latest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "hub_admin": {
+                            "address": "0x" + "1" * 40,
+                            "private_key": "0x" + "2" * 64,
+                        },
+                        "contracts": {
+                            "hub_credit_bridge_escrow": {
+                                "address": "0x" + "3" * 40,
+                                "bridge_controller_address": "0x" + "1" * 40,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = _args(
+                bridge_backend="credit-bridge-contract",
+                bridge_signer_source_manifest=str(manifest),
+                hub_chain_rpc_url="https://mainnet-rpc.greatlibrary.io",
+            )
+
+            bundle = coolify_hub_service.build_bridge_signer_bundle(profile, args)
+
+            self.assertTrue(bundle["ok"])
+            self.assertEqual(bundle["bridge_controller_address"], "0x" + "1" * 40)
+            self.assertEqual(bundle["escrow_address"], "0x" + "3" * 40)
+            self.assertEqual(bundle["wallet_path"], "hub_admin.private_key")
+
+    def test_sync_application_env_var_creates_runtime_secret(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/applications/app-uuid/envs"): [{"envs": []}],
+                ("POST", "/api/v1/applications/app-uuid/envs"): [{"uuid": "env-uuid"}],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        result = coolify_hub_service.sync_application_env_var(
+            client,
+            application_uuid="app-uuid",
+            key="MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64",
+            value="secret-value",
+            tried=tried,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(result["env_key"], "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64")
+        self.assertNotIn("secret-value", json.dumps(tried))
+
+    def test_no_bridge_writes_suppresses_signer_inference(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "latest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "hub_admin": {
+                            "address": "0x" + "1" * 40,
+                            "private_key": "0x" + "2" * 64,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = _args(
+                bridge_backend="credit-bridge-contract",
+                contracts_path="main_computer/config/mainnet_contracts.json",
+                bridge_signer_source_manifest=str(manifest),
+                no_bridge_writes=True,
+            )
+
+            coolify_hub_service.apply_bridge_signer_defaults(profile, args)
+
+            self.assertFalse(args.enable_bridge_writes)
+            self.assertFalse(args.sync_bridge_signer)
+            self.assertTrue(coolify_hub_service.hub_allow_missing_bridge_signer(profile, args))
 
 
 if __name__ == "__main__":

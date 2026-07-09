@@ -850,6 +850,15 @@ def sync_hub_application(
         update_result = {**update_result, "created": True}
         action = "created"
     storage = hub_tool.ensure_storage(client, app_profile, app_args, application_uuid=application_uuid, runtime_dir=hub.runtime_dir, tried=tried)
+    signer_sync_result = None
+    if hub_tool.bridge_signer_sync_requested(app_args):
+        signer_sync_result = hub_tool.sync_bridge_signer_application_env(
+            client,
+            app_profile,
+            app_args,
+            application_uuid=application_uuid,
+            tried=tried,
+        )
     deploy_result = None
     ready_result = None
     if not args.no_deploy:
@@ -865,6 +874,7 @@ def sync_hub_application(
         "existing": existing,
         "update_result": update_result,
         "storage": storage,
+        "bridge_signer_sync": signer_sync_result,
         "deployed": deploy_result is not None,
         "deploy_result": deploy_result,
         "ready_result": ready_result,
@@ -1907,6 +1917,7 @@ def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
     }
 
 def plan_result(placement: HubClusterPlacement, profile: Any, args: argparse.Namespace) -> dict[str, Any]:
+    hub_tool.apply_bridge_signer_defaults(profile, args)
     fdb_tool.validate_coolify_url_bindings(placement.servers, args)
 
     if not str(getattr(args, "git_repo", "") or "").strip():
@@ -2052,6 +2063,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-missing-bridge-signer", action="store_true")
     parser.add_argument("--enable-smoke-bridge", action="store_true")
     parser.add_argument("--enable-bridge-writes", action="store_true")
+    parser.add_argument("--no-bridge-writes", action="store_true", help="Do not infer or sync bridge signer material even when a local hub_admin manifest exists.")
     parser.add_argument("--sync-bridge-signer", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--bridge-signer-source-manifest", default="", help=argparse.SUPPRESS)
     parser.add_argument("--bridge-controller-wallet-path", default="", help=argparse.SUPPRESS)

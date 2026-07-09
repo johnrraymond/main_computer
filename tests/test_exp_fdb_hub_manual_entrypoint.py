@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import importlib
+import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -126,71 +130,6 @@ def test_exp_fdb_hub_unsigned_contract_startup_does_not_default_private_deployme
     assert config.hub_enable_smoke_bridge is False
     assert config.hub_contracts_path == contracts_path
     assert config.hub_dev_chain_deployment_path is None
-
-
-
-def test_exp_fdb_hub_explicit_contracts_path_infers_unsigned_startup_without_allow_flag(tmp_path, monkeypatch) -> None:
-    from main_computer.exp_fdb_hub import build_experimental_config, build_parser
-
-    monkeypatch.delenv("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", raising=False)
-    monkeypatch.delenv("MAIN_COMPUTER_DEV_CHAIN_DEPLOYMENT_PATH", raising=False)
-    monkeypatch.delenv("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", raising=False)
-    contracts_path = tmp_path / "main_computer" / "config" / "mainnet_contracts.json"
-    contracts_path.parent.mkdir(parents=True, exist_ok=True)
-    contracts_path.write_text('{"hub_credit_bridge_escrow": "0x5555555555555555555555555555555555555555"}\n', encoding="utf-8")
-
-    args = build_parser().parse_args(
-        [
-            "--repo-root",
-            str(tmp_path),
-            "--network-key",
-            "mainnet",
-            "--bridge-backend",
-            "credit-bridge-contract",
-            "--contracts-path",
-            str(contracts_path),
-        ]
-    )
-
-    config, _fdb_config = build_experimental_config(args, port=8790)
-
-    assert config.hub_allow_missing_bridge_signer is True
-    assert config.hub_enable_smoke_bridge is False
-    assert config.hub_contracts_path == contracts_path
-    assert config.hub_dev_chain_deployment_path is None
-
-
-def test_exp_fdb_hub_default_missing_signer_path_falls_back_to_public_contracts(tmp_path, monkeypatch) -> None:
-    from main_computer.exp_fdb_hub import build_experimental_config, build_parser
-
-    monkeypatch.delenv("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", raising=False)
-    monkeypatch.delenv("MAIN_COMPUTER_DEV_CHAIN_DEPLOYMENT_PATH", raising=False)
-    monkeypatch.delenv("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", raising=False)
-    contracts_path = tmp_path / "main_computer" / "config" / "mainnet_contracts.json"
-    contracts_path.parent.mkdir(parents=True, exist_ok=True)
-    contracts_path.write_text('{"hub_credit_bridge_escrow": "0x5555555555555555555555555555555555555555"}\n', encoding="utf-8")
-    stale_default_deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
-
-    args = build_parser().parse_args(
-        [
-            "--repo-root",
-            str(tmp_path),
-            "--network-key",
-            "mainnet",
-            "--bridge-backend",
-            "credit-bridge-contract",
-            "--dev-chain-deployment-path",
-            str(stale_default_deployment_path),
-            "--contracts-path",
-            str(contracts_path),
-        ]
-    )
-
-    config, _fdb_config = build_experimental_config(args, port=8790)
-
-    assert config.hub_allow_missing_bridge_signer is True
-    assert config.hub_contracts_path == contracts_path
-    assert config.hub_dev_chain_deployment_path == stale_default_deployment_path
 
 
 def test_exp_fdb_hub_dev_chain_lab_auto_uses_dev_deployment_and_smoke_bridge(tmp_path, monkeypatch) -> None:
@@ -708,3 +647,26 @@ def test_exp_fdb_hub_uses_stable_worker_session_store_constructor_contract() -> 
     assert "cluster_file=fdb_config.cluster_file" in module
     assert "activate_native_client=fdb_config.activate_native_client" not in module
 
+
+
+def test_exp_fdb_hub_materializes_bridge_signer_bundle_from_env(tmp_path, monkeypatch) -> None:
+    module = importlib.import_module("main_computer.exp_fdb_hub")
+    target = tmp_path / "private" / "bridge-signer" / "bridge-signer-bundle.json"
+    payload = {
+        "schema": "main-computer.bridge-signer.v1",
+        "network": "mainnet",
+        "bridge_controller": {
+            "address": "0x1111111111111111111111111111111111111111",
+            "private_key": "0x" + "2" * 64,
+        },
+    }
+    monkeypatch.setenv(
+        "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64",
+        base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii"),
+    )
+
+    assert module._materialize_bridge_signer_bundle_from_env(target) is True
+
+    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == "main-computer.bridge-signer.v1"
+    assert oct(target.stat().st_mode & 0o777) == "0o600"
+    assert "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64" not in os.environ
