@@ -2101,6 +2101,7 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_result_selection_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_round_1_three_results_returned"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_all_results_sent_to_all_reviewers"] is True
+    assert report["contracts"]["open_battery_byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_uses_simple_majority_rejection"] is True
@@ -2109,6 +2110,7 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_tie_uses_host_seeded_random_survivor_selection"] is True
     assert report["contracts"]["open_battery_byzantine_tie_random_pool_has_two_candidates"] is True
     assert report["contracts"]["open_battery_byzantine_tie_random_choice_from_ranked_survivor_pair"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_random_survivor_pair"] is True
     assert report["contracts"]["open_battery_byzantine_tie_random_path_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_agreed_result_is_original_worker_result"] is True
     assert report["contracts"]["open_battery_byzantine_agreed_result_is_survivor"] is True
@@ -2187,14 +2189,23 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["case_report_written"] is True
         assert decision["contracts"]["byzantine_round_1_three_results_returned"] is True
         assert decision["contracts"]["byzantine_round_2_all_results_sent_to_all_reviewers"] is True
+        assert decision["contracts"]["byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
         assert decision["contracts"]["byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_final_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_original_worker_result"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_survivor"] is True
         assert decision["contracts"]["byzantine_boundary_emits_single_result"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_random_survivor_pair"] is True
         assert len(round_1["results"]) == 3
         assert len(round_2["reviews"]) == 3
         assert all(len(review["input_result_ids"]) == 3 for review in round_2["reviews"])
+        assert all(len(review["input_results"]) == 3 for review in round_2["reviews"])
+        assert all(
+            {result["result_id"] for result in review["input_results"]}
+            == {result["result_id"] for result in round_1["results"]}
+            for review in round_2["reviews"]
+        )
+        assert all(review["input_results"] == round_1["results"] for review in round_2["reviews"])
         assert all(review["reject_count"] <= 1 for review in round_2["reviews"])
         assert final_selection["agreed_result_id"] in final_selection["round_1_result_ids"]
         assert final_selection["agreed_result_id"] in final_selection["surviving_results"]
@@ -2214,7 +2225,18 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert len(tie_selection["host_random_survivor_pool"]) == 2
     assert set(tie_selection["host_random_survivor_pool"]).issubset(set(tie_selection["surviving_results"]))
     assert tie_selection["agreed_result_id"] in tie_selection["host_random_survivor_pool"]
+    assert tie_selection["host_random_pool_size"] == 2
     assert tie_selection["host_random_seed"]
+    assert tie_selection["host_random_seed_sha256"] == tie_selection["host_random_seed"]
+
+    tie_decision = json.loads((run_dir / "answer_only" / "open_agent_decision.json").read_text(encoding="utf-8"))
+    assert tie_decision["byzantine_agreement"]["host_random_survivor_pool"] == tie_selection["host_random_survivor_pool"]
+    assert tie_decision["byzantine_agreement"]["host_random_pool_size"] == 2
+    assert tie_decision["byzantine_agreement"]["agreed_result_id"] in tie_decision["byzantine_agreement"]["host_random_survivor_pool"]
+
+    tie_case_report = report["case_reports"]["answer_only"]
+    assert tie_case_report["byzantine_agreement"]["host_random_survivor_pool"] == tie_selection["host_random_survivor_pool"]
+    assert tie_case_report["byzantine_agreement"]["host_random_pool_size"] == 2
 
     retry_decision = json.loads((run_dir / "retry_succeeded" / "open_agent_decision.json").read_text(encoding="utf-8"))
     assert retry_decision["observed_endstate"] == "retry_succeeded"

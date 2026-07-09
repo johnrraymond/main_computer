@@ -3535,6 +3535,323 @@
       };
     }
 
+
+    function mcelWallet21dRetryRecoverySafety(boundary = {}, runtimeRecovery = {}) {
+      const sendGate = boundary.wallet21aPolicyBoundSendGate || boundary.walletTransactionSendGate || {};
+      const ledger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
+      const watcher = boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {};
+      const latestReceipt = ledger.latestReceipt || {};
+      const sendEnvelopeHash = sendGate.sendEnvelope?.sendEnvelopeHash || latestReceipt.sendEnvelopeHash || runtimeRecovery.sendEnvelopeHash || "";
+      const receipts = Array.isArray(ledger.receipts) ? ledger.receipts : [];
+      const matchingReceipts = sendEnvelopeHash
+        ? receipts.filter((entry) => entry?.sendEnvelopeHash === sendEnvelopeHash)
+        : [];
+      const txHash = watcher.txHash || ledger.txHash || latestReceipt.txHash || "";
+      const providerAttemptObserved = ledger.providerTransactionSendRequested === true
+        || sendGate.providerTransactionSendRequested === true
+        || receipts.length > 0
+        || Boolean(txHash);
+      const providerRejected = ledger.providerRejected === true || sendGate.providerRejected === true || latestReceipt.status === "provider-rejected-send";
+      const providerException = ledger.providerException === true || sendGate.providerException === true || latestReceipt.status === "provider-send-exception";
+      const providerAccepted = ledger.providerAccepted === true || sendGate.providerAccepted === true || Boolean(txHash);
+      const pending = watcher.pending === true || watcher.receiptUnavailable === true || (Boolean(txHash) && watcher.confirmed !== true && watcher.failedOrReverted !== true);
+      const confirmed = watcher.confirmed === true;
+      const failedOrReverted = watcher.failedOrReverted === true;
+      const duplicateClickObserved = runtimeRecovery.duplicateClick === true
+        || runtimeRecovery.providerPending === true
+        || runtimeRecovery.sendInFlight === true
+        || runtimeRecovery.retryRequested === true;
+      const currentRequestHash = sendGate.sendEnvelope?.sendEnvelopeHash || "";
+      const previousRequestHash = runtimeRecovery.lastSendEnvelopeHash || latestReceipt.sendEnvelopeHash || "";
+      const sameEnvelopeAlreadySent = Boolean(sendEnvelopeHash && matchingReceipts.length > 0);
+      const staleRetryEnvelope = Boolean(runtimeRecovery.retryRequested === true && previousRequestHash && currentRequestHash && previousRequestHash === currentRequestHash);
+      const blockers = [];
+      if (duplicateClickObserved) blockers.push("duplicate-click-or-retry-request-observed");
+      if (sameEnvelopeAlreadySent) blockers.push("same-send-envelope-already-ledgered");
+      if (staleRetryEnvelope) blockers.push("retry-would-reuse-same-send-envelope");
+      if (pending) blockers.push("transaction-still-pending");
+      if (confirmed) blockers.push("transaction-already-confirmed");
+      if (failedOrReverted) blockers.push("failed-transaction-requires-new-review");
+      if (providerRejected) blockers.push("provider-rejection-relocks-send-path");
+      if (providerException) blockers.push("provider-exception-relocks-send-path");
+      if (providerAccepted && !txHash) blockers.push("provider-accepted-without-tx-hash");
+      const uniqueBlockers = [...new Set(blockers.filter(Boolean))];
+      const firstSendAvailable = sendGate.canRequestTransactionSend === true
+        && sendGate.canSend === true
+        && providerAttemptObserved !== true
+        && uniqueBlockers.length === 0;
+      const status = providerAttemptObserved
+        ? (confirmed
+          ? "confirmed-duplicate-send-blocked"
+          : (pending
+            ? "pending-duplicate-send-blocked"
+            : (failedOrReverted
+              ? "failed-retry-blocked-pending-new-review"
+              : (providerRejected
+                ? "provider-rejected-relocked"
+                : (providerException ? "provider-exception-relocked" : "attempt-ledgered-retry-blocked")))))
+        : (firstSendAvailable ? "first-send-allowed" : "waiting-for-first-send-eligibility");
+      const stage = firstSendAvailable
+        ? "21d-first-explicit-send-allowed"
+        : (providerAttemptObserved ? "21d-retry-recovery-guard-active" : "21d-waiting-for-eligible-send");
+      const recoveryEnvelope = {
+        kind: "mcelWallet21dRetryRecoverySafetyEnvelope.v1",
+        unlockVersion: "21D-MCEL",
+        status,
+        stage,
+        sendEnvelopeHash,
+        txHash,
+        providerAttemptObserved,
+        sameEnvelopeAlreadySent,
+        duplicateClickObserved,
+        staleRetryEnvelope,
+        pending,
+        confirmed,
+        failedOrReverted,
+        providerRejected,
+        providerException,
+        blockers: uniqueBlockers,
+        sendRequestAllowed: firstSendAvailable,
+        retryAllowed: false,
+        automaticRetryAllowed: false,
+        requiresNewEnvelopeForRetry: providerAttemptObserved,
+        oneShotGuard: true
+      };
+      recoveryEnvelope.recoveryEnvelopeHash = mcelTinyContractObjectHash(recoveryEnvelope);
+      const receipt = {
+        kind: "mcelWallet21dRetryRecoverySafetyReceipt.v1",
+        unlockVersion: "21D-MCEL",
+        status,
+        sendEnvelopeHash,
+        txHash,
+        duplicateSendBlocked: providerAttemptObserved || sameEnvelopeAlreadySent || duplicateClickObserved || Boolean(txHash),
+        retryAllowed: false,
+        automaticRetryAllowed: false,
+        blockers: uniqueBlockers,
+        recordedAt: new Date().toISOString()
+      };
+      return {
+        kind: "mcelWallet21dRetryRecoverySafety.v1",
+        unlockVersion: "21D-MCEL",
+        unlockEvent: "retry-recovery-duplicate-send-safety",
+        status,
+        stage,
+        recoveryEnvelope,
+        receipt,
+        sendRequestAllowed: firstSendAvailable,
+        providerAttemptObserved,
+        duplicateSendBlocked: receipt.duplicateSendBlocked,
+        sameEnvelopeAlreadySent,
+        pending,
+        confirmed,
+        failedOrReverted,
+        retryAllowed: false,
+        canRetryAutomatically: false,
+        canSend: firstSendAvailable,
+        canBroadcast: false,
+        mutationExecuted: ledger.mutationExecuted === true || watcher.mutationExecuted === true,
+        broadcastAttempted: ledger.broadcastAttempted === true || watcher.broadcastAttempted === true,
+        blockers: uniqueBlockers,
+        nextAction: firstSendAvailable
+          ? "21D allows exactly one explicit policy-bound send for this current envelope."
+          : (providerAttemptObserved
+            ? "21D blocks duplicate/retry sends until a new current draft, signed intent, and pre-send review are built."
+            : "clear 21A/20-series blockers before first policy-bound send."),
+        invariant: [
+          "21D is a one-shot duplicate-send and retry-recovery guard.",
+          "21D blocks same-envelope resend, duplicate click, pending retry, rejected retry, failed retry, and confirmed retry.",
+          "21D does not automatically retry and does not broaden network policy."
+        ]
+      };
+    }
+
+    function mcelWallet21ePostConfirmationMcelReceiptIntegration(boundary = {}, runtimeIntegration = {}) {
+      const ledger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
+      const watcher = boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {};
+      const recovery = boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {};
+      const latestReceipt = ledger.latestReceipt || {};
+      const chainReceipt = watcher.providerReceipt || watcher.watcherEnvelope?.providerReceipt || runtimeIntegration.transactionReceipt || null;
+      const txHash = watcher.txHash || ledger.txHash || latestReceipt.txHash || "";
+      const confirmed = watcher.confirmed === true;
+      const failedOrReverted = watcher.failedOrReverted === true;
+      const pending = watcher.pending === true || Boolean(txHash && !confirmed && !failedOrReverted);
+      const status = confirmed
+        ? "mcel-chain-confirmation-integrated"
+        : (failedOrReverted
+          ? "mcel-chain-failure-integrated"
+          : (pending ? "mcel-chain-outcome-pending" : "waiting-for-chain-outcome"));
+      const chainOutcome = confirmed
+        ? "confirmed"
+        : (failedOrReverted ? "failed-or-reverted" : (pending ? "pending" : "not-observed"));
+      const integrationEnvelope = {
+        kind: "mcelWallet21ePostConfirmationMcelReceiptIntegrationEnvelope.v1",
+        unlockVersion: "21E-MCEL",
+        status,
+        txHash,
+        chainOutcome,
+        providerOutcomeReceiptHash: latestReceipt ? mcelTinyContractObjectHash(latestReceipt) : "",
+        watcherEnvelopeHash: watcher.watcherEnvelope?.watcherEnvelopeHash || "",
+        recoveryEnvelopeHash: recovery.recoveryEnvelope?.recoveryEnvelopeHash || "",
+        chainReceipt,
+        walletBoardUpdated: true,
+        copiedReceiptCarriesOutcome: true,
+        codeStudioProofDockCarriesOutcome: true,
+        selectedRequestOutcomeBound: Boolean(txHash),
+        mutationExecuted: ledger.mutationExecuted === true || watcher.mutationExecuted === true,
+        broadcastAttempted: ledger.broadcastAttempted === true || watcher.broadcastAttempted === true
+      };
+      integrationEnvelope.integrationEnvelopeHash = mcelTinyContractObjectHash(integrationEnvelope);
+      const integratedReceipt = {
+        kind: "mcelWallet21ePostConfirmationMcelReceipt.v1",
+        unlockVersion: "21E-MCEL",
+        status,
+        txHash,
+        chainOutcome,
+        confirmed,
+        failedOrReverted,
+        pending,
+        accountAtSend: latestReceipt.accountAtSend || "",
+        chainIdAtSend: latestReceipt.chainIdAtSend || "",
+        targetAddress: latestReceipt.targetAddress || "",
+        calldataHash: latestReceipt.calldataHash || "",
+        mutationExecuted: integrationEnvelope.mutationExecuted,
+        broadcastAttempted: integrationEnvelope.broadcastAttempted,
+        integrationEnvelopeHash: integrationEnvelope.integrationEnvelopeHash,
+        recordedAt: new Date().toISOString()
+      };
+      return {
+        kind: "mcelWallet21ePostConfirmationMcelReceiptIntegration.v1",
+        unlockVersion: "21E-MCEL",
+        unlockEvent: "post-confirmation-mcel-receipt-integration",
+        status,
+        stage: confirmed || failedOrReverted ? "21e-chain-outcome-integrated" : "21e-waiting-for-final-chain-outcome",
+        chainOutcome,
+        txHash,
+        integrationEnvelope,
+        integratedReceipt,
+        receipt: integratedReceipt,
+        confirmed,
+        failedOrReverted,
+        pending,
+        proofSurfacesAligned: true,
+        walletBoardUpdated: true,
+        copiedReceiptCarriesOutcome: true,
+        codeStudioProofDockCarriesOutcome: true,
+        canSend: false,
+        canBroadcast: false,
+        mutationExecuted: integrationEnvelope.mutationExecuted,
+        broadcastAttempted: integrationEnvelope.broadcastAttempted,
+        nextAction: confirmed
+          ? "21F should complete the send cycle and relock for the next MCEL request."
+          : (failedOrReverted
+            ? "21F should relock and require a fresh recovery review before retry."
+            : (pending ? "keep watcher active; do not resend while the transaction is pending." : "wait for a provider outcome before integrating chain receipt.")),
+        invariant: [
+          "21E binds provider outcome and chain receipt state back to MCEL proof surfaces.",
+          "21E treats txHash, pending, confirmed, failed, and reverted as distinct receipt outcomes.",
+          "21E does not send, retry, or broaden network policy."
+        ]
+      };
+    }
+
+    function mcelWallet21fRelockResetLifecycle(boundary = {}, runtimeRelock = {}) {
+      const sendGate = boundary.wallet21aPolicyBoundSendGate || boundary.walletTransactionSendGate || {};
+      const ledger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
+      const watcher = boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {};
+      const recovery = boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {};
+      const integration = boundary.wallet21ePostConfirmationMcelReceiptIntegration || boundary.walletPostConfirmationReceiptIntegration || {};
+      const latestReceipt = ledger.latestReceipt || {};
+      const currentAccount = sendGate.providerTransactionRequest?.from || boundary.walletTxDraft?.from || "";
+      const currentChain = sendGate.networkExecutionPolicy?.chainId || boundary.walletTxDraft?.currentChainId || boundary.walletTxDraft?.chainId || "";
+      const accountChangedAfterSend = Boolean(latestReceipt.accountAtSend && currentAccount && latestReceipt.accountAtSend.toLowerCase() !== currentAccount.toLowerCase());
+      const chainChangedAfterSend = Boolean(latestReceipt.chainIdAtSend && currentChain && !mcelTinyContractSameChainId(latestReceipt.chainIdAtSend, currentChain));
+      const providerAttemptObserved = recovery.providerAttemptObserved === true || ledger.providerTransactionSendRequested === true || Boolean(ledger.txHash || watcher.txHash);
+      const confirmed = watcher.confirmed === true || integration.confirmed === true;
+      const failedOrReverted = watcher.failedOrReverted === true || integration.failedOrReverted === true;
+      const pending = watcher.pending === true || integration.pending === true;
+      const providerRejected = ledger.providerRejected === true;
+      const providerException = ledger.providerException === true;
+      const resetRequested = runtimeRelock.resetRequested === true || runtimeRelock.newRequestSelected === true || runtimeRelock.walletDisconnected === true;
+      const relockReasons = [];
+      if (confirmed) relockReasons.push("transaction-confirmed");
+      if (failedOrReverted) relockReasons.push("transaction-failed-or-reverted");
+      if (pending) relockReasons.push("transaction-pending");
+      if (providerRejected) relockReasons.push("provider-rejected");
+      if (providerException) relockReasons.push("provider-exception");
+      if (accountChangedAfterSend) relockReasons.push("account-changed-after-send");
+      if (chainChangedAfterSend) relockReasons.push("chain-changed-after-send");
+      if (resetRequested) relockReasons.push("reset-requested");
+      const status = confirmed
+        ? "complete-and-relocked"
+        : (failedOrReverted
+          ? "failed-and-relocked-recovery-required"
+          : (pending
+            ? "pending-recovery-hold"
+            : (providerRejected
+              ? "provider-rejected-and-relocked"
+              : (providerException
+                ? "provider-exception-and-relocked"
+                : (providerAttemptObserved ? "send-attempt-relocked" : "waiting-for-send-attempt")))));
+      const cycleComplete = confirmed === true;
+      const oldSendPathInvalidated = providerAttemptObserved || accountChangedAfterSend || chainChangedAfterSend || resetRequested;
+      const lifecycleEnvelope = {
+        kind: "mcelWallet21fRelockResetLifecycleEnvelope.v1",
+        unlockVersion: "21F-MCEL",
+        status,
+        txHash: watcher.txHash || ledger.txHash || "",
+        relockReasons: [...new Set(relockReasons)],
+        accountChangedAfterSend,
+        chainChangedAfterSend,
+        pending,
+        confirmed,
+        failedOrReverted,
+        providerRejected,
+        providerException,
+        resetRequested,
+        cycleComplete,
+        oldSendPathInvalidated,
+        canStartNewCycle: cycleComplete || providerRejected || providerException || failedOrReverted || resetRequested,
+        requiresFreshDraftForNextSend: oldSendPathInvalidated,
+        relocked: true
+      };
+      lifecycleEnvelope.lifecycleEnvelopeHash = mcelTinyContractObjectHash(lifecycleEnvelope);
+      return {
+        kind: "mcelWallet21fRelockResetLifecycle.v1",
+        unlockVersion: "21F-MCEL",
+        unlockEvent: "post-send-relock-reset-lifecycle",
+        status,
+        stage: status,
+        lifecycleEnvelope,
+        relockReasons: lifecycleEnvelope.relockReasons,
+        accountChangedAfterSend,
+        chainChangedAfterSend,
+        pending,
+        confirmed,
+        failedOrReverted,
+        cycleComplete,
+        oldSendPathInvalidated,
+        canStartNewCycle: lifecycleEnvelope.canStartNewCycle,
+        requiresFreshDraftForNextSend: lifecycleEnvelope.requiresFreshDraftForNextSend,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: ledger.mutationExecuted === true || watcher.mutationExecuted === true || integration.mutationExecuted === true,
+        broadcastAttempted: ledger.broadcastAttempted === true || watcher.broadcastAttempted === true || integration.broadcastAttempted === true,
+        nextAction: cycleComplete
+          ? "21F complete: chain outcome is integrated and the wallet send path is relocked for a fresh MCEL request."
+          : (pending
+            ? "21F hold: transaction pending; do not retry or reset the send path until watcher resolves or recovery policy intervenes."
+            : (providerAttemptObserved
+              ? "21F relocked after provider outcome; rebuild/review a fresh send envelope before any retry."
+              : "21F is waiting for a provider send attempt.")),
+        invariant: [
+          "21F relocks after rejection, exception, failure, confirmation, timeout/pending hold, account change, chain change, or reset.",
+          "21F invalidates the old send path and requires fresh evidence before another send.",
+          "21F does not auto-retry or broaden network policy."
+        ]
+      };
+    }
+
 function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, request = null, reason = "wallet-tool-preflight", simulation = null} = {}) {
       const txDraft = runtime.txDraft || {};
       const txPreflight = runtime.txDraftConsumerGate?.endgamePreflight || {};
@@ -3730,10 +4047,16 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       boundary.walletProviderOutcomeLedger = boundary.wallet21bProviderOutcomeLedger;
       boundary.wallet21cTransactionWatcher = mcelWallet21cTransactionWatcher(boundary, runtime.wallet21cTransactionWatcher || runtime.walletTransactionWatcher || {});
       boundary.walletTransactionWatcher = boundary.wallet21cTransactionWatcher;
-      boundary.canSend = boundary.wallet21aPolicyBoundSendGate?.canSend === true;
+      boundary.wallet21dRetryRecoverySafety = mcelWallet21dRetryRecoverySafety(boundary, runtime.wallet21dRetryRecoverySafety || runtime.walletRetryRecoverySafety || {});
+      boundary.walletRetryRecoverySafety = boundary.wallet21dRetryRecoverySafety;
+      boundary.wallet21ePostConfirmationMcelReceiptIntegration = mcelWallet21ePostConfirmationMcelReceiptIntegration(boundary, runtime.wallet21ePostConfirmationMcelReceiptIntegration || runtime.walletPostConfirmationReceiptIntegration || {});
+      boundary.walletPostConfirmationReceiptIntegration = boundary.wallet21ePostConfirmationMcelReceiptIntegration;
+      boundary.wallet21fRelockResetLifecycle = mcelWallet21fRelockResetLifecycle(boundary, runtime.wallet21fRelockResetLifecycle || runtime.walletRelockResetLifecycle || {});
+      boundary.walletRelockResetLifecycle = boundary.wallet21fRelockResetLifecycle;
+      boundary.canSend = boundary.wallet21aPolicyBoundSendGate?.canSend === true && boundary.wallet21dRetryRecoverySafety?.sendRequestAllowed === true;
       boundary.canSign = false;
       boundary.canBroadcast = false;
-      boundary.mutationExecuted = boundary.wallet21bProviderOutcomeLedger?.mutationExecuted === true || boundary.wallet21cTransactionWatcher?.mutationExecuted === true;
+      boundary.mutationExecuted = boundary.wallet21bProviderOutcomeLedger?.mutationExecuted === true || boundary.wallet21cTransactionWatcher?.mutationExecuted === true || boundary.wallet21ePostConfirmationMcelReceiptIntegration?.mutationExecuted === true || boundary.wallet21fRelockResetLifecycle?.mutationExecuted === true;
       boundary.walletUnlockContract = boundary.wallet20aUnlockContract;
       boundary.nextAction = boundary.wallet20bSignedIntentUnlock?.nextAction || boundary.wallet20aUnlockContract?.nextAction || boundary.nextAction;
       boundary.nextAction = boundary.wallet20cSignatureRequestPreflight?.nextAction || boundary.nextAction;
@@ -3744,6 +4067,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       boundary.nextAction = boundary.wallet21aPolicyBoundSendGate?.nextAction || boundary.nextAction;
       boundary.nextAction = boundary.wallet21bProviderOutcomeLedger?.nextAction || boundary.nextAction;
       boundary.nextAction = boundary.wallet21cTransactionWatcher?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21dRetryRecoverySafety?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21ePostConfirmationMcelReceiptIntegration?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21fRelockResetLifecycle?.nextAction || boundary.nextAction;
       return boundary;
     }
 
@@ -4537,6 +4863,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         walletProviderOutcomeLedger: null,
         wallet21cTransactionWatcher: null,
         walletTransactionWatcher: null,
+        wallet21dRetryRecoverySafety: null,
+        walletRetryRecoverySafety: null,
+        wallet21ePostConfirmationMcelReceiptIntegration: null,
+        walletPostConfirmationReceiptIntegration: null,
+        wallet21fRelockResetLifecycle: null,
+        walletRelockResetLifecycle: null,
         walletUnlockContract: null,
         walletAdapter: {
           providerKind: "unknown",
@@ -4797,6 +5129,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "walletProviderOutcomeLedger",
             "wallet21cTransactionWatcher",
             "walletTransactionWatcher",
+            "wallet21dRetryRecoverySafety",
+            "walletRetryRecoverySafety",
+            "wallet21ePostConfirmationMcelReceiptIntegration",
+            "walletPostConfirmationReceiptIntegration",
+            "wallet21fRelockResetLifecycle",
+            "walletRelockResetLifecycle",
             "walletUnlockContract",
             "walletAdapter",
             "walletEvents",
@@ -4851,6 +5189,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           "walletPolicyBoundTransactionSendRequested",
           "walletProviderOutcomeLedgered",
           "walletTransactionWatcherUpdated",
+          "walletRetryRecoverySafetyUpdated",
+          "walletPostConfirmationReceiptIntegrated",
+          "walletRelockResetLifecycleUpdated",
           "runtimeHintRepaired",
           "unsafeWriteBlocked",
           "serialized"
@@ -6175,6 +6516,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
               "runtime.walletProviderOutcomeLedger",
               "runtime.wallet21cTransactionWatcher",
               "runtime.walletTransactionWatcher",
+              "runtime.wallet21dRetryRecoverySafety",
+              "runtime.walletRetryRecoverySafety",
+              "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+              "runtime.walletPostConfirmationReceiptIntegration",
+              "runtime.wallet21fRelockResetLifecycle",
+              "runtime.walletRelockResetLifecycle",
               "runtime.walletEvents",
               "runtime.externalOutcome"
             ],
@@ -6185,6 +6532,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
               "runtime.walletProviderOutcomeLedger",
               "runtime.wallet21cTransactionWatcher",
               "runtime.walletTransactionWatcher",
+              "runtime.wallet21dRetryRecoverySafety",
+              "runtime.walletRetryRecoverySafety",
+              "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+              "runtime.walletPostConfirmationReceiptIntegration",
+              "runtime.wallet21fRelockResetLifecycle",
+              "runtime.walletRelockResetLifecycle",
               "runtime.externalOutcome",
               "runtime.walletEvents",
               "runtime.evidenceStrip"
@@ -6235,12 +6588,36 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
                 txHash,
                 transactionReceipt
               });
+              const recoverySafety = mcelWallet21dRetryRecoverySafety({
+                wallet21aPolicyBoundSendGate: sendGate,
+                wallet21bProviderOutcomeLedger: ledger,
+                wallet21cTransactionWatcher: watcher
+              }, ctx.get("runtime.wallet21dRetryRecoverySafety") || ctx.get("runtime.walletRetryRecoverySafety") || {});
+              const postConfirmationIntegration = mcelWallet21ePostConfirmationMcelReceiptIntegration({
+                wallet21aPolicyBoundSendGate: sendGate,
+                wallet21bProviderOutcomeLedger: ledger,
+                wallet21cTransactionWatcher: watcher,
+                wallet21dRetryRecoverySafety: recoverySafety
+              }, ctx.get("runtime.wallet21ePostConfirmationMcelReceiptIntegration") || ctx.get("runtime.walletPostConfirmationReceiptIntegration") || {});
+              const relockResetLifecycle = mcelWallet21fRelockResetLifecycle({
+                wallet21aPolicyBoundSendGate: sendGate,
+                wallet21bProviderOutcomeLedger: ledger,
+                wallet21cTransactionWatcher: watcher,
+                wallet21dRetryRecoverySafety: recoverySafety,
+                wallet21ePostConfirmationMcelReceiptIntegration: postConfirmationIntegration
+              }, ctx.get("runtime.wallet21fRelockResetLifecycle") || ctx.get("runtime.walletRelockResetLifecycle") || {});
               ctx.set("runtime.wallet21aPolicyBoundSendGate", sendGate);
               ctx.set("runtime.walletTransactionSendGate", sendGate);
               ctx.set("runtime.wallet21bProviderOutcomeLedger", ledger);
               ctx.set("runtime.walletProviderOutcomeLedger", ledger);
               ctx.set("runtime.wallet21cTransactionWatcher", watcher);
               ctx.set("runtime.walletTransactionWatcher", watcher);
+              ctx.set("runtime.wallet21dRetryRecoverySafety", recoverySafety);
+              ctx.set("runtime.walletRetryRecoverySafety", recoverySafety);
+              ctx.set("runtime.wallet21ePostConfirmationMcelReceiptIntegration", postConfirmationIntegration);
+              ctx.set("runtime.walletPostConfirmationReceiptIntegration", postConfirmationIntegration);
+              ctx.set("runtime.wallet21fRelockResetLifecycle", relockResetLifecycle);
+              ctx.set("runtime.walletRelockResetLifecycle", relockResetLifecycle);
               ctx.set("runtime.externalOutcome", outcome);
               ctx.set("runtime.walletEvents", [{
                 type: "policyBoundTransactionSend",
@@ -6249,7 +6626,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
                 providerMethod: "eth_sendTransaction",
                 txHash,
                 account: sendGate.providerTransactionRequest?.from || "",
-                chainId: sendGate.networkExecutionPolicy?.chainId || ""
+                chainId: sendGate.networkExecutionPolicy?.chainId || "",
+                recoveryStatus: recoverySafety.status,
+                postConfirmationStatus: postConfirmationIntegration.status,
+                relockStatus: relockResetLifecycle.status
               }]);
               ctx.set("runtime.evidenceStrip", [
                 `wallet.sendPolicyBoundTransaction outcome=${outcome.status}`,
@@ -6257,6 +6637,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
                 `txHash=${txHash || "missing"}`,
                 `ledger=${ledger.status}`,
                 `watcher=${watcher.status}`,
+                `21D=${recoverySafety.status}`,
+                `21E=${postConfirmationIntegration.status}`,
+                `21F=${relockResetLifecycle.status}`,
                 "networkAgnostic=true",
                 "devnetOnly=false"
               ]);
@@ -6266,7 +6649,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
                   ? "21A/21B/21C captured a policy-bound provider send with tx hash and watcher state."
                   : "21A captured a blocked or rejected policy-bound provider send without tx hash."
               });
-              return {sendGate, ledger, watcher, outcome, txHash, transactionReceipt};
+              return {sendGate, ledger, watcher, recoverySafety, postConfirmationIntegration, relockResetLifecycle, outcome, txHash, transactionReceipt};
             },
             commit(_ctx, result) {
               return {
@@ -6276,8 +6659,11 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
                 txHash: result?.txHash || "",
                 ledgerStatus: result?.ledger?.status || "",
                 watcherStatus: result?.watcher?.status || "",
-                mutationExecuted: result?.sendGate?.mutationExecuted === true,
-                broadcastAttempted: result?.sendGate?.broadcastAttempted === true,
+                recoveryStatus: result?.recoverySafety?.status || "",
+                postConfirmationStatus: result?.postConfirmationIntegration?.status || "",
+                relockStatus: result?.relockResetLifecycle?.status || "",
+                mutationExecuted: result?.sendGate?.mutationExecuted === true || result?.relockResetLifecycle?.mutationExecuted === true,
+                broadcastAttempted: result?.sendGate?.broadcastAttempted === true || result?.relockResetLifecycle?.broadcastAttempted === true,
                 canRetryAutomatically: false
               };
             }
@@ -6409,6 +6795,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "runtime.walletProviderOutcomeLedger",
             "runtime.wallet21cTransactionWatcher",
             "runtime.walletTransactionWatcher",
+            "runtime.wallet21dRetryRecoverySafety",
+            "runtime.walletRetryRecoverySafety",
+            "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+            "runtime.walletPostConfirmationReceiptIntegration",
+            "runtime.wallet21fRelockResetLifecycle",
+            "runtime.walletRelockResetLifecycle",
             "runtime.walletUnlockContract",
             "runtime.walletAdapter",
             "runtime.walletEvents",
@@ -6420,7 +6812,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "runtime.evidenceStrip",
             "runtime.wallet21aPolicyBoundSendGate",
             "runtime.wallet21bProviderOutcomeLedger",
-            "runtime.wallet21cTransactionWatcher"
+            "runtime.wallet21cTransactionWatcher",
+            "runtime.wallet21dRetryRecoverySafety",
+            "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+            "runtime.wallet21fRelockResetLifecycle"
           ],
           failIfRuntimeLeaks: true,
           runtimeLeakMarkers: [
@@ -6760,6 +7155,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const policyBoundSendGateSlot = document.querySelector("#mcel-21a-wallet-policy-bound-send-gate");
       const providerOutcomeLedgerSlot = document.querySelector("#mcel-21b-wallet-provider-outcome-ledger");
       const transactionWatcherSlot = document.querySelector("#mcel-21c-wallet-transaction-watcher");
+      const retryRecoverySafetySlot = document.querySelector("#mcel-21d-wallet-retry-recovery-safety");
+      const postConfirmationIntegrationSlot = document.querySelector("#mcel-21e-wallet-post-confirmation-integration");
+      const relockResetLifecycleSlot = document.querySelector("#mcel-21f-wallet-relock-reset-lifecycle");
       const finalLockedSpecimenSlot = document.querySelector("#mcel-18n-wallet-tool-final-locked-specimen");
       const completionReportSlot = document.querySelector("#mcel-18n-wallet-tool-completion-report");
       const visiblePhaseSlot = document.querySelector("#mcel-18n-wallet-tool-visible-phase");
@@ -6781,6 +7179,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const visible21aPolicySendSlot = document.querySelector("#mcel-21a-wallet-policy-send-visible-status");
       const visible21bOutcomeLedgerSlot = document.querySelector("#mcel-21b-wallet-provider-outcome-visible-status");
       const visible21cTransactionWatcherSlot = document.querySelector("#mcel-21c-wallet-transaction-watcher-visible-status");
+      const visible21dRetryRecoverySlot = document.querySelector("#mcel-21d-wallet-retry-recovery-visible-status");
+      const visible21eReceiptIntegrationSlot = document.querySelector("#mcel-21e-wallet-receipt-integration-visible-status");
+      const visible21fRelockLifecycleSlot = document.querySelector("#mcel-21f-wallet-relock-lifecycle-visible-status");
       const visible19cInvalidatedSlot = document.querySelector("#mcel-19c-wallet-tx-draft-invalidated-by");
       const visibleTxDraftStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-tx-draft-status");
       const visibleFreshnessStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-freshness-status");
@@ -6812,6 +7213,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const wallet21aPolicyBoundSendGate = boundary.wallet21aPolicyBoundSendGate || boundary.walletTransactionSendGate || {};
       const wallet21bProviderOutcomeLedger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
       const wallet21cTransactionWatcher = boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {};
+      const wallet21dRetryRecoverySafety = boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {};
+      const wallet21ePostConfirmationMcelReceiptIntegration = boundary.wallet21ePostConfirmationMcelReceiptIntegration || boundary.walletPostConfirmationReceiptIntegration || {};
+      const wallet21fRelockResetLifecycle = boundary.wallet21fRelockResetLifecycle || boundary.walletRelockResetLifecycle || {};
       const txDraftIdentityEnvelope = walletTxDraft.identityEnvelope
         || walletTxDraft.txDraftIdentity
         || walletPreflightReport.txDraftIdentityEnvelope
@@ -6839,10 +7243,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           `18N wallet tool: ${boundary.status || "locked"}`,
           `action: ${boundary.action || "wallet.send-sign"}`,
           `txDraft=${walletTxDraft.status || "empty"} freshness=${walletFreshnessSnapshot.status || "not-observed"}`,
-          `19A=${wallet19aSmokeRegressionGuard.status || "not-observed"} 19B=${txDraftIdentityEnvelope.kind || "missing"} 19C=${txDraftValidityEnvelope.status || "not-observed"} 19D=${wallet19dProofSurfaceAlignment.status || "not-observed"} 19E=${wallet19eNegativePathRegression.status || "not-observed"} 20A=${wallet20aUnlockContract.stage || wallet20aUnlockContract.status || "not-observed"} 20B=${wallet20bSignedIntentUnlock.stage || wallet20bSignedIntentUnlock.status || "not-observed"} 20C=${wallet20cSignatureRequestPreflight.stage || wallet20cSignatureRequestPreflight.status || "not-observed"} 20D=${wallet20dProviderIntentSignature.stage || wallet20dProviderIntentSignature.status || "not-observed"} 20E=${wallet20eSignedIntentVerification.stage || wallet20eSignedIntentVerification.status || "not-observed"} 20F=${wallet20fPreSendReviewGate.stage || wallet20fPreSendReviewGate.status || "not-observed"} 20G=${wallet20gProviderIntentHardening.stage || wallet20gProviderIntentHardening.status || "not-observed"} 21A=${wallet21aPolicyBoundSendGate.stage || wallet21aPolicyBoundSendGate.status || "not-observed"} 21B=${wallet21bProviderOutcomeLedger.status || "not-observed"} 21C=${wallet21cTransactionWatcher.status || "not-observed"}`,
+          `19A=${wallet19aSmokeRegressionGuard.status || "not-observed"} 19B=${txDraftIdentityEnvelope.kind || "missing"} 19C=${txDraftValidityEnvelope.status || "not-observed"} 19D=${wallet19dProofSurfaceAlignment.status || "not-observed"} 19E=${wallet19eNegativePathRegression.status || "not-observed"} 20A=${wallet20aUnlockContract.stage || wallet20aUnlockContract.status || "not-observed"} 20B=${wallet20bSignedIntentUnlock.stage || wallet20bSignedIntentUnlock.status || "not-observed"} 20C=${wallet20cSignatureRequestPreflight.stage || wallet20cSignatureRequestPreflight.status || "not-observed"} 20D=${wallet20dProviderIntentSignature.stage || wallet20dProviderIntentSignature.status || "not-observed"} 20E=${wallet20eSignedIntentVerification.stage || wallet20eSignedIntentVerification.status || "not-observed"} 20F=${wallet20fPreSendReviewGate.stage || wallet20fPreSendReviewGate.status || "not-observed"} 20G=${wallet20gProviderIntentHardening.stage || wallet20gProviderIntentHardening.status || "not-observed"} 21A=${wallet21aPolicyBoundSendGate.stage || wallet21aPolicyBoundSendGate.status || "not-observed"} 21B=${wallet21bProviderOutcomeLedger.status || "not-observed"} 21C=${wallet21cTransactionWatcher.status || "not-observed"} 21D=${wallet21dRetryRecoverySafety.status || "not-observed"} 21E=${wallet21ePostConfirmationMcelReceiptIntegration.status || "not-observed"} 21F=${wallet21fRelockResetLifecycle.status || "not-observed"}`,
           `simulation=${walletTxDraft.simulation?.kind || "none"}`,
           `canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`,
-          `unlock=${wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || walletUnlockRequirements.status || "incomplete"} final=${walletFinalLockedSpecimen.finalStatus || "locked"} completion=${wallet18nCompletionReport.status || "not-observed"}`,
+          `unlock=${wallet21fRelockResetLifecycle.stage || wallet21ePostConfirmationMcelReceiptIntegration.stage || wallet21dRetryRecoverySafety.stage || wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || walletUnlockRequirements.status || "incomplete"} final=${walletFinalLockedSpecimen.finalStatus || "locked"} completion=${wallet18nCompletionReport.status || "not-observed"}`,
           `backlogScheme=${walletBacklogPolicy.selectedScheme} queued=${walletBacklogRuntime.queuedCount} suppressed=${walletBacklogRuntime.suppressedCount} nuked=${walletBacklogRuntime.nukedCount}`,
           `next: ${boundary.nextAction || preflight.summary || "inspect MCEL commit receipt"}`
         ].join("\n");
@@ -6867,6 +7271,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           wallet21aPolicyBoundSendGate,
           wallet21bProviderOutcomeLedger,
           wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
           walletTxProvenance: boundary.walletTxProvenance || {},
           rebuildDraftAction: boundary.walletRebuildDraftAction || {}
         }, null, 2);
@@ -6911,6 +7321,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           wallet21aPolicyBoundSendGate,
           wallet21bProviderOutcomeLedger,
           wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
           wallet18nCompletionReport,
@@ -6941,6 +7354,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           wallet21aPolicyBoundSendGate,
           wallet21bProviderOutcomeLedger,
           wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
           wallet18nCompletionReport,
@@ -6989,6 +7405,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           wallet21aPolicyBoundSendGate,
           wallet21bProviderOutcomeLedger,
           wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
           signedIntentEnvelope: wallet20bSignedIntentUnlock.signedIntentEnvelope || {},
           decisionReceipt: wallet20bSignedIntentUnlock.decisionReceipt || {}
         }, null, 2);
@@ -7007,6 +7426,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           wallet21aPolicyBoundSendGate,
           wallet21bProviderOutcomeLedger,
           wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
           signaturePreflightEnvelope: wallet20cSignatureRequestPreflight.signaturePreflightEnvelope || {},
           decisionReceipt: wallet20cSignatureRequestPreflight.decisionReceipt || {}
         }, null, 2);
@@ -7072,6 +7494,32 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           watcherEnvelope: wallet21cTransactionWatcher.watcherEnvelope || {}
         }, null, 2);
       }
+      if (retryRecoverySafetySlot) {
+        retryRecoverySafetySlot.textContent = JSON.stringify({
+          kind: "mcel-21d-wallet-retry-recovery-safety-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21dRetryRecoverySafety,
+          recoveryEnvelope: wallet21dRetryRecoverySafety.recoveryEnvelope || {},
+          receipt: wallet21dRetryRecoverySafety.receipt || {}
+        }, null, 2);
+      }
+      if (postConfirmationIntegrationSlot) {
+        postConfirmationIntegrationSlot.textContent = JSON.stringify({
+          kind: "mcel-21e-wallet-post-confirmation-integration-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          integrationEnvelope: wallet21ePostConfirmationMcelReceiptIntegration.integrationEnvelope || {},
+          integratedReceipt: wallet21ePostConfirmationMcelReceiptIntegration.integratedReceipt || {}
+        }, null, 2);
+      }
+      if (relockResetLifecycleSlot) {
+        relockResetLifecycleSlot.textContent = JSON.stringify({
+          kind: "mcel-21f-wallet-relock-reset-lifecycle-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21fRelockResetLifecycle,
+          lifecycleEnvelope: wallet21fRelockResetLifecycle.lifecycleEnvelope || {}
+        }, null, 2);
+      }
       if (finalLockedSpecimenSlot) {
         finalLockedSpecimenSlot.textContent = JSON.stringify({
           kind: "mcel-18n-wallet-tool-final-locked-specimen-view",
@@ -7094,11 +7542,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         ...(walletNegativePathTestWall.blockers || []),
         ...(wallet20gProviderIntentHardening.blockers || []),
         ...(wallet21aPolicyBoundSendGate.blockers || []),
+        ...(wallet21dRetryRecoverySafety.blockers || []),
         ...txDraftInvalidationReasons,
         "wallet-send-sign-locked"
       ].filter(Boolean))].slice(0, 6);
       if (visiblePhaseSlot) {
-        visiblePhaseSlot.textContent = `${wallet18nCompletionReport.completionVersion || "18N-MCEL-k"} + 19A/B/C/D/E + 20A/20B/20C/20D/20E/20F/20G + 21A/21B/21C visible: ${wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || wallet18nCompletionReport.status || walletFinalLockedSpecimen.finalStatus || "locked"} under a policy-bound network-agnostic send contract`;
+        visiblePhaseSlot.textContent = `${wallet18nCompletionReport.completionVersion || "18N-MCEL-k"} + 19A/B/C/D/E + 20A/20B/20C/20D/20E/20F/20G + 21A/21B/21C/21D/21E/21F visible: ${wallet21fRelockResetLifecycle.stage || wallet21ePostConfirmationMcelReceiptIntegration.stage || wallet21dRetryRecoverySafety.stage || wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || wallet18nCompletionReport.status || walletFinalLockedSpecimen.finalStatus || "locked"} under a policy-bound network-agnostic send contract with retry safety, receipt integration, and relock lifecycle`;
       }
       if (visible19aSmokeSlot) {
         visible19aSmokeSlot.textContent = `${wallet19aSmokeRegressionGuard.smokeVersion || "19A-MCEL"} · ${wallet19aSmokeRegressionGuard.status || "not-observed"}`;
@@ -7172,6 +7621,15 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       if (visible21cTransactionWatcherSlot) {
         visible21cTransactionWatcherSlot.textContent = `${wallet21cTransactionWatcher.unlockVersion || "21C-MCEL"} · ${wallet21cTransactionWatcher.status || "not-observed"}`;
       }
+      if (visible21dRetryRecoverySlot) {
+        visible21dRetryRecoverySlot.textContent = `${wallet21dRetryRecoverySafety.unlockVersion || "21D-MCEL"} · ${wallet21dRetryRecoverySafety.status || "not-observed"} · duplicateBlocked=${wallet21dRetryRecoverySafety.duplicateSendBlocked === true}`;
+      }
+      if (visible21eReceiptIntegrationSlot) {
+        visible21eReceiptIntegrationSlot.textContent = `${wallet21ePostConfirmationMcelReceiptIntegration.unlockVersion || "21E-MCEL"} · ${wallet21ePostConfirmationMcelReceiptIntegration.status || "not-observed"} · outcome=${wallet21ePostConfirmationMcelReceiptIntegration.chainOutcome || "not-observed"}`;
+      }
+      if (visible21fRelockLifecycleSlot) {
+        visible21fRelockLifecycleSlot.textContent = `${wallet21fRelockResetLifecycle.unlockVersion || "21F-MCEL"} · ${wallet21fRelockResetLifecycle.status || "not-observed"} · relocked=${wallet21fRelockResetLifecycle.lifecycleEnvelope?.relocked === true}`;
+      }
       if (visibleTxDraftStatusSlot) {
         visibleTxDraftStatusSlot.textContent = `${walletTxDraft.status || boundary.mcelCommitDraft?.status || "empty"} · validity=${txDraftValidityEnvelope.status || "not-observed"}`;
       }
@@ -7179,10 +7637,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         visibleFreshnessStatusSlot.textContent = walletFreshnessSnapshot.status || boundary.mcelCommitFreshness?.status || "not-observed";
       }
       if (visibleUnlockStatusSlot) {
-        visibleUnlockStatusSlot.textContent = wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || walletUnlockRequirements.status || "incomplete";
+        visibleUnlockStatusSlot.textContent = wallet21fRelockResetLifecycle.stage || wallet21ePostConfirmationMcelReceiptIntegration.stage || wallet21dRetryRecoverySafety.stage || wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || walletUnlockRequirements.status || "incomplete";
       }
       if (visibleProviderStatusSlot) {
-        visibleProviderStatusSlot.textContent = wallet21bProviderOutcomeLedger.mutationExecuted === true || wallet21cTransactionWatcher.mutationExecuted === true || receipt.mutationExecuted === true ? "mutation receipted" : (wallet21aPolicyBoundSendGate.canRequestTransactionSend === true ? "policy-send eligible" : "blocked");
+        visibleProviderStatusSlot.textContent = wallet21fRelockResetLifecycle.mutationExecuted === true || wallet21ePostConfirmationMcelReceiptIntegration.mutationExecuted === true || wallet21bProviderOutcomeLedger.mutationExecuted === true || wallet21cTransactionWatcher.mutationExecuted === true || receipt.mutationExecuted === true ? "mutation receipted" : (wallet21dRetryRecoverySafety.sendRequestAllowed === true ? "policy-send eligible once" : "blocked/relocked");
       }
       if (visibleCompletionStatusSlot) {
         visibleCompletionStatusSlot.textContent = wallet18nCompletionReport.status || "not-observed";
@@ -7215,6 +7673,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           {step: "21A request policy-bound network-agnostic send", status: wallet21aPolicyBoundSendGate.stage || wallet21aPolicyBoundSendGate.status || "not-observed"},
           {step: "21B ledger provider send outcome", status: wallet21bProviderOutcomeLedger.status || "not-observed"},
           {step: "21C watch transaction receipt", status: wallet21cTransactionWatcher.status || "not-observed"},
+          {step: "21D block duplicate/retry sends", status: wallet21dRetryRecoverySafety.status || "not-observed"},
+          {step: "21E integrate chain outcome into MCEL receipts", status: wallet21ePostConfirmationMcelReceiptIntegration.status || "not-observed"},
+          {step: "21F relock/reset lifecycle", status: wallet21fRelockResetLifecycle.status || "not-observed"},
           ...baseVisibleFlow.filter((entry) => !String(entry.step || "").startsWith("19") && !String(entry.step || "").startsWith("20") && !String(entry.step || "").startsWith("21"))
         ];
         visibleFlow.forEach((entry) => {
@@ -7268,7 +7729,16 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         const transactionWatcherNext = wallet21cTransactionWatcher.nextAction
           ? `21C says ${wallet21cTransactionWatcher.status}: ${wallet21cTransactionWatcher.nextAction}`
           : "";
-        visibleNextSlot.textContent = `Next action: ${validityNext || proofAlignmentNext || transactionWatcherNext || providerOutcomeNext || policySendNext || providerIntentHardeningNext || preSendReviewNext || signedIntentVerificationNext || providerIntentNext || signaturePreflightNext || signedIntentNext || unlockContractNext || wallet18nCompletionReport.nextAction || walletFinalLockedSpecimen.nextAction || boundary.nextAction || "stop here until a separate wallet unlock design is blessed"}`;
+        const retryRecoveryNext = wallet21dRetryRecoverySafety.nextAction
+          ? `21D says ${wallet21dRetryRecoverySafety.status}: ${wallet21dRetryRecoverySafety.nextAction}`
+          : "";
+        const receiptIntegrationNext = wallet21ePostConfirmationMcelReceiptIntegration.nextAction
+          ? `21E says ${wallet21ePostConfirmationMcelReceiptIntegration.status}: ${wallet21ePostConfirmationMcelReceiptIntegration.nextAction}`
+          : "";
+        const relockLifecycleNext = wallet21fRelockResetLifecycle.nextAction
+          ? `21F says ${wallet21fRelockResetLifecycle.status}: ${wallet21fRelockResetLifecycle.nextAction}`
+          : "";
+        visibleNextSlot.textContent = `Next action: ${validityNext || proofAlignmentNext || relockLifecycleNext || receiptIntegrationNext || retryRecoveryNext || transactionWatcherNext || providerOutcomeNext || policySendNext || providerIntentHardeningNext || preSendReviewNext || signedIntentVerificationNext || providerIntentNext || signaturePreflightNext || signedIntentNext || unlockContractNext || wallet18nCompletionReport.nextAction || walletFinalLockedSpecimen.nextAction || boundary.nextAction || "stop here until a separate wallet unlock design is blessed"}`;
       }
       if (ledgerSlot) {
         ledgerSlot.textContent = JSON.stringify({
@@ -7311,6 +7781,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           wallet21aPolicyBoundSendGate,
           wallet21bProviderOutcomeLedger,
           wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
           walletUnlockRequirements,
           walletFinalLockedSpecimen,
           wallet18nCompletionReport,
@@ -7373,6 +7846,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         instance.runtime.walletProviderOutcomeLedger = boundary.walletProviderOutcomeLedger || boundary.wallet21bProviderOutcomeLedger || null;
         instance.runtime.wallet21cTransactionWatcher = boundary.wallet21cTransactionWatcher || null;
         instance.runtime.walletTransactionWatcher = boundary.walletTransactionWatcher || boundary.wallet21cTransactionWatcher || null;
+        instance.runtime.wallet21dRetryRecoverySafety = boundary.wallet21dRetryRecoverySafety || null;
+        instance.runtime.walletRetryRecoverySafety = boundary.walletRetryRecoverySafety || boundary.wallet21dRetryRecoverySafety || null;
+        instance.runtime.wallet21ePostConfirmationMcelReceiptIntegration = boundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
+        instance.runtime.walletPostConfirmationReceiptIntegration = boundary.walletPostConfirmationReceiptIntegration || boundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
+        instance.runtime.wallet21fRelockResetLifecycle = boundary.wallet21fRelockResetLifecycle || null;
+        instance.runtime.walletRelockResetLifecycle = boundary.walletRelockResetLifecycle || boundary.wallet21fRelockResetLifecycle || null;
         instance.runtime.walletUnlockContract = boundary.walletUnlockContract || boundary.wallet20aUnlockContract || null;
       }
       tinyState.lastWalletCommitBoundary = boundary;
@@ -7545,9 +8024,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       if (!instance) return null;
       const boundary = refreshMcel18nWalletToolBoundary("prepare-21a-policy-bound-send");
       const sendGate = boundary.wallet21aPolicyBoundSendGate || {};
+      const recoverySafety = boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {};
       const provider = mcelTinyContractInjectedProvider();
       const providerTransactionRequest = sendGate.providerTransactionRequest || {};
-      const canRequestTransactionSend = sendGate.canRequestTransactionSend === true && sendGate.canSend === true;
+      const canRequestTransactionSend = sendGate.canRequestTransactionSend === true
+        && sendGate.canSend === true
+        && recoverySafety.sendRequestAllowed === true;
       if (!canRequestTransactionSend || !provider) {
         const outcome = recordMcelTinyContractExternalOutcome({
           operation: "wallet.sendPolicyBoundTransaction",
@@ -7557,10 +8039,11 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           reason: !provider ? "provider-unavailable" : "21a-policy-send-blocked",
           message: !provider
             ? "No injected provider is available for the 21A policy-bound transaction send."
-            : `21A policy-bound transaction send is blocked: ${(sendGate.blockers || []).join(", ") || "unknown blocker"}.`,
+            : `21A policy-bound transaction send is blocked: ${[...(sendGate.blockers || []), ...(recoverySafety.blockers || [])].join(", ") || recoverySafety.status || "unknown blocker"}.`,
           value: {
             canRequestTransactionSend,
-            blockers: sendGate.blockers || [],
+            blockers: [...(sendGate.blockers || []), ...(recoverySafety.blockers || [])],
+            recoveryStatus: recoverySafety.status || "",
             sendEnvelopeHash: sendGate.sendEnvelope?.sendEnvelopeHash || "",
             chainId: sendGate.networkExecutionPolicy?.chainId || "",
             devnetOnly: false,
@@ -7579,7 +8062,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           "wallet-policy-bound-send",
           "21A policy-bound transaction send was blocked before provider mutation.",
           "warn",
-          {reason, outcome, effectEnvelope, sendEnvelopeHash: sendGate.sendEnvelope?.sendEnvelopeHash || ""}
+          {reason, outcome, effectEnvelope, recoverySafety, sendEnvelopeHash: sendGate.sendEnvelope?.sendEnvelopeHash || ""}
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "21A policy-bound send blocked.");
@@ -7705,6 +8188,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         walletProviderOutcomeLedger: boundary.walletProviderOutcomeLedger || boundary.wallet21bProviderOutcomeLedger || {},
         wallet21cTransactionWatcher: boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {},
         walletTransactionWatcher: boundary.walletTransactionWatcher || boundary.wallet21cTransactionWatcher || {},
+        wallet21dRetryRecoverySafety: boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {},
+        walletRetryRecoverySafety: boundary.walletRetryRecoverySafety || boundary.wallet21dRetryRecoverySafety || {},
+        wallet21ePostConfirmationMcelReceiptIntegration: boundary.wallet21ePostConfirmationMcelReceiptIntegration || boundary.walletPostConfirmationReceiptIntegration || {},
+        walletPostConfirmationReceiptIntegration: boundary.walletPostConfirmationReceiptIntegration || boundary.wallet21ePostConfirmationMcelReceiptIntegration || {},
+        wallet21fRelockResetLifecycle: boundary.wallet21fRelockResetLifecycle || boundary.walletRelockResetLifecycle || {},
+        walletRelockResetLifecycle: boundary.walletRelockResetLifecycle || boundary.wallet21fRelockResetLifecycle || {},
         walletUnlockContract: boundary.walletUnlockContract || boundary.wallet20aUnlockContract || {},
         walletUnlockRequirements: boundary.walletUnlockRequirements || {},
         walletFinalLockedSpecimen: boundary.walletFinalLockedSpecimen || {},
@@ -7771,6 +8260,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         instance.runtime.walletProviderOutcomeLedger = commitBoundary.walletProviderOutcomeLedger || commitBoundary.wallet21bProviderOutcomeLedger || null;
         instance.runtime.wallet21cTransactionWatcher = commitBoundary.wallet21cTransactionWatcher || null;
         instance.runtime.walletTransactionWatcher = commitBoundary.walletTransactionWatcher || commitBoundary.wallet21cTransactionWatcher || null;
+        instance.runtime.wallet21dRetryRecoverySafety = commitBoundary.wallet21dRetryRecoverySafety || null;
+        instance.runtime.walletRetryRecoverySafety = commitBoundary.walletRetryRecoverySafety || commitBoundary.wallet21dRetryRecoverySafety || null;
+        instance.runtime.wallet21ePostConfirmationMcelReceiptIntegration = commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
+        instance.runtime.walletPostConfirmationReceiptIntegration = commitBoundary.walletPostConfirmationReceiptIntegration || commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
+        instance.runtime.wallet21fRelockResetLifecycle = commitBoundary.wallet21fRelockResetLifecycle || null;
+        instance.runtime.walletRelockResetLifecycle = commitBoundary.walletRelockResetLifecycle || commitBoundary.wallet21fRelockResetLifecycle || null;
         instance.runtime.walletUnlockContract = commitBoundary.walletUnlockContract || commitBoundary.wallet20aUnlockContract || null;
       }
       tinyState.lastWalletCommitBoundary = commitBoundary;
@@ -7814,6 +8309,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           <dt>21A policy send</dt><dd>${commitBoundary.wallet21aPolicyBoundSendGate?.status || "not observed"} · networkAgnostic=${commitBoundary.wallet21aPolicyBoundSendGate?.networkAgnostic === true} · canSend=${commitBoundary.wallet21aPolicyBoundSendGate?.canSend === true}</dd>
           <dt>21B provider ledger</dt><dd>${commitBoundary.wallet21bProviderOutcomeLedger?.status || "not observed"} · txHash=${commitBoundary.wallet21bProviderOutcomeLedger?.txHash ? "present" : "missing"}</dd>
           <dt>21C transaction watcher</dt><dd>${commitBoundary.wallet21cTransactionWatcher?.status || "not observed"} · pending=${commitBoundary.wallet21cTransactionWatcher?.pending === true}</dd>
+          <dt>21D retry safety</dt><dd>${commitBoundary.wallet21dRetryRecoverySafety?.status || "not observed"} · duplicateBlocked=${commitBoundary.wallet21dRetryRecoverySafety?.duplicateSendBlocked === true}</dd>
+          <dt>21E receipt integration</dt><dd>${commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration?.status || "not observed"} · outcome=${commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration?.chainOutcome || "not observed"}</dd>
+          <dt>21F relock lifecycle</dt><dd>${commitBoundary.wallet21fRelockResetLifecycle?.status || "not observed"} · relocked=${commitBoundary.wallet21fRelockResetLifecycle?.lifecycleEnvelope?.relocked === true}</dd>
           <dt>final locked specimen</dt><dd>${commitBoundary.walletFinalLockedSpecimen?.finalStatus || "locked"} · mutationExecuted=${commitBoundary.walletFinalLockedSpecimen?.mutationExecuted === true}</dd>
         </dl>
       `;

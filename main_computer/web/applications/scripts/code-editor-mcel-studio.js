@@ -1556,6 +1556,15 @@
           wallet21cTransactionWatcher: source.wallet21cTransactionWatcher || source.walletTransactionWatcher || {},
           wallet21cTransactionWatcherStatus: source.wallet21cTransactionWatcher?.status || source.walletTransactionWatcher?.status || "not-observed",
           wallet21cPending: source.wallet21cTransactionWatcher?.pending === true || source.walletTransactionWatcher?.pending === true,
+          wallet21dRetryRecoverySafety: source.wallet21dRetryRecoverySafety || source.walletRetryRecoverySafety || {},
+          wallet21dRetryRecoveryStatus: source.wallet21dRetryRecoverySafety?.status || source.walletRetryRecoverySafety?.status || "not-observed",
+          wallet21dDuplicateSendBlocked: source.wallet21dRetryRecoverySafety?.duplicateSendBlocked === true || source.walletRetryRecoverySafety?.duplicateSendBlocked === true,
+          wallet21ePostConfirmationMcelReceiptIntegration: source.wallet21ePostConfirmationMcelReceiptIntegration || source.walletPostConfirmationReceiptIntegration || {},
+          wallet21eReceiptIntegrationStatus: source.wallet21ePostConfirmationMcelReceiptIntegration?.status || source.walletPostConfirmationReceiptIntegration?.status || "not-observed",
+          wallet21eChainOutcome: source.wallet21ePostConfirmationMcelReceiptIntegration?.chainOutcome || source.walletPostConfirmationReceiptIntegration?.chainOutcome || "not-observed",
+          wallet21fRelockResetLifecycle: source.wallet21fRelockResetLifecycle || source.walletRelockResetLifecycle || {},
+          wallet21fRelockLifecycleStatus: source.wallet21fRelockResetLifecycle?.status || source.walletRelockResetLifecycle?.status || "not-observed",
+          wallet21fRequiresFreshDraftForNextSend: source.wallet21fRelockResetLifecycle?.requiresFreshDraftForNextSend === true || source.walletRelockResetLifecycle?.requiresFreshDraftForNextSend === true,
           canBuildDraft: source.wallet20aUnlockContract?.canBuildDraft === true || source.walletUnlockContract?.canBuildDraft === true,
           canSimulate: source.wallet20aUnlockContract?.canSimulate === true || source.walletUnlockContract?.canSimulate === true,
           canRequestSignature: source.wallet20bSignedIntentUnlock?.canRequestSignature === true || source.walletSignedIntentUnlock?.canRequestSignature === true || source.wallet20aUnlockContract?.canRequestSignature === true || source.walletUnlockContract?.canRequestSignature === true,
@@ -1567,13 +1576,16 @@
           policyBoundNetworkAgnosticSendEligible: source.wallet21aPolicyBoundSendGate?.canRequestTransactionSend === true || source.walletTransactionSendGate?.canRequestTransactionSend === true,
           providerOutcomeLedgered: Boolean(source.wallet21bProviderOutcomeLedger?.status || source.walletProviderOutcomeLedger?.status),
           transactionWatcherActive: Boolean(source.wallet21cTransactionWatcher?.status || source.walletTransactionWatcher?.status),
+          retryRecoverySafetyActive: Boolean(source.wallet21dRetryRecoverySafety?.status || source.walletRetryRecoverySafety?.status),
+          postConfirmationReceiptIntegrated: Boolean(source.wallet21ePostConfirmationMcelReceiptIntegration?.status || source.walletPostConfirmationReceiptIntegration?.status),
+          relockResetLifecycleActive: Boolean(source.wallet21fRelockResetLifecycle?.status || source.walletRelockResetLifecycle?.status),
           blockers,
           allowedActions: uniqueScmReceiptList(source.allowedActions, consumerGate.allowedActions, preflight.allowedActions),
           blockedActions: uniqueScmReceiptList(source.blockedActions, preflight.blockedActions, blockers),
           proofDockSpecimens: source.mcelProofDockSpecimens || source.proofDockSpecimens || null,
           wallet18nCompletionReport: source.wallet18nCompletionReport || {},
           wallet18nCompletionStatus: source.wallet18nCompletionReport?.status || "not-observed",
-          nextAction: source.wallet21cTransactionWatcher?.nextAction || source.walletTransactionWatcher?.nextAction || source.wallet21bProviderOutcomeLedger?.nextAction || source.walletProviderOutcomeLedger?.nextAction || source.wallet21aPolicyBoundSendGate?.nextAction || source.walletTransactionSendGate?.nextAction || source.wallet20gProviderIntentHardening?.nextAction || source.walletProviderIntentHardening?.nextAction || source.wallet20fPreSendReviewGate?.nextAction || source.walletPreSendReviewGate?.nextAction || source.wallet20eSignedIntentVerification?.nextAction || source.walletSignedIntentVerification?.nextAction || source.wallet20dProviderIntentSignature?.nextAction || source.walletProviderIntentSignature?.nextAction || source.wallet20cSignatureRequestPreflight?.nextAction || source.walletSignatureRequestPreflight?.nextAction || source.wallet20bSignedIntentUnlock?.nextAction || source.walletSignedIntentUnlock?.nextAction || source.wallet20aUnlockContract?.nextAction || source.walletUnlockContract?.nextAction || source.wallet18nCompletionReport?.nextAction || source.nextAction || preflight.summary || consumerGate.reason || "",
+          nextAction: source.wallet21fRelockResetLifecycle?.nextAction || source.walletRelockResetLifecycle?.nextAction || source.wallet21ePostConfirmationMcelReceiptIntegration?.nextAction || source.walletPostConfirmationReceiptIntegration?.nextAction || source.wallet21dRetryRecoverySafety?.nextAction || source.walletRetryRecoverySafety?.nextAction || source.wallet21cTransactionWatcher?.nextAction || source.walletTransactionWatcher?.nextAction || source.wallet21bProviderOutcomeLedger?.nextAction || source.walletProviderOutcomeLedger?.nextAction || source.wallet21aPolicyBoundSendGate?.nextAction || source.walletTransactionSendGate?.nextAction || source.wallet20gProviderIntentHardening?.nextAction || source.walletProviderIntentHardening?.nextAction || source.wallet20fPreSendReviewGate?.nextAction || source.walletPreSendReviewGate?.nextAction || source.wallet20eSignedIntentVerification?.nextAction || source.walletSignedIntentVerification?.nextAction || source.wallet20dProviderIntentSignature?.nextAction || source.walletProviderIntentSignature?.nextAction || source.wallet20cSignatureRequestPreflight?.nextAction || source.walletSignatureRequestPreflight?.nextAction || source.wallet20bSignedIntentUnlock?.nextAction || source.walletSignedIntentUnlock?.nextAction || source.wallet20aUnlockContract?.nextAction || source.walletUnlockContract?.nextAction || source.wallet18nCompletionReport?.nextAction || source.nextAction || preflight.summary || consumerGate.reason || "",
           invariant: source.invariant || [],
           raw: source
         });
@@ -1587,7 +1599,7 @@
           ? (boundary.status || (locked ? "locked" : "needs inspection"))
           : "not observed";
         const label = observed
-          ? `${status} · ${boundary.action || "wallet.send-sign"} · validity=${boundary.txDraftValidityStatus || "not-observed"} · 19D=${boundary.wallet19dProofSurfaceAlignmentStatus || "not-observed"} · 19E=${boundary.wallet19eNegativePathRegressionStatus || "not-observed"} · 20A=${boundary.wallet20aUnlockContractStage || "not-observed"} · 20B=${boundary.wallet20bSignedIntentStage || "not-observed"} · 20C=${boundary.wallet20cSignaturePreflightStage || "not-observed"} · 20D=${boundary.wallet20dProviderIntentStage || "not-observed"} · 20E=${boundary.wallet20eSignedIntentVerificationStage || "not-observed"} · 20F=${boundary.wallet20fPreSendReviewStage || "not-observed"} · 20G=${boundary.wallet20gProviderIntentHardeningStage || "not-observed"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
+          ? `${status} · ${boundary.action || "wallet.send-sign"} · validity=${boundary.txDraftValidityStatus || "not-observed"} · 19D=${boundary.wallet19dProofSurfaceAlignmentStatus || "not-observed"} · 19E=${boundary.wallet19eNegativePathRegressionStatus || "not-observed"} · 20A=${boundary.wallet20aUnlockContractStage || "not-observed"} · 20B=${boundary.wallet20bSignedIntentStage || "not-observed"} · 20C=${boundary.wallet20cSignaturePreflightStage || "not-observed"} · 20D=${boundary.wallet20dProviderIntentStage || "not-observed"} · 20E=${boundary.wallet20eSignedIntentVerificationStage || "not-observed"} · 20F=${boundary.wallet20fPreSendReviewStage || "not-observed"} · 20G=${boundary.wallet20gProviderIntentHardeningStage || "not-observed"} · 21D=${boundary.wallet21dRetryRecoveryStatus || "not-observed"} · 21E=${boundary.wallet21eReceiptIntegrationStatus || "not-observed"} · 21F=${boundary.wallet21fRelockLifecycleStatus || "not-observed"} · canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`
           : "not observed";
         return jsonSafeClone({
           kind: "mcel-code-studio-18n-commit-boundary-workbench-summary",
@@ -1644,6 +1656,15 @@
           wallet20fPreSendReviewStatus: boundary.wallet20fPreSendReviewStatus || "not-observed",
           wallet20fPreSendReviewStage: boundary.wallet20fPreSendReviewStage || "not-observed",
           wallet20fEligibleForFutureSendPatch: boundary.wallet20fEligibleForFutureSendPatch === true,
+          wallet21dRetryRecoverySafety: boundary.wallet21dRetryRecoverySafety || {},
+          wallet21dRetryRecoveryStatus: boundary.wallet21dRetryRecoveryStatus || "not-observed",
+          wallet21dDuplicateSendBlocked: boundary.wallet21dDuplicateSendBlocked === true,
+          wallet21ePostConfirmationMcelReceiptIntegration: boundary.wallet21ePostConfirmationMcelReceiptIntegration || {},
+          wallet21eReceiptIntegrationStatus: boundary.wallet21eReceiptIntegrationStatus || "not-observed",
+          wallet21eChainOutcome: boundary.wallet21eChainOutcome || "not-observed",
+          wallet21fRelockResetLifecycle: boundary.wallet21fRelockResetLifecycle || {},
+          wallet21fRelockLifecycleStatus: boundary.wallet21fRelockLifecycleStatus || "not-observed",
+          wallet21fRequiresFreshDraftForNextSend: boundary.wallet21fRequiresFreshDraftForNextSend === true,
           canBuildDraft: boundary.canBuildDraft === true,
           canSimulate: boundary.canSimulate === true,
           canRequestSignature: boundary.canRequestSignature === true,
@@ -1651,7 +1672,7 @@
           canRequestProviderSignature: boundary.canRequestProviderSignature === true,
           signedIntentCurrent: boundary.signedIntentCurrent === true,
           eligibleForFutureSendPatch: boundary.eligibleForFutureSendPatch === true,
-          nextAction: boundary.nextAction || (observed ? "inspect MCEL 20D/20E/20F/20G provider intent signature hardening and pre-send review; send and broadcast remain locked" : "run MCEL Lab wallet proof"),
+          nextAction: boundary.nextAction || (observed ? "inspect MCEL 21D/21E/21F retry safety, receipt integration, and relock lifecycle after policy-bound send" : "run MCEL Lab wallet proof"),
           raw: boundary
         });
       }
@@ -1799,6 +1820,9 @@
             "20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D off-chain provider intent signature, 20E signed-intent verification, and 20F pre-send review are visible in Code Studio while transaction send and broadcast remain locked.",
             "20G provider intent hardening is visible in Code Studio before transaction send.",
             "21A/21B/21C policy-bound network-agnostic send, provider outcome ledger, and transaction watcher are visible in Code Studio.",
+            "20D/20E/20F proof dock markers remain visible.",
+            "20D/20E/20F/20G provider review markers remain visible.",
+            "21D/21E/21F retry safety, post-confirmation receipt integration, and relock lifecycle are visible in Code Studio.",
             "21A is not devnet-only; the connected chain must satisfy the MCEL network execution policy."
 
           ]

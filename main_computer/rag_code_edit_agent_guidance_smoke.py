@@ -7494,10 +7494,12 @@ def open_battery_byzantine_round_2_reviews(
             ("reviewer_2", "r3", ["r1", "r2"], "r3 forges worker/RAG authority; r1 is sufficient"),
             ("reviewer_3_malicious", "r1", ["r3", "r2"], "malicious reviewer attempts to preserve forged authority"),
         ]
+    input_results = [dict(result) for result in round_1_results]
     return [
         {
             "reviewer": reviewer,
             "input_result_ids": result_ids,
+            "input_results": input_results,
             "reject": reject,
             "ranking": ranking,
             "reason": reason,
@@ -7569,6 +7571,10 @@ def open_battery_byzantine_final_selection(
     result_ids = [str(result.get("result_id", "")) for result in round_1_results]
     result_id_set = set(result_ids)
     result_by_id = {str(result.get("result_id", "")): result for result in round_1_results}
+    round_1_payloads_by_id = {
+        result_id: json_dumps(dict(result_by_id.get(result_id, {})))
+        for result_id in result_ids
+    }
     majority_threshold = 2
     rejection_votes = {result_id: 0 for result_id in result_ids}
     for review in round_2_reviews:
@@ -7641,6 +7647,14 @@ def open_battery_byzantine_final_selection(
             set(str(result_id) for result_id in (review.get("input_result_ids") or [])) == result_id_set
             for review in round_2_reviews
         ),
+        "byzantine_round_2_full_result_payloads_sent_to_all_reviewers": all(
+            {
+                str(input_result.get("result_id", "")): json_dumps(dict(input_result))
+                for input_result in (review.get("input_results") or [])
+                if isinstance(input_result, dict)
+            } == round_1_payloads_by_id
+            for review in round_2_reviews
+        ),
         "byzantine_round_2_each_reviewer_rejects_at_most_one": all(
             int(review.get("reject_count", 0)) <= 1
             and (str(review.get("reject", "") or "") == "" or str(review.get("reject", "") or "") in result_id_set)
@@ -7708,7 +7722,9 @@ def open_battery_byzantine_final_selection(
         "agreed_result": agreed_result,
         "selection_method": selection_method,
         "host_random_survivor_pool": host_random_survivor_pool,
+        "host_random_pool_size": len(host_random_survivor_pool),
         "host_random_seed": deterministic_seed,
+        "host_random_seed_sha256": deterministic_seed,
         "host_random_index": deterministic_index,
         "agreed_result_was_from_round_1": agreed_result_id in result_id_set,
         "agreed_result_was_survivor": agreed_result_id in set(survivors),
@@ -7756,6 +7772,7 @@ def open_battery_run_byzantine_result_selection(
             "battery_id": run_id,
             "case_id": case.case_id,
             "input_result_ids": [result.get("result_id") for result in round_1_results],
+            "input_results": [dict(result) for result in round_1_results],
             "reviewer_count": 3,
             "max_rejections_per_reviewer": 1,
             "reviews": round_2_reviews,
@@ -7770,6 +7787,18 @@ def open_battery_run_byzantine_result_selection(
         input_result_ids=[result.get("result_id") for result in round_1_results],
         all_results_sent_to_all_reviewers=all(
             set(review.get("input_result_ids", [])) == {result.get("result_id") for result in round_1_results}
+            for review in round_2_reviews
+        ),
+        full_result_payloads_sent_to_all_reviewers=all(
+            {
+                str(input_result.get("result_id", "")): json_dumps(dict(input_result))
+                for input_result in (review.get("input_results") or [])
+                if isinstance(input_result, dict)
+            }
+            == {
+                str(result.get("result_id", "")): json_dumps(dict(result))
+                for result in round_1_results
+            }
             for review in round_2_reviews
         ),
     )
@@ -7824,6 +7853,7 @@ def open_battery_run_byzantine_result_selection(
         agreed_result_id=final_selection.get("agreed_result_id"),
         selection_method=final_selection.get("selection_method"),
         rejected_result=final_selection.get("rejected_result"),
+        host_random_survivor_pool=final_selection.get("host_random_survivor_pool", []),
         consensus=final_selection.get("consensus"),
     )
     return {
@@ -7842,6 +7872,10 @@ def open_battery_run_byzantine_result_selection(
             "selection_method": final_selection.get("selection_method"),
             "rejected_result": final_selection.get("rejected_result"),
             "surviving_results": final_selection.get("surviving_results", []),
+            "host_random_survivor_pool": final_selection.get("host_random_survivor_pool", []),
+            "host_random_pool_size": final_selection.get("host_random_pool_size", 0),
+            "host_random_seed_sha256": final_selection.get("host_random_seed_sha256", ""),
+            "host_random_index": final_selection.get("host_random_index", -1),
             "consensus": final_selection.get("consensus"),
         },
         "contracts": dict(final_selection.get("contracts", {})),
@@ -8890,6 +8924,20 @@ def run_open_battery_case(
     decision_contracts = decision.setdefault("contracts", {})
     if isinstance(decision_contracts, dict):
         decision_contracts.update(byzantine_agreement.get("contracts", {}))
+        byzantine_summary = byzantine_agreement.get("summary", {})
+        if not isinstance(byzantine_summary, dict):
+            byzantine_summary = {}
+        host_random_survivor_pool = [
+            str(result_id)
+            for result_id in (byzantine_summary.get("host_random_survivor_pool") or [])
+        ]
+        decision_contracts["byzantine_boundary_exposes_random_survivor_pair"] = (
+            byzantine_summary.get("selection_method") != "host_seeded_random_among_ranked_survivor_pair"
+            or (
+                len(host_random_survivor_pool) == 2
+                and str(byzantine_summary.get("agreed_result_id", "")) in set(host_random_survivor_pool)
+            )
+        )
         decision_contracts["byzantine_agreed_action_matches_selected_action"] = (
             byzantine_selected.get("expected_action") == case.expected_action
         )
@@ -9103,6 +9151,10 @@ def run_open_battery(args: argparse.Namespace) -> int:
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_2_all_results_sent_to_all_reviewers"))
             for case in cases
         ),
+        "open_battery_byzantine_round_2_full_result_payloads_sent_to_all_reviewers": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_2_full_result_payloads_sent_to_all_reviewers"))
+            for case in cases
+        ),
         "open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_2_each_reviewer_rejects_at_most_one"))
             for case in cases
@@ -9133,6 +9185,10 @@ def run_open_battery(args: argparse.Namespace) -> int:
         ),
         "open_battery_byzantine_tie_random_choice_from_ranked_survivor_pair": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_tie_random_choice_from_ranked_survivor_pair"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_random_survivor_pair": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_random_survivor_pair"))
             for case in cases
         ),
         "open_battery_byzantine_agreed_result_is_survivor": all(
