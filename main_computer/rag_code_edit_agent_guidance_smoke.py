@@ -7420,6 +7420,112 @@ def open_battery_payload_set_sha256(payload_hashes_by_id: Mapping[str, str]) -> 
     return text_sha256(json_dumps({str(key): str(value) for key, value in payload_hashes_by_id.items()}))
 
 
+def open_battery_byzantine_input_context_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    goal: Mapping[str, Any],
+    corpus: Sequence[Mapping[str, Any]],
+    retrieval_trace: Mapping[str, Any],
+    authority_resolution: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind Round 1 worker outputs to the host prompt, goal, retrieval, and trust boundary."""
+
+    selected_doc_ids = [str(doc_id) for doc_id in (retrieval_trace.get("selected_doc_ids") or [])]
+    selected_untrusted_doc_ids = [
+        str(doc_id)
+        for doc_id in (retrieval_trace.get("selected_untrusted_doc_ids") or [])
+    ]
+    corpus_by_id = {str(doc.get("doc_id", "")): dict(doc) for doc in corpus}
+    selected_docs = [
+        dict(corpus_by_id.get(doc_id, {"doc_id": doc_id, "missing": True}))
+        for doc_id in selected_doc_ids
+    ]
+    selected_doc_sha256_by_id = {
+        str(doc.get("doc_id", "")): open_battery_payload_sha256(doc)
+        for doc in selected_docs
+    }
+    selected_docs_set_sha256 = open_battery_payload_set_sha256(selected_doc_sha256_by_id)
+    trusted_selected_doc_ids = [
+        str(doc.get("doc_id", ""))
+        for doc in selected_docs
+        if bool(doc.get("trusted", False))
+    ]
+    untrusted_selected_doc_ids = [
+        str(doc.get("doc_id", ""))
+        for doc in selected_docs
+        if not bool(doc.get("trusted", True))
+    ]
+    host_policy_doc_ids = [
+        str(doc.get("doc_id", ""))
+        for doc in selected_docs
+        if str(doc.get("kind", "")) == "host_policy"
+    ]
+    prompt_sha256 = text_sha256(case.prompt)
+    goal_directive_sha256 = str(goal.get("directive_sha256", ""))
+    authority_payload = {
+        "host_authority": str(authority_resolution.get("host_authority", "")),
+        "suspicious_node_authority": str(authority_resolution.get("suspicious_node_authority", "")),
+        "model_output_is_policy_source": bool(authority_resolution.get("model_output_is_policy_source", True)),
+    }
+    payload = {
+        "rule": "bind_round_1_workers_to_host_prompt_goal_retrieval_and_trust_boundary",
+        "case_id": case.case_id,
+        "target_endstate": case.target_endstate,
+        "expected_action": case.expected_action,
+        "prompt_sha256": prompt_sha256,
+        "goal_directive_sha256": goal_directive_sha256,
+        "selected_doc_ids": selected_doc_ids,
+        "selected_untrusted_doc_ids": selected_untrusted_doc_ids,
+        "trusted_selected_doc_ids": trusted_selected_doc_ids,
+        "untrusted_selected_doc_ids": untrusted_selected_doc_ids,
+        "host_policy_doc_ids": host_policy_doc_ids,
+        "selected_doc_sha256_by_id": selected_doc_sha256_by_id,
+        "selected_docs_set_sha256": selected_docs_set_sha256,
+        "authority_resolution": authority_payload,
+        "host_policy_doc_selected": bool(retrieval_trace.get("host_policy_doc_selected")),
+        "selected_docs_have_trust_labels": all("trusted" in doc for doc in selected_docs),
+        "untrusted_docs_marked_tainted": all(
+            bool(doc.get("tainted"))
+            for doc in selected_docs
+            if not bool(doc.get("trusted", True))
+        ),
+        "host_authority_bound": authority_payload["host_authority"] == "authoritative",
+        "suspicious_context_ignored": authority_payload["suspicious_node_authority"] == "ignored",
+        "model_output_not_policy_source": authority_payload["model_output_is_policy_source"] is False,
+    }
+    payload["context_binding_sha256"] = text_sha256(json_dumps({
+        "case_id": payload["case_id"],
+        "target_endstate": payload["target_endstate"],
+        "expected_action": payload["expected_action"],
+        "prompt_sha256": payload["prompt_sha256"],
+        "goal_directive_sha256": payload["goal_directive_sha256"],
+        "selected_doc_sha256_by_id": payload["selected_doc_sha256_by_id"],
+        "selected_docs_set_sha256": payload["selected_docs_set_sha256"],
+        "selected_untrusted_doc_ids": payload["selected_untrusted_doc_ids"],
+        "authority_resolution": payload["authority_resolution"],
+    }))
+    payload["context_binding_preserved"] = (
+        bool(payload["prompt_sha256"])
+        and bool(payload["goal_directive_sha256"])
+        and bool(payload["selected_docs_set_sha256"])
+        and bool(payload["host_policy_doc_selected"])
+        and bool(payload["selected_docs_have_trust_labels"])
+        and bool(payload["untrusted_docs_marked_tainted"])
+        and bool(payload["host_authority_bound"])
+        and bool(payload["suspicious_context_ignored"])
+        and bool(payload["model_output_not_policy_source"])
+    )
+    return payload
+
+
+def open_battery_file_sha256(path: Path) -> str:
+    """Return the hash of the exact artifact bytes written to disk."""
+
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def open_battery_configured_reviewer_ids(case: OpenBatteryCaseSpec) -> list[str]:
     profile = open_battery_byzantine_result_selection_profile(case)
     if profile == "tie_host_seeded_random":
@@ -7687,6 +7793,7 @@ def open_battery_byzantine_round_1_results(
     *,
     case: OpenBatteryCaseSpec,
     goal: dict[str, Any],
+    input_context_binding_sha256: str = "",
 ) -> list[dict[str, Any]]:
     profile = open_battery_byzantine_result_selection_profile(case)
     safe_base = {
@@ -7694,6 +7801,7 @@ def open_battery_byzantine_round_1_results(
         "target_endstate": case.target_endstate,
         "expected_action": case.expected_action,
         "goal_directive_sha256": goal.get("directive_sha256", ""),
+        "input_context_binding_sha256": str(input_context_binding_sha256),
         "host_authority_required": True,
         "suspicious_context_authority": "ignored",
     }
@@ -8764,8 +8872,15 @@ def open_battery_run_byzantine_result_selection(
     case_dir: Path,
     goal: dict[str, Any],
     pathway_trace: list[dict[str, Any]],
+    input_context_derivation: Mapping[str, Any],
 ) -> dict[str, Any]:
-    round_1_results = open_battery_byzantine_round_1_results(case=case, goal=goal)
+    input_context_derivation = dict(input_context_derivation)
+    input_context_binding_sha256 = str(input_context_derivation.get("context_binding_sha256", ""))
+    round_1_results = open_battery_byzantine_round_1_results(
+        case=case,
+        goal=goal,
+        input_context_binding_sha256=input_context_binding_sha256,
+    )
     round_1_result_sha256_by_id = open_battery_payload_sha256_by_id(round_1_results, id_key="result_id")
     round_1_results_set_sha256 = open_battery_payload_set_sha256(round_1_result_sha256_by_id)
     configured_worker_ids = ["worker_1", "worker_2", "worker_3"]
@@ -8779,6 +8894,8 @@ def open_battery_run_byzantine_result_selection(
             "battery_id": run_id,
             "case_id": case.case_id,
             "task": case.prompt,
+            "input_context_derivation": input_context_derivation,
+            "input_context_binding_sha256": input_context_binding_sha256,
             "worker_count": 3,
             "configured_worker_ids": configured_worker_ids,
             "observed_worker_ids": observed_worker_ids,
@@ -8799,6 +8916,8 @@ def open_battery_run_byzantine_result_selection(
         observed_worker_ids=observed_worker_ids,
         worker_membership_set_sha256=worker_membership_set_sha256,
         result_payloads_set_sha256=round_1_results_set_sha256,
+        input_context_derivation=input_context_derivation,
+        input_context_binding_sha256=input_context_binding_sha256,
     )
 
     round_2_reviews = open_battery_byzantine_round_2_reviews(case=case, round_1_results=round_1_results)
@@ -8900,6 +9019,32 @@ def open_battery_run_byzantine_result_selection(
         round_1_results=round_1_results,
         round_2_reviews=round_2_reviews,
     )
+    final_selection["input_context_derivation"] = input_context_derivation
+    final_selection["input_context_binding_sha256"] = input_context_binding_sha256
+    final_contracts = final_selection.setdefault("contracts", {})
+    if isinstance(final_contracts, dict):
+        final_contracts.update({
+            "byzantine_input_context_derivation_recorded": (
+                input_context_derivation.get("rule")
+                == "bind_round_1_workers_to_host_prompt_goal_retrieval_and_trust_boundary"
+                and bool(input_context_derivation.get("context_binding_preserved"))
+                and len(input_context_binding_sha256) == 64
+            ),
+            "byzantine_round_1_results_bound_to_host_context": all(
+                str(result.get("input_context_binding_sha256", "")) == input_context_binding_sha256
+                and str(result.get("case_id", "")) == case.case_id
+                and str(result.get("goal_directive_sha256", "")) == str(goal.get("directive_sha256", ""))
+                for result in round_1_results
+            ),
+            "byzantine_boundary_exposes_input_context_derivation": (
+                final_selection.get("input_context_binding_sha256") == input_context_binding_sha256
+                and (final_selection.get("input_context_derivation") or {}).get("selected_doc_ids")
+                == input_context_derivation.get("selected_doc_ids")
+                and bool((final_selection.get("input_context_derivation") or {}).get("host_policy_doc_selected"))
+                and bool((final_selection.get("input_context_derivation") or {}).get("suspicious_context_ignored"))
+            ),
+        })
+        final_selection["consensus"] = all(bool(value) for value in final_contracts.values())
     final_path = case_dir / "byzantine_final_selection.json"
     atomic_write_json(final_path, final_selection)
     trace_path = case_dir / "byzantine_agreement_trace.json"
@@ -8918,6 +9063,8 @@ def open_battery_run_byzantine_result_selection(
                     "configured_worker_ids": configured_worker_ids,
                     "observed_worker_ids": observed_worker_ids,
                     "worker_membership_set_sha256": worker_membership_set_sha256,
+                    "input_context_derivation": input_context_derivation,
+                    "input_context_binding_sha256": input_context_binding_sha256,
                     "result_sha256_by_id": round_1_result_sha256_by_id,
                     "results_set_sha256": round_1_results_set_sha256,
                 },
@@ -8943,6 +9090,8 @@ def open_battery_run_byzantine_result_selection(
                     "artifact": str(final_path),
                     "input_reviewers": final_selection.get("input_reviewers", []),
                     "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
+                    "input_context_derivation": final_selection.get("input_context_derivation", {}),
+                    "input_context_binding_sha256": final_selection.get("input_context_binding_sha256", ""),
                     "quorum_membership_derivation": final_selection.get("quorum_membership_derivation", {}),
                     "round_2_review_derivations": final_selection.get("round_2_review_derivations", []),
                     "round_2_review_derivations_set_sha256": final_selection.get("round_2_review_derivations_set_sha256", ""),
@@ -8963,6 +9112,8 @@ def open_battery_run_byzantine_result_selection(
                 "agreed_result_id": final_selection.get("agreed_result_id"),
                 "agreed_result": final_selection.get("agreed_result"),
                 "agreed_result_sha256": final_selection.get("agreed_result_sha256", ""),
+                "input_context_derivation": final_selection.get("input_context_derivation", {}),
+                "input_context_binding_sha256": final_selection.get("input_context_binding_sha256", ""),
                 "quorum_membership_derivation": final_selection.get("quorum_membership_derivation", {}),
                 "quorum_role_separation_derivation": final_selection.get("quorum_role_separation_derivation", {}),
                 "fault_model_derivation": final_selection.get("fault_model_derivation", {}),
@@ -8978,6 +9129,49 @@ def open_battery_run_byzantine_result_selection(
             },
         },
     )
+    artifact_manifest_derivation = open_battery_byzantine_artifact_manifest_derivation(
+        case=case,
+        artifact_paths_by_name={
+            "round_1_results": round_1_path,
+            "round_2_reviews": round_2_path,
+            "final_selection": final_path,
+            "agreement_trace": trace_path,
+        },
+    )
+    artifact_manifest_path = case_dir / "byzantine_artifact_manifest.json"
+    atomic_write_json(
+        artifact_manifest_path,
+        {
+            "format": "main_computer_open_battery_byzantine_artifact_manifest_v1",
+            "battery_id": run_id,
+            "case_id": case.case_id,
+            **artifact_manifest_derivation,
+        },
+    )
+    artifact_manifest_contracts = {
+        "byzantine_artifact_manifest_recorded": (
+            artifact_manifest_derivation.get("rule") == "hash_written_byzantine_round_artifacts"
+            and bool(artifact_manifest_derivation.get("manifest_preserved"))
+            and len(str(artifact_manifest_derivation.get("manifest_sha256", ""))) == 64
+        ),
+        "byzantine_artifact_manifest_hashes_match_written_artifacts": all(
+            open_battery_file_sha256(path_value)
+            == str((artifact_manifest_derivation.get("artifact_sha256_by_name") or {}).get(name, ""))
+            for name, path_value in {
+                "round_1_results": round_1_path,
+                "round_2_reviews": round_2_path,
+                "final_selection": final_path,
+                "agreement_trace": trace_path,
+            }.items()
+        ),
+        "byzantine_boundary_exposes_artifact_manifest": (
+            set((artifact_manifest_derivation.get("artifact_sha256_by_name") or {}).keys())
+            == {"round_1_results", "round_2_reviews", "final_selection", "agreement_trace"}
+            and bool(artifact_manifest_derivation.get("all_artifacts_present"))
+            and bool(artifact_manifest_derivation.get("all_artifact_hashes_present"))
+        ),
+    }
+
     open_battery_add_pathway_stage(
         pathway_trace,
         run_id=run_id,
@@ -8985,6 +9179,8 @@ def open_battery_run_byzantine_result_selection(
         stage="byzantine_final_selection_recorded",
         agreed_result_id=final_selection.get("agreed_result_id"),
         agreed_result_sha256=final_selection.get("agreed_result_sha256", ""),
+        input_context_derivation=final_selection.get("input_context_derivation", {}),
+        input_context_binding_sha256=final_selection.get("input_context_binding_sha256", ""),
         selection_method=final_selection.get("selection_method"),
         quorum_membership_derivation=final_selection.get("quorum_membership_derivation", {}),
         quorum_role_separation_derivation=final_selection.get("quorum_role_separation_derivation", {}),
@@ -9003,6 +9199,9 @@ def open_battery_run_byzantine_result_selection(
         round_1_results_set_sha256=final_selection.get("round_1_results_set_sha256", ""),
         host_random_survivor_pool=final_selection.get("host_random_survivor_pool", []),
         host_random_survivor_pool_derivation=final_selection.get("host_random_survivor_pool_derivation", {}),
+        artifact_manifest_path=str(artifact_manifest_path),
+        artifact_manifest_derivation=artifact_manifest_derivation,
+        artifact_manifest_sha256=artifact_manifest_derivation.get("manifest_sha256", ""),
         consensus=final_selection.get("consensus"),
     )
     return {
@@ -9012,6 +9211,7 @@ def open_battery_run_byzantine_result_selection(
         "round_2_path": str(round_2_path),
         "final_selection_path": str(final_path),
         "agreement_trace_path": str(trace_path),
+        "artifact_manifest_path": str(artifact_manifest_path),
         "round_1_results": round_1_results,
         "round_2_reviews": round_2_reviews,
         "final_selection": final_selection,
@@ -9019,6 +9219,8 @@ def open_battery_run_byzantine_result_selection(
             "agreed_result_id": final_selection.get("agreed_result_id"),
             "agreed_result": final_selection.get("agreed_result"),
             "agreed_result_sha256": final_selection.get("agreed_result_sha256", ""),
+            "input_context_derivation": final_selection.get("input_context_derivation", {}),
+            "input_context_binding_sha256": final_selection.get("input_context_binding_sha256", ""),
             "surviving_result_sha256_by_id": final_selection.get("surviving_result_sha256_by_id", {}),
             "host_random_survivor_sha256_by_id": final_selection.get("host_random_survivor_sha256_by_id", {}),
             "selection_method": final_selection.get("selection_method"),
@@ -9027,6 +9229,9 @@ def open_battery_run_byzantine_result_selection(
             "fault_model_derivation": final_selection.get("fault_model_derivation", {}),
             "agreement_chain_derivation": final_selection.get("agreement_chain_derivation", {}),
             "agreement_chain_sha256": final_selection.get("agreement_chain_sha256", ""),
+            "artifact_manifest_derivation": artifact_manifest_derivation,
+            "artifact_manifest_sha256": artifact_manifest_derivation.get("manifest_sha256", ""),
+            "artifact_manifest_path": str(artifact_manifest_path),
             "configured_worker_ids": final_selection.get("configured_worker_ids", []),
             "configured_reviewer_ids": final_selection.get("configured_reviewer_ids", []),
             "observed_worker_ids": final_selection.get("observed_worker_ids", []),
@@ -9055,8 +9260,11 @@ def open_battery_run_byzantine_result_selection(
             "host_random_index": final_selection.get("host_random_index", -1),
             "consensus": final_selection.get("consensus"),
         },
-        "contracts": dict(final_selection.get("contracts", {})),
-        "ok": bool(final_selection.get("consensus")),
+        "contracts": {
+            **dict(final_selection.get("contracts", {})),
+            **artifact_manifest_contracts,
+        },
+        "ok": bool(final_selection.get("consensus")) and all(bool(value) for value in artifact_manifest_contracts.values()),
     }
 
 
@@ -9742,6 +9950,66 @@ def open_battery_scripted_retry_decision(
 
 
 
+def open_battery_byzantine_artifact_manifest_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    artifact_paths_by_name: Mapping[str, Path],
+) -> dict[str, Any]:
+    """Hash the exact Byzantine artifacts written for a case.
+
+    Payload-level hashes prove the protocol handoffs. This manifest proves the
+    files emitted on disk are the files the boundary says it emitted, using
+    stable artifact names plus exact byte hashes of the written JSON artifacts.
+    """
+
+    required_artifacts = [
+        "round_1_results",
+        "round_2_reviews",
+        "final_selection",
+        "agreement_trace",
+    ]
+    artifact_records: list[dict[str, Any]] = []
+    for name in required_artifacts:
+        artifact_path = artifact_paths_by_name.get(name)
+        exists = artifact_path is not None and artifact_path.exists()
+        artifact_records.append(
+            {
+                "name": name,
+                "relative_path": artifact_path.name if artifact_path is not None else "",
+                "path": str(artifact_path) if artifact_path is not None else "",
+                "exists": bool(exists),
+                "sha256": open_battery_file_sha256(artifact_path) if exists and artifact_path is not None else "",
+            }
+        )
+
+    artifact_sha256_by_name = {
+        str(record["name"]): str(record["sha256"])
+        for record in artifact_records
+    }
+    manifest_payload = {
+        "rule": "hash_written_byzantine_round_artifacts",
+        "case_id": case.case_id,
+        "required_artifacts": required_artifacts,
+        "artifact_records": artifact_records,
+        "artifact_sha256_by_name": artifact_sha256_by_name,
+        "artifact_count": len(artifact_records),
+        "all_artifacts_present": all(bool(record.get("exists")) for record in artifact_records),
+        "all_artifact_hashes_present": all(len(str(record.get("sha256", ""))) == 64 for record in artifact_records),
+    }
+    manifest_sha256 = text_sha256(json_dumps(manifest_payload))
+    return {
+        **manifest_payload,
+        "manifest_sha256": manifest_sha256,
+        "manifest_preserved": (
+            manifest_payload["all_artifacts_present"]
+            and manifest_payload["all_artifact_hashes_present"]
+            and len(manifest_sha256) == 64
+        ),
+    }
+
+
+
+
 def open_battery_action_selection_derivation(
     *,
     case: OpenBatteryCaseSpec,
@@ -9788,6 +10056,1182 @@ def open_battery_action_selection_derivation(
     derivation["action_selection_derivation_sha256"] = open_battery_payload_sha256(derivation)
     return derivation
 
+
+
+def open_battery_output_rendering_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    decision: Mapping[str, Any],
+    action_selection_derivation: Mapping[str, Any],
+    selected_action: str,
+) -> dict[str, Any]:
+    """Bind the host-visible terminal output surface to the Byzantine-selected action.
+
+    Action selection proves the host chose the case action from the agreed
+    worker payload.  This derivation proves the next boundary: the decision
+    surface that the host renders or materializes is consistent with that
+    selected action and with the observed terminal endstate.
+    """
+
+    output_kind_by_endstate = {
+        "answer_only": "answer",
+        "needs_clarification": "clarification",
+        "proposal_created": "proposal_artifact",
+        "proposal_rejected_unsafe": "rejection_artifact",
+        "proposal_rejected_stale": "rejection_artifact",
+        "applied_verified": "agent_report",
+        "applied_verification_failed": "agent_report",
+        "retry_required": "retry_plan",
+        "retry_succeeded": "scripted_retry_report",
+        "already_satisfied": "already_satisfied_check",
+        "diagnostic_failure": "diagnostic_artifact",
+    }
+    mutation_intent_by_endstate = {
+        "answer_only": "none",
+        "needs_clarification": "none",
+        "proposal_created": "proposal_only",
+        "proposal_rejected_unsafe": "rejected",
+        "proposal_rejected_stale": "rejected",
+        "applied_verified": "host_apply",
+        "applied_verification_failed": "host_apply",
+        "retry_required": "retry_pending",
+        "retry_succeeded": "retry_host_apply",
+        "already_satisfied": "none",
+        "diagnostic_failure": "none",
+    }
+    artifact_keys_by_output_kind = {
+        "proposal_artifact": ["proposal_path", "policy_review_path"],
+        "rejection_artifact": ["proposal_path", "policy_review_path", "rejection_path"],
+        "retry_plan": ["rejection_path", "retry_plan_path"],
+        "already_satisfied_check": ["already_satisfied_check_path"],
+        "diagnostic_artifact": ["diagnostic_path"],
+        "agent_report": ["agent_report_path"],
+        "scripted_retry_report": ["scripted_retry_summary_path", "scripted_retry_report_path"],
+    }
+
+    output_kind = output_kind_by_endstate.get(case.target_endstate, "unknown")
+    expected_mutation_intent = mutation_intent_by_endstate.get(case.target_endstate, "")
+    decision_action = str(decision.get("action", "") or "")
+    decision_expected_action = str(decision.get("expected_action", "") or "")
+    observed_endstate = str(decision.get("observed_endstate", "") or "")
+    mutation_intent = str(decision.get("mutation_intent", "") or "")
+    answer = str(decision.get("answer", "") or "")
+    artifacts = decision.get("artifacts", {})
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+
+    def artifact_record(name: str, path_value: Any) -> dict[str, Any]:
+        path_text = str(path_value or "")
+        artifact_path = Path(path_text) if path_text else None
+        exists = artifact_path is not None and artifact_path.exists() and artifact_path.is_file()
+        return {
+            "name": name,
+            "path": path_text,
+            "exists": bool(exists),
+            "sha256": open_battery_file_sha256(artifact_path) if exists and artifact_path is not None else "",
+        }
+
+    artifact_records: list[dict[str, Any]] = []
+    for key in artifact_keys_by_output_kind.get(output_kind, []):
+        if key in artifacts:
+            artifact_records.append(artifact_record(key, artifacts.get(key)))
+        elif key in decision:
+            artifact_records.append(artifact_record(key, decision.get(key)))
+        else:
+            artifact_records.append(artifact_record(key, ""))
+
+    artifact_sha256_by_name = {
+        str(record["name"]): str(record["sha256"])
+        for record in artifact_records
+    }
+    answer_sha256 = text_sha256(answer) if answer else ""
+    agent_report_present = isinstance(decision.get("agent_report"), dict) and bool(decision.get("agent_report"))
+    scripted_retry_summary_present = (
+        isinstance(decision.get("scripted_retry_summary"), dict)
+        and bool(decision.get("scripted_retry_summary"))
+    )
+    artifact_surface_present = bool(artifact_records) and all(bool(record.get("exists")) for record in artifact_records)
+    if output_kind in {"answer", "clarification"}:
+        output_surface_present = bool(answer_sha256)
+    elif output_kind == "agent_report":
+        output_surface_present = agent_report_present
+    elif output_kind == "scripted_retry_report":
+        output_surface_present = scripted_retry_summary_present
+    else:
+        output_surface_present = artifact_surface_present
+
+    payload = {
+        "rule": "bind_host_output_surface_to_byzantine_selected_action",
+        "case_id": case.case_id,
+        "target_endstate": case.target_endstate,
+        "observed_endstate": observed_endstate,
+        "selected_action": str(selected_action),
+        "decision_action": decision_action,
+        "decision_expected_action": decision_expected_action,
+        "action_selection_derivation_sha256": str(
+            action_selection_derivation.get("action_selection_derivation_sha256", "") or ""
+        ),
+        "output_kind": output_kind,
+        "expected_mutation_intent": expected_mutation_intent,
+        "mutation_intent": mutation_intent,
+        "answer_sha256": answer_sha256,
+        "artifact_records": artifact_records,
+        "artifact_sha256_by_name": artifact_sha256_by_name,
+        "agent_report_present": agent_report_present,
+        "scripted_retry_summary_present": scripted_retry_summary_present,
+        "action_matches_selected_action": decision_action == str(selected_action),
+        "expected_action_matches_selected_action": decision_expected_action == str(selected_action),
+        "observed_endstate_matches_target": observed_endstate == case.target_endstate,
+        "mutation_intent_matches_expected": mutation_intent == expected_mutation_intent,
+        "action_selection_derivation_recorded": len(str(
+            action_selection_derivation.get("action_selection_derivation_sha256", "") or ""
+        )) == 64,
+        "output_surface_present": bool(output_surface_present),
+    }
+    payload["output_surface_sha256"] = text_sha256(json_dumps({
+        "case_id": payload["case_id"],
+        "target_endstate": payload["target_endstate"],
+        "observed_endstate": payload["observed_endstate"],
+        "selected_action": payload["selected_action"],
+        "decision_action": payload["decision_action"],
+        "mutation_intent": payload["mutation_intent"],
+        "output_kind": payload["output_kind"],
+        "answer_sha256": payload["answer_sha256"],
+        "artifact_sha256_by_name": payload["artifact_sha256_by_name"],
+        "agent_report_present": payload["agent_report_present"],
+        "scripted_retry_summary_present": payload["scripted_retry_summary_present"],
+    }))
+    payload["output_rendering_preserved"] = all(
+        bool(payload[key])
+        for key in (
+            "action_matches_selected_action",
+            "expected_action_matches_selected_action",
+            "observed_endstate_matches_target",
+            "mutation_intent_matches_expected",
+            "action_selection_derivation_recorded",
+            "output_surface_present",
+        )
+    )
+    payload["output_rendering_derivation_sha256"] = open_battery_payload_sha256(payload)
+    return payload
+
+
+def open_battery_workspace_materialization_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    decision: Mapping[str, Any],
+    action_selection_derivation: Mapping[str, Any],
+    selected_action: str,
+    pathway_trace: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind host workspace materialization to the Byzantine-selected action.
+
+    Some terminal states intentionally do not create a workspace.  For cases that
+    do, this derivation proves the materialized workspace path and file hashes
+    were recorded at the pathway boundary and are consistent with the host-owned
+    case setup that the selected action is allowed to operate on.
+    """
+
+    workspace_required_endstates = {
+        "proposal_created",
+        "proposal_rejected_unsafe",
+        "proposal_rejected_stale",
+        "applied_verified",
+        "applied_verification_failed",
+        "retry_required",
+        "retry_succeeded",
+        "already_satisfied",
+    }
+    workspace_required = case.target_endstate in workspace_required_endstates
+    materialization_records = [
+        dict(record)
+        for record in pathway_trace
+        if isinstance(record, Mapping)
+        and str(record.get("stage", "")) == "workspace_materialized"
+    ]
+    materialization_record = materialization_records[0] if materialization_records else {}
+    materialization_details = (
+        materialization_record.get("details", {})
+        if isinstance(materialization_record.get("details", {}), Mapping)
+        else {}
+    )
+    workspace_path_text = str(materialization_details.get("workspace_path", "") or "")
+    workspace_path = Path(workspace_path_text) if workspace_path_text else None
+    workspace_exists = bool(workspace_path is not None and workspace_path.exists() and workspace_path.is_dir())
+
+    file_names = ["app.py", "README.md"]
+    file_records: list[dict[str, Any]] = []
+    for file_name in file_names:
+        file_path = workspace_path / file_name if workspace_path is not None else None
+        exists = bool(file_path is not None and file_path.exists() and file_path.is_file())
+        file_records.append(
+            {
+                "name": file_name,
+                "path": str(file_path) if file_path is not None else "",
+                "exists": exists,
+                "sha256": open_battery_file_sha256(file_path) if exists and file_path is not None else "",
+            }
+        )
+    file_sha256_by_name = {
+        str(record["name"]): str(record["sha256"])
+        for record in file_records
+    }
+
+    expected_app_py_sha256 = text_sha256(
+        APP_PY_DETERMINISTIC_FINAL
+        if case.target_endstate == "already_satisfied"
+        else APP_PY_INITIAL
+    )
+    expected_readme_sha256 = text_sha256(README_MD)
+    stage_app_py_sha256 = str(materialization_details.get("app_py_sha256", "") or "")
+    decision_action = str(decision.get("action", "") or "")
+    decision_expected_action = str(decision.get("expected_action", "") or "")
+    action_selection_derivation_sha256 = str(
+        action_selection_derivation.get("action_selection_derivation_sha256", "") or ""
+    )
+
+    workspace_files_match_expected_setup = (
+        (not workspace_required)
+        or (
+            file_sha256_by_name.get("app.py") == expected_app_py_sha256
+            and file_sha256_by_name.get("README.md") == expected_readme_sha256
+        )
+    )
+    materialization_stage_matches_workspace = (
+        (not workspace_required)
+        or (
+            bool(stage_app_py_sha256)
+            and stage_app_py_sha256 == file_sha256_by_name.get("app.py")
+            and stage_app_py_sha256 == expected_app_py_sha256
+        )
+    )
+    workspace_presence_matches_case = (
+        (workspace_required and workspace_exists and len(materialization_records) == 1)
+        or ((not workspace_required) and not materialization_records)
+    )
+
+    payload: dict[str, Any] = {
+        "rule": "bind_materialized_workspace_to_byzantine_selected_action",
+        "case_id": case.case_id,
+        "target_endstate": case.target_endstate,
+        "workspace_required": workspace_required,
+        "workspace_required_endstates": sorted(workspace_required_endstates),
+        "selected_action": str(selected_action),
+        "decision_action": decision_action,
+        "decision_expected_action": decision_expected_action,
+        "action_selection_derivation_sha256": action_selection_derivation_sha256,
+        "materialization_stage_count": len(materialization_records),
+        "materialization_stage_present": bool(materialization_records),
+        "workspace_path": workspace_path_text,
+        "workspace_exists": workspace_exists,
+        "stage_app_py_sha256": stage_app_py_sha256,
+        "expected_app_py_sha256": expected_app_py_sha256,
+        "expected_readme_sha256": expected_readme_sha256,
+        "file_records": file_records,
+        "file_sha256_by_name": file_sha256_by_name,
+        "action_matches_selected_action": decision_action == str(selected_action),
+        "expected_action_matches_selected_action": decision_expected_action == str(selected_action),
+        "action_selection_derivation_recorded": len(action_selection_derivation_sha256) == 64,
+        "workspace_presence_matches_case": workspace_presence_matches_case,
+        "workspace_files_match_expected_setup": workspace_files_match_expected_setup,
+        "materialization_stage_matches_workspace": materialization_stage_matches_workspace,
+    }
+    payload["workspace_surface_sha256"] = text_sha256(json_dumps({
+        "case_id": payload["case_id"],
+        "target_endstate": payload["target_endstate"],
+        "workspace_required": payload["workspace_required"],
+        "selected_action": payload["selected_action"],
+        "workspace_path": payload["workspace_path"],
+        "file_sha256_by_name": payload["file_sha256_by_name"],
+        "stage_app_py_sha256": payload["stage_app_py_sha256"],
+    }))
+    payload["workspace_materialization_preserved"] = all(
+        bool(payload[key])
+        for key in (
+            "action_matches_selected_action",
+            "expected_action_matches_selected_action",
+            "action_selection_derivation_recorded",
+            "workspace_presence_matches_case",
+            "workspace_files_match_expected_setup",
+            "materialization_stage_matches_workspace",
+        )
+    )
+    payload["workspace_materialization_derivation_sha256"] = open_battery_payload_sha256(payload)
+    return payload
+
+
+
+def open_battery_agent_delegation_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    decision: Mapping[str, Any],
+    action_selection_derivation: Mapping[str, Any],
+    workspace_materialization_derivation: Mapping[str, Any],
+    selected_action: str,
+    pathway_trace: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind delegated deterministic/scripted execution to the Byzantine-selected action.
+
+    Most cases intentionally remain host-synthetic and must not delegate to an
+    agent runner.  Agent-backed cases must expose the delegation stages and the
+    exact command/report artifacts that carried the selected action across the
+    runner boundary.
+    """
+
+    deterministic_agent_scenarios = {
+        "applied_verified": "single_file_python_edit",
+        "applied_verification_failed": "verification_failure_blocks_commit",
+    }
+    scripted_retry_scenarios = {
+        "retry_succeeded": "ai_restart_recovers_from_bad_generated_editor",
+    }
+    delegation_required = case.target_endstate in set(deterministic_agent_scenarios) | set(scripted_retry_scenarios)
+    delegation_kind = (
+        "deterministic_agent"
+        if case.target_endstate in deterministic_agent_scenarios
+        else "scripted_restart_recovery"
+        if case.target_endstate in scripted_retry_scenarios
+        else "none"
+    )
+    expected_scenario = (
+        deterministic_agent_scenarios.get(case.target_endstate)
+        or scripted_retry_scenarios.get(case.target_endstate, "")
+    )
+
+    def records_for(stage_name: str) -> list[dict[str, Any]]:
+        return [
+            dict(record)
+            for record in pathway_trace
+            if isinstance(record, Mapping)
+            and str(record.get("stage", "")) == stage_name
+        ]
+
+    deterministic_delegated = records_for("deterministic_agent_delegated")
+    deterministic_completed = records_for("deterministic_agent_completed")
+    agent_report_loaded = records_for("agent_report_loaded")
+    scripted_delegated = records_for("scripted_restart_recovery_delegated")
+    scripted_completed = records_for("scripted_restart_recovery_completed")
+    retry_attempt_observed = records_for("retry_attempt_observed")
+
+    def details(record: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        if not isinstance(record, Mapping):
+            return {}
+        value = record.get("details", {})
+        return value if isinstance(value, Mapping) else {}
+
+    deterministic_delegated_details = details(deterministic_delegated[0] if deterministic_delegated else None)
+    deterministic_completed_details = details(deterministic_completed[0] if deterministic_completed else None)
+    scripted_delegated_details = details(scripted_delegated[0] if scripted_delegated else None)
+    scripted_completed_details = details(scripted_completed[0] if scripted_completed else None)
+    retry_attempt_details = details(retry_attempt_observed[0] if retry_attempt_observed else None)
+
+    agent_run_dir_text = str(deterministic_delegated_details.get("agent_run_dir", "") or "")
+    agent_run_dir = Path(agent_run_dir_text) if agent_run_dir_text else None
+    commands_path = agent_run_dir / "commands.jsonl" if agent_run_dir is not None else None
+    deterministic_report_path_text = str(
+        deterministic_completed_details.get("report_path", "")
+        or decision.get("agent_report_path", "")
+        or (str(agent_run_dir / "report.json") if agent_run_dir is not None else "")
+    )
+    deterministic_report_path = Path(deterministic_report_path_text) if deterministic_report_path_text else None
+
+    scripted_summary_path_text = str(decision.get("scripted_retry_summary_path", "") or "")
+    scripted_report_path_text = str(decision.get("scripted_retry_report_path", "") or "")
+    scripted_summary_path = Path(scripted_summary_path_text) if scripted_summary_path_text else None
+    scripted_report_path = Path(scripted_report_path_text) if scripted_report_path_text else None
+
+    def artifact_record(name: str, path: Path | None) -> dict[str, Any]:
+        exists = bool(path is not None and path.exists() and path.is_file())
+        return {
+            "name": name,
+            "path": str(path) if path is not None else "",
+            "exists": exists,
+            "sha256": open_battery_file_sha256(path) if exists and path is not None else "",
+        }
+
+    artifact_records: list[dict[str, Any]] = []
+    if delegation_kind == "deterministic_agent":
+        artifact_records = [
+            artifact_record("commands_jsonl", commands_path),
+            artifact_record("agent_report_json", deterministic_report_path),
+        ]
+    elif delegation_kind == "scripted_restart_recovery":
+        artifact_records = [
+            artifact_record("scripted_retry_summary_json", scripted_summary_path),
+            artifact_record("scripted_retry_report_json", scripted_report_path),
+        ]
+    artifact_sha256_by_name = {
+        str(record["name"]): str(record["sha256"])
+        for record in artifact_records
+    }
+
+    deterministic_stage_counts = {
+        "deterministic_agent_delegated": len(deterministic_delegated),
+        "deterministic_agent_completed": len(deterministic_completed),
+        "agent_report_loaded": len(agent_report_loaded),
+    }
+    scripted_stage_counts = {
+        "scripted_restart_recovery_delegated": len(scripted_delegated),
+        "scripted_restart_recovery_completed": len(scripted_completed),
+        "retry_attempt_observed": len(retry_attempt_observed),
+    }
+    observed_scenario = (
+        str(deterministic_delegated_details.get("scenario", "") or "")
+        if delegation_kind == "deterministic_agent"
+        else str(scripted_delegated_details.get("scenario", "") or "")
+        if delegation_kind == "scripted_restart_recovery"
+        else ""
+    )
+    completed_scenario = (
+        str(deterministic_completed_details.get("scenario", "") or "")
+        if delegation_kind == "deterministic_agent"
+        else str(scripted_completed_details.get("scenario", "") or "")
+        if delegation_kind == "scripted_restart_recovery"
+        else ""
+    )
+
+    agent_report = decision.get("agent_report", {})
+    if not isinstance(agent_report, Mapping):
+        agent_report = {}
+    scripted_retry_summary = decision.get("scripted_retry_summary", {})
+    if not isinstance(scripted_retry_summary, Mapping):
+        scripted_retry_summary = {}
+    ai_call_summary = scripted_retry_summary.get("ai_call_summary", {})
+    if not isinstance(ai_call_summary, Mapping):
+        ai_call_summary = {}
+
+    deterministic_delegation_presence_matches_case = (
+        delegation_kind != "deterministic_agent"
+        or (
+            deterministic_stage_counts["deterministic_agent_delegated"] == 1
+            and deterministic_stage_counts["deterministic_agent_completed"] == 1
+            and deterministic_stage_counts["agent_report_loaded"] == 1
+            and scripted_stage_counts["scripted_restart_recovery_delegated"] == 0
+            and scripted_stage_counts["scripted_restart_recovery_completed"] == 0
+        )
+    )
+    scripted_delegation_presence_matches_case = (
+        delegation_kind != "scripted_restart_recovery"
+        or (
+            scripted_stage_counts["scripted_restart_recovery_delegated"] == 1
+            and scripted_stage_counts["scripted_restart_recovery_completed"] == 1
+            and scripted_stage_counts["retry_attempt_observed"] == 1
+            and deterministic_stage_counts["deterministic_agent_delegated"] == 0
+            and deterministic_stage_counts["deterministic_agent_completed"] == 0
+            and deterministic_stage_counts["agent_report_loaded"] == 0
+        )
+    )
+    no_unexpected_delegation = (
+        delegation_required
+        or (
+            deterministic_stage_counts["deterministic_agent_delegated"] == 0
+            and deterministic_stage_counts["deterministic_agent_completed"] == 0
+            and deterministic_stage_counts["agent_report_loaded"] == 0
+            and scripted_stage_counts["scripted_restart_recovery_delegated"] == 0
+            and scripted_stage_counts["scripted_restart_recovery_completed"] == 0
+            and scripted_stage_counts["retry_attempt_observed"] == 0
+        )
+    )
+    returncode = (
+        deterministic_completed_details.get("returncode")
+        if delegation_kind == "deterministic_agent"
+        else scripted_completed_details.get("returncode")
+        if delegation_kind == "scripted_restart_recovery"
+        else None
+    )
+    runner_returned_zero = (not delegation_required) or returncode == 0
+    if delegation_kind == "scripted_restart_recovery":
+        scenario_matches_expected = observed_scenario == expected_scenario and completed_scenario in {"", expected_scenario}
+    else:
+        scenario_matches_expected = (
+            not delegation_required
+            or (observed_scenario == expected_scenario and completed_scenario == expected_scenario)
+        )
+    artifacts_written = (not delegation_required) or all(bool(record.get("exists")) for record in artifact_records)
+    decision_action = str(decision.get("action", "") or "")
+    decision_expected_action = str(decision.get("expected_action", "") or "")
+    action_selection_derivation_sha256 = str(
+        action_selection_derivation.get("action_selection_derivation_sha256", "") or ""
+    )
+    workspace_materialization_derivation_sha256 = str(
+        workspace_materialization_derivation.get("workspace_materialization_derivation_sha256", "") or ""
+    )
+    workspace_bound = (
+        not delegation_required
+        or (
+            workspace_materialization_derivation.get("workspace_exists") is True
+            and workspace_materialization_derivation.get("selected_action") == str(selected_action)
+            and len(workspace_materialization_derivation_sha256) == 64
+        )
+    )
+    deterministic_report_loaded = (
+        delegation_kind != "deterministic_agent"
+        or bool(agent_report)
+    )
+    scripted_report_loaded = (
+        delegation_kind != "scripted_restart_recovery"
+        or (
+            bool(scripted_retry_summary)
+            and int(ai_call_summary.get("finished_live_call_count", 0) or 0) == 0
+        )
+    )
+
+    payload: dict[str, Any] = {
+        "rule": "bind_delegated_execution_to_byzantine_selected_action",
+        "case_id": case.case_id,
+        "target_endstate": case.target_endstate,
+        "delegation_required": delegation_required,
+        "delegation_kind": delegation_kind,
+        "delegation_required_endstates": sorted(set(deterministic_agent_scenarios) | set(scripted_retry_scenarios)),
+        "expected_scenario": expected_scenario,
+        "observed_scenario": observed_scenario,
+        "completed_scenario": completed_scenario,
+        "selected_action": str(selected_action),
+        "decision_action": decision_action,
+        "decision_expected_action": decision_expected_action,
+        "action_selection_derivation_sha256": action_selection_derivation_sha256,
+        "workspace_materialization_derivation_sha256": workspace_materialization_derivation_sha256,
+        "deterministic_stage_counts": deterministic_stage_counts,
+        "scripted_stage_counts": scripted_stage_counts,
+        "agent_run_dir": agent_run_dir_text,
+        "returncode": returncode,
+        "retry_attempts": retry_attempt_details.get("attempts"),
+        "artifact_records": artifact_records,
+        "artifact_sha256_by_name": artifact_sha256_by_name,
+        "action_matches_selected_action": decision_action == str(selected_action),
+        "expected_action_matches_selected_action": decision_expected_action == str(selected_action),
+        "action_selection_derivation_recorded": len(action_selection_derivation_sha256) == 64,
+        "workspace_materialization_bound": workspace_bound,
+        "deterministic_delegation_presence_matches_case": deterministic_delegation_presence_matches_case,
+        "scripted_delegation_presence_matches_case": scripted_delegation_presence_matches_case,
+        "no_unexpected_delegation": no_unexpected_delegation,
+        "scenario_matches_expected": scenario_matches_expected,
+        "runner_returned_zero": runner_returned_zero,
+        "delegation_artifacts_written": artifacts_written,
+        "deterministic_report_loaded": deterministic_report_loaded,
+        "scripted_report_loaded": scripted_report_loaded,
+    }
+    payload["delegation_surface_sha256"] = text_sha256(json_dumps({
+        "case_id": payload["case_id"],
+        "target_endstate": payload["target_endstate"],
+        "delegation_required": payload["delegation_required"],
+        "delegation_kind": payload["delegation_kind"],
+        "expected_scenario": payload["expected_scenario"],
+        "observed_scenario": payload["observed_scenario"],
+        "completed_scenario": payload["completed_scenario"],
+        "selected_action": payload["selected_action"],
+        "artifact_sha256_by_name": payload["artifact_sha256_by_name"],
+        "returncode": payload["returncode"],
+    }))
+    payload["agent_delegation_preserved"] = all(
+        bool(payload[key])
+        for key in (
+            "action_matches_selected_action",
+            "expected_action_matches_selected_action",
+            "action_selection_derivation_recorded",
+            "workspace_materialization_bound",
+            "deterministic_delegation_presence_matches_case",
+            "scripted_delegation_presence_matches_case",
+            "no_unexpected_delegation",
+            "scenario_matches_expected",
+            "runner_returned_zero",
+            "delegation_artifacts_written",
+            "deterministic_report_loaded",
+            "scripted_report_loaded",
+        )
+    )
+    payload["agent_delegation_derivation_sha256"] = open_battery_payload_sha256(payload)
+    return payload
+
+
+
+def open_battery_verification_result_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    decision: Mapping[str, Any],
+    action_selection_derivation: Mapping[str, Any],
+    agent_delegation_derivation: Mapping[str, Any],
+    selected_action: str,
+    pathway_trace: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind host verification observations to the Byzantine-selected action.
+
+    Delegation proves which runner boundary executed. This derivation proves the
+    verification result consumed from that boundary is the result the host used
+    to record terminal applied/retry endstates.
+    """
+
+    expected_verification_by_endstate = {
+        "applied_verified": True,
+        "applied_verification_failed": False,
+        "retry_succeeded": True,
+    }
+    verification_required = case.target_endstate in expected_verification_by_endstate
+    expected_verification_ok = expected_verification_by_endstate.get(case.target_endstate)
+
+    def records_for(stage_name: str) -> list[dict[str, Any]]:
+        return [
+            dict(record)
+            for record in pathway_trace
+            if isinstance(record, Mapping)
+            and str(record.get("stage", "")) == stage_name
+        ]
+
+    def details(record: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        if not isinstance(record, Mapping):
+            return {}
+        value = record.get("details", {})
+        return value if isinstance(value, Mapping) else {}
+
+    verification_records = records_for("verification_observed")
+    final_endstate_records = records_for("final_endstate_recorded")
+    commit_block_records = records_for("commit_block_observed")
+    host_apply_records = records_for("host_apply_observed")
+
+    verification_stage_ok_values = [
+        details(record).get("verification_ok")
+        for record in verification_records
+    ]
+    final_endstate_values = [
+        str(details(record).get("observed_endstate", "") or "")
+        for record in final_endstate_records
+    ]
+    changed_files_by_stage = [
+        list(details(record).get("changed_files", []) or [])
+        for record in host_apply_records
+    ]
+
+    agent_report = decision.get("agent_report", {})
+    if not isinstance(agent_report, Mapping):
+        agent_report = {}
+    agent_verification = agent_report.get("verification", {})
+    if not isinstance(agent_verification, Mapping):
+        agent_verification = {}
+    agent_commit = agent_report.get("commit", {})
+    if not isinstance(agent_commit, Mapping):
+        agent_commit = {}
+
+    scripted_report_path_text = str(decision.get("scripted_retry_report_path", "") or "")
+    scripted_report_path = Path(scripted_report_path_text) if scripted_report_path_text else None
+    scripted_report: dict[str, Any] = {}
+    if scripted_report_path is not None and scripted_report_path.exists():
+        loaded_scripted_report = load_report(scripted_report_path)
+        if isinstance(loaded_scripted_report, dict):
+            scripted_report = loaded_scripted_report
+    scripted_verification = scripted_report.get("verification", {})
+    if not isinstance(scripted_verification, Mapping):
+        scripted_verification = {}
+    scripted_commit = scripted_report.get("commit", {})
+    if not isinstance(scripted_commit, Mapping):
+        scripted_commit = {}
+
+    source_kind = (
+        "agent_report"
+        if case.target_endstate in {"applied_verified", "applied_verification_failed"}
+        else "scripted_retry_report"
+        if case.target_endstate == "retry_succeeded"
+        else "none"
+    )
+    if source_kind == "agent_report":
+        source_verification_ok = agent_verification.get("ok")
+        source_changed_files = list(agent_report.get("changed_files", []) or [])
+        source_commit_created = bool(agent_commit.get("created"))
+        source_commit_blocked = bool(agent_commit.get("blocked_by_verification_failure")) or not bool(agent_commit.get("created"))
+        source_report_path = str(decision.get("agent_report_path", "") or "")
+        source_report_exists = bool(source_report_path and Path(source_report_path).exists())
+        source_report_sha256 = open_battery_file_sha256(Path(source_report_path)) if source_report_exists else ""
+    elif source_kind == "scripted_retry_report":
+        source_verification_ok = scripted_verification.get("ok")
+        source_changed_files = list(scripted_report.get("changed_files", []) or [])
+        source_commit_created = bool(scripted_commit.get("created"))
+        source_commit_blocked = bool(scripted_commit.get("blocked_by_verification_failure")) or not bool(scripted_commit.get("created"))
+        source_report_path = scripted_report_path_text
+        source_report_exists = bool(scripted_report_path is not None and scripted_report_path.exists())
+        source_report_sha256 = open_battery_file_sha256(scripted_report_path) if source_report_exists and scripted_report_path is not None else ""
+    else:
+        source_verification_ok = None
+        source_changed_files = []
+        source_commit_created = False
+        source_commit_blocked = False
+        source_report_path = ""
+        source_report_exists = False
+        source_report_sha256 = ""
+
+    decision_action = str(decision.get("action", "") or "")
+    decision_expected_action = str(decision.get("expected_action", "") or "")
+    observed_endstate = str(decision.get("observed_endstate", "") or "")
+    decision_verified = bool(decision.get("verified"))
+    decision_applied = bool(decision.get("applied"))
+    decision_committed = bool(decision.get("committed"))
+    action_selection_derivation_sha256 = str(
+        action_selection_derivation.get("action_selection_derivation_sha256", "") or ""
+    )
+    agent_delegation_derivation_sha256 = str(
+        agent_delegation_derivation.get("agent_delegation_derivation_sha256", "") or ""
+    )
+
+    if verification_required:
+        verification_stage_matches_source = (
+            len(verification_stage_ok_values) == 1
+            and verification_stage_ok_values[0] is expected_verification_ok
+            and source_verification_ok is expected_verification_ok
+        )
+        verification_result_matches_decision = (
+            decision_verified is expected_verification_ok
+            and source_verification_ok is expected_verification_ok
+        )
+        verification_result_matches_endstate = observed_endstate == case.target_endstate
+        report_artifact_available = source_report_exists and len(source_report_sha256) == 64
+    else:
+        verification_stage_matches_source = len(verification_stage_ok_values) == 0
+        verification_result_matches_decision = True
+        verification_result_matches_endstate = observed_endstate == case.target_endstate
+        report_artifact_available = True
+
+    if case.target_endstate == "applied_verified":
+        commit_boundary_matches_verification = (
+            source_verification_ok is True
+            and decision_applied is True
+            and source_changed_files == ["app.py"]
+        )
+    elif case.target_endstate == "applied_verification_failed":
+        commit_boundary_matches_verification = (
+            source_verification_ok is False
+            and decision_applied is True
+            and source_changed_files == ["app.py"]
+            and source_commit_blocked is True
+            and bool(commit_block_records)
+        )
+    elif case.target_endstate == "retry_succeeded":
+        commit_boundary_matches_verification = (
+            source_verification_ok is True
+            and decision_applied is True
+            and source_changed_files == ["app.py"]
+        )
+    else:
+        commit_boundary_matches_verification = True
+
+    final_endstate_stage_matches_decision = (
+        bool(final_endstate_values)
+        and final_endstate_values[-1] == observed_endstate == case.target_endstate
+    )
+    host_apply_stage_matches_report = (
+        not verification_required
+        or case.target_endstate == "retry_succeeded"
+        or (
+            len(changed_files_by_stage) == 1
+            and changed_files_by_stage[0] == source_changed_files == ["app.py"]
+        )
+    )
+
+    payload: dict[str, Any] = {
+        "rule": "bind_verification_result_to_byzantine_selected_action",
+        "case_id": case.case_id,
+        "target_endstate": case.target_endstate,
+        "observed_endstate": observed_endstate,
+        "verification_required": verification_required,
+        "verification_required_endstates": sorted(expected_verification_by_endstate),
+        "expected_verification_ok": expected_verification_ok,
+        "source_kind": source_kind,
+        "source_report_path": source_report_path,
+        "source_report_exists": source_report_exists,
+        "source_report_sha256": source_report_sha256,
+        "source_verification_ok": source_verification_ok,
+        "source_changed_files": source_changed_files,
+        "source_commit_created": source_commit_created,
+        "source_commit_blocked": source_commit_blocked,
+        "selected_action": str(selected_action),
+        "decision_action": decision_action,
+        "decision_expected_action": decision_expected_action,
+        "decision_verified": decision_verified,
+        "decision_applied": decision_applied,
+        "decision_committed": decision_committed,
+        "verification_stage_count": len(verification_records),
+        "verification_stage_ok_values": verification_stage_ok_values,
+        "final_endstate_stage_count": len(final_endstate_records),
+        "final_endstate_values": final_endstate_values,
+        "host_apply_changed_files_by_stage": changed_files_by_stage,
+        "commit_block_stage_count": len(commit_block_records),
+        "action_selection_derivation_sha256": action_selection_derivation_sha256,
+        "agent_delegation_derivation_sha256": agent_delegation_derivation_sha256,
+        "action_matches_selected_action": decision_action == str(selected_action),
+        "expected_action_matches_selected_action": decision_expected_action == str(selected_action),
+        "action_selection_derivation_recorded": len(action_selection_derivation_sha256) == 64,
+        "agent_delegation_derivation_recorded": len(agent_delegation_derivation_sha256) == 64,
+        "report_artifact_available": report_artifact_available,
+        "verification_stage_matches_source": verification_stage_matches_source,
+        "verification_result_matches_decision": verification_result_matches_decision,
+        "verification_result_matches_endstate": verification_result_matches_endstate,
+        "commit_boundary_matches_verification": commit_boundary_matches_verification,
+        "final_endstate_stage_matches_decision": final_endstate_stage_matches_decision,
+        "host_apply_stage_matches_report": host_apply_stage_matches_report,
+    }
+    payload["verification_surface_sha256"] = text_sha256(json_dumps({
+        "case_id": payload["case_id"],
+        "target_endstate": payload["target_endstate"],
+        "observed_endstate": payload["observed_endstate"],
+        "verification_required": payload["verification_required"],
+        "expected_verification_ok": payload["expected_verification_ok"],
+        "source_kind": payload["source_kind"],
+        "source_report_sha256": payload["source_report_sha256"],
+        "source_verification_ok": payload["source_verification_ok"],
+        "source_changed_files": payload["source_changed_files"],
+        "selected_action": payload["selected_action"],
+        "decision_verified": payload["decision_verified"],
+        "verification_stage_ok_values": payload["verification_stage_ok_values"],
+        "final_endstate_values": payload["final_endstate_values"],
+    }))
+    payload["verification_result_preserved"] = all(
+        bool(payload[key])
+        for key in (
+            "action_matches_selected_action",
+            "expected_action_matches_selected_action",
+            "action_selection_derivation_recorded",
+            "agent_delegation_derivation_recorded",
+            "report_artifact_available",
+            "verification_stage_matches_source",
+            "verification_result_matches_decision",
+            "verification_result_matches_endstate",
+            "commit_boundary_matches_verification",
+            "final_endstate_stage_matches_decision",
+            "host_apply_stage_matches_report",
+        )
+    )
+    payload["verification_result_derivation_sha256"] = open_battery_payload_sha256(payload)
+    return payload
+
+
+def open_battery_host_policy_rejection_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    decision: Mapping[str, Any],
+    action_selection_derivation: Mapping[str, Any],
+    verification_result_derivation: Mapping[str, Any],
+    selected_action: str,
+    pathway_trace: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind terminal host policy/staleness rejections to the selected action.
+
+    The Byzantine result may ask the host to reject a proposal. This derivation
+    proves the host did so because the policy/freshness boundary rejected the
+    exact materialized proposal, not because an untrusted model output or later
+    fallback path invented a rejection reason.
+    """
+
+    rejection_specs: dict[str, dict[str, Any]] = {
+        "proposal_rejected_unsafe": {
+            "rejection_kind": "forbidden_file_write",
+            "expected_reason": "forbidden_file_write: README.md",
+            "expected_requested_files": ["README.md"],
+            "expected_forbidden_paths": ["README.md"],
+            "boundary_freshness_required": False,
+            "expected_proposal_boundary_sha256": "current-boundary-new",
+            "expected_current_boundary_sha256": "current-boundary-new",
+        },
+        "proposal_rejected_stale": {
+            "rejection_kind": "stale_boundary",
+            "expected_reason": "stale_boundary: proposal stale-boundary-old != current-boundary-new",
+            "expected_requested_files": ["app.py"],
+            "expected_forbidden_paths": [],
+            "boundary_freshness_required": True,
+            "expected_proposal_boundary_sha256": "stale-boundary-old",
+            "expected_current_boundary_sha256": "current-boundary-new",
+        },
+    }
+    rejection_required = case.target_endstate in rejection_specs
+    expected_spec = rejection_specs.get(case.target_endstate, {})
+    expected_reason = str(expected_spec.get("expected_reason", "") or "")
+    expected_requested_files = list(expected_spec.get("expected_requested_files", []) or [])
+    expected_forbidden_paths = list(expected_spec.get("expected_forbidden_paths", []) or [])
+    expected_proposal_boundary_sha256 = str(expected_spec.get("expected_proposal_boundary_sha256", "") or "")
+    expected_current_boundary_sha256 = str(expected_spec.get("expected_current_boundary_sha256", "") or "")
+    boundary_freshness_required = bool(expected_spec.get("boundary_freshness_required"))
+
+    def records_for(stage_name: str) -> list[dict[str, Any]]:
+        return [
+            dict(record)
+            for record in pathway_trace
+            if isinstance(record, Mapping)
+            and str(record.get("stage", "")) == stage_name
+        ]
+
+    def details(record: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        if not isinstance(record, Mapping):
+            return {}
+        value = record.get("details", {})
+        return value if isinstance(value, Mapping) else {}
+
+    def load_json_artifact(path_text: str) -> dict[str, Any]:
+        if not path_text:
+            return {}
+        artifact_path = Path(path_text)
+        if not artifact_path.exists() or not artifact_path.is_file():
+            return {}
+        try:
+            loaded = json.loads(artifact_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    artifacts = decision.get("artifacts", {})
+    if not isinstance(artifacts, Mapping):
+        artifacts = {}
+
+    proposal_path_text = str(artifacts.get("proposal_path", "") or "")
+    policy_review_path_text = str(artifacts.get("policy_review_path", "") or "")
+    rejection_path_text = str(artifacts.get("rejection_path", "") or "")
+    proposal_path = Path(proposal_path_text) if proposal_path_text else None
+    policy_review_path = Path(policy_review_path_text) if policy_review_path_text else None
+    rejection_path = Path(rejection_path_text) if rejection_path_text else None
+
+    proposal_payload = load_json_artifact(proposal_path_text)
+    policy_review_payload = load_json_artifact(policy_review_path_text)
+    rejection_payload = load_json_artifact(rejection_path_text)
+
+    proposal_files = sorted(str(path) for path in (proposal_payload.get("files") or {}).keys())
+    policy_requested_files = sorted(str(path) for path in (policy_review_payload.get("requested_files") or []))
+    policy_allowed_write_paths = sorted(str(path) for path in (policy_review_payload.get("allowed_write_paths") or []))
+    policy_forbidden_files = sorted(str(path) for path in (policy_review_payload.get("forbidden_files") or []))
+    rejection_forbidden_paths = sorted(str(path) for path in (rejection_payload.get("forbidden_paths") or []))
+    proposal_boundary_sha256 = str(proposal_payload.get("base_boundary_sha256", "") or "")
+    policy_proposal_boundary_sha256 = str(policy_review_payload.get("proposal_boundary_sha256", "") or "")
+    policy_current_boundary_sha256 = str(policy_review_payload.get("current_boundary_sha256", "") or "")
+    rejection_proposal_boundary_sha256 = str(rejection_payload.get("proposal_boundary_sha256", "") or "")
+    rejection_current_boundary_sha256 = str(rejection_payload.get("current_boundary_sha256", "") or "")
+
+    candidate_records = records_for("candidate_proposal_materialized")
+    policy_review_records = records_for("host_policy_reviewed")
+    rejection_records = records_for("host_rejection_recorded")
+    freshness_records = records_for("boundary_freshness_checked")
+    host_apply_records = records_for("host_apply_observed")
+    host_apply_deferred_records = records_for("host_apply_deferred")
+
+    policy_review_details = details(policy_review_records[-1] if policy_review_records else None)
+    rejection_details = details(rejection_records[-1] if rejection_records else None)
+    freshness_details = details(freshness_records[-1] if freshness_records else None)
+
+    decision_action = str(decision.get("action", "") or "")
+    decision_expected_action = str(decision.get("expected_action", "") or "")
+    observed_endstate = str(decision.get("observed_endstate", "") or "")
+    mutation_intent = str(decision.get("mutation_intent", "") or "")
+    decision_rejection_reason = str(decision.get("rejection_reason", "") or "")
+    action_selection_derivation_sha256 = str(
+        action_selection_derivation.get("action_selection_derivation_sha256", "") or ""
+    )
+    verification_result_derivation_sha256 = str(
+        verification_result_derivation.get("verification_result_derivation_sha256", "") or ""
+    )
+
+    artifact_records: list[dict[str, Any]] = []
+    for name, artifact_path in (
+        ("proposal_json", proposal_path),
+        ("policy_review_json", policy_review_path),
+        ("host_rejection_json", rejection_path),
+    ):
+        exists = bool(artifact_path is not None and artifact_path.exists() and artifact_path.is_file())
+        artifact_records.append(
+            {
+                "name": name,
+                "path": str(artifact_path) if artifact_path is not None else "",
+                "exists": exists,
+                "sha256": open_battery_file_sha256(artifact_path) if exists and artifact_path is not None else "",
+            }
+        )
+    artifact_sha256_by_name = {
+        str(record["name"]): str(record["sha256"])
+        for record in artifact_records
+        if bool(record.get("exists"))
+    }
+
+    rejection_artifacts_available = (
+        (not rejection_required)
+        or all(
+            bool(record.get("exists")) and len(str(record.get("sha256", ""))) == 64
+            for record in artifact_records
+        )
+    )
+    rejection_presence_matches_case = (
+        (
+            rejection_required
+            and len(candidate_records) == 1
+            and len(policy_review_records) == 1
+            and len(rejection_records) == 1
+            and not host_apply_records
+        )
+        or (
+            (not rejection_required)
+            and len(rejection_records) == 0
+        )
+    )
+    policy_review_matches_proposal = (
+        (not rejection_required)
+        or (
+            policy_review_payload.get("format") == "main_computer_open_battery_host_policy_review_v1"
+            and proposal_payload.get("format") == "main_computer_open_battery_proposal_v1"
+            and proposal_payload.get("case_id") == case.case_id
+            and policy_review_payload.get("case_id") == case.case_id
+            and policy_requested_files == proposal_files == expected_requested_files
+            and policy_review_payload.get("accepted") is False
+            and policy_review_payload.get("host_policy_enforced") is True
+            and "app.py" in policy_allowed_write_paths
+        )
+    )
+    rejection_record_matches_review = (
+        (not rejection_required)
+        or (
+            rejection_payload.get("format") == "main_computer_open_battery_rejection_v1"
+            and rejection_payload.get("case_id") == case.case_id
+            and rejection_payload.get("applied") is False
+            and rejection_payload.get("host_policy_enforced") is True
+            and str(rejection_payload.get("policy_review_path", "") or "") == policy_review_path_text
+            and str(rejection_payload.get("reason", "") or "") == str(policy_review_payload.get("reason", "") or "")
+        )
+    )
+    reason_matches_stage_and_decision = (
+        (not rejection_required)
+        or (
+            decision_rejection_reason == expected_reason
+            and str(policy_review_payload.get("reason", "") or "") == expected_reason
+            and str(rejection_payload.get("reason", "") or "") == expected_reason
+            and str(policy_review_details.get("reason", "") or "") == expected_reason
+            and str(rejection_details.get("reason", "") or "") == expected_reason
+            and policy_review_details.get("accepted") is False
+            and rejection_details.get("accepted") is False
+        )
+    )
+    forbidden_path_boundary_matches_expected = (
+        (not rejection_required)
+        or (
+            rejection_forbidden_paths == expected_forbidden_paths
+            and (
+                case.target_endstate != "proposal_rejected_unsafe"
+                or "README.md" in policy_forbidden_files
+            )
+        )
+    )
+    freshness_boundary_matches_expected = (
+        (not rejection_required)
+        or (
+            (
+                not boundary_freshness_required
+                and len(freshness_records) == 0
+                and proposal_boundary_sha256 == expected_proposal_boundary_sha256
+                and policy_proposal_boundary_sha256 == expected_proposal_boundary_sha256
+                and policy_current_boundary_sha256 == expected_current_boundary_sha256
+            )
+            or (
+                boundary_freshness_required
+                and len(freshness_records) == 1
+                and proposal_boundary_sha256 == expected_proposal_boundary_sha256
+                and policy_proposal_boundary_sha256 == expected_proposal_boundary_sha256
+                and policy_current_boundary_sha256 == expected_current_boundary_sha256
+                and rejection_proposal_boundary_sha256 == expected_proposal_boundary_sha256
+                and rejection_current_boundary_sha256 == expected_current_boundary_sha256
+                and str(freshness_details.get("proposal_boundary_sha256", "") or "") == expected_proposal_boundary_sha256
+                and str(freshness_details.get("current_boundary_sha256", "") or "") == expected_current_boundary_sha256
+                and freshness_details.get("accepted") is False
+            )
+        )
+    )
+    terminal_state_matches_policy_rejection = (
+        (not rejection_required)
+        or (
+            observed_endstate == case.target_endstate
+            and mutation_intent == "rejected"
+            and decision.get("applied") is False
+            and decision.get("committed") is False
+            and not host_apply_records
+            and not host_apply_deferred_records
+        )
+    )
+
+    payload: dict[str, Any] = {
+        "rule": "bind_host_policy_rejection_to_byzantine_selected_action",
+        "case_id": case.case_id,
+        "target_endstate": case.target_endstate,
+        "observed_endstate": observed_endstate,
+        "rejection_required": rejection_required,
+        "rejection_required_endstates": sorted(rejection_specs),
+        "rejection_kind": str(expected_spec.get("rejection_kind", "none") or "none"),
+        "expected_reason": expected_reason,
+        "decision_rejection_reason": decision_rejection_reason,
+        "selected_action": str(selected_action),
+        "decision_action": decision_action,
+        "decision_expected_action": decision_expected_action,
+        "mutation_intent": mutation_intent,
+        "proposal_path": proposal_path_text,
+        "policy_review_path": policy_review_path_text,
+        "rejection_path": rejection_path_text,
+        "proposal_files": proposal_files,
+        "policy_requested_files": policy_requested_files,
+        "policy_allowed_write_paths": policy_allowed_write_paths,
+        "policy_forbidden_files": policy_forbidden_files,
+        "rejection_forbidden_paths": rejection_forbidden_paths,
+        "expected_requested_files": expected_requested_files,
+        "expected_forbidden_paths": expected_forbidden_paths,
+        "proposal_boundary_sha256": proposal_boundary_sha256,
+        "policy_proposal_boundary_sha256": policy_proposal_boundary_sha256,
+        "policy_current_boundary_sha256": policy_current_boundary_sha256,
+        "rejection_proposal_boundary_sha256": rejection_proposal_boundary_sha256,
+        "rejection_current_boundary_sha256": rejection_current_boundary_sha256,
+        "expected_proposal_boundary_sha256": expected_proposal_boundary_sha256,
+        "expected_current_boundary_sha256": expected_current_boundary_sha256,
+        "candidate_proposal_stage_count": len(candidate_records),
+        "policy_review_stage_count": len(policy_review_records),
+        "host_rejection_stage_count": len(rejection_records),
+        "boundary_freshness_stage_count": len(freshness_records),
+        "host_apply_stage_count": len(host_apply_records),
+        "host_apply_deferred_stage_count": len(host_apply_deferred_records),
+        "artifact_records": artifact_records,
+        "artifact_sha256_by_name": artifact_sha256_by_name,
+        "action_selection_derivation_sha256": action_selection_derivation_sha256,
+        "verification_result_derivation_sha256": verification_result_derivation_sha256,
+        "action_matches_selected_action": decision_action == str(selected_action),
+        "expected_action_matches_selected_action": decision_expected_action == str(selected_action),
+        "action_selection_derivation_recorded": len(action_selection_derivation_sha256) == 64,
+        "verification_result_derivation_recorded": len(verification_result_derivation_sha256) == 64,
+        "rejection_presence_matches_case": rejection_presence_matches_case,
+        "rejection_artifacts_available": rejection_artifacts_available,
+        "policy_review_matches_proposal": policy_review_matches_proposal,
+        "rejection_record_matches_review": rejection_record_matches_review,
+        "reason_matches_stage_and_decision": reason_matches_stage_and_decision,
+        "forbidden_path_boundary_matches_expected": forbidden_path_boundary_matches_expected,
+        "freshness_boundary_matches_expected": freshness_boundary_matches_expected,
+        "terminal_state_matches_policy_rejection": terminal_state_matches_policy_rejection,
+    }
+    payload["policy_rejection_surface_sha256"] = text_sha256(json_dumps({
+        "case_id": payload["case_id"],
+        "target_endstate": payload["target_endstate"],
+        "rejection_required": payload["rejection_required"],
+        "rejection_kind": payload["rejection_kind"],
+        "selected_action": payload["selected_action"],
+        "decision_rejection_reason": payload["decision_rejection_reason"],
+        "artifact_sha256_by_name": payload["artifact_sha256_by_name"],
+        "proposal_files": payload["proposal_files"],
+        "policy_requested_files": payload["policy_requested_files"],
+        "rejection_forbidden_paths": payload["rejection_forbidden_paths"],
+        "proposal_boundary_sha256": payload["proposal_boundary_sha256"],
+        "policy_current_boundary_sha256": payload["policy_current_boundary_sha256"],
+    }))
+    payload["host_policy_rejection_preserved"] = all(
+        bool(payload[key])
+        for key in (
+            "action_matches_selected_action",
+            "expected_action_matches_selected_action",
+            "action_selection_derivation_recorded",
+            "verification_result_derivation_recorded",
+            "rejection_presence_matches_case",
+            "rejection_artifacts_available",
+            "policy_review_matches_proposal",
+            "rejection_record_matches_review",
+            "reason_matches_stage_and_decision",
+            "forbidden_path_boundary_matches_expected",
+            "freshness_boundary_matches_expected",
+            "terminal_state_matches_policy_rejection",
+        )
+    )
+    payload["host_policy_rejection_derivation_sha256"] = open_battery_payload_sha256(payload)
+    return payload
 
 def run_open_battery_case(
     *,
@@ -9861,12 +11305,20 @@ def run_open_battery_case(
         host_authority=authority_resolution.get("host_authority"),
         suspicious_node_authority=authority_resolution.get("suspicious_node_authority"),
     )
+    input_context_derivation = open_battery_byzantine_input_context_derivation(
+        case=case,
+        goal=goal,
+        corpus=corpus,
+        retrieval_trace=retrieval_trace,
+        authority_resolution=authority_resolution,
+    )
     byzantine_agreement = open_battery_run_byzantine_result_selection(
         run_id=battery_id,
         case=case,
         case_dir=case_dir,
         goal=goal,
         pathway_trace=pathway_trace,
+        input_context_derivation=input_context_derivation,
     )
     byzantine_summary = byzantine_agreement.get("summary", {})
     if not isinstance(byzantine_summary, dict):
@@ -10150,12 +11602,55 @@ def run_open_battery_case(
     else:
         raise SmokeFailure(f"unknown open-battery backing pathway: {case.backing_pathway}")
 
+    output_rendering_derivation = open_battery_output_rendering_derivation(
+        case=case,
+        decision=decision,
+        action_selection_derivation=action_selection_derivation,
+        selected_action=selected_action,
+    )
+    workspace_materialization_derivation = open_battery_workspace_materialization_derivation(
+        case=case,
+        decision=decision,
+        action_selection_derivation=action_selection_derivation,
+        selected_action=selected_action,
+        pathway_trace=pathway_trace,
+    )
+    agent_delegation_derivation = open_battery_agent_delegation_derivation(
+        case=case,
+        decision=decision,
+        action_selection_derivation=action_selection_derivation,
+        workspace_materialization_derivation=workspace_materialization_derivation,
+        selected_action=selected_action,
+        pathway_trace=pathway_trace,
+    )
+    verification_result_derivation = open_battery_verification_result_derivation(
+        case=case,
+        decision=decision,
+        action_selection_derivation=action_selection_derivation,
+        agent_delegation_derivation=agent_delegation_derivation,
+        selected_action=selected_action,
+        pathway_trace=pathway_trace,
+    )
+    host_policy_rejection_derivation = open_battery_host_policy_rejection_derivation(
+        case=case,
+        decision=decision,
+        action_selection_derivation=action_selection_derivation,
+        verification_result_derivation=verification_result_derivation,
+        selected_action=selected_action,
+        pathway_trace=pathway_trace,
+    )
+    decision["byzantine_output_rendering_derivation"] = output_rendering_derivation
+    decision["byzantine_workspace_materialization_derivation"] = workspace_materialization_derivation
+    decision["byzantine_agent_delegation_derivation"] = agent_delegation_derivation
+    decision["byzantine_verification_result_derivation"] = verification_result_derivation
+    decision["byzantine_host_policy_rejection_derivation"] = host_policy_rejection_derivation
     decision["byzantine_agreement"] = byzantine_agreement.get("summary", {})
     decision["byzantine_artifacts"] = {
         "round_1_results_path": byzantine_agreement.get("round_1_path", ""),
         "round_2_reviews_path": byzantine_agreement.get("round_2_path", ""),
         "final_selection_path": byzantine_agreement.get("final_selection_path", ""),
         "agreement_trace_path": byzantine_agreement.get("agreement_trace_path", ""),
+        "artifact_manifest_path": byzantine_agreement.get("artifact_manifest_path", ""),
     }
     pathway_summary = open_battery_pathway_summary(case=case, pathway_trace=pathway_trace)
     pathway_contracts = open_battery_pathway_contracts(case=case, pathway_trace=pathway_trace)
@@ -10194,6 +11689,92 @@ def run_open_battery_case(
         decision_contracts["byzantine_agreed_action_matches_selected_action"] = (
             action_selection_derivation.get("selected_action") == case.expected_action
         )
+        decision_contracts["byzantine_output_rendering_derivation_recorded"] = (
+            output_rendering_derivation.get("rule") == "bind_host_output_surface_to_byzantine_selected_action"
+            and bool(output_rendering_derivation.get("output_rendering_derivation_sha256"))
+        )
+        decision_contracts["byzantine_rendered_output_derived_from_selected_action"] = (
+            bool(output_rendering_derivation.get("output_rendering_preserved"))
+            and output_rendering_derivation.get("selected_action") == selected_action
+            and output_rendering_derivation.get("decision_action") == decision.get("action")
+            and output_rendering_derivation.get("observed_endstate") == decision.get("observed_endstate")
+        )
+        decision_contracts["byzantine_boundary_exposes_output_rendering_derivation"] = (
+            output_rendering_derivation.get("action_selection_derivation_sha256")
+            == action_selection_derivation.get("action_selection_derivation_sha256")
+            and output_rendering_derivation.get("output_surface_present") is True
+            and len(str(output_rendering_derivation.get("output_surface_sha256", "") or "")) == 64
+        )
+        decision_contracts["byzantine_workspace_materialization_derivation_recorded"] = (
+            workspace_materialization_derivation.get("rule")
+            == "bind_materialized_workspace_to_byzantine_selected_action"
+            and bool(workspace_materialization_derivation.get("workspace_materialization_derivation_sha256"))
+        )
+        decision_contracts["byzantine_workspace_materialized_from_selected_action"] = (
+            bool(workspace_materialization_derivation.get("workspace_materialization_preserved"))
+            and workspace_materialization_derivation.get("selected_action") == selected_action
+            and workspace_materialization_derivation.get("decision_action") == decision.get("action")
+        )
+        decision_contracts["byzantine_boundary_exposes_workspace_materialization_derivation"] = (
+            workspace_materialization_derivation.get("action_selection_derivation_sha256")
+            == action_selection_derivation.get("action_selection_derivation_sha256")
+            and len(str(workspace_materialization_derivation.get("workspace_surface_sha256", "") or "")) == 64
+            and (
+                workspace_materialization_derivation.get("workspace_required") is False
+                or workspace_materialization_derivation.get("workspace_exists") is True
+            )
+        )
+        decision_contracts["byzantine_agent_delegation_derivation_recorded"] = (
+            agent_delegation_derivation.get("rule")
+            == "bind_delegated_execution_to_byzantine_selected_action"
+            and bool(agent_delegation_derivation.get("agent_delegation_derivation_sha256"))
+        )
+        decision_contracts["byzantine_agent_delegation_bound_to_selected_action"] = (
+            bool(agent_delegation_derivation.get("agent_delegation_preserved"))
+            and agent_delegation_derivation.get("selected_action") == selected_action
+            and agent_delegation_derivation.get("decision_action") == decision.get("action")
+        )
+        decision_contracts["byzantine_boundary_exposes_agent_delegation_derivation"] = (
+            agent_delegation_derivation.get("action_selection_derivation_sha256")
+            == action_selection_derivation.get("action_selection_derivation_sha256")
+            and agent_delegation_derivation.get("workspace_materialization_derivation_sha256")
+            == workspace_materialization_derivation.get("workspace_materialization_derivation_sha256")
+            and len(str(agent_delegation_derivation.get("delegation_surface_sha256", "") or "")) == 64
+        )
+        decision_contracts["byzantine_verification_result_derivation_recorded"] = (
+            verification_result_derivation.get("rule")
+            == "bind_verification_result_to_byzantine_selected_action"
+            and bool(verification_result_derivation.get("verification_result_derivation_sha256"))
+        )
+        decision_contracts["byzantine_verification_result_bound_to_selected_action"] = (
+            bool(verification_result_derivation.get("verification_result_preserved"))
+            and verification_result_derivation.get("selected_action") == selected_action
+            and verification_result_derivation.get("decision_action") == decision.get("action")
+        )
+        decision_contracts["byzantine_boundary_exposes_verification_result_derivation"] = (
+            verification_result_derivation.get("action_selection_derivation_sha256")
+            == action_selection_derivation.get("action_selection_derivation_sha256")
+            and verification_result_derivation.get("agent_delegation_derivation_sha256")
+            == agent_delegation_derivation.get("agent_delegation_derivation_sha256")
+            and len(str(verification_result_derivation.get("verification_surface_sha256", "") or "")) == 64
+        )
+        decision_contracts["byzantine_host_policy_rejection_derivation_recorded"] = (
+            host_policy_rejection_derivation.get("rule")
+            == "bind_host_policy_rejection_to_byzantine_selected_action"
+            and bool(host_policy_rejection_derivation.get("host_policy_rejection_derivation_sha256"))
+        )
+        decision_contracts["byzantine_host_policy_rejection_bound_to_selected_action"] = (
+            bool(host_policy_rejection_derivation.get("host_policy_rejection_preserved"))
+            and host_policy_rejection_derivation.get("selected_action") == selected_action
+            and host_policy_rejection_derivation.get("decision_action") == decision.get("action")
+        )
+        decision_contracts["byzantine_boundary_exposes_host_policy_rejection_derivation"] = (
+            host_policy_rejection_derivation.get("action_selection_derivation_sha256")
+            == action_selection_derivation.get("action_selection_derivation_sha256")
+            and host_policy_rejection_derivation.get("verification_result_derivation_sha256")
+            == verification_result_derivation.get("verification_result_derivation_sha256")
+            and len(str(host_policy_rejection_derivation.get("policy_rejection_surface_sha256", "") or "")) == 64
+        )
         decision_contracts["observed_endstate_matches_target"] = decision.get("observed_endstate") == case.target_endstate
         decision_contracts["case_report_written"] = True
         decision_contracts.update(pathway_contracts)
@@ -10219,8 +11800,14 @@ def run_open_battery_case(
         "pathway": pathway_summary,
         "byzantine_agreement": byzantine_agreement.get("summary", {}),
         "byzantine_action_selection_derivation": action_selection_derivation,
+        "byzantine_output_rendering_derivation": output_rendering_derivation,
+        "byzantine_workspace_materialization_derivation": workspace_materialization_derivation,
+        "byzantine_agent_delegation_derivation": agent_delegation_derivation,
+        "byzantine_verification_result_derivation": verification_result_derivation,
+        "byzantine_host_policy_rejection_derivation": host_policy_rejection_derivation,
         "byzantine_agreement_trace_path": byzantine_agreement.get("agreement_trace_path", ""),
         "byzantine_final_selection_path": byzantine_agreement.get("final_selection_path", ""),
+        "byzantine_artifact_manifest_path": byzantine_agreement.get("artifact_manifest_path", ""),
         "decision_path": str(case_dir / "open_agent_decision.json"),
         "contracts": decision.get("contracts", {}),
     }
@@ -10338,6 +11925,258 @@ def open_battery_byzantine_profile_coverage_derivation(
     payload["coverage_set_sha256"] = text_sha256(json_dumps(payload))
     return payload
 
+
+def open_battery_byzantine_case_artifact_manifest_coverage_derivation(
+    *,
+    cases: Sequence[OpenBatteryCaseSpec],
+    case_reports: Mapping[str, Any],
+    battery_dir: Path,
+) -> dict[str, Any]:
+    """Hash the written per-case reports and Byzantine artifact manifests.
+
+    Per-case manifests prove the Byzantine JSON files written inside each case.
+    This battery-level derivation proves the top-level battery report covered
+    every written case report and every written Byzantine artifact manifest.
+    """
+
+    case_report_file_sha256_by_case: dict[str, str] = {}
+    case_report_payload_sha256_by_case: dict[str, str] = {}
+    embedded_case_report_payload_sha256_by_case: dict[str, str] = {}
+    byzantine_manifest_file_sha256_by_case: dict[str, str] = {}
+    byzantine_manifest_payload_sha256_by_case: dict[str, str] = {}
+    byzantine_manifest_derivation_sha256_by_case: dict[str, str] = {}
+    per_case: list[dict[str, Any]] = []
+
+    for case in cases:
+        case_dir = battery_dir / case.case_id
+        case_report_path = case_dir / "case_report.json"
+        byzantine_manifest_path = case_dir / "byzantine_artifact_manifest.json"
+
+        case_report_written = case_report_path.exists()
+        byzantine_manifest_written = byzantine_manifest_path.exists()
+        written_case_report: dict[str, Any] = {}
+        written_byzantine_manifest: dict[str, Any] = {}
+        if case_report_written:
+            written_case_report = json.loads(case_report_path.read_text(encoding="utf-8"))
+            case_report_file_sha256_by_case[case.case_id] = open_battery_file_sha256(case_report_path)
+            case_report_payload_sha256_by_case[case.case_id] = text_sha256(json_dumps(written_case_report))
+        else:
+            case_report_file_sha256_by_case[case.case_id] = ""
+            case_report_payload_sha256_by_case[case.case_id] = ""
+
+        embedded_report = case_reports.get(case.case_id) or {}
+        if not isinstance(embedded_report, dict):
+            embedded_report = {}
+        embedded_case_report_payload_sha256_by_case[case.case_id] = text_sha256(json_dumps(embedded_report))
+
+        if byzantine_manifest_written:
+            written_byzantine_manifest = json.loads(byzantine_manifest_path.read_text(encoding="utf-8"))
+            byzantine_manifest_file_sha256_by_case[case.case_id] = open_battery_file_sha256(byzantine_manifest_path)
+            byzantine_manifest_payload_sha256_by_case[case.case_id] = text_sha256(json_dumps(written_byzantine_manifest))
+            byzantine_manifest_derivation_sha256_by_case[case.case_id] = str(
+                written_byzantine_manifest.get("manifest_sha256", "") or ""
+            )
+        else:
+            byzantine_manifest_file_sha256_by_case[case.case_id] = ""
+            byzantine_manifest_payload_sha256_by_case[case.case_id] = ""
+            byzantine_manifest_derivation_sha256_by_case[case.case_id] = ""
+
+        expected_byzantine_manifest_path = str(byzantine_manifest_path)
+        reported_byzantine_manifest_path = str(
+            (embedded_report.get("byzantine_artifact_manifest_path", "") if isinstance(embedded_report, dict) else "")
+            or ""
+        )
+        per_case.append(
+            {
+                "case_id": case.case_id,
+                "case_report_path": str(case_report_path),
+                "case_report_written": case_report_written,
+                "case_report_file_sha256": case_report_file_sha256_by_case[case.case_id],
+                "case_report_payload_sha256": case_report_payload_sha256_by_case[case.case_id],
+                "embedded_case_report_payload_sha256": embedded_case_report_payload_sha256_by_case[case.case_id],
+                "case_report_payload_matches_embedded_report": (
+                    case_report_payload_sha256_by_case[case.case_id]
+                    == embedded_case_report_payload_sha256_by_case[case.case_id]
+                ),
+                "byzantine_artifact_manifest_path": str(byzantine_manifest_path),
+                "reported_byzantine_artifact_manifest_path": reported_byzantine_manifest_path,
+                "byzantine_artifact_manifest_path_matches_report": (
+                    reported_byzantine_manifest_path == expected_byzantine_manifest_path
+                ),
+                "byzantine_artifact_manifest_written": byzantine_manifest_written,
+                "byzantine_artifact_manifest_file_sha256": byzantine_manifest_file_sha256_by_case[case.case_id],
+                "byzantine_artifact_manifest_payload_sha256": byzantine_manifest_payload_sha256_by_case[case.case_id],
+                "byzantine_artifact_manifest_derivation_sha256": byzantine_manifest_derivation_sha256_by_case[case.case_id],
+            }
+        )
+
+    payload: dict[str, Any] = {
+        "rule": "cover_written_case_reports_and_byzantine_artifact_manifests",
+        "case_count": len(cases),
+        "complete_battery": len(cases) == len(OPEN_BATTERY_CASES),
+        "case_report_file_sha256_by_case": case_report_file_sha256_by_case,
+        "case_report_payload_sha256_by_case": case_report_payload_sha256_by_case,
+        "embedded_case_report_payload_sha256_by_case": embedded_case_report_payload_sha256_by_case,
+        "byzantine_artifact_manifest_file_sha256_by_case": byzantine_manifest_file_sha256_by_case,
+        "byzantine_artifact_manifest_payload_sha256_by_case": byzantine_manifest_payload_sha256_by_case,
+        "byzantine_artifact_manifest_derivation_sha256_by_case": byzantine_manifest_derivation_sha256_by_case,
+        "per_case": per_case,
+    }
+    payload["all_case_reports_written"] = all(record["case_report_written"] for record in per_case)
+    payload["all_case_report_payloads_match_embedded_reports"] = all(
+        record["case_report_payload_matches_embedded_report"] for record in per_case
+    )
+    payload["all_byzantine_artifact_manifests_written"] = all(
+        record["byzantine_artifact_manifest_written"] for record in per_case
+    )
+    payload["all_byzantine_artifact_manifest_paths_match_case_reports"] = all(
+        record["byzantine_artifact_manifest_path_matches_report"] for record in per_case
+    )
+    payload["manifest_coverage_set_sha256"] = text_sha256(json_dumps({
+        "case_report_file_sha256_by_case": case_report_file_sha256_by_case,
+        "byzantine_artifact_manifest_file_sha256_by_case": byzantine_manifest_file_sha256_by_case,
+        "byzantine_artifact_manifest_derivation_sha256_by_case": byzantine_manifest_derivation_sha256_by_case,
+    }))
+    return payload
+
+
+def open_battery_byzantine_boundary_artifact_coverage_derivation(
+    *,
+    cases: Sequence[OpenBatteryCaseSpec],
+    case_reports: Mapping[str, Any],
+    battery_dir: Path,
+) -> dict[str, Any]:
+    """Hash the written boundary artifacts that carry Byzantine decisions.
+
+    Per-case Byzantine manifests prove the protocol JSON artifacts themselves.
+    This battery-level derivation proves that each case's host boundary artifacts
+    (open_agent_decision.json and open_pathway_trace.json) were written, match
+    the paths reported by case_report.json, and carry the same pathway/contracts
+    summaries embedded in the top-level battery report.
+    """
+
+    decision_file_sha256_by_case: dict[str, str] = {}
+    decision_payload_sha256_by_case: dict[str, str] = {}
+    pathway_trace_file_sha256_by_case: dict[str, str] = {}
+    pathway_trace_payload_sha256_by_case: dict[str, str] = {}
+    per_case: list[dict[str, Any]] = []
+
+    for case in cases:
+        case_dir = battery_dir / case.case_id
+        decision_path = case_dir / "open_agent_decision.json"
+        pathway_trace_path = case_dir / "open_pathway_trace.json"
+        embedded_report = case_reports.get(case.case_id) or {}
+        if not isinstance(embedded_report, dict):
+            embedded_report = {}
+
+        decision_written = decision_path.exists()
+        pathway_trace_written = pathway_trace_path.exists()
+        decision_payload: dict[str, Any] = {}
+        pathway_trace_payload: dict[str, Any] = {}
+
+        if decision_written:
+            decision_payload = json.loads(decision_path.read_text(encoding="utf-8"))
+            decision_file_sha256_by_case[case.case_id] = open_battery_file_sha256(decision_path)
+            decision_payload_sha256_by_case[case.case_id] = text_sha256(json_dumps(decision_payload))
+        else:
+            decision_file_sha256_by_case[case.case_id] = ""
+            decision_payload_sha256_by_case[case.case_id] = ""
+
+        if pathway_trace_written:
+            pathway_trace_payload = json.loads(pathway_trace_path.read_text(encoding="utf-8"))
+            pathway_trace_file_sha256_by_case[case.case_id] = open_battery_file_sha256(pathway_trace_path)
+            pathway_trace_payload_sha256_by_case[case.case_id] = text_sha256(json_dumps(pathway_trace_payload))
+        else:
+            pathway_trace_file_sha256_by_case[case.case_id] = ""
+            pathway_trace_payload_sha256_by_case[case.case_id] = ""
+
+        reported_decision_path = str(embedded_report.get("decision_path", "") or "")
+        reported_pathway_trace_path = str(embedded_report.get("pathway_trace_path", "") or "")
+        embedded_pathway = embedded_report.get("pathway", {}) if isinstance(embedded_report, dict) else {}
+        embedded_contracts = embedded_report.get("contracts", {}) if isinstance(embedded_report, dict) else {}
+        if not isinstance(embedded_pathway, dict):
+            embedded_pathway = {}
+        if not isinstance(embedded_contracts, dict):
+            embedded_contracts = {}
+
+        decision_contracts = decision_payload.get("contracts", {}) if isinstance(decision_payload, dict) else {}
+        if not isinstance(decision_contracts, dict):
+            decision_contracts = {}
+        decision_pathway = decision_payload.get("pathway", {}) if isinstance(decision_payload, dict) else {}
+        if not isinstance(decision_pathway, dict):
+            decision_pathway = {}
+        pathway_summary = pathway_trace_payload.get("summary", {}) if isinstance(pathway_trace_payload, dict) else {}
+        if not isinstance(pathway_summary, dict):
+            pathway_summary = {}
+        pathway_records = pathway_trace_payload.get("records", []) if isinstance(pathway_trace_payload, dict) else []
+        if not isinstance(pathway_records, list):
+            pathway_records = []
+
+        per_case.append(
+            {
+                "case_id": case.case_id,
+                "decision_path": str(decision_path),
+                "reported_decision_path": reported_decision_path,
+                "decision_written": decision_written,
+                "decision_path_matches_case_report": reported_decision_path == str(decision_path),
+                "decision_file_sha256": decision_file_sha256_by_case[case.case_id],
+                "decision_payload_sha256": decision_payload_sha256_by_case[case.case_id],
+                "decision_contracts_match_case_report": decision_contracts == embedded_contracts,
+                "decision_pathway_matches_case_report": decision_pathway == embedded_pathway,
+                "decision_observed_endstate_matches_case_report": (
+                    decision_payload.get("observed_endstate", "") == embedded_report.get("observed_endstate", "")
+                ),
+                "decision_pathway_trace_path_matches_case_report": (
+                    str(decision_payload.get("pathway_trace_path", "") or "") == reported_pathway_trace_path
+                ),
+                "pathway_trace_path": str(pathway_trace_path),
+                "reported_pathway_trace_path": reported_pathway_trace_path,
+                "pathway_trace_written": pathway_trace_written,
+                "pathway_trace_path_matches_case_report": reported_pathway_trace_path == str(pathway_trace_path),
+                "pathway_trace_file_sha256": pathway_trace_file_sha256_by_case[case.case_id],
+                "pathway_trace_payload_sha256": pathway_trace_payload_sha256_by_case[case.case_id],
+                "pathway_trace_summary_matches_case_report": pathway_summary == embedded_pathway,
+                "pathway_trace_has_records": bool(pathway_records),
+                "pathway_trace_record_count": len(pathway_records),
+            }
+        )
+
+    payload: dict[str, Any] = {
+        "rule": "cover_written_decision_and_pathway_boundary_artifacts",
+        "case_count": len(cases),
+        "complete_battery": len(cases) == len(OPEN_BATTERY_CASES),
+        "decision_file_sha256_by_case": decision_file_sha256_by_case,
+        "decision_payload_sha256_by_case": decision_payload_sha256_by_case,
+        "pathway_trace_file_sha256_by_case": pathway_trace_file_sha256_by_case,
+        "pathway_trace_payload_sha256_by_case": pathway_trace_payload_sha256_by_case,
+        "per_case": per_case,
+    }
+    payload["all_decision_artifacts_written"] = all(record["decision_written"] for record in per_case)
+    payload["all_pathway_trace_artifacts_written"] = all(record["pathway_trace_written"] for record in per_case)
+    payload["all_boundary_artifact_paths_match_case_reports"] = all(
+        record["decision_path_matches_case_report"] and record["pathway_trace_path_matches_case_report"]
+        for record in per_case
+    )
+    payload["all_decision_payloads_match_case_reports"] = all(
+        record["decision_contracts_match_case_report"]
+        and record["decision_pathway_matches_case_report"]
+        and record["decision_observed_endstate_matches_case_report"]
+        and record["decision_pathway_trace_path_matches_case_report"]
+        for record in per_case
+    )
+    payload["all_pathway_trace_payloads_match_case_reports"] = all(
+        record["pathway_trace_summary_matches_case_report"] and record["pathway_trace_has_records"]
+        for record in per_case
+    )
+    payload["boundary_artifact_coverage_set_sha256"] = text_sha256(json_dumps({
+        "decision_file_sha256_by_case": decision_file_sha256_by_case,
+        "decision_payload_sha256_by_case": decision_payload_sha256_by_case,
+        "pathway_trace_file_sha256_by_case": pathway_trace_file_sha256_by_case,
+        "pathway_trace_payload_sha256_by_case": pathway_trace_payload_sha256_by_case,
+    }))
+    return payload
+
+
 def run_open_battery(args: argparse.Namespace) -> int:
     """Run the deterministic open-ended state battery.
 
@@ -10448,6 +12287,20 @@ def run_open_battery(args: argparse.Namespace) -> int:
         cases=cases,
         case_reports=case_reports,
     )
+    byzantine_case_artifact_manifest_coverage_derivation = (
+        open_battery_byzantine_case_artifact_manifest_coverage_derivation(
+            cases=cases,
+            case_reports=case_reports,
+            battery_dir=battery_dir,
+        )
+    )
+    byzantine_boundary_artifact_coverage_derivation = (
+        open_battery_byzantine_boundary_artifact_coverage_derivation(
+            cases=cases,
+            case_reports=case_reports,
+            battery_dir=battery_dir,
+        )
+    )
     contracts = {
         "open_battery_all_cases_passed": not failed_contracts,
         "open_battery_all_target_endstates_reached": all(
@@ -10498,6 +12351,18 @@ def run_open_battery(args: argparse.Namespace) -> int:
         ),
         "open_battery_byzantine_result_selection_exercised": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_result_selection_exercised"))
+            for case in cases
+        ),
+        "open_battery_byzantine_input_context_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_input_context_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_round_1_results_bound_to_host_context": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_1_results_bound_to_host_context"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_input_context_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_input_context_derivation"))
             for case in cases
         ),
         "open_battery_byzantine_profile_coverage_derivation_recorded": (
@@ -10589,6 +12454,69 @@ def run_open_battery(args: argparse.Namespace) -> int:
         "open_battery_byzantine_boundary_exposes_agreement_chain_derivation": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_agreement_chain_derivation"))
             for case in cases
+        ),
+        "open_battery_byzantine_artifact_manifest_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_artifact_manifest_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_artifact_manifest_hashes_match_written_artifacts": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_artifact_manifest_hashes_match_written_artifacts"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_artifact_manifest": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_artifact_manifest"))
+            for case in cases
+        ),
+        "open_battery_byzantine_case_artifact_manifest_coverage_recorded": (
+            byzantine_case_artifact_manifest_coverage_derivation.get("rule")
+            == "cover_written_case_reports_and_byzantine_artifact_manifests"
+            and int(byzantine_case_artifact_manifest_coverage_derivation.get("case_count", 0)) == len(cases)
+            and bool(byzantine_case_artifact_manifest_coverage_derivation.get("manifest_coverage_set_sha256"))
+        ),
+        "open_battery_byzantine_case_artifact_manifests_all_written": (
+            bool(byzantine_case_artifact_manifest_coverage_derivation.get("all_case_reports_written"))
+            and bool(byzantine_case_artifact_manifest_coverage_derivation.get("all_byzantine_artifact_manifests_written"))
+        ),
+        "open_battery_byzantine_case_reports_match_written_artifacts": bool(
+            byzantine_case_artifact_manifest_coverage_derivation.get("all_case_report_payloads_match_embedded_reports")
+        ),
+        "open_battery_byzantine_case_artifact_manifest_coverage_matches_case_reports": (
+            bool(byzantine_case_artifact_manifest_coverage_derivation.get("all_byzantine_artifact_manifest_paths_match_case_reports"))
+            and set((byzantine_case_artifact_manifest_coverage_derivation.get("case_report_file_sha256_by_case") or {}).keys())
+            == {case.case_id for case in cases}
+            and set((byzantine_case_artifact_manifest_coverage_derivation.get("byzantine_artifact_manifest_file_sha256_by_case") or {}).keys())
+            == {case.case_id for case in cases}
+            and all(
+                bool((byzantine_case_artifact_manifest_coverage_derivation.get("case_report_file_sha256_by_case") or {}).get(case.case_id))
+                and bool((byzantine_case_artifact_manifest_coverage_derivation.get("byzantine_artifact_manifest_file_sha256_by_case") or {}).get(case.case_id))
+                for case in cases
+            )
+        ),
+        "open_battery_byzantine_boundary_artifact_coverage_recorded": (
+            byzantine_boundary_artifact_coverage_derivation.get("rule")
+            == "cover_written_decision_and_pathway_boundary_artifacts"
+            and int(byzantine_boundary_artifact_coverage_derivation.get("case_count", 0)) == len(cases)
+            and bool(byzantine_boundary_artifact_coverage_derivation.get("boundary_artifact_coverage_set_sha256"))
+        ),
+        "open_battery_byzantine_boundary_artifacts_all_written": (
+            bool(byzantine_boundary_artifact_coverage_derivation.get("all_decision_artifacts_written"))
+            and bool(byzantine_boundary_artifact_coverage_derivation.get("all_pathway_trace_artifacts_written"))
+        ),
+        "open_battery_byzantine_boundary_artifact_paths_match_case_reports": bool(
+            byzantine_boundary_artifact_coverage_derivation.get("all_boundary_artifact_paths_match_case_reports")
+        ),
+        "open_battery_byzantine_boundary_artifact_payloads_match_case_reports": (
+            bool(byzantine_boundary_artifact_coverage_derivation.get("all_decision_payloads_match_case_reports"))
+            and bool(byzantine_boundary_artifact_coverage_derivation.get("all_pathway_trace_payloads_match_case_reports"))
+            and set((byzantine_boundary_artifact_coverage_derivation.get("decision_file_sha256_by_case") or {}).keys())
+            == {case.case_id for case in cases}
+            and set((byzantine_boundary_artifact_coverage_derivation.get("pathway_trace_file_sha256_by_case") or {}).keys())
+            == {case.case_id for case in cases}
+            and all(
+                bool((byzantine_boundary_artifact_coverage_derivation.get("decision_file_sha256_by_case") or {}).get(case.case_id))
+                and bool((byzantine_boundary_artifact_coverage_derivation.get("pathway_trace_file_sha256_by_case") or {}).get(case.case_id))
+                for case in cases
+            )
         ),
         "open_battery_byzantine_final_round_overrides_malicious_reviewer_vote": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_final_round_overrides_malicious_reviewer_vote"))
@@ -10766,6 +12694,66 @@ def run_open_battery(args: argparse.Namespace) -> int:
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_action_selection_derivation"))
             for case in cases
         ),
+        "open_battery_byzantine_output_rendering_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_output_rendering_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_rendered_output_derived_from_selected_action": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_rendered_output_derived_from_selected_action"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_output_rendering_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_output_rendering_derivation"))
+            for case in cases
+        ),
+        "open_battery_byzantine_workspace_materialization_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_workspace_materialization_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_workspace_materialized_from_selected_action": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_workspace_materialized_from_selected_action"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_workspace_materialization_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_workspace_materialization_derivation"))
+            for case in cases
+        ),
+        "open_battery_byzantine_agent_delegation_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_agent_delegation_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_agent_delegation_bound_to_selected_action": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_agent_delegation_bound_to_selected_action"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_agent_delegation_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_agent_delegation_derivation"))
+            for case in cases
+        ),
+        "open_battery_byzantine_verification_result_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_verification_result_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_verification_result_bound_to_selected_action": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_verification_result_bound_to_selected_action"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_verification_result_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_verification_result_derivation"))
+            for case in cases
+        ),
+        "open_battery_byzantine_host_policy_rejection_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_host_policy_rejection_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_host_policy_rejection_bound_to_selected_action": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_host_policy_rejection_bound_to_selected_action"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_host_policy_rejection_derivation": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_host_policy_rejection_derivation"))
+            for case in cases
+        ),
     }
     for contract_name, value in contracts.items():
         if not bool(value):
@@ -10786,6 +12774,8 @@ def run_open_battery(args: argparse.Namespace) -> int:
         "observed_endstates": observed_endstates,
         "case_reports": case_reports,
         "byzantine_profile_coverage_derivation": byzantine_profile_coverage_derivation,
+        "byzantine_case_artifact_manifest_coverage_derivation": byzantine_case_artifact_manifest_coverage_derivation,
+        "byzantine_boundary_artifact_coverage_derivation": byzantine_boundary_artifact_coverage_derivation,
         "failed_contracts": failed_contracts,
         "contracts": contracts,
     }

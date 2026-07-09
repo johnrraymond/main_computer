@@ -248,6 +248,171 @@ class CoolifyClusterOrchestratorTests(unittest.TestCase):
             self.assertFalse(hasattr(fdb_args, "recreate_hub_stacks"))
 
 
+    def test_no_fdb_port_guard_is_forwarded_to_fdb_stage_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            packet_path = Path(tmp) / "testnet-packet.json"
+            args = coolify_cluster.parse_args(
+                [
+                    "plan",
+                    "testnet",
+                    "--hubs",
+                    "testnet-hub1,testnet-hub2",
+                    "--fdb",
+                    "testnet-fdb1,testnet-fdb2",
+                    "--git-repo",
+                    "https://github.com/example/main_computer",
+                    "--packet",
+                    str(packet_path),
+                    "--no-private-state",
+                    "--coolify-project-name",
+                    "Main Computer",
+                    "--set-coolify-url",
+                    "coolify-a:http://198.51.100.10:8000",
+                    "--set-coolify-url",
+                    "coolify-b:http://198.51.100.11:8000",
+                    "--set-coolify-token",
+                    "coolify-a:token-a",
+                    "--set-coolify-token",
+                    "coolify-b:token-b",
+                    "--no-fdb-port-guard",
+                ]
+            )
+
+            fdb_args = coolify_cluster.fdb_args_for_cluster(args, packet_path)
+            hub_args = coolify_cluster.hub_args_for_cluster(args, packet_path)
+
+            self.assertTrue(fdb_args.no_fdb_port_guard)
+            self.assertFalse(hasattr(hub_args, "no_fdb_port_guard"))
+
+
+    def test_service_state_detects_ready_and_unhealthy_tokens(self) -> None:
+        ready = coolify_cluster.coolify_service_state({"status": "running", "health": "healthy"})
+        blocked = coolify_cluster.coolify_service_state({"status": "running", "health": "unhealthy"})
+
+        self.assertTrue(ready["ready"])
+        self.assertFalse(blocked["ready"])
+        self.assertIn("unhealthy", blocked["blocked_tokens"])
+
+    def test_apply_waits_for_fdb_ready_before_hub_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            packet_path = Path(tmp) / "testnet-packet.json"
+            state_path = Path(tmp) / "main_computer.private.yaml"
+            state_path.write_text(PRIVATE_STATE, encoding="utf-8")
+            args = coolify_cluster.parse_args(
+                [
+                    "apply",
+                    "testnet",
+                    "--hubs",
+                    "testnet-hub1",
+                    "--fdb",
+                    "testnet-fdb1",
+                    "--git-repo",
+                    "https://github.com/example/main_computer",
+                    "--packet",
+                    str(packet_path),
+                    "--private-state",
+                    str(state_path),
+                    "--no-deploy",
+                ]
+            )
+            packet = coolify_cluster.build_candidate_packet(args)
+            calls: list[str] = []
+
+            original_run_fdb_stage = coolify_cluster.run_fdb_stage
+            original_wait_for_fdb_stage_ready = coolify_cluster.wait_for_fdb_stage_ready
+            original_run_hub_stage = coolify_cluster.run_hub_stage
+
+            def fake_run_fdb_stage(stage_args, stage_packet_path):
+                del stage_args, stage_packet_path
+                calls.append("fdb")
+                return {"ok": True, "phases": [{"server": "coolify-a", "service_uuid": "fdb-service"}]}
+
+            def fake_wait_for_fdb_stage_ready(stage_args, fdb_result):
+                del stage_args, fdb_result
+                calls.append("fdb-ready")
+                return {"ok": True, "waited": True}
+
+            def fake_run_hub_stage(stage_args, stage_packet_path):
+                del stage_args, stage_packet_path
+                calls.append("hub")
+                return {"ok": True, "phases": []}
+
+            coolify_cluster.run_fdb_stage = fake_run_fdb_stage
+            coolify_cluster.wait_for_fdb_stage_ready = fake_wait_for_fdb_stage_ready
+            coolify_cluster.run_hub_stage = fake_run_hub_stage
+            try:
+                result = coolify_cluster.cluster_plan_or_apply_result(args, packet)
+            finally:
+                coolify_cluster.run_fdb_stage = original_run_fdb_stage
+                coolify_cluster.wait_for_fdb_stage_ready = original_wait_for_fdb_stage_ready
+                coolify_cluster.run_hub_stage = original_run_hub_stage
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(calls, ["fdb", "fdb-ready", "hub"])
+            self.assertEqual(result["stages"]["foundationdb_ready"], {"ok": True, "waited": True})
+
+
+    def test_fdb_only_apply_skips_fdb_ready_gate_because_no_hub_stage_follows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            packet_path = Path(tmp) / "testnet-packet.json"
+            state_path = Path(tmp) / "main_computer.private.yaml"
+            state_path.write_text(PRIVATE_STATE, encoding="utf-8")
+            args = coolify_cluster.parse_args(
+                [
+                    "apply",
+                    "testnet",
+                    "--hubs",
+                    "testnet-hub1",
+                    "--fdb",
+                    "testnet-fdb1",
+                    "--git-repo",
+                    "https://github.com/example/main_computer",
+                    "--packet",
+                    str(packet_path),
+                    "--private-state",
+                    str(state_path),
+                    "--fdb-only",
+                ]
+            )
+            packet = coolify_cluster.build_candidate_packet(args)
+            calls: list[str] = []
+
+            original_run_fdb_stage = coolify_cluster.run_fdb_stage
+            original_wait_for_coolify_service_ready = coolify_cluster.wait_for_coolify_service_ready
+            original_run_hub_stage = coolify_cluster.run_hub_stage
+
+            def fake_run_fdb_stage(stage_args, stage_packet_path):
+                del stage_args, stage_packet_path
+                calls.append("fdb")
+                return {"ok": True, "phases": [{"server": "coolify-a", "service_uuid": "fdb-service"}]}
+
+            def fake_wait_for_coolify_service_ready(*args, **kwargs):
+                del args, kwargs
+                calls.append("low-level-fdb-wait")
+                return {"ok": True}
+
+            def fake_run_hub_stage(stage_args, stage_packet_path):
+                del stage_args, stage_packet_path
+                calls.append("hub")
+                return {"ok": True, "phases": []}
+
+            coolify_cluster.run_fdb_stage = fake_run_fdb_stage
+            coolify_cluster.wait_for_coolify_service_ready = fake_wait_for_coolify_service_ready
+            coolify_cluster.run_hub_stage = fake_run_hub_stage
+            try:
+                result = coolify_cluster.cluster_plan_or_apply_result(args, packet)
+            finally:
+                coolify_cluster.run_fdb_stage = original_run_fdb_stage
+                coolify_cluster.wait_for_coolify_service_ready = original_wait_for_coolify_service_ready
+                coolify_cluster.run_hub_stage = original_run_hub_stage
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(calls, ["fdb"])
+            self.assertIsNone(result["stages"]["hub"])
+            self.assertTrue(result["stages"]["foundationdb_ready"]["skipped"])
+            self.assertIn("--fdb-only", result["stages"]["foundationdb_ready"]["reason"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

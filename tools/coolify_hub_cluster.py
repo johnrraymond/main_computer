@@ -21,8 +21,10 @@ import os
 import re
 import shlex
 import sys
+import time
 import urllib.parse
-from dataclasses import dataclass
+import urllib.request
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -224,30 +226,650 @@ def coolify_domain_with_backend_port(value: str, backend_port: int, field: str) 
     return f"{parsed.scheme}://{host}:{int(backend_port)}"
 
 
-def hub_service_domain_entries(placement: HubClusterPlacement, profile: Any, server_name: str) -> list[dict[str, str]]:
-    """Return Coolify's documented docker_compose_domains payload shape.
-
-    Coolify's OpenAPI schema defines ``docker_compose_domains`` as an array of
-    objects with ``name`` and ``domain`` fields.  The ``name`` is the compose
-    service name, and ``domain`` is the comma-separated domain string for that
-    service.
-    """
-
-    return [
-        {
-            "name": hub_container_key(hub),
+def hub_service_domains(placement: HubClusterPlacement, profile: Any, server_name: str) -> dict[str, dict[str, str]]:
+    return {
+        hub_container_key(hub): {
             "domain": coolify_domain_with_backend_port(
                 hub.public_url,
                 int(profile.hub_bind_port),
                 f"hubs[{hub.hub_id}].public_url",
-            ),
+            )
         }
         for hub in hubs_for_server(placement, server_name)
+    }
+
+
+def hub_application_name(placement: HubClusterPlacement, hub: HubPlacement) -> str:
+    # hub_id already carries the network prefix (for example mainnet-hub1).
+    return f"main-computer-{hub_container_key(hub)}"
+
+
+def hub_application_profile(profile: Any, hub: HubPlacement) -> Any:
+    return replace(profile, hub_public_url=hub.public_url, hub_runtime_dir=Path(hub.runtime_dir))
+
+
+def application_args_for_hub(args: argparse.Namespace, context: dict[str, Any], hub: HubPlacement) -> argparse.Namespace:
+    values = dict(vars(args))
+    values.update(
+        {
+            "coolify_project_uuid": context.get("project_uuid") or values.get("coolify_project_uuid", ""),
+            "coolify_server_uuid": context.get("server_uuid") or values.get("coolify_server_uuid", ""),
+            "coolify_environment_name": context.get("environment_name") or values.get("coolify_environment_name", ""),
+            "coolify_environment_uuid": context.get("environment_uuid") or values.get("coolify_environment_uuid", ""),
+            "coolify_application_uuid": "",
+            "github_app_uuid": values.get("github_app_uuid", ""),
+            "deploy_key_uuid": values.get("deploy_key_uuid", ""),
+            "no_create_storage": bool(values.get("no_create_storage", False)),
+            "hub_implementation": getattr(hub_tool, "HUB_IMPLEMENTATION_EXP_FDB", "exp-fdb"),
+            "hub_runtime_dir": hub.runtime_dir,
+            "fdb_cluster_file": hub.cluster_file_path,
+            "fdb_namespace": hub.namespace,
+            "replace_regular_hub": False,
+        }
+    )
+    return argparse.Namespace(**values)
+
+
+def hub_application_start_command(placement: HubClusterPlacement, profile: Any, hub: HubPlacement, args: argparse.Namespace) -> str:
+    command = hub_command_parts(profile, placement, hub, args)
+    return " ".join(hub_tool.command_token(part) for part in command)
+
+
+def hub_application_payload(
+    placement: HubClusterPlacement,
+    profile: Any,
+    args: argparse.Namespace,
+    *,
+    hub: HubPlacement,
+    server_name: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    app_profile = hub_application_profile(profile, hub)
+    app_args = application_args_for_hub(args, context, hub)
+    name = hub_application_name(placement, hub)
+    payload = hub_tool.application_payload(app_profile, app_args, service_name=name, runtime_dir=hub.runtime_dir)
+    payload.update(
+        {
+            "name": name,
+            "description": f"Main Computer {placement.network_key} Hub {hub.hub_id} on {server_name}",
+            "domains": coolify_domain_with_backend_port(hub.public_url, int(profile.hub_bind_port), f"hubs[{hub.hub_id}].public_url"),
+            "ports_exposes": str(profile.hub_bind_port),
+            "start_command": hub_application_start_command(placement, profile, hub, app_args),
+            "health_check_enabled": True,
+            "health_check_path": args.health_path,
+            "instant_deploy": False,
+        }
+    )
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def hub_application_update_payload(
+    placement: HubClusterPlacement,
+    profile: Any,
+    args: argparse.Namespace,
+    *,
+    hub: HubPlacement,
+    server_name: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    payload = hub_application_payload(placement, profile, args, hub=hub, server_name=server_name, context=context)
+    for key in ("project_uuid", "server_uuid", "environment_name", "environment_uuid", "git_repository"):
+        payload.pop(key, None)
+    return payload
+
+
+def hub_application_endpoint(args: argparse.Namespace) -> str:
+    if str(getattr(args, "github_app_uuid", "") or "").strip():
+        return "/api/v1/applications/private-github-app"
+    if str(getattr(args, "deploy_key_uuid", "") or "").strip():
+        return "/api/v1/applications/private-deploy-key"
+    return "/api/v1/applications/public"
+
+
+def _create_payload_with_auth(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    result = dict(payload)
+    if str(getattr(args, "github_app_uuid", "") or "").strip():
+        result["github_app_uuid"] = str(args.github_app_uuid).strip()
+    if str(getattr(args, "deploy_key_uuid", "") or "").strip():
+        result["private_key_uuid"] = str(args.deploy_key_uuid).strip()
+    return result
+
+
+def _minimal_application_create_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "project_uuid",
+        "server_uuid",
+        "environment_name",
+        "environment_uuid",
+        "github_app_uuid",
+        "private_key_uuid",
+        "git_repository",
+        "git_branch",
+        "build_pack",
+        "ports_exposes",
+        "destination_uuid",
+        "name",
+        "description",
+        "git_commit_sha",
+        "base_directory",
+        "dockerfile_location",
+    }
+    return {key: value for key, value in payload.items() if key in allowed and value not in (None, "")}
+
+
+def _application_create_payload_variants(payload: dict[str, Any], args: argparse.Namespace) -> list[tuple[str, dict[str, Any]]]:
+    full = _create_payload_with_auth(payload, args)
+    start_command_create_payload = {
+        key: value
+        for key, value in full.items()
+        if key
+        not in {
+            "domains",
+            "health_check_enabled",
+            "health_check_path",
+            "health_check_port",
+            "health_check_host",
+            "health_check_method",
+            "health_check_return_code",
+            "health_check_scheme",
+            "health_check_response_text",
+            "health_check_interval",
+            "health_check_timeout",
+            "health_check_retries",
+            "health_check_start_period",
+            "instant_deploy",
+        }
+    }
+    post_create_payload = {
+        key: value
+        for key, value in full.items()
+        if key
+        not in {
+            "domains",
+            "start_command",
+            "health_check_enabled",
+            "health_check_path",
+            "health_check_port",
+            "health_check_host",
+            "health_check_method",
+            "health_check_return_code",
+            "health_check_scheme",
+            "health_check_response_text",
+            "health_check_interval",
+            "health_check_timeout",
+            "health_check_retries",
+            "health_check_start_period",
+            "instant_deploy",
+        }
+    }
+    minimal = _minimal_application_create_payload(full)
+    variants: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for name, candidate in (
+        ("full", full),
+        ("domains-and-health-deferred", start_command_create_payload),
+        ("post-create-fields-deferred", post_create_payload),
+        ("minimal", minimal),
+    ):
+        clean = {key: value for key, value in candidate.items() if value not in (None, "")}
+        fingerprint = json.dumps(clean, sort_keys=True, default=str)
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            variants.append((name, clean))
+    return variants
+
+
+def _application_create_attempt_summary(variant: str, payload: dict[str, Any], response: Any) -> dict[str, Any]:
+    return {
+        "variant": variant,
+        "payload_keys": sorted(payload),
+        "domains": payload.get("domains"),
+        "build_pack": payload.get("build_pack"),
+        "ports_exposes": payload.get("ports_exposes"),
+        "base_directory": payload.get("base_directory"),
+        "dockerfile_location": payload.get("dockerfile_location"),
+        "has_start_command": "start_command" in payload,
+        "has_health_check": any(str(key).startswith("health_check_") for key in payload),
+        "response": hub_tool.response_to_dict(response),
+    }
+
+
+def create_hub_application(client: Any, payload: dict[str, Any], args: argparse.Namespace, tried: list[dict[str, Any]]) -> str:
+    endpoint = hub_application_endpoint(args)
+    application_name = str(payload.get("name") or "").strip()
+    failures: list[dict[str, Any]] = []
+    for variant, create_payload in _application_create_payload_variants(payload, args):
+        response = client.request("POST", endpoint, create_payload)
+        attempt = {
+            "operation": "create-hub-application",
+            "path": endpoint,
+            **_application_create_attempt_summary(variant, create_payload, response),
+        }
+        tried.append(attempt)
+        if response.ok:
+            uuid = hub_tool.item_uuid(response.body) if isinstance(response.body, dict) else ""
+            if not uuid and isinstance(response.body, dict) and isinstance(response.body.get("application"), dict):
+                uuid = hub_tool.item_uuid(response.body["application"])
+            if not uuid:
+                raise CoolifyHubDeployError(
+                    f"Coolify Hub application create succeeded with variant {variant!r} but no UUID was returned: {response.body}"
+                )
+            return uuid
+
+        failures.append(attempt)
+        if response.status >= 500 and application_name:
+            application_uuid, existing = hub_tool.find_application(
+                client,
+                service_name=application_name,
+                explicit_uuid="",
+                tried=tried,
+            )
+            if application_uuid:
+                tried.append(
+                    {
+                        "operation": "create-hub-application-recovered-existing-after-server-error",
+                        "application_name": application_name,
+                        "application_uuid": application_uuid,
+                        "existing": existing,
+                        "failed_variant": variant,
+                    }
+                )
+                return application_uuid
+        if response.status not in {400, 409, 422, 500}:
+            break
+
+    raise CoolifyHubDeployError(
+        "Coolify Hub application create failed on all payload variants: "
+        + json.dumps(
+            [
+                {
+                    "variant": item.get("variant"),
+                    "payload_keys": item.get("payload_keys"),
+                    "domains": item.get("domains"),
+                    "build_pack": item.get("build_pack"),
+                    "ports_exposes": item.get("ports_exposes"),
+                    "base_directory": item.get("base_directory"),
+                    "dockerfile_location": item.get("dockerfile_location"),
+                    "has_start_command": item.get("has_start_command"),
+                    "has_health_check": item.get("has_health_check"),
+                    "response": item.get("response"),
+                }
+                for item in failures
+            ],
+            sort_keys=True,
+        )
+    )
+
+
+def _clean_payload_subset(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {key: payload[key] for key in keys if key in payload and payload[key] not in (None, "")}
+
+
+def _application_update_attempt_summary(label: str, method: str, path: str, payload: dict[str, Any], response: Any) -> dict[str, Any]:
+    return {
+        "variant": label,
+        "method": method,
+        "path": path,
+        "payload_keys": sorted(payload),
+        "domains": payload.get("domains"),
+        "fqdn": payload.get("fqdn"),
+        "ports_exposes": payload.get("ports_exposes"),
+        "has_start_command": "start_command" in payload,
+        "has_health_check": any(str(key).startswith("health_check_") for key in payload),
+        "response": hub_tool.response_to_dict(response),
+    }
+
+
+def _try_hub_application_update_variants(
+    client: Any,
+    application_uuid: str,
+    variants: list[tuple[str, dict[str, Any]]],
+    tried: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    path = f"/api/v1/applications/{urllib.parse.quote(application_uuid)}"
+    failures: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for label, raw_payload in variants:
+        payload = {key: value for key, value in raw_payload.items() if value not in (None, "")}
+        if not payload:
+            continue
+        fingerprint = json.dumps(payload, sort_keys=True, default=str)
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        for method in ("PATCH", "PUT"):
+            response = client.request(method, path, payload)
+            attempt = {
+                "operation": "update-hub-application",
+                **_application_update_attempt_summary(label, method, path, payload, response),
+            }
+            tried.append(attempt)
+            if response.ok:
+                return {
+                    "ok": True,
+                    "variant": label,
+                    "method": method,
+                    "path": path,
+                    "payload_keys": sorted(payload),
+                    "domains": payload.get("domains") or payload.get("fqdn"),
+                    "has_start_command": "start_command" in payload,
+                }, failures
+            failures.append(attempt)
+            if response.status == 405:
+                break
+            if response.status not in {400, 404, 405, 422, 500}:
+                return None, failures
+    return None, failures
+
+
+def update_hub_application(client: Any, application_uuid: str, payload: dict[str, Any], tried: list[dict[str, Any]]) -> dict[str, Any]:
+    domain = str(payload.get("domains") or "").strip()
+    fqdn_domain = domain
+    start_command = str(payload.get("start_command") or "").strip()
+    port = str(payload.get("ports_exposes") or "").strip()
+
+    all_in_one_variants = [
+        ("full", payload),
+        (
+            "runtime-and-routing",
+            _clean_payload_subset(
+                payload,
+                (
+                    "name",
+                    "description",
+                    "domains",
+                    "ports_exposes",
+                    "start_command",
+                    "health_check_enabled",
+                    "health_check_path",
+                ),
+            ),
+        ),
+        (
+            "routing-and-command",
+            _clean_payload_subset(payload, ("domains", "ports_exposes", "start_command")),
+        ),
     ]
+    all_in_one_result, all_in_one_failures = _try_hub_application_update_variants(
+        client,
+        application_uuid,
+        all_in_one_variants,
+        tried,
+    )
+    if all_in_one_result is not None:
+        return {
+            "ok": True,
+            "strategy": "single-update",
+            "domains": all_in_one_result.get("domains"),
+            "results": [all_in_one_result],
+        }
+
+    domain_variants: list[tuple[str, dict[str, Any]]] = []
+    if domain:
+        domain_variants.extend(
+            [
+                ("domains-and-port", {"domains": domain, "ports_exposes": port}),
+                ("domains-only", {"domains": domain}),
+                # Some Coolify versions read the value as fqdn but write it as
+                # domains; keep fqdn as a last-resort compatibility probe so
+                # the failure report distinguishes field-name rejection from
+                # server-side crashes.
+                ("fqdn-only", {"fqdn": fqdn_domain}),
+            ]
+        )
+    domain_result, domain_failures = _try_hub_application_update_variants(
+        client,
+        application_uuid,
+        domain_variants,
+        tried,
+    )
+    if domain and domain_result is None:
+        raise CoolifyHubDeployError(
+            "Coolify Hub application domain update failed on all payload variants: "
+            + json.dumps(
+                [
+                    {
+                        "variant": item.get("variant"),
+                        "method": item.get("method"),
+                        "path": item.get("path"),
+                        "payload_keys": item.get("payload_keys"),
+                        "domains": item.get("domains"),
+                        "fqdn": item.get("fqdn"),
+                        "ports_exposes": item.get("ports_exposes"),
+                        "response": item.get("response"),
+                    }
+                    for item in [*all_in_one_failures, *domain_failures]
+                ],
+                sort_keys=True,
+            )
+        )
+
+    command_result = None
+    command_failures: list[dict[str, Any]] = []
+    if start_command:
+        command_variants = [
+            ("start-command-and-port", {"start_command": start_command, "ports_exposes": port}),
+            ("start-command-only", {"start_command": start_command}),
+        ]
+        command_result, command_failures = _try_hub_application_update_variants(
+            client,
+            application_uuid,
+            command_variants,
+            tried,
+        )
+
+    health_result = None
+    if payload.get("health_check_enabled") or payload.get("health_check_path"):
+        health_payload = _clean_payload_subset(
+            payload,
+            (
+                "health_check_enabled",
+                "health_check_path",
+                "health_check_port",
+                "health_check_host",
+                "health_check_method",
+                "health_check_return_code",
+                "health_check_scheme",
+                "health_check_response_text",
+                "health_check_interval",
+                "health_check_timeout",
+                "health_check_retries",
+                "health_check_start_period",
+            ),
+        )
+        health_result, _health_failures = _try_hub_application_update_variants(
+            client,
+            application_uuid,
+            [("health-only", health_payload)],
+            tried,
+        )
+
+    command_warning: dict[str, Any] | None = None
+    if start_command and command_result is None:
+        command_failure_summary = [
+            {
+                "variant": item.get("variant"),
+                "method": item.get("method"),
+                "path": item.get("path"),
+                "payload_keys": item.get("payload_keys"),
+                "has_start_command": item.get("has_start_command"),
+                "response": item.get("response"),
+            }
+            for item in command_failures
+        ]
+        if domain_result is None:
+            # When there was no successful routing/domain update to preserve,
+            # keep start command failures fatal.  Otherwise the caller could
+            # deploy an application that is neither correctly routed nor
+            # guaranteed to boot as the requested Hub.
+            raise CoolifyHubDeployError(
+                "Coolify Hub application start command update failed on all payload variants: "
+                + json.dumps(command_failure_summary, sort_keys=True)
+            )
+
+        # Some Coolify versions accept the split domain/port PATCH but crash
+        # when start_command is updated on an existing Dockerfile application.
+        # Keep the already-accepted domain:port reconciliation and make the
+        # skipped command update explicit in the result instead of failing the
+        # whole Hub pass after routing has been repaired.
+        command_warning = {
+            "operation": "start-command-update",
+            "ok": False,
+            "message": (
+                "Coolify accepted the Hub domain/port update but rejected all "
+                "start_command update variants. The deployer kept the routing "
+                "change and reported this warning instead of aborting after the "
+                "domain was already reconciled."
+            ),
+            "failures": command_failure_summary,
+        }
+
+    result = {
+        "ok": True,
+        "strategy": "split-updates",
+        "domains": domain_result.get("domains") if domain_result else "",
+        "results": [
+            item
+            for item in (domain_result, command_result, health_result)
+            if item is not None
+        ],
+    }
+    if command_warning is not None:
+        result["command_update_failed"] = True
+        result["warnings"] = [command_warning]
+    return result
 
 
-def hub_service_domain_map(placement: HubClusterPlacement, profile: Any, server_name: str) -> dict[str, str]:
-    return {entry["name"]: entry["domain"] for entry in hub_service_domain_entries(placement, profile, server_name)}
+def hub_status_url(hub: HubPlacement, health_path: str) -> str:
+    base = str(hub.public_url or "").strip().rstrip("/")
+    path = str(health_path or "/api/hub/status").strip() or "/api/hub/status"
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
+
+
+def wait_for_hub_ready(
+    placement: HubClusterPlacement,
+    profile: Any,
+    args: argparse.Namespace,
+    *,
+    hub: HubPlacement,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    timeout_s = float(getattr(args, "hub_wait_timeout_s", 300.0))
+    if timeout_s <= 0:
+        return {"ok": True, "skipped": True, "reason": "hub_wait_timeout_s <= 0", "hub_id": hub.hub_id}
+    if bool(getattr(args, "no_wait_hubs", False)):
+        return {"ok": True, "skipped": True, "reason": "--no-wait-hubs", "hub_id": hub.hub_id}
+
+    status_url = hub_status_url(hub, getattr(args, "health_path", "/api/hub/status"))
+    deadline = time.monotonic() + timeout_s
+    poll_s = float(getattr(args, "hub_wait_poll_s", 5.0))
+    status_timeout_s = float(getattr(args, "hub_status_timeout_s", 5.0))
+    user_agent = str(getattr(args, "hub_status_user_agent", hub_tool.DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
+    last_error: object = None
+    attempts = 0
+
+    while time.monotonic() < deadline:
+        attempts += 1
+        try:
+            request = hub_tool.hub_status_request(status_url, user_agent=user_agent)
+            with urllib.request.urlopen(request, timeout=status_timeout_s) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            network = payload.get("network") if isinstance(payload, dict) else {}
+            if isinstance(network, dict):
+                network_key = network.get("network_key") or network.get("network")
+                chain_id = network.get("chain_id")
+                if network_key == placement.network_key and int(chain_id) == int(profile.chain_id or -1):
+                    result = {
+                        "ok": True,
+                        "hub_id": hub.hub_id,
+                        "status_url": status_url,
+                        "attempts": attempts,
+                        "status": payload,
+                    }
+                    tried.append({"operation": "wait-hub-ready", **result})
+                    return result
+                last_error = f"unexpected Hub status network={network_key!r} chain_id={chain_id!r}"
+            else:
+                last_error = "Hub status response has no network object"
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{type(exc).__name__}: {exc}"
+        tried.append(
+            {
+                "operation": "wait-hub-ready",
+                "hub_id": hub.hub_id,
+                "status_url": status_url,
+                "attempt": attempts,
+                "ok": False,
+                "last_error": str(last_error),
+            }
+        )
+        time.sleep(max(0.0, poll_s))
+
+    raise CoolifyHubDeployError(f"Hub {hub.hub_id!r} did not become ready at {status_url}: {last_error}")
+
+
+def sync_hub_application(
+    client: Any,
+    placement: HubClusterPlacement,
+    profile: Any,
+    args: argparse.Namespace,
+    *,
+    server_name: str,
+    hub: HubPlacement,
+    context: dict[str, Any],
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    app_args = application_args_for_hub(args, context, hub)
+    app_profile = hub_application_profile(profile, hub)
+    name = hub_application_name(placement, hub)
+    application_uuid, existing = hub_tool.find_application(client, service_name=name, explicit_uuid="", tried=tried)
+    if application_uuid:
+        update_result = update_hub_application(
+            client,
+            application_uuid,
+            hub_application_update_payload(placement, profile, args, hub=hub, server_name=server_name, context=context),
+            tried,
+        )
+        action = "updated"
+    else:
+        create_payload = hub_application_payload(placement, profile, args, hub=hub, server_name=server_name, context=context)
+        application_uuid = create_hub_application(
+            client,
+            create_payload,
+            app_args,
+            tried,
+        )
+        update_result = update_hub_application(
+            client,
+            application_uuid,
+            hub_application_update_payload(placement, profile, args, hub=hub, server_name=server_name, context=context),
+            tried,
+        )
+        update_result = {**update_result, "created": True}
+        action = "created"
+    storage = hub_tool.ensure_storage(client, app_profile, app_args, application_uuid=application_uuid, runtime_dir=hub.runtime_dir, tried=tried)
+    deploy_result = None
+    ready_result = None
+    if not args.no_deploy:
+        deploy_result = hub_tool.trigger_deploy(client, application_uuid=application_uuid, force=args.force_deploy, tried=tried)
+        ready_result = wait_for_hub_ready(placement, profile, args, hub=hub, tried=tried)
+    return {
+        "ok": True,
+        "hub_id": hub.hub_id,
+        "server": server_name,
+        "application_name": name,
+        "application_uuid": application_uuid,
+        "application_action": action,
+        "existing": existing,
+        "update_result": update_result,
+        "storage": storage,
+        "deployed": deploy_result is not None,
+        "deploy_result": deploy_result,
+        "ready_result": ready_result,
+        "domains": coolify_domain_with_backend_port(hub.public_url, int(profile.hub_bind_port), f"hubs[{hub.hub_id}].public_url"),
+    }
 
 
 def shared_entry_hosts(placement: HubClusterPlacement) -> tuple[str, ...]:
@@ -866,6 +1488,7 @@ def service_payload(placement: HubClusterPlacement, profile: Any, args: argparse
     compose = render_server_hub_compose(placement, profile, args, server_name)
     destination_overrides = fdb_tool.parse_binding_map(args.set_coolify_destination_uuid or [], "--set-coolify-destination-uuid")
     destination_uuid = destination_overrides.get(server_name) or args.coolify_destination_uuid
+    domains = hub_service_domains(placement, profile, server_name)
     payload: dict[str, Any] = {
         "server_uuid": context.get("server_uuid"),
         "project_uuid": context.get("project_uuid"),
@@ -874,6 +1497,7 @@ def service_payload(placement: HubClusterPlacement, profile: Any, args: argparse
         "name": service_name,
         "description": f"Main Computer {placement.network_key} Hub containers on {server_name}",
         "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        "docker_compose_domains": domains,
         "instant_deploy": False,
     }
     if destination_uuid:
@@ -900,29 +1524,6 @@ def create_service(client: Any, payload: dict[str, Any], tried: list[dict[str, A
     return uuid
 
 
-def delete_service(client: Any, service_uuid: str, tried: list[dict[str, Any]]) -> dict[str, Any]:
-    path = f"/api/v1/services/{urllib.parse.quote(service_uuid)}"
-    response = client.request("DELETE", path)
-    tried.append(
-        {
-            "operation": "delete-hub-service",
-            "method": "DELETE",
-            "path": path,
-            "response": hub_tool.response_to_dict(response),
-        }
-    )
-    if response.ok or response.status == 404:
-        return {
-            "ok": True,
-            "path": path,
-            "status": response.status,
-            "already_missing": response.status == 404,
-        }
-    raise CoolifyHubDeployError(
-        f"Coolify Hub service delete failed for {service_uuid!r} with HTTP {response.status}: {response.body}"
-    )
-
-
 def update_service(
     client: Any,
     service_uuid: str,
@@ -930,41 +1531,40 @@ def update_service(
     compose: str,
     tried: list[dict[str, Any]],
     *,
-    domains: list[dict[str, str]] | None = None,
+    domains: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     encoded = base64.b64encode(compose.encode("utf-8")).decode("ascii")
-    clean_domains = domains or []
-    domain_update_payloads: list[dict[str, Any]] = []
+    clean_domains = domains or {}
+    update_payloads: list[dict[str, Any]] = []
     if clean_domains:
-        # Coolify rejects docker_compose_domains on service creation in some
-        # 4.1.x builds, but may accept it while updating an existing service
-        # stack.  Never silently fall back to a compose-only update when the
-        # caller supplied domain targets; that would make the deploy look clean
-        # while leaving generated wildcard domains in place.
-        domain_update_payloads.extend(
+        # Coolify Service Stack domains are stored as docker_compose_domains,
+        # keyed by compose service name.  Include them before the compose-only
+        # fallbacks so deployments can recreate the per-service Domains UI
+        # entries that operators previously had to set by hand.
+        update_payloads.extend(
             [
                 {"docker_compose_raw": encoded, "docker_compose_domains": clean_domains, "name": service_name},
                 {"docker_compose_raw": encoded, "docker_compose_domains": clean_domains},
                 {"docker_compose": compose, "docker_compose_domains": clean_domains, "name": service_name},
             ]
         )
-    compose_only_payloads = [
-        {"docker_compose_raw": encoded, "name": service_name},
-        {"docker_compose_raw": encoded},
-        {"docker_compose": compose, "name": service_name},
-        {"compose": compose, "name": service_name},
-    ]
-    payload_groups = [domain_update_payloads] if clean_domains else [compose_only_payloads]
+    update_payloads.extend(
+        [
+            {"docker_compose_raw": encoded, "name": service_name},
+            {"docker_compose_raw": encoded},
+            {"docker_compose": compose, "name": service_name},
+            {"compose": compose, "name": service_name},
+        ]
+    )
     update_paths = [
         f"/api/v1/services/{urllib.parse.quote(service_uuid)}",
         f"/api/v1/services/{urllib.parse.quote(service_uuid)}/compose",
     ]
-    failures: list[dict[str, Any]] = []
     for path in update_paths:
-        for payloads in payload_groups:
-            for payload in payloads:
-                response = client.request("PATCH", path, payload)
-                record = {
+        for payload in update_payloads:
+            response = client.request("PATCH", path, payload)
+            tried.append(
+                {
                     "operation": "update-hub-service",
                     "method": "PATCH",
                     "path": path,
@@ -972,18 +1572,18 @@ def update_service(
                     "domain_payload": payload.get("docker_compose_domains", None),
                     "response": hub_tool.response_to_dict(response),
                 }
-                tried.append(record)
-                if response.ok:
-                    return {
-                        "ok": True,
-                        "path": path,
-                        "method": "PATCH",
-                        "domains_included": "docker_compose_domains" in payload,
-                    }
-                failures.append(record)
-                if response.status == 405:
-                    response = client.request("PUT", path, payload)
-                    record = {
+            )
+            if response.ok:
+                return {
+                    "ok": True,
+                    "path": path,
+                    "method": "PATCH",
+                    "domains_included": "docker_compose_domains" in payload,
+                }
+            if response.status == 405:
+                response = client.request("PUT", path, payload)
+                tried.append(
+                    {
                         "operation": "update-hub-service",
                         "method": "PUT",
                         "path": path,
@@ -991,33 +1591,16 @@ def update_service(
                         "domain_payload": payload.get("docker_compose_domains", None),
                         "response": hub_tool.response_to_dict(response),
                     }
-                    tried.append(record)
-                    if response.ok:
-                        return {
-                            "ok": True,
-                            "path": path,
-                            "method": "PUT",
-                            "domains_included": "docker_compose_domains" in payload,
-                        }
-                    failures.append(record)
-                if response.status not in {400, 404, 405, 422}:
-                    raise CoolifyHubDeployError(
-                        f"Coolify Hub service update failed with HTTP {response.status}: {response.body}"
-                    )
-    if clean_domains:
-        compact_failures = [
-            {
-                "method": item.get("method"),
-                "path": item.get("path"),
-                "payload_keys": item.get("payload_keys"),
-                "response": item.get("response"),
-            }
-            for item in failures
-        ]
-        raise CoolifyHubDeployError(
-            "Coolify Hub service domain update failed on all known endpoints; "
-            f"docker_compose_domains was rejected or ignored by the API: {compact_failures}"
-        )
+                )
+                if response.ok:
+                    return {
+                        "ok": True,
+                        "path": path,
+                        "method": "PUT",
+                        "domains_included": "docker_compose_domains" in payload,
+                    }
+            if response.status not in {400, 404, 405, 422}:
+                raise CoolifyHubDeployError(f"Coolify Hub service update failed with HTTP {response.status}: {response.body}")
     raise CoolifyHubDeployError("Coolify Hub service update failed on all known endpoints.")
 
 
@@ -1185,41 +1768,51 @@ def reconcile_service_application_domains(
     client: Any,
     *,
     service_uuid: str,
-    domains: list[dict[str, str]],
+    domains: dict[str, dict[str, str]],
     tried: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Report domain reconciliation without patching generated sub-app rows.
+    clean_domains = {
+        str(service_key): str(spec.get("domain") or "").strip()
+        for service_key, spec in (domains or {}).items()
+        if isinstance(spec, dict) and str(spec.get("domain") or "").strip()
+    }
+    if not clean_domains:
+        return {"ok": True, "changed": False, "results": [], "skipped": "no-domain-targets"}
 
-    Coolify 4.1.x returned 404 for generated Service Stack application UUIDs on
-    both global and service-scoped application PATCH routes.  For Hub stacks,
-    the supported automation path is therefore the documented
-    ``docker_compose_domains`` field on the service create/update payload.
-    """
+    applications = load_service_applications(client, service_uuid, tried)
+    if not applications:
+        raise CoolifyHubDeployError(
+            f"Coolify service {service_uuid!r} did not expose application rows; cannot reconcile Hub domains."
+        )
 
-    clean_domains = [
-        {"name": str(item.get("name") or "").strip(), "domain": str(item.get("domain") or "").strip()}
-        for item in (domains or [])
-        if isinstance(item, dict)
-        and str(item.get("name") or "").strip()
-        and str(item.get("domain") or "").strip()
-    ]
-    tried.append(
-        {
-            "operation": "hub-domain-reconciliation",
-            "mode": "docker_compose_domains-service-payload",
-            "service_uuid": service_uuid,
-            "domains": clean_domains,
-            "note": (
-                "No generated application-domain PATCH was attempted; Coolify 4.1.x rejects those "
-                "routes for service-stack sub-applications."
-            ),
-        }
-    )
+    results: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for service_key, desired_domain in clean_domains.items():
+        application = _match_application_for_service(applications, service_key)
+        if application is None:
+            missing.append(service_key)
+            continue
+        results.append(
+            reconcile_application_domain(
+                client,
+                application=application,
+                service_key=service_key,
+                desired_domain=desired_domain,
+                tried=tried,
+            )
+        )
+
+    if missing:
+        raise CoolifyHubDeployError(
+            "Coolify service application lookup did not find expected Hub service(s): "
+            + ", ".join(sorted(missing))
+        )
+
+    changed = any(bool(item.get("changed")) for item in results)
     return {
         "ok": True,
-        "changed": False,
-        "mode": "docker_compose_domains-service-payload",
-        "domains": clean_domains,
+        "changed": changed,
+        "results": results,
     }
 
 
@@ -1236,59 +1829,64 @@ def sync_service_for_server(
     name = hub_service_name(placement, server_name)
     service_uuid, existing = hub_tool.find_service(client, service_name=name, explicit_uuid="", tried=tried)
     compose = render_server_hub_compose(placement, profile, args, server_name)
-    domains = hub_service_domain_entries(placement, profile, server_name)
-    if service_uuid and bool(getattr(args, "recreate_hub_stacks", False)):
-        delete_result = delete_service(client, service_uuid, tried)
-        payload = service_payload(placement, profile, args, server_name=server_name, context=context)
-        service_uuid = create_service(client, payload, tried)
-        domain_update_result = update_service(client, service_uuid, name, compose, tried, domains=domains)
-        return service_uuid, "recreated", existing, {
-            "ok": True,
-            "path": "/api/v1/services",
-            "method": "POST",
-            "deleted_existing": delete_result,
-            "create_domains_included": bool(payload.get("docker_compose_domains")),
-            "domain_update_result": domain_update_result,
-        }
+    domains = hub_service_domains(placement, profile, server_name)
     if service_uuid:
         update_result = update_service(client, service_uuid, name, compose, tried, domains=domains)
         return service_uuid, "updated", existing, update_result
     payload = service_payload(placement, profile, args, server_name=server_name, context=context)
     service_uuid = create_service(client, payload, tried)
-    domain_update_result = update_service(client, service_uuid, name, compose, tried, domains=domains)
     return service_uuid, "created", existing, {
         "ok": True,
         "path": "/api/v1/services",
         "method": "POST",
-        "create_domains_included": bool(payload.get("docker_compose_domains")),
-        "domain_update_result": domain_update_result,
+        "domains_included": bool(payload.get("docker_compose_domains")),
     }
 
 
 def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Namespace, server_name: str) -> dict[str, Any]:
-    compose = render_server_hub_compose(placement, profile, args, server_name)
     context_preview = {
         "server_uuid": "<resolved-at-apply>",
         "project_uuid": args.coolify_project_uuid or "<resolved-at-apply>",
         "environment_name": args.coolify_environment_name,
         "environment_uuid": args.coolify_environment_uuid or "<resolved-at-apply>",
     }
-    payload = service_payload(placement, profile, args, server_name=server_name, context=context_preview)
     local_hubs = hubs_for_server(placement, server_name)
+    applications = [
+        {
+            "hub_id": hub.hub_id,
+            "application_name": hub_application_name(placement, hub),
+            "public_url": hub.public_url,
+            "runtime_dir": hub.runtime_dir,
+            "cluster_file_path": hub.cluster_file_path,
+            "namespace": hub.namespace,
+            "application_payload": hub_application_payload(
+                placement,
+                profile,
+                args,
+                hub=hub,
+                server_name=server_name,
+                context=context_preview,
+            ),
+        }
+        for hub in local_hubs
+    ]
     traefik_dynamic_config = None
     if shared_entry_hosts(placement):
         traefik_dynamic_config = {
             "installed": traefik_sidecar_enabled(args),
             "container_service": traefik_dynamic_config_service_key(placement, server_name),
             "path": traefik_dynamic_config_path(placement, server_name),
-            "action": "write" if local_hubs else "remove",
+            "action": "preview-only",
             "contents": render_server_traefik_dynamic_config(placement, profile, args, server_name) if local_hubs else "",
+            "note": "Hub Application mode previews but does not install the old Service Stack public-entry sidecar.",
         }
     return {
         "server": server_name,
         "coolify_url": fdb_tool.coolify_url_for_server(server_name, args)[0],
         "coolify_url_source": fdb_tool.coolify_url_for_server(server_name, args)[1],
+        "resource_kind": "applications",
         "service_name": hub_service_name(placement, server_name),
+        "legacy_service_stack_name": hub_service_name(placement, server_name),
         "hubs": [
             {
                 "hub_id": hub.hub_id,
@@ -1299,16 +1897,14 @@ def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
             }
             for hub in local_hubs
         ],
-        "coolify_service_domains": hub_service_domain_entries(placement, profile, server_name),
-        "docker_compose": compose,
+        "coolify_service_domains": hub_service_domains(placement, profile, server_name),
+        "applications": applications,
         "traefik_dynamic_config": traefik_dynamic_config,
-        "service_payload": {
-            **{key: value for key, value in payload.items() if key != "docker_compose_raw"},
-            "docker_compose_raw": "<base64>",
-            "docker_compose_raw_bytes": len(payload.get("docker_compose_raw", "")),
-        },
+        "operator_note": (
+            "Each Hub is deployed as a first-class Coolify Application so the normal Application domains field "
+            "can be set directly. No Hub Service Stack or service-stack sub-application domain metadata is used."
+        ),
     }
-
 
 def plan_result(placement: HubClusterPlacement, profile: Any, args: argparse.Namespace) -> dict[str, Any]:
     fdb_tool.validate_coolify_url_bindings(placement.servers, args)
@@ -1336,8 +1932,9 @@ def plan_result(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
         },
         "servers": [server_plan(placement, profile, args, server_name) for server_name in sorted(placement.servers)],
         "operator_note": (
-            "Apply the shared FDB layer first. This Hub layer mounts the shared runtime directory and reads "
-            f"{placement.cluster_file_path!r}; it does not start an FDB sidecar or rewrite fdb.cluster."
+            "Apply the shared FDB layer first. Hubs deploy as separate Coolify Applications, each mounting "
+            f"the shared runtime directory and reading {placement.cluster_file_path!r}. The Hub stage no longer "
+            "creates a Coolify Service Stack for Hub containers."
         ),
     }
 
@@ -1358,31 +1955,19 @@ def apply_result(placement: HubClusterPlacement, profile: Any, args: argparse.Na
                 f"Coolify API version check failed for {server_name!r} with HTTP {version.status}: {version.body}"
             )
         context = resolve_context_for_server(client, placement, args, server_name, tried)
-        service_uuid, action, existing, update_result = sync_service_for_server(
-            client,
-            placement,
-            profile,
-            args,
-            server_name=server_name,
-            context=context,
-            tried=tried,
-        )
-        deploy_result = None
-        post_domain_deploy_result = None
-        if not args.no_deploy:
-            deploy_result = hub_tool.trigger_deploy_service(client, service_uuid=service_uuid, force=args.force_deploy, tried=tried)
-        domain_result = reconcile_service_application_domains(
-            client,
-            service_uuid=service_uuid,
-            domains=hub_service_domain_entries(placement, profile, server_name),
-            tried=tried,
-        )
-        if bool(domain_result.get("changed")) and not args.no_deploy:
-            post_domain_deploy_result = hub_tool.trigger_deploy_service(
-                client,
-                service_uuid=service_uuid,
-                force=True,
-                tried=tried,
+        application_results: list[dict[str, Any]] = []
+        for hub in hubs_for_server(placement, server_name):
+            application_results.append(
+                sync_hub_application(
+                    client,
+                    placement,
+                    profile,
+                    args,
+                    server_name=server_name,
+                    hub=hub,
+                    context=context,
+                    tried=tried,
+                )
             )
         phases.append(
             {
@@ -1391,14 +1976,8 @@ def apply_result(placement: HubClusterPlacement, profile: Any, args: argparse.Na
                 "coolify_url_source": fdb_tool.coolify_url_for_server(server_name, args)[1],
                 "token_source": token_source,
                 "context": context,
-                "service_uuid": service_uuid,
-                "service_action": action,
-                "existing": existing,
-                "service_update_result": update_result,
-                "domain_result": domain_result,
-                "deployed": deploy_result is not None,
-                "deploy_result": deploy_result,
-                "post_domain_deploy_result": post_domain_deploy_result,
+                "resource_kind": "applications",
+                "applications": application_results,
                 "tried": tried,
             }
         )
@@ -1482,6 +2061,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-timeout-s", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--coolify-retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--coolify-retry-sleep-s", type=float, default=DEFAULT_RETRY_SLEEP_S)
+    parser.add_argument("--hub-wait-timeout-s", type=float, default=300.0, help="Maximum seconds to wait for each Hub to become ready before deploying the next Hub.")
+    parser.add_argument("--hub-wait-poll-s", type=float, default=5.0, help="Seconds between per-Hub readiness checks.")
+    parser.add_argument("--hub-status-timeout-s", type=float, default=5.0, help="HTTP timeout for each Hub readiness check.")
+    parser.add_argument("--hub-status-user-agent", default=hub_tool.DEFAULT_JSON_RPC_USER_AGENT, help="User-Agent for Hub readiness checks.")
+    parser.add_argument("--no-wait-hubs", action="store_true", help="Do not wait for each Hub to become ready before deploying the next Hub.")
     parser.add_argument("--no-deploy", action="store_true", help="Create/update only; do not trigger a service deploy.")
     parser.add_argument(
         "--no-traefik-sidecar",
@@ -1494,7 +2078,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--force-deploy", action="store_true", help="Ask Coolify to force rebuild/redeploy services.")
-    parser.add_argument("--recreate-hub-stacks", action="store_true", help="Delete and recreate Hub service stacks only; FoundationDB stacks are not touched.")
     parser.add_argument("--dry-run", action="store_true", help="For apply: render the plan without network or Coolify calls.")
     parser.add_argument("--json", action="store_true", help="Print compact machine-readable JSON.")
     return parser.parse_args(argv)

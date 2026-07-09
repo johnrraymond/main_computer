@@ -24,6 +24,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -504,6 +505,7 @@ def fdb_args_for_cluster(args: argparse.Namespace, packet_path: Path) -> argpars
         coolify_retries=args.coolify_retries,
         coolify_retry_sleep_s=args.coolify_retry_sleep_s,
         no_deploy=args.no_deploy,
+        no_fdb_port_guard=args.no_fdb_port_guard,
         force_deploy=args.force_deploy,
         dry_run=args.dry_run,
         json=args.json,
@@ -566,6 +568,11 @@ def hub_args_for_cluster(args: argparse.Namespace, packet_path: Path) -> argpars
         coolify_timeout_s=args.coolify_timeout_s,
         coolify_retries=args.coolify_retries,
         coolify_retry_sleep_s=args.coolify_retry_sleep_s,
+        hub_wait_timeout_s=args.hub_wait_timeout_s,
+        hub_wait_poll_s=args.hub_wait_poll_s,
+        hub_status_timeout_s=args.hub_status_timeout_s,
+        hub_status_user_agent=args.hub_status_user_agent,
+        no_wait_hubs=args.no_wait_hubs,
         no_deploy=args.no_deploy,
         no_traefik_sidecar=args.no_traefik_sidecar,
         force_deploy=args.force_deploy,
@@ -913,6 +920,172 @@ def run_fdb_stage(args: argparse.Namespace, packet_path: Path) -> dict[str, Any]
     return {"ok": True, "plan": fdb_tool.plan_result(placement, stage_args)}
 
 
+READY_STATUS_TOKENS = {
+    "healthy",
+    "running",
+    "active",
+    "started",
+    "deployed",
+    "finished",
+    "success",
+    "successful",
+    "online",
+}
+BLOCKED_STATUS_TOKENS = {
+    "unhealthy",
+    "failed",
+    "failure",
+    "error",
+    "exited",
+    "dead",
+    "stopped",
+    "crashed",
+    "rollback",
+    "rolling_back",
+    "degraded",
+}
+
+
+def _status_values_from_body(value: Any) -> list[str]:
+    values: list[str] = []
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            clean_key = str(key or "").strip().lower()
+            if any(marker in clean_key for marker in ("status", "health", "state")) and not isinstance(item, (dict, list)):
+                text = str(item or "").strip()
+                if text:
+                    values.append(text)
+            values.extend(_status_values_from_body(item))
+    elif isinstance(value, list):
+        for item in value:
+            values.extend(_status_values_from_body(item))
+    return values
+
+
+def _split_status_tokens(values: list[str]) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        for token in str(value or "").replace(":", " ").replace("/", " ").replace("-", "_").split():
+            clean = token.strip().lower()
+            if clean:
+                tokens.add(clean)
+    return tokens
+
+
+def coolify_service_state(body: Any) -> dict[str, Any]:
+    values = _status_values_from_body(body)
+    tokens = _split_status_tokens(values)
+    blocked = sorted(tokens & BLOCKED_STATUS_TOKENS)
+    ready = bool(tokens & READY_STATUS_TOKENS) and not blocked
+    return {
+        "ready": ready,
+        "status_values": values,
+        "tokens": sorted(tokens),
+        "blocked_tokens": blocked,
+    }
+
+
+def wait_for_coolify_service_ready(
+    client: Any,
+    *,
+    service_uuid: str,
+    server_name: str,
+    label: str,
+    timeout_s: float,
+    poll_s: float,
+    stable_checks: int,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if timeout_s <= 0:
+        return {"ok": True, "skipped": True, "reason": "timeout <= 0", "service_uuid": service_uuid}
+    required_stable_checks = max(1, int(stable_checks or 1))
+    consecutive_ready = 0
+    deadline = time.monotonic() + timeout_s
+    last_state: dict[str, Any] = {}
+    path = f"/api/v1/services/{fdb_tool.urllib.parse.quote(service_uuid)}"
+    attempts = 0
+    while time.monotonic() < deadline:
+        attempts += 1
+        response = client.request("GET", path)
+        state = coolify_service_state(response.body)
+        last_state = {
+            "response": fdb_tool.hub_tool.response_to_dict(response),
+            "state": state,
+        }
+        tried.append(
+            {
+                "operation": "wait-coolify-service-ready",
+                "server": server_name,
+                "label": label,
+                "path": path,
+                "attempt": attempts,
+                **last_state,
+            }
+        )
+        if response.ok and state["ready"]:
+            consecutive_ready += 1
+            if consecutive_ready >= required_stable_checks:
+                return {
+                    "ok": True,
+                    "service_uuid": service_uuid,
+                    "server": server_name,
+                    "label": label,
+                    "attempts": attempts,
+                    "stable_checks": consecutive_ready,
+                    "state": state,
+                }
+        else:
+            consecutive_ready = 0
+        time.sleep(max(0.0, float(poll_s)))
+    raise CoolifyHubDeployError(
+        f"Coolify service {label!r} on {server_name!r} did not report a stable ready state "
+        f"after {timeout_s:g}s: {last_state}"
+    )
+
+
+def wait_for_fdb_stage_ready(args: argparse.Namespace, fdb_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if fdb_result is None or args.hubs_only:
+        return None
+    if args.action != "apply" or args.no_deploy:
+        return {"ok": True, "skipped": True, "reason": "not an active deploy"}
+    if bool(getattr(args, "fdb_only", False)):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "--fdb-only has no Hub stage to gate; FDB container health is handled by the rendered Compose healthchecks",
+        }
+    if bool(getattr(args, "no_wait_fdb", False)):
+        return {"ok": True, "skipped": True, "reason": "--no-wait-fdb"}
+    phases = [phase for phase in fdb_result.get("phases", []) if isinstance(phase, Mapping)]
+    results: list[dict[str, Any]] = []
+    for phase in phases:
+        service_uuid = str(phase.get("service_uuid") or "").strip()
+        server_name = str(phase.get("server") or "").strip()
+        if not service_uuid or not server_name:
+            continue
+        tried: list[dict[str, Any]] = []
+        client, token_source = fdb_tool.client_for_server(server_name, fdb_args_for_cluster(args, packet_path_for_args(args)))
+        result = wait_for_coolify_service_ready(
+            client,
+            service_uuid=service_uuid,
+            server_name=server_name,
+            label=f"FoundationDB service {service_uuid}",
+            timeout_s=float(getattr(args, "fdb_wait_timeout_s", 600.0)),
+            poll_s=float(getattr(args, "fdb_wait_poll_s", 10.0)),
+            stable_checks=int(getattr(args, "fdb_wait_stable_checks", 2)),
+            tried=tried,
+        )
+        result["token_source"] = token_source
+        result["tried"] = tried
+        phase["ready_wait"] = result
+        results.append(result)
+    return {
+        "ok": True,
+        "waited": bool(results),
+        "results": results,
+    }
+
+
 def run_hub_stage(args: argparse.Namespace, packet_path: Path) -> dict[str, Any] | None:
     if args.fdb_only:
         return None
@@ -933,7 +1106,8 @@ def cluster_plan_or_apply_result(args: argparse.Namespace, packet: dict[str, Any
     write = write_candidate_packet(resolved_args, packet)
     packet_path = packet_path_for_args(resolved_args)
     fdb = run_fdb_stage(resolved_args, packet_path)
-    hub = run_hub_stage(resolved_args, packet_path)
+    fdb_ready = wait_for_fdb_stage_ready(resolved_args, fdb)
+    hub = None if resolved_args.fdb_only else run_hub_stage(resolved_args, packet_path)
 
     return {
         "ok": True,
@@ -944,6 +1118,7 @@ def cluster_plan_or_apply_result(args: argparse.Namespace, packet: dict[str, Any
         "preflight": check["preflight"],
         "stages": {
             "foundationdb": fdb,
+            "foundationdb_ready": fdb_ready,
             "hub": hub,
         },
         "operator_note": (
@@ -1032,7 +1207,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-timeout-s", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--coolify-retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--coolify-retry-sleep-s", type=float, default=DEFAULT_RETRY_SLEEP_S)
+    parser.add_argument("--fdb-wait-timeout-s", type=float, default=600.0, help="Maximum seconds to wait for FDB Coolify services before starting Hubs.")
+    parser.add_argument("--fdb-wait-poll-s", type=float, default=10.0, help="Seconds between FDB Coolify service readiness checks.")
+    parser.add_argument("--fdb-wait-stable-checks", type=int, default=2, help="Consecutive ready checks required before the Hub stage starts.")
+    parser.add_argument("--no-wait-fdb", action="store_true", help="Do not wait for FDB services to report ready before starting Hubs.")
+    parser.add_argument("--hub-wait-timeout-s", type=float, default=300.0, help="Maximum seconds to wait for each Hub to become ready before deploying the next Hub.")
+    parser.add_argument("--hub-wait-poll-s", type=float, default=5.0, help="Seconds between per-Hub readiness checks.")
+    parser.add_argument("--hub-status-timeout-s", type=float, default=5.0, help="HTTP timeout for each Hub readiness check.")
+    parser.add_argument("--hub-status-user-agent", default=hub_cluster_tool.hub_tool.DEFAULT_JSON_RPC_USER_AGENT, help="User-Agent for Hub readiness checks.")
+    parser.add_argument("--no-wait-hubs", action="store_true", help="Do not wait for each Hub to become ready before deploying the next Hub.")
     parser.add_argument("--no-deploy", action="store_true", help="Create/update only; do not trigger deploys.")
+    parser.add_argument(
+        "--no-fdb-port-guard",
+        action="store_true",
+        help=(
+            "Do not render the narrow Docker-socket preflight guard that removes stale "
+            "Main Computer FDB containers holding this stack's configured VPN ports."
+        ),
+    )
     parser.add_argument(
         "--no-traefik-sidecar",
         action="store_true",

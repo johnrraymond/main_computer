@@ -2099,6 +2099,9 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_trust_boundaries_checked_for_every_case"] is True
     assert report["contracts"]["open_battery_all_target_endstates_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_result_selection_exercised"] is True
+    assert report["contracts"]["open_battery_byzantine_input_context_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_round_1_results_bound_to_host_context"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_input_context_derivation"] is True
     assert report["contracts"]["open_battery_byzantine_profile_coverage_derivation_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_profile_coverage_matches_case_reports"] is True
     assert report["contracts"]["open_battery_byzantine_clear_majority_path_exercised"] is True
@@ -2118,6 +2121,17 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_agreement_chain_derivation_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_agreement_chain_links_payload_hashes"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_exposes_agreement_chain_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_artifact_manifest_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_artifact_manifest_hashes_match_written_artifacts"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_artifact_manifest"] is True
+    assert report["contracts"]["open_battery_byzantine_case_artifact_manifest_coverage_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_case_artifact_manifests_all_written"] is True
+    assert report["contracts"]["open_battery_byzantine_case_reports_match_written_artifacts"] is True
+    assert report["contracts"]["open_battery_byzantine_case_artifact_manifest_coverage_matches_case_reports"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_artifact_coverage_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_artifacts_all_written"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_artifact_paths_match_case_reports"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_artifact_payloads_match_case_reports"] is True
     assert report["contracts"]["open_battery_byzantine_final_round_overrides_malicious_reviewer_vote"] is True
     assert report["contracts"]["open_battery_byzantine_final_round_rejects_malicious_worker_result_when_present"] is True
     assert report["contracts"]["open_battery_byzantine_round_1_payload_hashes_recorded"] is True
@@ -2161,6 +2175,21 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_action_selection_derivation_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_selected_action_derived_from_agreed_result"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_exposes_action_selection_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_output_rendering_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_rendered_output_derived_from_selected_action"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_output_rendering_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_workspace_materialization_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_workspace_materialized_from_selected_action"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_workspace_materialization_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_agent_delegation_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_agent_delegation_bound_to_selected_action"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_agent_delegation_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_verification_result_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_verification_result_bound_to_selected_action"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_verification_result_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_host_policy_rejection_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_host_policy_rejection_bound_to_selected_action"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_host_policy_rejection_derivation"] is True
 
     profile_coverage = report["byzantine_profile_coverage_derivation"]
     assert profile_coverage["rule"] == "exercise_fault_free_tie_and_faulty_clear_majority_byzantine_profiles"
@@ -2180,6 +2209,47 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert profile_coverage["selection_method_by_case"]["proposal_created"] == "clear_majority"
     assert profile_coverage["malicious_worker_ids_by_case"]["proposal_created"] == ["worker_3"]
     assert profile_coverage["malicious_reviewer_ids_by_case"]["proposal_created"] == ["reviewer_3_malicious"]
+
+    case_manifest_coverage = report["byzantine_case_artifact_manifest_coverage_derivation"]
+    assert case_manifest_coverage["rule"] == "cover_written_case_reports_and_byzantine_artifact_manifests"
+    assert case_manifest_coverage["case_count"] == len(report["cases"])
+    assert case_manifest_coverage["complete_battery"] is True
+    assert case_manifest_coverage["all_case_reports_written"] is True
+    assert case_manifest_coverage["all_case_report_payloads_match_embedded_reports"] is True
+    assert case_manifest_coverage["all_byzantine_artifact_manifests_written"] is True
+    assert case_manifest_coverage["all_byzantine_artifact_manifest_paths_match_case_reports"] is True
+    assert len(case_manifest_coverage["manifest_coverage_set_sha256"]) == 64
+    assert set(case_manifest_coverage["case_report_file_sha256_by_case"]) == set(report["cases"])
+    assert set(case_manifest_coverage["byzantine_artifact_manifest_file_sha256_by_case"]) == set(report["cases"])
+    assert all(
+        len(case_manifest_coverage["case_report_file_sha256_by_case"][case_id]) == 64
+        for case_id in report["cases"]
+    )
+    assert all(
+        len(case_manifest_coverage["byzantine_artifact_manifest_file_sha256_by_case"][case_id]) == 64
+        for case_id in report["cases"]
+    )
+
+    boundary_artifact_coverage = report["byzantine_boundary_artifact_coverage_derivation"]
+    assert boundary_artifact_coverage["rule"] == "cover_written_decision_and_pathway_boundary_artifacts"
+    assert boundary_artifact_coverage["case_count"] == len(report["cases"])
+    assert boundary_artifact_coverage["complete_battery"] is True
+    assert boundary_artifact_coverage["all_decision_artifacts_written"] is True
+    assert boundary_artifact_coverage["all_pathway_trace_artifacts_written"] is True
+    assert boundary_artifact_coverage["all_boundary_artifact_paths_match_case_reports"] is True
+    assert boundary_artifact_coverage["all_decision_payloads_match_case_reports"] is True
+    assert boundary_artifact_coverage["all_pathway_trace_payloads_match_case_reports"] is True
+    assert len(boundary_artifact_coverage["boundary_artifact_coverage_set_sha256"]) == 64
+    assert set(boundary_artifact_coverage["decision_file_sha256_by_case"]) == set(report["cases"])
+    assert set(boundary_artifact_coverage["pathway_trace_file_sha256_by_case"]) == set(report["cases"])
+    assert all(
+        len(boundary_artifact_coverage["decision_file_sha256_by_case"][case_id]) == 64
+        for case_id in report["cases"]
+    )
+    assert all(
+        len(boundary_artifact_coverage["pathway_trace_file_sha256_by_case"][case_id]) == 64
+        for case_id in report["cases"]
+    )
 
     expected_endstates = {
         "answer_only",
@@ -2208,6 +2278,7 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert (case_dir / "byzantine_round_2_reviews.json").exists()
         assert (case_dir / "byzantine_final_selection.json").exists()
         assert (case_dir / "byzantine_agreement_trace.json").exists()
+        assert (case_dir / "byzantine_artifact_manifest.json").exists()
         pathway_trace = json.loads((case_dir / "open_pathway_trace.json").read_text(encoding="utf-8"))
         decision = json.loads((case_dir / "open_agent_decision.json").read_text(encoding="utf-8"))
         retrieval_trace = json.loads((case_dir / "run_state_retrieval_trace.json").read_text(encoding="utf-8"))
@@ -2216,6 +2287,43 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         round_2 = json.loads((case_dir / "byzantine_round_2_reviews.json").read_text(encoding="utf-8"))
         final_selection = json.loads((case_dir / "byzantine_final_selection.json").read_text(encoding="utf-8"))
         agreement_trace = json.loads((case_dir / "byzantine_agreement_trace.json").read_text(encoding="utf-8"))
+        artifact_manifest = json.loads((case_dir / "byzantine_artifact_manifest.json").read_text(encoding="utf-8"))
+        case_manifest_record = next(
+            record
+            for record in case_manifest_coverage["per_case"]
+            if record["case_id"] == case_id
+        )
+        assert case_manifest_record["case_report_written"] is True
+        assert case_manifest_record["case_report_payload_matches_embedded_report"] is True
+        assert case_manifest_record["byzantine_artifact_manifest_written"] is True
+        assert case_manifest_record["byzantine_artifact_manifest_path_matches_report"] is True
+        assert len(case_manifest_record["case_report_file_sha256"]) == 64
+        assert len(case_manifest_record["byzantine_artifact_manifest_file_sha256"]) == 64
+        assert case_manifest_record["case_report_path"] == str(case_dir / "case_report.json")
+        assert case_manifest_record["byzantine_artifact_manifest_path"] == str(case_dir / "byzantine_artifact_manifest.json")
+        assert case_manifest_record["reported_byzantine_artifact_manifest_path"] == report["case_reports"][case_id]["byzantine_artifact_manifest_path"]
+
+        boundary_artifact_record = next(
+            record
+            for record in boundary_artifact_coverage["per_case"]
+            if record["case_id"] == case_id
+        )
+        assert boundary_artifact_record["decision_written"] is True
+        assert boundary_artifact_record["pathway_trace_written"] is True
+        assert boundary_artifact_record["decision_path_matches_case_report"] is True
+        assert boundary_artifact_record["pathway_trace_path_matches_case_report"] is True
+        assert boundary_artifact_record["decision_contracts_match_case_report"] is True
+        assert boundary_artifact_record["decision_pathway_matches_case_report"] is True
+        assert boundary_artifact_record["decision_observed_endstate_matches_case_report"] is True
+        assert boundary_artifact_record["decision_pathway_trace_path_matches_case_report"] is True
+        assert boundary_artifact_record["pathway_trace_summary_matches_case_report"] is True
+        assert boundary_artifact_record["pathway_trace_has_records"] is True
+        assert len(boundary_artifact_record["decision_file_sha256"]) == 64
+        assert len(boundary_artifact_record["pathway_trace_file_sha256"]) == 64
+        assert boundary_artifact_record["decision_path"] == str(case_dir / "open_agent_decision.json")
+        assert boundary_artifact_record["pathway_trace_path"] == str(case_dir / "open_pathway_trace.json")
+        assert boundary_artifact_record["reported_decision_path"] == report["case_reports"][case_id]["decision_path"]
+        assert boundary_artifact_record["reported_pathway_trace_path"] == report["case_reports"][case_id]["pathway_trace_path"]
         suspicious_docs = [
             doc for doc in corpus["documents"]
             if doc.get("kind") == "suspicious_node_output"
@@ -2267,6 +2375,9 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_agreement_chain_derivation_recorded"] is True
         assert decision["contracts"]["byzantine_agreement_chain_links_payload_hashes"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_agreement_chain_derivation"] is True
+        assert decision["contracts"]["byzantine_artifact_manifest_recorded"] is True
+        assert decision["contracts"]["byzantine_artifact_manifest_hashes_match_written_artifacts"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_artifact_manifest"] is True
         assert decision["contracts"]["byzantine_final_round_overrides_malicious_reviewer_vote"] is True
         assert decision["contracts"]["byzantine_final_round_rejects_malicious_worker_result_when_present"] is True
         assert decision["contracts"]["byzantine_round_1_payload_hashes_recorded"] is True
@@ -2297,6 +2408,262 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_action_selection_derivation_recorded"] is True
         assert decision["contracts"]["byzantine_selected_action_derived_from_agreed_result"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_action_selection_derivation"] is True
+        assert decision["contracts"]["byzantine_output_rendering_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_rendered_output_derived_from_selected_action"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_output_rendering_derivation"] is True
+        output_rendering = decision["byzantine_output_rendering_derivation"]
+        assert output_rendering == report["case_reports"][case_id]["byzantine_output_rendering_derivation"]
+        assert output_rendering["rule"] == "bind_host_output_surface_to_byzantine_selected_action"
+        assert output_rendering["case_id"] == case_id
+        assert output_rendering["target_endstate"] == decision["target_endstate"]
+        assert output_rendering["observed_endstate"] == decision["observed_endstate"]
+        assert output_rendering["selected_action"] == decision["action"]
+        assert output_rendering["decision_action"] == decision["action"]
+        assert output_rendering["decision_expected_action"] == decision["expected_action"]
+        assert output_rendering["action_matches_selected_action"] is True
+        assert output_rendering["expected_action_matches_selected_action"] is True
+        assert output_rendering["observed_endstate_matches_target"] is True
+        assert output_rendering["mutation_intent_matches_expected"] is True
+        assert output_rendering["action_selection_derivation_recorded"] is True
+        assert output_rendering["output_surface_present"] is True
+        assert output_rendering["output_rendering_preserved"] is True
+        assert len(output_rendering["output_surface_sha256"]) == 64
+        assert len(output_rendering["output_rendering_derivation_sha256"]) == 64
+        if output_rendering["output_kind"] in {"answer", "clarification"}:
+            assert len(output_rendering["answer_sha256"]) == 64
+        if output_rendering["artifact_records"]:
+            assert all(record["exists"] is True for record in output_rendering["artifact_records"])
+            assert all(len(record["sha256"]) == 64 for record in output_rendering["artifact_records"])
+        assert decision["contracts"]["byzantine_workspace_materialization_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_workspace_materialized_from_selected_action"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_workspace_materialization_derivation"] is True
+        workspace_materialization = decision["byzantine_workspace_materialization_derivation"]
+        assert workspace_materialization == report["case_reports"][case_id]["byzantine_workspace_materialization_derivation"]
+        assert workspace_materialization["rule"] == "bind_materialized_workspace_to_byzantine_selected_action"
+        assert workspace_materialization["case_id"] == case_id
+        assert workspace_materialization["target_endstate"] == decision["target_endstate"]
+        assert workspace_materialization["selected_action"] == decision["action"]
+        assert workspace_materialization["decision_action"] == decision["action"]
+        assert workspace_materialization["decision_expected_action"] == decision["expected_action"]
+        assert workspace_materialization["action_matches_selected_action"] is True
+        assert workspace_materialization["expected_action_matches_selected_action"] is True
+        assert workspace_materialization["action_selection_derivation_recorded"] is True
+        assert workspace_materialization["workspace_presence_matches_case"] is True
+        assert workspace_materialization["workspace_files_match_expected_setup"] is True
+        assert workspace_materialization["materialization_stage_matches_workspace"] is True
+        assert workspace_materialization["workspace_materialization_preserved"] is True
+        assert len(workspace_materialization["workspace_surface_sha256"]) == 64
+        assert len(workspace_materialization["workspace_materialization_derivation_sha256"]) == 64
+        if workspace_materialization["workspace_required"]:
+            assert workspace_materialization["workspace_exists"] is True
+            assert workspace_materialization["materialization_stage_count"] == 1
+            assert workspace_materialization["materialization_stage_present"] is True
+            assert workspace_materialization["workspace_path"] == str(case_dir / "open_pathway_workspace")
+            assert workspace_materialization["stage_app_py_sha256"] == workspace_materialization["expected_app_py_sha256"]
+            assert workspace_materialization["file_sha256_by_name"]["app.py"] == workspace_materialization["expected_app_py_sha256"]
+            assert workspace_materialization["file_sha256_by_name"]["README.md"] == workspace_materialization["expected_readme_sha256"]
+            assert all(record["exists"] is True for record in workspace_materialization["file_records"])
+            assert all(len(record["sha256"]) == 64 for record in workspace_materialization["file_records"])
+        else:
+            assert workspace_materialization["workspace_exists"] is False
+            assert workspace_materialization["materialization_stage_count"] == 0
+            assert workspace_materialization["materialization_stage_present"] is False
+        assert decision["contracts"]["byzantine_agent_delegation_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_agent_delegation_bound_to_selected_action"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_agent_delegation_derivation"] is True
+        agent_delegation = decision["byzantine_agent_delegation_derivation"]
+        assert agent_delegation == report["case_reports"][case_id]["byzantine_agent_delegation_derivation"]
+        assert agent_delegation["rule"] == "bind_delegated_execution_to_byzantine_selected_action"
+        assert agent_delegation["case_id"] == case_id
+        assert agent_delegation["target_endstate"] == decision["target_endstate"]
+        assert agent_delegation["selected_action"] == decision["action"]
+        assert agent_delegation["decision_action"] == decision["action"]
+        assert agent_delegation["decision_expected_action"] == decision["expected_action"]
+        assert agent_delegation["action_matches_selected_action"] is True
+        assert agent_delegation["expected_action_matches_selected_action"] is True
+        assert agent_delegation["action_selection_derivation_recorded"] is True
+        assert agent_delegation["workspace_materialization_bound"] is True
+        assert agent_delegation["deterministic_delegation_presence_matches_case"] is True
+        assert agent_delegation["scripted_delegation_presence_matches_case"] is True
+        assert agent_delegation["no_unexpected_delegation"] is True
+        assert agent_delegation["scenario_matches_expected"] is True
+        assert agent_delegation["runner_returned_zero"] is True
+        assert agent_delegation["delegation_artifacts_written"] is True
+        assert agent_delegation["deterministic_report_loaded"] is True
+        assert agent_delegation["scripted_report_loaded"] is True
+        assert agent_delegation["agent_delegation_preserved"] is True
+        assert len(agent_delegation["delegation_surface_sha256"]) == 64
+        assert len(agent_delegation["agent_delegation_derivation_sha256"]) == 64
+        if case_id in {"applied_verified", "applied_verification_failed"}:
+            expected_scenario = (
+                "single_file_python_edit"
+                if case_id == "applied_verified"
+                else "verification_failure_blocks_commit"
+            )
+            assert agent_delegation["delegation_required"] is True
+            assert agent_delegation["delegation_kind"] == "deterministic_agent"
+            assert agent_delegation["expected_scenario"] == expected_scenario
+            assert agent_delegation["observed_scenario"] == expected_scenario
+            assert agent_delegation["completed_scenario"] == expected_scenario
+            assert agent_delegation["deterministic_stage_counts"]["deterministic_agent_delegated"] == 1
+            assert agent_delegation["deterministic_stage_counts"]["deterministic_agent_completed"] == 1
+            assert agent_delegation["deterministic_stage_counts"]["agent_report_loaded"] == 1
+            assert all(record["exists"] is True for record in agent_delegation["artifact_records"])
+            assert {record["name"] for record in agent_delegation["artifact_records"]} == {"commands_jsonl", "agent_report_json"}
+            assert all(len(record["sha256"]) == 64 for record in agent_delegation["artifact_records"])
+        elif case_id == "retry_succeeded":
+            assert agent_delegation["delegation_required"] is True
+            assert agent_delegation["delegation_kind"] == "scripted_restart_recovery"
+            assert agent_delegation["expected_scenario"] == "ai_restart_recovers_from_bad_generated_editor"
+            assert agent_delegation["observed_scenario"] == "ai_restart_recovers_from_bad_generated_editor"
+            assert agent_delegation["completed_scenario"] in {"", "ai_restart_recovers_from_bad_generated_editor"}
+            assert agent_delegation["scripted_stage_counts"]["scripted_restart_recovery_delegated"] == 1
+            assert agent_delegation["scripted_stage_counts"]["scripted_restart_recovery_completed"] == 1
+            assert agent_delegation["scripted_stage_counts"]["retry_attempt_observed"] == 1
+            assert all(record["exists"] is True for record in agent_delegation["artifact_records"])
+            assert {record["name"] for record in agent_delegation["artifact_records"]} == {
+                "scripted_retry_summary_json",
+                "scripted_retry_report_json",
+            }
+            assert all(len(record["sha256"]) == 64 for record in agent_delegation["artifact_records"])
+        else:
+            assert agent_delegation["delegation_required"] is False
+            assert agent_delegation["delegation_kind"] == "none"
+            assert agent_delegation["artifact_records"] == []
+        assert decision["contracts"]["byzantine_verification_result_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_verification_result_bound_to_selected_action"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_verification_result_derivation"] is True
+        verification_result = decision["byzantine_verification_result_derivation"]
+        assert verification_result == report["case_reports"][case_id]["byzantine_verification_result_derivation"]
+        assert verification_result["rule"] == "bind_verification_result_to_byzantine_selected_action"
+        assert verification_result["case_id"] == case_id
+        assert verification_result["target_endstate"] == decision["target_endstate"]
+        assert verification_result["observed_endstate"] == decision["observed_endstate"]
+        assert verification_result["selected_action"] == decision["action"]
+        assert verification_result["decision_action"] == decision["action"]
+        assert verification_result["decision_expected_action"] == decision["expected_action"]
+        assert verification_result["action_matches_selected_action"] is True
+        assert verification_result["expected_action_matches_selected_action"] is True
+        assert verification_result["action_selection_derivation_recorded"] is True
+        assert verification_result["agent_delegation_derivation_recorded"] is True
+        assert verification_result["report_artifact_available"] is True
+        assert verification_result["verification_stage_matches_source"] is True
+        assert verification_result["verification_result_matches_decision"] is True
+        assert verification_result["verification_result_matches_endstate"] is True
+        assert verification_result["commit_boundary_matches_verification"] is True
+        assert verification_result["final_endstate_stage_matches_decision"] is True
+        assert verification_result["host_apply_stage_matches_report"] is True
+        assert verification_result["verification_result_preserved"] is True
+        assert len(verification_result["verification_surface_sha256"]) == 64
+        assert len(verification_result["verification_result_derivation_sha256"]) == 64
+        if case_id in {"applied_verified", "applied_verification_failed", "retry_succeeded"}:
+            expected_ok = case_id != "applied_verification_failed"
+            expected_source = "scripted_retry_report" if case_id == "retry_succeeded" else "agent_report"
+            assert verification_result["verification_required"] is True
+            assert verification_result["expected_verification_ok"] is expected_ok
+            assert verification_result["source_kind"] == expected_source
+            assert verification_result["source_verification_ok"] is expected_ok
+            assert verification_result["decision_verified"] is expected_ok
+            assert verification_result["verification_stage_count"] == 1
+            assert verification_result["verification_stage_ok_values"] == [expected_ok]
+            assert verification_result["source_changed_files"] == ["app.py"]
+            assert verification_result["source_report_exists"] is True
+            assert len(verification_result["source_report_sha256"]) == 64
+            if case_id == "applied_verification_failed":
+                assert verification_result["source_commit_blocked"] is True
+                assert verification_result["commit_block_stage_count"] == 1
+            else:
+                assert verification_result["commit_block_stage_count"] == 0
+        else:
+            assert verification_result["verification_required"] is False
+            assert verification_result["expected_verification_ok"] is None
+            assert verification_result["source_kind"] == "none"
+            assert verification_result["source_verification_ok"] is None
+            assert verification_result["verification_stage_count"] == 0
+            assert verification_result["verification_stage_ok_values"] == []
+            assert verification_result["source_report_exists"] is False
+            assert verification_result["source_report_sha256"] == ""
+        assert decision["contracts"]["byzantine_host_policy_rejection_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_host_policy_rejection_bound_to_selected_action"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_host_policy_rejection_derivation"] is True
+        host_policy_rejection = decision["byzantine_host_policy_rejection_derivation"]
+        assert host_policy_rejection == report["case_reports"][case_id]["byzantine_host_policy_rejection_derivation"]
+        assert host_policy_rejection["rule"] == "bind_host_policy_rejection_to_byzantine_selected_action"
+        assert host_policy_rejection["case_id"] == case_id
+        assert host_policy_rejection["target_endstate"] == decision["target_endstate"]
+        assert host_policy_rejection["observed_endstate"] == decision["observed_endstate"]
+        assert host_policy_rejection["selected_action"] == decision["action"]
+        assert host_policy_rejection["decision_action"] == decision["action"]
+        assert host_policy_rejection["decision_expected_action"] == decision["expected_action"]
+        assert host_policy_rejection["action_matches_selected_action"] is True
+        assert host_policy_rejection["expected_action_matches_selected_action"] is True
+        assert host_policy_rejection["action_selection_derivation_recorded"] is True
+        assert host_policy_rejection["verification_result_derivation_recorded"] is True
+        assert host_policy_rejection["rejection_presence_matches_case"] is True
+        assert host_policy_rejection["rejection_artifacts_available"] is True
+        assert host_policy_rejection["policy_review_matches_proposal"] is True
+        assert host_policy_rejection["rejection_record_matches_review"] is True
+        assert host_policy_rejection["reason_matches_stage_and_decision"] is True
+        assert host_policy_rejection["forbidden_path_boundary_matches_expected"] is True
+        assert host_policy_rejection["freshness_boundary_matches_expected"] is True
+        assert host_policy_rejection["terminal_state_matches_policy_rejection"] is True
+        assert host_policy_rejection["host_policy_rejection_preserved"] is True
+        assert len(host_policy_rejection["policy_rejection_surface_sha256"]) == 64
+        assert len(host_policy_rejection["host_policy_rejection_derivation_sha256"]) == 64
+        if case_id in {"proposal_rejected_unsafe", "proposal_rejected_stale"}:
+            expected_reason = (
+                "forbidden_file_write: README.md"
+                if case_id == "proposal_rejected_unsafe"
+                else "stale_boundary: proposal stale-boundary-old != current-boundary-new"
+            )
+            expected_files = ["README.md"] if case_id == "proposal_rejected_unsafe" else ["app.py"]
+            expected_forbidden_paths = ["README.md"] if case_id == "proposal_rejected_unsafe" else []
+            assert host_policy_rejection["rejection_required"] is True
+            assert host_policy_rejection["decision_rejection_reason"] == expected_reason
+            assert host_policy_rejection["expected_reason"] == expected_reason
+            assert host_policy_rejection["proposal_files"] == expected_files
+            assert host_policy_rejection["policy_requested_files"] == expected_files
+            assert host_policy_rejection["expected_requested_files"] == expected_files
+            assert host_policy_rejection["rejection_forbidden_paths"] == expected_forbidden_paths
+            assert host_policy_rejection["expected_forbidden_paths"] == expected_forbidden_paths
+            assert host_policy_rejection["candidate_proposal_stage_count"] == 1
+            assert host_policy_rejection["policy_review_stage_count"] == 1
+            assert host_policy_rejection["host_rejection_stage_count"] == 1
+            assert host_policy_rejection["host_apply_stage_count"] == 0
+            assert host_policy_rejection["host_apply_deferred_stage_count"] == 0
+            assert all(record["exists"] is True for record in host_policy_rejection["artifact_records"])
+            assert {record["name"] for record in host_policy_rejection["artifact_records"]} == {
+                "proposal_json",
+                "policy_review_json",
+                "host_rejection_json",
+            }
+            assert all(len(record["sha256"]) == 64 for record in host_policy_rejection["artifact_records"])
+            assert len(host_policy_rejection["artifact_sha256_by_name"]) == 3
+            if case_id == "proposal_rejected_unsafe":
+                assert host_policy_rejection["rejection_kind"] == "forbidden_file_write"
+                assert host_policy_rejection["boundary_freshness_stage_count"] == 0
+                assert host_policy_rejection["proposal_boundary_sha256"] == "current-boundary-new"
+                assert host_policy_rejection["policy_current_boundary_sha256"] == "current-boundary-new"
+            else:
+                assert host_policy_rejection["rejection_kind"] == "stale_boundary"
+                assert host_policy_rejection["boundary_freshness_stage_count"] == 1
+                assert host_policy_rejection["proposal_boundary_sha256"] == "stale-boundary-old"
+                assert host_policy_rejection["policy_proposal_boundary_sha256"] == "stale-boundary-old"
+                assert host_policy_rejection["policy_current_boundary_sha256"] == "current-boundary-new"
+                assert host_policy_rejection["rejection_proposal_boundary_sha256"] == "stale-boundary-old"
+                assert host_policy_rejection["rejection_current_boundary_sha256"] == "current-boundary-new"
+        else:
+            assert host_policy_rejection["rejection_required"] is False
+            assert host_policy_rejection["rejection_kind"] == "none"
+            assert host_policy_rejection["decision_rejection_reason"] in {
+                "",
+                "first proposal rejected; retry required with host rejection evidence",
+                "missing_required_artifact: report.json",
+            }
+            assert host_policy_rejection["host_rejection_stage_count"] == 0
+        assert decision["contracts"]["byzantine_input_context_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_round_1_results_bound_to_host_context"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_input_context_derivation"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_random_survivor_pair"] is True
         assert decision["contracts"]["byzantine_clear_winner_derived_from_first_place_votes"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_clear_winner_derivation"] is True
@@ -2306,6 +2673,30 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert len(round_2["reviews"]) == 3
         assert round_1["configured_worker_ids"] == ["worker_1", "worker_2", "worker_3"]
         assert round_1["observed_worker_ids"] == [result["worker"] for result in round_1["results"]]
+        input_context = final_selection["input_context_derivation"]
+        assert input_context["rule"] == "bind_round_1_workers_to_host_prompt_goal_retrieval_and_trust_boundary"
+        assert input_context["case_id"] == case_id
+        assert input_context["prompt_sha256"] == smoke.text_sha256(report["case_reports"][case_id]["prompt"])
+        assert input_context["goal_directive_sha256"] == report["goal_directive"]["directive_sha256"]
+        assert input_context["selected_doc_ids"] == retrieval_trace["selected_doc_ids"]
+        assert input_context["selected_untrusted_doc_ids"] == retrieval_trace["selected_untrusted_doc_ids"]
+        assert input_context["host_policy_doc_selected"] is True
+        assert input_context["selected_docs_have_trust_labels"] is True
+        assert input_context["untrusted_docs_marked_tainted"] is True
+        assert input_context["host_authority_bound"] is True
+        assert input_context["suspicious_context_ignored"] is True
+        assert input_context["model_output_not_policy_source"] is True
+        assert input_context["context_binding_preserved"] is True
+        assert len(input_context["context_binding_sha256"]) == 64
+        assert final_selection["input_context_binding_sha256"] == input_context["context_binding_sha256"]
+        assert round_1["input_context_derivation"] == input_context
+        assert round_1["input_context_binding_sha256"] == input_context["context_binding_sha256"]
+        assert decision["byzantine_agreement"]["input_context_derivation"] == input_context
+        assert decision["byzantine_agreement"]["input_context_binding_sha256"] == input_context["context_binding_sha256"]
+        assert all(
+            result["input_context_binding_sha256"] == input_context["context_binding_sha256"]
+            for result in round_1["results"]
+        )
         expected_reviewer_ids = (
             ["reviewer_1", "reviewer_2", "reviewer_3"]
             if case_id == "answer_only"
@@ -2399,8 +2790,49 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["byzantine_agreement"]["agreement_chain_derivation"] == agreement_chain
         assert decision["byzantine_agreement"]["agreement_chain_sha256"] == agreement_chain["chain_sha256"]
         assert report["case_reports"][case_id]["byzantine_agreement"]["agreement_chain_derivation"] == agreement_chain
+        assert agreement_trace["rounds"][0]["input_context_derivation"] == input_context
+        assert agreement_trace["rounds"][0]["input_context_binding_sha256"] == input_context["context_binding_sha256"]
+        assert agreement_trace["rounds"][2]["input_context_derivation"] == input_context
+        assert agreement_trace["rounds"][2]["input_context_binding_sha256"] == input_context["context_binding_sha256"]
         assert agreement_trace["rounds"][2]["agreement_chain_derivation"] == agreement_chain
+        assert agreement_trace["boundary_output"]["input_context_derivation"] == input_context
+        assert agreement_trace["boundary_output"]["input_context_binding_sha256"] == input_context["context_binding_sha256"]
         assert agreement_trace["boundary_output"]["agreement_chain_derivation"] == agreement_chain
+        artifact_derivation = decision["byzantine_agreement"]["artifact_manifest_derivation"]
+        assert artifact_manifest["rule"] == "hash_written_byzantine_round_artifacts"
+        assert artifact_manifest["manifest_preserved"] is True
+        assert artifact_manifest["manifest_sha256"] == artifact_derivation["manifest_sha256"]
+        assert artifact_derivation["required_artifacts"] == [
+            "round_1_results",
+            "round_2_reviews",
+            "final_selection",
+            "agreement_trace",
+        ]
+        expected_artifact_paths = {
+            "round_1_results": case_dir / "byzantine_round_1_results.json",
+            "round_2_reviews": case_dir / "byzantine_round_2_reviews.json",
+            "final_selection": case_dir / "byzantine_final_selection.json",
+            "agreement_trace": case_dir / "byzantine_agreement_trace.json",
+        }
+        assert artifact_derivation["artifact_sha256_by_name"] == {
+            name: smoke.open_battery_file_sha256(path)
+            for name, path in expected_artifact_paths.items()
+        }
+        assert all(record["exists"] is True for record in artifact_derivation["artifact_records"])
+        assert all(len(record["sha256"]) == 64 for record in artifact_derivation["artifact_records"])
+        assert decision["byzantine_agreement"]["artifact_manifest_sha256"] == artifact_manifest["manifest_sha256"]
+        assert decision["byzantine_agreement"]["artifact_manifest_path"].endswith("byzantine_artifact_manifest.json")
+        assert decision["byzantine_artifacts"]["artifact_manifest_path"].endswith("byzantine_artifact_manifest.json")
+        assert report["case_reports"][case_id]["byzantine_artifact_manifest_path"].endswith("byzantine_artifact_manifest.json")
+        assert report["case_reports"][case_id]["byzantine_agreement"]["artifact_manifest_derivation"] == artifact_derivation
+        final_stage = [
+            record for record in pathway_trace["records"]
+            if record["stage"] == "byzantine_final_selection_recorded"
+        ][0]
+        assert final_stage["details"]["artifact_manifest_derivation"] == artifact_derivation
+        assert final_stage["details"]["artifact_manifest_sha256"] == artifact_manifest["manifest_sha256"]
+        assert final_stage["details"]["input_context_derivation"] == input_context
+        assert final_stage["details"]["input_context_binding_sha256"] == input_context["context_binding_sha256"]
         assert final_selection["input_reviewers"] == [review["reviewer"] for review in round_2["reviews"]]
         assert final_selection["input_reviews"] == round_2["reviews"]
         assert all(len(review["input_result_ids"]) == 3 for review in round_2["reviews"])
@@ -2699,6 +3131,9 @@ def test_open_battery_case_filter_runs_single_endstate(tmp_path: Path) -> None:
     assert final_selection["agreement_chain_derivation"]["selection_method"] == "clear_majority"
     assert final_selection["agreement_chain_derivation"]["boundary_output_preserved"] is True
     assert len(final_selection["agreement_chain_sha256"]) == 64
+    artifact_manifest = json.loads((run_dir / "proposal_rejected_stale" / "byzantine_artifact_manifest.json").read_text(encoding="utf-8"))
+    assert artifact_manifest["manifest_preserved"] is True
+    assert artifact_manifest["artifact_sha256_by_name"]["final_selection"] == smoke.open_battery_file_sha256(run_dir / "proposal_rejected_stale" / "byzantine_final_selection.json")
     assert final_selection["fault_model_derivation"]["malicious_worker_result_ids"] == ["r3"]
     assert final_selection["agreed_result"]["target_endstate"] == "proposal_rejected_stale"
     assert "trust_boundary_evaluated" in pathway_trace["summary"]["observed_stages"]

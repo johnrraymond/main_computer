@@ -4,6 +4,7 @@ import argparse
 import base64
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -53,6 +54,7 @@ def _args(**overrides):
         "coolify_retries": 0,
         "coolify_retry_sleep_s": 0.0,
         "no_deploy": False,
+        "no_fdb_port_guard": False,
         "force_deploy": False,
         "dry_run": False,
         "json": False,
@@ -189,6 +191,20 @@ coolify:
         self.assertIn("127.0.0.1", compose)
         self.assertIn("configure new double ssd", compose)
         self.assertIn("/data/main-computer/hub/testnet-exp-fdb/fdb.cluster", compose)
+        self.assertIn("testnet-fdb-configure:", compose)
+        self.assertIn("condition: service_healthy", compose)
+        self.assertIn("fdbcli -C /data/main-computer/hub/testnet-exp-fdb/fdb.cluster --exec status --timeout 10", compose)
+        self.assertIn("start_period: 10s", compose)
+
+    def test_fdb_configure_healthcheck_command_uses_fdb_status(self) -> None:
+        placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
+
+        command = coolify_fdb_cluster.fdb_configure_healthcheck_command(placement)
+
+        self.assertEqual(
+            command,
+            "fdbcli -C /data/main-computer/hub/testnet-exp-fdb/fdb.cluster --exec status --timeout 10 >/dev/null 2>&1",
+        )
 
     def test_service_payload_contains_base64_compose_and_context(self) -> None:
         placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
@@ -318,6 +334,67 @@ coolify:
         decoded = base64.b64decode(post[2]["docker_compose_raw"]).decode("utf-8")
         self.assertIn("testnet-fdb1:", decoded)
         self.assertIn("testnet-fdb2:", decoded)
+
+
+    def test_render_server_fdb_compose_includes_stale_port_guard_by_default(self) -> None:
+        placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
+        compose = coolify_fdb_cluster.render_server_fdb_compose(placement, "coolify-a", _args())
+
+        self.assertIn("testnet-fdb-port-guard:", compose)
+        self.assertIn("image: \"docker:27-cli\"", compose)
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", compose)
+        self.assertIn("testnet-fdb1|10.116.0.3:4550", compose)
+        self.assertIn("testnet-fdb2|10.116.0.3:4551", compose)
+        self.assertIn("docker rm -f", compose)
+        self.assertIn("foundationdb/foundationdb", compose)
+        self.assertIn("FDB port guard still sees", compose)
+        self.assertIn("condition: service_completed_successfully", compose)
+
+    def test_render_server_fdb_compose_escapes_shell_variables_for_compose(self) -> None:
+        placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
+        compose = coolify_fdb_cluster.render_server_fdb_compose(placement, "coolify-a", _args())
+
+        self.assertIn("$${spec%%|*}", compose)
+        self.assertIn("$$container_id", compose)
+        self.assertIn("$$needle", compose)
+        self.assertIn("for attempt in $$(seq 1 120)", compose)
+        self.assertIn('[ \\"$$attempt\\" = 120 ]', compose)
+
+    def test_fdb_port_guard_script_is_posix_shell_syntax(self) -> None:
+        placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
+        instances = [
+            instance
+            for instance in placement.instances
+            if instance.coolify_server == "coolify-a"
+        ]
+        script = coolify_fdb_cluster.fdb_port_guard_script(placement, instances)
+
+        self.assertIn('needle="${binding}->"', script)
+        self.assertIn('port_needle=":${port}->"', script)
+        self.assertIn("foundationdb/foundationdb", script)
+        self.assertIn("Refusing to remove non-FDB container", script)
+        result = subprocess.run(
+            ["/bin/sh", "-n"],
+            input=script,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+    def test_render_server_fdb_compose_can_disable_stale_port_guard(self) -> None:
+        placement = coolify_fdb_cluster.load_fdb_placement(_args().placement)
+        compose = coolify_fdb_cluster.render_server_fdb_compose(
+            placement,
+            "coolify-a",
+            _args(no_fdb_port_guard=True),
+        )
+
+        self.assertNotIn("testnet-fdb-port-guard:", compose)
+        self.assertNotIn("/var/run/docker.sock:/var/run/docker.sock", compose)
+        self.assertNotIn("condition: service_completed_successfully", compose)
 
 
 if __name__ == "__main__":

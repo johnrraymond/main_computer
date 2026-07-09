@@ -73,7 +73,6 @@ def _args(**overrides):
         "no_deploy": False,
         "no_traefik_sidecar": False,
         "force_deploy": False,
-        "recreate_hub_stacks": False,
         "dry_run": False,
         "json": False,
     }
@@ -181,14 +180,14 @@ coolify:
         self.assertEqual(plan["servers"][1]["service_name"], "main-computer-mainnet-hubs-coolify-b")
         self.assertEqual(
             plan["servers"][0]["coolify_service_domains"],
-            [
-                {"name": "mainnet-hub1", "domain": "https://mainnet-hub1.greatlibrary.io:8790"},
-                {"name": "mainnet-hub2", "domain": "https://mainnet-hub2.greatlibrary.io:8790"},
-            ],
+            {
+                "mainnet-hub1": {"domain": "https://mainnet-hub1.greatlibrary.io:8790"},
+                "mainnet-hub2": {"domain": "https://mainnet-hub2.greatlibrary.io:8790"},
+            },
         )
         self.assertEqual(
             plan["servers"][1]["coolify_service_domains"],
-            [{"name": "mainnet-hub3", "domain": "https://mainnet-hub3.greatlibrary.io:8790"}],
+            {"mainnet-hub3": {"domain": "https://mainnet-hub3.greatlibrary.io:8790"}},
         )
         self.assertIn("mainnet-hub1:", compose)
         self.assertIn("mainnet-hub2:", compose)
@@ -257,10 +256,9 @@ coolify:
         self.assertEqual(payload["server_uuid"], "server-b")
         self.assertEqual(payload["project_uuid"], "project-b")
         self.assertEqual(payload["environment_uuid"], "env-b")
-        self.assertNotIn("docker_compose_domains", payload)
         self.assertEqual(
-            coolify_hub_cluster.hub_service_domain_entries(placement, profile, "coolify-b"),
-            [{"name": "testnet-hub3", "domain": "https://testnet-hub3.greatlibrary.io:8785"}],
+            payload["docker_compose_domains"],
+            {"testnet-hub3": {"domain": "https://testnet-hub3.greatlibrary.io:8785"}},
         )
         compose = base64.b64decode(payload["docker_compose_raw"]).decode("utf-8")
         self.assertIn("testnet-hub3:", compose)
@@ -438,9 +436,6 @@ coolify:
                 ("POST", "/api/v1/services"): [
                     {"uuid": "service-uuid", "name": "main-computer-testnet-hubs-coolify-a"}
                 ],
-                ("PATCH", "/api/v1/services/service-uuid"): [
-                    {"uuid": "service-uuid", "name": "main-computer-testnet-hubs-coolify-a"}
-                ],
             }
         )
         tried: list[dict[str, object]] = []
@@ -463,21 +458,18 @@ coolify:
         self.assertEqual(service_uuid, "service-uuid")
         self.assertEqual(action, "created")
         self.assertEqual(existing["source"], "missing")
-        self.assertFalse(update_result["create_domains_included"])
-        self.assertTrue(update_result["domain_update_result"]["domains_included"])
+        self.assertTrue(update_result["domains_included"])
         post = next(request for request in client.requests if request[0] == "POST")
         self.assertEqual(post[1], "/api/v1/services")
         self.assertEqual(post[2]["server_uuid"], "server-a")
         self.assertEqual(post[2]["project_uuid"], "project-a")
         self.assertIn("docker_compose_raw", post[2])
-        self.assertNotIn("docker_compose_domains", post[2])
-        patch = next(request for request in client.requests if request[0] == "PATCH")
         self.assertEqual(
-            patch[2]["docker_compose_domains"],
-            [
-                {"name": "testnet-hub1", "domain": "https://testnet-hub1.greatlibrary.io:8785"},
-                {"name": "testnet-hub2", "domain": "https://testnet-hub2.greatlibrary.io:8785"},
-            ],
+            post[2]["docker_compose_domains"],
+            {
+                "testnet-hub1": {"domain": "https://testnet-hub1.greatlibrary.io:8785"},
+                "testnet-hub2": {"domain": "https://testnet-hub2.greatlibrary.io:8785"},
+            },
         )
         decoded = base64.b64decode(post[2]["docker_compose_raw"]).decode("utf-8")
         self.assertIn("testnet-hub1:", decoded)
@@ -530,96 +522,383 @@ coolify:
         self.assertEqual(patch[1], "/api/v1/services/service-uuid")
         self.assertEqual(
             patch[2]["docker_compose_domains"],
-            [
-                {"name": "testnet-hub1", "domain": "https://testnet-hub1.greatlibrary.io:8785"},
-                {"name": "testnet-hub2", "domain": "https://testnet-hub2.greatlibrary.io:8785"},
-            ],
+            {
+                "testnet-hub1": {"domain": "https://testnet-hub1.greatlibrary.io:8785"},
+                "testnet-hub2": {"domain": "https://testnet-hub2.greatlibrary.io:8785"},
+            },
         )
         self.assertIn("docker_compose_raw", patch[2])
 
 
-    def test_reconcile_service_application_domains_reports_service_payload_mode(self) -> None:
-        client = RouteCoolifyClient({})
-        tried: list[dict[str, object]] = []
-
-        result = coolify_hub_cluster.reconcile_service_application_domains(
-            client,
-            service_uuid="service-uuid",
-            domains=[
-                {"name": "testnet-hub1", "domain": "https://testnet-hub1.greatlibrary.io:8785"},
-                {"name": "testnet-hub2", "domain": "https://testnet-hub2.greatlibrary.io:8785"},
-            ],
-            tried=tried,
-        )
-
-        self.assertTrue(result["ok"])
-        self.assertFalse(result["changed"])
-        self.assertEqual(result["mode"], "docker_compose_domains-service-payload")
-        self.assertEqual(
-            result["domains"],
-            [
-                {"name": "testnet-hub1", "domain": "https://testnet-hub1.greatlibrary.io:8785"},
-                {"name": "testnet-hub2", "domain": "https://testnet-hub2.greatlibrary.io:8785"},
-            ],
-        )
-        self.assertFalse([request for request in client.requests if request[0] == "PATCH"])
-        self.assertEqual(tried[-1]["operation"], "hub-domain-reconciliation")
-
-    def test_sync_service_for_server_can_recreate_existing_hub_stack(self) -> None:
-        args = _args(recreate_hub_stacks=True)
-        placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)
-        profile = coolify_hub_cluster.load_network_profile(placement, args)
+    def test_reconcile_service_application_domains_patches_application_domains(self) -> None:
         client = RouteCoolifyClient(
             {
-                ("GET", "/api/v1/services"): [
-                    [
-                        {"uuid": "service-uuid", "name": "main-computer-testnet-hubs-coolify-a"}
-                    ]
+                ("GET", "/api/v1/services/service-uuid"): [
+                    {
+                        "uuid": "service-uuid",
+                        "applications": [
+                            {"uuid": "app-hub1", "name": "testnet-hub1", "fqdn": ""},
+                            {"uuid": "app-hub2", "name": "testnet-hub2", "fqdn": ""},
+                        ],
+                    }
                 ],
-                ("DELETE", "/api/v1/services/service-uuid"): [
-                    {"ok": True}
+                ("PATCH", "/api/v1/applications/app-hub1"): [
+                    {"uuid": "app-hub1", "fqdn": "https://testnet-hub1.greatlibrary.io:8785"}
                 ],
-                ("POST", "/api/v1/services"): [
-                    {"uuid": "new-service-uuid"}
-                ],
-                ("PATCH", "/api/v1/services/new-service-uuid"): [
-                    {"uuid": "new-service-uuid", "name": "main-computer-testnet-hubs-coolify-a"}
+                ("PATCH", "/api/v1/applications/app-hub2"): [
+                    {"uuid": "app-hub2", "fqdn": "https://testnet-hub2.greatlibrary.io:8785"}
                 ],
             }
         )
         tried: list[dict[str, object]] = []
 
-        service_uuid, action, existing, update_result = coolify_hub_cluster.sync_service_for_server(
+        result = coolify_hub_cluster.reconcile_service_application_domains(
             client,
-            placement,
-            profile,
-            args,
-            server_name="coolify-a",
-            context={
-                "server_uuid": "server-a",
-                "project_uuid": "project-a",
-                "environment_name": "testnet-hubs",
-                "environment_uuid": "env-a",
+            service_uuid="service-uuid",
+            domains={
+                "testnet-hub1": {"domain": "https://testnet-hub1.greatlibrary.io:8785"},
+                "testnet-hub2": {"domain": "https://testnet-hub2.greatlibrary.io:8785"},
             },
             tried=tried,
         )
 
-        self.assertEqual(service_uuid, "new-service-uuid")
-        self.assertEqual(action, "recreated")
-        self.assertEqual(existing["source"], "name")
-        self.assertFalse(update_result["create_domains_included"])
-        self.assertTrue(update_result["domain_update_result"]["domains_included"])
-        self.assertIn(("DELETE", "/api/v1/services/service-uuid", None), client.requests)
-        post = next(request for request in client.requests if request[0] == "POST")
-        self.assertNotIn("docker_compose_domains", post[2])
-        patch = next(request for request in client.requests if request[0] == "PATCH")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["changed"])
+        patches = [request for request in client.requests if request[0] == "PATCH"]
         self.assertEqual(
-            patch[2]["docker_compose_domains"],
+            [(method, path, payload) for method, path, payload in patches],
             [
-                {"name": "testnet-hub1", "domain": "https://testnet-hub1.greatlibrary.io:8785"},
-                {"name": "testnet-hub2", "domain": "https://testnet-hub2.greatlibrary.io:8785"},
+                (
+                    "PATCH",
+                    "/api/v1/applications/app-hub1",
+                    {"domains": "https://testnet-hub1.greatlibrary.io:8785"},
+                ),
+                (
+                    "PATCH",
+                    "/api/v1/applications/app-hub2",
+                    {"domains": "https://testnet-hub2.greatlibrary.io:8785"},
+                ),
             ],
         )
+
+    def test_reconcile_service_application_domains_skips_already_current_domain(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/services/service-uuid"): [
+                    {
+                        "uuid": "service-uuid",
+                        "applications": [
+                            {
+                                "uuid": "app-hub1",
+                                "name": "testnet-hub1",
+                                "fqdn": "https://testnet-hub1.greatlibrary.io:8785",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        result = coolify_hub_cluster.reconcile_service_application_domains(
+            client,
+            service_uuid="service-uuid",
+            domains={"testnet-hub1": {"domain": "https://testnet-hub1.greatlibrary.io:8785"}},
+            tried=tried,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["changed"])
+        self.assertFalse([request for request in client.requests if request[0] == "PATCH"])
+
+    def test_reconcile_service_application_domains_matches_coolify_display_name(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/services/service-uuid"): [
+                    {
+                        "uuid": "service-uuid",
+                        "applications": [
+                            {
+                                "uuid": "app-hub1",
+                                "name": "Mainnet Hub1",
+                                "image": "main-computer-mainnet-mainnet-hub1:remote",
+                                "fqdn": "",
+                            }
+                        ],
+                    }
+                ],
+                ("PATCH", "/api/v1/applications/app-hub1"): [
+                    {"uuid": "app-hub1", "fqdn": "https://mainnet-hub1.greatlibrary.io:8790"}
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        result = coolify_hub_cluster.reconcile_service_application_domains(
+            client,
+            service_uuid="service-uuid",
+            domains={"mainnet-hub1": {"domain": "https://mainnet-hub1.greatlibrary.io:8790"}},
+            tried=tried,
+        )
+
+        self.assertTrue(result["changed"])
+        patch = next(request for request in client.requests if request[0] == "PATCH")
+        self.assertEqual(patch[1], "/api/v1/applications/app-hub1")
+        self.assertEqual(patch[2], {"domains": "https://mainnet-hub1.greatlibrary.io:8790"})
+
+
+
+    def test_create_hub_application_retries_with_minimal_payload_after_500(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("POST", "/api/v1/applications/public"): [
+                    {"_status": 500, "message": "Server Error"},
+                    {"uuid": "app-uuid"},
+                ],
+                ("GET", "/api/v1/applications"): [
+                    {"applications": []}
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+        payload = {
+            "project_uuid": "project-uuid",
+            "server_uuid": "server-uuid",
+            "environment_name": "mainnet-hubs",
+            "environment_uuid": "environment-uuid",
+            "git_repository": "https://github.com/example/main-computer",
+            "git_branch": "main",
+            "build_pack": "dockerfile",
+            "ports_exposes": "8790",
+            "base_directory": "/",
+            "dockerfile_location": "/Dockerfile.hub.exp-fdb",
+            "name": "main-computer-mainnet-hub1",
+            "description": "Hub 1",
+            "domains": "https://mainnet-hub1.greatlibrary.io:8790",
+            "start_command": "python /app/exp-fdb-hub.py --port 8790",
+            "health_check_enabled": True,
+            "health_check_path": "/api/hub/status",
+            "instant_deploy": False,
+        }
+
+        uuid = coolify_hub_cluster.create_hub_application(client, payload, _args(), tried)
+
+        self.assertEqual(uuid, "app-uuid")
+        posts = [request for request in client.requests if request[0] == "POST"]
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0][2]["domains"], "https://mainnet-hub1.greatlibrary.io:8790")
+        self.assertIn("start_command", posts[0][2])
+        self.assertNotIn("domains", posts[1][2])
+        self.assertIn("start_command", posts[1][2])
+        self.assertEqual(tried[0]["variant"], "full")
+        self.assertEqual(tried[-1]["variant"], "domains-and-health-deferred")
+
+
+
+    def test_update_hub_application_splits_domain_and_command_after_full_500(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("PATCH", "/api/v1/applications/app-uuid"): [
+                    {"_status": 500, "message": "Server Error"},
+                    {"_status": 500, "message": "Server Error"},
+                    {"_status": 500, "message": "Server Error"},
+                    {"uuid": "app-uuid", "domains": "https://mainnet-hub1.greatlibrary.io:8790"},
+                    {"uuid": "app-uuid", "start_command": "python /app/exp-fdb-hub.py --port 8790"},
+                    {"uuid": "app-uuid", "health_check_path": "/api/hub/status"},
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+        payload = {
+            "name": "main-computer-mainnet-hub1",
+            "description": "Hub 1",
+            "domains": "https://mainnet-hub1.greatlibrary.io:8790",
+            "ports_exposes": "8790",
+            "start_command": "python /app/exp-fdb-hub.py --port 8790",
+            "health_check_enabled": True,
+            "health_check_path": "/api/hub/status",
+        }
+
+        result = coolify_hub_cluster.update_hub_application(client, "app-uuid", payload, tried)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["strategy"], "split-updates")
+        patches = [request for request in client.requests if request[0] == "PATCH"]
+        self.assertEqual(patches[0][2], payload)
+        self.assertEqual(patches[1][2], {
+            "domains": "https://mainnet-hub1.greatlibrary.io:8790",
+            "ports_exposes": "8790",
+            "start_command": "python /app/exp-fdb-hub.py --port 8790",
+        })
+        self.assertEqual(patches[2][2], {"domains": "https://mainnet-hub1.greatlibrary.io:8790", "ports_exposes": "8790"})
+        self.assertEqual(patches[3][2], {"domains": "https://mainnet-hub1.greatlibrary.io:8790"})
+        self.assertEqual(patches[4][2], {"start_command": "python /app/exp-fdb-hub.py --port 8790", "ports_exposes": "8790"})
+        self.assertEqual(patches[5][2], {"health_check_enabled": True, "health_check_path": "/api/hub/status"})
+
+
+    def test_update_hub_application_keeps_domain_port_when_start_command_update_fails(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("PATCH", "/api/v1/applications/app-uuid"): [
+                    {"_status": 500, "message": "Server Error"},
+                    {"_status": 500, "message": "Server Error"},
+                    {"uuid": "app-uuid", "domains": "https://mainnet-hub1.greatlibrary.io:8790"},
+                    {"_status": 500, "message": "Server Error"},
+                    {"_status": 500, "message": "Server Error"},
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+        payload = {
+            "name": "main-computer-mainnet-hub1",
+            "description": "Hub 1",
+            "domains": "https://mainnet-hub1.greatlibrary.io:8790",
+            "ports_exposes": "8790",
+            "start_command": "python /app/exp-fdb-hub.py --port 8790",
+        }
+
+        result = coolify_hub_cluster.update_hub_application(client, "app-uuid", payload, tried)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["strategy"], "split-updates")
+        self.assertEqual(result["domains"], "https://mainnet-hub1.greatlibrary.io:8790")
+        self.assertTrue(result["command_update_failed"])
+        self.assertEqual(result["warnings"][0]["operation"], "start-command-update")
+        patches = [request for request in client.requests if request[0] == "PATCH"]
+        self.assertEqual(patches[2][2], {"domains": "https://mainnet-hub1.greatlibrary.io:8790", "ports_exposes": "8790"})
+        self.assertEqual(patches[3][2], {"start_command": "python /app/exp-fdb-hub.py --port 8790", "ports_exposes": "8790"})
+        self.assertEqual(patches[4][2], {"start_command": "python /app/exp-fdb-hub.py --port 8790"})
+
+    def test_update_hub_application_still_fails_start_command_without_domain_success(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("PATCH", "/api/v1/applications/app-uuid"): [
+                    {"_status": 500, "message": "Server Error"},
+                    {"_status": 500, "message": "Server Error"},
+                    {"_status": 500, "message": "Server Error"},
+                    {"_status": 500, "message": "Server Error"},
+                    {"_status": 500, "message": "Server Error"},
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+        payload = {
+            "ports_exposes": "8790",
+            "start_command": "python /app/exp-fdb-hub.py --port 8790",
+        }
+
+        with self.assertRaises(coolify_hub_cluster.CoolifyHubDeployError):
+            coolify_hub_cluster.update_hub_application(client, "app-uuid", payload, tried)
+
+
+    def test_hub_command_parts_explicit_mainnet_contracts_path_omits_missing_signer_manifest(self) -> None:
+        placement = coolify_hub_cluster.load_hub_cluster_placement(
+            REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json"
+        )
+        profile = coolify_hub_cluster.load_network_profile(
+            placement,
+            _args(network="mainnet", bridge_backend="credit-bridge-contract"),
+        )
+        hub = placement.hubs[0]
+        args = _args(
+            network="mainnet",
+            bridge_backend="credit-bridge-contract",
+            contracts_path="main_computer/config/mainnet_contracts.json",
+            hub_chain_rpc_url="https://mainnet-rpc.greatlibrary.io",
+        )
+
+        command = coolify_hub_cluster.hub_command_parts(profile, placement, hub, args)
+
+        self.assertIn("--contracts-path", command)
+        self.assertIn("main_computer/config/mainnet_contracts.json", command)
+        self.assertIn("--allow-missing-bridge-signer", command)
+        self.assertNotIn("--dev-chain-deployment-path", command)
+
+    def test_hub_command_parts_mainnet_bridge_writes_require_signer_manifest(self) -> None:
+        placement = coolify_hub_cluster.load_hub_cluster_placement(
+            REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json"
+        )
+        profile = coolify_hub_cluster.load_network_profile(
+            placement,
+            _args(network="mainnet", bridge_backend="credit-bridge-contract"),
+        )
+        hub = placement.hubs[0]
+        args = _args(
+            network="mainnet",
+            bridge_backend="credit-bridge-contract",
+            contracts_path="main_computer/config/mainnet_contracts.json",
+            hub_chain_rpc_url="https://mainnet-rpc.greatlibrary.io",
+            enable_bridge_writes=True,
+        )
+
+        command = coolify_hub_cluster.hub_command_parts(profile, placement, hub, args)
+
+        self.assertIn("--contracts-path", command)
+        self.assertIn("main_computer/config/mainnet_contracts.json", command)
+        self.assertIn("--dev-chain-deployment-path", command)
+        self.assertNotIn("--allow-missing-bridge-signer", command)
+
+    def test_wait_for_hub_ready_uses_concrete_hub_public_url(self) -> None:
+        placement = coolify_hub_cluster.load_hub_cluster_placement(_args().placement)
+        profile = coolify_hub_cluster.load_network_profile(placement, _args(network="testnet"))
+        hub = placement.hubs[0]
+        args = _args(
+            hub_wait_timeout_s=1.0,
+            hub_wait_poll_s=0.0,
+            hub_status_timeout_s=0.2,
+            hub_status_user_agent="unit-test",
+        )
+        tried: list[dict[str, object]] = []
+        captured: list[str] = []
+
+        class FakeHubStatusResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self) -> bytes:
+                return b'{"network":{"network_key":"testnet","chain_id":42424241}}'
+
+        original_urlopen = coolify_hub_cluster.urllib.request.urlopen
+
+        def fake_urlopen(request, timeout=0):
+            del timeout
+            captured.append(request.full_url)
+            return FakeHubStatusResponse()
+
+        coolify_hub_cluster.urllib.request.urlopen = fake_urlopen
+        try:
+            result = coolify_hub_cluster.wait_for_hub_ready(
+                placement,
+                profile,
+                args,
+                hub=hub,
+                tried=tried,
+            )
+        finally:
+            coolify_hub_cluster.urllib.request.urlopen = original_urlopen
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured, [hub.public_url.rstrip("/") + "/api/hub/status"])
+        self.assertEqual(tried[-1]["operation"], "wait-hub-ready")
+
+    def test_wait_for_hub_ready_can_be_disabled_for_emergency_rollout(self) -> None:
+        placement = coolify_hub_cluster.load_hub_cluster_placement(_args().placement)
+        profile = coolify_hub_cluster.load_network_profile(placement, _args(network="testnet"))
+        result = coolify_hub_cluster.wait_for_hub_ready(
+            placement,
+            profile,
+            _args(no_wait_hubs=True),
+            hub=placement.hubs[0],
+            tried=[],
+        )
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "--no-wait-hubs")
+
+
 
 
 

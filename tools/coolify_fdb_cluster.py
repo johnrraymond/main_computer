@@ -77,6 +77,7 @@ DEFAULT_ENVIRONMENT_SUFFIX = "fdb"
 DEFAULT_PRIVATE_STATE_PATH = REPO_ROOT / "runtime" / "state" / "main_computer.private.yaml"
 FDB_CONFIGURE_ATTEMPTS = 120
 FDB_CONFIGURE_SLEEP_S = 2
+FDB_PORT_GUARD_IMAGE = "docker:27-cli"
 
 PRIVATE_STATE_PLACEHOLDER_RE = re.compile(r"^<[^>\n]+>$")
 PRIVATE_STATE_URL_KEYS = ("url", "coolify_url", "api_url", "base_url")
@@ -213,6 +214,12 @@ def sh_quote(value: str) -> str:
 
 def yaml_quote(value: str) -> str:
     return json.dumps(str(value))
+
+
+def compose_shell_quote(value: str) -> str:
+    """Quote shell script content for Docker Compose without env interpolation."""
+
+    return yaml_quote(str(value).replace("$", "$$"))
 
 
 def service_key(value: str) -> str:
@@ -692,6 +699,14 @@ def fdb_configure_bootstrap_script(placement: FoundationDBPlacement) -> str:
     )
 
 
+def fdb_configure_healthcheck_command(placement: FoundationDBPlacement) -> str:
+    """Return the Docker healthcheck command for the FDB configure sentinel."""
+
+    return f"fdbcli -C {sh_quote(placement.cluster_file_path)} --exec status --timeout 10 >/dev/null 2>&1"
+
+
+
+
 def render_disabled_fdb_compose(placement: FoundationDBPlacement, server_name: str) -> str:
     cluster_dir = posix_dirname(placement.cluster_file_path)
     cluster_contents = fdb_cluster_contents(placement)
@@ -718,7 +733,7 @@ def render_disabled_fdb_compose(placement: FoundationDBPlacement, server_name: s
             "    entrypoint:",
             "      - /bin/sh",
             "      - -euc",
-            f"      - {yaml_quote(script)}",
+            f"      - {compose_shell_quote(script)}",
             "    healthcheck:",
             "      test: [\"CMD-SHELL\", \"test -s " + placement.cluster_file_path + "\"]",
             "      interval: 30s",
@@ -730,7 +745,117 @@ def render_disabled_fdb_compose(placement: FoundationDBPlacement, server_name: s
     )
 
 
-def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str) -> str:
+
+def fdb_port_guard_enabled(args: argparse.Namespace | None = None) -> bool:
+    """Return whether rendered FDB Service Stacks should clean stale FDB port owners.
+
+    Coolify/Docker Compose can leave a prior FDB container from an older Service
+    UUID bound to the same VPN IP:port.  The guard is intentionally narrow: it
+    only removes containers whose names include one of this stack's FDB instance
+    ids and whose published ports include the exact configured bind address.
+    """
+
+    return not bool(getattr(args, "no_fdb_port_guard", False))
+
+
+def fdb_port_guard_script(placement: FoundationDBPlacement, instances: list[FoundationDBInstancePlacement]) -> str:
+    bindings = " ".join(
+        sh_quote(f"{instance.id}|{instance.vpn_ip}:{instance.port}") for instance in instances
+    )
+    network_key = sh_quote(placement.network_key)
+    return "\n".join(
+        [
+            "set -eu",
+            "echo 'Checking for stale Main Computer FDB containers that still own configured VPN ports.'",
+            "owners_file=$(mktemp)",
+            "trap 'rm -f \"$owners_file\"' EXIT",
+            "docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Ports}}' > \"$owners_file\"",
+            "remove_safe_owner() {",
+            "  owner_id=$1",
+            "  owner_name=$2",
+            "  owner_image=$3",
+            "  owner_binding=$4",
+            "  owner_instance=$5",
+            "  safe_owner=false",
+            "  case \"$owner_name\" in",
+            "    *\"$owner_instance\"*|*\"$network_key-fdb\"*|*\"main-computer-$network_key-fdb\"*) safe_owner=true ;;",
+            "  esac",
+            "  case \"$owner_image\" in",
+            "    foundationdb/foundationdb|foundationdb/foundationdb:*) safe_owner=true ;;",
+            "  esac",
+            "  if [ \"$safe_owner\" = true ]; then",
+            "    echo \"Removing stale FDB container ${owner_name} (${owner_id}, image=${owner_image}) bound to ${owner_binding}\"",
+            "    docker rm -f \"$owner_id\" >/dev/null",
+            "    return 0",
+            "  fi",
+            "  echo \"Refusing to remove non-FDB container ${owner_name} (${owner_id}, image=${owner_image}) bound to ${owner_binding}\" >&2",
+            "  return 1",
+            "}",
+            "network_key=" + network_key,
+            "for spec in " + bindings + "; do",
+            "  instance_id=${spec%%|*}",
+            "  binding=${spec#*|}",
+            "  port=${binding##*:}",
+            "  needle=\"${binding}->\"",
+            "  port_needle=\":${port}->\"",
+            "  while IFS='|' read -r container_id container_name container_image ports; do",
+            "    [ -n \"$container_id\" ] || continue",
+            "    case \"$ports\" in",
+            "      *\"$needle\"*|*\"$port_needle\"*)",
+            "        remove_safe_owner \"$container_id\" \"$container_name\" \"$container_image\" \"$binding\" \"$instance_id\" || true",
+            "        ;;",
+            "    esac",
+            "  done < \"$owners_file\"",
+            "done",
+            "docker ps -a --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Ports}}' > \"$owners_file\"",
+            "blocked=0",
+            "for spec in " + bindings + "; do",
+            "  instance_id=${spec%%|*}",
+            "  binding=${spec#*|}",
+            "  port=${binding##*:}",
+            "  needle=\"${binding}->\"",
+            "  port_needle=\":${port}->\"",
+            "  while IFS='|' read -r container_id container_name container_image ports; do",
+            "    [ -n \"$container_id\" ] || continue",
+            "    case \"$ports\" in",
+            "      *\"$needle\"*|*\"$port_needle\"*)",
+            "        echo \"FDB port guard still sees ${binding} owned by ${container_name} (${container_id}, image=${container_image}, ports=${ports})\" >&2",
+            "        blocked=1",
+            "        ;;",
+            "    esac",
+            "  done < \"$owners_file\"",
+            "done",
+            "if [ \"$blocked\" != 0 ]; then",
+            "  echo 'FDB port guard blocked startup because at least one configured FDB port is still allocated.' >&2",
+            "  exit 1",
+            "fi",
+            "echo 'FDB port guard completed.'",
+        ]
+    )
+
+
+def fdb_port_guard_service_key(placement: FoundationDBPlacement) -> str:
+    return service_key(f"{placement.network_key}-fdb-port-guard")
+
+
+def render_fdb_port_guard_service(placement: FoundationDBPlacement, instances: list[FoundationDBInstancePlacement]) -> list[str]:
+    guard_key = fdb_port_guard_service_key(placement)
+    return [
+        f"  {guard_key}:",
+        f"    image: {yaml_quote(FDB_PORT_GUARD_IMAGE)}",
+        "    restart: \"no\"",
+        "    volumes:",
+        "      - /var/run/docker.sock:/var/run/docker.sock",
+        "    entrypoint:",
+        "      - /bin/sh",
+        "      - -euc",
+        f"      - {compose_shell_quote(fdb_port_guard_script(placement, instances))}",
+        "    healthcheck:",
+        "      disable: true",
+        "",
+    ]
+
+def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str, args: argparse.Namespace | None = None) -> str:
     if server_name not in placement.servers:
         raise CoolifyHubDeployError(f"Unknown server {server_name!r}.")
     instances = [instance for instance in placement.instances if instance.coolify_server == server_name]
@@ -742,6 +867,10 @@ def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str
         "",
         "services:",
     ]
+    guard_key = ""
+    if fdb_port_guard_enabled(args):
+        guard_key = fdb_port_guard_service_key(placement)
+        lines.extend(render_fdb_port_guard_service(placement, instances))
     for instance in instances:
         key = service_key(instance.id)
         instance_dir = fdb_instance_state_dir(placement, instance)
@@ -752,12 +881,24 @@ def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str
                 "    restart: unless-stopped",
                 "    ports:",
                 f"      - {yaml_quote(f'{instance.vpn_ip}:{instance.port}:{instance.port}/tcp')}",
+            ]
+        )
+        if guard_key:
+            lines.extend(
+                [
+                    "    depends_on:",
+                    f"      {guard_key}:",
+                    "        condition: service_completed_successfully",
+                ]
+            )
+        lines.extend(
+            [
                 "    volumes:",
                 f"      - {yaml_quote(f'{cluster_dir}:{cluster_dir}')}",
                 "    entrypoint:",
                 "      - /bin/sh",
                 "      - -euc",
-                f"      - {yaml_quote(fdb_server_bootstrap_script(placement, instance))}",
+                f"      - {compose_shell_quote(fdb_server_bootstrap_script(placement, instance))}",
                 "    healthcheck:",
                 f'      test: ["CMD-SHELL", "python3 -c \'import socket; s=socket.create_connection((\\\"127.0.0.1\\\",{instance.port}),timeout=3); s.close()\'"]',
                 "      interval: 30s",
@@ -775,13 +916,26 @@ def render_server_fdb_compose(placement: FoundationDBPlacement, server_name: str
             f"    image: {yaml_quote(placement.image)}",
             "    restart: unless-stopped",
             "    depends_on:",
-            *[f"      - {service_key(instance.id)}" for instance in instances],
+            *[
+                item
+                for instance in instances
+                for item in (
+                    f"      {service_key(instance.id)}:",
+                    "        condition: service_healthy",
+                )
+            ],
             "    volumes:",
             f"      - {yaml_quote(f'{cluster_dir}:{cluster_dir}')}",
             "    entrypoint:",
             "      - /bin/sh",
             "      - -euc",
-            f"      - {yaml_quote(fdb_configure_bootstrap_script(placement))}",
+            f"      - {compose_shell_quote(fdb_configure_bootstrap_script(placement))}",
+            "    healthcheck:",
+            f"      test: [\"CMD-SHELL\", {yaml_quote(fdb_configure_healthcheck_command(placement))}]",
+            "      interval: 30s",
+            "      timeout: 10s",
+            "      start_period: 10s",
+            "      retries: 5",
             "",
         ]
     )
@@ -795,7 +949,7 @@ def service_payload(
     server_name: str,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    compose = render_server_fdb_compose(placement, server_name)
+    compose = render_server_fdb_compose(placement, server_name, args)
     payload: dict[str, Any] = {
         "server_uuid": (context or {}).get("server_uuid") or "",
         "project_uuid": (context or {}).get("project_uuid") or "",
@@ -840,7 +994,7 @@ def server_plan(placement: FoundationDBPlacement, args: argparse.Namespace, serv
             for instance in instances
         ],
         "service_payload": redact_payload(service_payload(placement, args, server_name=server_name)),
-        "docker_compose": render_server_fdb_compose(placement, server_name),
+        "docker_compose": render_server_fdb_compose(placement, server_name, args),
     }
 
 
@@ -985,7 +1139,7 @@ def sync_service_for_server(
 ) -> tuple[str, str, dict[str, Any]]:
     name = fdb_service_name(placement.network_key, server_name)
     service_uuid, existing = hub_tool.find_service(client, service_name=name, explicit_uuid="", tried=tried)
-    compose = render_server_fdb_compose(placement, server_name)
+    compose = render_server_fdb_compose(placement, server_name, args)
     if service_uuid:
         update_service(client, service_uuid, name, compose, tried)
         return service_uuid, "updated", existing
@@ -1084,6 +1238,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--coolify-retry-sleep-s", type=float, default=DEFAULT_RETRY_SLEEP_S)
     parser.add_argument("--no-deploy", action="store_true", help="Create/update only; do not trigger a service deploy.")
+    parser.add_argument(
+        "--no-fdb-port-guard",
+        action="store_true",
+        help=(
+            "Do not render the narrow Docker-socket preflight guard that removes stale "
+            "Main Computer FDB containers holding this stack's configured VPN ports."
+        ),
+    )
     parser.add_argument("--force-deploy", action="store_true", help="Ask Coolify to force rebuild/redeploy services.")
     parser.add_argument("--dry-run", action="store_true", help="For apply: render the plan without network or Coolify calls.")
     parser.add_argument("--json", action="store_true", help="Print compact machine-readable JSON.")

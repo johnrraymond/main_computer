@@ -630,6 +630,12 @@ def hub_allow_missing_bridge_signer(profile: HubNetworkProfile, args: argparse.N
     if str(os.environ.get("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER") or "").strip().lower() in {"1", "true", "yes", "on"}:
         return True
 
+    # An explicit public contracts file is enough for remote read/status-only
+    # contract startup.  Do not require the private signer bundle unless bridge
+    # writes were explicitly enabled above.
+    if str(getattr(args, "contracts_path", "") or "").strip():
+        return True
+
     # Public remote testnet deployments intentionally carry only contract
     # addresses in the image.  They should expose health/status without private
     # admin wallet metadata, while bridge write paths stay disabled in the Hub.

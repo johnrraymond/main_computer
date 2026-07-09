@@ -1213,5 +1213,25 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(result["phases"][1]["result"]["skipped"], True)
 
 
+    def test_explicit_contracts_path_allows_mainnet_status_only_startup_without_signer(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(
+            bridge_backend="credit-bridge-contract",
+            contracts_path="main_computer/config/mainnet_contracts.json",
+        )
+
+        self.assertTrue(coolify_hub_service.hub_allow_missing_bridge_signer(profile, args))
+
+    def test_bridge_writes_keep_explicit_contracts_path_signer_required(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(
+            bridge_backend="credit-bridge-contract",
+            contracts_path="main_computer/config/mainnet_contracts.json",
+            enable_bridge_writes=True,
+        )
+
+        self.assertFalse(coolify_hub_service.hub_allow_missing_bridge_signer(profile, args))
+
+
 if __name__ == "__main__":
     unittest.main()

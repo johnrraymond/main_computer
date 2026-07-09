@@ -1,64 +1,90 @@
 #!/usr/bin/env python3
-"""Capture human-reviewable FLOG layout inference snapshots.
+"""FLOG synthetic layout trial smoke with PNG proof.
 
-This smoke is intentionally narrower than a full layout engine.  It opens one or
-more mounted application surfaces in Playwright/Chromium, measures the rendered
-geometry that Chromium actually produced, overlays the measurements, and writes
-PNG snapshots directly into the report directory plus JSON/Markdown reports.
+This script is intentionally not a live-app layout fixer.  It creates eight
+MCEL-like synthetic hierarchies that model what real mounted apps should look
+like once the source hierarchy is properly described.  For each hierarchy it
+tries multiple stable layout families, measures the rendered geometry in
+Playwright/Chromium, and writes a PNG proof for every trial.
 
-The point is to keep a human in the loop:
+The human stays in the loop:
 
-* Geometry facts are treated as proved by Chromium.
-* Layout-family suggestions are treated as inferences.
-* Missing MCEL/source hierarchy is called out as an unknown rather than guessed.
-
-Default run focuses on the simple file-explorer mountable because it has a small
-three-region shape that is easier to reason about before promoting FLOG to the
-large app surfaces.
+* Chromium proves rectangles, clipping, scroll pressure, focus area, and rough
+  unclaimed/wasted space.
+* FLOG infers which layout family looks best for the hierarchy.
+* The report calls out what the script cannot know yet.
 
 Examples:
 
     python main_computer/flog_layout_snapshot_smoke.py
-    python main_computer/flog_layout_snapshot_smoke.py --apps file-explorer --viewports desktop=1440x900,narrow=390x844
-    python main_computer/flog_layout_snapshot_smoke.py --apps all --screenshot-mode both
+    python main_computer/flog_layout_snapshot_smoke.py --hierarchies all --viewports desktop=1440x900,narrow=390x844
+    python main_computer/flog_layout_snapshot_smoke.py --candidates split-pane,focus-priority --screenshot-mode both
 """
 
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import tempfile
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from PIL import Image, ImageDraw, ImageOps
+except ImportError:  # pragma: no cover - exercised only when Pillow is missing at runtime.
+    Image = None
+    ImageDraw = None
+    ImageOps = None
 
-DEFAULT_APPS = "file-explorer"
+
+DEFAULT_HIERARCHIES = "all"
 DEFAULT_VIEWPORTS = "desktop=1440x900"
-DEFAULT_CHROME = "current"
+DEFAULT_CHROME = "mcel-realistic"
+DEFAULT_CANDIDATES = "all"
+DEFAULT_OUTPUT_DIR = "runtime/reports/flog"
+ROLLUP_TOP_N = 8
+ROLLUP_COLUMNS = 4
+ROLLUP_TILE_WIDTH = 320
+ROLLUP_IMAGE_HEIGHT = 180
+ROLLUP_TILE_GAP = 12
+ROLLUP_CANVAS_MARGIN = 16
 
-ROOT_SELECTOR_OVERRIDES = {
-    "desktop": ".viewport",
-    "webgl": "#webgl-demo",
-    "game-editor": "#game-editor-app",
-}
+SEMANTIC_RELATION_KEYS = (
+    "controls",
+    "selects",
+    "navigates",
+    "scopes",
+    "reflects",
+    "confirms",
+    "proves",
+    "emits",
+    "consumes",
+)
+SEMANTIC_QUALITY_KEYS = (
+    "authority",
+    "persistence",
+    "growth",
+    "layoutAffordance",
+    "deferability",
+    "scrollPolicy",
+)
 
-PARTIAL_OVERRIDES = {
-    "desktop": "main_computer/web/applications.html",
-    "game-editor": "main_computer/web/applications/apps/layout-builder.html",
-}
+LAYOUT_CANDIDATES = [
+    "source-order-stacked",
+    "split-pane",
+    "sectioned-sidebar",
+    "inspector",
+    "dashboard-grid",
+    "focus-priority",
+    "bounded-drawer",
+]
 
-
-@dataclass(frozen=True)
-class AppEntry:
-    app: str
-    title: str
-    summary: str
-    href: str
-    partial: str
-    root_selector: str
+ACCEPTABLE_LAYOUT_STATUSES = {"pass", "watch"}
 
 
 @dataclass(frozen=True)
@@ -69,144 +95,1635 @@ class ViewportProfile:
 
 
 def slugify(value: str) -> str:
-    clean = re.sub(r"[^a-zA-Z0-9_.-]+", "-", value.strip()).strip("-")
-    return clean or "snapshot"
-
-
-def repo_path(repo: Path, rel: str) -> Path:
-    return repo.joinpath(*Path(rel).parts)
-
-
-def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
-def html_text(value: str) -> str:
-    value = re.sub(r"<[^>]+>", " ", value or "")
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def parse_launcher_entries(applications_html: str) -> list[dict[str, str]]:
-    entries: list[dict[str, str]] = []
-    for match in re.finditer(r"<a\b(?P<attrs>[^>]*\bdata-app=\"(?P<app>[^\"]+)\"[^>]*)>(?P<body>.*?)</a>", applications_html, re.S | re.I):
-        attrs = match.group("attrs")
-        body = match.group("body")
-        app = match.group("app").strip()
-        href_match = re.search(r"\bhref=\"([^\"]+)\"", attrs, re.I)
-        title_match = re.search(r"<strong[^>]*>(.*?)</strong>", body, re.S | re.I)
-        summary_match = re.search(r"<span[^>]*>(.*?)</span>", body, re.S | re.I)
-        entries.append(
-            {
-                "app": app,
-                "href": href_match.group(1).strip() if href_match else f"/applications/{app}",
-                "title": html_text(title_match.group(1) if title_match else app),
-                "summary": html_text(summary_match.group(1) if summary_match else ""),
-            }
-        )
-    return entries
-
-
-def root_selector_for(app: str) -> str:
-    if app in ROOT_SELECTOR_OVERRIDES:
-        return ROOT_SELECTOR_OVERRIDES[app]
-    return f"#{app}-app"
-
-
-def partial_for(app: str) -> str:
-    if app in PARTIAL_OVERRIDES:
-        return PARTIAL_OVERRIDES[app]
-    return f"main_computer/web/applications/apps/{app}.html"
-
-
-def enumerate_apps(repo: Path) -> list[AppEntry]:
-    applications_html = read_text(repo / "main_computer/web/applications.html")
-    entries = []
-    seen: set[str] = set()
-    for item in parse_launcher_entries(applications_html):
-        app = item["app"]
-        if app in seen:
-            continue
-        seen.add(app)
-        entries.append(
-            AppEntry(
-                app=app,
-                title=item["title"],
-                summary=item["summary"],
-                href=item["href"],
-                partial=partial_for(app),
-                root_selector=root_selector_for(app),
-            )
-        )
-    return entries
-
-
-def parse_apps_arg(value: str, available: list[AppEntry]) -> list[AppEntry]:
-    by_name = {entry.app: entry for entry in available}
-    if value.strip().lower() == "all":
-        return available
-    selected: list[AppEntry] = []
-    for name in [part.strip() for part in value.split(",") if part.strip()]:
-        if name not in by_name:
-            known = ", ".join(sorted(by_name))
-            raise SystemExit(f"Unknown app {name!r}. Known apps: {known}")
-        selected.append(by_name[name])
-    return selected
+    clean = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value).strip()).strip("-")
+    return clean.lower() or "item"
 
 
 def parse_viewports(value: str) -> list[ViewportProfile]:
     profiles: list[ViewportProfile] = []
-    for part in [chunk.strip() for chunk in value.split(",") if chunk.strip()]:
-        if "=" not in part or "x" not in part:
-            raise SystemExit(f"Viewport must look like name=WIDTHxHEIGHT, got {part!r}")
-        name, dims = part.split("=", 1)
-        width_s, height_s = dims.lower().split("x", 1)
-        try:
-            width = int(width_s)
-            height = int(height_s)
-        except ValueError as exc:
-            raise SystemExit(f"Invalid viewport dimensions in {part!r}") from exc
+    for raw in value.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if "=" not in raw or "x" not in raw:
+            raise ValueError(f"Viewport must look like name=WIDTHxHEIGHT: {raw!r}")
+        name, dims = raw.split("=", 1)
+        width_text, height_text = dims.lower().split("x", 1)
+        width = int(width_text)
+        height = int(height_text)
         if width <= 0 or height <= 0:
-            raise SystemExit(f"Viewport dimensions must be positive in {part!r}")
-        profiles.append(ViewportProfile(slugify(name), width, height))
+            raise ValueError(f"Viewport dimensions must be positive: {raw!r}")
+        profiles.append(ViewportProfile(name=slugify(name), width=width, height=height))
     if not profiles:
-        raise SystemExit("At least one viewport is required")
+        raise ValueError("At least one viewport is required.")
     return profiles
 
 
-INCLUDE_PATTERN = re.compile(r"<!--\s*@include\s+([^>]+?)\s*-->")
+def parse_candidates(value: str) -> list[str]:
+    if value.strip().lower() == "all":
+        return list(LAYOUT_CANDIDATES)
+    selected = [slugify(part) for part in value.split(",") if part.strip()]
+    unknown = [item for item in selected if item not in LAYOUT_CANDIDATES]
+    if unknown:
+        raise ValueError(f"Unknown layout candidate(s): {', '.join(unknown)}")
+    if not selected:
+        raise ValueError("At least one layout candidate is required.")
+    return selected
 
 
-def expand_applications_html(repo: Path) -> str:
-    """Expand the repository's HTML include comments into a standalone page.
 
-    The production shell uses include comments for styles, app partials, and
-    scripts.  The smoke expands them into one temporary HTML file so Chromium can
-    render the same source tree from disk without requiring the local server.
+
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item)]
+    return [str(value)]
+
+
+def _add_semantic(semantics: dict[str, list[str]], key: str, values: Any) -> None:
+    bucket = semantics.setdefault(key, [])
+    for value in _as_list(values):
+        if value not in bucket:
+            bucket.append(value)
+
+
+def _focus_growth_for_kind(kind: str) -> str:
+    kind = slugify(kind)
+    if "grid" in kind:
+        return "large-dense-grid"
+    if "terminal" in kind:
+        return "large-output-stream"
+    if "editor" in kind:
+        return "large-text-surface"
+    if "file-list" in kind or "collection" in kind:
+        return "large-collection"
+    if "map" in kind:
+        return "large-spatial-surface"
+    if "canvas" in kind or "workspace" in kind:
+        return "large-work-surface"
+    return "large-focus-surface"
+
+
+def _semantic_attr_name(key: str) -> str:
+    return "data-mc-" + re.sub(r"(?<!^)([A-Z])", r"-\1", key).lower()
+
+
+def enrich_nodes_with_semantic_primitives(nodes: list[dict[str, Any]], focus_slot: str) -> list[dict[str, Any]]:
+    """Attach generic semantic relationship tags without hard-coding app archetypes.
+
+    The output does not say "spreadsheet", "IDE", or "file explorer".  It only
+    declares composable primitives such as controls, selects, reflects,
+    confirms, proves, owned scroll, and persistence.  FLOG can then infer a
+    layout grammar from those primitives instead of importing a high-level app
+    answer.
     """
 
-    applications_path = repo / "main_computer/web/applications.html"
-    source = read_text(applications_path)
+    role_by_slot = {node["slot"]: node.get("role", "support") for node in nodes}
+    enriched: list[dict[str, Any]] = []
+    for raw_node in nodes:
+        node = dict(raw_node)
+        role = node.get("role", "support")
+        slot = node["slot"]
+        connects = list(node.get("connects") or [])
+        connects_focus = focus_slot in connects or slot == focus_slot
+        semantics: dict[str, list[str]] = {
+            key: list(values)
+            for key, values in (node.get("semantics") or {}).items()
+        }
 
-    def replace_include(match: re.Match[str]) -> str:
-        rel = match.group(1).strip()
-        path = repo / "main_computer/web" / rel
-        if not path.exists():
-            return f"\n/* FLOG snapshot smoke: missing include {rel} */\n"
-        text = read_text(path)
-        if rel.startswith("applications/styles/"):
-            return f"\n/* begin {rel} */\n{text}\n/* end {rel} */\n"
-        if rel.startswith("applications/scripts/"):
-            return f"\n/* begin {rel} */\n{text}\n/* end {rel} */\n"
-        return f"\n<!-- begin {rel} -->\n{text}\n<!-- end {rel} -->\n"
+        if slot == focus_slot or role == "focus":
+            _add_semantic(semantics, "authority", "primary-work")
+            _add_semantic(semantics, "emits", [f"{slot}.selection", f"{slot}.state"])
+            _add_semantic(semantics, "growth", _focus_growth_for_kind(node.get("kind", "")))
+            _add_semantic(semantics, "layoutAffordance", "dominant-surface")
+            _add_semantic(semantics, "scrollPolicy", "owned" if node.get("scroll", "allowed") == "allowed" else "fixed")
+            command_inputs = [f"{candidate}.intent" for candidate, role_name in role_by_slot.items() if role_name == "command"]
+            _add_semantic(semantics, "consumes", command_inputs)
 
-    return INCLUDE_PATTERN.sub(replace_include, source)
+        if role == "command":
+            _add_semantic(semantics, "authority", "command")
+            _add_semantic(semantics, "layoutAffordance", "command-rail")
+            _add_semantic(semantics, "emits", f"{slot}.intent")
+            _add_semantic(semantics, "controls", focus_slot if connects_focus else connects[:1])
+
+        if role == "navigation":
+            target = focus_slot if connects_focus else connects[:1]
+            _add_semantic(semantics, "navigates", target)
+            _add_semantic(semantics, "scopes", target)
+            _add_semantic(semantics, "selects", f"{focus_slot}.selection" if connects_focus else target)
+            _add_semantic(semantics, "growth", "medium-list")
+            _add_semantic(semantics, "layoutAffordance", "rail")
+
+        if role == "collection":
+            target = focus_slot if connects_focus else connects[:1]
+            _add_semantic(semantics, "selects", f"{focus_slot}.selection" if connects_focus else target)
+            _add_semantic(semantics, "growth", "medium-collection")
+            _add_semantic(semantics, "layoutAffordance", "support-collection")
+
+        if role in {"detail", "inspector"}:
+            reflected = f"{focus_slot}.selection" if connects_focus else connects[:1]
+            _add_semantic(semantics, "reflects", reflected)
+            _add_semantic(semantics, "consumes", reflected)
+            _add_semantic(semantics, "layoutAffordance", "inspector")
+
+        if role == "status":
+            confirmed = f"{focus_slot}.state" if connects_focus else connects[:1]
+            _add_semantic(semantics, "confirms", confirmed)
+            _add_semantic(semantics, "consumes", confirmed)
+            _add_semantic(semantics, "persistence", "always-visible")
+            _add_semantic(semantics, "layoutAffordance", "status-rail")
+
+        if role == "evidence":
+            target = focus_slot if connects_focus else (connects[0] if connects else focus_slot)
+            claim = f"{target}.claim"
+            _add_semantic(semantics, "proves", claim)
+            _add_semantic(semantics, "consumes", claim)
+            _add_semantic(semantics, "deferability", "secondary-visible" if node.get("visibility") == "deferable" else "visible")
+            _add_semantic(semantics, "layoutAffordance", "proof-region")
+
+        if node.get("visibility") == "deferable":
+            _add_semantic(semantics, "deferability", "deferable")
+        elif node.get("visibility") == "required":
+            _add_semantic(semantics, "deferability", "not-deferable")
+
+        node["semantics"] = semantics
+        enriched.append(node)
+
+    return enriched
+
+
+def _targets_focus(target: str, focus_slot: str) -> bool:
+    return target == focus_slot or target.startswith(f"{focus_slot}.")
+
+
+def semantic_relationship_edges(hierarchy: dict[str, Any]) -> list[dict[str, str]]:
+    edges: list[dict[str, str]] = []
+    for node in hierarchy.get("nodes", []):
+        semantics = node.get("semantics") or {}
+        for primitive in SEMANTIC_RELATION_KEYS:
+            for target in _as_list(semantics.get(primitive)):
+                edges.append(
+                    {
+                        "primitive": primitive,
+                        "source": node["slot"],
+                        "target": target,
+                    }
+                )
+    return edges
+
+
+
+def semantic_contract_audit(hierarchy: dict[str, Any]) -> dict[str, Any]:
+    focus_slot = hierarchy["focusSlot"]
+    nodes = hierarchy.get("nodes", [])
+    role_slots: dict[str, list[str]] = defaultdict(list)
+    for node in nodes:
+        role_slots[node.get("role", "support")].append(node["slot"])
+
+    edges = semantic_relationship_edges(hierarchy)
+    edge_text = [f"{edge['source']} {edge['primitive']} {edge['target']}" for edge in edges]
+
+    def has_edge(primitive: str, *, source: str | None = None, focus_target: bool = False) -> bool:
+        for edge in edges:
+            if edge["primitive"] != primitive:
+                continue
+            if source is not None and edge["source"] != source:
+                continue
+            if focus_target and not _targets_focus(edge["target"], focus_slot):
+                continue
+            return True
+        return False
+
+    missing: list[str] = []
+    focus_node = next((node for node in nodes if node["slot"] == focus_slot), {})
+    focus_semantics = focus_node.get("semantics") or {}
+
+    if not has_edge("emits", source=focus_slot):
+        missing.append(f"{focus_slot} emits selection/state")
+    if not _as_list(focus_semantics.get("growth")):
+        missing.append(f"{focus_slot} declares generic growth/density behavior")
+    if not _as_list(focus_semantics.get("scrollPolicy")):
+        missing.append(f"{focus_slot} declares owned scroll behavior")
+    if role_slots.get("command") and not has_edge("consumes", source=focus_slot):
+        missing.append(f"{focus_slot} consumes command intent")
+
+    if role_slots.get("command") and not has_edge("controls", focus_target=True):
+        missing.append(f"command controls {focus_slot}")
+
+    selector_slots = [
+        node["slot"]
+        for node in nodes
+        if node.get("role") in {"navigation", "collection"} and focus_slot in (node.get("connects") or [])
+    ]
+    if selector_slots and not any(has_edge(primitive, focus_target=True) for primitive in ("selects", "navigates", "scopes")):
+        missing.append(f"navigation/collection selects, navigates, or scopes {focus_slot}")
+
+    if role_slots.get("detail") and not has_edge("reflects", focus_target=True):
+        missing.append(f"detail reflects {focus_slot}.selection or {focus_slot}.state")
+    if role_slots.get("detail") and not any(has_edge("consumes", source=slot) for slot in role_slots.get("detail", [])):
+        missing.append(f"detail consumes {focus_slot}.selection or {focus_slot}.state")
+
+    if role_slots.get("status") and not has_edge("confirms", focus_target=True):
+        missing.append(f"status confirms {focus_slot}.state")
+    if role_slots.get("status") and not any(has_edge("consumes", source=slot) for slot in role_slots.get("status", [])):
+        missing.append(f"status consumes {focus_slot}.state")
+
+    if role_slots.get("evidence") and not has_edge("proves"):
+        missing.append("evidence proves a focus, command, or runtime claim")
+
+    primitive_counts = {
+        primitive: sum(1 for edge in edges if edge["primitive"] == primitive)
+        for primitive in SEMANTIC_RELATION_KEYS
+    }
+    inferred_grammar: list[str] = []
+    if has_edge("controls", focus_target=True) and has_edge("confirms", focus_target=True):
+        inferred_grammar.append("controller-focus-confirmation")
+    if has_edge("scopes", focus_target=True):
+        inferred_grammar.append("scoped-focus")
+    if any(has_edge(primitive, focus_target=True) for primitive in ("selects", "navigates")):
+        inferred_grammar.append("selector-focus")
+    if has_edge("reflects", focus_target=True) and any(has_edge("consumes", source=slot) for slot in role_slots.get("detail", [])):
+        inferred_grammar.append("focus-reflection")
+    if has_edge("proves"):
+        inferred_grammar.append("evidence-backed-claim")
+    if _as_list(focus_semantics.get("growth")):
+        inferred_grammar.append("dominant-owned-work-surface")
+    if any(
+        "always-visible" in _as_list((node.get("semantics") or {}).get("persistence"))
+        for node in nodes
+        if node.get("role") == "status"
+    ):
+        inferred_grammar.append("persistent-state-confirmation")
+    if has_edge("emits", source=focus_slot) and has_edge("consumes"):
+        inferred_grammar.append("emitted-state-consumption")
+
+    layout_pressures = semantic_layout_pressures(hierarchy)
+    contract_confidence = min(1.0, (len(layout_pressures) / 7.0) if layout_pressures else 0.0)
+
+    if not missing and contract_confidence >= 0.72:
+        state = "complete"
+    elif len(missing) <= 2 and len(edges) >= 4:
+        state = "partial"
+    else:
+        state = "underspecified"
+
+    return {
+        "hierarchyId": hierarchy["id"],
+        "focusSlot": focus_slot,
+        "state": state,
+        "primitiveCounts": primitive_counts,
+        "primitiveEdgeCount": len(edges),
+        "relationships": edge_text,
+        "missingPrimitives": missing,
+        "inferredLayoutGrammar": inferred_grammar,
+        "layoutPressures": [pressure["kind"] for pressure in layout_pressures],
+        "layoutPressureCount": len(layout_pressures),
+        "contractConfidence": round(contract_confidence, 3),
+        "note": "Inferred from generic MCEL primitives; no high-level app archetype was used.",
+    }
+
+
+def _node_by_slot(hierarchy: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {node["slot"]: node for node in hierarchy.get("nodes", [])}
+
+
+def _target_slot_for_semantic_target(target: str, hierarchy: dict[str, Any]) -> str:
+    slot = str(target).split(".", 1)[0]
+    return slot if slot in _node_by_slot(hierarchy) else hierarchy["focusSlot"]
+
+
+def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]:
+    """Infer layout pressures from generic MCEL primitives.
+
+    This still does not declare an app archetype.  It turns relationships such as
+    "controls focus", "selects focus.selection", and "confirms focus.state" into
+    spatial questions that candidate layouts can be tested against.
+    """
+
+    focus_slot = hierarchy["focusSlot"]
+    nodes_by_slot = _node_by_slot(hierarchy)
+    pressures: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    focus_node = nodes_by_slot.get(focus_slot, {})
+    focus_growth = _as_list((focus_node.get("semantics") or {}).get("growth"))
+    if focus_growth:
+        pressures.append(
+            {
+                "kind": "focus-growth",
+                "source": focus_slot,
+                "target": focus_slot,
+                "expectation": "dominant-owned-work-surface",
+                "weight": 18,
+                "details": focus_growth,
+            }
+        )
+
+    for edge in semantic_relationship_edges(hierarchy):
+        primitive = edge["primitive"]
+        source = edge["source"]
+        target_slot = _target_slot_for_semantic_target(edge["target"], hierarchy)
+        source_node = nodes_by_slot.get(source, {})
+        source_semantics = source_node.get("semantics") or {}
+        source_affordances = _as_list(source_semantics.get("layoutAffordance"))
+
+        kind = ""
+        expectation = ""
+        weight = 0
+
+        if primitive == "controls" and target_slot == focus_slot:
+            kind = "control-focus-adjacency"
+            expectation = "control-adjacent"
+            weight = 11
+        elif primitive in {"selects", "navigates", "scopes"} and _targets_focus(edge["target"], focus_slot):
+            kind = f"{primitive}-focus-adjacency"
+            expectation = "selector-adjacent"
+            weight = 13 if primitive in {"navigates", "scopes"} else 11
+        elif primitive == "reflects" and _targets_focus(edge["target"], focus_slot):
+            kind = "reflection-adjacency"
+            expectation = "reflection-adjacent"
+            weight = 12
+        elif primitive == "confirms" and _targets_focus(edge["target"], focus_slot):
+            kind = "persistent-confirmation"
+            expectation = "persistent-visible"
+            weight = 10
+        elif primitive == "proves" and _targets_focus(edge["target"], focus_slot):
+            kind = "proof-support"
+            expectation = "proof-visible"
+            weight = 8
+        elif primitive == "consumes" and _targets_focus(edge["target"], focus_slot) and source != focus_slot:
+            kind = "emitted-state-consumption"
+            expectation = "consumer-visible"
+            weight = 6
+
+        if not kind:
+            continue
+
+        key = (kind, source, target_slot)
+        if key in seen:
+            continue
+        seen.add(key)
+        pressures.append(
+            {
+                "kind": kind,
+                "source": source,
+                "target": target_slot,
+                "expectation": expectation,
+                "weight": weight,
+                "affordances": source_affordances,
+                "primitive": primitive,
+            }
+        )
+
+    return pressures
+
+
+def _record_rect(record: dict[str, Any] | None) -> dict[str, float] | None:
+    if not record:
+        return None
+    rect = record.get("rect") or record.get("documentRect")
+    if not rect:
+        return None
+    left = float(rect.get("left", rect.get("x", 0)) or 0)
+    top = float(rect.get("top", rect.get("y", 0)) or 0)
+    width = float(rect.get("width", 0) or 0)
+    height = float(rect.get("height", 0) or 0)
+    right = float(rect.get("right", left + width) or (left + width))
+    bottom = float(rect.get("bottom", top + height) or (top + height))
+    if width <= 0 and right > left:
+        width = right - left
+    if height <= 0 and bottom > top:
+        height = bottom - top
+    area = float(rect.get("area", width * height) or (width * height))
+    return {"left": left, "right": right, "top": top, "bottom": bottom, "width": width, "height": height, "area": area}
+
+
+def _overlap_ratio(a: dict[str, float], b: dict[str, float], axis: str) -> float:
+    if axis == "x":
+        overlap = max(0.0, min(a["right"], b["right"]) - max(a["left"], b["left"]))
+        denom = max(1.0, min(a["width"], b["width"]))
+    else:
+        overlap = max(0.0, min(a["bottom"], b["bottom"]) - max(a["top"], b["top"]))
+        denom = max(1.0, min(a["height"], b["height"]))
+    return max(0.0, min(1.0, overlap / denom))
+
+
+def _axis_gap(a: dict[str, float], b: dict[str, float], axis: str) -> float:
+    if axis == "x":
+        return max(0.0, max(a["left"] - b["right"], b["left"] - a["right"]))
+    return max(0.0, max(a["top"] - b["bottom"], b["top"] - a["bottom"]))
+
+
+def _center_distance_score(source: dict[str, float], target: dict[str, float], root: dict[str, float]) -> tuple[float, float]:
+    sx = (source["left"] + source["right"]) / 2.0
+    sy = (source["top"] + source["bottom"]) / 2.0
+    tx = (target["left"] + target["right"]) / 2.0
+    ty = (target["top"] + target["bottom"]) / 2.0
+    diagonal = max(1.0, (root["width"] ** 2 + root["height"] ** 2) ** 0.5)
+    normalized = (((sx - tx) ** 2 + (sy - ty) ** 2) ** 0.5) / diagonal
+    score = max(0.0, min(1.0, 1.0 - (normalized / 0.58)))
+    return normalized, score
+
+
+def _slot_records_by_slot(measurement: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    nodes = ((measurement.get("examples") or {}).get("nodes") or [])
+    return {node.get("slot"): node for node in nodes if node.get("slot")}
+
+
+def _root_rect_from_measurement(measurement: dict[str, Any]) -> dict[str, float] | None:
+    facts = measurement.get("geometryFacts") or {}
+    root = (facts.get("root") or {}).get("clipped") or (facts.get("root") or {}).get("raw")
+    return _record_rect({"rect": root}) if root else None
+
+
+def _spatial_relation(source_record: dict[str, Any], target_record: dict[str, Any], root_rect: dict[str, float]) -> dict[str, Any]:
+    source = _record_rect(source_record)
+    target = _record_rect(target_record)
+    if not source or not target or source["area"] <= 4 or target["area"] <= 4:
+        return {
+            "visible": False,
+            "sideDocked": False,
+            "bandDocked": False,
+            "near": False,
+            "normalizedDistance": 1.0,
+            "distanceScore": 0.0,
+            "horizontalGap": 1.0,
+            "verticalGap": 1.0,
+            "crossAxisOverlap": 0.0,
+        }
+
+    horizontal_gap = _axis_gap(source, target, "x") / max(1.0, root_rect["width"])
+    vertical_gap = _axis_gap(source, target, "y") / max(1.0, root_rect["height"])
+    x_overlap = _overlap_ratio(source, target, "x")
+    y_overlap = _overlap_ratio(source, target, "y")
+    normalized_distance, distance_score = _center_distance_score(source, target, root_rect)
+    side_docked = horizontal_gap <= 0.055 and y_overlap >= 0.22
+    band_docked = vertical_gap <= 0.055 and x_overlap >= 0.30
+    near = normalized_distance <= 0.58
+
+    return {
+        "visible": True,
+        "sideDocked": side_docked,
+        "bandDocked": band_docked,
+        "near": near,
+        "normalizedDistance": round(normalized_distance, 4),
+        "distanceScore": round(distance_score, 4),
+        "horizontalGap": round(horizontal_gap, 4),
+        "verticalGap": round(vertical_gap, 4),
+        "crossAxisOverlap": round(max(x_overlap, y_overlap), 4),
+    }
+
+
+def _score_spatial_expectation(expectation: str, relation: dict[str, Any], *, affordances: list[str]) -> int:
+    if not relation.get("visible"):
+        return 0
+
+    side = bool(relation.get("sideDocked"))
+    band = bool(relation.get("bandDocked"))
+    near = bool(relation.get("near"))
+    distance_score = float(relation.get("distanceScore", 0.0) or 0.0)
+
+    if expectation == "selector-adjacent":
+        if "rail" in affordances:
+            if side:
+                return 100
+            if band:
+                return 66
+            if near:
+                return max(44, round(distance_score * 64))
+            return 28
+        if side or band:
+            return 94
+        if near:
+            return max(50, round(distance_score * 76))
+        return 32
+
+    if expectation == "reflection-adjacent":
+        if side:
+            return 100
+        if band:
+            return 76
+        if near:
+            return max(48, round(distance_score * 72))
+        return 30
+
+    if expectation == "control-adjacent":
+        if side or band:
+            return 100
+        if near:
+            return max(60, round(distance_score * 82))
+        return 42
+
+    if expectation == "persistent-visible":
+        if side or band:
+            return 100
+        if near:
+            return max(66, round(distance_score * 86))
+        return 52
+
+    if expectation == "proof-visible":
+        if side or band:
+            return 94
+        if near:
+            return max(58, round(distance_score * 78))
+        return 46
+
+    if expectation == "consumer-visible":
+        if side or band:
+            return 88
+        if near:
+            return max(54, round(distance_score * 72))
+        return 44
+
+    return 50 if relation.get("visible") else 0
+
+
+def _score_focus_growth_contract(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> tuple[int, str]:
+    facts = measurement.get("geometryFacts") or {}
+    focus_share = float(facts.get("focusShare", 0.0) or 0.0)
+    desired = float(facts.get("desiredFocusShare", hierarchy.get("desiredFocusShare", 0.5)) or 0.5)
+    min_share = float(facts.get("minFocusShare", hierarchy.get("minFocusShare", max(0.0, desired - 0.14))) or 0.0)
+    focus_node = next((node for node in hierarchy.get("nodes", []) if node["slot"] == hierarchy["focusSlot"]), {})
+    growth = _as_list((focus_node.get("semantics") or {}).get("growth"))
+    strictness = 1.0
+    if any(item in {"large-dense-grid", "large-output-stream", "large-text-surface"} for item in growth):
+        strictness = 1.25
+    deviation = abs(focus_share - desired) * strictness
+    score = 100 - round(min(1.0, deviation / 0.22) * 46)
+    if focus_share < min_share:
+        score -= 24
+    score = max(0, min(100, score))
+    return score, f"focus {hierarchy['focusSlot']} is {focus_share:.0%} against contract target {desired:.0%}"
+
+
+def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
+    pressures = semantic_layout_pressures(hierarchy)
+    root_rect = _root_rect_from_measurement(measurement)
+    records = _slot_records_by_slot(measurement)
+    focus_slot = hierarchy["focusSlot"]
+    focus_record = records.get(focus_slot)
+
+    evaluated: list[dict[str, Any]] = []
+    weighted_total = 0.0
+    weight_total = 0.0
+
+    for pressure in pressures:
+        weight = float(pressure.get("weight", 1) or 1)
+        kind = pressure["kind"]
+        if kind == "focus-growth":
+            score, reason = _score_focus_growth_contract(hierarchy, measurement)
+            relation = {}
+        else:
+            if not root_rect or not focus_record:
+                score = 0
+                relation = {}
+                reason = f"{pressure['source']} cannot be spatially checked because root/focus geometry is missing"
+            else:
+                source_record = records.get(pressure["source"])
+                target_record = records.get(pressure.get("target") or focus_slot) or focus_record
+                if not source_record or not target_record:
+                    score = 0
+                    relation = {}
+                    reason = f"{pressure['source']} → {pressure.get('target', focus_slot)} is missing from measured nodes"
+                else:
+                    relation = _spatial_relation(source_record, target_record, root_rect)
+                    score = _score_spatial_expectation(
+                        pressure["expectation"],
+                        relation,
+                        affordances=list(pressure.get("affordances") or []),
+                    )
+                    relation_words: list[str] = []
+                    if relation.get("sideDocked"):
+                        relation_words.append("side-docked")
+                    if relation.get("bandDocked"):
+                        relation_words.append("band-docked")
+                    if relation.get("near"):
+                        relation_words.append("near")
+                    if not relation_words:
+                        relation_words.append("visible but weakly related" if relation.get("visible") else "not visible")
+                    reason = f"{pressure['source']} {pressure['primitive']} {pressure['target']} is {', '.join(relation_words)}"
+
+        weighted_total += score * weight
+        weight_total += weight
+        evaluated.append(
+            {
+                **pressure,
+                "score": int(score),
+                "met": score >= 72,
+                "reason": reason,
+                "relation": relation,
+            }
+        )
+
+    score = round(weighted_total / weight_total) if weight_total else 0
+    confidence = min(1.0, (len(pressures) / 7.0) if pressures else 0.0)
+
+    risks = [item for item in evaluated if item["score"] < 68]
+    positives = [item for item in evaluated if item["score"] >= 82]
+
+    if confidence < 0.45:
+        state = "geometryOnly"
+    elif score >= 86 and len(risks) <= 1:
+        state = "strongContractFit"
+    elif score >= 72:
+        state = "usableContractFit"
+    elif score >= 56:
+        state = "weakContractFit"
+    else:
+        state = "contractRisk"
+
+    return {
+        "score": int(score),
+        "state": state,
+        "confidence": round(confidence, 3),
+        "pressureCount": len(evaluated),
+        "pressures": evaluated,
+        "positiveReasons": [item["reason"] for item in positives[:4]],
+        "riskReasons": [item["reason"] for item in sorted(risks, key=lambda item: item["score"])[:4]],
+        "note": "Contract fit is inferred from generic MCEL primitives and measured geometry; it is evidence for FLOG ranking, not a claim of perfect inference.",
+    }
+
+
+def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
+    fit = semantic_contract_fit(hierarchy, measurement)
+    classification = measurement.setdefault("classification", {})
+    geometry_score = int(classification.get("score", 0) or 0)
+    selection_score = round((geometry_score * 0.70) + (fit["score"] * 0.30))
+
+    original_status = str(classification.get("status") or "fail")
+    warnings = list(classification.get("warnings") or [])
+    if original_status == "fail":
+        status = "fail"
+    elif selection_score >= 82 and len(warnings) <= 1 and fit["score"] >= 72:
+        status = "pass"
+    elif selection_score >= 64:
+        status = "watch"
+    else:
+        status = "fail"
+
+    classification["geometryScore"] = geometry_score
+    classification["contractFitScore"] = fit["score"]
+    classification["contractFitState"] = fit["state"]
+    classification["selectionScore"] = selection_score
+    classification["score"] = selection_score
+    classification["status"] = status
+
+    positive_reasons = classification.setdefault("positiveReasons", [])
+    failure_reasons = classification.setdefault("failureReasons", [])
+    review_notes = classification.setdefault("reviewNotes", [])
+
+    if fit["positiveReasons"]:
+        positive_reasons.insert(0, f"generic contract fit is {fit['score']}%: {fit['positiveReasons'][0]}")
+    if fit["riskReasons"]:
+        review_notes.insert(0, f"contract-fit review: {fit['riskReasons'][0]}")
+    if fit["state"] in {"weakContractFit", "contractRisk"} and original_status != "fail":
+        failure_reasons.append(f"generic contract fit is only {fit['score']}%; layout preserves rectangles better than behavior relationships")
+    review_notes.append("Contract fit is inferred from generic semantic tags; FLOG still keeps multiple candidates for human review.")
+
+    measurement["contractFit"] = fit
+    return measurement
+
+
+
+
+def synthetic_hierarchies() -> list[dict[str, Any]]:
+    """Return seeded MCEL-good hierarchies with explicit layout roles.
+
+    These fixtures intentionally model the *target* MCEL source quality rather
+    than today's under-described live app DOM.  Each hierarchy declares:
+
+    * a focus slot and desired space share;
+    * required companions that must remain visible with the focus;
+    * nearby companions that should remain spatially close to the focus;
+    * deferable slots that may collapse or move later;
+    * layout families that are preferred or dangerous for the role contract;
+    * generic semantic primitives such as controls, selects, reflects, confirms,
+      proves, growth, owned scroll, and persistence.
+
+    That lets FLOG test layout inference against composable app semantics instead
+    of pretending that area alone is enough or importing high-level app archetypes.
+    """
+
+    def item(kind: str, label: str, *, role: str = "content") -> dict[str, str]:
+        return {"kind": kind, "label": label, "role": role}
+
+    def role_min_visible_share(role: str, priority: str) -> float:
+        # This is a visibility floor, not a desired space share.  The previous
+        # seed used one 6% floor for every companion, which made status strips
+        # and compact command bars look "missing" even when the browser proved
+        # they were visible.  Keep focus/primary context meaningful while
+        # allowing status/evidence to be compact default companions.
+        if role == "focus":
+            return 0.06
+        if role == "status":
+            return 0.012
+        if role == "evidence":
+            return 0.016
+        if role == "command":
+            return 0.026 if priority == "primary" else 0.022
+        if role in {"navigation", "collection"}:
+            return 0.03 if priority == "primary" else 0.024
+        if role in {"detail", "inspector"}:
+            return 0.026
+        return 0.022
+
+    def node(
+        slot: str,
+        kind: str,
+        title: str,
+        *,
+        role: str,
+        priority: str,
+        weight: int,
+        connects: list[str],
+        items: list[dict[str, str]],
+        scroll: str = "allowed",
+        visibility: str = "required",
+        proximity: str = "loose",
+        min_visible_share: float | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "slot": slot,
+            "kind": kind,
+            "title": title,
+            "role": role,
+            "priority": priority,
+            "visibility": visibility,
+            "proximity": proximity,
+            "connects": connects,
+            "weight": weight,
+            "scroll": scroll,
+            "minVisibleShare": role_min_visible_share(role, priority) if min_visible_share is None else min_visible_share,
+            "items": items,
+        }
+
+    def hierarchy(
+        *,
+        id: str,
+        title: str,
+        description: str,
+        source_app: str,
+        root_concern: str,
+        focus_slot: str,
+        desired_focus_share: float,
+        min_focus_share: float,
+        max_focus_share: float,
+        required_companions: list[str],
+        nearby_companions: list[str],
+        deferable_slots: list[str],
+        forbidden_default_hidden: list[str],
+        preferred_families: list[str],
+        dangerous_families: dict[str, str],
+        nodes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        nodes = enrich_nodes_with_semantic_primitives(nodes, focus_slot)
+        slots = {entry["slot"] for entry in nodes}
+        missing = [slot for slot in [focus_slot, *required_companions, *nearby_companions, *deferable_slots] if slot not in slots]
+        if missing:
+            raise ValueError(f"Hierarchy {id} references missing slot(s): {missing}")
+        return {
+            "id": id,
+            "title": title,
+            "description": description,
+            "sourceApp": source_app,
+            "rootConcern": root_concern,
+            "focusSlot": focus_slot,
+            "desiredFocusShare": desired_focus_share,
+            "minFocusShare": min_focus_share,
+            "maxFocusShare": max_focus_share,
+            "roleContract": {
+                "focus": {
+                    "slot": focus_slot,
+                    "desiredShare": desired_focus_share,
+                    "minShare": min_focus_share,
+                    "maxShare": max_focus_share,
+                },
+                "requiredCompanions": required_companions,
+                "nearbyCompanions": nearby_companions,
+                "deferableSlots": deferable_slots,
+                "forbiddenDefaultHidden": forbidden_default_hidden,
+                "preferredFamilies": preferred_families,
+                "dangerousFamilies": dangerous_families,
+            },
+            "nodes": nodes,
+        }
+
+    return [
+        hierarchy(
+            id="operator-control-surface",
+            title="Operator Control Surface",
+            description="Command-heavy app with records, validation, jobs, and evidence.",
+            source_app="conductor",
+            root_concern="operations.control",
+            focus_slot="workspace",
+            desired_focus_share=0.42,
+            min_focus_share=0.34,
+            max_focus_share=0.62,
+            required_companions=["command", "status"],
+            nearby_companions=["evidence", "jobs"],
+            deferable_slots=["detail"],
+            forbidden_default_hidden=["command", "status", "workspace"],
+            preferred_families=["split-pane", "source-order-stacked", "sectioned-sidebar"],
+            dangerous_families={
+                "bounded-drawer": "primary commands and status cannot become drawer-only",
+                "dashboard-grid": "operator authority should not become a flat peer dashboard",
+            },
+            nodes=[
+                node("command", "authority-command", "Command", role="command", priority="primary", visibility="required", proximity="near", weight=3, scroll="no", connects=["workspace", "status", "evidence", "jobs"], items=[
+                    item("button", "Plan"), item("button", "Apply"), item("button", "Validate"), item("control", "Target"), item("control", "Mode"),
+                ]),
+                node("workspace", "primary-workspace", "Record Map", role="focus", priority="focus", visibility="required", proximity="self", weight=7, connects=["detail", "status"], items=[
+                    item("surface", "Authority map: pending, valid, and blocked records grouped by action state", role="workspace-canvas"),
+                    item("collection", "Record row A · target=prod · safe"), item("collection", "Record row B · target=staging · warning"), item("collection", "Record row C · mutation preview ready"),
+                    item("collection", "Record row D · dependency blocked"), item("collection", "Record row E · audit required"), item("collection", "Record row F · complete"),
+                    item("status", "Selection summary: 3 records selected, 1 requires evidence"), item("text", "Focus occupancy is intentional: rows, selection state, and mutation preview all live inside the primary work surface."),
+                ]),
+                node("detail", "inspector-detail", "Selected Record", role="detail", priority="secondary", visibility="deferable", proximity="loose", weight=3, connects=["workspace", "evidence"], items=[
+                    item("text", "Selected record summary"), item("control", "TTL"), item("control", "Value"), item("button", "Preview change"),
+                ]),
+                node("status", "status", "Status", role="status", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["command", "workspace"], items=[
+                    item("status", "Ready"), item("status", "2 warnings"),
+                ]),
+                node("jobs", "collection-jobs", "Jobs", role="collection", priority="secondary", visibility="companion", proximity="near", weight=2, connects=["status", "evidence"], items=[
+                    item("collection", "Queued apply"), item("collection", "Last validation"), item("collection", "Audit receipt"),
+                ]),
+                node("evidence", "evidence", "Evidence", role="evidence", priority="secondary", visibility="companion", proximity="near", weight=2, connects=["command", "status"], items=[
+                    item("evidence", "Receipt: planned mutation would touch 3 records."), item("evidence", "Geometry proof should remain visible when failures exist."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="document-workbench",
+            title="Document Workbench",
+            description="Editor-first app with outline, formatting, AI notes, and source evidence.",
+            source_app="document",
+            root_concern="document.authoring",
+            focus_slot="editor",
+            desired_focus_share=0.58,
+            min_focus_share=0.48,
+            max_focus_share=0.76,
+            required_companions=["toolbar", "status"],
+            nearby_companions=["outline", "inspector"],
+            deferable_slots=["evidence"],
+            forbidden_default_hidden=["toolbar", "editor", "status"],
+            preferred_families=["sectioned-sidebar", "split-pane", "focus-priority"],
+            dangerous_families={
+                "bounded-drawer": "document controls may be drawer-like later, but save/status cannot be hidden by default",
+                "dashboard-grid": "the editor must not be flattened into a peer card grid",
+            },
+            nodes=[
+                node("toolbar", "authority-command", "Toolbar", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["editor", "status"], items=[
+                    item("button", "Save"), item("button", "Export"), item("button", "Ask"), item("control", "Block"), item("control", "Style"),
+                ]),
+                node("outline", "navigation-outline", "Outline", role="navigation", priority="secondary", visibility="companion", proximity="near", weight=2, connects=["editor"], items=[
+                    item("collection", "Introduction"), item("collection", "Model"), item("collection", "Results"), item("collection", "Appendix"),
+                ]),
+                node("editor", "primary-editor", "Page Editor", role="focus", priority="focus", visibility="required", proximity="self", weight=9, connects=["status", "evidence", "outline", "inspector"], items=[
+                    item("surface", "Page surface with margins, active cursor, and selected paragraph", role="page-surface"),
+                    item("text", "Block 1 · Heading and anchor metadata"), item("text", "Block 2 · Body paragraph with inline comment marker"), item("text", "Block 3 · Callout region tied to source evidence"),
+                    item("status", "Selection strip: paragraph 2, words 44-78"), item("collection", "Comment affordance · unresolved style note"), item("collection", "Format context · H2 / body / quote"),
+                    item("text", "The editor focus is no longer a blank canvas; useful interior structure must occupy enough of the focus region."),
+                ]),
+                node("inspector", "inspector-detail", "Inspector", role="detail", priority="secondary", visibility="companion", proximity="near", weight=3, connects=["editor", "evidence"], items=[
+                    item("control", "Margins"), item("control", "Page size"), item("button", "Apply preset"), item("text", "AI notes and formatting metadata."),
+                ]),
+                node("status", "status", "Status", role="status", priority="primary", visibility="required", proximity="near", weight=1, scroll="no", connects=["toolbar", "editor"], items=[
+                    item("status", "Draft saved"), item("status", "No validation errors"),
+                ]),
+                node("evidence", "evidence", "Source Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["editor", "inspector"], items=[
+                    item("evidence", "Serialization proof: generated wrappers are runtime-only."), item("evidence", "Layout proof: editor remains the focus."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="system-map-console",
+            title="System Map Console",
+            description="Graph-like app with a central map, subsystem tentacles, actions, alerts, and evidence.",
+            source_app="ai-control",
+            root_concern="systems.connected-map",
+            focus_slot="map",
+            desired_focus_share=0.50,
+            min_focus_share=0.40,
+            max_focus_share=0.70,
+            required_companions=["command", "alerts"],
+            nearby_companions=["subsystems", "detail"],
+            deferable_slots=["evidence"],
+            forbidden_default_hidden=["command", "map", "alerts"],
+            preferred_families=["focus-priority", "sectioned-sidebar", "split-pane"],
+            dangerous_families={
+                "source-order-stacked": "system map loses relationship context when support regions are merely stacked",
+                "dashboard-grid": "grid only works if dependency relationships remain visually encoded",
+            },
+            nodes=[
+                node("command", "authority-command", "Global Actions", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["map", "alerts", "evidence"], items=[
+                    item("button", "Scan"), item("button", "Route"), item("button", "Repair"), item("control", "Scope"),
+                ]),
+                node("map", "primary-graph", "System Map", role="focus", priority="focus", visibility="required", proximity="self", weight=8, scroll="no", connects=["subsystems", "detail", "alerts"], items=[
+                    item("surface", "Central orchestration node with live route labels", role="graph-center"),
+                    item("surface", "Dependency edge: gateway → scheduler → worker pool", role="graph-edge"),
+                    item("surface", "Connected subsystem tentacle A · healthy"), item("surface", "Connected subsystem tentacle B · degraded"), item("surface", "Connected subsystem tentacle C · pending repair"),
+                    item("status", "Fault boundary: no red-zone overlap"), item("collection", "Selected edge: scheduler owns 2 downstream jobs"), item("text", "Map occupancy models real graph content instead of an empty focus card."),
+                ]),
+                node("subsystems", "collection-subsystems", "Subsystems", role="collection", priority="secondary", visibility="companion", proximity="near", weight=3, connects=["map", "detail"], items=[
+                    item("collection", "Gateway"), item("collection", "Scheduler"), item("collection", "Worker pool"), item("collection", "Storage"),
+                ]),
+                node("detail", "inspector-detail", "Node Detail", role="detail", priority="secondary", visibility="companion", proximity="near", weight=3, connects=["map", "evidence"], items=[
+                    item("status", "Latency 18 ms"), item("status", "2 dependent jobs"), item("button", "Open node"),
+                ]),
+                node("alerts", "status-alerts", "Alerts", role="status", priority="primary", visibility="required", proximity="near", weight=2, connects=["command", "map"], items=[
+                    item("status", "Fault zone clear"), item("status", "One dependency degraded"),
+                ]),
+                node("evidence", "evidence", "Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["command", "map", "detail"], items=[
+                    item("evidence", "Graph relationship proof uses data-mc-connects."), item("evidence", "Central/spiral layout only allowed when relationships are explicit."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="calculator-workbench",
+            title="Calculator Workbench",
+            description="Calculator app with expression entry, keypad, graphing, history, and model explanation.",
+            source_app="calculator",
+            root_concern="calculator.solve",
+            focus_slot="workspace",
+            desired_focus_share=0.46,
+            min_focus_share=0.34,
+            max_focus_share=0.62,
+            required_companions=["command", "detail", "status"],
+            nearby_companions=["records"],
+            deferable_slots=["evidence"],
+            forbidden_default_hidden=["command", "workspace", "detail", "status"],
+            preferred_families=["split-pane", "inspector", "sectioned-sidebar"],
+            dangerous_families={
+                "bounded-drawer": "keypad/parameters cannot become deferred drawer-only controls",
+                "focus-priority": "the solve surface should not bury keypad and status",
+            },
+            nodes=[
+                node("command", "authority-command", "Mode and Solve", role="command", priority="primary", visibility="required", proximity="near", weight=3, scroll="no", connects=["workspace", "status", "evidence"], items=[
+                    item("button", "Basic"), item("button", "Scientific"), item("button", "Graph"), item("control", "Expression"), item("button", "Ask model"),
+                ]),
+                node("workspace", "primary-calculator", "Solve Surface", role="focus", priority="focus", visibility="required", proximity="self", weight=7, connects=["detail", "records", "status"], items=[
+                    item("surface", "Expression display: sin(x) + 2x", role="expression-display"), item("surface", "Result display: roots, extrema, and units", role="result-display"),
+                    item("surface", "Graphing canvas with axes and selected point", role="graph-surface"), item("collection", "History relation: previous expression feeds current graph"),
+                    item("status", "Domain warning: x ∈ [-10, 10]"), item("text", "The focus is the live solving surface, while keypad and parameters remain required companions."),
+                ]),
+                node("detail", "inspector-detail", "Keypad and Parameters", role="detail", priority="primary", visibility="required", proximity="near", weight=4, connects=["workspace"], items=[
+                    item("button", "7"), item("button", "8"), item("button", "9"), item("control", "X min"), item("control", "X max"),
+                ]),
+                node("records", "collection-history", "History", role="collection", priority="secondary", visibility="companion", proximity="near", weight=2, connects=["workspace", "evidence"], items=[
+                    item("collection", "2 + 2 = 4"), item("collection", "sin(x) plotted"), item("collection", "unit conversion"),
+                ]),
+                node("status", "status", "Solve Status", role="status", priority="primary", visibility="required", proximity="near", weight=1, scroll="no", connects=["command", "workspace"], items=[
+                    item("status", "Ready"), item("status", "No graph errors"),
+                ]),
+                node("evidence", "evidence", "Explanation Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["workspace"], items=[
+                    item("evidence", "Model explanation remains tied to the expression that produced it."), item("evidence", "History and graph controls are support surfaces."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="spreadsheet-workbook",
+            title="Spreadsheet Workbook",
+            description="Spreadsheet app with grid focus, formula bar, sheet tabs, inspector, charts, and save evidence.",
+            source_app="spreadsheet",
+            root_concern="spreadsheet.grid",
+            focus_slot="grid",
+            desired_focus_share=0.60,
+            min_focus_share=0.48,
+            max_focus_share=0.78,
+            required_companions=["formula", "status"],
+            nearby_companions=["tabs", "inspector"],
+            deferable_slots=["evidence"],
+            forbidden_default_hidden=["formula", "grid", "status"],
+            preferred_families=["focus-priority", "split-pane", "sectioned-sidebar"],
+            dangerous_families={
+                "dashboard-grid": "a spreadsheet grid is not a peer dashboard",
+                "bounded-drawer": "formula/status cannot become drawer-only",
+            },
+            nodes=[
+                node("formula", "authority-command", "Formula Bar", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["grid", "status"], items=[
+                    item("control", "Cell"), item("control", "Formula"), item("button", "Commit"), item("button", "Recalculate"),
+                ]),
+                node("grid", "primary-grid", "Sheet Grid", role="focus", priority="focus", visibility="required", proximity="self", weight=10, connects=["formula", "tabs", "inspector", "status"], items=[
+                    item("surface", "A1:H24 editable grid with frozen header row", role="grid-surface"), item("surface", "Selected cell range B4:D9 with fill handle", role="selection-region"),
+                    item("collection", "Row group: revenue model"), item("collection", "Row group: expense model"), item("collection", "Inline chart preview tied to selected range"),
+                    item("status", "Formula dependency: Sheet1!B4 references Models!C2"), item("text", "The grid owns most space, but useful grid internals must fill the focus area."),
+                ]),
+                node("tabs", "navigation-tabs", "Sheets", role="navigation", priority="secondary", visibility="companion", proximity="near", weight=2, connects=["grid"], items=[
+                    item("collection", "Sheet1"), item("collection", "Models"), item("collection", "Charts"),
+                ]),
+                node("inspector", "inspector-detail", "Cell Inspector", role="detail", priority="secondary", visibility="companion", proximity="near", weight=3, connects=["grid", "evidence"], items=[
+                    item("control", "Format"), item("control", "Validation"), item("button", "Create chart"),
+                ]),
+                node("status", "status", "Workbook Status", role="status", priority="primary", visibility="required", proximity="near", weight=1, scroll="no", connects=["formula", "grid"], items=[
+                    item("status", "Saved"), item("status", "No formula errors"),
+                ]),
+                node("evidence", "evidence", "Recalc Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["formula", "grid"], items=[
+                    item("evidence", "Recalculation proof and file persistence trail."), item("evidence", "Import/export state remains runtime evidence."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="code-studio-workbench",
+            title="Code Studio Workbench",
+            description="Code editor app with source tree, editor, terminal/test output, SCM evidence, and AI inspector.",
+            source_app="code-editor",
+            root_concern="code.authoring",
+            focus_slot="editor",
+            desired_focus_share=0.56,
+            min_focus_share=0.44,
+            max_focus_share=0.74,
+            required_companions=["command", "status"],
+            nearby_companions=["records", "detail"],
+            deferable_slots=["evidence"],
+            forbidden_default_hidden=["command", "editor", "status"],
+            preferred_families=["sectioned-sidebar", "split-pane", "focus-priority"],
+            dangerous_families={
+                "dashboard-grid": "source editor authority should not become a peer tile",
+                "bounded-drawer": "test/status context cannot be drawer-only during edits",
+            },
+            nodes=[
+                node("command", "authority-command", "Command Center", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["editor", "status", "evidence"], items=[
+                    item("button", "Validate"), item("button", "Serialize"), item("button", "Run tests"), item("control", "Branch"),
+                ]),
+                node("records", "navigation-outline", "File Map", role="navigation", priority="secondary", visibility="companion", proximity="near", weight=3, connects=["editor"], items=[
+                    item("collection", "main_computer/"), item("collection", "tests/"), item("collection", "pretty_docs/"), item("collection", "runtime/"),
+                ]),
+                node("editor", "primary-editor", "Source Editor", role="focus", priority="focus", visibility="required", proximity="self", weight=9, connects=["records", "detail", "status", "evidence"], items=[
+                    item("surface", "Tab strip: flog_layout_snapshot_smoke.py · tests/test_flog_layout_snapshot_smoke.py", role="tab-strip"),
+                    item("surface", "Source editor: line numbers, active function, selection, and diagnostics gutter", role="source-editor"),
+                    item("collection", "Diagnostic: companion proximity scoring needs explanation"), item("collection", "Test marker: report includes reasons"),
+                    item("status", "Cursor: scoring block, column 18"), item("text", "The editor should get stable area while verification, SCM evidence, and AI inspection remain connected."),
+                ]),
+                node("detail", "inspector-detail", "AI and Test Inspector", role="detail", priority="secondary", visibility="companion", proximity="near", weight=3, connects=["editor", "evidence"], items=[
+                    item("control", "Evidence filter"), item("button", "Ask AI"), item("surface", "Terminal/test output"),
+                ]),
+                node("status", "status", "Editor Status", role="status", priority="primary", visibility="required", proximity="near", weight=1, scroll="no", connects=["command", "editor"], items=[
+                    item("status", "Route valid"), item("status", "Serialization clean"),
+                ]),
+                node("evidence", "evidence", "SCM Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["command", "editor"], items=[
+                    item("evidence", "SCM receipt proves source/runtime separation."), item("evidence", "Repair evidence stays runtime-owned."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="terminal-console-workbench",
+            title="Terminal Console Workbench",
+            description="Terminal app with command entry, live output focus, history, process status, and safety evidence.",
+            source_app="terminal",
+            root_concern="terminal.execution",
+            focus_slot="terminal",
+            desired_focus_share=0.62,
+            min_focus_share=0.50,
+            max_focus_share=0.82,
+            required_companions=["command", "status"],
+            nearby_companions=["records"],
+            deferable_slots=["evidence", "detail"],
+            forbidden_default_hidden=["command", "terminal", "status"],
+            preferred_families=["focus-priority", "sectioned-sidebar", "split-pane"],
+            dangerous_families={
+                "dashboard-grid": "terminal output should not become one peer card among many",
+                "bounded-drawer": "command entry and status cannot hide by default",
+            },
+            nodes=[
+                node("command", "authority-command", "Command Entry", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["terminal", "status"], items=[
+                    item("control", "Working directory"), item("control", "Command"), item("button", "Run"), item("button", "Stop"),
+                ]),
+                node("terminal", "primary-terminal", "Terminal Output", role="focus", priority="focus", visibility="required", proximity="self", weight=10, connects=["command", "status", "evidence"], items=[
+                    item("surface", "$ python -m pytest tests/test_flog_layout_snapshot_smoke.py", role="command-line"),
+                    item("surface", "live stdout/stderr stream with last 24 lines", role="terminal-stream"),
+                    item("collection", "PASSED test_render_trial_html_contains_generated_hierarchy_and_candidate"), item("collection", "PASSED test_write_reports_lists_best_candidate_and_pngs"),
+                    item("status", "Exit code 0 · duration 1.42s"), item("text", "The terminal focus is a live proof surface with command, output, and result context."),
+                ]),
+                node("records", "collection-history", "Command History", role="collection", priority="secondary", visibility="companion", proximity="near", weight=2, connects=["command", "terminal"], items=[
+                    item("collection", "pytest -q"), item("collection", "git status"), item("collection", "python main.py"),
+                ]),
+                node("detail", "inspector-detail", "Environment", role="detail", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["terminal"], items=[
+                    item("control", "Timeout"), item("control", "Env preset"), item("button", "Copy output"),
+                ]),
+                node("status", "status", "Process Status", role="status", priority="primary", visibility="required", proximity="near", weight=1, scroll="no", connects=["command", "terminal"], items=[
+                    item("status", "Idle"), item("status", "Exit code 0"),
+                ]),
+                node("evidence", "evidence", "Safety Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["command", "terminal"], items=[
+                    item("evidence", "Command output is runtime evidence, not source."), item("evidence", "Dangerous actions require explicit user confirmation."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="file-explorer-workspace",
+            title="File Explorer Workspace",
+            description="File explorer app with tree navigation, file list focus, preview, actions, and selection evidence.",
+            source_app="file-explorer",
+            root_concern="files.navigation",
+            focus_slot="workspace",
+            desired_focus_share=0.48,
+            min_focus_share=0.38,
+            max_focus_share=0.65,
+            required_companions=["command", "records", "status"],
+            nearby_companions=["detail"],
+            deferable_slots=["evidence"],
+            forbidden_default_hidden=["command", "records", "workspace", "status"],
+            preferred_families=["split-pane", "sectioned-sidebar", "inspector"],
+            dangerous_families={
+                "bounded-drawer": "tree and file list should not be separated by a hidden drawer",
+                "source-order-stacked": "large file lists become too vertically fragmented when stacked",
+            },
+            nodes=[
+                node("command", "authority-command", "File Actions", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["records", "workspace", "status"], items=[
+                    item("button", "Refresh"), item("button", "New folder"), item("button", "Open"), item("control", "Search"),
+                ]),
+                node("records", "navigation-outline", "Folder Tree", role="navigation", priority="primary", visibility="required", proximity="near", weight=3, connects=["workspace"], items=[
+                    item("collection", "main_computer"), item("collection", "tests"), item("collection", "runtime"), item("collection", "pretty_docs"),
+                ]),
+                node("workspace", "primary-file-list", "File List", role="focus", priority="focus", visibility="required", proximity="self", weight=8, connects=["records", "detail", "status"], items=[
+                    item("surface", "Path bar: main_computer/static/apps/", role="path-surface"),
+                    item("collection", "conductor.html · selected · 42 KB"), item("collection", "mcel-scm.js · modified · 18 KB"), item("collection", "test_mcel_scm_layout_style.py · test · 9 KB"),
+                    item("collection", "layout-snapshot-report.md · report · 14 KB"), item("collection", "runtime/reports/flog/ · generated proofs"),
+                    item("status", "Selection summary: 4 files, preview available"), item("text", "Folder tree, file list, preview, and status need visible relationships for safe file actions."),
+                ]),
+                node("detail", "inspector-detail", "Preview", role="detail", priority="secondary", visibility="companion", proximity="near", weight=3, connects=["workspace", "evidence"], items=[
+                    item("surface", "Selected file preview"), item("button", "Open in editor"), item("button", "Copy path"),
+                ]),
+                node("status", "status", "Selection Status", role="status", priority="primary", visibility="required", proximity="near", weight=1, scroll="no", connects=["workspace"], items=[
+                    item("status", "4 files selected"),
+                ]),
+                node("evidence", "evidence", "Selection Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["workspace", "detail"], items=[
+                    item("evidence", "Selection and preview must remain connected."), item("evidence", "File operations need visible target evidence."),
+                ]),
+            ],
+        ),
+    ]
+
+
+def parse_hierarchies(value: str, available: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id = {item["id"]: item for item in available}
+    if value.strip().lower() == "all":
+        return list(available)
+    selected: list[dict[str, Any]] = []
+    for raw in value.split(","):
+        key = slugify(raw)
+        if not key:
+            continue
+        if key not in by_id:
+            raise ValueError(f"Unknown synthetic hierarchy: {raw!r}")
+        selected.append(by_id[key])
+    if not selected:
+        raise ValueError("At least one hierarchy is required.")
+    return selected
+
+
+def node_markup(node: dict[str, Any], focus_slot: str) -> str:
+    slot = node["slot"]
+    focus = slot == focus_slot
+    attrs = {
+        "class": f"flog-node node-{slugify(slot)} kind-{slugify(node['kind'])} role-{slugify(node.get('role', 'support'))}",
+        "data-mc": "region",
+        "data-mc-slot": slot,
+        "data-mc-kind": node["kind"],
+        "data-mc-rank": node.get("priority", "secondary"),
+        "data-mc-connects": " ".join(node.get("connects", [])),
+        "data-mc-role": node.get("role", "support"),
+        "data-mc-visibility": node.get("visibility", "required"),
+        "data-mc-proximity": node.get("proximity", "loose"),
+        "data-flog-slot": slot,
+        "data-flog-role": node.get("role", "support"),
+        "data-flog-priority": node.get("priority", "secondary"),
+        "data-flog-visibility": node.get("visibility", "required"),
+        "data-flog-proximity": node.get("proximity", "loose"),
+        "data-flog-min-visible-share": str(node.get("minVisibleShare", 0.06)),
+        "data-flog-weight": str(node.get("weight", 1)),
+        "data-flog-scroll": node.get("scroll", "no"),
+        "data-flog-focus": "true" if focus else "false",
+    }
+    semantics = node.get("semantics") or {}
+    for semantic_key in (*SEMANTIC_RELATION_KEYS, *SEMANTIC_QUALITY_KEYS):
+        values = _as_list(semantics.get(semantic_key))
+        if values:
+            attrs[_semantic_attr_name(semantic_key)] = " ".join(values)
+
+    if focus:
+        attrs["aria-label"] = f"Focus surface: {node['title']}"
+    attr_text = " ".join(f'{name}="{html.escape(value, quote=True)}"' for name, value in attrs.items())
+    parts = [f"<section {attr_text}>"]
+    parts.append(f"<header class=\"node-header\"><h2>{html.escape(node['title'])}</h2><span>{html.escape(node['kind'])}</span></header>")
+    parts.append("<div class=\"node-body\">")
+    for index, item in enumerate(node.get("items", []), start=1):
+        kind = item.get("kind", "text")
+        role = item.get("role", "content")
+        label = item.get("label", "")
+        escaped = html.escape(label)
+        escaped_slot = html.escape(slot)
+        escaped_role = html.escape(role, quote=True)
+        item_attrs = (
+            f'data-flog-item="true" data-flog-item-kind="{html.escape(kind, quote=True)}" '
+            f'data-flog-item-role="{escaped_role}" data-flog-item-index="{index}"'
+        )
+        if kind == "button":
+            parts.append(f"<button data-mc=\"action\" data-mc-slot=\"{escaped_slot}.action\" {item_attrs}>{escaped}</button>")
+        elif kind == "control":
+            control_id = f"{slugify(slot)}-{slugify(label)}"
+            parts.append(
+                f"<label data-mc=\"control\" data-mc-slot=\"{escaped_slot}.control\" for=\"{control_id}\" {item_attrs}>"
+                f"{escaped}<input id=\"{control_id}\" value=\"{escaped}\" /></label>"
+            )
+        elif kind == "collection":
+            parts.append(f"<div class=\"item collection-item\" data-mc=\"collection-item\" data-mc-slot=\"{escaped_slot}.item\" {item_attrs}>{escaped}</div>")
+        elif kind == "status":
+            parts.append(f"<div class=\"item status-item\" data-mc=\"status\" data-mc-slot=\"{escaped_slot}.status\" {item_attrs}>{escaped}</div>")
+        elif kind == "evidence":
+            parts.append(f"<pre class=\"evidence-item\" data-mc=\"evidence\" data-mc-slot=\"{escaped_slot}.evidence\" {item_attrs}>{escaped}</pre>")
+        elif kind == "surface":
+            parts.append(f"<div class=\"surface-item\" data-mc=\"surface\" data-mc-slot=\"{escaped_slot}.surface\" {item_attrs}>{escaped}</div>")
+        else:
+            parts.append(f"<p class=\"text-item\" data-mc=\"text\" data-mc-slot=\"{escaped_slot}.text\" {item_attrs}>{escaped}</p>")
+    parts.append("</div>")
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+def render_trial_html(hierarchy: dict[str, Any], candidate: str, chrome: str) -> str:
+    focus_slot = hierarchy["focusSlot"]
+    nodes = "\n".join(node_markup(node, focus_slot) for node in hierarchy["nodes"])
+    contract = hierarchy.get("roleContract", {})
+    root_attrs = {
+        "id": hierarchy["id"],
+        "class": f"flog-root trial-{candidate}",
+        "data-mc": "component",
+        "data-mc-component": "SyntheticFlogHierarchy",
+        "data-mc-kind": "control-surface",
+        "data-mc-flow": "linear-hierarchical",
+        "data-mc-source-app": hierarchy.get("sourceApp", ""),
+        "data-mc-root-concern": hierarchy["rootConcern"],
+        "data-flog-candidate": candidate,
+        "data-flog-source-app": hierarchy.get("sourceApp", ""),
+        "data-flog-focus-slot": focus_slot,
+        "data-flog-desired-focus-share": str(hierarchy["desiredFocusShare"]),
+        "data-flog-min-focus-share": str(hierarchy["minFocusShare"]),
+        "data-flog-max-focus-share": str(hierarchy["maxFocusShare"]),
+        "data-flog-min-useful-focus-occupancy": str(hierarchy.get("minUsefulFocusOccupancy", 0.30)),
+        "data-flog-target-useful-focus-occupancy": str(hierarchy.get("targetUsefulFocusOccupancy", 0.56)),
+        "data-flog-required-companions": " ".join(contract.get("requiredCompanions", [])),
+        "data-flog-nearby-companions": " ".join(contract.get("nearbyCompanions", [])),
+        "data-flog-deferable-slots": " ".join(contract.get("deferableSlots", [])),
+        "data-flog-forbidden-default-hidden": " ".join(contract.get("forbiddenDefaultHidden", [])),
+        "data-flog-preferred-families": " ".join(contract.get("preferredFamilies", [])),
+        "data-flog-dangerous-families": " ".join((contract.get("dangerousFamilies") or {}).keys()),
+    }
+    root_attr_text = " ".join(f'{name}="{html.escape(str(value), quote=True)}"' for name, value in root_attrs.items())
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>FLOG synthetic trial - {html.escape(hierarchy['title'])} - {candidate}</title>
+<style>
+{TRIAL_CSS}
+</style>
+</head>
+<body data-flog-chrome="{html.escape(chrome, quote=True)}" data-flog-trial="{html.escape(candidate, quote=True)}">
+  <main class="flog-stage">
+    <article {root_attr_text}>
+      <div class="root-title" data-mc="heading" data-mc-slot="title">
+        <h1>{html.escape(hierarchy['title'])}</h1>
+        <p>{html.escape(hierarchy['description'])}</p>
+      </div>
+      {nodes}
+    </article>
+  </main>
+</body>
+</html>
+"""
+
+
+TRIAL_CSS = r"""
+:root {
+  color-scheme: light dark;
+  --surface: #f7f8fb;
+  --panel: #ffffff;
+  --panel-2: #edf1f7;
+  --ink: #152033;
+  --muted: #586579;
+  --border: #bac5d7;
+  --focus: #d9edff;
+  --authority: #fff2c4;
+  --evidence: #eefce9;
+  --gap: 14px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #202838; color: var(--ink); }
+body[data-flog-chrome*="glass"] {
+  --surface: #071013;
+  --panel: #101d24;
+  --panel-2: #172b33;
+  --ink: #edf8f8;
+  --muted: #b8c9cd;
+  --border: #3c5962;
+  --focus: #102d41;
+  --authority: #2f2610;
+  --evidence: #12261c;
+}
+.flog-stage {
+  min-height: 100vh;
+  padding: 20px;
+  display: grid;
+  place-items: center;
+}
+.flog-root {
+  width: min(1320px, calc(100vw - 40px));
+  height: calc(100vh - 40px);
+  min-height: 520px;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  border-radius: 18px;
+  padding: var(--gap);
+  background: var(--surface);
+  box-shadow: 0 22px 70px rgba(0,0,0,.25);
+}
+.root-title {
+  min-height: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.root-title h1 { margin: 0 0 3px 0; font-size: 18px; line-height: 1.1; }
+.root-title p { margin: 0; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flog-node {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.flog-node[data-flog-scroll="allowed"] .node-body { overflow: auto; }
+.flog-node[data-flog-focus="true"] {
+  background: var(--focus);
+  border-width: 2px;
+}
+.kind-authority-command { background: var(--authority); }
+.kind-evidence, .node-evidence { background: var(--evidence); }
+.node-header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.node-header h2 { margin: 0; font-size: 15px; line-height: 1.1; }
+.node-header span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.node-body {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+button, input, select, textarea, summary {
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: rgba(255,255,255,.68);
+  color: var(--ink);
+}
+label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+[data-flog-item="true"] { min-width: 0; }
+.item, .surface-item, .text-item, .evidence-item {
+  min-height: 32px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--border), transparent 35%);
+  border-radius: 10px;
+  background: rgba(255,255,255,.48);
+}
+.surface-item {
+  min-height: 82px;
+  display: grid;
+  place-items: center;
+  border-style: dashed;
+  font-weight: 650;
+  text-align: center;
+}
+.flog-node[data-flog-focus="true"] .node-body {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.flog-node[data-flog-focus="true"] .surface-item {
+  min-height: 96px;
+}
+.flog-node[data-flog-focus="true"] .surface-item[data-flog-item-index="1"] {
+  grid-column: 1 / -1;
+  min-height: 128px;
+}
+.flog-node[data-flog-focus="true"] .text-item {
+  background: color-mix(in srgb, var(--focus), white 50%);
+}
+.evidence-item { white-space: pre-wrap; font-size: 12px; }
+
+.trial-source-order-stacked {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  overflow: auto;
+}
+.trial-source-order-stacked .flog-node[data-flog-focus="true"] {
+  min-height: clamp(300px, 42vh, 430px);
+}
+.trial-source-order-stacked .flog-node[data-flog-priority="primary"]:not([data-flog-focus="true"]) {
+  min-height: 68px;
+}
+
+
+.trial-split-pane {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(190px, 0.18fr) minmax(0, 1fr) minmax(220px, 0.22fr);
+  grid-template-rows: minmax(48px, auto) minmax(62px, 0.075fr) minmax(0, 1fr) minmax(86px, 0.105fr);
+  grid-template-areas:
+    "title title title"
+    "command command detail"
+    "collection focus detail"
+    "status focus evidence";
+}
+.trial-split-pane .root-title { grid-area: title; }
+.trial-split-pane .node-command, .trial-split-pane .node-toolbar { grid-area: command; }
+.trial-split-pane .node-workspace, .trial-split-pane .node-editor, .trial-split-pane .node-map { grid-area: focus; }
+.trial-split-pane .node-records, .trial-split-pane .node-outline, .trial-split-pane .node-subsystems, .trial-split-pane .node-jobs { grid-area: collection; }
+.trial-split-pane .node-detail, .trial-split-pane .node-inspector { grid-area: detail; }
+.trial-split-pane .node-status, .trial-split-pane .node-alerts { grid-area: status; }
+.trial-split-pane .node-evidence { grid-area: evidence; }
+
+/* Rich seeded roles: allow future app slots to map by role rather than by today's slot names. */
+.trial-split-pane .flog-node[data-flog-role="focus"],
+.trial-split-pane .flog-node[data-flog-focus="true"] { grid-area: focus; }
+.trial-split-pane .flog-node[data-flog-role="command"] { grid-area: command; }
+.trial-split-pane .flog-node[data-flog-role="navigation"],
+.trial-split-pane .flog-node[data-flog-role="collection"] { grid-area: collection; }
+.trial-split-pane .flog-node[data-flog-role="detail"],
+.trial-split-pane .flog-node[data-flog-role="inspector"] { grid-area: detail; }
+.trial-split-pane .flog-node[data-flog-role="status"] { grid-area: status; }
+.trial-split-pane .flog-node[data-flog-role="evidence"] { grid-area: evidence; }
+
+.trial-sectioned-sidebar {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(270px, 0.28fr) minmax(0, 1fr);
+  grid-template-rows: minmax(48px, auto) minmax(78px, 0.10fr) minmax(120px, 0.18fr) minmax(120px, 0.18fr) minmax(58px, 0.07fr) minmax(72px, 0.09fr);
+  grid-template-areas:
+    "title title"
+    "command focus"
+    "collection focus"
+    "detail focus"
+    "status focus"
+    "evidence focus";
+}
+.trial-sectioned-sidebar .root-title { grid-area: title; }
+.trial-sectioned-sidebar .node-command, .trial-sectioned-sidebar .node-toolbar { grid-area: command; }
+.trial-sectioned-sidebar .node-workspace, .trial-sectioned-sidebar .node-editor, .trial-sectioned-sidebar .node-map { grid-area: focus; }
+.trial-sectioned-sidebar .node-records, .trial-sectioned-sidebar .node-outline, .trial-sectioned-sidebar .node-subsystems, .trial-sectioned-sidebar .node-jobs { grid-area: collection; }
+.trial-sectioned-sidebar .node-detail, .trial-sectioned-sidebar .node-inspector { grid-area: detail; }
+.trial-sectioned-sidebar .node-status, .trial-sectioned-sidebar .node-alerts { grid-area: status; }
+.trial-sectioned-sidebar .node-evidence { grid-area: evidence; }
+
+.trial-sectioned-sidebar .flog-node[data-flog-role="focus"],
+.trial-sectioned-sidebar .flog-node[data-flog-focus="true"] { grid-area: focus; }
+.trial-sectioned-sidebar .flog-node[data-flog-role="command"] { grid-area: command; }
+.trial-sectioned-sidebar .flog-node[data-flog-role="navigation"],
+.trial-sectioned-sidebar .flog-node[data-flog-role="collection"] { grid-area: collection; }
+.trial-sectioned-sidebar .flog-node[data-flog-role="detail"],
+.trial-sectioned-sidebar .flog-node[data-flog-role="inspector"] { grid-area: detail; }
+.trial-sectioned-sidebar .flog-node[data-flog-role="status"] { grid-area: status; }
+.trial-sectioned-sidebar .flog-node[data-flog-role="evidence"] { grid-area: evidence; }
+
+.trial-inspector {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(190px, 0.18fr) minmax(0, 1fr) minmax(250px, 0.24fr);
+  grid-template-rows: minmax(48px, auto) minmax(62px, 0.075fr) minmax(0, 1fr) minmax(86px, 0.105fr);
+  grid-template-areas:
+    "title title title"
+    "command command detail"
+    "collection focus detail"
+    "status focus evidence";
+}
+.trial-inspector .root-title { grid-area: title; }
+.trial-inspector .node-command, .trial-inspector .node-toolbar { grid-area: command; }
+.trial-inspector .node-workspace, .trial-inspector .node-editor, .trial-inspector .node-map { grid-area: focus; }
+.trial-inspector .node-records, .trial-inspector .node-outline, .trial-inspector .node-subsystems, .trial-inspector .node-jobs { grid-area: collection; }
+.trial-inspector .node-detail, .trial-inspector .node-inspector { grid-area: detail; }
+.trial-inspector .node-status, .trial-inspector .node-alerts { grid-area: status; }
+.trial-inspector .node-evidence { grid-area: evidence; }
+
+.trial-inspector .flog-node[data-flog-role="focus"],
+.trial-inspector .flog-node[data-flog-focus="true"] { grid-area: focus; }
+.trial-inspector .flog-node[data-flog-role="command"] { grid-area: command; }
+.trial-inspector .flog-node[data-flog-role="navigation"],
+.trial-inspector .flog-node[data-flog-role="collection"] { grid-area: collection; }
+.trial-inspector .flog-node[data-flog-role="detail"],
+.trial-inspector .flog-node[data-flog-role="inspector"] { grid-area: detail; }
+.trial-inspector .flog-node[data-flog-role="status"] { grid-area: status; }
+.trial-inspector .flog-node[data-flog-role="evidence"] { grid-area: evidence; }
+
+.trial-dashboard-grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: auto repeat(2, minmax(0, 1fr));
+}
+.trial-dashboard-grid .root-title { grid-column: 1 / -1; }
+.trial-dashboard-grid .flog-node[data-flog-focus="true"] { grid-column: span 2; }
+
+.trial-focus-priority {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(160px, 0.14fr) minmax(0, 1fr) minmax(235px, 0.21fr);
+  grid-template-rows: minmax(48px, auto) minmax(78px, 0.085fr) minmax(0, 1fr) minmax(66px, 0.075fr);
+  grid-template-areas:
+    "title title command"
+    "collection focus command"
+    "collection focus detail"
+    "status status evidence";
+}
+.trial-focus-priority .root-title { grid-area: title; }
+.trial-focus-priority .node-command, .trial-focus-priority .node-toolbar { grid-area: command; }
+.trial-focus-priority .node-workspace, .trial-focus-priority .node-editor, .trial-focus-priority .node-map { grid-area: focus; }
+.trial-focus-priority .node-records, .trial-focus-priority .node-outline, .trial-focus-priority .node-subsystems, .trial-focus-priority .node-jobs { grid-area: collection; }
+.trial-focus-priority .node-detail, .trial-focus-priority .node-inspector { grid-area: detail; }
+.trial-focus-priority .node-status, .trial-focus-priority .node-alerts { grid-area: status; }
+.trial-focus-priority .node-evidence { grid-area: evidence; }
+
+.trial-focus-priority .flog-node[data-flog-role="focus"],
+.trial-focus-priority .flog-node[data-flog-focus="true"] { grid-area: focus; }
+.trial-focus-priority .flog-node[data-flog-role="command"] { grid-area: command; }
+.trial-focus-priority .flog-node[data-flog-role="navigation"],
+.trial-focus-priority .flog-node[data-flog-role="collection"] { grid-area: collection; }
+.trial-focus-priority .flog-node[data-flog-role="detail"],
+.trial-focus-priority .flog-node[data-flog-role="inspector"] { grid-area: detail; }
+.trial-focus-priority .flog-node[data-flog-role="status"] { grid-area: status; }
+.trial-focus-priority .flog-node[data-flog-role="evidence"] { grid-area: evidence; }
+.trial-focus-priority .flog-node[data-flog-role="navigation"],
+.trial-focus-priority .flog-node[data-flog-role="collection"] {
+  /* Nearby can be satisfied by an integrated side rail, not only by center distance. */
+  align-self: stretch;
+}
+
+.trial-bounded-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+.trial-bounded-drawer .root-title,
+.trial-bounded-drawer .node-command,
+.trial-bounded-drawer .node-toolbar {
+  flex: 0 0 auto;
+}
+.trial-bounded-drawer .node-workspace,
+.trial-bounded-drawer .node-editor,
+.trial-bounded-drawer .node-map,
+.trial-bounded-drawer .flog-node[data-flog-role="focus"],
+.trial-bounded-drawer .flog-node[data-flog-focus="true"] {
+  flex: 1 1 auto;
+  min-height: 300px;
+}
+.trial-bounded-drawer .flog-node[data-flog-role="command"],
+.trial-bounded-drawer .node-command,
+.trial-bounded-drawer .node-toolbar {
+  flex: 0 0 auto;
+}
+.trial-bounded-drawer .flog-node:not([data-flog-focus="true"]):not(.node-command):not(.node-toolbar) {
+  flex: 0 0 92px;
+}
+
+@media (max-width: 720px) {
+  .flog-stage { padding: 10px; }
+  .flog-root { width: calc(100vw - 20px); height: calc(100vh - 20px); min-height: 0; }
+  .trial-split-pane,
+  .trial-sectioned-sidebar,
+  .trial-inspector,
+  .trial-dashboard-grid,
+  .trial-focus-priority,
+  .trial-bounded-drawer {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+  .trial-split-pane .node-detail,
+  .trial-split-pane .node-inspector,
+  .trial-split-pane .node-jobs,
+  .trial-sectioned-sidebar .node-detail,
+  .trial-sectioned-sidebar .node-inspector {
+    display: flex;
+  }
+  .flog-node[data-flog-focus="true"] { min-height: 360px; }
+}
+"""
 
 
 MEASURE_AND_OVERLAY_JS = r"""
-({rootSelector, app, chrome, viewportProfile, overlayMode}) => {
+({hierarchyId, candidate, chrome, viewportProfile}) => {
   const doc = document;
   const win = window;
-  const root = doc.querySelector(rootSelector);
+  const root = doc.querySelector(".flog-root");
   const viewport = {
     width: win.innerWidth,
     height: win.innerHeight,
@@ -221,21 +1738,7 @@ MEASURE_AND_OVERLAY_JS = r"""
     const top = Number(rect.top);
     const width = Math.max(0, Number(rect.width));
     const height = Math.max(0, Number(rect.height));
-    return {
-      x: left,
-      y: top,
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      area: width * height,
-    };
-  }
-
-  function emptyRect() {
-    return {x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, area: 0};
+    return {x: left, y: top, left, top, right: left + width, bottom: top + height, width, height, area: width * height};
   }
 
   function intersect(a, b) {
@@ -259,7 +1762,9 @@ MEASURE_AND_OVERLAY_JS = r"""
   function cssPath(el) {
     if (!el || !el.tagName) return "";
     if (el.id) return `#${CSS.escape(el.id)}`;
-    const className = String(el.className || "").trim().split(/\s+/).filter(Boolean).slice(0, 3);
+    const slot = el.getAttribute("data-flog-slot") || el.getAttribute("data-mc-slot");
+    if (slot) return `[data-mc-slot='${slot}']`;
+    const className = String(el.className || "").trim().split(/\s+/).filter(Boolean).slice(0, 2);
     if (className.length) return `${el.tagName.toLowerCase()}.${className.map((name) => CSS.escape(name)).join(".")}`;
     return el.tagName.toLowerCase();
   }
@@ -276,20 +1781,18 @@ MEASURE_AND_OVERLAY_JS = r"""
     return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") !== 0;
   }
 
-  function isInactiveOrDeferred(el) {
-    if (!el) return false;
-    if (el.closest("[hidden], [aria-hidden='true'], template")) return true;
-    if (el.closest("details:not([open])")) return true;
-    const input = el instanceof HTMLInputElement ? el : null;
-    if (input && input.type === "file") return true;
-    return false;
-  }
-
-  function elementRecord(el) {
+  function recordFor(el) {
     const raw = rectObj(el.getBoundingClientRect());
-    const clippedViewport = intersect(raw, viewport);
     return {
       selector: cssPath(el),
+      slot: el.getAttribute("data-flog-slot") || el.getAttribute("data-mc-slot") || "",
+      role: el.getAttribute("data-flog-role") || el.getAttribute("data-mc-role") || "",
+      priority: el.getAttribute("data-flog-priority") || el.getAttribute("data-mc-rank") || "",
+      visibility: el.getAttribute("data-flog-visibility") || el.getAttribute("data-mc-visibility") || "",
+      proximity: el.getAttribute("data-flog-proximity") || el.getAttribute("data-mc-proximity") || "",
+      minVisibleShare: Number(el.getAttribute("data-flog-min-visible-share") || "0"),
+      itemKind: el.getAttribute("data-flog-item-kind") || "",
+      itemRole: el.getAttribute("data-flog-item-role") || "",
       tag: el.tagName.toLowerCase(),
       label: labelFor(el),
       rect: raw,
@@ -304,7 +1807,6 @@ MEASURE_AND_OVERLAY_JS = r"""
         height: raw.height,
         area: raw.area,
       },
-      visibleArea: clippedViewport.area,
     };
   }
 
@@ -334,62 +1836,28 @@ MEASURE_AND_OVERLAY_JS = r"""
     return Math.min(area, bounds.area);
   }
 
-  function kindFor(el) {
-    const tag = el.tagName.toLowerCase();
-    const role = (el.getAttribute("role") || "").toLowerCase();
-    const type = (el.getAttribute("type") || "").toLowerCase();
-    const classText = String(el.className || "").toLowerCase();
-    const idText = String(el.id || "").toLowerCase();
-    if (tag === "canvas" || tag === "iframe" || tag === "video" || tag === "svg") return "embedded-surface";
-    if (el.isContentEditable || tag === "textarea" || classText.includes("editor") || classText.includes("terminal")) return "embedded-surface";
-    if (el.hasAttribute("data-file-explorer-tree") || classText.includes("tree") || classText.includes("grid") || classText.includes("list")) return "collection-surface";
-    if (["button", "summary"].includes(tag) || role === "button") return "action";
-    if (tag === "a" && el.hasAttribute("href")) return "action";
-    if (["input", "select", "textarea"].includes(tag) && type !== "hidden") return "control";
-    if (/^h[1-6]$/.test(tag) || tag === "label" || tag === "strong") return "label";
-    if (tag === "pre" || tag === "code" || tag === "output") return "evidence";
-    if (["main", "section", "aside", "article", "nav", "header", "footer"].includes(tag)) return "region";
-    if ((el.innerText || "").trim().length > 24 && el.children.length === 0) return "text";
-    return "";
-  }
-
-  function isMeaningful(el) {
-    if (!root.contains(el) || el === root) return false;
-    if (!isVisibleByStyle(el)) return false;
-    const rect = rectObj(el.getBoundingClientRect());
-    if (rect.area <= 4) return false;
-    const kind = kindFor(el);
-    if (kind) return true;
-    return false;
-  }
-
-  function isCriticalAction(el) {
-    if (!root.contains(el) || el === root) return false;
+  function isCriticalControl(el) {
     const tag = el.tagName.toLowerCase();
     const role = (el.getAttribute("role") || "").toLowerCase();
     const type = (el.getAttribute("type") || "").toLowerCase();
     if (tag === "input" && type === "hidden") return false;
-    return tag === "button" || tag === "summary" || role === "button" || (tag === "a" && el.hasAttribute("href")) || ["input", "select", "textarea"].includes(tag);
+    return tag === "button" || role === "button" || ["input", "select", "textarea"].includes(tag);
   }
 
   if (!root) {
     return {
-      app,
+      hierarchyId,
+      candidate,
       chrome,
       viewportProfile,
-      rootSelector,
       rootFound: false,
-      geometryFacts: {
-        provedBy: "playwright-chromium",
-        viewport,
+      geometryFacts: {provedBy: "playwright-chromium", viewport},
+      classification: {score: 0, status: "fail", warnings: ["synthetic root was not found"]},
+      humanLoop: {
+        proved: ["Chromium loaded the page."],
+        inferred: [],
+        unknowns: ["No root exists, so no layout inference is valid."],
       },
-      overlayLegend: [],
-      inference: {
-        confidence: "none",
-        suggestion: "unknown",
-        reason: "root selector was not found",
-      },
-      unknowns: ["The selected mount root was not found, so no layout inference is valid."],
     };
   }
 
@@ -407,35 +1875,217 @@ MEASURE_AND_OVERLAY_JS = r"""
     area: rootRaw.area,
   };
 
-  const allInside = Array.from(root.querySelectorAll("*"));
-  const meaningful = allInside.filter(isMeaningful).map((el) => ({...elementRecord(el), kind: kindFor(el)}));
-  const criticalElements = allInside.filter(isCriticalAction);
+  const nodes = Array.from(root.querySelectorAll(".flog-node")).filter((el) => isVisibleByStyle(el));
+  const focus = root.querySelector("[data-flog-focus='true']");
+  const requiredNodes = nodes.filter((el) => (el.getAttribute("data-flog-priority") || "") === "primary" || el.getAttribute("data-flog-focus") === "true");
+  const nodeRecords = nodes.map(recordFor).filter((item) => item.rect.area > 4);
+  const focusRecord = focus ? recordFor(focus) : null;
+  const visibleRequired = requiredNodes.map(recordFor).filter((item) => item.rect.area > 4 && intersect(item.rect, rootClipped).area > 4);
 
-  const clippedCriticalActions = [];
-  const hiddenCriticalActions = [];
-  const intentionallyDeferredActions = [];
-  for (const el of criticalElements) {
-    const record = elementRecord(el);
-    const visibleByStyle = isVisibleByStyle(el);
-    const hasArea = record.rect.area > 4;
-    const deferred = isInactiveOrDeferred(el);
-    if (!visibleByStyle || !hasArea) {
-      if (deferred) intentionallyDeferredActions.push({...record, reason: "deferred-or-proxied"});
-      else hiddenCriticalActions.push({...record, reason: "hidden-or-zero-sized"});
+  const nodeArea = unionArea(nodeRecords.map((item) => item.rect), rootClipped);
+  const nodeCoverageRatio = rootClipped.area > 0 ? nodeArea / rootClipped.area : 0;
+  const unclaimedAreaRatio = rootClipped.area > 0 ? Math.max(0, 1 - nodeCoverageRatio) : 1;
+  const focusClipped = focusRecord ? intersect(focusRecord.rect, rootClipped) : {left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, area: 0};
+  const focusVisibleArea = focusClipped.area;
+  const focusShare = rootClipped.area > 0 ? focusVisibleArea / rootClipped.area : 0;
+  const desiredFocusShare = Number(root.getAttribute("data-flog-desired-focus-share") || "0.45");
+  const minFocusShare = Number(root.getAttribute("data-flog-min-focus-share") || "0.3");
+  const maxFocusShare = Number(root.getAttribute("data-flog-max-focus-share") || "0.75");
+  const focusDeviation = Math.abs(focusShare - desiredFocusShare);
+
+  const focusContentRecords = focus
+    ? Array.from(focus.querySelectorAll("[data-flog-item='true']"))
+        .filter((el) => isVisibleByStyle(el))
+        .map(recordFor)
+        .filter((item) => item.rect.area > 4 && intersect(item.rect, focusClipped).area > 4)
+    : [];
+  const focusContentArea = unionArea(focusContentRecords.map((item) => item.rect), focusClipped);
+  const usefulFocusOccupancy = focusClipped.area > 0 ? Math.min(1, focusContentArea / focusClipped.area) : 0;
+  const minUsefulFocusOccupancy = Number(root.getAttribute("data-flog-min-useful-focus-occupancy") || "0.30");
+  const targetUsefulFocusOccupancy = Number(root.getAttribute("data-flog-target-useful-focus-occupancy") || "0.56");
+  const usefulFocusOccupancyDeviation = Math.abs(usefulFocusOccupancy - targetUsefulFocusOccupancy);
+
+  function splitAttr(name) {
+    return String(root.getAttribute(name) || "").split(/\s+/).map((part) => part.trim()).filter(Boolean);
+  }
+
+  const requiredCompanionSlots = splitAttr("data-flog-required-companions");
+  const nearbyCompanionSlots = splitAttr("data-flog-nearby-companions");
+  const deferableSlots = splitAttr("data-flog-deferable-slots");
+  const forbiddenDefaultHiddenSlots = splitAttr("data-flog-forbidden-default-hidden");
+  const preferredFamilies = splitAttr("data-flog-preferred-families");
+  const dangerousFamilies = splitAttr("data-flog-dangerous-families");
+
+  const nodeBySlot = new Map();
+  const elementBySlot = new Map();
+  for (const el of nodes) {
+    const slot = el.getAttribute("data-flog-slot") || el.getAttribute("data-mc-slot") || "";
+    if (slot && !elementBySlot.has(slot)) elementBySlot.set(slot, el);
+  }
+  for (const record of nodeRecords) {
+    if (record.slot && !nodeBySlot.has(record.slot)) nodeBySlot.set(record.slot, record);
+  }
+
+  function visibleShareForSlot(slot) {
+    const record = nodeBySlot.get(slot);
+    if (!record || rootClipped.area <= 0) return 0;
+    return intersect(record.rect, rootClipped).area / rootClipped.area;
+  }
+
+  function minVisibleShareForSlot(slot) {
+    const el = elementBySlot.get(slot);
+    const declared = Number(el?.getAttribute("data-flog-min-visible-share") || "0");
+    return Math.max(0.012, declared || 0);
+  }
+
+  function proximityForSlot(slot) {
+    const el = elementBySlot.get(slot);
+    return el?.getAttribute("data-flog-proximity") || "loose";
+  }
+
+  function proximityThreshold(proximity) {
+    if (proximity === "attached") return 0.38;
+    if (proximity === "near") return 0.58;
+    if (proximity === "self") return 0.20;
+    return 0.72;
+  }
+
+  function centerOf(rect) {
+    return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
+  }
+
+  function overlapLength(aStart, aEnd, bStart, bEnd) {
+    return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+  }
+
+  function nearbyIntegration(record, focus, rootBounds) {
+    if (!record || !focus || !rootBounds || rootBounds.area <= 0) {
+      return {mode: "missing", score: 0, gap: 1, crossAxisOverlap: 0};
+    }
+    const rect = record.rect;
+    const maxGap = Math.max(18, Math.min(rootBounds.width, rootBounds.height) * 0.045);
+    const horizontalGap = Math.max(0, Math.max(focus.left - rect.right, rect.left - focus.right));
+    const verticalGap = Math.max(0, Math.max(focus.top - rect.bottom, rect.top - focus.bottom));
+    const sideOverlap = overlapLength(rect.top, rect.bottom, focus.top, focus.bottom) / Math.max(1, Math.min(rect.height, focus.height));
+    const bandOverlap = overlapLength(rect.left, rect.right, focus.left, focus.right) / Math.max(1, Math.min(rect.width, focus.width));
+    const sideRail = horizontalGap <= maxGap && sideOverlap >= 0.22;
+    const band = verticalGap <= maxGap && bandOverlap >= 0.30;
+    if (!sideRail && !band) {
+      return {mode: "distance-only", score: 0, gap: Math.min(horizontalGap, verticalGap), crossAxisOverlap: Math.max(sideOverlap, bandOverlap)};
+    }
+    const gap = sideRail ? horizontalGap : verticalGap;
+    const crossAxisOverlap = sideRail ? sideOverlap : bandOverlap;
+    const score = Math.max(0, Math.min(1, (1 - gap / Math.max(1, maxGap)) * Math.min(1, crossAxisOverlap)));
+    return {
+      mode: sideRail ? "integrated-side-rail" : "integrated-cross-band",
+      score,
+      gap,
+      crossAxisOverlap,
+    };
+  }
+
+  const focusCenter = focusRecord ? centerOf(focusRecord.rect) : null;
+  const rootDiagonal = Math.max(1, Math.hypot(rootClipped.width, rootClipped.height));
+
+  const requiredCompanionResults = requiredCompanionSlots.map((slot) => {
+    const visibleShare = visibleShareForSlot(slot);
+    const minVisibleShare = minVisibleShareForSlot(slot);
+    return {
+      slot,
+      visibleShare,
+      minVisibleShare,
+      visible: visibleShare >= minVisibleShare,
+    };
+  });
+  const missingRequiredCompanions = requiredCompanionResults.filter((item) => !item.visible);
+
+  const forbiddenHiddenResults = forbiddenDefaultHiddenSlots.map((slot) => {
+    const visibleShare = visibleShareForSlot(slot);
+    const minVisibleShare = minVisibleShareForSlot(slot);
+    return {
+      slot,
+      visibleShare,
+      minVisibleShare,
+      visible: visibleShare >= minVisibleShare,
+    };
+  });
+  const hiddenForbiddenSlots = forbiddenHiddenResults.filter((item) => !item.visible);
+
+  const nearbyCompanionResults = nearbyCompanionSlots.map((slot) => {
+    const record = nodeBySlot.get(slot);
+    const proximity = proximityForSlot(slot);
+    const threshold = proximityThreshold(proximity);
+    const minVisibleShare = minVisibleShareForSlot(slot);
+    if (!record || !focusCenter || !focusRecord) {
+      return {
+        slot,
+        visibleShare: 0,
+        minVisibleShare,
+        effectiveMinVisibleShare: minVisibleShare,
+        normalizedDistance: 1,
+        proximity,
+        threshold,
+        distanceScore: 0,
+        integration: {mode: "missing", score: 0, gap: 1, crossAxisOverlap: 0},
+        near: false,
+      };
+    }
+    const center = centerOf(record.rect);
+    const normalizedDistance = Math.min(1, Math.hypot(center.x - focusCenter.x, center.y - focusCenter.y) / rootDiagonal);
+    const visibleShare = visibleShareForSlot(slot);
+    const integration = nearbyIntegration(record, focusRecord.rect, rootClipped);
+    const centerDistanceScore = Math.max(0, 1 - (normalizedDistance / Math.max(0.001, threshold)));
+    const relationshipScore = Math.max(centerDistanceScore, integration.score);
+    const effectiveMinVisibleShare = integration.score >= 0.55 ? minVisibleShare * 0.72 : minVisibleShare;
+    return {
+      slot,
+      visibleShare,
+      minVisibleShare,
+      effectiveMinVisibleShare,
+      normalizedDistance,
+      proximity,
+      threshold,
+      distanceScore: relationshipScore,
+      centerDistanceScore,
+      integration,
+      near: visibleShare >= effectiveMinVisibleShare && (normalizedDistance <= threshold || integration.score >= 0.55),
+    };
+  });
+  const distantNearbyCompanions = nearbyCompanionResults.filter((item) => !item.near);
+  const companionVisibilityRatio = requiredCompanionResults.length
+    ? requiredCompanionResults.filter((item) => item.visible).length / requiredCompanionResults.length
+    : 1;
+  const nearbyCompanionRatio = nearbyCompanionResults.length
+    ? nearbyCompanionResults.filter((item) => item.near).length / nearbyCompanionResults.length
+    : 1;
+  const companionProximityScore = nearbyCompanionResults.length
+    ? nearbyCompanionResults.reduce((total, item) => total + (item.visibleShare >= item.effectiveMinVisibleShare ? item.distanceScore : 0), 0) / nearbyCompanionResults.length
+    : 1;
+  const averageNearbyCompanionDistance = nearbyCompanionResults.length
+    ? nearbyCompanionResults.reduce((total, item) => total + item.normalizedDistance, 0) / nearbyCompanionResults.length
+    : 0;
+  const preferredFamilyMatch = preferredFamilies.includes(candidate);
+  const dangerousFamilyMatch = dangerousFamilies.includes(candidate);
+
+  const controls = Array.from(root.querySelectorAll("button, input, select, textarea")).filter(isCriticalControl);
+  const clippedCriticalControls = [];
+  const hiddenCriticalControls = [];
+  for (const el of controls) {
+    const record = recordFor(el);
+    const visible = isVisibleByStyle(el) && record.rect.area > 4;
+    if (!visible) {
+      hiddenCriticalControls.push({...record, reason: "hidden-or-zero-sized"});
       continue;
     }
     const inViewport = containsMostly(viewport, record.rect);
     const inRoot = containsMostly(rootRaw, record.rect);
     if (!inViewport || !inRoot) {
-      clippedCriticalActions.push({
-        ...record,
-        reason: !inViewport ? "outside-viewport" : "outside-root",
-      });
+      clippedCriticalControls.push({...record, reason: !inViewport ? "outside-viewport" : "outside-root"});
     }
   }
 
   const scrollOwners = [];
-  for (const el of [root, ...allInside]) {
+  for (const el of [root, ...nodes, ...Array.from(root.querySelectorAll(".node-body"))]) {
     if (!isVisibleByStyle(el)) continue;
     const rect = rectObj(el.getBoundingClientRect());
     if (rect.area <= 4) continue;
@@ -446,6 +2096,7 @@ MEASURE_AND_OVERLAY_JS = r"""
     if (scrolls && canScroll) {
       scrollOwners.push({
         selector: cssPath(el),
+        slot: el.getAttribute("data-flog-slot") || el.getAttribute("data-mc-slot") || "",
         label: labelFor(el),
         rect,
         clientWidth: el.clientWidth,
@@ -456,100 +2107,110 @@ MEASURE_AND_OVERLAY_JS = r"""
     }
   }
 
-  const meaningfulRects = meaningful.map((item) => item.rect);
-  const meaningfulArea = unionArea(meaningfulRects, rootClipped);
-  const meaningfulCoverageRatio = rootClipped.area > 0 ? meaningfulArea / rootClipped.area : 0;
-  const unclaimedAreaRatio = rootClipped.area > 0 ? Math.max(0, 1 - meaningfulCoverageRatio) : 1;
-  const rootViewportCoverageRatio = viewport.width * viewport.height > 0 ? rootClipped.area / (viewport.width * viewport.height) : 0;
-
-  const dataTraitElements = allInside.filter((el) => Array.from(el.attributes).some((attr) => attr.name.startsWith("data-mc") || attr.name.startsWith("data-widget")));
-  const mcelTraitElements = allInside.filter((el) => Array.from(el.attributes).some((attr) => attr.name.startsWith("data-mc-") || attr.name === "data-mc"));
-  const explicitSlots = allInside.filter((el) => el.hasAttribute("data-mc-slot"));
-  const explicitConnects = allInside.filter((el) => el.hasAttribute("data-mc-connects"));
-
-  const tagCounts = allInside.reduce((acc, el) => {
-    const tag = el.tagName.toLowerCase();
-    acc[tag] = (acc[tag] || 0) + 1;
-    return acc;
-  }, {});
-  const directChildren = Array.from(root.children).filter((el) => isVisibleByStyle(el) && rectObj(el.getBoundingClientRect()).area > 4);
-  const directChildTags = directChildren.map((el) => el.tagName.toLowerCase());
-  const hasAside = allInside.some((el) => el.tagName.toLowerCase() === "aside");
-  const hasMainOrSection = allInside.some((el) => ["main", "section", "article"].includes(el.tagName.toLowerCase()));
-  const hasCollection = meaningful.some((item) => item.kind === "collection-surface");
-  const hasEmbedded = meaningful.some((item) => item.kind === "embedded-surface");
-
-  let suggestion = "stacked-flow";
-  const reasons = [];
-  let inferenceConfidence = "low";
-  if (directChildren.length >= 2 && hasAside && hasMainOrSection) {
-    suggestion = "split-pane-or-sectioned-sidebar";
-    reasons.push("rendered HTML has side/support and main/content boundaries");
-  } else if (hasEmbedded && meaningful.length <= 6) {
-    suggestion = "embedded-surface-priority";
-    reasons.push("one or more embedded surfaces dominate the meaningful geometry");
-  } else if (hasCollection && hasMainOrSection) {
-    suggestion = "split-pane";
-    reasons.push("collection and content boundaries can be kept visible together");
-  } else if (meaningful.length <= 12 && rootViewportCoverageRatio > 0.35) {
-    suggestion = "stacked-flow";
-    reasons.push("small meaningful hierarchy can remain linear without obvious crowding");
-  }
-  if (explicitSlots.length || explicitConnects.length) {
-    inferenceConfidence = "medium";
-    reasons.push("some MCEL relationship traits are present");
-  }
-  if (mcelTraitElements.length >= 5 && explicitSlots.length >= 2) {
-    inferenceConfidence = "high";
-  }
-  if (!explicitSlots.length) {
-    reasons.push("no data-mc-slot traits found, so concern placement remains partly human-reviewed");
-  }
-  if (!explicitConnects.length) {
-    reasons.push("no data-mc-connects traits found, so action/result relationships are not machine-proven");
-  }
-
   const warnings = [];
-  if (rootClipped.area <= 1) warnings.push("mount root is not visible or has zero clipped area");
-  if (unclaimedAreaRatio > 0.6) warnings.push(`high measured unclaimed meaningful area (${unclaimedAreaRatio.toFixed(2)})`);
-  if (clippedCriticalActions.length) warnings.push(`${clippedCriticalActions.length} critical action(s) extend outside viewport/root`);
-  if (hiddenCriticalActions.length) warnings.push(`${hiddenCriticalActions.length} critical action(s) are hidden or zero-sized`);
-  if (scrollOwners.length > 3) warnings.push(`${scrollOwners.length} scroll owner(s) detected; scroll ownership needs human review`);
+  if (rootClipped.area <= 1) warnings.push("root is not visible");
+  if (unclaimedAreaRatio > 0.34) warnings.push(`high measured unclaimed layout area (${unclaimedAreaRatio.toFixed(2)})`);
+  if (focusShare < minFocusShare) warnings.push(`focus slot is starved (${focusShare.toFixed(2)} < ${minFocusShare.toFixed(2)})`);
+  if (focusShare > maxFocusShare) warnings.push(`focus slot dominates beyond target (${focusShare.toFixed(2)} > ${maxFocusShare.toFixed(2)})`);
+  if (usefulFocusOccupancy < minUsefulFocusOccupancy) warnings.push(`focus interior is too sparse (${usefulFocusOccupancy.toFixed(2)} < ${minUsefulFocusOccupancy.toFixed(2)})`);
+  if (focusContentRecords.length < 4) warnings.push(`focus slot has too few useful interior elements (${focusContentRecords.length})`);
+  if (clippedCriticalControls.length) warnings.push(`${clippedCriticalControls.length} critical control(s) extend outside viewport/root`);
+  if (hiddenCriticalControls.length) warnings.push(`${hiddenCriticalControls.length} critical control(s) are hidden or zero-sized`);
+  if (visibleRequired.length < requiredNodes.length) warnings.push("some required primary/focus nodes are not visible");
+  if (missingRequiredCompanions.length) warnings.push(`required companion slot(s) not visible enough: ${missingRequiredCompanions.map((item) => item.slot).join(", ")}`);
+  if (hiddenForbiddenSlots.length) warnings.push(`forbidden default-hidden slot(s) are missing from the default view: ${hiddenForbiddenSlots.map((item) => item.slot).join(", ")}`);
+  if (distantNearbyCompanions.length) warnings.push(`nearby companion slot(s) are too far from focus: ${distantNearbyCompanions.map((item) => item.slot).join(", ")}`);
+  const sourceOrderStarvesHighFocus = candidate === "source-order-stacked" && minFocusShare >= 0.40 && focusShare < minFocusShare;
+  if (dangerousFamilyMatch) warnings.push(`candidate is marked dangerous for this role contract: ${candidate}`);
+  if (sourceOrderStarvesHighFocus) warnings.push("source-order-stacked preserves visibility but starves a high-focus hierarchy");
+  if (!preferredFamilyMatch && preferredFamilies.length) warnings.push(`candidate is outside preferred families for this hierarchy`);
+  if (doc.body.scrollWidth > viewport.width + 2) warnings.push("document overflows horizontally");
+  if (doc.body.scrollHeight > viewport.height + 2 && candidate !== "source-order-stacked") warnings.push("document overflows vertically outside the root");
 
-  const score = Math.max(
-    0,
-    Math.round(
-      100 -
-        clippedCriticalActions.length * 7 -
-        hiddenCriticalActions.length * 10 -
-        Math.max(0, scrollOwners.length - 1) * 8 -
-        (unclaimedAreaRatio > 0.6 ? 20 : unclaimedAreaRatio > 0.45 ? 8 : 0) -
-        (rootViewportCoverageRatio < 0.25 ? 12 : 0)
-    )
-  );
-  const status = score >= 85 && !warnings.length ? "pass" : score >= 65 ? "watch" : "fail";
+  const positiveReasons = [];
+  const failureReasons = [];
+  const reviewNotes = [];
+  function pct(value) {
+    return `${(value * 100).toFixed(0)}%`;
+  }
+  if (focusShare >= minFocusShare && focusShare <= maxFocusShare) {
+    positiveReasons.push(`focus ${root.getAttribute("data-flog-focus-slot") || "slot"} got ${pct(focusShare)} of the root against target ${pct(desiredFocusShare)}`);
+  } else if (focusShare < minFocusShare) {
+    failureReasons.push(`focus share ${pct(focusShare)} is below required minimum ${pct(minFocusShare)}`);
+  } else {
+    failureReasons.push(`focus share ${pct(focusShare)} exceeds maximum ${pct(maxFocusShare)}, suggesting companion context may be starved`);
+  }
+  if (usefulFocusOccupancy >= minUsefulFocusOccupancy) {
+    positiveReasons.push(`focus interior occupancy is ${pct(usefulFocusOccupancy)} from ${focusContentRecords.length} useful seeded elements`);
+  } else {
+    failureReasons.push(`focus interior occupancy is only ${pct(usefulFocusOccupancy)}; this looks like a big empty focus panel`);
+  }
+  if (companionVisibilityRatio === 1) {
+    positiveReasons.push("all required companions remained visible enough");
+  } else {
+    failureReasons.push(`required companion visibility is ${pct(companionVisibilityRatio)}`);
+  }
+  if (nearbyCompanionRatio === 1) {
+    const integratedCount = nearbyCompanionResults.filter((item) => item.integration && item.integration.score >= 0.55).length;
+    const integrationText = integratedCount ? `; ${integratedCount} nearby companion(s) are integrated as side/band regions` : "";
+    positiveReasons.push(`nearby companions stayed near the focus or were integrated into support regions (avg distance ${averageNearbyCompanionDistance.toFixed(2)}${integrationText})`);
+  } else {
+    failureReasons.push(`nearby companion fit is ${pct(nearbyCompanionRatio)}; ${distantNearbyCompanions.map((item) => item.slot).join(", ")} need docking or integration review`);
+  }
+  if (unclaimedAreaRatio <= 0.24) {
+    positiveReasons.push(`unclaimed area is controlled at ${pct(unclaimedAreaRatio)}`);
+  } else {
+    failureReasons.push(`unclaimed area is high at ${pct(unclaimedAreaRatio)}`);
+  }
+  if (clippedCriticalControls.length === 0 && hiddenCriticalControls.length === 0) {
+    positiveReasons.push("no critical controls were clipped or hidden");
+  } else {
+    failureReasons.push(`${clippedCriticalControls.length + hiddenCriticalControls.length} critical control(s) were clipped or hidden`);
+  }
+  if (preferredFamilyMatch) {
+    positiveReasons.push(`candidate is preferred for this declared role contract`);
+  } else if (preferredFamilies.length) {
+    reviewNotes.push(`candidate is outside preferred families: ${preferredFamilies.join(", ")}`);
+  }
+  if (dangerousFamilyMatch) {
+    failureReasons.push(`candidate is marked dangerous: ${candidate}`);
+  }
+  if (sourceOrderStarvesHighFocus) {
+    failureReasons.push("source-order-stacked is only a visibility fallback here; it does not satisfy the declared focus minimum");
+  }
+  if (scrollOwners.length > 2) {
+    reviewNotes.push(`${scrollOwners.length} scroll owners may create review burden`);
+  }
+  if (nearbyCompanionResults.some((item) => item.integration && item.integration.score >= 0.55)) {
+    reviewNotes.push("Nearby was satisfied by semantic docking/integration, not just center-point distance.");
+  }
+  reviewNotes.push("Human review still must compare the PNG proof against the intended app meaning.");
 
-  const proved = [
-    "Chromium viewport size",
-    "mount-root rectangle",
-    "meaningful rendered rectangles",
-    "visible/clipped/hidden control rectangles",
-    "scroll-owner rectangles",
-    "approximate union area of meaningful rendered elements inside the mount root",
-  ];
-  const inferred = [
-    "whether unclaimed area is actually wasted vs intentionally calm spacing",
-    "which stable layout family should be tried first",
-    "whether hidden/proxied controls are acceptable app state",
-  ];
-  const unknowns = [];
-  if (!explicitSlots.length) unknowns.push("Concern hierarchy is weak because data-mc-slot traits are missing.");
-  if (!explicitConnects.length) unknowns.push("Action/result relationships are weak because data-mc-connects traits are missing.");
-  if (unclaimedAreaRatio > 0.6) unknowns.push("High unclaimed area needs human review: it may be waste, or the detector may not yet understand a meaningful surface.");
-  if (intentionallyDeferredActions.length) unknowns.push("Some controls are intentionally deferred/proxied and should not be treated as layout failures without human confirmation.");
+  let score = 100;
+  score -= Math.round(unclaimedAreaRatio * 54);
+  score -= Math.round(focusDeviation * 72);
+  if (focusShare < minFocusShare) score -= 16;
+  if (focusShare > maxFocusShare) score -= 8;
+  score -= Math.round(Math.max(0, minUsefulFocusOccupancy - usefulFocusOccupancy) * 72);
+  score -= Math.min(14, Math.max(0, 4 - focusContentRecords.length) * 4);
+  score -= clippedCriticalControls.length * 8;
+  score -= hiddenCriticalControls.length * 10;
+  score -= Math.max(0, visibleRequired.length < requiredNodes.length ? 18 : 0);
+  score -= missingRequiredCompanions.length * 14;
+  score -= hiddenForbiddenSlots.length * 16;
+  score -= distantNearbyCompanions.length * 6;
+  score -= Math.round((1 - companionVisibilityRatio) * 18);
+  score -= Math.round((1 - nearbyCompanionRatio) * 10);
+  score -= Math.round((1 - companionProximityScore) * 12);
+  if (dangerousFamilyMatch) score -= 14;
+  if (sourceOrderStarvesHighFocus) score -= 12;
+  if (preferredFamilyMatch) score += 6;
+  score -= Math.max(0, scrollOwners.length - 2) * 5;
+  if (doc.body.scrollWidth > viewport.width + 2) score -= 16;
+  if (doc.body.scrollHeight > viewport.height + 2 && candidate !== "source-order-stacked") score -= 8;
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const status = score >= 82 && warnings.length <= 1 ? "pass" : score >= 64 ? "watch" : "fail";
 
-  // Draw overlay into the page. Coordinates are document-relative so viewport and
-  // full-page screenshots stay aligned.
   doc.querySelectorAll("[data-flog-snapshot-overlay]").forEach((node) => node.remove());
   const overlay = doc.createElement("div");
   overlay.setAttribute("data-flog-snapshot-overlay", "root");
@@ -583,14 +2244,14 @@ MEASURE_AND_OVERLAY_JS = r"""
     box.style.border = `2px solid ${color}`;
     box.style.background = fill;
     box.style.boxSizing = "border-box";
-    box.style.borderRadius = "3px";
+    box.style.borderRadius = "4px";
     const tag = doc.createElement("div");
     tag.textContent = label;
     tag.style.position = "absolute";
     tag.style.left = "0";
     tag.style.top = "0";
-    tag.style.maxWidth = "260px";
-    tag.style.padding = "2px 4px";
+    tag.style.maxWidth = "360px";
+    tag.style.padding = "2px 5px";
     tag.style.color = "#111";
     tag.style.background = color;
     tag.style.opacity = "0.92";
@@ -601,31 +2262,18 @@ MEASURE_AND_OVERLAY_JS = r"""
     overlay.appendChild(box);
   }
 
-  addBox({documentRect: rootDocumentRect}, "#43a7ff", `root ${rootSelector}`, "rgba(67, 167, 255, 0.05)");
-  meaningful.slice(0, 36).forEach((item) => addBox(item, "#38d66b", `${item.kind}: ${item.selector}`, "rgba(56, 214, 107, 0.04)"));
-  scrollOwners.slice(0, 18).forEach((item) => {
-    const record = {
-      documentRect: {
-        left: item.rect.left + win.scrollX,
-        top: item.rect.top + win.scrollY,
-        width: item.rect.width,
-        height: item.rect.height,
-      }
-    };
-    addBox(record, "#ffbf3f", `scroll: ${item.selector}`, "rgba(255, 191, 63, 0.06)");
+  addBox({documentRect: rootDocumentRect}, "#43a7ff", `root ${hierarchyId}`, "rgba(67, 167, 255, 0.04)");
+  nodeRecords.forEach((item) => {
+    const isFocus = item.slot === (root.getAttribute("data-flog-focus-slot") || "");
+    addBox(item, isFocus ? "#b46cff" : "#38d66b", `${isFocus ? "FOCUS " : ""}${item.slot}`, isFocus ? "rgba(180,108,255,0.07)" : "rgba(56,214,107,0.04)");
   });
-  clippedCriticalActions.slice(0, 18).forEach((item) => addBox(item, "#ff4d4d", `clipped: ${item.selector}`, "rgba(255, 77, 77, 0.05)"));
-  hiddenCriticalActions.slice(0, 12).forEach((item) => {
-    // Hidden zero-size elements cannot be boxed; mark the top-left of the root.
-    const marker = {
-      documentRect: {
-        left: rootDocumentRect.left + 6,
-        top: rootDocumentRect.top + 24 + hiddenCriticalActions.indexOf(item) * 18,
-        width: 180,
-        height: 16,
-      }
-    };
-    addBox(marker, "#ff4d4d", `hidden: ${item.selector}`, "rgba(255, 77, 77, 0.16)");
+  scrollOwners.slice(0, 14).forEach((item) => {
+    const rect = item.rect;
+    addBox({documentRect: {left: rect.left + win.scrollX, top: rect.top + win.scrollY, width: rect.width, height: rect.height}}, "#ffbf3f", `scroll ${item.slot || item.selector}`, "rgba(255,191,63,0.06)");
+  });
+  clippedCriticalControls.slice(0, 18).forEach((item) => addBox(item, "#ff4d4d", `clipped ${item.selector}`, "rgba(255,77,77,0.06)"));
+  hiddenCriticalControls.slice(0, 12).forEach((item, index) => {
+    addBox({documentRect: {left: rootDocumentRect.left + 8, top: rootDocumentRect.top + 28 + index * 18, width: 220, height: 16}}, "#ff4d4d", `hidden ${item.selector}`, "rgba(255,77,77,0.16)");
   });
 
   const legend = doc.createElement("div");
@@ -633,86 +2281,102 @@ MEASURE_AND_OVERLAY_JS = r"""
   legend.style.position = "fixed";
   legend.style.left = "12px";
   legend.style.bottom = "12px";
-  legend.style.maxWidth = "520px";
+  legend.style.maxWidth = "640px";
   legend.style.padding = "10px 12px";
-  legend.style.background = "rgba(0, 0, 0, 0.78)";
+  legend.style.background = "rgba(0,0,0,.80)";
   legend.style.color = "white";
-  legend.style.border = "1px solid rgba(255,255,255,0.35)";
+  legend.style.border = "1px solid rgba(255,255,255,.35)";
   legend.style.borderRadius = "8px";
-  legend.style.boxShadow = "0 8px 28px rgba(0,0,0,0.35)";
+  legend.style.boxShadow = "0 8px 28px rgba(0,0,0,.35)";
   legend.innerHTML = [
-    `<strong>FLOG human-review snapshot</strong>`,
-    `app=${app} viewport=${viewportProfile} chrome=${chrome}`,
-    `score=${score} status=${status} unclaimed=${unclaimedAreaRatio.toFixed(3)}`,
-    `<span style="color:#43a7ff">blue=root</span> <span style="color:#38d66b">green=meaningful</span> <span style="color:#ffbf3f">orange=scroll</span> <span style="color:#ff4d4d">red=clipped/hidden</span>`,
-    `inference=${suggestion} confidence=${inferenceConfidence}`,
+    `<strong>FLOG trial proof</strong>`,
+    `hierarchy=${hierarchyId} layout=${candidate} viewport=${viewportProfile} chrome=${chrome}`,
+    `score=${score} status=${status} wasted/unclaimed=${unclaimedAreaRatio.toFixed(3)} focus=${focusShare.toFixed(3)} target=${desiredFocusShare.toFixed(2)} focus-occupancy=${usefulFocusOccupancy.toFixed(3)} companion-proximity=${companionProximityScore.toFixed(3)}`,
+    `<span style="color:#43a7ff">blue=root</span> <span style="color:#38d66b">green=semantic node</span> <span style="color:#b46cff">purple=focus target</span> <span style="color:#ffbf3f">orange=scroll</span> <span style="color:#ff4d4d">red=clipped/hidden</span>`,
   ].join("<br>");
   overlay.appendChild(legend);
 
   return {
-    app,
+    hierarchyId,
+    candidate,
     chrome,
     viewportProfile,
-    rootSelector,
     rootFound: true,
-    title: root.getAttribute("aria-label") || labelFor(root),
+    title: root.querySelector("h1")?.innerText || hierarchyId,
     geometryFacts: {
       provedBy: "playwright-chromium",
       viewport,
-      root: {
-        raw: rootRaw,
-        clipped: rootClipped,
-        documentRect: rootDocumentRect,
-      },
+      root: {raw: rootRaw, clipped: rootClipped, documentRect: rootDocumentRect},
       bodyScrollWidth: doc.body.scrollWidth,
       bodyScrollHeight: doc.body.scrollHeight,
       documentOverflowX: doc.body.scrollWidth > viewport.width + 2,
       documentOverflowY: doc.body.scrollHeight > viewport.height + 2,
-      meaningfulCount: meaningful.length,
-      meaningfulCoverageRatio,
+      nodeCount: nodeRecords.length,
+      nodeCoverageRatio,
       unclaimedAreaRatio,
-      rootViewportCoverageRatio,
-      clippedCriticalActionCount: clippedCriticalActions.length,
-      hiddenCriticalActionCount: hiddenCriticalActions.length,
-      intentionallyDeferredActionCount: intentionallyDeferredActions.length,
+      focusShare,
+      desiredFocusShare,
+      minFocusShare,
+      maxFocusShare,
+      focusDeviation,
+      focusContentCount: focusContentRecords.length,
+      focusContentArea,
+      usefulFocusOccupancy,
+      minUsefulFocusOccupancy,
+      targetUsefulFocusOccupancy,
+      usefulFocusOccupancyDeviation,
+      requiredNodeCount: requiredNodes.length,
+      visibleRequiredNodeCount: visibleRequired.length,
+      clippedCriticalControlCount: clippedCriticalControls.length,
+      hiddenCriticalControlCount: hiddenCriticalControls.length,
       scrollOwnerCount: scrollOwners.length,
-      directChildTags,
-      tagCounts,
-      dataTraitElementCount: dataTraitElements.length,
-      mcelTraitElementCount: mcelTraitElements.length,
-      explicitSlotCount: explicitSlots.length,
-      explicitConnectCount: explicitConnects.length,
+      requiredCompanionSlots,
+      nearbyCompanionSlots,
+      deferableSlots,
+      forbiddenDefaultHiddenSlots,
+      preferredFamilies,
+      dangerousFamilies,
+      companionVisibilityRatio,
+      nearbyCompanionRatio,
+      companionProximityScore,
+      averageNearbyCompanionDistance,
+      requiredCompanions: requiredCompanionResults,
+      nearbyCompanions: nearbyCompanionResults,
+      missingRequiredCompanions,
+      hiddenForbiddenSlots,
+      distantNearbyCompanions,
+      preferredFamilyMatch,
+      dangerousFamilyMatch,
     },
     examples: {
-      meaningful: meaningful.slice(0, 20),
-      clippedCriticalActions: clippedCriticalActions.slice(0, 20),
-      hiddenCriticalActions: hiddenCriticalActions.slice(0, 20),
-      intentionallyDeferredActions: intentionallyDeferredActions.slice(0, 20),
+      nodes: nodeRecords,
+      focus: focusRecord,
+      focusContent: focusContentRecords.slice(0, 30),
+      clippedCriticalControls: clippedCriticalControls.slice(0, 20),
+      hiddenCriticalControls: hiddenCriticalControls.slice(0, 20),
       scrollOwners: scrollOwners.slice(0, 20),
     },
-    classification: {
-      score,
-      status,
-      warnings,
-    },
-    inference: {
-      suggestion,
-      confidence: inferenceConfidence,
-      reasons,
-    },
+    classification: {score, status, warnings, positiveReasons, failureReasons, reviewNotes},
     humanLoop: {
-      required: inferenceConfidence !== "high" || warnings.length > 0,
-      proved,
-      inferred,
-      unknowns,
-      reviewPrompt: "Use the PNG overlay to decide whether the inferred layout family makes sense or whether the HTML hierarchy needs better MCEL traits first.",
+      required: true,
+      proved: [
+        "Chromium rendered the candidate layout.",
+        "The PNG shows the root, semantic nodes, focus target, scroll owners, and clipped/hidden controls.",
+        "The report measured approximate node coverage and unclaimed area inside the root.",
+        "The report measured how much of the root was given to the declared focus slot.",
+      ],
+      inferred: [
+        "Whether the unclaimed area is desirable calm spacing or waste.",
+        "Whether the declared focus slot is the correct thing to maximize for the real app.",
+        "Whether required companions are truly required, nearby, or safely deferable.",
+        "Whether this candidate should become a default for this hierarchy/chrome.",
+      ],
+      unknowns: [
+        "Real app data volume may change scroll pressure.",
+        "Theme-specific readability is not fully scored yet.",
+        "The seeded role contract is a stand-in until live MCEL hierarchies are strong enough.",
+      ],
     },
-    overlayLegend: [
-      {color: "blue", meaning: "mount root"},
-      {color: "green", meaning: "meaningful occupied surfaces/controls"},
-      {color: "orange", meaning: "scroll owners"},
-      {color: "red", meaning: "clipped or hidden critical controls"},
-    ],
   };
 }
 """
@@ -720,14 +2384,13 @@ MEASURE_AND_OVERLAY_JS = r"""
 
 def playwright_missing_message(exc: BaseException) -> str:
     return (
-        "Playwright/Chromium is required for PNG geometry snapshots. "
+        "Playwright/Chromium is required for FLOG layout trial PNGs. "
         "Install the browser with: python -m playwright install chromium. "
         f"Original error: {exc}"
     )
 
 
 def verify_png_written(path: Path) -> None:
-    """Fail loudly when the whole purpose of the run did not happen."""
     if not path.exists():
         raise RuntimeError(f"Expected PNG snapshot was not created: {path}")
     if path.stat().st_size <= 0:
@@ -741,15 +2404,115 @@ def capture_png(page: Any, path: Path, *, full_page: bool) -> str:
     return path.name
 
 
-def run_browser_snapshots(
+def measurement_score(item: dict[str, Any]) -> int:
+    classification = item.get("classification") or {}
+    return int(classification.get("selectionScore", classification.get("score", 0)) or 0)
+
+
+def measurement_status(item: dict[str, Any]) -> str:
+    return str((item.get("classification") or {}).get("status") or "fail")
+
+
+def measurement_selection_row(
+    item: dict[str, Any],
     *,
-    repo: Path,
-    apps: list[AppEntry],
+    selection_state: str,
+    highest_scoring: dict[str, Any],
+) -> dict[str, Any]:
+    classification = item.get("classification") or {}
+    facts = item.get("geometryFacts") or {}
+    highest_classification = highest_scoring.get("classification") or {}
+    row = {
+        "hierarchyId": item["hierarchyId"],
+        "viewportProfile": item["viewportProfile"],
+        "candidate": item["candidate"],
+        "score": classification.get("score", 0),
+        "status": classification.get("status", "fail"),
+        "selectionState": selection_state,
+        "noPassingCandidate": selection_state == "noPassingCandidate",
+        "unclaimedAreaRatio": facts.get("unclaimedAreaRatio", 0),
+        "focusShare": facts.get("focusShare", 0),
+        "desiredFocusShare": facts.get("desiredFocusShare", 0),
+        "usefulFocusOccupancy": facts.get("usefulFocusOccupancy", 0),
+        "companionProximityScore": facts.get("companionProximityScore", 1),
+        "geometryScore": classification.get("geometryScore", classification.get("score", 0)),
+        "selectionScore": classification.get("selectionScore", classification.get("score", 0)),
+        "contractFitScore": classification.get("contractFitScore", 0),
+        "contractFitState": classification.get("contractFitState", "notEvaluated"),
+        "contractFitReasons": (item.get("contractFit") or {}).get("positiveReasons", []),
+        "contractFitRisks": (item.get("contractFit") or {}).get("riskReasons", []),
+        "reasons": classification.get("positiveReasons", []),
+        "failureReasons": classification.get("failureReasons", []),
+        "reviewNotes": classification.get("reviewNotes", []),
+        "snapshots": item.get("snapshots", {}),
+        "highestScoringCandidate": {
+            "candidate": highest_scoring.get("candidate"),
+            "score": highest_classification.get("score", 0),
+            "status": highest_classification.get("status", "fail"),
+        },
+    }
+    if selection_state == "noPassingCandidate":
+        row["highestScoringFailure"] = {
+            "candidate": highest_scoring.get("candidate"),
+            "score": highest_classification.get("score", 0),
+            "status": highest_classification.get("status", "fail"),
+            "failureReasons": highest_classification.get("failureReasons", []),
+            "snapshots": highest_scoring.get("snapshots", {}),
+        }
+    return row
+
+
+def best_by_hierarchy_viewport_rows(measurements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for measurement in measurements:
+        key = f"{measurement['hierarchyId']}::{measurement['viewportProfile']}"
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(measurement)
+
+    rows: list[dict[str, Any]] = []
+    for key in order:
+        ranked = sorted(
+            grouped[key],
+            key=lambda item: (
+                measurement_score(item),
+                1 if measurement_status(item) == "pass" else 0,
+                1 if measurement_status(item) == "watch" else 0,
+            ),
+            reverse=True,
+        )
+        highest_scoring = ranked[0]
+        acceptable = [item for item in ranked if measurement_status(item) in ACCEPTABLE_LAYOUT_STATUSES]
+        if acceptable:
+            rows.append(
+                measurement_selection_row(
+                    acceptable[0],
+                    selection_state="bestPassingCandidate",
+                    highest_scoring=highest_scoring,
+                )
+            )
+        else:
+            rows.append(
+                measurement_selection_row(
+                    highest_scoring,
+                    selection_state="noPassingCandidate",
+                    highest_scoring=highest_scoring,
+                )
+            )
+    return rows
+
+
+def run_synthetic_trials(
+    *,
+    hierarchies: list[dict[str, Any]],
+    candidates: list[str],
     viewports: list[ViewportProfile],
     chrome: str,
     output_dir: Path,
     screenshot_mode: str,
-    keep_expanded_html: bool,
+    keep_html: bool,
 ) -> dict[str, Any]:
     try:
         from playwright.sync_api import sync_playwright
@@ -757,98 +2520,95 @@ def run_browser_snapshots(
         raise SystemExit(playwright_missing_message(exc)) from exc
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    # Put PNGs directly in the report directory by default. The report should be
-    # self-contained and obvious to inspect after a smoke run.
-    snapshot_dir = output_dir
-
-    expanded_html = expand_applications_html(repo)
-    temp_dir_cm = tempfile.TemporaryDirectory(prefix="flog-layout-snapshot-")
-    temp_dir = Path(temp_dir_cm.name)
-    expanded_path = temp_dir / "applications-expanded.html"
-    expanded_path.write_text(expanded_html, encoding="utf-8")
-    if keep_expanded_html:
-        expanded_copy = output_dir / "applications-expanded.html"
-        expanded_copy.write_text(expanded_html, encoding="utf-8")
-
     measurements: list[dict[str, Any]] = []
     generated_at = datetime.now(timezone.utc).isoformat()
 
-    try:
-        with sync_playwright() as pw:
-            try:
-                browser = pw.chromium.launch(headless=True)
-            except Exception as exc:  # pragma: no cover - depends on local browser install
-                raise SystemExit(playwright_missing_message(exc)) from exc
+    with tempfile.TemporaryDirectory(prefix="flog-layout-trials-") as temp_name:
+        temp_dir = Path(temp_name)
+        try:
+            with sync_playwright() as pw:
+                try:
+                    browser = pw.chromium.launch(headless=True)
+                except Exception as exc:  # pragma: no cover - depends on local browser install
+                    raise SystemExit(playwright_missing_message(exc)) from exc
 
-            try:
-                for viewport in viewports:
-                    context = browser.new_context(
-                        viewport={"width": viewport.width, "height": viewport.height},
-                        device_scale_factor=1,
-                    )
-                    page = context.new_page()
-                    page.on("console", lambda msg: None)
-                    for app in apps:
-                        url = expanded_path.as_uri()
-                        page.goto(url, wait_until="domcontentloaded")
-                        page.evaluate(
-                            """({app}) => {
-                              try {
-                                if (typeof window.setActiveApp === "function") {
-                                  window.setActiveApp(app, {syncRoute: false, replaceRoute: true});
-                                } else {
-                                  document.body.dataset.activeApp = app;
-                                }
-                              } catch (error) {
-                                document.body.dataset.activeApp = app;
-                                window.__flogActivationError = String(error && error.message || error || "");
-                              }
-                            }""",
-                            {"app": app.app},
+                try:
+                    for viewport in viewports:
+                        context = browser.new_context(
+                            viewport={"width": viewport.width, "height": viewport.height},
+                            device_scale_factor=1,
                         )
-                        page.wait_for_timeout(150)
-                        measurement = page.evaluate(
-                            MEASURE_AND_OVERLAY_JS,
-                            {
-                                "rootSelector": app.root_selector,
-                                "app": app.app,
-                                "chrome": chrome,
-                                "viewportProfile": viewport.name,
-                                "overlayMode": screenshot_mode,
-                            },
-                        )
-                        measurement["partial"] = app.partial
-                        measurement["href"] = app.href
-                        measurement["appTitle"] = app.title
-                        measurement["summary"] = app.summary
-                        measurement["activationError"] = page.evaluate("window.__flogActivationError || ''")
-                        measurement["snapshots"] = {}
+                        page = context.new_page()
+                        page.on("console", lambda msg: None)
+                        for hierarchy in hierarchies:
+                            for candidate in candidates:
+                                html_text = render_trial_html(hierarchy, candidate, chrome)
+                                html_path = temp_dir / f"{slugify(hierarchy['id'])}--{slugify(candidate)}.html"
+                                html_path.write_text(html_text, encoding="utf-8")
+                                if keep_html:
+                                    (output_dir / html_path.name).write_text(html_text, encoding="utf-8")
+                                page.goto(html_path.as_uri(), wait_until="domcontentloaded")
+                                page.wait_for_timeout(100)
+                                measurement = page.evaluate(
+                                    MEASURE_AND_OVERLAY_JS,
+                                    {
+                                        "hierarchyId": hierarchy["id"],
+                                        "candidate": candidate,
+                                        "chrome": chrome,
+                                        "viewportProfile": viewport.name,
+                                    },
+                                )
+                                measurement["hierarchyTitle"] = hierarchy["title"]
+                                measurement["hierarchyDescription"] = hierarchy["description"]
+                                measurement["sourceApp"] = hierarchy.get("sourceApp", "")
+                                measurement["focusSlot"] = hierarchy["focusSlot"]
+                                measurement["rootConcern"] = hierarchy["rootConcern"]
+                                measurement["roleContract"] = hierarchy.get("roleContract", {})
+                                measurement["snapshots"] = {}
 
-                        base_name = f"{slugify(app.app)}--{slugify(viewport.name)}--{slugify(chrome)}"
-                        page.wait_for_timeout(50)
-                        if screenshot_mode in {"viewport", "both"}:
-                            png = snapshot_dir / f"{base_name}--viewport.png"
-                            measurement["snapshots"]["viewport"] = capture_png(page, png, full_page=False)
-                        if screenshot_mode in {"full-page", "both"}:
-                            png = snapshot_dir / f"{base_name}--full-page.png"
-                            measurement["snapshots"]["fullPage"] = capture_png(page, png, full_page=True)
-                        if not measurement["snapshots"]:
-                            raise RuntimeError(f"No PNG snapshots were requested or written for {app.app} / {viewport.name}.")
-                        measurements.append(measurement)
-                    context.close()
-            finally:
-                browser.close()
-    finally:
-        temp_dir_cm.cleanup()
+                                base_name = f"{slugify(hierarchy['id'])}--{slugify(viewport.name)}--{slugify(candidate)}"
+                                if screenshot_mode in {"viewport", "both"}:
+                                    png = output_dir / f"{base_name}--viewport.png"
+                                    measurement["snapshots"]["viewport"] = capture_png(page, png, full_page=False)
+                                if screenshot_mode in {"full-page", "both"}:
+                                    png = output_dir / f"{base_name}--full-page.png"
+                                    measurement["snapshots"]["fullPage"] = capture_png(page, png, full_page=True)
+                                if not measurement["snapshots"]:
+                                    raise RuntimeError(
+                                        f"No PNG snapshots were written for {hierarchy['id']} / {candidate} / {viewport.name}."
+                                    )
+                                apply_semantic_contract_fit(hierarchy, measurement)
+                                measurements.append(measurement)
+                        context.close()
+                finally:
+                    browser.close()
+        finally:
+            pass
 
-    report = {
-        "kind": "mcel.flog.layout.snapshot.report",
+    best_by_hierarchy = best_by_hierarchy_viewport_rows(measurements)
+
+    return {
+        "kind": "mcel.flog.synthetic.layout.trial.report",
         "generatedAt": generated_at,
-        "smokeLevel": "browser-geometry-human-review",
+        "smokeLevel": "synthetic-hierarchy-layout-trials",
         "geometryEngine": "playwright-chromium",
-        "hierarchySource": "html",
+        "hierarchySource": "generated-mcel-like-html",
         "chrome": chrome,
-        "apps": [app.app for app in apps],
+        "candidates": candidates,
+        "hierarchies": [
+            {
+                "id": item["id"],
+                "title": item["title"],
+                "sourceApp": item.get("sourceApp", ""),
+                "rootConcern": item["rootConcern"],
+                "focusSlot": item["focusSlot"],
+                "desiredFocusShare": item["desiredFocusShare"],
+                "roleContract": item.get("roleContract", {}),
+                "nodeSlots": [node["slot"] for node in item["nodes"]],
+                "nodeRoles": {node["slot"]: node.get("role", "support") for node in item["nodes"]},
+            }
+            for item in hierarchies
+        ],
         "viewports": [{"name": vp.name, "width": vp.width, "height": vp.height} for vp in viewports],
         "screenshotMode": screenshot_mode,
         "snapshotDirectory": ".",
@@ -857,13 +2617,182 @@ def run_browser_snapshots(
             for measurement in measurements
             for rel in (measurement.get("snapshots") or {}).values()
         ],
+        "semanticContracts": [semantic_contract_audit(item) for item in hierarchies],
+        "bestByHierarchyViewport": best_by_hierarchy,
         "humanLoop": {
             "required": True,
-            "reason": "The tool can prove geometry, but layout-family promotion still needs human review when MCEL hierarchy traits are weak.",
+            "reason": "The script can measure which synthetic layout trials use space best, but a human must decide whether the synthetic hierarchy matches the intended real app.",
         },
         "measurements": measurements,
     }
-    return report
+
+
+
+
+def measurement_quality_rank(status: str) -> int:
+    return {"pass": 0, "watch": 1, "fail": 2}.get((status or "fail").lower(), 3)
+
+
+def rollup_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
+    classification = item.get("classification") or {}
+    return (
+        measurement_quality_rank(classification.get("status", "fail")),
+        -int(classification.get("score", 0)),
+        item.get("candidate", ""),
+    )
+
+
+def preferred_snapshot_rel(item: dict[str, Any]) -> str:
+    snapshots = item.get("snapshots") or {}
+    return snapshots.get("viewport") or snapshots.get("fullPage") or next(iter(snapshots.values()), "")
+
+
+def _rollup_short_reason(item: dict[str, Any], limit: int = 72) -> str:
+    classification = item.get("classification") or {}
+    fit = item.get("contractFit") or {}
+    reasons: list[str] = []
+    if fit.get("state") in {"weakContractFit", "contractRisk"}:
+        reasons = [f"contract risk: {text}" for text in (fit.get("riskReasons") or [])]
+    if not reasons and fit.get("positiveReasons"):
+        reasons = [f"contract: {text}" for text in fit.get("positiveReasons", [])]
+    if not reasons:
+        reasons = list(classification.get("failureReasons") or [])
+    if not reasons:
+        reasons = list(classification.get("positiveReasons") or [])
+    if not reasons:
+        reasons = list(classification.get("reviewNotes") or [])
+    if not reasons:
+        return ""
+    text = str(reasons[0]).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _draw_wrapped_text(draw: Any, xy: tuple[int, int], text: str, *, width: int, line_height: int = 12) -> None:
+    import textwrap
+
+    lines: list[str] = []
+    for raw_line in text.splitlines() or [""]:
+        wrapped = textwrap.wrap(raw_line, width=width) or [""]
+        lines.extend(wrapped)
+    draw.multiline_text(xy, "\n".join(lines), fill=(24, 24, 24), spacing=max(2, line_height - 10))
+
+
+def generate_rollup_pngs(
+    report: dict[str, Any],
+    output_dir: Path,
+    *,
+    top_n: int = ROLLUP_TOP_N,
+    columns: int = ROLLUP_COLUMNS,
+) -> list[dict[str, Any]]:
+    if Image is None or ImageDraw is None or ImageOps is None:
+        raise RuntimeError(
+            "Rollup PNG generation requires Pillow. Install it with 'python -m pip install pillow'."
+        )
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for measurement in report.get("measurements", []):
+        groups[(measurement["hierarchyId"], measurement["viewportProfile"])].append(measurement)
+
+    rollups: list[dict[str, Any]] = []
+    resampling = getattr(Image, "Resampling", Image)
+    thumbnail_resample = getattr(resampling, "LANCZOS", getattr(Image, "LANCZOS", 1))
+
+    for (hierarchy_id, viewport_profile), items in sorted(groups.items()):
+        ordered = sorted(items, key=rollup_sort_key)[:top_n]
+        if not ordered:
+            continue
+
+        used_columns = min(max(1, columns), max(1, len(ordered)))
+        used_rows = (len(ordered) + used_columns - 1) // used_columns
+        header_height = 32
+        title_height = 20
+        meta_height = 26
+        reason_height = 44
+        tile_height = ROLLUP_IMAGE_HEIGHT + title_height + meta_height + reason_height + 22
+        canvas_width = (ROLLUP_CANVAS_MARGIN * 2) + (used_columns * ROLLUP_TILE_WIDTH) + ((used_columns - 1) * ROLLUP_TILE_GAP)
+        canvas_height = (
+            ROLLUP_CANVAS_MARGIN * 2
+            + header_height
+            + (used_rows * tile_height)
+            + ((used_rows - 1) * ROLLUP_TILE_GAP)
+        )
+
+        canvas = Image.new("RGB", (canvas_width, canvas_height), (246, 246, 246))
+        draw = ImageDraw.Draw(canvas)
+        header_text = f"{hierarchy_id} / {viewport_profile} - ranked layouts 1-{len(ordered)} (best to worst)"
+        draw.text((ROLLUP_CANVAS_MARGIN, ROLLUP_CANVAS_MARGIN), header_text, fill=(0, 0, 0))
+
+        for index, item in enumerate(ordered):
+            row, col = divmod(index, used_columns)
+            x = ROLLUP_CANVAS_MARGIN + col * (ROLLUP_TILE_WIDTH + ROLLUP_TILE_GAP)
+            y = ROLLUP_CANVAS_MARGIN + header_height + row * (tile_height + ROLLUP_TILE_GAP)
+
+            draw.rectangle(
+                [x, y, x + ROLLUP_TILE_WIDTH, y + tile_height],
+                fill=(255, 255, 255),
+                outline=(180, 180, 180),
+                width=1,
+            )
+
+            image_left = x + 8
+            image_top = y + 8
+            image_box = (ROLLUP_TILE_WIDTH - 16, ROLLUP_IMAGE_HEIGHT)
+            draw.rectangle(
+                [image_left, image_top, image_left + image_box[0], image_top + image_box[1]],
+                fill=(252, 252, 252),
+                outline=(208, 208, 208),
+                width=1,
+            )
+
+            rel = preferred_snapshot_rel(item)
+            image_path = output_dir / rel
+            with Image.open(image_path) as raw:
+                child = raw.convert("RGB")
+                thumb = ImageOps.contain(child, image_box, method=thumbnail_resample)
+            paste_x = image_left + (image_box[0] - thumb.width) // 2
+            paste_y = image_top + (image_box[1] - thumb.height) // 2
+            canvas.paste(thumb, (paste_x, paste_y))
+
+            classification = item.get("classification") or {}
+            facts = item.get("geometryFacts") or {}
+            title = f"#{index + 1} {item.get('candidate', 'unknown')}"
+            draw.text((x + 8, y + 8 + ROLLUP_IMAGE_HEIGHT + 4), title, fill=(0, 0, 0))
+
+            focus_share = float(facts.get("focusShare", 0.0) or 0.0)
+            target_share = float(facts.get("desiredFocusShare", 0.0) or 0.0)
+            status = classification.get("status", "fail")
+            contract_score = classification.get("contractFitScore", 0)
+            meta = f"score {classification.get('score', 0)} · {status} · contract {contract_score}% · focus {focus_share:.0%}/{target_share:.0%}"
+            draw.text((x + 8, y + 8 + ROLLUP_IMAGE_HEIGHT + 20), meta, fill=(32, 32, 32))
+
+            reason = _rollup_short_reason(item)
+            if reason:
+                _draw_wrapped_text(
+                    draw,
+                    (x + 8, y + 8 + ROLLUP_IMAGE_HEIGHT + 38),
+                    reason,
+                    width=44,
+                    line_height=12,
+                )
+
+        file_name = f"{slugify(hierarchy_id)}--{slugify(viewport_profile)}--rollup.png"
+        rel_path = Path(file_name)
+        canvas.save(output_dir / rel_path)
+        rollups.append(
+            {
+                "hierarchyId": hierarchy_id,
+                "viewportProfile": viewport_profile,
+                "file": rel_path.as_posix(),
+                "candidates": [item.get("candidate", "") for item in ordered],
+                "columns": used_columns,
+                "rows": used_rows,
+                "topCount": len(ordered),
+            }
+        )
+
+    return rollups
 
 
 def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
@@ -873,14 +2802,14 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 
     lines: list[str] = []
-    lines.append("# FLOG Layout Snapshot Report")
+    lines.append("# FLOG Synthetic Layout Trial Report")
     lines.append("")
     lines.append(f"- Generated: `{report['generatedAt']}`")
     lines.append(f"- Smoke level: `{report['smokeLevel']}`")
     lines.append(f"- Geometry engine: `{report['geometryEngine']}`")
     lines.append(f"- Hierarchy source: `{report['hierarchySource']}`")
     lines.append(f"- Chrome/theme input: `{report['chrome']}`")
-    lines.append(f"- Apps: `{', '.join(report['apps'])}`")
+    lines.append(f"- Layout candidates: `{', '.join(report['candidates'])}`")
     lines.append(f"- Viewports: `{', '.join(v['name'] for v in report['viewports'])}`")
     lines.append(f"- PNG directory: `{report['snapshotDirectory']}`")
     files = report.get("snapshotFiles") or []
@@ -888,76 +2817,216 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
     if files:
         lines.append(f"- First PNG: `{files[0]}`")
     lines.append("")
-    lines.append("## Human-in-the-loop boundary")
+
+    lines.append("## What this proves vs what it does not")
     lines.append("")
-    lines.append("This smoke proves rendered geometry with Chromium, but it does not promote a layout by itself.")
-    lines.append("The PNG overlays are meant for review: blue is the mount root, green is meaningful occupied space, orange is scroll ownership, and red is clipped/hidden critical controls.")
+    lines.append("This smoke generates MCEL-like hierarchies, applies multiple candidate layouts, measures the rendered geometry in Chromium, and writes one PNG proof per trial.")
+    lines.append("It proves rectangles, focus share, unclaimed node area, clipping, hidden controls, and scroll pressure for the synthetic cases.")
+    lines.append("It does **not** prove that the live app hierarchy is good enough yet; the synthetic hierarchies are training/evidence fixtures for the FLOG method.")
     lines.append("")
-    lines.append("## Measurements")
+
+    lines.append("## Synthetic hierarchies")
+    lines.append("")
+    for item in report["hierarchies"]:
+        lines.append(f"### `{item['id']}`")
+        lines.append("")
+        lines.append(f"- Title: {item['title']}")
+        if item.get("sourceApp"):
+            lines.append(f"- Source app seed: `{item['sourceApp']}`")
+        lines.append(f"- Root concern: `{item['rootConcern']}`")
+        lines.append(f"- Focus slot: `{item['focusSlot']}`")
+        lines.append(f"- Desired focus share: `{item['desiredFocusShare']}`")
+        contract = item.get("roleContract") or {}
+        lines.append(f"- Required companions: `{', '.join(contract.get('requiredCompanions', []))}`")
+        lines.append(f"- Nearby companions: `{', '.join(contract.get('nearbyCompanions', []))}`")
+        lines.append(f"- Deferable slots: `{', '.join(contract.get('deferableSlots', []))}`")
+        lines.append(f"- Forbidden default-hidden: `{', '.join(contract.get('forbiddenDefaultHidden', []))}`")
+        lines.append(f"- Preferred families: `{', '.join(contract.get('preferredFamilies', []))}`")
+        lines.append(f"- Slots: `{', '.join(item['nodeSlots'])}`")
+        if item.get("nodeRoles"):
+            role_text = ", ".join(f"{slot}:{role}" for slot, role in item["nodeRoles"].items())
+            lines.append(f"- Slot roles: `{role_text}`")
+        lines.append("")
+
+    if report.get("semanticContracts"):
+        lines.append("## Generic semantic contract audit")
+        lines.append("")
+        lines.append(
+            "These audits use composable MCEL primitives such as `controls`, `selects`, `reflects`, `confirms`, and `proves`. They do not rely on high-level app archetype labels."
+        )
+        lines.append("")
+        for audit in report.get("semanticContracts", []):
+            grammar = ", ".join(audit.get("inferredLayoutGrammar", [])) or "none"
+            lines.append(
+                f"- `{audit['hierarchyId']}`: state=`{audit['state']}` "
+                f"focus=`{audit['focusSlot']}` primitiveEdges=`{audit.get('primitiveEdgeCount', 0)}` "
+                f"layoutPressures=`{audit.get('layoutPressureCount', 0)}` confidence=`{audit.get('contractConfidence', 0):.3f}` grammar=`{grammar}`"
+            )
+            if audit.get("missingPrimitives"):
+                lines.append("  - Missing primitives:")
+                for missing in audit.get("missingPrimitives", [])[:8]:
+                    lines.append(f"    - {missing}")
+            else:
+                lines.append("  - Missing primitives: `none`")
+            sample = audit.get("relationships", [])[:6]
+            if sample:
+                lines.append(f"  - Relationship sample: `{'; '.join(sample)}`")
+        lines.append("")
+
+    lines.append("## Best candidate by hierarchy and viewport")
+    lines.append("")
+    lines.append("`selectionState=bestPassingCandidate` means the row is the best `pass`/`watch` trial. `selectionState=noPassingCandidate` means every trial failed and the row is only the highest-scoring failure.")
+    lines.append("")
+    for item in report["bestByHierarchyViewport"]:
+        selection_state = item.get("selectionState", "bestPassingCandidate")
+        no_passing = bool(item.get("noPassingCandidate"))
+        lines.append(f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['candidate']}` score=`{item['score']}` status=`{item['status']}` selectionState=`{selection_state}` unclaimed=`{item['unclaimedAreaRatio']:.4f}` focus=`{item['focusShare']:.4f}` target=`{item['desiredFocusShare']:.2f}` occupancy=`{item.get('usefulFocusOccupancy', 0):.4f}` proximity=`{item.get('companionProximityScore', 1):.4f}` contractFit=`{item.get('contractFitScore', 0)}` contractState=`{item.get('contractFitState', 'notEvaluated')}`")
+        if no_passing:
+            highest = item.get("highestScoringFailure") or item.get("highestScoringCandidate") or {}
+            lines.append(f"  - No passing candidate: showing highest-scoring failure `{highest.get('candidate', item['candidate'])}` score=`{highest.get('score', item['score'])}` status=`{highest.get('status', item['status'])}`.")
+        else:
+            highest = item.get("highestScoringCandidate") or {}
+            if highest and highest.get("candidate") != item.get("candidate"):
+                lines.append(f"  - Selected best passing/watch candidate; highest raw score was `{highest.get('candidate')}` score=`{highest.get('score')}` status=`{highest.get('status')}`.")
+        snaps = item.get("snapshots") or {}
+        if snaps:
+            lines.append(f"  - PNG: `{next(iter(snaps.values()))}`")
+        if item.get("contractFitReasons"):
+            lines.append("  - Contract fit evidence:")
+            for reason in item.get("contractFitReasons", [])[:4]:
+                lines.append(f"    - {reason}")
+        if item.get("contractFitRisks"):
+            lines.append("  - Contract fit risks:")
+            for reason in item.get("contractFitRisks", [])[:4]:
+                lines.append(f"    - {reason}")
+        if item.get("reasons"):
+            lines.append("  - Why it ranked well:")
+            for reason in item.get("reasons", [])[:6]:
+                lines.append(f"    - {reason}")
+        if item.get("failureReasons"):
+            lines.append("  - Remaining failures / risks:")
+            for reason in item.get("failureReasons", [])[:6]:
+                lines.append(f"    - {reason}")
+        if item.get("reviewNotes"):
+            lines.append("  - Human review notes:")
+            for note in item.get("reviewNotes", [])[:4]:
+                lines.append(f"    - {note}")
+    lines.append("")
+
+    if report.get("rollups"):
+        lines.append("## Rollup PNGs")
+        lines.append("")
+        lines.append(
+            "Each hierarchy/viewport gets one compact rollup PNG. The rollup orders the top layouts from best to worst and packs up to 8 tiles into a 4×2 grid."
+        )
+        lines.append("")
+        for item in report.get("rollups", []):
+            lines.append(
+                f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['file']}` "
+                f"(tiles=`{item.get('topCount', 0)}`, grid=`{item.get('columns', 0)}x{item.get('rows', 0)}`)"
+            )
+            if item.get("candidates"):
+                lines.append(f"  - Included layouts: `{', '.join(item['candidates'])}`")
+        lines.append("")
+
+    lines.append("## All trial measurements")
     lines.append("")
     for item in report["measurements"]:
         facts = item.get("geometryFacts", {})
         classification = item.get("classification", {})
-        inference = item.get("inference", {})
-        human = item.get("humanLoop", {})
-        lines.append(f"### `{item.get('app')}` / `{item.get('viewportProfile')}` / `{item.get('chrome')}`")
+        lines.append(f"### `{item['hierarchyId']}` / `{item['viewportProfile']}` / `{item['candidate']}`")
         lines.append("")
         lines.append(f"- Status: `{classification.get('status')}`")
         lines.append(f"- Score: `{classification.get('score')}`")
-        lines.append(f"- Root selector: `{item.get('rootSelector')}`")
-        lines.append(f"- Suggested layout family: `{inference.get('suggestion')}`")
-        lines.append(f"- Inference confidence: `{inference.get('confidence')}`")
-        lines.append(f"- Unclaimed meaningful area ratio: `{facts.get('unclaimedAreaRatio', 0):.4f}`")
-        lines.append(f"- Meaningful coverage ratio: `{facts.get('meaningfulCoverageRatio', 0):.4f}`")
-        lines.append(f"- Root viewport coverage ratio: `{facts.get('rootViewportCoverageRatio', 0):.4f}`")
-        lines.append(f"- Clipped critical actions: `{facts.get('clippedCriticalActionCount', 0)}`")
-        lines.append(f"- Hidden critical actions: `{facts.get('hiddenCriticalActionCount', 0)}`")
-        lines.append(f"- Intentionally deferred/proxied actions: `{facts.get('intentionallyDeferredActionCount', 0)}`")
+        lines.append(f"- Geometry score: `{classification.get('geometryScore', classification.get('score'))}`")
+        lines.append(f"- Contract fit score: `{classification.get('contractFitScore', 0)}` state=`{classification.get('contractFitState', 'notEvaluated')}`")
+        lines.append(f"- Focus slot: `{item.get('focusSlot')}`")
+        lines.append(f"- Unclaimed layout area ratio: `{facts.get('unclaimedAreaRatio', 0):.4f}`")
+        lines.append(f"- Node coverage ratio: `{facts.get('nodeCoverageRatio', 0):.4f}`")
+        lines.append(f"- Focus share: `{facts.get('focusShare', 0):.4f}`")
+        lines.append(f"- Desired focus share: `{facts.get('desiredFocusShare', 0):.4f}`")
+        lines.append(f"- Focus deviation: `{facts.get('focusDeviation', 0):.4f}`")
+        lines.append(f"- Useful focus occupancy: `{facts.get('usefulFocusOccupancy', 0):.4f}`")
+        lines.append(f"- Focus content count: `{facts.get('focusContentCount', 0)}`")
+        lines.append(f"- Required companion visibility: `{facts.get('companionVisibilityRatio', 1):.4f}`")
+        lines.append(f"- Nearby companion fit: `{facts.get('nearbyCompanionRatio', 1):.4f}`")
+        lines.append(f"- Companion proximity score: `{facts.get('companionProximityScore', 1):.4f}`")
+        if facts.get("missingRequiredCompanions"):
+            lines.append("- Missing required companions:")
+            for companion in facts.get("missingRequiredCompanions", []):
+                lines.append(f"  - `{companion.get('slot')}` visibleShare=`{companion.get('visibleShare', 0):.4f}`")
+        if facts.get("distantNearbyCompanions"):
+            lines.append("- Nearby companion problems:")
+            for companion in facts.get("distantNearbyCompanions", []):
+                integration = companion.get("integration") or {}
+                lines.append(f"  - `{companion.get('slot')}` distance=`{companion.get('normalizedDistance', 0):.4f}` visibleShare=`{companion.get('visibleShare', 0):.4f}` effectiveMin=`{companion.get('effectiveMinVisibleShare', companion.get('minVisibleShare', 0)):.4f}` integration=`{integration.get('mode', 'distance-only')}` score=`{integration.get('score', 0):.4f}`")
+        lines.append(f"- Clipped critical controls: `{facts.get('clippedCriticalControlCount', 0)}`")
+        lines.append(f"- Hidden critical controls: `{facts.get('hiddenCriticalControlCount', 0)}`")
         lines.append(f"- Scroll owners: `{facts.get('scrollOwnerCount', 0)}`")
         snaps = item.get("snapshots", {})
         if snaps:
             lines.append("- PNG snapshots:")
             for key, rel in snaps.items():
                 lines.append(f"  - `{key}`: `{rel}`")
+        contract_fit = item.get("contractFit") or {}
+        if contract_fit:
+            lines.append("- Generic contract fit:")
+            lines.append(f"  - Score: `{contract_fit.get('score', 0)}` state=`{contract_fit.get('state', 'unknown')}` confidence=`{contract_fit.get('confidence', 0):.3f}`")
+            for reason in contract_fit.get("positiveReasons", [])[:4]:
+                lines.append(f"  - Preserved: {reason}")
+            for reason in contract_fit.get("riskReasons", [])[:4]:
+                lines.append(f"  - Risk: {reason}")
+        reasons = classification.get("positiveReasons") or []
+        if reasons:
+            lines.append("- Why this candidate worked:")
+            for reason in reasons:
+                lines.append(f"  - {reason}")
+        failures = classification.get("failureReasons") or []
+        if failures:
+            lines.append("- Why this candidate failed or needs caution:")
+            for reason in failures:
+                lines.append(f"  - {reason}")
+        review_notes = classification.get("reviewNotes") or []
+        if review_notes:
+            lines.append("- Human review notes:")
+            for note in review_notes:
+                lines.append(f"  - {note}")
         warnings = classification.get("warnings") or []
         if warnings:
             lines.append("- Warnings:")
             for warning in warnings:
                 lines.append(f"  - {warning}")
-        proved = human.get("proved") or []
-        inferred = human.get("inferred") or []
-        unknowns = human.get("unknowns") or []
-        if proved:
-            lines.append("- Proved by Chromium:")
-            for entry in proved:
-                lines.append(f"  - {entry}")
-        if inferred:
-            lines.append("- Inferred, not proved:")
-            for entry in inferred:
-                lines.append(f"  - {entry}")
-        if unknowns:
-            lines.append("- Unknown / needs human review:")
-            for entry in unknowns:
-                lines.append(f"  - {entry}")
+        human = item.get("humanLoop", {})
+        lines.append("- Proved by Chromium:")
+        for entry in human.get("proved", []):
+            lines.append(f"  - {entry}")
+        lines.append("- Inferred, not proved:")
+        for entry in human.get("inferred", []):
+            lines.append(f"  - {entry}")
+        lines.append("- Unknown / needs human review:")
+        for entry in human.get("unknowns", []):
+            lines.append(f"  - {entry}")
         lines.append("")
+
     md_path.write_text("\n".join(lines), encoding="utf-8")
     return json_path, md_path
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Capture FLOG layout inference PNG snapshots for human review.")
+    parser = argparse.ArgumentParser(description="FLOG synthetic MCEL hierarchy layout trials with PNG proof.")
     parser.add_argument("--repo", default=".", help="Repository root. Default: current directory.")
-    parser.add_argument("--apps", default=DEFAULT_APPS, help="Comma-separated app slugs or 'all'. Default: file-explorer.")
+    parser.add_argument("--hierarchies", default=DEFAULT_HIERARCHIES, help="Comma-separated synthetic hierarchy IDs or 'all'.")
+    parser.add_argument("--candidates", default=DEFAULT_CANDIDATES, help="Comma-separated layout candidates or 'all'.")
     parser.add_argument("--viewports", default=DEFAULT_VIEWPORTS, help="Comma-separated profiles like desktop=1440x900,narrow=390x844.")
-    parser.add_argument("--chrome", default=DEFAULT_CHROME, help="Chrome/theme label to record as layout input. Default: current.")
-    parser.add_argument("--output-dir", default="runtime/reports/flog", help="Output report directory. PNGs are written directly here.")
+    parser.add_argument("--chrome", default=DEFAULT_CHROME, help="Chrome/theme label to record as layout input.")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Output report directory. PNGs are written directly here.")
     parser.add_argument(
         "--screenshot-mode",
         choices=["viewport", "full-page", "both"],
-        default="both",
-        help="Which PNG snapshots to write. Default: both.",
+        default="viewport",
+        help="Which PNG snapshots to write per trial. Default: viewport.",
     )
-    parser.add_argument("--keep-expanded-html", action="store_true", help="Write the expanded HTML used for Chromium into the output directory.")
+    parser.add_argument("--keep-html", action="store_true", help="Write each generated synthetic trial HTML into the output directory.")
     return parser
 
 
@@ -966,19 +3035,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     repo = Path(args.repo).resolve()
     output_dir = (repo / args.output_dir).resolve() if not Path(args.output_dir).is_absolute() else Path(args.output_dir).resolve()
-    available = enumerate_apps(repo)
-    apps = parse_apps_arg(args.apps, available)
+
+    available = synthetic_hierarchies()
+    hierarchies = parse_hierarchies(args.hierarchies, available)
+    candidates = parse_candidates(args.candidates)
     viewports = parse_viewports(args.viewports)
 
-    report = run_browser_snapshots(
-        repo=repo,
-        apps=apps,
+    report = run_synthetic_trials(
+        hierarchies=hierarchies,
+        candidates=candidates,
         viewports=viewports,
         chrome=args.chrome,
         output_dir=output_dir,
         screenshot_mode=args.screenshot_mode,
-        keep_expanded_html=args.keep_expanded_html,
+        keep_html=args.keep_html,
     )
+    report['rollups'] = generate_rollup_pngs(report, output_dir)
+    report['rollupFiles'] = [item['file'] for item in report['rollups']]
     json_path, md_path = write_reports(report, output_dir)
     print(f"Wrote {json_path}")
     print(f"Wrote {md_path}")
@@ -987,8 +3060,10 @@ def main(argv: list[str] | None = None) -> int:
         for rel in (measurement.get("snapshots") or {}).values():
             png_count += 1
             print(f"Wrote PNG {output_dir / rel}")
+    for rollup in report.get('rollups', []):
+        print(f"Wrote rollup PNG {output_dir / rollup['file']}")
     if png_count == 0:
-        raise SystemExit("No PNG snapshots were written; refusing to call this smoke successful.")
+        raise SystemExit("No PNG snapshots were written; refusing to call this FLOG trial successful.")
     return 0
 
 

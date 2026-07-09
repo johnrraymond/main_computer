@@ -2467,14 +2467,32 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
     network_key = _exp_fdb_network_key_from_args(args, bridge_backend=bridge_backend)
     allow_missing_bridge_signer = bool(getattr(args, "allow_missing_bridge_signer", False)) or base.hub_allow_missing_bridge_signer
     dev_chain_deployment_path = Path(args.dev_chain_deployment_path) if args.dev_chain_deployment_path else base.hub_dev_chain_deployment_path
+    if dev_chain_deployment_path is not None and not dev_chain_deployment_path.is_absolute():
+        dev_chain_deployment_path = repo_root / dev_chain_deployment_path
+    contracts_path = Path(args.contracts_path) if getattr(args, "contracts_path", None) else base.hub_contracts_path
+    if contracts_path is None and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}:
+        contracts_path = _default_contracts_path(repo_root=repo_root, network_key=network_key)
+    if contracts_path is not None and not contracts_path.is_absolute():
+        contracts_path = repo_root / contracts_path
+    if (
+        not allow_missing_bridge_signer
+        and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}
+        and contracts_path is not None
+        and contracts_path.exists()
+        and (dev_chain_deployment_path is None or not dev_chain_deployment_path.exists())
+    ):
+        # Remote contract-aware Hub images carry public contract-address config
+        # but normally do not mount a private bridge signer bundle.  Infer the
+        # safe read/status-only mode here as a runtime fallback so stale Coolify
+        # start commands that still mention the default missing signer path do
+        # not crash before the deployer can repair the command.
+        allow_missing_bridge_signer = True
     if (
         dev_chain_deployment_path is None
         and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}
         and not allow_missing_bridge_signer
     ):
         dev_chain_deployment_path = _default_dev_chain_deployment_path(repo_root=repo_root, network_key=network_key)
-    if dev_chain_deployment_path is not None and not dev_chain_deployment_path.is_absolute():
-        dev_chain_deployment_path = repo_root / dev_chain_deployment_path
     enable_smoke_bridge = bool(getattr(args, "enable_smoke_bridge", False)) or base.hub_enable_smoke_bridge
     if (
         not enable_smoke_bridge
@@ -2483,11 +2501,6 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         and _deployment_manifest_is_smoke_bridge(dev_chain_deployment_path)
     ):
         enable_smoke_bridge = True
-    contracts_path = Path(args.contracts_path) if getattr(args, "contracts_path", None) else base.hub_contracts_path
-    if contracts_path is None and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}:
-        contracts_path = _default_contracts_path(repo_root=repo_root, network_key=network_key)
-    if contracts_path is not None and not contracts_path.is_absolute():
-        contracts_path = repo_root / contracts_path
     ring_config_path = Path(args.ring_config_path) if getattr(args, "ring_config_path", None) else base.hub_ring_config_path
     if ring_config_path is not None and not ring_config_path.is_absolute():
         ring_config_path = repo_root / ring_config_path
