@@ -48,11 +48,12 @@ DEFAULT_CHROME = "mcel-realistic"
 DEFAULT_CANDIDATES = "all"
 DEFAULT_OUTPUT_DIR = "runtime/reports/flog"
 ROLLUP_TOP_N = 8
-ROLLUP_COLUMNS = 4
-ROLLUP_TILE_WIDTH = 320
-ROLLUP_IMAGE_HEIGHT = 180
-ROLLUP_TILE_GAP = 12
-ROLLUP_CANVAS_MARGIN = 16
+ROLLUP_TILE_WIDTH = 176
+ROLLUP_IMAGE_HEIGHT = 92
+ROLLUP_TILE_GAP = 8
+ROLLUP_CANVAS_MARGIN = 14
+ROLLUP_ROW_LABEL_WIDTH = 210
+ROLLUP_FILE_NAME = "layout-snapshot-final-rollup.png"
 
 SEMANTIC_RELATION_KEYS = (
     "controls",
@@ -3300,70 +3301,120 @@ def _draw_wrapped_text(draw: Any, xy: tuple[int, int], text: str, *, width: int,
     draw.multiline_text(xy, "\n".join(lines), fill=(24, 24, 24), spacing=max(2, line_height - 10))
 
 
+
 def generate_rollup_pngs(
     report: dict[str, Any],
     output_dir: Path,
     *,
     top_n: int = ROLLUP_TOP_N,
-    columns: int = ROLLUP_COLUMNS,
 ) -> list[dict[str, Any]]:
+    """Write one compact final rollup PNG for the whole smoke run.
+
+    Older runs wrote one rollup PNG per hierarchy, which was convenient locally but
+    expensive to upload/review.  The final rollup keeps the same best-to-worst
+    ordering but packs every hierarchy/viewport into one row inside a single PNG.
+    """
+
     if Image is None or ImageDraw is None or ImageOps is None:
         raise RuntimeError(
             "Rollup PNG generation requires Pillow. Install it with 'python -m pip install pillow'."
         )
 
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    order: list[tuple[str, str]] = []
     for measurement in report.get("measurements", []):
-        groups[(measurement["hierarchyId"], measurement["viewportProfile"])].append(measurement)
+        key = (measurement["hierarchyId"], measurement["viewportProfile"])
+        if key not in groups:
+            order.append(key)
+        groups[key].append(measurement)
 
-    rollups: list[dict[str, Any]] = []
+    if not order:
+        return []
+
+    ranked_groups: list[dict[str, Any]] = []
+    for hierarchy_id, viewport_profile in order:
+        ordered = sorted(groups[(hierarchy_id, viewport_profile)], key=rollup_sort_key)[:top_n]
+        if ordered:
+            ranked_groups.append(
+                {
+                    "hierarchyId": hierarchy_id,
+                    "viewportProfile": viewport_profile,
+                    "items": ordered,
+                    "candidates": [item.get("candidate", "") for item in ordered],
+                }
+            )
+
+    if not ranked_groups:
+        return []
+
+    column_count = max(len(group["items"]) for group in ranked_groups)
+    header_height = 44
+    row_height = ROLLUP_IMAGE_HEIGHT + 54
+    canvas_width = (
+        ROLLUP_CANVAS_MARGIN * 2
+        + ROLLUP_ROW_LABEL_WIDTH
+        + (column_count * ROLLUP_TILE_WIDTH)
+        + ((column_count - 1) * ROLLUP_TILE_GAP)
+    )
+    canvas_height = (
+        ROLLUP_CANVAS_MARGIN * 2
+        + header_height
+        + (len(ranked_groups) * row_height)
+        + ((len(ranked_groups) - 1) * ROLLUP_TILE_GAP)
+    )
+
+    canvas = Image.new("RGB", (canvas_width, canvas_height), (246, 246, 246))
+    draw = ImageDraw.Draw(canvas)
     resampling = getattr(Image, "Resampling", Image)
     thumbnail_resample = getattr(resampling, "LANCZOS", getattr(Image, "LANCZOS", 1))
 
-    for (hierarchy_id, viewport_profile), items in sorted(groups.items()):
-        ordered = sorted(items, key=rollup_sort_key)[:top_n]
-        if not ordered:
-            continue
+    header = f"FLOG final rollup - {len(ranked_groups)} app/viewport row(s), top {top_n} max each, best to worst left-to-right"
+    draw.text((ROLLUP_CANVAS_MARGIN, ROLLUP_CANVAS_MARGIN), header, fill=(0, 0, 0))
+    draw.text(
+        (ROLLUP_CANVAS_MARGIN, ROLLUP_CANVAS_MARGIN + 18),
+        "One PNG replaces per-app rollups to reduce upload/review pressure.",
+        fill=(64, 64, 64),
+    )
 
-        used_columns = min(max(1, columns), max(1, len(ordered)))
-        used_rows = (len(ordered) + used_columns - 1) // used_columns
-        header_height = 32
-        title_height = 20
-        meta_height = 26
-        reason_height = 44
-        tile_height = ROLLUP_IMAGE_HEIGHT + title_height + meta_height + reason_height + 22
-        canvas_width = (ROLLUP_CANVAS_MARGIN * 2) + (used_columns * ROLLUP_TILE_WIDTH) + ((used_columns - 1) * ROLLUP_TILE_GAP)
-        canvas_height = (
-            ROLLUP_CANVAS_MARGIN * 2
-            + header_height
-            + (used_rows * tile_height)
-            + ((used_rows - 1) * ROLLUP_TILE_GAP)
+    for row_index, group in enumerate(ranked_groups):
+        y = ROLLUP_CANVAS_MARGIN + header_height + row_index * (row_height + ROLLUP_TILE_GAP)
+        label_x = ROLLUP_CANVAS_MARGIN
+        label_text = f"{group['hierarchyId']}\n{group['viewportProfile']}"
+        draw.rectangle(
+            [
+                label_x,
+                y,
+                label_x + ROLLUP_ROW_LABEL_WIDTH - ROLLUP_TILE_GAP,
+                y + row_height,
+            ],
+            fill=(255, 255, 255),
+            outline=(180, 180, 180),
+            width=1,
         )
+        _draw_wrapped_text(draw, (label_x + 8, y + 10), label_text, width=28, line_height=13)
 
-        canvas = Image.new("RGB", (canvas_width, canvas_height), (246, 246, 246))
-        draw = ImageDraw.Draw(canvas)
-        header_text = f"{hierarchy_id} / {viewport_profile} - ranked layouts 1-{len(ordered)} (best to worst)"
-        draw.text((ROLLUP_CANVAS_MARGIN, ROLLUP_CANVAS_MARGIN), header_text, fill=(0, 0, 0))
+        if group["items"]:
+            winner = group["items"][0]
+            winner_classification = winner.get("classification") or {}
+            winner_text = f"winner: {winner.get('candidate', '')} · {winner_classification.get('status', 'fail')}"
+            _draw_wrapped_text(draw, (label_x + 8, y + 46), winner_text, width=28, line_height=12)
 
-        for index, item in enumerate(ordered):
-            row, col = divmod(index, used_columns)
-            x = ROLLUP_CANVAS_MARGIN + col * (ROLLUP_TILE_WIDTH + ROLLUP_TILE_GAP)
-            y = ROLLUP_CANVAS_MARGIN + header_height + row * (tile_height + ROLLUP_TILE_GAP)
-
+        for index, item in enumerate(group["items"]):
+            x = ROLLUP_CANVAS_MARGIN + ROLLUP_ROW_LABEL_WIDTH + index * (ROLLUP_TILE_WIDTH + ROLLUP_TILE_GAP)
             draw.rectangle(
-                [x, y, x + ROLLUP_TILE_WIDTH, y + tile_height],
+                [x, y, x + ROLLUP_TILE_WIDTH, y + row_height],
                 fill=(255, 255, 255),
-                outline=(180, 180, 180),
+                outline=(188, 188, 188),
                 width=1,
             )
 
-            image_left = x + 8
-            image_top = y + 8
-            image_box = (ROLLUP_TILE_WIDTH - 16, ROLLUP_IMAGE_HEIGHT)
+            image_left = x + 6
+            image_top = y + 6
+            image_box = (ROLLUP_TILE_WIDTH - 12, ROLLUP_IMAGE_HEIGHT)
             draw.rectangle(
                 [image_left, image_top, image_left + image_box[0], image_top + image_box[1]],
                 fill=(252, 252, 252),
-                outline=(208, 208, 208),
+                outline=(216, 216, 216),
                 width=1,
             )
 
@@ -3378,43 +3429,39 @@ def generate_rollup_pngs(
 
             classification = item.get("classification") or {}
             facts = item.get("geometryFacts") or {}
-            title = f"#{index + 1} {item.get('candidate', 'unknown')}"
-            draw.text((x + 8, y + 8 + ROLLUP_IMAGE_HEIGHT + 4), title, fill=(0, 0, 0))
-
             focus_share = float(facts.get("focusShare", 0.0) or 0.0)
             target_share = float(facts.get("desiredFocusShare", 0.0) or 0.0)
-            status = classification.get("status", "fail")
-            contract_score = classification.get("contractFitScore", 0)
-            affordance_score = classification.get("affordanceFitScore", 0)
-            meta = f"score {classification.get('score', 0)} · {status} · contract {contract_score}% · afford {affordance_score}% · focus {focus_share:.0%}/{target_share:.0%}"
-            draw.text((x + 8, y + 8 + ROLLUP_IMAGE_HEIGHT + 20), meta, fill=(32, 32, 32))
+            title = f"#{index + 1} {item.get('candidate', 'unknown')}"
+            draw.text((x + 6, y + 6 + ROLLUP_IMAGE_HEIGHT + 4), title[:28], fill=(0, 0, 0))
+            meta = (
+                f"{classification.get('score', 0)} {classification.get('status', 'fail')} "
+                f"C{classification.get('contractFitScore', 0)} A{classification.get('affordanceFitScore', 0)} "
+                f"F{focus_share:.0%}/{target_share:.0%}"
+            )
+            draw.text((x + 6, y + 6 + ROLLUP_IMAGE_HEIGHT + 20), meta[:33], fill=(32, 32, 32))
 
-            reason = _rollup_short_reason(item)
-            if reason:
-                _draw_wrapped_text(
-                    draw,
-                    (x + 8, y + 8 + ROLLUP_IMAGE_HEIGHT + 38),
-                    reason,
-                    width=44,
-                    line_height=12,
-                )
+    rel_path = Path(ROLLUP_FILE_NAME)
+    canvas.save(output_dir / rel_path, optimize=True)
 
-        file_name = f"{slugify(hierarchy_id)}--{slugify(viewport_profile)}--rollup.png"
-        rel_path = Path(file_name)
-        canvas.save(output_dir / rel_path)
-        rollups.append(
-            {
-                "hierarchyId": hierarchy_id,
-                "viewportProfile": viewport_profile,
-                "file": rel_path.as_posix(),
-                "candidates": [item.get("candidate", "") for item in ordered],
-                "columns": used_columns,
-                "rows": used_rows,
-                "topCount": len(ordered),
-            }
-        )
-
-    return rollups
+    return [
+        {
+            "kind": "finalRollup",
+            "file": rel_path.as_posix(),
+            "groupCount": len(ranked_groups),
+            "columns": column_count,
+            "rows": len(ranked_groups),
+            "topCountPerGroup": top_n,
+            "groups": [
+                {
+                    "hierarchyId": group["hierarchyId"],
+                    "viewportProfile": group["viewportProfile"],
+                    "candidates": group["candidates"],
+                    "topCount": len(group["candidates"]),
+                }
+                for group in ranked_groups
+            ],
+        }
+    ]
 
 
 def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
@@ -3574,16 +3621,19 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
         lines.append("## Rollup PNGs")
         lines.append("")
         lines.append(
-            "Each hierarchy/viewport gets one compact rollup PNG. The rollup orders the top layouts from best to worst and packs up to 8 tiles into a 4×2 grid."
+            "The smoke writes one final compact rollup PNG for the whole run. Each hierarchy/viewport is one row, with ranked layouts ordered best to worst from left to right."
         )
         lines.append("")
         for item in report.get("rollups", []):
             lines.append(
-                f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['file']}` "
-                f"(tiles=`{item.get('topCount', 0)}`, grid=`{item.get('columns', 0)}x{item.get('rows', 0)}`)"
+                f"- Final rollup: `{item['file']}` "
+                f"(groups=`{item.get('groupCount', 0)}`, grid=`{item.get('columns', 0)}x{item.get('rows', 0)}`, topPerGroup=`{item.get('topCountPerGroup', 0)}`)"
             )
-            if item.get("candidates"):
-                lines.append(f"  - Included layouts: `{', '.join(item['candidates'])}`")
+            for group in item.get("groups", []):
+                if group.get("candidates"):
+                    lines.append(
+                        f"  - `{group['hierarchyId']}` / `{group['viewportProfile']}`: `{', '.join(group['candidates'])}`"
+                    )
         lines.append("")
 
     lines.append("## All trial measurements")

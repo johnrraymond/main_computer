@@ -2447,6 +2447,7 @@ def sync_application_env_var(
             break
 
     base_payloads = [
+        {"key": clean_key, "value": value},
         {
             "key": clean_key,
             "value": value,
@@ -2463,7 +2464,6 @@ def sync_application_env_var(
             "is_literal": True,
             "is_multiline": False,
         },
-        {"key": clean_key, "value": value},
     ]
     value_hash = hashlib.sha256(value.encode("utf-8")).hexdigest()
     value_bytes = len(value.encode("utf-8"))
@@ -2540,6 +2540,43 @@ def sync_application_env_var(
     if saw_conflict:
         raise CoolifyHubDeployError("Coolify application env exists, but update failed on all known endpoints.")
     raise CoolifyHubDeployError("Coolify application env sync failed on all known endpoints.")
+
+
+def sync_hub_runtime_application_envs(
+    client: CoolifyClient,
+    profile: HubNetworkProfile,
+    args: argparse.Namespace,
+    *,
+    application_uuid: str,
+    runtime_dir: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Sync launcher/runtime environment so Hub Apps work even when Coolify ignores start_command."""
+
+    values = hub_runtime_env_defaults(profile, args, runtime_dir=runtime_dir)
+    results: list[dict[str, Any]] = []
+    for key in sorted(values):
+        sync = sync_application_env_var(
+            client,
+            application_uuid=application_uuid,
+            key=key,
+            value=values[key],
+            tried=tried,
+        )
+        results.append(
+            {
+                "key": key,
+                "action": sync["action"],
+                "value_sha256": sync["value_sha256"],
+                "value_bytes": sync["value_bytes"],
+            }
+        )
+    return {
+        "ok": True,
+        "count": len(results),
+        "keys": [item["key"] for item in results],
+        "envs": results,
+    }
 
 
 def sync_bridge_signer_application_env(

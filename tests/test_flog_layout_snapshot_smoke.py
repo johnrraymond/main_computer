@@ -294,7 +294,7 @@ def test_best_by_hierarchy_viewport_prefers_passing_candidate_and_marks_no_pass(
     assert by_hierarchy["all-fail"]["highestScoringFailure"]["candidate"] == "highest-failure"
 
 
-def test_generate_rollup_pngs_orders_best_to_worst_and_caps_at_eight(tmp_path):
+def test_generate_rollup_pngs_writes_one_final_rollup_and_caps_each_group_at_eight(tmp_path):
     module = load_module()
     from PIL import Image
 
@@ -310,40 +310,44 @@ def test_generate_rollup_pngs_orders_best_to_worst_and_caps_at_eight(tmp_path):
         ("low-fail", 60, "fail"),
         ("overflow-fail", 10, "fail"),
     ]
-    for index, (candidate, score, status) in enumerate(ranking, start=1):
-        file_name = f"trial-{index}.png"
-        Image.new("RGB", (640, 400), (200, 200, 200)).save(tmp_path / file_name)
-        measurements.append(
-            {
-                "hierarchyId": "document-workbench",
-                "viewportProfile": "desktop",
-                "candidate": candidate,
-                "classification": {
-                    "score": score,
-                    "status": status,
-                    "positiveReasons": [f"{candidate} summary reason"],
-                    "failureReasons": [],
-                    "reviewNotes": [],
-                },
-                "geometryFacts": {
-                    "focusShare": 0.51,
-                    "desiredFocusShare": 0.58,
-                },
-                "snapshots": {"viewport": file_name},
-            }
-        )
+    for group_name in ["document-workbench", "terminal-console-workbench"]:
+        for index, (candidate, score, status) in enumerate(ranking, start=1):
+            file_name = f"{group_name}-trial-{index}.png"
+            Image.new("RGB", (640, 400), (200, 200, 200)).save(tmp_path / file_name)
+            measurements.append(
+                {
+                    "hierarchyId": group_name,
+                    "viewportProfile": "desktop",
+                    "candidate": candidate,
+                    "classification": {
+                        "score": score,
+                        "status": status,
+                        "positiveReasons": [f"{candidate} summary reason"],
+                        "failureReasons": [],
+                        "reviewNotes": [],
+                    },
+                    "geometryFacts": {
+                        "focusShare": 0.51,
+                        "desiredFocusShare": 0.58,
+                    },
+                    "snapshots": {"viewport": file_name},
+                }
+            )
 
     report = {"measurements": measurements}
     rollups = module.generate_rollup_pngs(report, tmp_path)
 
     assert len(rollups) == 1
     rollup = rollups[0]
-    assert rollup["hierarchyId"] == "document-workbench"
-    assert rollup["viewportProfile"] == "desktop"
-    assert rollup["topCount"] == 8
-    assert rollup["columns"] == 4
+    assert rollup["kind"] == "finalRollup"
+    assert rollup["file"] == module.ROLLUP_FILE_NAME
+    assert rollup["groupCount"] == 2
+    assert rollup["columns"] == 8
     assert rollup["rows"] == 2
-    assert rollup["candidates"] == [
+    assert len(rollup["groups"]) == 2
+    assert rollup["groups"][0]["hierarchyId"] == "document-workbench"
+    assert rollup["groups"][0]["topCount"] == 8
+    assert rollup["groups"][0]["candidates"] == [
         "gold-pass",
         "silver-pass",
         "bronze-pass",
@@ -359,8 +363,8 @@ def test_generate_rollup_pngs_orders_best_to_worst_and_caps_at_eight(tmp_path):
     with Image.open(rollup_path) as image:
         width, height = image.size
     assert width > height
-    assert width < 1600
-    assert height < 900
+    assert width < 1800
+    assert height < 500
 
 
 def test_write_reports_lists_rollup_pngs(tmp_path):
@@ -418,23 +422,31 @@ def test_write_reports_lists_rollup_pngs(tmp_path):
         "measurements": [],
         "rollups": [
             {
-                "hierarchyId": "document-workbench",
-                "viewportProfile": "desktop",
-                "file": "document-workbench--desktop--rollup.png",
-                "candidates": ["focus-priority", "split-pane"],
-                "columns": 4,
-                "rows": 2,
-                "topCount": 2,
+                "kind": "finalRollup",
+                "file": "layout-snapshot-final-rollup.png",
+                "groupCount": 1,
+                "columns": 2,
+                "rows": 1,
+                "topCountPerGroup": 8,
+                "groups": [
+                    {
+                        "hierarchyId": "document-workbench",
+                        "viewportProfile": "desktop",
+                        "candidates": ["focus-priority", "split-pane"],
+                        "topCount": 2,
+                    }
+                ],
             }
         ],
-        "rollupFiles": ["document-workbench--desktop--rollup.png"],
+        "rollupFiles": ["layout-snapshot-final-rollup.png"],
     }
 
     json_path, md_path = module.write_reports(report, tmp_path)
     assert json_path.exists()
     text = md_path.read_text(encoding="utf-8")
     assert "## Rollup PNGs" in text
-    assert "document-workbench--desktop--rollup.png" in text
+    assert "layout-snapshot-final-rollup.png" in text
+    assert "groups=`1`" in text
     assert "focus-priority, split-pane" in text
 
 

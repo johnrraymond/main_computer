@@ -1057,6 +1057,96 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         )
         self.assertIn("grid-template-rows: auto auto;", GIT_TOOLS_CSS)
 
+
+    def test_git_tools_mock_declares_generic_semantic_layout_contract(self) -> None:
+        component_tags = re.findall(r"<[^>]+data-mc-component-id=\"[^\"]+\"[^>]*>", GIT_TOOLS_APP_HTML)
+        components = {}
+        for tag in component_tags:
+            attrs = dict(re.findall(r"([\w-]+)=\"([^\"]*)\"", tag))
+            components[attrs["data-mc-component-id"]] = attrs
+
+        self.assertNotIn("data-mc-app-archetype", GIT_TOOLS_APP_HTML)
+        self.assertNotIn("data-mc-primary-grammar", GIT_TOOLS_APP_HTML)
+
+        expected_contract = {
+            "git-tools.root": {
+                "data-mc-layout-affordance": "guided-workflow-shell",
+                "data-mc-presentation-set": "project-context workflow-plan publish-controls operation-evidence",
+            },
+            "git-tools.projects.roster": {
+                "data-mc-selects": "git-tools.projects.main git-tools.workflow.accordion",
+                "data-mc-layout-affordance": "selection-rail",
+                "data-mc-hard-constraints": "project-context-visible",
+            },
+            "git-tools.projects.main": {
+                "data-mc-layout-affordance": "dominant-workflow-surface",
+                "data-mc-hard-constraints": "must-own-readable-space workflow-surface-visible",
+                "data-mc-consumes": "selected-project project-inspection-state",
+            },
+            "git-tools.projects.wizard-plan": {
+                "data-mc-layout-affordance": "action-plan-surface",
+                "data-mc-proves": "git-tools.projects.main",
+            },
+            "git-tools.git-server.panel": {
+                "data-mc-layout-affordance": "support-workflow-dock",
+                "data-mc-controls": "git-tools.git-server.workflow-layout git-tools.git-server.activity",
+            },
+            "git-tools.git-server.workflow-steps": {
+                "data-mc-layout-affordance": "step-command-stack",
+                "data-mc-hard-constraints": "publish-controls-visible",
+            },
+            "git-tools.git-server.activity": {
+                "data-mc-layout-affordance": "secondary-proof-dock",
+                "data-mc-proves": "git-tools.git-server.publish-workflow",
+                "data-mc-hard-constraints": "operation-evidence-accessible",
+            },
+            "git-tools.outputs.git-server.content": {
+                "data-mc-layout-affordance": "output-log",
+                "data-mc-growth": "large-output-stream",
+            },
+            "git-tools.git-server.advanced": {
+                "data-mc-layout-affordance": "deferred-advanced-command-dock",
+                "data-mc-deferability": "deferable",
+            },
+        }
+        for component_id, expected_attrs in expected_contract.items():
+            with self.subTest(component_id=component_id):
+                self.assertIn(component_id, components)
+            for attr_name, expected_value in expected_attrs.items():
+                with self.subTest(component_id=component_id, attr=attr_name):
+                    self.assertEqual(components[component_id].get(attr_name), expected_value)
+
+        relationship_attrs = (
+            "data-mc-controls",
+            "data-mc-selects",
+            "data-mc-navigates",
+            "data-mc-scopes",
+            "data-mc-reflects",
+            "data-mc-confirms",
+            "data-mc-proves",
+        )
+        for component_id, attrs in components.items():
+            for attr_name in relationship_attrs:
+                targets = attrs.get(attr_name, "").split()
+                for target in targets:
+                    with self.subTest(component_id=component_id, attr=attr_name, target=target):
+                        self.assertIn(target, components)
+
+        semantic_attrs = (
+            "data-mc-controls",
+            "data-mc-selects",
+            "data-mc-scopes",
+            "data-mc-emits",
+            "data-mc-consumes",
+            "data-mc-layout-affordance",
+            "data-mc-phase",
+            "data-mc-presentation-set",
+            "data-mc-hard-constraints",
+        )
+        for attr_name in semantic_attrs:
+            with self.subTest(attr=attr_name):
+                self.assertIn(attr_name, GIT_TOOLS_APP_HTML)
+
     def test_git_tools_responsive_css_is_owned_by_git_tools_stylesheet(self) -> None:
         self.assertNotIn("git-tools", STATUS_AND_RESPONSIVE_CSS)
         self.assertIn("@container (max-width: 980px)", GIT_TOOLS_CSS)

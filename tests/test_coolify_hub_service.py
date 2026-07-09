@@ -1303,6 +1303,45 @@ class CoolifyHubServiceTests(unittest.TestCase):
             self.assertEqual(bundle["escrow_address"], "0x" + "3" * 40)
             self.assertEqual(bundle["wallet_path"], "hub_admin.private_key")
 
+    def test_sync_hub_runtime_application_envs_sets_launcher_defaults_for_signer_mode(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(
+            bridge_backend="credit-bridge-contract",
+            contracts_path="main_computer/config/mainnet_contracts.json",
+            enable_bridge_writes=True,
+            hub_chain_rpc_url="https://mainnet-rpc.greatlibrary.io",
+        )
+        expected = coolify_hub_service.hub_runtime_env_defaults(
+            profile,
+            args,
+            runtime_dir="/data/main-computer/hub/mainnet-exp-fdb",
+        )
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/applications/app-uuid/envs"): [{"envs": []} for _ in expected],
+                ("POST", "/api/v1/applications/app-uuid/envs"): [{"uuid": f"env-{index}"} for index, _key in enumerate(expected)],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        result = coolify_hub_service.sync_hub_runtime_application_envs(
+            client,
+            profile,
+            args,
+            application_uuid="app-uuid",
+            runtime_dir="/data/main-computer/hub/mainnet-exp-fdb",
+            tried=tried,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", result["keys"])
+        self.assertIn("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES", result["keys"])
+        self.assertIn("MAIN_COMPUTER_HUB_CHAIN_RPC_URL", result["keys"])
+        post_payloads = [request[2] for request in client.requests if request[0] == "POST"]
+        self.assertEqual(set(post_payloads[0]), {"key", "value"})
+        self.assertNotIn("https://mainnet-rpc.greatlibrary.io", json.dumps(tried))
+
+
     def test_sync_application_env_var_creates_runtime_secret_without_leaking_value(self) -> None:
         client = RouteCoolifyClient(
             {

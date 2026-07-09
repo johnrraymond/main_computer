@@ -850,6 +850,14 @@ def sync_hub_application(
         update_result = {**update_result, "created": True}
         action = "created"
     storage = hub_tool.ensure_storage(client, app_profile, app_args, application_uuid=application_uuid, runtime_dir=hub.runtime_dir, tried=tried)
+    runtime_env_sync_result = hub_tool.sync_hub_runtime_application_envs(
+        client,
+        app_profile,
+        app_args,
+        application_uuid=application_uuid,
+        runtime_dir=hub.runtime_dir,
+        tried=tried,
+    )
     signer_sync_result = None
     if hub_tool.bridge_signer_sync_requested(app_args):
         signer_sync_result = hub_tool.sync_bridge_signer_application_env(
@@ -874,6 +882,7 @@ def sync_hub_application(
         "existing": existing,
         "update_result": update_result,
         "storage": storage,
+        "runtime_env_sync": runtime_env_sync_result,
         "bridge_signer_sync": signer_sync_result,
         "deployed": deploy_result is not None,
         "deploy_result": deploy_result,
