@@ -5,7 +5,6 @@
   "coolify": {
     "server_url_source": "command-line",
     "server_url_argument": "--set-coolify-url",
-    "server_url_argument_format": "<server-name>:<coolify-base-url>",
     "server_token_source": "environment-or-command-line"
   },
   "servers": [

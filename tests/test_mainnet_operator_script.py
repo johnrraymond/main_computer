@@ -168,3 +168,248 @@ def test_dry_run_prints_delegated_command_without_executing(monkeypatch, capsys)
     assert "dev-chain-reset.py" in output
     assert "--private-key-env OPERATOR_DEPLOYER_PRIVATE_KEY" in output
     assert operator.DEFAULT_DEV_PRIVATE_KEY not in output
+
+
+
+def test_private_key_to_address_matches_default_anvil_deployer() -> None:
+    operator = load_mainnet_operator()
+    assert operator.private_key_to_address(operator.DEFAULT_DEV_PRIVATE_KEY) == "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+
+
+def test_prepare_keys_defaults_to_repo_private_state_path() -> None:
+    operator = load_mainnet_operator()
+    assert operator.default_private_state_path() == operator.repo_root() / "runtime" / "state" / "main_computer.private.yaml"
+
+
+def test_prepare_keys_populates_missing_mainnet_wallets_without_printing_private_keys(tmp_path, capsys) -> None:
+    operator = load_mainnet_operator()
+    state_path = tmp_path / "main_computer.private.yaml"
+    summary_path = tmp_path / "mainnet-wallets.public.json"
+    local_secrets_path = tmp_path / "local.secrets"
+    state_path.write_text(
+        """
+schema_version: 1
+networks:
+  mainnet:
+    kind: mainnet
+    wallets:
+      deployer:
+        address: null
+        private_key: null
+      captain:
+        address: null
+        private_key: null
+      o1:
+        address: null
+        private_key: null
+      o2:
+        address: null
+        private_key: null
+      o3:
+        address: null
+        private_key: null
+      hub_admin:
+        address: null
+        private_key: null
+      escrow_owner:
+        address: null
+        private_key: null
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    status = operator.main(
+        [
+            "prepare-keys",
+            "--network",
+            "mainnet",
+            "--state",
+            str(state_path),
+            "--summary-path",
+            str(summary_path),
+            "--local-secrets-path",
+            str(local_secrets_path),
+        ]
+    )
+
+    assert status == 0
+    output = capsys.readouterr().out
+    assert "private keys were not printed" in output
+    assert "0x" + "11" * 32 not in output
+
+    import yaml
+
+    state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    wallets = state["networks"]["mainnet"]["wallets"]
+    assert set(operator.DEFAULT_KEYGEN_ROLES) <= set(wallets)
+    for role in operator.DEFAULT_KEYGEN_ROLES:
+        entry = wallets[role]
+        assert operator.is_private_key(entry["private_key"])
+        assert operator.is_address(entry["address"])
+        assert operator.private_key_to_address(entry["private_key"]).lower() == entry["address"].lower()
+        assert entry["source"] == "mainnet-operator prepare-keys mainnet"
+        assert entry["created_at"].endswith("Z")
+
+    local_secret_values = {line.strip() for line in local_secrets_path.read_text(encoding="utf-8").splitlines()}
+    assert {wallets[role]["private_key"] for role in operator.DEFAULT_KEYGEN_ROLES} <= local_secret_values
+    assert "local.secrets updated" in output
+
+    import json
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["network"] == "mainnet"
+    assert summary["private_keys_included"] is False
+    assert sorted(item["role"] for item in summary["generated_roles"]) == sorted(operator.DEFAULT_KEYGEN_ROLES)
+    summary_text = summary_path.read_text(encoding="utf-8")
+    assert "private_key\"" not in summary_text
+    assert "private_keys_included" in summary_text
+
+
+def test_prepare_keys_refuses_address_without_matching_private_key(tmp_path) -> None:
+    operator = load_mainnet_operator()
+    state_path = tmp_path / "main_computer.private.yaml"
+    local_secrets_path = tmp_path / "local.secrets"
+    state_path.write_text(
+        """
+networks:
+  mainnet:
+    wallets:
+      deployer:
+        address: "0x1111111111111111111111111111111111111111"
+        private_key: null
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    status = operator.main(
+        [
+            "prepare-keys",
+            "--network",
+            "mainnet",
+            "--state",
+            str(state_path),
+            "--roles",
+            "deployer",
+            "--summary-path",
+            str(tmp_path / "summary.json"),
+            "--local-secrets-path",
+            str(local_secrets_path),
+        ]
+    )
+
+    assert status == 1
+
+
+def test_prepare_keys_verifies_existing_private_key_and_fills_address(tmp_path) -> None:
+    operator = load_mainnet_operator()
+    state_path = tmp_path / "main_computer.private.yaml"
+    summary_path = tmp_path / "summary.json"
+    local_secrets_path = tmp_path / "local.secrets"
+    private_key = "0x" + "12" * 32
+    state_path.write_text(
+        f"""
+networks:
+  testnet:
+    wallets:
+      deployer:
+        address: null
+        private_key: "{private_key}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    status = operator.main(
+        [
+            "prepare-keys",
+            "--network",
+            "testnet",
+            "--state",
+            str(state_path),
+            "--roles",
+            "deployer",
+            "--summary-path",
+            str(summary_path),
+            "--local-secrets-path",
+            str(local_secrets_path),
+        ]
+    )
+
+    assert status == 0
+
+    import yaml
+
+    state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    entry = state["networks"]["testnet"]["wallets"]["deployer"]
+    assert entry["private_key"] == private_key
+    assert entry["address"] == operator.private_key_to_address(private_key)
+    assert private_key in {line.strip() for line in local_secrets_path.read_text(encoding="utf-8").splitlines()}
+
+    import json
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["generated_roles"] == []
+    assert summary["existing_roles"] == [{"address": entry["address"], "role": "deployer"}]
+
+
+
+def test_append_local_secrets_is_idempotent_and_preserves_existing_lines(tmp_path) -> None:
+    operator = load_mainnet_operator()
+    local_secrets_path = tmp_path / "local.secrets"
+    existing = "already-secret"
+    private_key = "0x" + "34" * 32
+    local_secrets_path.write_text(existing, encoding="utf-8")
+
+    appended = operator.append_local_secrets(local_secrets_path, [private_key, private_key])
+
+    assert appended == 1
+    lines = local_secrets_path.read_text(encoding="utf-8").splitlines()
+    assert lines == [existing, private_key]
+
+    appended_again = operator.append_local_secrets(local_secrets_path, [private_key])
+    assert appended_again == 0
+    assert local_secrets_path.read_text(encoding="utf-8").splitlines() == [existing, private_key]
+
+def test_private_key_to_address_does_not_shell_out_to_openssl(monkeypatch) -> None:
+    operator = load_mainnet_operator()
+
+    def fail_subprocess_run(*_args, **_kwargs):
+        raise FileNotFoundError(2, "The system cannot find the file specified", "openssl")
+
+    monkeypatch.setattr(operator.subprocess, "run", fail_subprocess_run)
+
+    assert operator.private_key_to_address(operator.DEFAULT_DEV_PRIVATE_KEY) == "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+
+
+def test_prepare_keys_file_not_found_diagnostic_includes_missing_filename(monkeypatch, capsys, tmp_path) -> None:
+    operator = load_mainnet_operator()
+    state_path = tmp_path / "main_computer.private.yaml"
+    local_secrets_path = tmp_path / "local.secrets"
+    state_path.write_text("networks: {mainnet: {wallets: {}}}\n", encoding="utf-8")
+
+    def fail_load_private_state(_path):
+        raise FileNotFoundError(2, "The system cannot find the file specified", "missing-tool.exe")
+
+    monkeypatch.setattr(operator, "load_private_state", fail_load_private_state)
+
+    status = operator.main(
+        [
+            "prepare-keys",
+            "--network",
+            "mainnet",
+            "--state",
+            str(state_path),
+            "--roles",
+            "deployer",
+            "--summary-path",
+            str(tmp_path / "summary.json"),
+            "--local-secrets-path",
+            str(local_secrets_path),
+        ]
+    )
+
+    assert status == 1
+    captured = capsys.readouterr()
+    assert "prepare-keys" in captured.err
+    assert "missing-tool.exe" in captured.err
+    assert "FileNotFoundError" in captured.err
+    assert "errno" in captured.err

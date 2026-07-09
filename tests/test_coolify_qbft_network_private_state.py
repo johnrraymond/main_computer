@@ -8,6 +8,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "tools" / "coolify_qbft_network.py"
+FAKE_PRIVATE_STATE_FIXTURE = ROOT / "tests" / "fixtures" / "fake-main-computer.private.yaml"
 
 
 def _load_module() -> Any:
@@ -354,6 +355,42 @@ def test_instances_selection_infers_single_coolify_host_from_private_state(tmp_p
         {"url": "http://198.51.100.10:30010", "source": "direct-host-port"},
         {"url": "https://testnet-rpc.greatlibrary.io", "source": "configured-network-rpc"},
     ]
+    assert module.contract_deployment_rpc_candidates(plan, args) == [
+        {"url": "http://198.51.100.10:30010", "source": "direct-host-port"},
+        {"url": "https://testnet-rpc.greatlibrary.io:443", "source": "configured-network-rpc"},
+    ]
+
+
+def test_contract_deployment_rpc_selection_falls_back_to_canonical_port(tmp_path: Path, monkeypatch: Any) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+
+    args = module.parse_args(
+        [
+            "deploy-contracts",
+            "testnet",
+            "--private-state",
+            str(state_path),
+            "--instances",
+            "validator-rpc-1",
+        ]
+    )
+    plan = module.build_plan_from_args(args)
+    calls: list[str] = []
+
+    def fake_json_rpc(url: str, method: str, *args: Any, **kwargs: Any) -> str:
+        assert method == "eth_chainId"
+        calls.append(url)
+        if url == "http://198.51.100.10:30010":
+            raise RuntimeError("blocked direct host-port")
+        if url == "https://testnet-rpc.greatlibrary.io:443":
+            return hex(plan.chain_id)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
+
+    assert module.select_contract_deployment_rpc_url(plan, args) == "https://testnet-rpc.greatlibrary.io:443"
+    assert calls == ["http://198.51.100.10:30010", "https://testnet-rpc.greatlibrary.io:443"]
 
 
 def test_private_state_external_rpc_publishes_selected_rpc_host_port_by_default(tmp_path: Path) -> None:
@@ -604,3 +641,62 @@ def test_coolify_sync_uses_singleton_coolify_server_when_private_host_name_is_no
     assert fake_client.created_payload["environment_uuid"] == "env-1"
     assert fake_client.created_payload["name"] == "main-computer-qbft-testnet-a"
     assert not _contains_exact_key(result, "body")
+
+
+def test_fake_private_state_fixture_drives_testnet_and_mainnet_qbft_plans() -> None:
+    module = _load_module()
+
+    testnet = module.build_plan("testnet", private_state_path=FAKE_PRIVATE_STATE_FIXTURE)
+    testnet_services = {service.id: service for service in testnet.services}
+    assert testnet.environment == "testnet"
+    assert {host.id for host in testnet.hosts} == {"a", "b"}
+    assert set(testnet_services) == {"validator-rpc-1", "validator-1", "validator-2", "rpc-1"}
+    assert testnet_services["validator-rpc-1"].rpc_host_port == 30110
+    assert testnet_services["validator-rpc-1"].p2p_host_port == 30410
+    assert testnet_services["rpc-1"].rpc_host_port == 30120
+    assert module.rpc_target_service(testnet).id == "rpc-1"
+    assert "single-Besu" not in "\n".join(testnet.warnings)
+    assert "Topology has 3 validators" in "\n".join(testnet.warnings)
+
+    try:
+        module.build_plan("mainnet", private_state_path=FAKE_PRIVATE_STATE_FIXTURE)
+    except module.PlanError as exc:
+        assert "--allow-mainnet" in str(exc)
+    else:
+        raise AssertionError("mainnet fixture must still require --allow-mainnet")
+
+    mainnet = module.build_plan(
+        "mainnet",
+        private_state_path=FAKE_PRIVATE_STATE_FIXTURE,
+        allow_mainnet=True,
+    )
+    mainnet_services = {service.id: service for service in mainnet.services}
+    assert mainnet.environment == "mainnet"
+    assert mainnet.chain_id == 42424240
+    assert {host.id for host in mainnet.hosts} == {"a", "b"}
+    assert set(mainnet_services) == {"validator-rpc-1", "validator-1", "validator-2", "rpc-1"}
+    assert mainnet_services["validator-rpc-1"].rpc_host_port == 31110
+    assert mainnet_services["validator-rpc-1"].p2p_host_port == 31410
+    assert mainnet_services["rpc-1"].rpc_host_port == 31120
+    assert mainnet_services["rpc-1"].host == "b"
+    assert module.rpc_target_service(mainnet).id == "rpc-1"
+    assert "single-validator" not in "\n".join(mainnet.warnings)
+    assert "Topology has 3 validators" in "\n".join(mainnet.warnings)
+
+
+def test_filtered_mainnet_validator_rpc_instance_satisfies_rpc_topology_policy() -> None:
+    module = _load_module()
+
+    plan = module.build_plan(
+        "mainnet",
+        private_state_path=FAKE_PRIVATE_STATE_FIXTURE,
+        allow_mainnet=True,
+        instances="validator-rpc-1",
+    )
+
+    assert [service.id for service in plan.services] == ["validator-rpc-1"]
+    service = plan.services[0]
+    assert service.role == "validator"
+    assert service.roles == ("rpc", "validator")
+    assert service.rpc_host_port == 31110
+    assert module.rpc_target_service(plan).id == "validator-rpc-1"

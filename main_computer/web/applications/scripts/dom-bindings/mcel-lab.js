@@ -53,6 +53,8 @@
           fullBatteryRunCount: 0,
           lastWalletResetClean: false,
           lastProof: null,
+          lastWalletCommitBoundary: null,
+          commitBoundaryReceipts: [],
           evidence: [],
           walletAdapter: {
             providerKind: "unknown",
@@ -160,6 +162,9 @@
     const mcelTinyContractSerialized = document.querySelector("#mcel-tiny-contract-serialized");
     const mcelTinyContractProof = document.querySelector("#mcel-tiny-contract-proof");
     const mcelTinyContractEvidence = document.querySelector("#mcel-tiny-contract-evidence");
+    const mcel18nWalletToolStatus = document.querySelector("#mcel-18n-wallet-tool-status");
+    const mcel18nWalletToolPreflight = document.querySelector("#mcel-18n-wallet-tool-preflight");
+    const mcel18nWalletToolReceipt = document.querySelector("#mcel-18n-wallet-tool-receipt");
     const mcelTinyContractRun = document.querySelector("#mcel-tiny-contract-run");
     const mcelTinyContractIncrement = document.querySelector("#mcel-tiny-contract-increment");
     const mcelTinyContractWallet = document.querySelector("#mcel-tiny-contract-wallet");

@@ -5,10 +5,12 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "tools" / "sync_private_state.py"
+FAKE_PRIVATE_STATE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "fake-main-computer.private.yaml"
 
 
 @pytest.fixture()
@@ -235,3 +237,30 @@ def test_write_updates_local_secrets_without_live_checks(sync_private_state, tmp
     assert key("a") not in local_secrets
     assert "203.0.113.30" in local_secrets
     assert "10.0.0.30" not in local_secrets
+
+
+def test_fake_private_template_local_secrets_coverage_is_test_only(sync_private_state):
+    state = yaml.safe_load(FAKE_PRIVATE_STATE_FIXTURE.read_text(encoding="utf-8"))
+
+    values = sync_private_state.sensitive_local_secret_values(state)
+
+    testnet_wallet_keys = [
+        wallet["private_key"]
+        for wallet in state["networks"]["testnet"]["wallets"].values()
+        if wallet.get("private_key")
+    ]
+    assert testnet_wallet_keys
+    for private_key in testnet_wallet_keys:
+        assert private_key in values
+
+    assert all(wallet["private_key"] is None for wallet in state["networks"]["mainnet"]["wallets"].values())
+    assert "198.51.100.10" in values
+    assert "198.51.100.11" in values
+    assert "10.42.0.10" not in values
+    assert "10.42.0.11" not in values
+
+    # Stage 4 is deliberately test-only: local.secrets is still a denylist for
+    # wallet private keys and public Coolify IP coordinates, not the source of
+    # truth for fake or real Coolify API tokens.
+    assert "fake-coolify-token-a-not-secret" not in values
+    assert "fake-coolify-token-b-not-secret" not in values

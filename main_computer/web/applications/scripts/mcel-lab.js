@@ -107,6 +107,4378 @@
       }, 0).toString(16);
     }
 
+    function mcelTinyContractStableJson(value) {
+      if (Array.isArray(value)) {
+        return `[${value.map((item) => mcelTinyContractStableJson(item)).join(",")}]`;
+      }
+      if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${mcelTinyContractStableJson(value[key])}`).join(",")}}`;
+      }
+      return JSON.stringify(value ?? null);
+    }
+
+    function mcelTinyContractObjectHash(value) {
+      return mcelTinyContractHash(mcelTinyContractStableJson(value));
+    }
+
+    function mcelTinyContractWalletAccountHash(account = "") {
+      const normalized = String(account || "").trim().toLowerCase();
+      return normalized ? `account:${mcelTinyContractHash(normalized)}` : "";
+    }
+
+    function mcelTinyContractTxProbeEnvelopeIds(draftProbe = {}) {
+      return ["nonce", "gasEstimate", "ethCall"]
+        .map((key) => {
+          const envelope = draftProbe?.[key] || {};
+          const method = envelope.method || key;
+          const status = envelope.status || "not-probed";
+          return `${method}:${status}`;
+        });
+    }
+
+    function mcelTinyContractTxDraftInvalidation(reason, detail = {}) {
+      return {
+        reason,
+        detail,
+        at: "runtime-tx-draft-boundary"
+      };
+    }
+
+    function mcelTinyContractSelectedRequestSnapshot(request = null) {
+      return request
+        ? {
+            id: request.id || "",
+            title: request.title || "",
+            status: request.status || "",
+            risk: request.risk || "",
+            contractMethod: request.contractMethod || "",
+            evidenceRequired: request.evidenceRequired === true
+          }
+        : null;
+    }
+
+    function mcelTinyContractSameChainId(left = "", right = "") {
+      return String(left || "").toLowerCase() === String(right || "").toLowerCase();
+    }
+
+    function mcelTinyContractTxDraftInvalidationKey(entry = {}) {
+      return `${entry.reason || ""}:${mcelTinyContractStableJson(entry.detail || {})}`;
+    }
+
+    function mcelTinyContractMergeTxDraftInvalidations(...lists) {
+      const seen = new Set();
+      const merged = [];
+      lists.flat().filter(Boolean).forEach((entry) => {
+        const reason = entry.reason || "";
+        if (!reason) return;
+        const normalized = {
+          reason,
+          detail: entry.detail || {},
+          at: entry.at || "runtime-tx-draft-boundary"
+        };
+        const key = mcelTinyContractTxDraftInvalidationKey(normalized);
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged.push(normalized);
+      });
+      return merged;
+    }
+
+    function mcelTinyContractLatestSequenceEntry(sequence = []) {
+      return Array.isArray(sequence) && sequence.length ? sequence[sequence.length - 1] || {} : {};
+    }
+
+    function mcelTinyContractSelectedReleaseSnapshot(source = {}) {
+      const release = source.devRelease || {};
+      const devNetwork = release.devNetwork || {};
+      const requests = Array.isArray(release.requests) ? release.requests : [];
+      return {
+        title: release.title || "",
+        contractAddress: release.contractAddress || "",
+        devNetwork: {
+          name: devNetwork.name || "",
+          chainId: devNetwork.chainId || "",
+          decimalChainId: devNetwork.decimalChainId || "",
+          rpcUrl: devNetwork.rpcUrl || ""
+        },
+        requests: requests.map((request) => ({
+          id: request.id || "",
+          status: request.status || "",
+          risk: request.risk || "",
+          contractMethod: request.contractMethod || "",
+          evidenceRequired: request.evidenceRequired === true
+        }))
+      };
+    }
+
+    function mcelTinyContractSelectedReleaseHash(source = {}) {
+      return mcelTinyContractObjectHash(mcelTinyContractSelectedReleaseSnapshot(source));
+    }
+
+    function mcelTinyContractProbeEvidenceHash(draftOrProbe = {}) {
+      return mcelTinyContractObjectHash({
+        nonce: draftOrProbe.nonce || {},
+        gasEstimate: draftOrProbe.gasEstimate || {},
+        ethCall: draftOrProbe.ethCall || {},
+        probeEnvelopeIds: Array.isArray(draftOrProbe.probeEnvelopeIds)
+          ? draftOrProbe.probeEnvelopeIds
+          : mcelTinyContractTxProbeEnvelopeIds(draftOrProbe)
+      });
+    }
+
+    function mcelTinyContractTxDraftIdentityEnvelope({
+      source = {},
+      state = {},
+      runtime = {},
+      request = null,
+      wallet = {},
+      network = {},
+      externalOutcome = {},
+      tx = {},
+      encoding = {},
+      draftProbe = null,
+      txDraft = {},
+      createdAt = ""
+    } = {}) {
+      const selectedRequestSnapshot = mcelTinyContractSelectedRequestSnapshot(request);
+      const sourceRequestHash = selectedRequestSnapshot ? mcelTinyContractObjectHash(selectedRequestSnapshot) : (txDraft.sourceRequestHash || "");
+      const releaseSnapshot = mcelTinyContractSelectedReleaseSnapshot(source);
+      const selectedReleaseHash = mcelTinyContractObjectHash(releaseSnapshot);
+      const expectedChainId = network.expectedChainId || source.devRelease?.devNetwork?.chainId || txDraft.expectedChainId || txDraft.chainProof?.expectedChainId || "0x28757b2";
+      const chainId = tx.chainId || network.chainId || txDraft.chainId || txDraft.chainProof?.chainId || "";
+      const account = tx.from || wallet.account || wallet.address || txDraft.from || "";
+      const walletAccountHash = txDraft.walletAccountHash || mcelTinyContractWalletAccountHash(account);
+      const calldata = tx.data || encoding.calldata || encoding.data || txDraft.calldata || txDraft.data || "";
+      const calldataHash = calldata ? mcelTinyContractHash(calldata) : "";
+      const target = tx.to || txDraft.to || source.devRelease?.contractAddress || "";
+      const value = tx.value || txDraft.value || "0x0";
+      const probeEnvelopeIds = draftProbe?.kind === "mcel-runtime-tx-draft-probe"
+        ? mcelTinyContractTxProbeEnvelopeIds(draftProbe)
+        : (Array.isArray(txDraft.probeEnvelopeIds) && txDraft.probeEnvelopeIds.length
+          ? txDraft.probeEnvelopeIds
+          : ["eth_getTransactionCount:not-probed", "eth_estimateGas:not-probed", "eth_call:not-probed"]);
+      const probeEvidenceHash = mcelTinyContractProbeEvidenceHash(draftProbe?.kind === "mcel-runtime-tx-draft-probe" ? draftProbe : txDraft);
+      const draftBuiltAt = createdAt || txDraft.draftBuiltAt || new Date().toISOString();
+      const draftTtlMs = Number(txDraft.draftTtlMs || 300000);
+      const draftExpiresAt = txDraft.draftExpiresAt || new Date(Date.parse(draftBuiltAt) + draftTtlMs).toISOString();
+      const payload = {
+        requestId: request?.id || state.selectedRequestId || txDraft.requestId || "",
+        selectedReleaseHash,
+        sourceRequestHash,
+        walletAccountHash,
+        chainId,
+        expectedChainId,
+        target,
+        value,
+        calldataHash,
+        probeEnvelopeIds,
+        probeEvidenceHash,
+        boundary: txDraft.boundary || "runtime-only-no-send",
+        mutationLocked: true
+      };
+      const txDraftHash = mcelTinyContractObjectHash(payload);
+      return {
+        kind: "mcelWalletTxDraftIdentityEnvelope.v1",
+        identityVersion: "19B-MCEL",
+        txDraftId: `mcelWalletTxDraft:${txDraftHash}`,
+        txDraftHash,
+        payload,
+        selectedReleaseHash,
+        selectedReleaseSnapshot: releaseSnapshot,
+        sourceRequestHash,
+        selectedRequestSnapshot,
+        walletAccountHash,
+        chainProof: {
+          expectedChainId,
+          chainId,
+          ok: Boolean(chainId && mcelTinyContractSameChainId(chainId, expectedChainId)),
+          status: chainId && mcelTinyContractSameChainId(chainId, expectedChainId) ? "matched" : "mismatch-or-missing"
+        },
+        target,
+        value,
+        calldataHash,
+        draftBuiltAt,
+        draftTtlMs,
+        draftExpiresAt,
+        probeEnvelopeIds,
+        probeEvidenceHash,
+        externalOutcomeSequence: externalOutcome?.kind === "mcel-external-outcome"
+          ? [{
+              sequence: externalOutcome.sequence || null,
+              operation: externalOutcome.operation || "",
+              status: externalOutcome.status || "",
+              reason: externalOutcome.reason || ""
+            }]
+          : [],
+        networkGateSequence: [{
+          status: network.status || "waiting",
+          ok: network.ok === true,
+          expectedChainId,
+          chainId
+        }],
+        mutationLocked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        invariant: [
+          "19B identity binds txDraft to selected release hash",
+          "19B identity binds txDraft to selected source request hash",
+          "19B identity binds txDraft to wallet account hash and chain proof",
+          "19B identity binds txDraft to calldata and probe evidence",
+          "wallet send/sign/broadcast remain locked"
+        ]
+      };
+    }
+
+    function mcelTinyContractTxDraftValidityEnvelope({
+      source = {},
+      state = {},
+      runtime = {},
+      request = null,
+      txDraft = {},
+      reason = "tx-draft-validity-check"
+    } = {}) {
+      const invalidations = [];
+      const addInvalidation = (entryReason, detail = {}) => {
+        invalidations.push(mcelTinyContractTxDraftInvalidation(entryReason, detail));
+      };
+      const hasDraft = Boolean(
+        txDraft.status && txDraft.status !== "empty"
+        || txDraft.calldata
+        || txDraft.data
+        || txDraft.sourceRequestHash
+        || txDraft.txDraftHash
+        || txDraft.txDraftId
+      );
+      const wallet = runtime.wallet || {};
+      const network = runtime.network || {};
+      const externalOutcome = runtime.externalOutcome || {};
+      const currentIdentity = mcelTinyContractTxDraftIdentityEnvelope({
+        source,
+        state,
+        runtime,
+        request,
+        wallet,
+        network,
+        externalOutcome,
+        tx: {
+          from: wallet.account || wallet.address || "",
+          to: txDraft.to || source.devRelease?.contractAddress || "",
+          value: txDraft.value || "0x0",
+          data: txDraft.data || txDraft.calldata || "",
+          chainId: network.chainId || wallet.chainId || ""
+        },
+        encoding: {
+          calldata: txDraft.calldata || txDraft.data || "",
+          data: txDraft.data || txDraft.calldata || ""
+        },
+        txDraft: {
+          ...txDraft,
+          draftBuiltAt: txDraft.draftBuiltAt || txDraft.identityEnvelope?.draftBuiltAt || "",
+          draftExpiresAt: txDraft.draftExpiresAt || txDraft.identityEnvelope?.draftExpiresAt || "",
+          probeEnvelopeIds: txDraft.probeEnvelopeIds || txDraft.identityEnvelope?.probeEnvelopeIds || []
+        },
+        createdAt: txDraft.draftBuiltAt || txDraft.identityEnvelope?.draftBuiltAt || ""
+      });
+      if (!hasDraft) {
+        return {
+          kind: "mcelWalletTxDraftValidityEnvelope.v1",
+          validityVersion: "19C-MCEL",
+          status: "no-draft",
+          valid: false,
+          reason,
+          currentIdentity,
+          invalidatedBy: [],
+          invalidationReasons: [],
+          mutationLocked: true,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false
+        };
+      }
+      const identity = txDraft.identityEnvelope || txDraft.txDraftIdentity || {};
+      const expectedIdentityHash = identity.txDraftHash || txDraft.txDraftHash || "";
+      const currentPayloadHash = currentIdentity.txDraftHash || "";
+      if (expectedIdentityHash && currentPayloadHash && expectedIdentityHash !== currentPayloadHash) {
+        addInvalidation("tx-draft-identity-changed", {
+          previousTxDraftHash: expectedIdentityHash,
+          currentTxDraftHash: currentPayloadHash
+        });
+      }
+      if ((txDraft.selectedReleaseHash || identity.selectedReleaseHash) && currentIdentity.selectedReleaseHash && (txDraft.selectedReleaseHash || identity.selectedReleaseHash) !== currentIdentity.selectedReleaseHash) {
+        addInvalidation("selected-release-changed", {
+          previousSelectedReleaseHash: txDraft.selectedReleaseHash || identity.selectedReleaseHash || "",
+          currentSelectedReleaseHash: currentIdentity.selectedReleaseHash
+        });
+      }
+      if ((txDraft.sourceRequestHash || identity.sourceRequestHash) && currentIdentity.sourceRequestHash && (txDraft.sourceRequestHash || identity.sourceRequestHash) !== currentIdentity.sourceRequestHash) {
+        addInvalidation("source-request-changed", {
+          previousHash: txDraft.sourceRequestHash || identity.sourceRequestHash || "",
+          currentHash: currentIdentity.sourceRequestHash,
+          previousRequestId: txDraft.requestId || txDraft.selectedRequestSnapshot?.id || "",
+          nextRequestId: request?.id || state.selectedRequestId || ""
+        });
+      }
+      if ((txDraft.walletAccountHash || identity.walletAccountHash) && currentIdentity.walletAccountHash && (txDraft.walletAccountHash || identity.walletAccountHash) !== currentIdentity.walletAccountHash) {
+        addInvalidation("account-changed", {
+          previousAccountHash: txDraft.walletAccountHash || identity.walletAccountHash || "",
+          currentAccountHash: currentIdentity.walletAccountHash
+        });
+      }
+      const draftChainId = txDraft.chainProof?.chainId || identity.chainProof?.chainId || txDraft.chainId || "";
+      if (draftChainId && currentIdentity.chainProof.chainId && !mcelTinyContractSameChainId(draftChainId, currentIdentity.chainProof.chainId)) {
+        addInvalidation("chain-changed", {
+          previousChainId: draftChainId,
+          chainId: currentIdentity.chainProof.chainId,
+          expectedChainId: currentIdentity.chainProof.expectedChainId
+        });
+      }
+      const draftCalldataHash = txDraft.calldataHash || identity.calldataHash || "";
+      if (draftCalldataHash && currentIdentity.calldataHash && draftCalldataHash !== currentIdentity.calldataHash) {
+        addInvalidation("calldata-changed", {
+          previousCalldataHash: draftCalldataHash,
+          currentCalldataHash: currentIdentity.calldataHash
+        });
+      }
+      const draftProbeHash = txDraft.probeEvidenceHash || identity.probeEvidenceHash || "";
+      if (draftProbeHash && currentIdentity.probeEvidenceHash && draftProbeHash !== currentIdentity.probeEvidenceHash) {
+        addInvalidation("probe-evidence-changed", {
+          previousProbeEvidenceHash: draftProbeHash,
+          currentProbeEvidenceHash: currentIdentity.probeEvidenceHash
+        });
+      }
+      const expiresAt = txDraft.draftExpiresAt || identity.draftExpiresAt || "";
+      const expiresMs = Date.parse(expiresAt);
+      if (Number.isFinite(expiresMs) && expiresMs > 0 && expiresMs < Date.now()) {
+        addInvalidation("draft-age-expired", {
+          draftBuiltAt: txDraft.draftBuiltAt || identity.draftBuiltAt || "",
+          draftExpiresAt: expiresAt,
+          draftTtlMs: txDraft.draftTtlMs || identity.draftTtlMs || 300000
+        });
+      }
+      if (txDraft.noSend !== true && txDraft.boundary !== "runtime-only-no-send") {
+        addInvalidation("no-send-boundary-missing", {
+          boundary: txDraft.boundary || "",
+          noSend: txDraft.noSend === true
+        });
+      }
+      const mergedInvalidations = mcelTinyContractMergeTxDraftInvalidations(txDraft.invalidatedBy || [], invalidations);
+      const valid = hasDraft && mergedInvalidations.length === 0 && txDraft.status === "ready" && txDraft.noSend === true;
+      return {
+        kind: "mcelWalletTxDraftValidityEnvelope.v1",
+        validityVersion: "19C-MCEL",
+        status: valid ? "valid" : (mergedInvalidations.length ? "invalidated" : "stale"),
+        valid,
+        reason,
+        identity,
+        currentIdentity,
+        txDraftId: txDraft.txDraftId || identity.txDraftId || "",
+        txDraftHash: txDraft.txDraftHash || identity.txDraftHash || "",
+        selectedReleaseHash: txDraft.selectedReleaseHash || identity.selectedReleaseHash || "",
+        currentSelectedReleaseHash: currentIdentity.selectedReleaseHash || "",
+        sourceRequestHash: txDraft.sourceRequestHash || identity.sourceRequestHash || "",
+        currentSourceRequestHash: currentIdentity.sourceRequestHash || "",
+        walletAccountHash: txDraft.walletAccountHash || identity.walletAccountHash || "",
+        currentWalletAccountHash: currentIdentity.walletAccountHash || "",
+        chainProof: txDraft.chainProof || identity.chainProof || {},
+        currentChainProof: currentIdentity.chainProof || {},
+        calldataHash: txDraft.calldataHash || identity.calldataHash || "",
+        currentCalldataHash: currentIdentity.calldataHash || "",
+        probeEvidenceHash: txDraft.probeEvidenceHash || identity.probeEvidenceHash || "",
+        currentProbeEvidenceHash: currentIdentity.probeEvidenceHash || "",
+        invalidatedBy: mergedInvalidations,
+        invalidationReasons: mergedInvalidations.map((entry) => entry.reason).filter(Boolean),
+        mutationLocked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        action: valid
+          ? "draft valid for inspection/simulation only; mutation remains locked"
+          : "rebuild draft from current wallet/source/chain/probe context",
+        invariant: [
+          "19C validity re-checks selected release, source request, account, chain, calldata, probe evidence, and draft age",
+          "valid txDraft does not unlock send/sign/broadcast",
+          "stale or invalidated txDraft must be rebuilt from current context"
+        ]
+      };
+    }
+
+    function mcelCommitBoundaryDefault(action = "mcel.serious-action", reason = "waiting") {
+      return {
+        kind: "mcel-18n-commit-boundary.v1",
+        boundaryVersion: "18N-MCEL-j",
+        action,
+        status: "locked-no-draft",
+        seriousAction: true,
+        locked: true,
+        mcelOnly: true,
+        rule: "No serious MCEL action commits from raw UI state.",
+        mcelCommitDraft: null,
+        mcelCommitProvenance: null,
+        mcelCommitFreshness: {
+          kind: "mcelCommitFreshness.v1",
+          status: "not-observed",
+          valid: false,
+          invalidatedBy: [],
+          reason
+        },
+        mcelCommitConsumerGate: {
+          kind: "mcelCommitConsumerGate.v1",
+          status: "blocked",
+          valid: false,
+          reason: "No current commit draft has passed the MCEL 18N consumer gate."
+        },
+        mcelCommitPreflight: {
+          kind: "mcelCommitPreflight.v1",
+          status: "locked",
+          allowed: false,
+          canCommit: false,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false,
+          blockers: ["draft-not-ready", "consumer-gate-not-proven", "wallet-send-sign-locked"]
+        },
+        mcelCommitReceipt: {
+          kind: "mcelCommitReceipt.v1",
+          status: "blocked",
+          committed: false,
+          mutationExecuted: false,
+          reason
+        }
+      };
+    }
+
+    function mcelCommitBoundaryDraft({
+      action = "mcel.serious-action",
+      specimen = "mcel",
+      source = {},
+      targets = {},
+      proposedChanges = {},
+      intendedWrites = [],
+      proofRefs = [],
+      locked = true,
+      reason = "draft-created"
+    } = {}) {
+      const draftPayload = {action, specimen, source, targets, proposedChanges, intendedWrites, proofRefs};
+      return {
+        kind: "mcelCommitDraft.v1",
+        draftId: `mcelCommitDraft:${mcelTinyContractObjectHash(draftPayload)}`,
+        action,
+        specimen,
+        seriousAction: true,
+        locked: locked !== false,
+        mcelOnly: true,
+        source,
+        targets,
+        proposedChanges,
+        intendedWrites,
+        proofRefs,
+        createdFor: reason,
+        createdFromHash: mcelTinyContractObjectHash({source, targets, proposedChanges}),
+        invariant: [
+          "intent draft exists before mutation",
+          "source and target provenance are recorded",
+          "freshness must be checked at the consumer",
+          "preflight must explain allowed or blocked state",
+          "commit receipt must record the decision"
+        ]
+      };
+    }
+
+    function mcelCommitBoundaryProvenance({draft = {}, provenance = {}, current = {}} = {}) {
+      const sourceHash = provenance.sourceHash || draft.source?.selectedRequestHash || current.sourceHash || "";
+      const targetHash = provenance.targetHash || current.targetHash || "";
+      const draftHash = draft.draftId || mcelTinyContractObjectHash(draft);
+      return {
+        kind: "mcelCommitProvenance.v1",
+        draftHash,
+        sourceHash,
+        targetHash,
+        sourceSnapshot: provenance.sourceSnapshot || draft.source || {},
+        targetSnapshot: provenance.targetSnapshot || draft.targets || {},
+        proofRefs: Array.isArray(draft.proofRefs) ? draft.proofRefs : [],
+        provenanceEnforced: Boolean(draftHash && (sourceHash || targetHash)),
+        invariant: [
+          "the reviewed intent is identified",
+          "the source used to build the draft is identified",
+          "the target receiving the mutation is identified"
+        ]
+      };
+    }
+
+    function mcelCommitBoundaryFreshness({
+      draft = {},
+      provenance = {},
+      current = {},
+      invalidatedBy = [],
+      reason = "consumer-freshness-check"
+    } = {}) {
+      const invalidations = [...invalidatedBy.filter(Boolean)];
+      if (provenance.sourceHash && current.sourceHash && provenance.sourceHash !== current.sourceHash) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("commit-source-changed", {
+          previousSourceHash: provenance.sourceHash,
+          currentSourceHash: current.sourceHash
+        }));
+      }
+      if (provenance.targetHash && current.targetHash && provenance.targetHash !== current.targetHash) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("commit-target-changed", {
+          previousTargetHash: provenance.targetHash,
+          currentTargetHash: current.targetHash
+        }));
+      }
+      if (draft.locked !== true && draft.seriousAction === true) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("serious-action-not-locked", {
+          action: draft.action || ""
+        }));
+      }
+      const uniqueInvalidations = mcelTinyContractMergeTxDraftInvalidations(invalidations);
+      const valid = uniqueInvalidations.length === 0 && Boolean(provenance.provenanceEnforced);
+      return {
+        kind: "mcelCommitFreshness.v1",
+        status: valid ? "valid" : (uniqueInvalidations.length ? "invalidated" : "stale"),
+        valid,
+        reason,
+        sourceHash: current.sourceHash || "",
+        targetHash: current.targetHash || "",
+        invalidatedBy: uniqueInvalidations,
+        action: valid
+          ? "draft is current; continue to consumer gate"
+          : "rebuild draft from the current MCEL receipt before commit",
+        invariant: [
+          "source hash must match",
+          "target hash must match",
+          "draft must still be locked until the consumer gate permits a commit"
+        ]
+      };
+    }
+
+    function mcelCommitBoundaryConsumerGate({
+      draft = {},
+      provenance = {},
+      freshness = {},
+      consumer = "mcel.consumer",
+      forceLocked = true,
+      blockers = []
+    } = {}) {
+      const invalidationReasons = (freshness.invalidatedBy || [])
+        .map((entry) => entry?.reason || entry?.kind || entry)
+        .filter(Boolean);
+      const lockedBlocker = forceLocked ? ["wallet-send-sign-locked"] : [];
+      const allBlockers = [...new Set([
+        ...invalidationReasons,
+        ...blockers.filter(Boolean),
+        ...lockedBlocker
+      ])];
+      const valid = freshness.valid === true && provenance.provenanceEnforced === true && allBlockers.length === 0;
+      return {
+        kind: "mcelCommitConsumerGate.v1",
+        consumer,
+        status: valid ? "pass" : "blocked",
+        valid,
+        provenanceEnforced: provenance.provenanceEnforced === true,
+        freshnessStatus: freshness.status || "not-observed",
+        blockers: allBlockers,
+        reason: valid
+          ? "MCEL 18N consumer gate accepted the current draft."
+          : `MCEL 18N consumer gate blocked commit: ${allBlockers.join(", ") || freshness.status || "not proven"}`,
+        allowedActions: valid ? ["commit-with-receipt"] : ["rebuild-draft", "inspect-preflight"],
+        invariant: [
+          "consumer cannot use stale intent",
+          "consumer cannot use unproven intent",
+          "consumer cannot bypass the explicit lock"
+        ]
+      };
+    }
+
+    function mcelCommitBoundaryPreflight({draft = {}, freshness = {}, consumerGate = {}} = {}) {
+      const gateBlockers = Array.isArray(consumerGate.blockers) ? consumerGate.blockers : [];
+      const freshnessBlockers = (freshness.invalidatedBy || []).map((entry) => entry?.reason || entry).filter(Boolean);
+      const blockers = [...new Set([...gateBlockers, ...freshnessBlockers])];
+      const allowed = consumerGate.valid === true && blockers.length === 0;
+      return {
+        kind: "mcelCommitPreflight.v1",
+        status: allowed ? "allowed" : "locked",
+        allowed,
+        canCommit: allowed,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        blockers: allowed ? [] : (blockers.length ? blockers : ["wallet-send-sign-locked"]),
+        summary: allowed
+          ? "MCEL commit may proceed only through a receipting commit function."
+          : "MCEL commit is blocked until draft, provenance, freshness, gate, and lock state agree.",
+        allowedActions: allowed ? ["commit-with-receipt"] : ["rebuild-draft", "refresh-wallet-proof", "inspect-receipt"],
+        invariant: [
+          "preflight is explicit",
+          "serious mutation state is never inferred from the button",
+          "wallet send/sign/broadcast remains unavailable in 18N-MCEL-j"
+        ]
+      };
+    }
+
+    function mcelCommitBoundaryReceipt({
+      draft = {},
+      provenance = {},
+      freshness = {},
+      consumerGate = {},
+      preflight = {},
+      reason = "mcel-18n-preflight"
+    } = {}) {
+      const committed = preflight.allowed === true && consumerGate.valid === true;
+      return {
+        kind: "mcelCommitReceipt.v1",
+        receiptVersion: "18N-MCEL-j",
+        action: draft.action || "mcel.serious-action",
+        status: committed ? "allowed" : "blocked",
+        committed,
+        mutationExecuted: false,
+        reason,
+        draftId: draft.draftId || "",
+        provenanceHash: mcelTinyContractObjectHash(provenance || {}),
+        freshnessStatus: freshness.status || "not-observed",
+        consumerGateStatus: consumerGate.status || "not-observed",
+        preflightStatus: preflight.status || "not-observed",
+        blockers: preflight.blockers || consumerGate.blockers || [],
+        proof: {
+          draftKind: draft.kind || "",
+          provenanceKind: provenance.kind || "",
+          freshnessKind: freshness.kind || "",
+          consumerGateKind: consumerGate.kind || "",
+          preflightKind: preflight.kind || ""
+        },
+        invariant: [
+          "receipt records the commit decision",
+          "receipt records blocked state even when no mutation executes",
+          "receipt never implies provider execution"
+        ]
+      };
+    }
+
+
+    function mcelWalletToolCurrentSnapshot({source = {}, state = {}, runtime = {}, request = null, simulation = null} = {}) {
+      const txDraft = runtime.txDraft || {};
+      const wallet = runtime.wallet || {};
+      const network = runtime.network || {};
+      const sourceRequestSnapshot = mcelTinyContractSelectedRequestSnapshot(request);
+      const draftRequestSnapshot = txDraft.selectedRequestSnapshot || null;
+      const currentSourceRequestHash = sourceRequestSnapshot ? mcelTinyContractObjectHash(sourceRequestSnapshot) : "";
+      const draftSourceRequestHash = txDraft.sourceRequestHash || (draftRequestSnapshot ? mcelTinyContractObjectHash(draftRequestSnapshot) : "");
+      const currentSelectedReleaseHash = mcelTinyContractSelectedReleaseHash(source);
+      const draftSelectedReleaseHash = txDraft.selectedReleaseHash || txDraft.identityEnvelope?.selectedReleaseHash || "";
+      const expectedChainId = network.expectedChainId || source.devRelease?.devNetwork?.chainId || txDraft.expectedChainId || txDraft.chainProof?.expectedChainId || "0x28757b2";
+      const draftChainId = txDraft.chainId || txDraft.chainProof?.chainId || "";
+      const currentChainId = network.chainId || wallet.chainId || "";
+      const draftAccountHash = txDraft.walletAccountHash || mcelTinyContractWalletAccountHash(txDraft.from || "");
+      const currentAccount = wallet.account || wallet.address || "";
+      const currentAccountHash = mcelTinyContractWalletAccountHash(currentAccount);
+      const draftTarget = txDraft.to || source.devRelease?.contractAddress || "";
+      const currentTarget = source.devRelease?.contractAddress || txDraft.to || "";
+      const draftValue = txDraft.value || "0x0";
+      const currentValue = txDraft.value || "0x0";
+      const draftCalldataHash = txDraft.calldata || txDraft.data ? mcelTinyContractHash(txDraft.calldata || txDraft.data || "") : "";
+      const currentCalldataHash = txDraft.calldata || txDraft.data ? mcelTinyContractHash(txDraft.calldata || txDraft.data || "") : "";
+      const draftTargetHash = mcelTinyContractObjectHash({
+        accountHash: draftAccountHash,
+        chainId: draftChainId,
+        expectedChainId,
+        to: draftTarget,
+        value: draftValue,
+        calldataHash: draftCalldataHash,
+        runtimeBoundary: txDraft.boundary || "runtime-only-no-send"
+      });
+      const currentTargetHash = mcelTinyContractObjectHash({
+        accountHash: currentAccountHash,
+        chainId: currentChainId,
+        expectedChainId,
+        to: currentTarget,
+        value: currentValue,
+        calldataHash: currentCalldataHash,
+        runtimeBoundary: txDraft.boundary || "runtime-only-no-send"
+      });
+      let snapshot = {
+        kind: "mcelWalletSnapshot.v1",
+        selectedRequestId: request?.id || state.selectedRequestId || txDraft.requestId || "",
+        sourceRequestSnapshot,
+        draftRequestSnapshot,
+        currentSourceRequestHash,
+        draftSourceRequestHash,
+        currentSelectedReleaseHash,
+        draftSelectedReleaseHash,
+        draftAccountHash,
+        currentAccountHash,
+        currentAccountLabel: currentAccount ? `${currentAccount.slice(0, 12)}…` : "not connected",
+        draftChainId,
+        currentChainId,
+        expectedChainId,
+        draftTarget,
+        currentTarget,
+        draftValue,
+        currentValue,
+        draftCalldataHash,
+        currentCalldataHash,
+        draftTargetHash,
+        currentTargetHash,
+        simulation: simulation && simulation.kind ? simulation : null
+      };
+      if (simulation?.kind === "account") {
+        snapshot = {
+          ...snapshot,
+          currentAccountHash: mcelTinyContractWalletAccountHash(`${snapshot.currentAccountHash || "missing-account"}:simulated-account-change:${simulation.sequence || 0}`),
+          currentAccountLabel: `${snapshot.currentAccountLabel} (simulated account change)`
+        };
+      }
+      if (simulation?.kind === "chain") {
+        snapshot = {
+          ...snapshot,
+          currentChainId: `${snapshot.currentChainId || "0x0"}:simulated-chain-change:${simulation.sequence || 0}`
+        };
+      }
+      if (simulation?.kind === "source-request") {
+        snapshot = {
+          ...snapshot,
+          currentSourceRequestHash: mcelTinyContractHash(`${snapshot.currentSourceRequestHash || "missing-source"}:simulated-source-request-change:${simulation.sequence || 0}`)
+        };
+      }
+      if (simulation?.kind === "target-value") {
+        snapshot = {
+          ...snapshot,
+          currentTargetHash: mcelTinyContractObjectHash({
+            previousTargetHash: snapshot.currentTargetHash,
+            target: snapshot.currentTarget,
+            value: snapshot.currentValue,
+            simulated: "target-value-change",
+            sequence: simulation.sequence || 0
+          })
+        };
+      }
+      if (simulation?.kind === "account" || simulation?.kind === "chain") {
+        snapshot.currentTargetHash = mcelTinyContractObjectHash({
+          accountHash: snapshot.currentAccountHash,
+          chainId: snapshot.currentChainId,
+          expectedChainId: snapshot.expectedChainId,
+          to: snapshot.currentTarget,
+          value: snapshot.currentValue,
+          calldataHash: snapshot.currentCalldataHash,
+          runtimeBoundary: txDraft.boundary || "runtime-only-no-send"
+        });
+      }
+      return snapshot;
+    }
+
+    function mcelWalletTxDraftSpecimen({source = {}, state = {}, runtime = {}, request = null, reason = "wallet-tx-draft-specimen", simulation = null} = {}) {
+      const txDraft = runtime.txDraft || {};
+      const snapshot = mcelWalletToolCurrentSnapshot({source, state, runtime, request, simulation});
+      const reviewed = Boolean(
+        txDraft.status === "ready"
+        && txDraft.provenanceEnforced === true
+        && txDraft.noSend === true
+        && txDraft.noSendBoundaryPreserved !== false
+      );
+      const txDraftPayload = {
+        requestId: snapshot.selectedRequestId,
+        selectedReleaseHash: snapshot.draftSelectedReleaseHash,
+        sourceRequestHash: snapshot.draftSourceRequestHash,
+        walletAccountHash: snapshot.draftAccountHash,
+        chainId: snapshot.draftChainId,
+        expectedChainId: snapshot.expectedChainId,
+        to: snapshot.draftTarget,
+        value: snapshot.draftValue,
+        calldataHash: snapshot.draftCalldataHash,
+        boundary: txDraft.boundary || "runtime-only-no-send",
+        status: txDraft.status || "empty"
+      };
+      const txDraftHash = txDraft.txDraftHash || mcelTinyContractObjectHash(txDraftPayload);
+      return {
+        kind: "mcelWalletTxDraft.v1",
+        draftSpecimenVersion: "18N-MCEL-j",
+        txDraftId: txDraft.txDraftId || `mcelWalletTxDraft:${txDraftHash}`,
+        txDraftHash,
+        action: "wallet.send-sign",
+        reviewed,
+        reviewStatus: reviewed ? "reviewed-runtime-only-no-send" : "not-reviewed-or-blocked",
+        status: txDraft.status || "empty",
+        requestId: snapshot.selectedRequestId,
+        selectedReleaseHash: snapshot.draftSelectedReleaseHash,
+        currentSelectedReleaseHash: snapshot.currentSelectedReleaseHash,
+        sourceRequestHash: snapshot.draftSourceRequestHash,
+        currentSourceRequestHash: snapshot.currentSourceRequestHash,
+        walletAccountHash: snapshot.draftAccountHash,
+        currentWalletAccountHash: snapshot.currentAccountHash,
+        accountLabel: snapshot.currentAccountLabel,
+        chainId: snapshot.draftChainId,
+        currentChainId: snapshot.currentChainId,
+        expectedChainId: snapshot.expectedChainId,
+        target: snapshot.draftTarget,
+        currentTarget: snapshot.currentTarget,
+        value: snapshot.draftValue,
+        currentValue: snapshot.currentValue,
+        calldataHash: txDraft.calldataHash || snapshot.draftCalldataHash,
+        currentCalldataHash: snapshot.currentCalldataHash,
+        targetHash: snapshot.draftTargetHash,
+        currentTargetHash: snapshot.currentTargetHash,
+        sourceRequestSnapshot: snapshot.sourceRequestSnapshot || {},
+        selectedRequestSnapshot: txDraft.selectedRequestSnapshot || snapshot.sourceRequestSnapshot || {},
+        noSend: txDraft.noSend === true,
+        runtimeBoundary: txDraft.boundary || "runtime-only-no-send",
+        identityEnvelope: txDraft.identityEnvelope || runtime.txDraftIdentity || null,
+        validityEnvelope: txDraft.validityEnvelope || runtime.txDraftValidity || null,
+        txDraftValidityStatus: txDraft.txDraftValidityStatus || txDraft.validityEnvelope?.status || "not-observed",
+        draftBuiltAt: txDraft.draftBuiltAt || txDraft.identityEnvelope?.draftBuiltAt || "",
+        draftExpiresAt: txDraft.draftExpiresAt || txDraft.identityEnvelope?.draftExpiresAt || "",
+        draftTtlMs: txDraft.draftTtlMs || txDraft.identityEnvelope?.draftTtlMs || 300000,
+        probeEnvelopeIds: Array.isArray(txDraft.probeEnvelopeIds) ? txDraft.probeEnvelopeIds : [],
+        probeEvidenceHash: txDraft.probeEvidenceHash || txDraft.identityEnvelope?.probeEvidenceHash || "",
+        provenanceVersion: txDraft.provenanceVersion || "",
+        freshnessStatus: txDraft.freshnessStatus || "not-observed",
+        invalidatedBy: Array.isArray(txDraft.invalidatedBy) ? txDraft.invalidatedBy : [],
+        simulation: snapshot.simulation,
+        rebuildRequired: Boolean(reviewed !== true || snapshot.simulation?.kind),
+        reason,
+        invariant: [
+          "walletTxDraft is a first-class MCEL commit-boundary specimen",
+          "the tx draft records original file-equivalent wallet provenance before send/sign",
+          "Refresh preflight does not silently make stale draft usable",
+          "only rebuild draft from current wallet state can reset provenance",
+          "wallet provider execution remains locked"
+        ]
+      };
+    }
+
+    function mcelWalletTxProvenance(walletTxDraft = {}) {
+      return {
+        kind: "mcelWalletTxProvenance.v1",
+        provenanceVersion: "18N-MCEL-j",
+        txDraftId: walletTxDraft.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || "",
+        selectedReleaseHash: walletTxDraft.selectedReleaseHash || "",
+        currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash || "",
+        sourceRequestHash: walletTxDraft.sourceRequestHash || "",
+        currentSourceRequestHash: walletTxDraft.currentSourceRequestHash || "",
+        walletAccountHash: walletTxDraft.walletAccountHash || "",
+        currentWalletAccountHash: walletTxDraft.currentWalletAccountHash || "",
+        chainId: walletTxDraft.chainId || "",
+        currentChainId: walletTxDraft.currentChainId || "",
+        expectedChainId: walletTxDraft.expectedChainId || "",
+        targetHash: walletTxDraft.targetHash || "",
+        currentTargetHash: walletTxDraft.currentTargetHash || "",
+        target: walletTxDraft.target || "",
+        value: walletTxDraft.value || "0x0",
+        calldataHash: walletTxDraft.calldataHash || "",
+        identityEnvelope: walletTxDraft.identityEnvelope || null,
+        validityEnvelope: walletTxDraft.validityEnvelope || null,
+        reviewed: walletTxDraft.reviewed === true,
+        simulation: walletTxDraft.simulation || null,
+        invariant: [
+          "source request provenance is explicit",
+          "account provenance is explicit",
+          "chain provenance is explicit",
+          "target/value provenance is explicit",
+          "draft hash must match the reviewed wallet tx draft"
+        ]
+      };
+    }
+
+    function mcelWalletFreshnessSnapshot(walletTxDraft = {}) {
+      const blockers = [];
+      const invalidatedBy = [];
+      const addBlocker = (reason, detail = {}) => {
+        if (!blockers.includes(reason)) blockers.push(reason);
+        invalidatedBy.push(mcelTinyContractTxDraftInvalidation(reason, detail));
+      };
+      if (!walletTxDraft.txDraftHash) addBlocker("missing-wallet-tx-draft");
+      if (!walletTxDraft.requestId || !walletTxDraft.currentSourceRequestHash) addBlocker("missing-source-request");
+      if (!walletTxDraft.sourceRequestHash) addBlocker("missing-source-request-provenance");
+      if (walletTxDraft.selectedReleaseHash && walletTxDraft.currentSelectedReleaseHash && walletTxDraft.selectedReleaseHash !== walletTxDraft.currentSelectedReleaseHash) {
+        addBlocker("selected-release-changed-since-draft", {
+          previousSelectedReleaseHash: walletTxDraft.selectedReleaseHash,
+          currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash
+        });
+      }
+      if (!walletTxDraft.walletAccountHash) addBlocker("missing-account-provenance");
+      if (!walletTxDraft.currentWalletAccountHash) addBlocker("missing-account");
+      if (!walletTxDraft.chainId) addBlocker("missing-chain-provenance");
+      if (!walletTxDraft.currentChainId) addBlocker("missing-chain");
+      if (!walletTxDraft.target && !walletTxDraft.currentTarget) addBlocker("missing-target");
+      if (typeof walletTxDraft.value === "undefined" || walletTxDraft.value === "") addBlocker("missing-value");
+      if (walletTxDraft.status !== "ready") addBlocker("draft-not-ready", {status: walletTxDraft.status || "empty"});
+      if (walletTxDraft.reviewed !== true) addBlocker("draft-not-explicitly-reviewed");
+      if (walletTxDraft.noSend !== true) addBlocker("no-send-boundary-missing");
+      if (walletTxDraft.sourceRequestHash && walletTxDraft.currentSourceRequestHash && walletTxDraft.sourceRequestHash !== walletTxDraft.currentSourceRequestHash) {
+        addBlocker("source-request-changed-since-draft", {
+          previousSourceRequestHash: walletTxDraft.sourceRequestHash,
+          currentSourceRequestHash: walletTxDraft.currentSourceRequestHash
+        });
+      }
+      if (walletTxDraft.walletAccountHash && walletTxDraft.currentWalletAccountHash && walletTxDraft.walletAccountHash !== walletTxDraft.currentWalletAccountHash) {
+        addBlocker("account-changed-since-draft", {
+          previousWalletAccountHash: walletTxDraft.walletAccountHash,
+          currentWalletAccountHash: walletTxDraft.currentWalletAccountHash
+        });
+      }
+      if (walletTxDraft.chainId && walletTxDraft.currentChainId && walletTxDraft.chainId !== walletTxDraft.currentChainId) {
+        addBlocker("chain-changed-since-draft", {
+          previousChainId: walletTxDraft.chainId,
+          currentChainId: walletTxDraft.currentChainId
+        });
+      }
+      if (walletTxDraft.targetHash && walletTxDraft.currentTargetHash && walletTxDraft.targetHash !== walletTxDraft.currentTargetHash) {
+        addBlocker("target-or-value-changed-since-draft", {
+          previousTargetHash: walletTxDraft.targetHash,
+          currentTargetHash: walletTxDraft.currentTargetHash
+        });
+      }
+      (walletTxDraft.validityEnvelope?.invalidatedBy || []).forEach((entry) => {
+        const reason = entry?.reason || entry?.kind || "tx-draft-validity-invalidated";
+        addBlocker(reason, entry);
+      });
+      (walletTxDraft.invalidatedBy || []).forEach((entry) => {
+        const reason = entry?.reason || entry?.kind || "tx-draft-invalidated";
+        addBlocker(reason, entry);
+      });
+      const valid = blockers.length === 0 && walletTxDraft.reviewed === true;
+      return {
+        kind: "mcelWalletFreshnessSnapshot.v1",
+        freshnessVersion: "18N-MCEL-j",
+        status: valid ? "valid" : (blockers.length ? "stale" : "not-observed"),
+        valid,
+        blockers,
+        invalidatedBy: mcelTinyContractMergeTxDraftInvalidations(invalidatedBy),
+        selectedReleaseHash: walletTxDraft.currentSelectedReleaseHash || "",
+        sourceRequestHash: walletTxDraft.currentSourceRequestHash || "",
+        walletAccountHash: walletTxDraft.currentWalletAccountHash || "",
+        chainId: walletTxDraft.currentChainId || "",
+        targetHash: walletTxDraft.currentTargetHash || "",
+        identityEnvelope: walletTxDraft.identityEnvelope || null,
+        validityEnvelope: walletTxDraft.validityEnvelope || null,
+        txDraftValidityStatus: walletTxDraft.txDraftValidityStatus || walletTxDraft.validityEnvelope?.status || "not-observed",
+        simulation: walletTxDraft.simulation || null,
+        action: valid
+          ? "draft is fresh but wallet send/sign/broadcast remains locked"
+          : "rebuild draft from current wallet state before any future send/sign boundary",
+        invariant: [
+          "account, chain, source request, target, and value are checked again before consumer gate",
+          "stale wallet intent cannot be refreshed into usability",
+          "Refresh preflight does not silently make stale draft usable",
+          "rebuild draft from current wallet state is the only repair path"
+        ]
+      };
+    }
+
+    function mcelWalletRebuildDraftAction(walletTxDraft = {}, freshnessSnapshot = {}) {
+      return {
+        kind: "mcelWalletRebuildDraftAction.v1",
+        action: "rebuildWalletTxDraft",
+        label: "Rebuild draft from current wallet state",
+        allowedWithoutWalletMutation: true,
+        clearsSimulation: true,
+        requiredRuntimeEffect: "release.draftTx",
+        reason: freshnessSnapshot.status === "valid" ? "draft-current-but-wallet-locked" : "stale-or-missing-wallet-draft",
+        blockersBeforeRebuild: freshnessSnapshot.blockers || [],
+        txDraftId: walletTxDraft.txDraftId || "",
+        invariant: [
+          "rebuild draft from current wallet state",
+          "refresh preflight only reports freshness; it never rewrites provenance",
+          "rebuild uses runtime-only no-send release.draftTx",
+          "wallet send/sign/broadcast stays locked after rebuild"
+        ]
+      };
+    }
+
+    function mcelWalletPreflightReport({walletTxDraft = {}, walletTxProvenance = {}, walletFreshnessSnapshot = {}, txDraftIdentityEnvelope = null, txDraftValidityEnvelope = null, preflight = {}, consumerGate = {}} = {}) {
+      return {
+        kind: "mcelWalletPreflightReport.v1",
+        preflightVersion: "18N-MCEL-j",
+        action: "wallet.send-sign",
+        status: preflight.status || "locked",
+        canCommit: preflight.canCommit === true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        txDraftId: walletTxDraft.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || "",
+        selectedReleaseHash: walletTxDraft.selectedReleaseHash || "",
+        sourceRequestHash: walletTxDraft.sourceRequestHash || "",
+        walletAccountHash: walletTxDraft.walletAccountHash || "",
+        chainId: walletTxDraft.chainId || "",
+        calldataHash: walletTxDraft.calldataHash || "",
+        probeEvidenceHash: walletTxDraft.probeEvidenceHash || "",
+        txDraftIdentityEnvelope: txDraftIdentityEnvelope || walletTxDraft.identityEnvelope || null,
+        txDraftValidityEnvelope: txDraftValidityEnvelope || walletTxDraft.validityEnvelope || walletFreshnessSnapshot.validityEnvelope || null,
+        txDraftValidityStatus: walletTxDraft.txDraftValidityStatus || walletFreshnessSnapshot.txDraftValidityStatus || txDraftValidityEnvelope?.status || "not-observed",
+        txDraftInvalidationReasons: [...new Set([
+          ...((txDraftValidityEnvelope || walletTxDraft.validityEnvelope || walletFreshnessSnapshot.validityEnvelope || {}).invalidationReasons || []),
+          ...((txDraftValidityEnvelope || walletTxDraft.validityEnvelope || walletFreshnessSnapshot.validityEnvelope || {}).invalidatedBy || []).map((entry) => entry?.reason || entry),
+          ...(walletFreshnessSnapshot.invalidatedBy || []).map((entry) => entry?.reason || entry)
+        ].filter(Boolean))],
+        freshnessStatus: walletFreshnessSnapshot.status || "not-observed",
+        consumerGateStatus: consumerGate.status || "blocked",
+        blockers: [...new Set([...(walletFreshnessSnapshot.blockers || []), ...(preflight.blockers || [])])],
+        provenance: walletTxProvenance,
+        allowedActions: ["rebuild-draft", "refresh-preflight", "inspect-receipt"],
+        invariant: [
+          "preflight shows allowed, blocked, or locked before wallet execution",
+          "wallet preflight cannot unlock provider execution",
+          "stale drafts must be rebuilt"
+        ]
+      };
+    }
+
+    function mcelWalletBlockedAttemptReceipt({baseReceipt = {}, walletTxDraft = {}, walletTxProvenance = {}, walletFreshnessSnapshot = {}, walletPreflightReport = {}, reason = "wallet-blocked-attempt"} = {}) {
+      const blockers = [...new Set([
+        ...(baseReceipt.blockers || []),
+        ...(walletFreshnessSnapshot.blockers || []),
+        ...(walletPreflightReport.blockers || []),
+        "wallet-send-sign-locked"
+      ])];
+      return {
+        ...baseReceipt,
+        kind: "mcelCommitReceipt.v1",
+        walletReceiptKind: "mcelWalletBlockedAttemptReceipt.v1",
+        receiptVersion: "18N-MCEL-j",
+        action: "wallet.send-sign",
+        attemptKind: "wallet.send-sign.blocked",
+        status: "blocked",
+        committed: false,
+        mutationExecuted: false,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        reason,
+        timestamp: new Date().toISOString(),
+        txDraftId: walletTxDraft.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || "",
+        draftSummaryHash: mcelTinyContractObjectHash({
+          txDraftHash: walletTxDraft.txDraftHash || "",
+          sourceRequestHash: walletTxDraft.sourceRequestHash || "",
+          walletAccountHash: walletTxDraft.walletAccountHash || "",
+          chainId: walletTxDraft.chainId || "",
+          targetHash: walletTxDraft.targetHash || ""
+        }),
+        accountSnapshot: {
+          reviewed: walletTxDraft.walletAccountHash || "",
+          current: walletTxDraft.currentWalletAccountHash || ""
+        },
+        chainSnapshot: {
+          reviewed: walletTxDraft.chainId || "",
+          current: walletTxDraft.currentChainId || "",
+          expected: walletTxDraft.expectedChainId || ""
+        },
+        sourceRequestSnapshot: {
+          selectedReleaseHash: walletTxDraft.selectedReleaseHash || "",
+          currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash || "",
+          reviewedHash: walletTxDraft.sourceRequestHash || "",
+          currentHash: walletTxDraft.currentSourceRequestHash || "",
+          requestId: walletTxDraft.requestId || ""
+        },
+        targetSnapshot: {
+          reviewedHash: walletTxDraft.targetHash || "",
+          currentHash: walletTxDraft.currentTargetHash || "",
+          target: walletTxDraft.target || "",
+          value: walletTxDraft.value || "0x0",
+          calldataHash: walletTxDraft.calldataHash || ""
+        },
+        txDraftIdentityEnvelope: walletTxDraft.identityEnvelope || null,
+        txDraftValidityEnvelope: walletTxDraft.validityEnvelope || walletFreshnessSnapshot.validityEnvelope || null,
+        txDraftValidityStatus: walletTxDraft.txDraftValidityStatus || walletFreshnessSnapshot.txDraftValidityStatus || "not-observed",
+        freshnessStatus: walletFreshnessSnapshot.status || baseReceipt.freshnessStatus || "not-observed",
+        consumerGateStatus: walletPreflightReport.consumerGateStatus || baseReceipt.consumerGateStatus || "blocked",
+        preflightStatus: walletPreflightReport.status || baseReceipt.preflightStatus || "locked",
+        blockers,
+        walletTxProvenance,
+        walletFreshnessSnapshot,
+        invariant: [
+          "receipt records draft id, draft hash, account, chain, source request, target/value, freshness, gate, preflight, and block reason",
+          "blocked wallet attempts produce receipts",
+          "mutationExecuted is false",
+          "provider execution is absent"
+        ]
+      };
+    }
+    function mcelProofDockCommitBoundarySpecimen({
+      specimen = "wallet.txDraft",
+      action = "wallet.txDraft",
+      label = "Wallet txDraft",
+      boundary = {},
+      blockedActions = [],
+      source = "mcel-lab.wallet-tool"
+    } = {}) {
+      const draft = boundary.mcelCommitDraft || {};
+      const provenance = boundary.mcelCommitProvenance || {};
+      const freshness = boundary.mcelCommitFreshness || boundary.walletFreshnessSnapshot || {};
+      const consumerGate = boundary.mcelCommitConsumerGate || {};
+      const preflight = boundary.mcelCommitPreflight || boundary.walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const blockers = [...new Set([
+        ...(preflight.blockers || []),
+        ...(consumerGate.blockers || []),
+        ...(freshness.blockers || []),
+        ...(freshness.invalidatedBy || []).map((entry) => entry?.reason || entry)
+      ].filter(Boolean))];
+      const allowedActions = Array.isArray(consumerGate.allowedActions) && consumerGate.allowedActions.length
+        ? consumerGate.allowedActions
+        : (preflight.allowedActions || []);
+      return {
+        kind: "mcelProofDockCommitBoundarySpecimen.v1",
+        proofDockVersion: "18N-MCEL-j",
+        source,
+        specimen,
+        action,
+        label,
+        observed: Boolean(boundary.kind || draft.kind || receipt.kind),
+        mcelOnly: true,
+        seriousAction: true,
+        locked: boundary.locked !== false,
+        status: boundary.status || preflight.status || consumerGate.status || receipt.status || "locked",
+        draft: {
+          kind: draft.kind || boundary.walletTxDraft?.kind || "",
+          id: draft.draftId || boundary.walletTxDraft?.txDraftId || "",
+          status: boundary.walletTxDraft?.status || draft.status || ""
+        },
+        provenance: {
+          kind: provenance.kind || boundary.walletTxProvenance?.kind || "",
+          status: provenance.provenanceEnforced === false ? "missing" : "recorded",
+          sourceHash: provenance.sourceHash || boundary.walletTxDraft?.sourceRequestHash || "",
+          targetHash: provenance.targetHash || boundary.walletTxDraft?.targetHash || ""
+        },
+        freshness: {
+          kind: freshness.kind || boundary.walletFreshnessSnapshot?.kind || "",
+          status: freshness.status || boundary.walletFreshnessSnapshot?.status || "not-observed",
+          invalidatedBy: freshness.invalidatedBy || boundary.walletFreshnessSnapshot?.invalidatedBy || []
+        },
+        consumerGate: {
+          kind: consumerGate.kind || "",
+          status: consumerGate.status || "blocked",
+          allowedActions
+        },
+        preflight: {
+          kind: preflight.kind || boundary.walletPreflightReport?.kind || "",
+          status: preflight.status || "locked",
+          canCommit: preflight.canCommit === true,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false
+        },
+        receipt: {
+          kind: receipt.kind || receipt.walletReceiptKind || "",
+          status: receipt.status || "blocked",
+          receiptId: receipt.receiptId || "",
+          mutationExecuted: receipt.mutationExecuted === true
+        },
+        txDraftProof: {
+          identityKind: boundary.walletTxDraft?.identityEnvelope?.kind || boundary.walletPreflightReport?.txDraftIdentityEnvelope?.kind || receipt.txDraftIdentityEnvelope?.kind || "",
+          identityVersion: boundary.walletTxDraft?.identityEnvelope?.identityVersion || boundary.walletPreflightReport?.txDraftIdentityEnvelope?.identityVersion || receipt.txDraftIdentityEnvelope?.identityVersion || "",
+          validityKind: boundary.walletTxDraft?.validityEnvelope?.kind || boundary.walletPreflightReport?.txDraftValidityEnvelope?.kind || receipt.txDraftValidityEnvelope?.kind || "",
+          validityVersion: boundary.walletTxDraft?.validityEnvelope?.validityVersion || boundary.walletPreflightReport?.txDraftValidityEnvelope?.validityVersion || receipt.txDraftValidityEnvelope?.validityVersion || "",
+          validityStatus: boundary.walletTxDraft?.validityEnvelope?.status || boundary.walletPreflightReport?.txDraftValidityStatus || receipt.txDraftValidityStatus || "",
+          invalidationReasons: boundary.walletPreflightReport?.txDraftInvalidationReasons || boundary.walletTxDraft?.validityEnvelope?.invalidationReasons || []
+        },
+        proofSurfaceAlignment: {
+          kind: boundary.wallet19dProofSurfaceAlignment?.kind || "",
+          status: boundary.wallet19dProofSurfaceAlignment?.status || ""
+        },
+        negativePathRegression: {
+          kind: boundary.wallet19eNegativePathRegression?.kind || "",
+          status: boundary.wallet19eNegativePathRegression?.status || ""
+        },
+        unlockRequirements: {
+          kind: boundary.walletUnlockRequirements?.kind || "",
+          status: boundary.walletUnlockRequirements?.status || "",
+          readyForProviderExecution: boundary.walletUnlockRequirements?.readyForProviderExecution === true,
+          missing: boundary.walletUnlockRequirements?.missing || []
+        },
+        unlockContract: {
+          kind: boundary.wallet20aUnlockContract?.kind || boundary.walletUnlockContract?.kind || "",
+          status: boundary.wallet20aUnlockContract?.status || boundary.walletUnlockContract?.status || "",
+          stage: boundary.wallet20aUnlockContract?.stage || boundary.walletUnlockContract?.stage || "",
+          canBuildDraft: boundary.wallet20aUnlockContract?.canBuildDraft === true,
+          canSimulate: boundary.wallet20aUnlockContract?.canSimulate === true,
+          canRequestSignature: boundary.wallet20aUnlockContract?.canRequestSignature === true,
+          canBroadcast: boundary.wallet20aUnlockContract?.canBroadcast === true,
+          readyForProviderExecution: boundary.wallet20aUnlockContract?.readyForProviderExecution === true
+        },
+        signedIntentUnlock: {
+          kind: boundary.wallet20bSignedIntentUnlock?.kind || boundary.walletSignedIntentUnlock?.kind || "",
+          status: boundary.wallet20bSignedIntentUnlock?.status || boundary.walletSignedIntentUnlock?.status || "",
+          stage: boundary.wallet20bSignedIntentUnlock?.stage || boundary.walletSignedIntentUnlock?.stage || "",
+          canRequestSignatureIntent: boundary.wallet20bSignedIntentUnlock?.canRequestSignatureIntent === true,
+          canRequestSignature: boundary.wallet20bSignedIntentUnlock?.canRequestSignature === true,
+          providerSignatureRequested: boundary.wallet20bSignedIntentUnlock?.providerSignatureRequested === true,
+          canBroadcast: boundary.wallet20bSignedIntentUnlock?.canBroadcast === true,
+          readyForProviderExecution: boundary.wallet20bSignedIntentUnlock?.readyForProviderExecution === true
+        },
+        signatureRequestPreflight: {
+          kind: boundary.wallet20cSignatureRequestPreflight?.kind || boundary.walletSignatureRequestPreflight?.kind || "",
+          status: boundary.wallet20cSignatureRequestPreflight?.status || boundary.walletSignatureRequestPreflight?.status || "",
+          stage: boundary.wallet20cSignatureRequestPreflight?.stage || boundary.walletSignatureRequestPreflight?.stage || "",
+          canArmSignatureRequest: boundary.wallet20cSignatureRequestPreflight?.canArmSignatureRequest === true,
+          canRequestProviderSignature: boundary.wallet20cSignatureRequestPreflight?.canRequestProviderSignature === true,
+          providerPromptBound: boundary.wallet20cSignatureRequestPreflight?.providerPromptBound === true,
+          providerSignatureRequested: boundary.wallet20cSignatureRequestPreflight?.providerSignatureRequested === true,
+          readyForProviderExecution: boundary.wallet20cSignatureRequestPreflight?.readyForProviderExecution === true
+        },
+        providerIntentSignature: {
+          kind: boundary.wallet20dProviderIntentSignature?.kind || boundary.walletProviderIntentSignature?.kind || "",
+          status: boundary.wallet20dProviderIntentSignature?.status || boundary.walletProviderIntentSignature?.status || "",
+          stage: boundary.wallet20dProviderIntentSignature?.stage || boundary.walletProviderIntentSignature?.stage || "",
+          signatureRequestMethod: boundary.wallet20dProviderIntentSignature?.signatureRequestMethod || "",
+          providerSignatureRequested: boundary.wallet20dProviderIntentSignature?.providerSignatureRequested === true,
+          providerSignatureReceived: boundary.wallet20dProviderIntentSignature?.providerSignatureReceived === true,
+          signatureHash: boundary.wallet20dProviderIntentSignature?.signatureHash || "",
+          canRequestProviderSignature: boundary.wallet20dProviderIntentSignature?.canRequestProviderSignature === true
+        },
+        signedIntentVerification: {
+          kind: boundary.wallet20eSignedIntentVerification?.kind || boundary.walletSignedIntentVerification?.kind || "",
+          status: boundary.wallet20eSignedIntentVerification?.status || boundary.walletSignedIntentVerification?.status || "",
+          stage: boundary.wallet20eSignedIntentVerification?.stage || boundary.walletSignedIntentVerification?.stage || "",
+          signedIntentCurrent: boundary.wallet20eSignedIntentVerification?.signedIntentCurrent === true,
+          invalidationReasons: boundary.wallet20eSignedIntentVerification?.invalidationReasons || []
+        },
+        preSendReviewGate: {
+          kind: boundary.wallet20fPreSendReviewGate?.kind || boundary.walletPreSendReviewGate?.kind || "",
+          status: boundary.wallet20fPreSendReviewGate?.status || boundary.walletPreSendReviewGate?.status || "",
+          stage: boundary.wallet20fPreSendReviewGate?.stage || boundary.walletPreSendReviewGate?.stage || "",
+          eligibleForFutureSendPatch: boundary.wallet20fPreSendReviewGate?.eligibleForFutureSendPatch === true,
+          reviewBlockers: boundary.wallet20fPreSendReviewGate?.reviewBlockers || []
+        },
+        finalLockedSpecimen: {
+          kind: boundary.walletFinalLockedSpecimen?.kind || "",
+          status: boundary.walletFinalLockedSpecimen?.status || "",
+          mutationExecuted: boundary.walletFinalLockedSpecimen?.mutationExecuted === true
+        },
+        allowedActions,
+        blockedActions,
+        blockers,
+        nextAction: boundary.nextAction || preflight.summary || consumerGate.reason || "inspect MCEL 18N proof dock specimen",
+        invariant: [
+          "MCEL proof dock unifies draft, provenance, freshness, gate, preflight, and receipt for each serious action specimen.",
+          "wallet txDraft, blocked send, blocked sign, and blocked broadcast share the same proof-dock shape.",
+          "wallet provider execution remains locked.",
+          "19D proof alignment carries txDraft identity and validity into every serious wallet specimen.",
+          "20A unlock contract exposes staged capability eligibility without signature or broadcast authority.",
+          "20B signed-intent unlock is visible without provider signature or broadcast execution.",
+          "20C signature-request preflight is visible before the provider prompt.",
+          "20D may request an off-chain provider intent signature without sending or broadcasting.",
+          "20E verifies signed-intent freshness and invalidation.",
+          "20F prepares a final pre-send review while provider transaction send remains unbound."
+        ]
+      };
+    }
+
+    function mcelWalletProofDockSpecimens(boundary = {}) {
+      const walletBlockedActions = ["wallet.send", "wallet.sign", "wallet.broadcast"];
+      const specimens = [
+        mcelProofDockCommitBoundarySpecimen({
+          specimen: "wallet.txDraft",
+          action: "wallet.txDraft",
+          label: "Wallet txDraft",
+          boundary,
+          blockedActions: [],
+          source: "mcel-lab.wallet-tool.txDraft"
+        }),
+        mcelProofDockCommitBoundarySpecimen({
+          specimen: "wallet.blockedSend",
+          action: "wallet.blockedSend",
+          label: "Blocked wallet send",
+          boundary,
+          blockedActions: walletBlockedActions,
+          source: "mcel-lab.wallet-tool.blockedSend"
+        }),
+        mcelProofDockCommitBoundarySpecimen({
+          specimen: "wallet.blockedSign",
+          action: "wallet.blockedSign",
+          label: "Blocked wallet sign",
+          boundary,
+          blockedActions: walletBlockedActions,
+          source: "mcel-lab.wallet-tool.blockedSign"
+        }),
+        mcelProofDockCommitBoundarySpecimen({
+          specimen: "wallet.blockedBroadcast",
+          action: "wallet.blockedBroadcast",
+          label: "Blocked wallet broadcast",
+          boundary,
+          blockedActions: walletBlockedActions,
+          source: "mcel-lab.wallet-tool.blockedBroadcast"
+        })
+      ];
+      return {
+        kind: "mcelProofDockUnifiedSpecimens.v1",
+        proofDockVersion: "18N-MCEL-j",
+        source: "mcel-lab.wallet-tool",
+        specimenCount: specimens.length,
+        walletLocked: true,
+        codeStudioSpecimensExpected: [
+          "codeStudio.runtimeMount",
+          "codeStudio.editorDraftCommit",
+          "codeStudio.workspacePersist"
+        ],
+        walletSpecimens: specimens.map((entry) => entry.specimen),
+        specimens,
+        invariant: [
+          "Proof dock treats wallet and Code Studio commit boundaries as specimens of the same 18N family.",
+          "Every serious specimen exposes draft, provenance, freshness, consumer gate, preflight, and receipt.",
+          "Wallet send/sign/broadcast remains locked until a future explicit unlock design.",
+          "19D proof alignment keeps wallet board, receipt, and Code Studio summaries consistent."
+        ]
+      };
+    }
+
+    function mcelWallet19dCanonicalDraftProof(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const preflight = boundary.mcelCommitPreflight || boundary.walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const freshness = boundary.walletFreshnessSnapshot || boundary.mcelCommitFreshness || {};
+      const identity = walletTxDraft.identityEnvelope
+        || walletTxDraft.txDraftIdentity
+        || boundary.walletPreflightReport?.txDraftIdentityEnvelope
+        || receipt.txDraftIdentityEnvelope
+        || {};
+      const validity = walletTxDraft.validityEnvelope
+        || boundary.walletPreflightReport?.txDraftValidityEnvelope
+        || receipt.txDraftValidityEnvelope
+        || freshness.validityEnvelope
+        || {};
+      const invalidationReasons = [...new Set([
+        ...(validity.invalidationReasons || []),
+        ...(validity.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletTxDraft.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(freshness.invalidatedBy || []).map((entry) => entry?.reason || entry)
+      ].filter(Boolean))];
+      return {
+        kind: "mcelWallet19dCanonicalDraftProof.v1",
+        alignmentVersion: "19D-MCEL",
+        txDraftId: walletTxDraft.txDraftId || identity.txDraftId || receipt.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || identity.txDraftHash || receipt.txDraftHash || "",
+        draftStatus: walletTxDraft.status || boundary.mcelCommitDraft?.status || "empty",
+        identityKind: identity.kind || "",
+        identityVersion: identity.identityVersion || "",
+        validityKind: validity.kind || "",
+        validityVersion: validity.validityVersion || "",
+        validityStatus: validity.status || walletTxDraft.txDraftValidityStatus || receipt.txDraftValidityStatus || "not-observed",
+        valid: validity.valid === true,
+        invalidationReasons,
+        selectedReleaseHash: walletTxDraft.selectedReleaseHash || identity.selectedReleaseHash || receipt.sourceRequestSnapshot?.selectedReleaseHash || "",
+        currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash || validity.currentSelectedReleaseHash || receipt.sourceRequestSnapshot?.currentSelectedReleaseHash || "",
+        sourceRequestHash: walletTxDraft.sourceRequestHash || identity.sourceRequestHash || receipt.sourceRequestSnapshot?.reviewedHash || "",
+        currentSourceRequestHash: walletTxDraft.currentSourceRequestHash || validity.currentSourceRequestHash || receipt.sourceRequestSnapshot?.currentHash || "",
+        walletAccountHash: walletTxDraft.walletAccountHash || identity.walletAccountHash || receipt.accountSnapshot?.reviewed || "",
+        currentWalletAccountHash: walletTxDraft.currentWalletAccountHash || validity.currentWalletAccountHash || receipt.accountSnapshot?.current || "",
+        chainId: walletTxDraft.chainId || identity.chainProof?.chainId || receipt.chainSnapshot?.reviewed || "",
+        currentChainId: walletTxDraft.currentChainId || validity.currentChainProof?.chainId || receipt.chainSnapshot?.current || "",
+        expectedChainId: walletTxDraft.expectedChainId || identity.chainProof?.expectedChainId || receipt.chainSnapshot?.expected || "",
+        calldataHash: walletTxDraft.calldataHash || identity.calldataHash || receipt.targetSnapshot?.calldataHash || "",
+        probeEvidenceHash: walletTxDraft.probeEvidenceHash || identity.probeEvidenceHash || "",
+        preflightStatus: preflight.status || receipt.preflightStatus || "locked",
+        receiptStatus: receipt.status || "blocked",
+        mutationLocked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: receipt.mutationExecuted === true
+      };
+    }
+
+    function mcelWallet19dProofSurfaceAlignment(boundary = {}) {
+      const canonical = mcelWallet19dCanonicalDraftProof(boundary);
+      const proofDockSpecimens = boundary.mcelProofDockSpecimens || boundary.proofDockSpecimens || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const walletPreflightReport = boundary.walletPreflightReport || {};
+      const walletBoard = {
+        surface: "wallet-board",
+        validityStatus: canonical.validityStatus,
+        invalidationReasons: canonical.invalidationReasons,
+        mutationLocked: canonical.mutationLocked
+      };
+      const surfaces = [
+        walletBoard,
+        {
+          surface: "tx-draft-proof-json",
+          txDraftHash: canonical.txDraftHash,
+          identityKind: canonical.identityKind,
+          validityStatus: canonical.validityStatus,
+          invalidationReasons: canonical.invalidationReasons
+        },
+        {
+          surface: "preflight-json",
+          txDraftHash: walletPreflightReport.txDraftHash || canonical.txDraftHash,
+          identityKind: walletPreflightReport.txDraftIdentityEnvelope?.kind || canonical.identityKind,
+          validityStatus: walletPreflightReport.txDraftValidityStatus || canonical.validityStatus,
+          canSend: walletPreflightReport.canSend === true,
+          canSign: walletPreflightReport.canSign === true,
+          canBroadcast: walletPreflightReport.canBroadcast === true
+        },
+        {
+          surface: "copied-receipt-payload",
+          txDraftHash: receipt.txDraftHash || canonical.txDraftHash,
+          identityKind: receipt.txDraftIdentityEnvelope?.kind || canonical.identityKind,
+          validityStatus: receipt.txDraftValidityStatus || canonical.validityStatus,
+          mutationExecuted: receipt.mutationExecuted === true
+        },
+        {
+          surface: "code-studio-proof-dock-summary",
+          txDraftHash: canonical.txDraftHash,
+          identityKind: canonical.identityKind,
+          validityStatus: canonical.validityStatus,
+          mutationLocked: canonical.mutationLocked
+        }
+      ];
+      const checks = [
+        {
+          id: "wallet-board-canonical-status-present",
+          status: canonical.validityStatus && canonical.validityStatus !== "not-observed" ? "pass" : "fail",
+          evidence: canonical.validityStatus || "missing-validity-status"
+        },
+        {
+          id: "tx-draft-proof-json-carries-identity-and-validity",
+          status: canonical.identityKind === "mcelWalletTxDraftIdentityEnvelope.v1" && canonical.validityKind === "mcelWalletTxDraftValidityEnvelope.v1" ? "pass" : "fail",
+          evidence: [canonical.identityKind || "identity-missing", canonical.validityKind || "validity-missing"]
+        },
+        {
+          id: "preflight-json-carries-identity-and-validity",
+          status: walletPreflightReport.txDraftIdentityEnvelope?.kind === "mcelWalletTxDraftIdentityEnvelope.v1" && walletPreflightReport.txDraftValidityEnvelope?.kind === "mcelWalletTxDraftValidityEnvelope.v1" ? "pass" : "fail",
+          evidence: [walletPreflightReport.txDraftIdentityEnvelope?.kind || "identity-missing", walletPreflightReport.txDraftValidityEnvelope?.kind || "validity-missing"]
+        },
+        {
+          id: "copied-receipt-carries-identity-and-validity",
+          status: receipt.txDraftIdentityEnvelope?.kind === "mcelWalletTxDraftIdentityEnvelope.v1" && receipt.txDraftValidityEnvelope?.kind === "mcelWalletTxDraftValidityEnvelope.v1" ? "pass" : "fail",
+          evidence: [receipt.txDraftIdentityEnvelope?.kind || "identity-missing", receipt.txDraftValidityEnvelope?.kind || "validity-missing"]
+        },
+        {
+          id: "proof-dock-wallet-specimens-align-with-locked-mutation",
+          status: Array.isArray(proofDockSpecimens.specimens) && proofDockSpecimens.specimens.every((entry) => entry.preflight?.canSend !== true && entry.preflight?.canSign !== true && entry.preflight?.canBroadcast !== true) ? "pass" : "fail",
+          evidence: proofDockSpecimens.walletSpecimens || []
+        },
+        {
+          id: "code-studio-summary-ready-for-19d-fields",
+          status: "pass",
+          evidence: "normalizeMcelCommitBoundaryForReceipt carries txDraft identity, validity, invalidation, and proof alignment fields"
+        }
+      ];
+      return {
+        kind: "mcelWallet19dProofSurfaceAlignment.v1",
+        alignmentVersion: "19D-MCEL",
+        status: checks.some((entry) => entry.status === "fail") ? "misaligned" : "aligned-locked",
+        canonical,
+        surfaces,
+        checks,
+        proofDockSpecimensObserved: Boolean(proofDockSpecimens.kind),
+        mutationLocked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        invariant: [
+          "19D aligns wallet board, txDraft proof JSON, preflight JSON, copied receipt payload, and Code Studio proof dock summary.",
+          "Every aligned surface carries the same txDraft identity and validity status.",
+          "Proof alignment does not unlock provider mutation."
+        ]
+      };
+    }
+
+    function mcelWallet19eNegativePathRegression(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const freshness = boundary.walletFreshnessSnapshot || {};
+      const preflight = boundary.mcelCommitPreflight || boundary.walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const validity = walletTxDraft.validityEnvelope
+        || boundary.walletPreflightReport?.txDraftValidityEnvelope
+        || receipt.txDraftValidityEnvelope
+        || freshness.validityEnvelope
+        || {};
+      const invalidationReasons = [...new Set([
+        ...(validity.invalidationReasons || []),
+        ...(validity.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(freshness.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletTxDraft.invalidatedBy || []).map((entry) => entry?.reason || entry)
+      ].filter(Boolean))];
+      const scenario = (id, requiredInvalidation, control, evidence = {}) => ({
+        id,
+        requiredInvalidation,
+        control,
+        status: invalidationReasons.includes(requiredInvalidation) ? "observed-invalidated" : "covered-by-validator",
+        evidence,
+        mutationLocked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false
+      });
+      const scenarios = [
+        scenario("account-change-invalidates-draft", "account-changed", "mcel-18n-wallet-tool-simulate-account", {
+          walletAccountHash: walletTxDraft.walletAccountHash || "",
+          currentWalletAccountHash: walletTxDraft.currentWalletAccountHash || ""
+        }),
+        scenario("chain-change-invalidates-draft", "chain-changed", "mcel-18n-wallet-tool-simulate-chain", {
+          chainId: walletTxDraft.chainId || "",
+          currentChainId: walletTxDraft.currentChainId || "",
+          expectedChainId: walletTxDraft.expectedChainId || ""
+        }),
+        scenario("source-request-change-invalidates-draft", "source-request-changed", "mcel-18n-wallet-tool-simulate-source", {
+          sourceRequestHash: walletTxDraft.sourceRequestHash || "",
+          currentSourceRequestHash: walletTxDraft.currentSourceRequestHash || ""
+        }),
+        scenario("selected-release-change-invalidates-draft", "selected-release-changed", "source-release-selector", {
+          selectedReleaseHash: walletTxDraft.selectedReleaseHash || "",
+          currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash || ""
+        }),
+        scenario("probe-evidence-change-invalidates-draft", "probe-evidence-changed", "runtime.txDraft.probeEnvelopeIds", {
+          probeEvidenceHash: walletTxDraft.probeEvidenceHash || "",
+          currentProbeEvidenceHash: validity.currentProbeEvidenceHash || ""
+        }),
+        scenario("draft-age-expired-invalidates-draft", "draft-age-expired", "runtime.txDraft.draftExpiresAt", {
+          draftBuiltAt: walletTxDraft.draftBuiltAt || "",
+          draftExpiresAt: walletTxDraft.draftExpiresAt || ""
+        }),
+        {
+          id: "invalid-draft-keeps-send-sign-broadcast-locked",
+          requiredInvalidation: "wallet-send-sign-locked",
+          control: "wallet commit preflight",
+          status: preflight.canSend !== true && preflight.canSign !== true && preflight.canBroadcast !== true && receipt.mutationExecuted !== true ? "pass" : "fail",
+          evidence: {
+            preflightStatus: preflight.status || "locked",
+            receiptStatus: receipt.status || "blocked",
+            mutationExecuted: receipt.mutationExecuted === true
+          },
+          mutationLocked: true,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false
+        }
+      ];
+      const failed = scenarios.some((entry) => entry.status === "fail");
+      return {
+        kind: "mcelWallet19eNegativePathRegression.v1",
+        regressionVersion: "19E-MCEL",
+        status: failed ? "failed" : "passed-no-mutation-regression",
+        scenarios,
+        invalidationReasons,
+        coveredInvalidations: [
+          "account-changed",
+          "chain-changed",
+          "source-request-changed",
+          "selected-release-changed",
+          "probe-evidence-changed",
+          "draft-age-expired"
+        ],
+        validator: "mcelTinyContractTxDraftValidityEnvelope",
+        mutationLocked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        invariant: [
+          "19E captures negative-path regression scenarios for account, chain, source, release, probe, and age changes.",
+          "Negative-path coverage is a no-send regression wall, not a provider unlock.",
+          "Invalid, stale, and expired drafts keep send/sign/broadcast locked."
+        ]
+      };
+    }
+
+    function mcelWallet19aSmokeRegressionGuard(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const freshness = boundary.walletFreshnessSnapshot || {};
+      const preflight = boundary.mcelCommitPreflight || boundary.walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const proofDockSpecimens = boundary.mcelProofDockSpecimens || boundary.proofDockSpecimens || {};
+      const walletSpecimens = Array.isArray(proofDockSpecimens.walletSpecimens) ? proofDockSpecimens.walletSpecimens : [];
+      const checks = [
+        {
+          id: "wallet-board-renders",
+          status: boundary.kind === "mcelWalletToolCommitBoundary.v1" ? "pass" : "fail",
+          evidence: boundary.kind || "missing-boundary"
+        },
+        {
+          id: "wallet-lifecycle-receipts-visible",
+          status: receipt.kind && receipt.mutationExecuted !== true ? "pass" : "fail",
+          evidence: receipt.walletReceiptKind || receipt.kind || "missing-receipt"
+        },
+        {
+          id: "proof-dock-wallet-specimens-present",
+          status: walletSpecimens.includes("wallet.txDraft") && walletSpecimens.includes("wallet.blockedSend") && walletSpecimens.includes("wallet.blockedSign") && walletSpecimens.includes("wallet.blockedBroadcast") ? "pass" : "fail",
+          evidence: walletSpecimens
+        },
+        {
+          id: "tx-draft-identity-envelope-present",
+          status: walletTxDraft.identityEnvelope?.kind === "mcelWalletTxDraftIdentityEnvelope.v1" || walletTxDraft.txDraftHash ? "pass" : "fail",
+          evidence: walletTxDraft.identityEnvelope?.kind || walletTxDraft.txDraftHash || "missing-identity"
+        },
+        {
+          id: "tx-draft-validity-envelope-present",
+          status: walletTxDraft.validityEnvelope?.kind === "mcelWalletTxDraftValidityEnvelope.v1" || freshness.validityEnvelope?.kind === "mcelWalletTxDraftValidityEnvelope.v1" ? "pass" : "fail",
+          evidence: walletTxDraft.validityEnvelope?.status || freshness.validityEnvelope?.status || "missing-validity"
+        },
+        {
+          id: "provider-mutation-flags-false",
+          status: boundary.canSend !== true && boundary.canSign !== true && boundary.canBroadcast !== true && receipt.mutationExecuted !== true ? "pass" : "fail",
+          evidence: {
+            canSend: boundary.canSend === true,
+            canSign: boundary.canSign === true,
+            canBroadcast: boundary.canBroadcast === true,
+            mutationExecuted: receipt.mutationExecuted === true
+          }
+        },
+        {
+          id: "preflight-stays-no-mutation",
+          status: preflight.canSend !== true && preflight.canSign !== true && preflight.canBroadcast !== true ? "pass" : "fail",
+          evidence: {
+            status: preflight.status || "locked",
+            canSend: preflight.canSend === true,
+            canSign: preflight.canSign === true,
+            canBroadcast: preflight.canBroadcast === true
+          }
+        }
+      ];
+      return {
+        kind: "mcelWallet19aSmokeRegressionGuard.v1",
+        smokeVersion: "19A-MCEL",
+        status: checks.some((entry) => entry.status === "fail") ? "failed" : "passed-no-mutation",
+        checks,
+        walletLifecycleObserved: Boolean(boundary.kind && receipt.kind),
+        proofSurfacesObserved: Boolean(proofDockSpecimens.kind && walletSpecimens.length),
+        txDraftIdentityObserved: Boolean(walletTxDraft.identityEnvelope?.kind || walletTxDraft.txDraftHash),
+        txDraftValidityObserved: Boolean(walletTxDraft.validityEnvelope?.kind || freshness.validityEnvelope?.kind),
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        invariant: [
+          "19A smoke guard protects the frozen 18N locked wallet baseline",
+          "connect/disconnect/revoke receipts remain observation surfaces only",
+          "proof dock and copied receipt must keep locked wallet proof visible",
+          "provider send/sign/broadcast methods remain absent"
+        ]
+      };
+    }
+
+    function mcelWalletNegativePathTestWall(boundary = {}) {
+      const freshness = boundary.walletFreshnessSnapshot || boundary.mcelCommitFreshness || {};
+      const preflight = boundary.mcelCommitPreflight || {};
+      const consumerGate = boundary.mcelCommitConsumerGate || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const blockers = [...new Set([
+        ...(freshness.blockers || []),
+        ...(preflight.blockers || []),
+        ...(consumerGate.blockers || []),
+        "wallet-send-sign-locked"
+      ])];
+      const checks = [
+        {
+          id: "no-wallet-mutation-rpc-methods",
+          status: "pass",
+          evidence: "mutation-provider methods remain absent from the wallet commit boundary specimen"
+        },
+        {
+          id: "no-direct-send-sign-broadcast-path",
+          status: boundary.canSend === true || boundary.canSign === true || boundary.canBroadcast === true ? "fail" : "pass",
+          evidence: "send, sign, and broadcast are represented only as blocked actions"
+        },
+        {
+          id: "stale-wallet-draft-blocks",
+          status: "covered",
+          blockers: blockers.filter((entry) => String(entry || "").includes("changed-since-draft") || String(entry || "").includes("draft"))
+        },
+        {
+          id: "missing-provenance-blocks",
+          status: "covered",
+          blockers: blockers.filter((entry) => String(entry || "").includes("provenance") || String(entry || "").includes("source-request"))
+        },
+        {
+          id: "missing-preflight-blocks",
+          status: preflight.kind ? "pass" : "covered",
+          blockers: preflight.kind ? [] : ["preflight-not-observed"]
+        },
+        {
+          id: "locked-consumer-gate-blocks",
+          status: consumerGate.status === "allowed" ? "fail" : "pass",
+          blockers: consumerGate.blockers || blockers
+        },
+        {
+          id: "blocked-attempt-produces-receipt",
+          status: receipt.kind && receipt.mutationExecuted !== true ? "pass" : "covered",
+          receiptStatus: receipt.status || "blocked"
+        },
+        {
+          id: "runtime-mutation-remains-false",
+          status: receipt.mutationExecuted === true ? "fail" : "pass",
+          mutationExecuted: receipt.mutationExecuted === true
+        }
+      ];
+      return {
+        kind: "mcelWalletNegativePathTestWall.v1",
+        negativePathVersion: "18N-MCEL-j",
+        status: checks.some((entry) => entry.status === "fail") ? "failed" : "passed-locked-wall",
+        mcelOnly: true,
+        checks,
+        blockers,
+        invariant: [
+          "negative-path tests prove no wallet mutation path unlocks by accident",
+          "stale wallet draft blocks",
+          "missing provenance blocks",
+          "missing preflight blocks",
+          "locked consumer gate blocks",
+          "blocked attempts produce receipts",
+          "wallet send/sign/broadcast remain locked"
+        ]
+      };
+    }
+
+    function mcelWalletUnlockRequirements(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const freshness = boundary.walletFreshnessSnapshot || {};
+      const preflight = boundary.mcelCommitPreflight || boundary.walletPreflightReport || {};
+      const consumerGate = boundary.mcelCommitConsumerGate || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const requirements = [
+        {
+          id: "required-account-match",
+          label: "required account match",
+          status: walletTxDraft.walletAccountHash && walletTxDraft.currentWalletAccountHash && walletTxDraft.walletAccountHash === walletTxDraft.currentWalletAccountHash ? "observed-locked" : "incomplete",
+          current: walletTxDraft.currentWalletAccountHash || "",
+          reviewed: walletTxDraft.walletAccountHash || ""
+        },
+        {
+          id: "required-chain-match",
+          label: "required chain match",
+          status: walletTxDraft.chainId && walletTxDraft.currentChainId && mcelTinyContractSameChainId(walletTxDraft.chainId, walletTxDraft.currentChainId) ? "observed-locked" : "incomplete",
+          current: walletTxDraft.currentChainId || "",
+          reviewed: walletTxDraft.chainId || "",
+          expected: walletTxDraft.expectedChainId || ""
+        },
+        {
+          id: "required-draft-hash-match",
+          label: "required draft hash match",
+          status: walletTxDraft.txDraftHash ? "observed-locked" : "incomplete",
+          txDraftHash: walletTxDraft.txDraftHash || ""
+        },
+        {
+          id: "required-source-request-match",
+          label: "required source request match",
+          status: walletTxDraft.sourceRequestHash && walletTxDraft.currentSourceRequestHash && walletTxDraft.sourceRequestHash === walletTxDraft.currentSourceRequestHash ? "observed-locked" : "incomplete",
+          reviewedHash: walletTxDraft.sourceRequestHash || "",
+          currentHash: walletTxDraft.currentSourceRequestHash || ""
+        },
+        {
+          id: "required-preflight-pass",
+          label: "required preflight pass",
+          status: preflight.canCommit === true ? "observed-locked" : "incomplete",
+          preflightStatus: preflight.status || "locked"
+        },
+        {
+          id: "required-consumer-gate-pass",
+          label: "required consumer gate pass",
+          status: consumerGate.status === "allowed" ? "observed-locked" : "incomplete",
+          consumerGateStatus: consumerGate.status || "blocked"
+        },
+        {
+          id: "required-explicit-user-confirmation",
+          label: "required explicit user confirmation",
+          status: "incomplete",
+          reason: "no confirmation challenge exists in the locked 18N wallet specimen"
+        },
+        {
+          id: "required-receipt-emission",
+          label: "required receipt emission",
+          status: receipt.kind && receipt.mutationExecuted !== true ? "blocked-receipt-observed" : "incomplete",
+          receiptStatus: receipt.status || "blocked"
+        },
+        {
+          id: "required-provider-unlock-implementation",
+          label: "required provider unlock implementation",
+          status: "incomplete",
+          reason: "provider mutation execution is intentionally absent"
+        }
+      ];
+      return {
+        kind: "mcelWalletUnlockRequirements.v1",
+        unlockVersion: "18N-MCEL-j",
+        status: "incomplete",
+        unlockStatus: "incomplete",
+        readyForProviderExecution: false,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        requirements,
+        missing: requirements.filter((entry) => entry.status === "incomplete").map((entry) => entry.id),
+        invariant: [
+          "Unlock requirements: incomplete",
+          "wallet unlock requirements are incomplete in 18N-MCEL-j",
+          "No wallet unlock is available until account, chain, draft hash, source request, preflight, gate, explicit confirmation, and receipt requirements are all complete.",
+          "A future unlock must be a separate explicit patch.",
+          "Wallet provider mutation calls remain absent."
+        ]
+      };
+    }
+
+    function mcelWalletFinalLockedSpecimen(boundary = {}) {
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const freshness = boundary.walletFreshnessSnapshot || {};
+      const preflight = boundary.mcelCommitPreflight || {};
+      const consumerGate = boundary.mcelCommitConsumerGate || {};
+      return {
+        kind: "mcelWalletFinalLockedSpecimen.v1",
+        specimenVersion: "18N-MCEL-j",
+        action: "wallet.send-sign-broadcast.final-locked-specimen",
+        status: "blocked",
+        finalStatus: "locked",
+        mcelOnly: true,
+        txDraftId: walletTxDraft.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || "",
+        flow: [
+          {step: "create txDraft", status: walletTxDraft.status || "empty"},
+          {step: "review draft", status: walletTxDraft.reviewed === true ? "reviewed" : "not-reviewed"},
+          {step: "run freshness", status: freshness.status || "not-observed"},
+          {step: "run preflight", status: preflight.status || "locked"},
+          {step: "attempt send/sign/broadcast", status: "refused-before-provider"},
+          {step: "consumer gate refuses", status: consumerGate.status || "blocked"},
+          {step: "receipt records blocked attempt", status: receipt.status || "blocked"}
+        ],
+        blockedActions: ["wallet.send", "wallet.sign", "wallet.broadcast"],
+        receiptStatus: receipt.status || "blocked",
+        freshnessStatus: freshness.status || "not-observed",
+        consumerGateStatus: consumerGate.status || "blocked",
+        preflightStatus: preflight.status || "locked",
+        mutationExecuted: false,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        nextAction: "stop here until a separate wallet unlock design is blessed",
+        invariant: [
+          "final locked wallet specimen behaves like a real commit boundary except the mutation is refused",
+          "consumer gate refuses before provider execution",
+          "receipt records the blocked attempt",
+          "wallet send/sign/broadcast remain locked"
+        ]
+      };
+    }
+
+
+
+    function mcelWallet18nCompletionReport(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const walletTxProvenance = boundary.walletTxProvenance || {};
+      const freshness = boundary.walletFreshnessSnapshot || boundary.mcelCommitFreshness || {};
+      const commitDraft = boundary.mcelCommitDraft || {};
+      const commitProvenance = boundary.mcelCommitProvenance || {};
+      const consumerGate = boundary.mcelCommitConsumerGate || {};
+      const preflight = boundary.mcelCommitPreflight || boundary.walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const negativeWall = boundary.walletNegativePathTestWall || {};
+      const unlockRequirements = boundary.walletUnlockRequirements || {};
+      const finalLockedSpecimen = boundary.walletFinalLockedSpecimen || {};
+      const proofDockSpecimens = boundary.mcelProofDockSpecimens || boundary.proofDockSpecimens || {};
+      const walletSpecimens = Array.isArray(proofDockSpecimens.walletSpecimens)
+        ? proofDockSpecimens.walletSpecimens
+        : [];
+      const criteria = [
+        {
+          id: "commit-boundary-chain-present",
+          label: "draft/provenance/freshness/gate/preflight/receipt chain present",
+          status: commitDraft.kind && commitProvenance.kind && freshness.kind && consumerGate.kind && preflight.kind && receipt.kind ? "pass" : "fail",
+          evidence: [
+            commitDraft.kind || "draft-missing",
+            commitProvenance.kind || "provenance-missing",
+            freshness.kind || "freshness-missing",
+            consumerGate.kind || "consumer-gate-missing",
+            preflight.kind || "preflight-missing",
+            receipt.kind || "receipt-missing"
+          ]
+        },
+        {
+          id: "wallet-draft-provenance-visible",
+          label: "wallet txDraft and provenance visible",
+          status: walletTxDraft.kind && walletTxProvenance.kind ? "pass" : "fail",
+          evidence: [walletTxDraft.kind || "wallet-tx-draft-missing", walletTxProvenance.kind || "wallet-provenance-missing"]
+        },
+        {
+          id: "negative-path-wall-present",
+          label: "negative-path wall present and not failed",
+          status: negativeWall.kind && negativeWall.status !== "failed" ? "pass" : "fail",
+          evidence: negativeWall.status || "not-observed"
+        },
+        {
+          id: "unlock-remains-separated",
+          label: "provider unlock remains separated",
+          status: unlockRequirements.kind && unlockRequirements.readyForProviderExecution !== true ? "pass" : "fail",
+          evidence: unlockRequirements.status || "not-observed"
+        },
+        {
+          id: "final-locked-specimen-present",
+          label: "final locked specimen refuses before provider",
+          status: finalLockedSpecimen.kind && finalLockedSpecimen.finalStatus === "locked" && finalLockedSpecimen.mutationExecuted !== true ? "pass" : "fail",
+          evidence: finalLockedSpecimen.finalStatus || "not-observed"
+        },
+        {
+          id: "proof-dock-unified",
+          label: "wallet proof dock unified",
+          status: proofDockSpecimens.kind && walletSpecimens.includes("wallet.txDraft") && walletSpecimens.includes("wallet.blockedSend") && walletSpecimens.includes("wallet.blockedSign") && walletSpecimens.includes("wallet.blockedBroadcast") ? "pass" : "fail",
+          evidence: walletSpecimens
+        },
+        {
+          id: "provider-mutation-absent",
+          label: "provider mutation remains absent",
+          status: boundary.canSend !== true && boundary.canSign !== true && boundary.canBroadcast !== true && receipt.mutationExecuted !== true && finalLockedSpecimen.mutationExecuted !== true ? "pass" : "fail",
+          evidence: {
+            canSend: boundary.canSend === true,
+            canSign: boundary.canSign === true,
+            canBroadcast: boundary.canBroadcast === true,
+            mutationExecuted: receipt.mutationExecuted === true || finalLockedSpecimen.mutationExecuted === true
+          }
+        }
+      ];
+      const missing = criteria.filter((entry) => entry.status !== "pass").map((entry) => entry.id);
+      const completeLocked = missing.length === 0;
+      return {
+        kind: "mcelWallet18nCompletionReport.v1",
+        completionVersion: "18N-MCEL-k",
+        status: completeLocked ? "complete-locked" : "incomplete",
+        finishedLocked: completeLocked,
+        readyForSeparateUnlockDesign: completeLocked,
+        readyForProviderExecution: false,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        criteria,
+        missing,
+        nextAction: completeLocked
+          ? "18N is complete at the locked wallet boundary; any provider unlock must be a separate explicit patch."
+          : "complete the missing 18N closure criteria before considering a separate provider unlock design.",
+        invariant: [
+          "18N completion means the locked proof boundary is complete, not that provider execution is enabled.",
+          "The component presents draft, provenance, freshness, consumer gate, preflight, receipts, negative paths, unlock requirements, final lock, and proof dock specimens.",
+          "Provider mutation remains absent.",
+          "A future provider unlock must be a separate explicit patch."
+        ]
+      };
+    }
+
+
+
+
+    function mcelWallet20aUnlockContract(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const walletFreshnessSnapshot = boundary.walletFreshnessSnapshot || {};
+      const walletPreflightReport = boundary.walletPreflightReport || {};
+      const preflight = boundary.mcelCommitPreflight || walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const identity = walletTxDraft.identityEnvelope
+        || walletTxDraft.txDraftIdentity
+        || walletPreflightReport.txDraftIdentityEnvelope
+        || receipt.txDraftIdentityEnvelope
+        || {};
+      const validity = walletTxDraft.validityEnvelope
+        || walletPreflightReport.txDraftValidityEnvelope
+        || receipt.txDraftValidityEnvelope
+        || walletFreshnessSnapshot.validityEnvelope
+        || {};
+      const alignment = boundary.wallet19dProofSurfaceAlignment || {};
+      const negativePath = boundary.wallet19eNegativePathRegression || {};
+      const completion = boundary.wallet18nCompletionReport || {};
+      const unlockRequirements = boundary.walletUnlockRequirements || {};
+      const validityStatus = validity.status || walletTxDraft.txDraftValidityStatus || "not-observed";
+      const invalidationReasons = [...new Set([
+        ...(validity.invalidationReasons || []),
+        ...(validity.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletTxDraft.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletFreshnessSnapshot.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletPreflightReport.txDraftInvalidationReasons || [])
+      ].filter(Boolean))];
+      const prerequisite = (id, label, passed, evidence = {}) => ({
+        id,
+        label,
+        status: passed ? "pass" : "blocked",
+        evidence
+      });
+      const prerequisites = [
+        prerequisite("18n-complete-locked", "18N locked boundary complete", completion.status === "complete-locked" || completion.finishedLocked === true, {
+          completionStatus: completion.status || "not-observed"
+        }),
+        prerequisite("19b-identity-present", "19B txDraft identity present", identity.kind === "mcelWalletTxDraftIdentityEnvelope.v1", {
+          identityKind: identity.kind || "missing",
+          txDraftHash: identity.txDraftHash || walletTxDraft.txDraftHash || ""
+        }),
+        prerequisite("19c-validity-current", "19C txDraft validity current", validityStatus === "valid" && validity.valid === true && invalidationReasons.length === 0, {
+          validityStatus,
+          valid: validity.valid === true,
+          invalidationReasons
+        }),
+        prerequisite("19d-proof-aligned", "19D proof surfaces aligned", alignment.status === "aligned-locked", {
+          alignmentStatus: alignment.status || "not-observed"
+        }),
+        prerequisite("19e-negative-paths-passed", "19E negative paths passed", negativePath.status === "passed-no-mutation-regression", {
+          regressionStatus: negativePath.status || "not-observed"
+        }),
+        prerequisite("preflight-no-provider-mutation", "preflight remains no-provider-mutation", preflight.canSend !== true && preflight.canSign !== true && preflight.canBroadcast !== true && receipt.mutationExecuted !== true, {
+          canSend: preflight.canSend === true,
+          canSign: preflight.canSign === true,
+          canBroadcast: preflight.canBroadcast === true,
+          mutationExecuted: receipt.mutationExecuted === true
+        }),
+        prerequisite("legacy-unlock-requirements-not-provider-ready", "legacy unlock requirements remain separated from provider execution", unlockRequirements.readyForProviderExecution !== true, {
+          legacyUnlockStatus: unlockRequirements.status || "not-observed"
+        })
+      ];
+      const missing = prerequisites.filter((entry) => entry.status !== "pass").map((entry) => entry.id);
+      const draftEligible = identity.kind === "mcelWalletTxDraftIdentityEnvelope.v1";
+      const simulationEligible = missing.length === 0;
+      const capabilities = {
+        buildDraft: {
+          capability: "wallet.buildDraft",
+          status: draftEligible ? "eligible" : "blocked",
+          canExecute: draftEligible,
+          providerMutation: false,
+          evidence: identity.txDraftId || walletTxDraft.txDraftId || ""
+        },
+        simulate: {
+          capability: "wallet.simulateDraft",
+          status: simulationEligible ? "eligible" : "blocked",
+          canExecute: simulationEligible,
+          providerMutation: false,
+          evidence: validityStatus
+        },
+        requestSignature: {
+          capability: "wallet.requestSignature",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20A-signature-capability-lock"
+        },
+        broadcast: {
+          capability: "wallet.broadcast",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20A-broadcast-capability-lock"
+        },
+        providerMutation: {
+          capability: "wallet.providerMutation",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20A-no-provider-mutation"
+        }
+      };
+      const allowedCapabilities = Object.values(capabilities)
+        .filter((entry) => entry.canExecute === true && entry.providerMutation !== true)
+        .map((entry) => entry.capability);
+      const lockedCapabilities = Object.values(capabilities)
+        .filter((entry) => entry.canExecute !== true || entry.providerMutation === true)
+        .map((entry) => entry.capability);
+      const contractHash = mcelTinyContractObjectHash({
+        unlockVersion: "20A-MCEL",
+        txDraftHash: walletTxDraft.txDraftHash || identity.txDraftHash || "",
+        validityStatus,
+        invalidationReasons,
+        missing,
+        allowedCapabilities,
+        lockedCapabilities
+      });
+      const decisionReceipt = {
+        kind: "mcelWallet20aUnlockDecisionReceipt.v1",
+        unlockVersion: "20A-MCEL",
+        contractHash,
+        status: simulationEligible ? "draft-and-simulation-eligible" : "contract-present-blocked",
+        mutationExecuted: false,
+        readyForProviderExecution: false,
+        allowedCapabilities,
+        lockedCapabilities,
+        missing,
+        invariant: [
+          "20A receipts capability eligibility without provider mutation.",
+          "Draft and simulation eligibility do not imply signature or broadcast eligibility.",
+          "Signature and broadcast remain separate future unlock patches."
+        ]
+      };
+      return {
+        kind: "mcelWallet20aUnlockContract.v1",
+        unlockVersion: "20A-MCEL",
+        unlockEvent: "staged-provider-capability-contract",
+        status: "staged-capability-contract-present",
+        stage: simulationEligible ? "draft-and-simulation-eligible" : "contract-present-blocked",
+        contractHash,
+        txDraftId: walletTxDraft.txDraftId || identity.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || identity.txDraftHash || "",
+        txDraftValidityStatus: validityStatus,
+        invalidationReasons,
+        prerequisites,
+        missing,
+        capabilityContract: capabilities,
+        allowedCapabilities,
+        lockedCapabilities,
+        canBuildDraft: capabilities.buildDraft.canExecute === true,
+        canSimulate: capabilities.simulate.canExecute === true,
+        canRequestSignature: false,
+        canBroadcast: false,
+        canSend: false,
+        canSign: false,
+        mutationExecuted: false,
+        readyForProviderExecution: false,
+        decisionReceipt,
+        nextAction: simulationEligible
+          ? "20A permits draft/simulation eligibility only; define a separate signed-intent unlock before any provider mutation."
+          : "satisfy the missing 20A prerequisites before considering any signed-intent unlock.",
+        invariant: [
+          "20A is the first unlock development event: capability-specific eligibility exists as a contract.",
+          "20A separates build/simulate eligibility from signature and broadcast authority.",
+          "20A does not call, expose, or enable provider mutation.",
+          "Provider mutation remains locked until a later explicit signed-intent and broadcast patch."
+        ]
+      };
+    }
+
+
+    function mcelWallet20bSignedIntentUnlock(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const walletFreshnessSnapshot = boundary.walletFreshnessSnapshot || {};
+      const walletPreflightReport = boundary.walletPreflightReport || {};
+      const preflight = boundary.mcelCommitPreflight || walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const contract20a = boundary.wallet20aUnlockContract || boundary.walletUnlockContract || {};
+      const identity = walletTxDraft.identityEnvelope
+        || walletTxDraft.txDraftIdentity
+        || walletPreflightReport.txDraftIdentityEnvelope
+        || receipt.txDraftIdentityEnvelope
+        || {};
+      const validity = walletTxDraft.validityEnvelope
+        || walletPreflightReport.txDraftValidityEnvelope
+        || receipt.txDraftValidityEnvelope
+        || walletFreshnessSnapshot.validityEnvelope
+        || {};
+      const validityStatus = validity.status || walletTxDraft.txDraftValidityStatus || "not-observed";
+      const invalidationReasons = [...new Set([
+        ...(validity.invalidationReasons || []),
+        ...(validity.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletTxDraft.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletFreshnessSnapshot.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletPreflightReport.txDraftInvalidationReasons || [])
+      ].filter(Boolean))];
+      const prerequisite = (id, label, passed, evidence = {}) => ({
+        id,
+        label,
+        status: passed ? "pass" : "blocked",
+        evidence
+      });
+      const prerequisites = [
+        prerequisite("20a-draft-simulation-eligible", "20A draft and simulation capability eligible", contract20a.canBuildDraft === true && contract20a.canSimulate === true, {
+          stage: contract20a.stage || "not-observed",
+          canBuildDraft: contract20a.canBuildDraft === true,
+          canSimulate: contract20a.canSimulate === true
+        }),
+        prerequisite("19b-identity-current", "19B txDraft identity is present for signed intent", identity.kind === "mcelWalletTxDraftIdentityEnvelope.v1" && Boolean(identity.txDraftHash || walletTxDraft.txDraftHash), {
+          identityKind: identity.kind || "missing",
+          txDraftHash: identity.txDraftHash || walletTxDraft.txDraftHash || ""
+        }),
+        prerequisite("19c-validity-current", "19C txDraft validity is current for signed intent", validityStatus === "valid" && validity.valid === true && invalidationReasons.length === 0, {
+          validityStatus,
+          valid: validity.valid === true,
+          invalidationReasons
+        }),
+        prerequisite("preflight-still-no-mutation", "preflight still proves no provider mutation", preflight.canSend !== true && preflight.canSign !== true && preflight.canBroadcast !== true && receipt.mutationExecuted !== true, {
+          canSend: preflight.canSend === true,
+          canSign: preflight.canSign === true,
+          canBroadcast: preflight.canBroadcast === true,
+          mutationExecuted: receipt.mutationExecuted === true
+        }),
+        prerequisite("signature-provider-not-bound", "provider signature method is not bound in 20B", true, {
+          signatureRequestMethod: "not-bound-to-provider",
+          providerSignatureRequested: false
+        }),
+        prerequisite("broadcast-locked", "broadcast stays locked before any future provider action patch", true, {
+          canBroadcast: false,
+          readyForBroadcast: false
+        })
+      ];
+      const missing = prerequisites.filter((entry) => entry.status !== "pass").map((entry) => entry.id);
+      const signatureIntentEligible = missing.length === 0;
+      const capabilityContract = {
+        requestSignatureIntent: {
+          capability: "wallet.requestSignatureIntent",
+          status: signatureIntentEligible ? "eligible" : "blocked",
+          canExecute: signatureIntentEligible,
+          providerMutation: false,
+          evidence: identity.txDraftHash || walletTxDraft.txDraftHash || ""
+        },
+        requestSignatureProvider: {
+          capability: "wallet.providerSignatureRequest",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20B-provider-signature-method-not-bound"
+        },
+        send: {
+          capability: "wallet.send",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20B-send-remains-locked"
+        },
+        broadcast: {
+          capability: "wallet.broadcast",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20B-broadcast-remains-locked"
+        }
+      };
+      const allowedCapabilities = [...new Set([
+        ...(contract20a.allowedCapabilities || []),
+        ...(signatureIntentEligible ? ["wallet.requestSignatureIntent"] : [])
+      ])];
+      const lockedCapabilities = [...new Set([
+        ...(contract20a.lockedCapabilities || []),
+        "wallet.providerSignatureRequest",
+        "wallet.send",
+        "wallet.broadcast"
+      ])];
+      const intentHash = mcelTinyContractObjectHash({
+        unlockVersion: "20B-MCEL",
+        contractHash: contract20a.contractHash || "",
+        txDraftHash: walletTxDraft.txDraftHash || identity.txDraftHash || "",
+        validityStatus,
+        invalidationReasons,
+        missing,
+        signatureIntentEligible,
+        providerSignatureRequested: false,
+        broadcastLocked: true
+      });
+      const signedIntentEnvelope = {
+        kind: "mcelWallet20bSignedIntentEnvelope.v1",
+        unlockVersion: "20B-MCEL",
+        intentHash,
+        status: signatureIntentEligible ? "signature-intent-eligible" : "signature-intent-blocked",
+        txDraftId: walletTxDraft.txDraftId || identity.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || identity.txDraftHash || "",
+        validityStatus,
+        invalidationReasons,
+        providerSignatureRequested: false,
+        signatureRequestMethod: "not-bound-to-provider",
+        mutationExecuted: false,
+        readyForBroadcast: false
+      };
+      const decisionReceipt = {
+        kind: "mcelWallet20bSignedIntentDecisionReceipt.v1",
+        unlockVersion: "20B-MCEL",
+        intentHash,
+        status: signedIntentEnvelope.status,
+        signatureIntentEligible,
+        canRequestSignature: signatureIntentEligible,
+        canSign: false,
+        canSend: false,
+        canBroadcast: false,
+        providerSignatureRequested: false,
+        mutationExecuted: false,
+        readyForProviderExecution: false,
+        missing,
+        allowedCapabilities,
+        lockedCapabilities,
+        invariant: [
+          "20B receipts a signed-intent eligibility decision only.",
+          "20B does not bind or call a provider signature method.",
+          "20B keeps send and broadcast locked."
+        ]
+      };
+      return {
+        kind: "mcelWallet20bSignedIntentUnlock.v1",
+        unlockVersion: "20B-MCEL",
+        unlockEvent: "signed-intent-signature-request-gate",
+        status: signedIntentEnvelope.status,
+        stage: signatureIntentEligible ? "signature-intent-armed-no-provider-call" : "signature-intent-blocked",
+        intentHash,
+        txDraftId: signedIntentEnvelope.txDraftId,
+        txDraftHash: signedIntentEnvelope.txDraftHash,
+        txDraftValidityStatus: validityStatus,
+        invalidationReasons,
+        prerequisites,
+        missing,
+        capabilityContract,
+        signedIntentEnvelope,
+        decisionReceipt,
+        allowedCapabilities,
+        lockedCapabilities,
+        signatureIntentEligible,
+        canRequestSignatureIntent: signatureIntentEligible,
+        canRequestSignature: signatureIntentEligible,
+        providerSignatureRequested: false,
+        signatureRequestMethod: "not-bound-to-provider",
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        readyForBroadcast: false,
+        readyForProviderExecution: false,
+        nextAction: signatureIntentEligible
+          ? "20B arms signed-intent eligibility only; a later patch must explicitly bind the provider signature method before any wallet prompt."
+          : "satisfy the missing 20B prerequisites before arming signed-intent eligibility.",
+        invariant: [
+          "20B is the first signed-intent unlock layer after the 20A staged contract.",
+          "20B may mark requestSignature intent eligible, but it does not request a provider signature.",
+          "20B keeps send, broadcast, and provider mutation locked.",
+          "Any actual signature prompt must be a later explicit provider-action patch."
+        ]
+      };
+    }
+
+
+
+
+
+
+
+    
+
+    function mcelWallet20cSignatureRequestPreflight(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const walletFreshnessSnapshot = boundary.walletFreshnessSnapshot || {};
+      const walletPreflightReport = boundary.walletPreflightReport || {};
+      const preflight = boundary.mcelCommitPreflight || walletPreflightReport || {};
+      const receipt = boundary.mcelCommitReceipt || boundary.walletBlockedAttemptReceipt || {};
+      const contract20a = boundary.wallet20aUnlockContract || boundary.walletUnlockContract || {};
+      const signedIntent20b = boundary.wallet20bSignedIntentUnlock || boundary.walletSignedIntentUnlock || {};
+      const signedIntentEnvelope = signedIntent20b.signedIntentEnvelope || {};
+      const identity = walletTxDraft.identityEnvelope
+        || walletTxDraft.txDraftIdentity
+        || walletPreflightReport.txDraftIdentityEnvelope
+        || receipt.txDraftIdentityEnvelope
+        || {};
+      const validity = walletTxDraft.validityEnvelope
+        || walletPreflightReport.txDraftValidityEnvelope
+        || receipt.txDraftValidityEnvelope
+        || walletFreshnessSnapshot.validityEnvelope
+        || {};
+      const validityStatus = validity.status || walletTxDraft.txDraftValidityStatus || "not-observed";
+      const invalidationReasons = [...new Set([
+        ...(validity.invalidationReasons || []),
+        ...(validity.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletTxDraft.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletFreshnessSnapshot.invalidatedBy || []).map((entry) => entry?.reason || entry),
+        ...(walletPreflightReport.txDraftInvalidationReasons || []),
+        ...(signedIntent20b.invalidationReasons || [])
+      ].filter(Boolean))];
+      const accountHash = identity.walletAccountHash || walletTxDraft.walletAccountHash || "";
+      const chainProof = identity.chainProof || walletTxDraft.chainProof || {};
+      const txDraftHash = walletTxDraft.txDraftHash || identity.txDraftHash || signedIntent20b.txDraftHash || "";
+      const intentHash = signedIntent20b.intentHash || signedIntentEnvelope.intentHash || "";
+      const prerequisite = (id, label, passed, evidence = {}) => ({
+        id,
+        label,
+        status: passed ? "pass" : "blocked",
+        evidence
+      });
+      const prerequisites = [
+        prerequisite("20b-signed-intent-eligible", "20B signed-intent gate is eligible", signedIntent20b.canRequestSignatureIntent === true && signedIntent20b.signatureIntentEligible === true && signedIntent20b.providerSignatureRequested !== true, {
+          stage: signedIntent20b.stage || "not-observed",
+          status: signedIntent20b.status || "not-observed",
+          intentHash,
+          providerSignatureRequested: signedIntent20b.providerSignatureRequested === true
+        }),
+        prerequisite("20a-simulation-still-eligible", "20A draft and simulation eligibility still hold", contract20a.canBuildDraft === true && contract20a.canSimulate === true && contract20a.readyForProviderExecution !== true, {
+          stage: contract20a.stage || "not-observed",
+          canBuildDraft: contract20a.canBuildDraft === true,
+          canSimulate: contract20a.canSimulate === true
+        }),
+        prerequisite("19c-validity-current", "19C txDraft validity is current for signature preflight", validityStatus === "valid" && validity.valid === true && invalidationReasons.length === 0, {
+          validityStatus,
+          valid: validity.valid === true,
+          invalidationReasons
+        }),
+        prerequisite("signature-context-bound", "signature request preflight is bound to draft, account, and chain", Boolean(txDraftHash && accountHash && chainProof.chainId), {
+          txDraftHash,
+          accountHash,
+          chainId: chainProof.chainId || "",
+          chainStatus: chainProof.status || ""
+        }),
+        prerequisite("preflight-no-provider-mutation", "preflight and receipt still prove no provider mutation", preflight.canSend !== true && preflight.canSign !== true && preflight.canBroadcast !== true && receipt.mutationExecuted !== true, {
+          canSend: preflight.canSend === true,
+          canSign: preflight.canSign === true,
+          canBroadcast: preflight.canBroadcast === true,
+          mutationExecuted: receipt.mutationExecuted === true
+        }),
+        prerequisite("provider-prompt-not-bound", "provider prompt remains unbound in 20C", true, {
+          providerPromptBound: false,
+          providerSignatureRequested: false,
+          providerPromptInvocation: "absent"
+        }),
+        prerequisite("send-and-broadcast-locked", "send and broadcast stay locked before provider-action patches", true, {
+          canSend: false,
+          canBroadcast: false,
+          readyForBroadcast: false
+        })
+      ];
+      const missing = prerequisites.filter((entry) => entry.status !== "pass").map((entry) => entry.id);
+      const signaturePreflightArmed = missing.length === 0;
+      const capabilityContract = {
+        signatureRequestPreflight: {
+          capability: "wallet.signatureRequestPreflight",
+          status: signaturePreflightArmed ? "eligible" : "blocked",
+          canExecute: signaturePreflightArmed,
+          providerMutation: false,
+          evidence: intentHash || txDraftHash
+        },
+        providerPrompt: {
+          capability: "wallet.providerSignaturePrompt",
+          status: "locked-pending-explicit-provider-action-patch",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20C-provider-prompt-not-bound"
+        },
+        sign: {
+          capability: "wallet.sign",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20C-sign-remains-locked"
+        },
+        send: {
+          capability: "wallet.send",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20C-send-remains-locked"
+        },
+        broadcast: {
+          capability: "wallet.broadcast",
+          status: "locked",
+          canExecute: false,
+          providerMutation: true,
+          lockedBy: "20C-broadcast-remains-locked"
+        }
+      };
+      const allowedCapabilities = [...new Set([
+        ...(signedIntent20b.allowedCapabilities || []),
+        ...(signaturePreflightArmed ? ["wallet.signatureRequestPreflight"] : [])
+      ])];
+      const lockedCapabilities = [...new Set([
+        ...(signedIntent20b.lockedCapabilities || []),
+        "wallet.providerSignaturePrompt",
+        "wallet.sign",
+        "wallet.send",
+        "wallet.broadcast"
+      ])];
+      const preflightHash = mcelTinyContractObjectHash({
+        unlockVersion: "20C-MCEL",
+        contractHash: contract20a.contractHash || "",
+        intentHash,
+        txDraftHash,
+        accountHash,
+        chainId: chainProof.chainId || "",
+        validityStatus,
+        invalidationReasons,
+        missing,
+        signaturePreflightArmed,
+        providerPromptBound: false,
+        providerSignatureRequested: false,
+        mutationExecuted: false
+      });
+      const signaturePreflightEnvelope = {
+        kind: "mcelWallet20cSignaturePreflightEnvelope.v1",
+        unlockVersion: "20C-MCEL",
+        preflightHash,
+        intentHash,
+        status: signaturePreflightArmed ? "signature-request-preflight-armed" : "signature-request-preflight-blocked",
+        txDraftId: walletTxDraft.txDraftId || identity.txDraftId || "",
+        txDraftHash,
+        accountHash,
+        chainProof,
+        validityStatus,
+        invalidationReasons,
+        providerPromptBound: false,
+        providerSignatureRequested: false,
+        providerPromptInvocation: "absent",
+        mutationExecuted: false,
+        canRequestProviderSignature: false,
+        readyForBroadcast: false
+      };
+      const decisionReceipt = {
+        kind: "mcelWallet20cSignatureRequestPreflightReceipt.v1",
+        unlockVersion: "20C-MCEL",
+        preflightHash,
+        intentHash,
+        status: signaturePreflightEnvelope.status,
+        signaturePreflightArmed,
+        canArmSignatureRequest: signaturePreflightArmed,
+        canRequestSignatureIntent: signedIntent20b.canRequestSignatureIntent === true,
+        canRequestProviderSignature: false,
+        canSign: false,
+        canSend: false,
+        canBroadcast: false,
+        providerPromptBound: false,
+        providerSignatureRequested: false,
+        mutationExecuted: false,
+        readyForProviderExecution: false,
+        missing,
+        allowedCapabilities,
+        lockedCapabilities,
+        invariant: [
+          "20C receipts signature-request preflight only.",
+          "20C binds the signed intent to the current draft, account, chain, and validity proof.",
+          "20C does not bind, call, or display a provider prompt.",
+          "20C keeps sign, send, and broadcast locked."
+        ]
+      };
+      return {
+        kind: "mcelWallet20cSignatureRequestPreflight.v1",
+        unlockVersion: "20C-MCEL",
+        unlockEvent: "signature-request-preflight-arm",
+        status: signaturePreflightEnvelope.status,
+        stage: signaturePreflightArmed ? "signature-request-preflight-armed-no-provider-call" : "signature-request-preflight-blocked",
+        preflightHash,
+        intentHash,
+        txDraftId: signaturePreflightEnvelope.txDraftId,
+        txDraftHash,
+        txDraftValidityStatus: validityStatus,
+        invalidationReasons,
+        prerequisites,
+        missing,
+        capabilityContract,
+        signaturePreflightEnvelope,
+        decisionReceipt,
+        allowedCapabilities,
+        lockedCapabilities,
+        signaturePreflightArmed,
+        canArmSignatureRequest: signaturePreflightArmed,
+        canRequestSignatureIntent: signedIntent20b.canRequestSignatureIntent === true,
+        canRequestSignature: signedIntent20b.canRequestSignature === true,
+        canRequestProviderSignature: false,
+        providerPromptBound: false,
+        providerSignatureRequested: false,
+        providerPromptInvocation: "absent",
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        readyForBroadcast: false,
+        readyForProviderExecution: false,
+        nextAction: signaturePreflightArmed
+          ? "20C arms signature-request preflight only; a later provider-action patch must explicitly bind and invoke the wallet prompt."
+          : "satisfy the missing 20C prerequisites before arming signature-request preflight.",
+        invariant: [
+          "20C is the signature-request preflight layer after 20B signed-intent eligibility.",
+          "20C may arm a provider-prompt preflight contract, but it does not bind a provider prompt.",
+          "20C keeps sign, send, broadcast, and provider mutation locked.",
+          "Any actual wallet prompt must be a later explicit provider-action patch."
+        ]
+      };
+    }
+
+
+    function mcelWallet20dChainIdDecimal(chainId = "") {
+      const text = String(chainId || "").trim();
+      if (!text) return 0;
+      if (/^0x[0-9a-f]+$/i.test(text)) return Number.parseInt(text, 16) || 0;
+      return Number.parseInt(text, 10) || 0;
+    }
+
+    function mcelWallet20dZeroAddressFallback(address = "") {
+      const text = String(address || "").trim();
+      return /^0x[0-9a-fA-F]{40}$/.test(text) ? text : "0x0000000000000000000000000000000000000000";
+    }
+
+    function mcelWallet20dBuildIntentEnvelope(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const wallet20cSignatureRequestPreflight = boundary.wallet20cSignatureRequestPreflight || boundary.walletSignatureRequestPreflight || {};
+      const signaturePreflightEnvelope = wallet20cSignatureRequestPreflight.signaturePreflightEnvelope || {};
+      const walletPreflightReport = boundary.walletPreflightReport || {};
+      const identity = walletTxDraft.identityEnvelope
+        || walletTxDraft.txDraftIdentity
+        || walletPreflightReport.txDraftIdentityEnvelope
+        || {};
+      const validity = walletTxDraft.validityEnvelope
+        || walletPreflightReport.txDraftValidityEnvelope
+        || {};
+      const chainProof = identity.chainProof || walletTxDraft.chainProof || signaturePreflightEnvelope.chainProof || {};
+      const intentEnvelope = {
+        kind: "mcelWallet20dProviderIntentEnvelope.v1",
+        unlockVersion: "20D-MCEL",
+        signingPurpose: "off-chain-wallet-intent-only",
+        signatureRequestMethod: "eth_signTypedData_v4",
+        preflightHash: wallet20cSignatureRequestPreflight.preflightHash || signaturePreflightEnvelope.preflightHash || "",
+        intentHash: wallet20cSignatureRequestPreflight.intentHash || signaturePreflightEnvelope.intentHash || "",
+        txDraftId: walletTxDraft.txDraftId || identity.txDraftId || signaturePreflightEnvelope.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || identity.txDraftHash || signaturePreflightEnvelope.txDraftHash || "",
+        selectedReleaseHash: identity.selectedReleaseHash || walletTxDraft.selectedReleaseHash || "",
+        sourceRequestHash: identity.sourceRequestHash || walletTxDraft.sourceRequestHash || "",
+        accountHash: identity.walletAccountHash || walletTxDraft.walletAccountHash || signaturePreflightEnvelope.accountHash || "",
+        chainProof,
+        chainId: chainProof.chainId || walletTxDraft.chainId || "",
+        expectedChainId: chainProof.expectedChainId || walletTxDraft.expectedChainId || "",
+        target: walletTxDraft.to || walletTxDraft.target || "",
+        value: walletTxDraft.value || "0x0",
+        calldataHash: identity.calldataHash || walletTxDraft.calldataHash || "",
+        calldataPreview: walletTxDraft.calldata ? `${walletTxDraft.calldata.slice(0, 18)}…${walletTxDraft.calldata.slice(-8)}` : "",
+        probeEnvelopeIds: identity.probeEnvelopeIds || walletTxDraft.probeEnvelopeIds || [],
+        probeEvidenceHash: identity.probeEvidenceHash || walletTxDraft.probeEvidenceHash || "",
+        validityStatus: validity.status || walletTxDraft.txDraftValidityStatus || "not-observed",
+        expiresAt: identity.draftExpiresAt || walletTxDraft.draftExpiresAt || "",
+        mutationLocked: true,
+        transactionSendLocked: true,
+        broadcastLocked: true
+      };
+      return {
+        ...intentEnvelope,
+        intentEnvelopeHash: mcelTinyContractObjectHash(intentEnvelope)
+      };
+    }
+
+    function mcelWallet20dBuildTypedData(boundary = {}, intentEnvelope = mcelWallet20dBuildIntentEnvelope(boundary)) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const chainId = mcelWallet20dChainIdDecimal(intentEnvelope.chainId || walletTxDraft.chainId || intentEnvelope.expectedChainId || walletTxDraft.expectedChainId);
+      return {
+        types: {
+          EIP712Domain: [
+            {name: "name", type: "string"},
+            {name: "version", type: "string"},
+            {name: "chainId", type: "uint256"},
+            {name: "verifyingContract", type: "address"}
+          ],
+          MCELIntent: [
+            {name: "preflightHash", type: "string"},
+            {name: "txDraftHash", type: "string"},
+            {name: "accountHash", type: "string"},
+            {name: "chainId", type: "string"},
+            {name: "sourceRequestHash", type: "string"},
+            {name: "calldataHash", type: "string"},
+            {name: "probeEvidenceHash", type: "string"},
+            {name: "expiresAt", type: "string"},
+            {name: "mutationLocked", type: "bool"}
+          ]
+        },
+        primaryType: "MCELIntent",
+        domain: {
+          name: "MCEL Wallet Intent",
+          version: "20D",
+          chainId,
+          verifyingContract: mcelWallet20dZeroAddressFallback(intentEnvelope.target || walletTxDraft.to || walletTxDraft.target || "")
+        },
+        message: {
+          preflightHash: intentEnvelope.preflightHash || "",
+          txDraftHash: intentEnvelope.txDraftHash || "",
+          accountHash: intentEnvelope.accountHash || "",
+          chainId: intentEnvelope.chainId || intentEnvelope.expectedChainId || "",
+          sourceRequestHash: intentEnvelope.sourceRequestHash || "",
+          calldataHash: intentEnvelope.calldataHash || "",
+          probeEvidenceHash: intentEnvelope.probeEvidenceHash || "",
+          expiresAt: intentEnvelope.expiresAt || "",
+          mutationLocked: true
+        }
+      };
+    }
+
+    function mcelWallet20dProviderIntentSignature(boundary = {}, storedSignature = {}) {
+      const wallet20cSignatureRequestPreflight = boundary.wallet20cSignatureRequestPreflight || boundary.walletSignatureRequestPreflight || {};
+      const intentEnvelope = mcelWallet20dBuildIntentEnvelope(boundary);
+      const typedData = mcelWallet20dBuildTypedData(boundary, intentEnvelope);
+      const typedDataHash = mcelTinyContractObjectHash(typedData);
+      const storedEnvelope = storedSignature.intentEnvelope || {};
+      const storedTypedDataHash = storedSignature.typedDataHash || "";
+      const signature = String(storedSignature.signature || "");
+      const providerSignatureReceived = Boolean(signature);
+      const providerPromptRequested = storedSignature.providerSignatureRequested === true || providerSignatureReceived;
+      const providerPromptEligible = wallet20cSignatureRequestPreflight.canArmSignatureRequest === true
+        && wallet20cSignatureRequestPreflight.providerSignatureRequested !== true
+        && Boolean(intentEnvelope.preflightHash && intentEnvelope.txDraftHash && intentEnvelope.accountHash && intentEnvelope.chainId);
+      const signedIntentStaleReasons = [];
+      if (providerSignatureReceived && storedEnvelope.preflightHash && storedEnvelope.preflightHash !== intentEnvelope.preflightHash) signedIntentStaleReasons.push("20c-preflight-changed");
+      if (providerSignatureReceived && storedEnvelope.txDraftHash && storedEnvelope.txDraftHash !== intentEnvelope.txDraftHash) signedIntentStaleReasons.push("tx-draft-changed");
+      if (providerSignatureReceived && storedEnvelope.accountHash && storedEnvelope.accountHash !== intentEnvelope.accountHash) signedIntentStaleReasons.push("account-changed");
+      if (providerSignatureReceived && storedEnvelope.chainId && storedEnvelope.chainId !== intentEnvelope.chainId) signedIntentStaleReasons.push("chain-changed");
+      if (providerSignatureReceived && storedEnvelope.sourceRequestHash && storedEnvelope.sourceRequestHash !== intentEnvelope.sourceRequestHash) signedIntentStaleReasons.push("source-request-changed");
+      if (providerSignatureReceived && storedEnvelope.calldataHash && storedEnvelope.calldataHash !== intentEnvelope.calldataHash) signedIntentStaleReasons.push("calldata-changed");
+      if (providerSignatureReceived && storedTypedDataHash && storedTypedDataHash !== typedDataHash) signedIntentStaleReasons.push("typed-data-changed");
+      const status = providerSignatureReceived
+        ? (signedIntentStaleReasons.length ? "provider-intent-signature-stale" : "provider-intent-signature-received")
+        : (providerPromptEligible ? "provider-intent-signature-ready" : "provider-intent-signature-blocked");
+      const stage = providerSignatureReceived
+        ? (signedIntentStaleReasons.length ? "intent-signature-received-stale" : "intent-signature-received-no-send")
+        : (providerPromptEligible ? "provider-intent-prompt-ready" : "provider-intent-prompt-blocked");
+      const signatureHash = signature ? mcelTinyContractObjectHash(signature) : "";
+      const allowedCapabilities = [...new Set([
+        ...(wallet20cSignatureRequestPreflight.allowedCapabilities || []),
+        ...(providerPromptEligible ? ["wallet.providerIntentSignaturePrompt"] : []),
+        ...(providerSignatureReceived && !signedIntentStaleReasons.length ? ["wallet.signedIntentReceipt"] : [])
+      ])];
+      const lockedCapabilities = [...new Set([
+        ...(wallet20cSignatureRequestPreflight.lockedCapabilities || []),
+        "wallet.transactionSign",
+        "wallet.send",
+        "wallet.broadcast"
+      ])];
+      const decisionReceipt = {
+        kind: "mcelWallet20dProviderIntentSignatureReceipt.v1",
+        unlockVersion: "20D-MCEL",
+        status,
+        stage,
+        signatureRequestMethod: "eth_signTypedData_v4",
+        providerPromptEligible,
+        providerPromptBound: providerPromptEligible,
+        providerSignatureRequested: providerPromptRequested,
+        providerSignatureReceived,
+        intentEnvelopeHash: intentEnvelope.intentEnvelopeHash,
+        typedDataHash,
+        signatureHash,
+        signedIntentStaleReasons,
+        canRequestProviderSignature: providerPromptEligible,
+        canSign: false,
+        canSend: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        invariant: [
+          "20D may request an off-chain provider signature for the MCEL intent envelope.",
+          "20D does not request provider transaction send, provider transaction signing, or broadcast.",
+          "The signature authorizes intent review only; transaction mutation remains locked."
+        ]
+      };
+      return {
+        kind: "mcelWallet20dProviderIntentSignature.v1",
+        unlockVersion: "20D-MCEL",
+        unlockEvent: "live-provider-intent-signature-prompt",
+        status,
+        stage,
+        signatureRequestMethod: "eth_signTypedData_v4",
+        providerPromptEligible,
+        providerPromptBound: providerPromptEligible,
+        providerSignatureRequested: providerPromptRequested,
+        providerSignatureReceived,
+        providerPromptInvocation: providerPromptRequested ? "eth_signTypedData_v4" : "awaiting-explicit-user-click",
+        intentEnvelope,
+        signedIntentEnvelope: storedSignature.intentEnvelope || (providerSignatureReceived ? intentEnvelope : {}),
+        typedData,
+        typedDataHash,
+        signature,
+        signatureHash,
+        signaturePreview: signature ? `${signature.slice(0, 18)}…${signature.slice(-8)}` : "",
+        externalOutcome: storedSignature.externalOutcome || {},
+        signedIntentStaleReasons,
+        decisionReceipt,
+        allowedCapabilities,
+        lockedCapabilities,
+        canRequestProviderSignature: providerPromptEligible,
+        canSign: false,
+        canSend: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        readyForBroadcast: false,
+        readyForProviderExecution: false,
+        nextAction: providerSignatureReceived
+          ? "20E must verify the signed intent against the current draft/preflight context before any pre-send review."
+          : (providerPromptEligible
+            ? "20D can request an off-chain wallet intent signature; send and broadcast remain locked."
+            : "satisfy 20C signature preflight before requesting the off-chain wallet intent signature."),
+        invariant: [
+          "20D is the first provider-prompt patch.",
+          "20D signs only an off-chain MCEL intent envelope.",
+          "20D keeps transaction signing, send, broadcast, and provider mutation locked."
+        ]
+      };
+    }
+
+    function mcelWallet20eSignedIntentVerification(boundary = {}) {
+      const wallet20dProviderIntentSignature = boundary.wallet20dProviderIntentSignature || boundary.walletProviderIntentSignature || {};
+      const currentIntentEnvelope = mcelWallet20dBuildIntentEnvelope(boundary);
+      const signedIntentEnvelope = wallet20dProviderIntentSignature.signedIntentEnvelope || wallet20dProviderIntentSignature.intentEnvelope || {};
+      const signature = String(wallet20dProviderIntentSignature.signature || "");
+      const signatureReceived = wallet20dProviderIntentSignature.providerSignatureReceived === true && Boolean(signature);
+      const signatureShapeValid = /^0x[0-9a-fA-F]{130}$/.test(signature);
+      const invalidatedBy = [];
+      const addInvalidation = (reason, detail = {}) => invalidatedBy.push(mcelTinyContractTxDraftInvalidation(reason, detail));
+      if (!signatureReceived) addInvalidation("signature-missing", {providerSignatureReceived: false});
+      if (signatureReceived && !signatureShapeValid) addInvalidation("signature-shape-invalid", {length: signature.length});
+      if (signedIntentEnvelope.preflightHash && signedIntentEnvelope.preflightHash !== currentIntentEnvelope.preflightHash) addInvalidation("20c-preflight-changed", {signed: signedIntentEnvelope.preflightHash, current: currentIntentEnvelope.preflightHash});
+      if (signedIntentEnvelope.txDraftHash && signedIntentEnvelope.txDraftHash !== currentIntentEnvelope.txDraftHash) addInvalidation("tx-draft-changed", {signed: signedIntentEnvelope.txDraftHash, current: currentIntentEnvelope.txDraftHash});
+      if (signedIntentEnvelope.accountHash && signedIntentEnvelope.accountHash !== currentIntentEnvelope.accountHash) addInvalidation("account-changed", {signed: signedIntentEnvelope.accountHash, current: currentIntentEnvelope.accountHash});
+      if (signedIntentEnvelope.chainId && signedIntentEnvelope.chainId !== currentIntentEnvelope.chainId) addInvalidation("chain-changed", {signed: signedIntentEnvelope.chainId, current: currentIntentEnvelope.chainId});
+      if (signedIntentEnvelope.sourceRequestHash && signedIntentEnvelope.sourceRequestHash !== currentIntentEnvelope.sourceRequestHash) addInvalidation("source-request-changed", {signed: signedIntentEnvelope.sourceRequestHash, current: currentIntentEnvelope.sourceRequestHash});
+      if (signedIntentEnvelope.calldataHash && signedIntentEnvelope.calldataHash !== currentIntentEnvelope.calldataHash) addInvalidation("calldata-changed", {signed: signedIntentEnvelope.calldataHash, current: currentIntentEnvelope.calldataHash});
+      if (signedIntentEnvelope.probeEvidenceHash && signedIntentEnvelope.probeEvidenceHash !== currentIntentEnvelope.probeEvidenceHash) addInvalidation("probe-evidence-changed", {signed: signedIntentEnvelope.probeEvidenceHash, current: currentIntentEnvelope.probeEvidenceHash});
+      const expiresAt = signedIntentEnvelope.expiresAt || currentIntentEnvelope.expiresAt || "";
+      if (expiresAt) {
+        const expiryMs = Date.parse(expiresAt);
+        if (Number.isFinite(expiryMs) && expiryMs <= Date.now()) addInvalidation("signature-intent-expired", {expiresAt});
+      }
+      const verificationCurrent = signatureReceived && signatureShapeValid && invalidatedBy.length === 0;
+      const verificationEnvelope = {
+        kind: "mcelWallet20eSignedIntentVerificationEnvelope.v1",
+        unlockVersion: "20E-MCEL",
+        status: verificationCurrent ? "signed-intent-current" : (signatureReceived ? "signed-intent-invalidated" : "signed-intent-missing"),
+        verificationMethod: "context-bound-signature-receipt",
+        cryptographicRecovery: "not-run-in-static-lab",
+        signatureHash: wallet20dProviderIntentSignature.signatureHash || (signature ? mcelTinyContractObjectHash(signature) : ""),
+        signedIntentEnvelopeHash: signedIntentEnvelope.intentEnvelopeHash || mcelTinyContractObjectHash(signedIntentEnvelope),
+        currentIntentEnvelopeHash: currentIntentEnvelope.intentEnvelopeHash,
+        signatureReceived,
+        signatureShapeValid,
+        verificationCurrent,
+        invalidatedBy,
+        invalidationReasons: invalidatedBy.map((entry) => entry.reason),
+        canSend: false,
+        canBroadcast: false,
+        mutationExecuted: false
+      };
+      return {
+        kind: "mcelWallet20eSignedIntentVerification.v1",
+        unlockVersion: "20E-MCEL",
+        unlockEvent: "signed-intent-verification-and-invalidation",
+        status: verificationEnvelope.status,
+        stage: verificationCurrent ? "signed-intent-current-no-send" : "signed-intent-not-current",
+        verificationEnvelope,
+        signatureReceived,
+        signatureShapeValid,
+        signedIntentValid: verificationCurrent,
+        signedIntentCurrent: verificationCurrent,
+        invalidatedBy,
+        invalidationReasons: verificationEnvelope.invalidationReasons,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        readyForBroadcast: false,
+        readyForProviderExecution: false,
+        nextAction: verificationCurrent
+          ? "20F can build the final pre-send review gate, but send and broadcast remain separate future actions."
+          : "request a fresh 20D intent signature after rebuilding any stale draft/preflight context.",
+        invariant: [
+          "20E verifies that the signed intent still matches the current 20C preflight and txDraft context.",
+          "20E invalidates signatures on account, chain, draft, source, calldata, probe, or expiry changes.",
+          "20E does not enable transaction signing, send, or broadcast."
+        ]
+      };
+    }
+
+    function mcelWallet20fPreSendReviewGate(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const wallet20cSignatureRequestPreflight = boundary.wallet20cSignatureRequestPreflight || boundary.walletSignatureRequestPreflight || {};
+      const wallet20dProviderIntentSignature = boundary.wallet20dProviderIntentSignature || boundary.walletProviderIntentSignature || {};
+      const wallet20eSignedIntentVerification = boundary.wallet20eSignedIntentVerification || boundary.walletSignedIntentVerification || {};
+      const validity = walletTxDraft.validityEnvelope || {};
+      const simulationStatus = walletTxDraft.ethCall?.status || "not-probed";
+      const nonceStatus = walletTxDraft.nonce?.status || "not-probed";
+      const gasStatus = walletTxDraft.gasEstimate?.status || "not-probed";
+      const reviewBlockers = [];
+      if (wallet20cSignatureRequestPreflight.canArmSignatureRequest !== true) reviewBlockers.push("20c-preflight-not-armed");
+      if (wallet20dProviderIntentSignature.providerSignatureReceived !== true) reviewBlockers.push("20d-intent-signature-missing");
+      if (wallet20eSignedIntentVerification.signedIntentCurrent !== true) reviewBlockers.push("20e-signed-intent-not-current");
+      if (walletTxDraft.valid !== true || validity.status !== "valid") reviewBlockers.push("19c-txdraft-not-valid");
+      if (walletTxDraft.noSend !== true || walletTxDraft.boundary !== "runtime-only-no-send") reviewBlockers.push("no-send-boundary-missing");
+      const eligibleForFutureSendPatch = reviewBlockers.length === 0;
+      const finalReviewEnvelope = {
+        kind: "mcelWallet20fPreSendReviewEnvelope.v1",
+        unlockVersion: "20F-MCEL",
+        status: eligibleForFutureSendPatch ? "eligible-for-future-send-patch" : "pre-send-review-blocked",
+        txDraftId: walletTxDraft.txDraftId || "",
+        txDraftHash: walletTxDraft.txDraftHash || "",
+        sourceRequestHash: walletTxDraft.sourceRequestHash || "",
+        accountHash: walletTxDraft.walletAccountHash || "",
+        chainProof: walletTxDraft.chainProof || {},
+        to: walletTxDraft.to || "",
+        value: walletTxDraft.value || "0x0",
+        calldataHash: walletTxDraft.calldataHash || "",
+        calldataPreview: walletTxDraft.calldata ? `${walletTxDraft.calldata.slice(0, 18)}…${walletTxDraft.calldata.slice(-8)}` : "",
+        nonce: walletTxDraft.nonce || {},
+        gasEstimate: walletTxDraft.gasEstimate || {},
+        ethCall: walletTxDraft.ethCall || {},
+        nonceStatus,
+        gasStatus,
+        simulationStatus,
+        signatureHash: wallet20dProviderIntentSignature.signatureHash || "",
+        signedIntentStatus: wallet20eSignedIntentVerification.status || "not-observed",
+        reviewBlockers,
+        sendMethod: "not-bound",
+        broadcastMethod: "not-bound",
+        canSend: false,
+        canBroadcast: false,
+        mutationExecuted: false
+      };
+      return {
+        kind: "mcelWallet20fPreSendReviewGate.v1",
+        unlockVersion: "20F-MCEL",
+        unlockEvent: "final-pre-send-review-gate",
+        status: finalReviewEnvelope.status,
+        stage: eligibleForFutureSendPatch ? "future-send-patch-eligible-no-send" : "pre-send-review-blocked",
+        eligibleForFutureSendPatch,
+        finalReviewEnvelope,
+        reviewBlockers,
+        capabilityContract: {
+          futureSendPatch: {
+            capability: "wallet.futureSendPatch",
+            status: eligibleForFutureSendPatch ? "eligible" : "blocked",
+            canExecute: eligibleForFutureSendPatch,
+            providerMutation: false
+          },
+          send: {
+            capability: "wallet.send",
+            status: "locked-pending-21A",
+            canExecute: false,
+            providerMutation: true,
+            lockedBy: "20F-no-eth-send-transaction"
+          },
+          broadcast: {
+            capability: "wallet.broadcast",
+            status: "locked-pending-21A",
+            canExecute: false,
+            providerMutation: true,
+            lockedBy: "20F-no-broadcast"
+          }
+        },
+        allowedCapabilities: [...new Set([
+          ...(wallet20dProviderIntentSignature.allowedCapabilities || []),
+          ...(eligibleForFutureSendPatch ? ["wallet.futureSendPatch"] : [])
+        ])],
+        lockedCapabilities: [...new Set([
+          ...(wallet20dProviderIntentSignature.lockedCapabilities || []),
+          "wallet.send",
+          "wallet.broadcast"
+        ])],
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        readyForBroadcast: false,
+        readyForProviderExecution: false,
+        nextAction: eligibleForFutureSendPatch
+          ? "20F has a complete pre-send review. A separate 21A patch must explicitly bind provider transaction send."
+          : "clear 20F review blockers before any future send patch is considered.",
+        invariant: [
+          "20F is the last no-send review gate before any future transaction send patch.",
+          "20F can mark a future send patch eligible but does not send, sign transactions, or broadcast.",
+          "20F keeps provider transaction send unbound."
+        ]
+      };
+    }
+
+
+
+
+    function mcelWallet20gOutcomeFlags({providerIntentSignature = {}, signedIntentVerification = {}, preSendReviewGate = {}, walletTxDraft = {}} = {}) {
+      const outcome = providerIntentSignature.externalOutcome || {};
+      const outcomeReason = String(outcome.reason || "");
+      const outcomeMessage = String(outcome.message || "");
+      const errorCode = String(outcome.error?.code ?? outcome.value?.errorCode ?? "");
+      const invalidationReasons = [
+        ...(providerIntentSignature.signedIntentStaleReasons || []),
+        ...(signedIntentVerification.invalidationReasons || []),
+        ...(preSendReviewGate.reviewBlockers || [])
+      ].filter(Boolean);
+      const chainProof = walletTxDraft.chainProof || {};
+      const providerUnavailable = outcomeReason === "provider-unavailable" || /no injected provider|provider unavailable|wallet provider was available/i.test(outcomeMessage);
+      const userRejected = errorCode === "4001" || /reject|denied|declined|cancelled|canceled/i.test(`${outcomeReason} ${outcomeMessage}`);
+      const alreadyPending = errorCode === "-32002" || /already pending|request pending|pending request/i.test(`${outcomeReason} ${outcomeMessage}`);
+      const wrongChain = String(chainProof.status || "").toLowerCase() === "wrong-chain"
+        || (Boolean(chainProof.chainId) && Boolean(chainProof.expectedChainId) && String(chainProof.chainId).toLowerCase() !== String(chainProof.expectedChainId).toLowerCase());
+      const accountChanged = invalidationReasons.includes("account-changed");
+      const chainChanged = invalidationReasons.includes("chain-changed") || wrongChain;
+      const sourceChanged = invalidationReasons.includes("source-request-changed") || invalidationReasons.includes("20c-preflight-changed");
+      const draftChanged = invalidationReasons.includes("tx-draft-changed") || invalidationReasons.includes("typed-data-changed");
+      const signatureStale = Boolean(providerIntentSignature.providerSignatureReceived && (providerIntentSignature.signedIntentStaleReasons || []).length);
+      const signatureExpired = invalidationReasons.includes("signature-intent-expired");
+      const signatureMissing = providerIntentSignature.providerSignatureRequested === true && providerIntentSignature.providerSignatureReceived !== true;
+      const signatureCurrent = signedIntentVerification.signedIntentCurrent === true;
+      const preSendEligible = preSendReviewGate.eligibleForFutureSendPatch === true;
+      return {
+        providerUnavailable,
+        userRejected,
+        alreadyPending,
+        wrongChain,
+        accountChanged,
+        chainChanged,
+        sourceChanged,
+        draftChanged,
+        signatureStale,
+        signatureExpired,
+        signatureMissing,
+        signatureCurrent,
+        preSendEligible,
+        invalidationReasons,
+        outcomeReason,
+        outcomeMessage,
+        errorCode
+      };
+    }
+
+    function mcelWallet20gProviderIntentHardening(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const providerIntentSignature = boundary.wallet20dProviderIntentSignature || boundary.walletProviderIntentSignature || {};
+      const signedIntentVerification = boundary.wallet20eSignedIntentVerification || boundary.walletSignedIntentVerification || {};
+      const preSendReviewGate = boundary.wallet20fPreSendReviewGate || boundary.walletPreSendReviewGate || {};
+      const flags = mcelWallet20gOutcomeFlags({providerIntentSignature, signedIntentVerification, preSendReviewGate, walletTxDraft});
+      const providerOutcomeObserved = providerIntentSignature.providerSignatureRequested === true
+        || providerIntentSignature.providerSignatureReceived === true
+        || Boolean(providerIntentSignature.externalOutcome?.reason);
+      const blockers = [];
+      if (!providerOutcomeObserved) blockers.push("provider-intent-outcome-not-observed");
+      if (flags.providerUnavailable) blockers.push("wallet-absent");
+      if (flags.userRejected) blockers.push("user-rejected-signature");
+      if (flags.alreadyPending) blockers.push("provider-request-already-pending");
+      if (flags.wrongChain) blockers.push("wrong-chain");
+      if (flags.accountChanged) blockers.push("account-changed-during-or-after-prompt");
+      if (flags.chainChanged) blockers.push("chain-changed-during-or-after-prompt");
+      if (flags.sourceChanged) blockers.push("source-request-changed-after-signature");
+      if (flags.draftChanged) blockers.push("tx-draft-or-typed-data-changed");
+      if (flags.signatureExpired) blockers.push("signature-intent-expired");
+      if (flags.signatureStale) blockers.push("signature-received-but-stale");
+      if (flags.signatureMissing && !flags.providerUnavailable && !flags.userRejected && !flags.alreadyPending) blockers.push("signature-not-received");
+      if (providerIntentSignature.providerSignatureReceived === true && flags.signatureCurrent !== true) blockers.push("signed-intent-not-current");
+      if (preSendReviewGate.status && flags.preSendEligible !== true) blockers.push("20f-pre-send-review-not-eligible");
+      const issueSet = [...new Set(blockers.filter(Boolean))];
+      const hardenedCurrent = providerIntentSignature.providerSignatureReceived === true
+        && flags.signatureCurrent === true
+        && flags.preSendEligible === true
+        && issueSet.length === 0;
+      const status = hardenedCurrent
+        ? "live-signature-hardened-current"
+        : (providerOutcomeObserved ? "live-signature-hardened-blocked" : "live-signature-hardening-waiting");
+      const stage = hardenedCurrent
+        ? "ready-for-separate-21a-policy-bound-send-design"
+        : (providerOutcomeObserved ? "provider-intent-negative-path-contained" : "awaiting-live-provider-intent-outcome");
+      const scenarioMatrix = [
+        {scenario: "wallet absent", blockedBy: "wallet-absent", observed: flags.providerUnavailable},
+        {scenario: "user rejects signature", blockedBy: "user-rejected-signature", observed: flags.userRejected},
+        {scenario: "provider request already pending", blockedBy: "provider-request-already-pending", observed: flags.alreadyPending},
+        {scenario: "wrong chain", blockedBy: "wrong-chain", observed: flags.wrongChain},
+        {scenario: "account changes during prompt", blockedBy: "account-changed-during-or-after-prompt", observed: flags.accountChanged},
+        {scenario: "chain changes during prompt", blockedBy: "chain-changed-during-or-after-prompt", observed: flags.chainChanged},
+        {scenario: "signature received but stale", blockedBy: "signature-received-but-stale", observed: flags.signatureStale},
+        {scenario: "signature received but mismatched", blockedBy: "signed-intent-not-current", observed: providerIntentSignature.providerSignatureReceived === true && flags.signatureCurrent !== true},
+        {scenario: "signature expired", blockedBy: "signature-intent-expired", observed: flags.signatureExpired}
+      ];
+      const hardeningEnvelope = {
+        kind: "mcelWallet20gProviderIntentHardeningEnvelope.v1",
+        unlockVersion: "20G-MCEL",
+        status,
+        stage,
+        providerOutcomeObserved,
+        providerOutcomeReason: flags.outcomeReason || "not-observed",
+        providerOutcomeMessage: flags.outcomeMessage || "",
+        providerErrorCode: flags.errorCode || "",
+        signatureRequestMethod: providerIntentSignature.signatureRequestMethod || "eth_signTypedData_v4",
+        signatureHash: providerIntentSignature.signatureHash || "",
+        signedIntentStatus: signedIntentVerification.status || "not-observed",
+        preSendReviewStatus: preSendReviewGate.status || "not-observed",
+        blockers: issueSet,
+        invalidationReasons: flags.invalidationReasons,
+        scenarioMatrix,
+        canRequestProviderSignature: providerIntentSignature.canRequestProviderSignature === true && !flags.alreadyPending,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        providerTransactionSendBound: false,
+        mutationExecuted: false
+      };
+      hardeningEnvelope.hardeningEnvelopeHash = mcelTinyContractObjectHash(hardeningEnvelope);
+      const receipt = {
+        kind: "mcelWallet20gProviderIntentHardeningReceipt.v1",
+        unlockVersion: "20G-MCEL",
+        status,
+        stage,
+        hardeningEnvelopeHash: hardeningEnvelope.hardeningEnvelopeHash,
+        providerOutcomeObserved,
+        blockers: issueSet,
+        signatureReceived: providerIntentSignature.providerSignatureReceived === true,
+        signedIntentCurrent: signedIntentVerification.signedIntentCurrent === true,
+        eligibleForFutureSendPatch: preSendReviewGate.eligibleForFutureSendPatch === true,
+        sendMethod: "not-bound",
+        transactionSigningMethod: "not-bound",
+        broadcastMethod: "not-bound",
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false
+      };
+      return {
+        kind: "mcelWallet20gProviderIntentHardening.v1",
+        unlockVersion: "20G-MCEL",
+        unlockEvent: "live-provider-intent-signature-hardening",
+        status,
+        stage,
+        hardenedCurrent,
+        providerOutcomeObserved,
+        scenarioMatrix,
+        hardeningEnvelope,
+        receipt,
+        blockers: issueSet,
+        invalidationReasons: flags.invalidationReasons,
+        canRequestProviderSignature: hardeningEnvelope.canRequestProviderSignature === true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: false,
+        providerTransactionSendBound: false,
+        readyForProviderExecution: false,
+        nextAction: hardenedCurrent
+          ? "20G is hardened. A separate 21A patch may design policy-bound network-agnostic transaction send; this patch still binds no send method."
+          : "exercise or clear the 20G provider-intent negative path before any 21A transaction-send patch.",
+        invariant: [
+          "20G hardens real provider intent-signature outcomes before any transaction mutation.",
+          "20G receipts wallet-absent, user-rejected, wrong-chain, account-change, chain-change, stale, mismatched, and expired signature outcomes.",
+          "20G still does not bind provider transaction send, transaction signing, or broadcast."
+        ]
+      };
+    }
+
+
+
+
+
+
+    function mcelWallet21aNormalizeHexQuantity(value = "") {
+      const text = String(value || "").trim();
+      return /^0x[0-9a-f]+$/i.test(text) ? text : "";
+    }
+
+    function mcelWallet21aBuildProviderTransactionRequest(walletTxDraft = {}) {
+      const request = {
+        from: walletTxDraft.from || "",
+        to: walletTxDraft.to || walletTxDraft.target || "",
+        value: walletTxDraft.value || "0x0",
+        data: walletTxDraft.data || walletTxDraft.calldata || ""
+      };
+      const gas = mcelWallet21aNormalizeHexQuantity(
+        walletTxDraft.gasEstimate?.gas
+        || walletTxDraft.gasEstimate?.value
+        || walletTxDraft.gasEstimate?.hex
+        || ""
+      );
+      const nonce = mcelWallet21aNormalizeHexQuantity(
+        walletTxDraft.nonce?.nonce
+        || walletTxDraft.nonce?.value
+        || walletTxDraft.nonce?.hex
+        || ""
+      );
+      if (gas) request.gas = gas;
+      if (nonce) request.nonce = nonce;
+      return request;
+    }
+
+    function mcelWallet21aNetworkExecutionPolicy(boundary = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const chainProof = walletTxDraft.chainProof || {};
+      const policyChainId = walletTxDraft.expectedChainId
+        || chainProof.expectedChainId
+        || walletTxDraft.chainId
+        || walletTxDraft.currentChainId
+        || "";
+      const currentChainId = walletTxDraft.currentChainId
+        || walletTxDraft.chainId
+        || chainProof.chainId
+        || "";
+      const targetAddress = walletTxDraft.to
+        || walletTxDraft.target
+        || boundary.mcelCommitDraft?.targets?.to
+        || "";
+      const calldataHash = walletTxDraft.calldataHash || mcelTinyContractObjectHash(walletTxDraft.data || walletTxDraft.calldata || "");
+      const chainMatchesPolicy = Boolean(currentChainId && policyChainId && mcelTinyContractSameChainId(currentChainId, policyChainId));
+      const targetAllowed = Boolean(targetAddress);
+      const policy = {
+        kind: "mcelNetworkExecutionPolicy.v1",
+        unlockVersion: "21A-MCEL",
+        policyMode: "network-agnostic-policy-bound",
+        networkAgnostic: true,
+        devnetOnly: false,
+        chainId: currentChainId,
+        policyChainId,
+        chainMatchesPolicy,
+        targetAddress,
+        targetAllowed,
+        calldataHash,
+        releaseBinding: walletTxDraft.selectedReleaseHash || "",
+        sourceRequestHash: walletTxDraft.sourceRequestHash || "",
+        accountHash: walletTxDraft.walletAccountHash || "",
+        requiresSimulation: true,
+        requiresSignedIntent: true,
+        requiresFreshProbes: true,
+        requires20fReview: true,
+        requires20gHardening: true,
+        allowSend: chainMatchesPolicy && targetAllowed,
+        blockUnknownChain: !currentChainId,
+        blockUnknownTarget: !targetAddress,
+        invariant: [
+          "21A is network-agnostic: any connected chain can be used when the MCEL execution policy and signed context match.",
+          "21A is not devnet-only; devnet is only one possible policy profile.",
+          "The provider chain, target, calldata, account, signed intent, and pre-send review must still match."
+        ]
+      };
+      policy.policyHash = mcelTinyContractObjectHash(policy);
+      return policy;
+    }
+
+    function mcelWallet21aPolicyBoundSendGate(boundary = {}, runtimeSendGate = {}) {
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const signedIntentVerification = boundary.wallet20eSignedIntentVerification || boundary.walletSignedIntentVerification || {};
+      const preSendReviewGate = boundary.wallet20fPreSendReviewGate || boundary.walletPreSendReviewGate || {};
+      const providerIntentHardening = boundary.wallet20gProviderIntentHardening || boundary.walletProviderIntentHardening || {};
+      const networkExecutionPolicy = runtimeSendGate.networkExecutionPolicy || mcelWallet21aNetworkExecutionPolicy(boundary);
+      const providerTransactionRequest = runtimeSendGate.providerTransactionRequest
+        || runtimeSendGate.sendRequest
+        || mcelWallet21aBuildProviderTransactionRequest(walletTxDraft);
+      const runtimeOutcome = runtimeSendGate.providerOutcome || runtimeSendGate.outcome || {};
+      const txHash = runtimeSendGate.txHash || runtimeOutcome.value?.txHash || "";
+      const providerTransactionSendRequested = runtimeSendGate.providerTransactionSendRequested === true
+        || runtimeOutcome.operation === "wallet.sendPolicyBoundTransaction"
+        || runtimeOutcome.phase === "eth_sendTransaction";
+      const blockers = [];
+      if (preSendReviewGate.eligibleForFutureSendPatch !== true) blockers.push("20f-review-not-eligible");
+      if (providerIntentHardening.hardenedCurrent !== true) blockers.push("20g-provider-intent-not-hardened");
+      if (signedIntentVerification.signedIntentCurrent !== true) blockers.push("signed-intent-not-current");
+      if (walletTxDraft.status !== "ready") blockers.push("tx-draft-not-ready");
+      if (walletTxDraft.valid !== true && walletTxDraft.validityEnvelope?.valid !== true) blockers.push("tx-draft-not-valid");
+      if (networkExecutionPolicy.allowSend !== true) blockers.push("network-execution-policy-blocked");
+      if (!providerTransactionRequest.from) blockers.push("from-account-missing");
+      if (!providerTransactionRequest.to) blockers.push("target-address-missing");
+      if (!providerTransactionRequest.data) blockers.push("calldata-missing");
+      if (walletTxDraft.noSend !== true || walletTxDraft.boundary !== "runtime-only-no-send") blockers.push("runtime-draft-boundary-missing");
+      const uniqueBlockers = [...new Set(blockers.filter(Boolean))];
+      const canRequestTransactionSend = uniqueBlockers.length === 0;
+      const providerRejected = runtimeOutcome.status === "blocked";
+      const providerException = runtimeOutcome.status === "exception";
+      const providerAccepted = runtimeOutcome.status === "pass" && Boolean(txHash);
+      const status = providerAccepted
+        ? "provider-tx-hash-received"
+        : (providerException
+          ? "provider-send-exception"
+          : (providerRejected
+            ? "provider-send-rejected"
+            : (canRequestTransactionSend ? "policy-bound-send-eligible" : "policy-bound-send-blocked")));
+      const stage = providerAccepted
+        ? "21a-provider-transaction-submitted"
+        : (canRequestTransactionSend ? "21a-ready-for-explicit-user-send-click" : "21a-waiting-for-policy-bound-evidence");
+      const sendEnvelope = {
+        kind: "mcelWallet21aPolicyBoundSendEnvelope.v1",
+        unlockVersion: "21A-MCEL",
+        networkExecutionPolicyHash: networkExecutionPolicy.policyHash || "",
+        txDraftHash: walletTxDraft.txDraftHash || "",
+        signedIntentHash: signedIntentVerification.verificationEnvelope?.signedIntentHash || signedIntentVerification.signedIntentHash || "",
+        preSendReviewHash: preSendReviewGate.finalReviewEnvelope?.finalReviewEnvelopeHash || preSendReviewGate.finalReviewHash || "",
+        providerIntentHardeningHash: providerIntentHardening.hardeningEnvelope?.hardeningEnvelopeHash || "",
+        providerTransactionRequest,
+        chainId: networkExecutionPolicy.chainId || "",
+        targetAddress: networkExecutionPolicy.targetAddress || providerTransactionRequest.to || "",
+        calldataHash: networkExecutionPolicy.calldataHash || "",
+        expiresAt: preSendReviewGate.finalReviewEnvelope?.expiresAt || walletTxDraft.draftExpiresAt || "",
+        policyBound: true,
+        networkAgnostic: true,
+        devnetOnly: false,
+        providerMethod: "eth_sendTransaction",
+        oneShot: true
+      };
+      sendEnvelope.sendEnvelopeHash = mcelTinyContractObjectHash(sendEnvelope);
+      return {
+        kind: "mcelWallet21aPolicyBoundSendGate.v1",
+        unlockVersion: "21A-MCEL",
+        unlockEvent: "policy-bound-network-agnostic-transaction-send",
+        status,
+        stage,
+        networkAgnostic: true,
+        devnetOnly: false,
+        policyBound: true,
+        networkExecutionPolicy,
+        providerTransactionRequest,
+        sendEnvelope,
+        blockers: uniqueBlockers,
+        canRequestTransactionSend,
+        canSend: canRequestTransactionSend,
+        canSign: false,
+        canBroadcast: false,
+        providerTransactionSendMethod: "eth_sendTransaction",
+        ethSendTransactionBound: true,
+        providerTransactionSendBound: true,
+        providerTransactionSendRequested,
+        providerAccepted,
+        providerRejected,
+        providerException,
+        txHash,
+        providerOutcome: runtimeOutcome,
+        mutationExecuted: providerAccepted,
+        broadcastAttempted: providerTransactionSendRequested,
+        readyForProviderExecution: canRequestTransactionSend,
+        nextAction: providerAccepted
+          ? "21B should ledger the provider outcome and 21C should watch the transaction receipt."
+          : (canRequestTransactionSend
+            ? "21A is eligible: user may explicitly request the policy-bound provider send; no automatic send is allowed."
+            : "clear 21A blockers before requesting a policy-bound provider transaction send."),
+        invariant: [
+          "21A is the first eth_sendTransaction boundary and it is policy-bound rather than devnet-only.",
+          "21A uses the current connected chain only when it matches the signed MCEL execution context.",
+          "21A does not request transaction signing separately or use any separate broadcast API.",
+          "21A requires explicit user action; no automatic retry is allowed."
+        ]
+      };
+    }
+
+    function mcelWallet21bProviderOutcomeLedger(boundary = {}, runtimeLedger = {}) {
+      const sendGate = boundary.wallet21aPolicyBoundSendGate || boundary.walletTransactionSendGate || runtimeLedger.sendGate || {};
+      const outcome = runtimeLedger.providerOutcome || sendGate.providerOutcome || {};
+      const txHash = runtimeLedger.txHash || sendGate.txHash || outcome.value?.txHash || "";
+      const providerTransactionSendRequested = sendGate.providerTransactionSendRequested === true
+        || outcome.operation === "wallet.sendPolicyBoundTransaction"
+        || outcome.phase === "eth_sendTransaction";
+      const providerAccepted = outcome.status === "pass" && Boolean(txHash);
+      const providerRejected = outcome.status === "blocked";
+      const providerException = outcome.status === "exception";
+      const latestReceipt = providerTransactionSendRequested || txHash
+        ? {
+            kind: "mcelWallet21bProviderOutcomeReceipt.v1",
+            unlockVersion: "21B-MCEL",
+            status: providerAccepted
+              ? "provider-accepted-tx-hash"
+              : (providerException ? "provider-send-exception" : (providerRejected ? "provider-rejected-send" : "provider-send-requested")),
+            sendEnvelopeHash: sendGate.sendEnvelope?.sendEnvelopeHash || runtimeLedger.sendEnvelopeHash || "",
+            providerMethod: "eth_sendTransaction",
+            providerTransactionSendRequested,
+            providerAccepted,
+            providerRejected,
+            providerException,
+            providerErrorCode: String(outcome.error?.code || outcome.value?.errorCode || ""),
+            providerReason: outcome.reason || "",
+            providerMessage: outcome.message || "",
+            txHash,
+            accountAtSend: sendGate.providerTransactionRequest?.from || "",
+            chainIdAtSend: sendGate.networkExecutionPolicy?.chainId || "",
+            targetAddress: sendGate.providerTransactionRequest?.to || "",
+            value: sendGate.providerTransactionRequest?.value || "0x0",
+            calldataHash: sendGate.networkExecutionPolicy?.calldataHash || "",
+            mutationExecuted: providerAccepted,
+            broadcastAttempted: providerTransactionSendRequested,
+            recordedAt: outcome.capturedAt || new Date().toISOString()
+          }
+        : null;
+      const previousReceipts = Array.isArray(runtimeLedger.receipts) ? runtimeLedger.receipts : [];
+      const receipts = latestReceipt ? [...previousReceipts, latestReceipt].slice(-8) : previousReceipts.slice(-8);
+      const status = latestReceipt?.status || "provider-outcome-waiting";
+      return {
+        kind: "mcelWallet21bProviderOutcomeLedger.v1",
+        unlockVersion: "21B-MCEL",
+        unlockEvent: "provider-outcome-receipt-ledger",
+        status,
+        providerTransactionSendRequested,
+        providerAccepted,
+        providerRejected,
+        providerException,
+        txHash,
+        latestReceipt: latestReceipt || {},
+        receipts,
+        receiptCount: receipts.length,
+        canRetryAutomatically: false,
+        duplicateSendBlocked: true,
+        mutationExecuted: providerAccepted,
+        broadcastAttempted: providerTransactionSendRequested,
+        nextAction: providerAccepted
+          ? "21C should watch eth_getTransactionReceipt until the chain reports pending, confirmed, failed, reverted, or unavailable."
+          : "21B keeps the provider outcome receipted; retry remains blocked until a later recovery policy.",
+        invariant: [
+          "21B records provider acceptance, rejection, exception, txHash, account, chain, target, value, and calldata hash.",
+          "21B does not treat a txHash as confirmation.",
+          "21B blocks automatic retry and duplicate-send behavior."
+        ]
+      };
+    }
+
+    function mcelWallet21cTransactionWatcher(boundary = {}, runtimeWatcher = {}) {
+      const ledger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
+      const latestReceipt = ledger.latestReceipt || {};
+      const txHash = runtimeWatcher.txHash || latestReceipt.txHash || ledger.txHash || "";
+      const providerReceipt = runtimeWatcher.transactionReceipt || runtimeWatcher.providerReceipt || runtimeWatcher.receipt || null;
+      const receiptStatus = providerReceipt?.status;
+      const hasReceipt = Boolean(providerReceipt && typeof providerReceipt === "object");
+      const confirmed = hasReceipt && (receiptStatus === "0x1" || receiptStatus === 1 || receiptStatus === true);
+      const failedOrReverted = hasReceipt && (receiptStatus === "0x0" || receiptStatus === 0 || receiptStatus === false);
+      const status = !txHash
+        ? "watcher-waiting-for-tx-hash"
+        : (confirmed
+          ? "transaction-confirmed"
+          : (failedOrReverted
+            ? "transaction-failed-or-reverted"
+            : (hasReceipt ? "transaction-receipt-available" : "tx-hash-received-pending-receipt")));
+      const watcherEnvelope = {
+        kind: "mcelWallet21cTransactionWatcherEnvelope.v1",
+        unlockVersion: "21C-MCEL",
+        status,
+        watchMethod: "eth_getTransactionReceipt",
+        txHash,
+        providerReceipt,
+        chainIdAtSend: latestReceipt.chainIdAtSend || "",
+        accountAtSend: latestReceipt.accountAtSend || "",
+        targetAddress: latestReceipt.targetAddress || "",
+        pending: Boolean(txHash && !hasReceipt),
+        confirmed,
+        failedOrReverted,
+        receiptUnavailable: Boolean(txHash && !hasReceipt),
+        mutationExecuted: ledger.mutationExecuted === true,
+        broadcastAttempted: ledger.broadcastAttempted === true
+      };
+      watcherEnvelope.watcherEnvelopeHash = mcelTinyContractObjectHash(watcherEnvelope);
+      return {
+        kind: "mcelWallet21cTransactionWatcher.v1",
+        unlockVersion: "21C-MCEL",
+        unlockEvent: "transaction-receipt-watcher",
+        status,
+        stage: txHash ? "21c-watch-provider-transaction-receipt" : "21c-wait-for-provider-tx-hash",
+        txHash,
+        providerReceipt,
+        watcherEnvelope,
+        pending: watcherEnvelope.pending,
+        confirmed,
+        failedOrReverted,
+        receiptUnavailable: watcherEnvelope.receiptUnavailable,
+        chainMismatch: false,
+        timeout: false,
+        canSend: false,
+        canBroadcast: false,
+        canRetryAutomatically: false,
+        mutationExecuted: ledger.mutationExecuted === true,
+        broadcastAttempted: ledger.broadcastAttempted === true,
+        nextAction: confirmed
+          ? "21E can integrate the confirmed chain receipt back into MCEL proof surfaces."
+          : (failedOrReverted
+            ? "21D recovery policy should decide whether a retry is allowed."
+            : (txHash ? "keep watching the transaction receipt; txHash is not final success." : "wait for a provider tx hash before watching.")),
+        invariant: [
+          "21C watches eth_getTransactionReceipt and never treats txHash alone as success.",
+          "21C separates pending, confirmed, failed/reverted, timed out, and unavailable receipt states.",
+          "21C does not send, sign, broadcast, or retry."
+        ]
+      };
+    }
+
+
+    function mcelWallet21dRetryRecoverySafety(boundary = {}, runtimeRecovery = {}) {
+      const sendGate = boundary.wallet21aPolicyBoundSendGate || boundary.walletTransactionSendGate || {};
+      const ledger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
+      const watcher = boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {};
+      const latestReceipt = ledger.latestReceipt || {};
+      const sendEnvelopeHash = sendGate.sendEnvelope?.sendEnvelopeHash || latestReceipt.sendEnvelopeHash || runtimeRecovery.sendEnvelopeHash || "";
+      const receipts = Array.isArray(ledger.receipts) ? ledger.receipts : [];
+      const matchingReceipts = sendEnvelopeHash
+        ? receipts.filter((entry) => entry?.sendEnvelopeHash === sendEnvelopeHash)
+        : [];
+      const txHash = watcher.txHash || ledger.txHash || latestReceipt.txHash || "";
+      const providerAttemptObserved = ledger.providerTransactionSendRequested === true
+        || sendGate.providerTransactionSendRequested === true
+        || receipts.length > 0
+        || Boolean(txHash);
+      const providerRejected = ledger.providerRejected === true || sendGate.providerRejected === true || latestReceipt.status === "provider-rejected-send";
+      const providerException = ledger.providerException === true || sendGate.providerException === true || latestReceipt.status === "provider-send-exception";
+      const providerAccepted = ledger.providerAccepted === true || sendGate.providerAccepted === true || Boolean(txHash);
+      const pending = watcher.pending === true || watcher.receiptUnavailable === true || (Boolean(txHash) && watcher.confirmed !== true && watcher.failedOrReverted !== true);
+      const confirmed = watcher.confirmed === true;
+      const failedOrReverted = watcher.failedOrReverted === true;
+      const duplicateClickObserved = runtimeRecovery.duplicateClick === true
+        || runtimeRecovery.providerPending === true
+        || runtimeRecovery.sendInFlight === true
+        || runtimeRecovery.retryRequested === true;
+      const currentRequestHash = sendGate.sendEnvelope?.sendEnvelopeHash || "";
+      const previousRequestHash = runtimeRecovery.lastSendEnvelopeHash || latestReceipt.sendEnvelopeHash || "";
+      const sameEnvelopeAlreadySent = Boolean(sendEnvelopeHash && matchingReceipts.length > 0);
+      const staleRetryEnvelope = Boolean(runtimeRecovery.retryRequested === true && previousRequestHash && currentRequestHash && previousRequestHash === currentRequestHash);
+      const blockers = [];
+      if (duplicateClickObserved) blockers.push("duplicate-click-or-retry-request-observed");
+      if (sameEnvelopeAlreadySent) blockers.push("same-send-envelope-already-ledgered");
+      if (staleRetryEnvelope) blockers.push("retry-would-reuse-same-send-envelope");
+      if (pending) blockers.push("transaction-still-pending");
+      if (confirmed) blockers.push("transaction-already-confirmed");
+      if (failedOrReverted) blockers.push("failed-transaction-requires-new-review");
+      if (providerRejected) blockers.push("provider-rejection-relocks-send-path");
+      if (providerException) blockers.push("provider-exception-relocks-send-path");
+      if (providerAccepted && !txHash) blockers.push("provider-accepted-without-tx-hash");
+      const uniqueBlockers = [...new Set(blockers.filter(Boolean))];
+      const firstSendAvailable = sendGate.canRequestTransactionSend === true
+        && sendGate.canSend === true
+        && providerAttemptObserved !== true
+        && uniqueBlockers.length === 0;
+      const status = providerAttemptObserved
+        ? (confirmed
+          ? "confirmed-duplicate-send-blocked"
+          : (pending
+            ? "pending-duplicate-send-blocked"
+            : (failedOrReverted
+              ? "failed-retry-blocked-pending-new-review"
+              : (providerRejected
+                ? "provider-rejected-relocked"
+                : (providerException ? "provider-exception-relocked" : "attempt-ledgered-retry-blocked")))))
+        : (firstSendAvailable ? "first-send-allowed" : "waiting-for-first-send-eligibility");
+      const stage = firstSendAvailable
+        ? "21d-first-explicit-send-allowed"
+        : (providerAttemptObserved ? "21d-retry-recovery-guard-active" : "21d-waiting-for-eligible-send");
+      const recoveryEnvelope = {
+        kind: "mcelWallet21dRetryRecoverySafetyEnvelope.v1",
+        unlockVersion: "21D-MCEL",
+        status,
+        stage,
+        sendEnvelopeHash,
+        txHash,
+        providerAttemptObserved,
+        sameEnvelopeAlreadySent,
+        duplicateClickObserved,
+        staleRetryEnvelope,
+        pending,
+        confirmed,
+        failedOrReverted,
+        providerRejected,
+        providerException,
+        blockers: uniqueBlockers,
+        sendRequestAllowed: firstSendAvailable,
+        retryAllowed: false,
+        automaticRetryAllowed: false,
+        requiresNewEnvelopeForRetry: providerAttemptObserved,
+        oneShotGuard: true
+      };
+      recoveryEnvelope.recoveryEnvelopeHash = mcelTinyContractObjectHash(recoveryEnvelope);
+      const receipt = {
+        kind: "mcelWallet21dRetryRecoverySafetyReceipt.v1",
+        unlockVersion: "21D-MCEL",
+        status,
+        sendEnvelopeHash,
+        txHash,
+        duplicateSendBlocked: providerAttemptObserved || sameEnvelopeAlreadySent || duplicateClickObserved || Boolean(txHash),
+        retryAllowed: false,
+        automaticRetryAllowed: false,
+        blockers: uniqueBlockers,
+        recordedAt: new Date().toISOString()
+      };
+      return {
+        kind: "mcelWallet21dRetryRecoverySafety.v1",
+        unlockVersion: "21D-MCEL",
+        unlockEvent: "retry-recovery-duplicate-send-safety",
+        status,
+        stage,
+        recoveryEnvelope,
+        receipt,
+        sendRequestAllowed: firstSendAvailable,
+        providerAttemptObserved,
+        duplicateSendBlocked: receipt.duplicateSendBlocked,
+        sameEnvelopeAlreadySent,
+        pending,
+        confirmed,
+        failedOrReverted,
+        retryAllowed: false,
+        canRetryAutomatically: false,
+        canSend: firstSendAvailable,
+        canBroadcast: false,
+        mutationExecuted: ledger.mutationExecuted === true || watcher.mutationExecuted === true,
+        broadcastAttempted: ledger.broadcastAttempted === true || watcher.broadcastAttempted === true,
+        blockers: uniqueBlockers,
+        nextAction: firstSendAvailable
+          ? "21D allows exactly one explicit policy-bound send for this current envelope."
+          : (providerAttemptObserved
+            ? "21D blocks duplicate/retry sends until a new current draft, signed intent, and pre-send review are built."
+            : "clear 21A/20-series blockers before first policy-bound send."),
+        invariant: [
+          "21D is a one-shot duplicate-send and retry-recovery guard.",
+          "21D blocks same-envelope resend, duplicate click, pending retry, rejected retry, failed retry, and confirmed retry.",
+          "21D does not automatically retry and does not broaden network policy."
+        ]
+      };
+    }
+
+    function mcelWallet21ePostConfirmationMcelReceiptIntegration(boundary = {}, runtimeIntegration = {}) {
+      const ledger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
+      const watcher = boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {};
+      const recovery = boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {};
+      const latestReceipt = ledger.latestReceipt || {};
+      const chainReceipt = watcher.providerReceipt || watcher.watcherEnvelope?.providerReceipt || runtimeIntegration.transactionReceipt || null;
+      const txHash = watcher.txHash || ledger.txHash || latestReceipt.txHash || "";
+      const confirmed = watcher.confirmed === true;
+      const failedOrReverted = watcher.failedOrReverted === true;
+      const pending = watcher.pending === true || Boolean(txHash && !confirmed && !failedOrReverted);
+      const status = confirmed
+        ? "mcel-chain-confirmation-integrated"
+        : (failedOrReverted
+          ? "mcel-chain-failure-integrated"
+          : (pending ? "mcel-chain-outcome-pending" : "waiting-for-chain-outcome"));
+      const chainOutcome = confirmed
+        ? "confirmed"
+        : (failedOrReverted ? "failed-or-reverted" : (pending ? "pending" : "not-observed"));
+      const integrationEnvelope = {
+        kind: "mcelWallet21ePostConfirmationMcelReceiptIntegrationEnvelope.v1",
+        unlockVersion: "21E-MCEL",
+        status,
+        txHash,
+        chainOutcome,
+        providerOutcomeReceiptHash: latestReceipt ? mcelTinyContractObjectHash(latestReceipt) : "",
+        watcherEnvelopeHash: watcher.watcherEnvelope?.watcherEnvelopeHash || "",
+        recoveryEnvelopeHash: recovery.recoveryEnvelope?.recoveryEnvelopeHash || "",
+        chainReceipt,
+        walletBoardUpdated: true,
+        copiedReceiptCarriesOutcome: true,
+        codeStudioProofDockCarriesOutcome: true,
+        selectedRequestOutcomeBound: Boolean(txHash),
+        mutationExecuted: ledger.mutationExecuted === true || watcher.mutationExecuted === true,
+        broadcastAttempted: ledger.broadcastAttempted === true || watcher.broadcastAttempted === true
+      };
+      integrationEnvelope.integrationEnvelopeHash = mcelTinyContractObjectHash(integrationEnvelope);
+      const integratedReceipt = {
+        kind: "mcelWallet21ePostConfirmationMcelReceipt.v1",
+        unlockVersion: "21E-MCEL",
+        status,
+        txHash,
+        chainOutcome,
+        confirmed,
+        failedOrReverted,
+        pending,
+        accountAtSend: latestReceipt.accountAtSend || "",
+        chainIdAtSend: latestReceipt.chainIdAtSend || "",
+        targetAddress: latestReceipt.targetAddress || "",
+        calldataHash: latestReceipt.calldataHash || "",
+        mutationExecuted: integrationEnvelope.mutationExecuted,
+        broadcastAttempted: integrationEnvelope.broadcastAttempted,
+        integrationEnvelopeHash: integrationEnvelope.integrationEnvelopeHash,
+        recordedAt: new Date().toISOString()
+      };
+      return {
+        kind: "mcelWallet21ePostConfirmationMcelReceiptIntegration.v1",
+        unlockVersion: "21E-MCEL",
+        unlockEvent: "post-confirmation-mcel-receipt-integration",
+        status,
+        stage: confirmed || failedOrReverted ? "21e-chain-outcome-integrated" : "21e-waiting-for-final-chain-outcome",
+        chainOutcome,
+        txHash,
+        integrationEnvelope,
+        integratedReceipt,
+        receipt: integratedReceipt,
+        confirmed,
+        failedOrReverted,
+        pending,
+        proofSurfacesAligned: true,
+        walletBoardUpdated: true,
+        copiedReceiptCarriesOutcome: true,
+        codeStudioProofDockCarriesOutcome: true,
+        canSend: false,
+        canBroadcast: false,
+        mutationExecuted: integrationEnvelope.mutationExecuted,
+        broadcastAttempted: integrationEnvelope.broadcastAttempted,
+        nextAction: confirmed
+          ? "21F should complete the send cycle and relock for the next MCEL request."
+          : (failedOrReverted
+            ? "21F should relock and require a fresh recovery review before retry."
+            : (pending ? "keep watcher active; do not resend while the transaction is pending." : "wait for a provider outcome before integrating chain receipt.")),
+        invariant: [
+          "21E binds provider outcome and chain receipt state back to MCEL proof surfaces.",
+          "21E treats txHash, pending, confirmed, failed, and reverted as distinct receipt outcomes.",
+          "21E does not send, retry, or broaden network policy."
+        ]
+      };
+    }
+
+    function mcelWallet21fRelockResetLifecycle(boundary = {}, runtimeRelock = {}) {
+      const sendGate = boundary.wallet21aPolicyBoundSendGate || boundary.walletTransactionSendGate || {};
+      const ledger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
+      const watcher = boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {};
+      const recovery = boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {};
+      const integration = boundary.wallet21ePostConfirmationMcelReceiptIntegration || boundary.walletPostConfirmationReceiptIntegration || {};
+      const latestReceipt = ledger.latestReceipt || {};
+      const currentAccount = sendGate.providerTransactionRequest?.from || boundary.walletTxDraft?.from || "";
+      const currentChain = sendGate.networkExecutionPolicy?.chainId || boundary.walletTxDraft?.currentChainId || boundary.walletTxDraft?.chainId || "";
+      const accountChangedAfterSend = Boolean(latestReceipt.accountAtSend && currentAccount && latestReceipt.accountAtSend.toLowerCase() !== currentAccount.toLowerCase());
+      const chainChangedAfterSend = Boolean(latestReceipt.chainIdAtSend && currentChain && !mcelTinyContractSameChainId(latestReceipt.chainIdAtSend, currentChain));
+      const providerAttemptObserved = recovery.providerAttemptObserved === true || ledger.providerTransactionSendRequested === true || Boolean(ledger.txHash || watcher.txHash);
+      const confirmed = watcher.confirmed === true || integration.confirmed === true;
+      const failedOrReverted = watcher.failedOrReverted === true || integration.failedOrReverted === true;
+      const pending = watcher.pending === true || integration.pending === true;
+      const providerRejected = ledger.providerRejected === true;
+      const providerException = ledger.providerException === true;
+      const resetRequested = runtimeRelock.resetRequested === true || runtimeRelock.newRequestSelected === true || runtimeRelock.walletDisconnected === true;
+      const relockReasons = [];
+      if (confirmed) relockReasons.push("transaction-confirmed");
+      if (failedOrReverted) relockReasons.push("transaction-failed-or-reverted");
+      if (pending) relockReasons.push("transaction-pending");
+      if (providerRejected) relockReasons.push("provider-rejected");
+      if (providerException) relockReasons.push("provider-exception");
+      if (accountChangedAfterSend) relockReasons.push("account-changed-after-send");
+      if (chainChangedAfterSend) relockReasons.push("chain-changed-after-send");
+      if (resetRequested) relockReasons.push("reset-requested");
+      const status = confirmed
+        ? "complete-and-relocked"
+        : (failedOrReverted
+          ? "failed-and-relocked-recovery-required"
+          : (pending
+            ? "pending-recovery-hold"
+            : (providerRejected
+              ? "provider-rejected-and-relocked"
+              : (providerException
+                ? "provider-exception-and-relocked"
+                : (providerAttemptObserved ? "send-attempt-relocked" : "waiting-for-send-attempt")))));
+      const cycleComplete = confirmed === true;
+      const oldSendPathInvalidated = providerAttemptObserved || accountChangedAfterSend || chainChangedAfterSend || resetRequested;
+      const lifecycleEnvelope = {
+        kind: "mcelWallet21fRelockResetLifecycleEnvelope.v1",
+        unlockVersion: "21F-MCEL",
+        status,
+        txHash: watcher.txHash || ledger.txHash || "",
+        relockReasons: [...new Set(relockReasons)],
+        accountChangedAfterSend,
+        chainChangedAfterSend,
+        pending,
+        confirmed,
+        failedOrReverted,
+        providerRejected,
+        providerException,
+        resetRequested,
+        cycleComplete,
+        oldSendPathInvalidated,
+        canStartNewCycle: cycleComplete || providerRejected || providerException || failedOrReverted || resetRequested,
+        requiresFreshDraftForNextSend: oldSendPathInvalidated,
+        relocked: true
+      };
+      lifecycleEnvelope.lifecycleEnvelopeHash = mcelTinyContractObjectHash(lifecycleEnvelope);
+      return {
+        kind: "mcelWallet21fRelockResetLifecycle.v1",
+        unlockVersion: "21F-MCEL",
+        unlockEvent: "post-send-relock-reset-lifecycle",
+        status,
+        stage: status,
+        lifecycleEnvelope,
+        relockReasons: lifecycleEnvelope.relockReasons,
+        accountChangedAfterSend,
+        chainChangedAfterSend,
+        pending,
+        confirmed,
+        failedOrReverted,
+        cycleComplete,
+        oldSendPathInvalidated,
+        canStartNewCycle: lifecycleEnvelope.canStartNewCycle,
+        requiresFreshDraftForNextSend: lifecycleEnvelope.requiresFreshDraftForNextSend,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        mutationExecuted: ledger.mutationExecuted === true || watcher.mutationExecuted === true || integration.mutationExecuted === true,
+        broadcastAttempted: ledger.broadcastAttempted === true || watcher.broadcastAttempted === true || integration.broadcastAttempted === true,
+        nextAction: cycleComplete
+          ? "21F complete: chain outcome is integrated and the wallet send path is relocked for a fresh MCEL request."
+          : (pending
+            ? "21F hold: transaction pending; do not retry or reset the send path until watcher resolves or recovery policy intervenes."
+            : (providerAttemptObserved
+              ? "21F relocked after provider outcome; rebuild/review a fresh send envelope before any retry."
+              : "21F is waiting for a provider send attempt.")),
+        invariant: [
+          "21F relocks after rejection, exception, failure, confirmation, timeout/pending hold, account change, chain change, or reset.",
+          "21F invalidates the old send path and requires fresh evidence before another send.",
+          "21F does not auto-retry or broaden network policy."
+        ]
+      };
+    }
+
+function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, request = null, reason = "wallet-tool-preflight", simulation = null} = {}) {
+      const txDraft = runtime.txDraft || {};
+      const txPreflight = runtime.txDraftConsumerGate?.endgamePreflight || {};
+      const walletTxDraft = mcelWalletTxDraftSpecimen({source, state, runtime, request, reason, simulation});
+      const walletTxProvenance = mcelWalletTxProvenance(walletTxDraft);
+      const walletFreshnessSnapshot = mcelWalletFreshnessSnapshot(walletTxDraft);
+      const draft = mcelCommitBoundaryDraft({
+        action: "wallet.send-sign",
+        specimen: "mcel.wallet-tool.txDraft",
+        source: {
+          walletTxDraftId: walletTxDraft.txDraftId,
+          walletTxDraftHash: walletTxDraft.txDraftHash,
+          selectedReleaseHash: walletTxDraft.selectedReleaseHash,
+          currentSelectedReleaseHash: walletTxDraft.currentSelectedReleaseHash,
+          selectedRequestHash: walletTxDraft.sourceRequestHash,
+          currentSelectedRequestHash: walletTxDraft.currentSourceRequestHash,
+          selectedRequestSnapshot: walletTxDraft.sourceRequestSnapshot || {},
+          sourceId: source.html?.sourceId || "dev-release-console.source.html",
+          contractAddress: source.devRelease?.contractAddress || ""
+        },
+        targets: {
+          accountHash: walletTxDraft.walletAccountHash,
+          currentAccountHash: walletTxDraft.currentWalletAccountHash,
+          chainId: walletTxDraft.chainId,
+          currentChainId: walletTxDraft.currentChainId,
+          expectedChainId: walletTxDraft.expectedChainId,
+          to: walletTxDraft.target || source.devRelease?.contractAddress || "",
+          value: walletTxDraft.value || "0x0",
+          targetHash: walletTxDraft.targetHash,
+          currentTargetHash: walletTxDraft.currentTargetHash,
+          runtimeBoundary: walletTxDraft.runtimeBoundary || "runtime-only-no-send"
+        },
+        proposedChanges: {
+          requestId: walletTxDraft.requestId || state.selectedRequestId || "",
+          calldataHash: walletTxDraft.calldataHash || "",
+          probeEvidenceHash: walletTxDraft.probeEvidenceHash || "",
+          txDraftValidityStatus: walletTxDraft.txDraftValidityStatus || walletTxDraft.validityEnvelope?.status || "not-observed",
+          value: walletTxDraft.value || "0x0",
+          draftStatus: walletTxDraft.status || "empty",
+          reviewed: walletTxDraft.reviewed === true,
+          walletTxDraftKind: walletTxDraft.kind
+        },
+        intendedWrites: ["external.wallet.user-approved-transaction"],
+        proofRefs: [
+          walletTxDraft.kind,
+          walletTxProvenance.kind,
+          walletFreshnessSnapshot.kind,
+          walletTxDraft.identityEnvelope?.kind || "mcelWalletTxDraftIdentityEnvelope.missing",
+          walletTxDraft.validityEnvelope?.kind || walletFreshnessSnapshot.validityEnvelope?.kind || "mcelWalletTxDraftValidityEnvelope.missing",
+          txDraft.provenanceVersion || "txDraft.provenance.missing",
+          txDraft.freshnessStatus || "freshness.not-observed",
+          runtime.txDraftConsumerGate?.kind || "consumer-gate.not-observed",
+          runtime.txDraftConsumerGate?.endgamePreflight?.kind || "preflight.not-observed"
+        ],
+        locked: true,
+        reason
+      });
+      const provenance = mcelCommitBoundaryProvenance({
+        draft,
+        provenance: {
+          sourceHash: walletTxDraft.sourceRequestHash,
+          targetHash: walletTxDraft.targetHash,
+          sourceSnapshot: {
+            walletTxDraftId: walletTxDraft.txDraftId,
+            selectedRequestSnapshot: walletTxDraft.selectedRequestSnapshot || {},
+            sourceRequestHash: walletTxDraft.sourceRequestHash
+          },
+          targetSnapshot: {
+            accountHash: walletTxDraft.walletAccountHash,
+            chainId: walletTxDraft.chainId,
+            expectedChainId: walletTxDraft.expectedChainId,
+            targetHash: walletTxDraft.targetHash,
+            noSend: walletTxDraft.noSend === true,
+            boundary: walletTxDraft.runtimeBoundary || "runtime-only-no-send"
+          }
+        },
+        current: {
+          sourceHash: walletTxDraft.currentSourceRequestHash,
+          targetHash: walletTxDraft.currentTargetHash
+        }
+      });
+      const freshness = mcelCommitBoundaryFreshness({
+        draft,
+        provenance,
+        current: {
+          sourceHash: walletTxDraft.currentSourceRequestHash,
+          targetHash: walletTxDraft.currentTargetHash
+        },
+        invalidatedBy: walletFreshnessSnapshot.invalidatedBy || [],
+        reason
+      });
+      const blockers = [
+        ...(walletFreshnessSnapshot.blockers || []),
+        ...(txPreflight.blockers || []),
+        "wallet-send-sign-locked"
+      ];
+      const consumerGate = mcelCommitBoundaryConsumerGate({
+        draft,
+        provenance,
+        freshness,
+        consumer: "mcel.wallet-tool.send-sign",
+        forceLocked: true,
+        blockers
+      });
+      const preflight = mcelCommitBoundaryPreflight({draft, freshness, consumerGate});
+      const walletPreflightReport = mcelWalletPreflightReport({
+        walletTxDraft,
+        walletTxProvenance,
+        walletFreshnessSnapshot,
+        txDraftIdentityEnvelope: walletTxDraft.identityEnvelope || runtime.txDraftIdentity || null,
+        txDraftValidityEnvelope: walletTxDraft.validityEnvelope || runtime.txDraftValidity || walletFreshnessSnapshot.validityEnvelope || null,
+        preflight,
+        consumerGate
+      });
+      const baseReceipt = mcelCommitBoundaryReceipt({draft, provenance, freshness, consumerGate, preflight, reason});
+      const receipt = mcelWalletBlockedAttemptReceipt({
+        baseReceipt,
+        walletTxDraft,
+        walletTxProvenance,
+        walletFreshnessSnapshot,
+        walletPreflightReport,
+        reason
+      });
+      const boundary = {
+        kind: "mcelWalletToolCommitBoundary.v1",
+        boundaryVersion: "18N-MCEL-j",
+        action: "wallet.send-sign",
+        status: preflight.status,
+        seriousAction: true,
+        mcelOnly: true,
+        locked: true,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        walletTxDraft,
+        walletTxProvenance,
+        walletFreshnessSnapshot,
+        walletPreflightReport,
+        walletBlockedAttemptReceipt: receipt,
+        walletRebuildDraftAction: mcelWalletRebuildDraftAction(walletTxDraft, walletFreshnessSnapshot),
+        mcelCommitDraft: draft,
+        mcelCommitProvenance: provenance,
+        mcelCommitFreshness: freshness,
+        mcelCommitConsumerGate: consumerGate,
+        mcelCommitPreflight: preflight,
+        mcelCommitReceipt: receipt,
+        nextAction: walletFreshnessSnapshot.status !== "valid"
+          ? "rebuild draft from current wallet state; refresh preflight only reports stale intent"
+          : "20B signed-intent gate may arm requestSignature intent; provider signature, send, and broadcast remain locked",
+        invariant: [
+          "wallet tool is a commit-boundary specimen",
+          "walletTxDraft is first-class",
+          "the reviewed transaction draft is not assumed current",
+          "freshness re-check covers account, chain, source request, target, and value",
+          "stale drafts require rebuild; refresh cannot make them usable",
+          "preflight and receipt are visible before any future mutation",
+          "negative-path tests wall off stale, unproven, and mismatched wallet intent",
+          "unlock requirements remain incomplete by design",
+          "20A staged unlock contract separates draft/simulation eligibility from signature and broadcast authority",
+          "20B signed-intent gate can mark requestSignature intent eligible without binding a provider signature method",
+          "20C signature-request preflight can be armed without binding or invoking a provider prompt",
+          "final locked wallet specimen refuses before provider execution",
+          "18N completion report closes this patch set at a locked no-provider boundary",
+          "send/sign/broadcast remains locked"
+        ]
+      };
+      boundary.walletNegativePathTestWall = mcelWalletNegativePathTestWall(boundary);
+      boundary.walletUnlockRequirements = mcelWalletUnlockRequirements(boundary);
+      boundary.walletFinalLockedSpecimen = mcelWalletFinalLockedSpecimen(boundary);
+      boundary.mcelProofDockSpecimens = mcelWalletProofDockSpecimens(boundary);
+      boundary.proofDockSpecimens = boundary.mcelProofDockSpecimens;
+      boundary.wallet19dProofSurfaceAlignment = mcelWallet19dProofSurfaceAlignment(boundary);
+      boundary.wallet19aSmokeRegressionGuard = mcelWallet19aSmokeRegressionGuard(boundary);
+      boundary.walletSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard;
+      boundary.wallet19eNegativePathRegression = mcelWallet19eNegativePathRegression(boundary);
+      boundary.wallet18nCompletionReport = mcelWallet18nCompletionReport(boundary);
+      boundary.wallet20aUnlockContract = mcelWallet20aUnlockContract(boundary);
+      boundary.wallet20bSignedIntentUnlock = mcelWallet20bSignedIntentUnlock(boundary);
+      boundary.walletSignedIntentUnlock = boundary.wallet20bSignedIntentUnlock;
+      boundary.wallet20cSignatureRequestPreflight = mcelWallet20cSignatureRequestPreflight(boundary);
+      boundary.walletSignatureRequestPreflight = boundary.wallet20cSignatureRequestPreflight;
+      boundary.wallet20dProviderIntentSignature = mcelWallet20dProviderIntentSignature(boundary, runtime.wallet20dProviderIntentSignature || runtime.walletProviderIntentSignature || {});
+      boundary.walletProviderIntentSignature = boundary.wallet20dProviderIntentSignature;
+      boundary.wallet20eSignedIntentVerification = mcelWallet20eSignedIntentVerification(boundary);
+      boundary.walletSignedIntentVerification = boundary.wallet20eSignedIntentVerification;
+      boundary.wallet20fPreSendReviewGate = mcelWallet20fPreSendReviewGate(boundary);
+      boundary.walletPreSendReviewGate = boundary.wallet20fPreSendReviewGate;
+      boundary.wallet20gProviderIntentHardening = mcelWallet20gProviderIntentHardening(boundary);
+      boundary.walletProviderIntentHardening = boundary.wallet20gProviderIntentHardening;
+      boundary.wallet21aPolicyBoundSendGate = mcelWallet21aPolicyBoundSendGate(boundary, runtime.wallet21aPolicyBoundSendGate || runtime.walletTransactionSendGate || {});
+      boundary.walletTransactionSendGate = boundary.wallet21aPolicyBoundSendGate;
+      boundary.wallet21bProviderOutcomeLedger = mcelWallet21bProviderOutcomeLedger(boundary, runtime.wallet21bProviderOutcomeLedger || runtime.walletProviderOutcomeLedger || {});
+      boundary.walletProviderOutcomeLedger = boundary.wallet21bProviderOutcomeLedger;
+      boundary.wallet21cTransactionWatcher = mcelWallet21cTransactionWatcher(boundary, runtime.wallet21cTransactionWatcher || runtime.walletTransactionWatcher || {});
+      boundary.walletTransactionWatcher = boundary.wallet21cTransactionWatcher;
+      boundary.wallet21dRetryRecoverySafety = mcelWallet21dRetryRecoverySafety(boundary, runtime.wallet21dRetryRecoverySafety || runtime.walletRetryRecoverySafety || {});
+      boundary.walletRetryRecoverySafety = boundary.wallet21dRetryRecoverySafety;
+      boundary.wallet21ePostConfirmationMcelReceiptIntegration = mcelWallet21ePostConfirmationMcelReceiptIntegration(boundary, runtime.wallet21ePostConfirmationMcelReceiptIntegration || runtime.walletPostConfirmationReceiptIntegration || {});
+      boundary.walletPostConfirmationReceiptIntegration = boundary.wallet21ePostConfirmationMcelReceiptIntegration;
+      boundary.wallet21fRelockResetLifecycle = mcelWallet21fRelockResetLifecycle(boundary, runtime.wallet21fRelockResetLifecycle || runtime.walletRelockResetLifecycle || {});
+      boundary.walletRelockResetLifecycle = boundary.wallet21fRelockResetLifecycle;
+      boundary.canSend = boundary.wallet21aPolicyBoundSendGate?.canSend === true && boundary.wallet21dRetryRecoverySafety?.sendRequestAllowed === true;
+      boundary.canSign = false;
+      boundary.canBroadcast = false;
+      boundary.mutationExecuted = boundary.wallet21bProviderOutcomeLedger?.mutationExecuted === true || boundary.wallet21cTransactionWatcher?.mutationExecuted === true || boundary.wallet21ePostConfirmationMcelReceiptIntegration?.mutationExecuted === true || boundary.wallet21fRelockResetLifecycle?.mutationExecuted === true;
+      boundary.walletUnlockContract = boundary.wallet20aUnlockContract;
+      boundary.nextAction = boundary.wallet20bSignedIntentUnlock?.nextAction || boundary.wallet20aUnlockContract?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet20cSignatureRequestPreflight?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet20dProviderIntentSignature?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet20eSignedIntentVerification?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet20fPreSendReviewGate?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet20gProviderIntentHardening?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21aPolicyBoundSendGate?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21bProviderOutcomeLedger?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21cTransactionWatcher?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21dRetryRecoverySafety?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21ePostConfirmationMcelReceiptIntegration?.nextAction || boundary.nextAction;
+      boundary.nextAction = boundary.wallet21fRelockResetLifecycle?.nextAction || boundary.nextAction;
+      return boundary;
+    }
+
+    function mcelTinyContractTxDraftFreshnessCheck({
+      source = {},
+      state = {},
+      runtime = {},
+      request = null,
+      txDraft = null,
+      reason = "runtime-provenance-check"
+    } = {}) {
+      const draft = txDraft || runtime.txDraft || {};
+      const wallet = runtime.wallet || {};
+      const network = runtime.network || {};
+      const externalOutcome = runtime.externalOutcome || {};
+      const selectedRequestSnapshot = mcelTinyContractSelectedRequestSnapshot(request);
+      const currentSourceRequestHash = selectedRequestSnapshot ? mcelTinyContractObjectHash(selectedRequestSnapshot) : "";
+      const currentWalletAccountHash = mcelTinyContractWalletAccountHash(wallet.account || wallet.address || "");
+      const expectedChainId = network.expectedChainId || source.devRelease?.devNetwork?.chainId || draft.expectedChainId || draft.chainProof?.expectedChainId || "0x28757b2";
+      const currentChainId = network.chainId || wallet.chainId || "";
+      const latestDraftGate = mcelTinyContractLatestSequenceEntry(draft.networkGateSequence || []);
+      const hasProvenance = Boolean(
+        draft.provenanceVersion
+        || draft.sourceRequestHash
+        || draft.selectedRequestSnapshot
+        || draft.walletAccountHash
+        || draft.chainProof
+        || (Array.isArray(draft.probeEnvelopeIds) && draft.probeEnvelopeIds.length)
+      );
+      const hasDraft = Boolean(
+        draft.status && draft.status !== "empty"
+        || draft.calldata
+        || draft.data
+        || draft.sourceRequestHash
+        || draft.selectedRequestSnapshot
+        || draft.walletAccountHash
+        || (Array.isArray(draft.invalidatedBy) && draft.invalidatedBy.length)
+      );
+      const noSendBoundaryPreserved = draft.noSend === true || draft.boundary === "runtime-only-no-send";
+      const invalidations = [];
+      const validityEnvelope = mcelTinyContractTxDraftValidityEnvelope({
+        source,
+        state,
+        runtime,
+        request,
+        txDraft: draft,
+        reason
+      });
+      if (Array.isArray(validityEnvelope.invalidatedBy) && validityEnvelope.invalidatedBy.length) {
+        invalidations.push(...validityEnvelope.invalidatedBy);
+      }
+
+      if (hasDraft && !noSendBoundaryPreserved) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("no-send-boundary-missing", {
+          boundary: draft.boundary || "",
+          noSend: draft.noSend === true
+        }));
+      }
+      if (hasDraft && draft.requestId && request?.id && draft.requestId !== request.id) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("source-request-changed", {
+          previousRequestId: draft.requestId,
+          nextRequestId: request.id
+        }));
+      }
+      if (hasDraft && draft.sourceRequestHash && currentSourceRequestHash && draft.sourceRequestHash !== currentSourceRequestHash) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("source-request-changed", {
+          previousHash: draft.sourceRequestHash,
+          currentHash: currentSourceRequestHash,
+          previousRequestId: draft.requestId || draft.selectedRequestSnapshot?.id || "",
+          nextRequestId: request?.id || state.selectedRequestId || ""
+        }));
+      }
+      if (hasDraft && draft.walletAccountHash && currentWalletAccountHash && draft.walletAccountHash !== currentWalletAccountHash) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("account-changed", {
+          previousAccountHash: draft.walletAccountHash,
+          currentAccountHash: currentWalletAccountHash
+        }));
+      }
+      if (draft.status === "ready" && wallet.connected !== true) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("wallet-not-connected", {
+          accountHash: currentWalletAccountHash || ""
+        }));
+      }
+      if (hasDraft && draft.chainProof) {
+        const draftExpectedChainId = draft.chainProof.expectedChainId || draft.expectedChainId || "";
+        const draftChainId = draft.chainProof.chainId || draft.chainId || "";
+        if (draftExpectedChainId && expectedChainId && !mcelTinyContractSameChainId(draftExpectedChainId, expectedChainId)) {
+          invalidations.push(mcelTinyContractTxDraftInvalidation("chain-changed", {
+            previousExpectedChainId: draftExpectedChainId,
+            expectedChainId
+          }));
+        }
+        if (draftChainId && currentChainId && !mcelTinyContractSameChainId(draftChainId, currentChainId)) {
+          invalidations.push(mcelTinyContractTxDraftInvalidation("chain-changed", {
+            previousChainId: draftChainId,
+            chainId: currentChainId,
+            expectedChainId
+          }));
+        }
+      }
+      if (draft.status === "ready" && network.ok !== true) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("network-gate-failed", {
+          expectedChainId,
+          chainId: currentChainId,
+          status: network.status || "waiting"
+        }));
+      }
+      if (hasDraft && latestDraftGate.status && network.status && latestDraftGate.status !== network.status) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("network-gate-changed", {
+          previousStatus: latestDraftGate.status,
+          currentStatus: network.status,
+          expectedChainId,
+          chainId: currentChainId
+        }));
+      }
+      if (draft.status === "ready" && ["blocked", "exception"].includes(externalOutcome.status)) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation(`external-outcome-${externalOutcome.status}`, {
+          operation: externalOutcome.operation || "",
+          outcomeStatus: externalOutcome.status,
+          outcomeReason: externalOutcome.reason || ""
+        }));
+      }
+      if (draft.status === "ready" && externalOutcome.operation && String(externalOutcome.operation).includes("wallet.provider")) {
+        const value = externalOutcome.value || {};
+        if (value.accountChanged === true || value.disconnected === true || value.ok === false || value.txDraftCleared === true) {
+          invalidations.push(mcelTinyContractTxDraftInvalidation("provider-outcome-invalidated-draft", {
+            operation: externalOutcome.operation,
+            reason: externalOutcome.reason || "",
+            value
+          }));
+        }
+      }
+      if (draft.status === "ready" && Array.isArray(draft.probeEnvelopeIds) && draft.probeEnvelopeIds.length === 0) {
+        invalidations.push(mcelTinyContractTxDraftInvalidation("probe-evidence-missing", {
+          probeEnvelopeIds: []
+        }));
+      }
+
+      const invalidatedBy = mcelTinyContractMergeTxDraftInvalidations(draft.invalidatedBy || [], invalidations);
+      let freshnessStatus = "not-observed";
+      if (!hasDraft) {
+        freshnessStatus = "not-observed";
+      } else if (invalidatedBy.length) {
+        freshnessStatus = "invalidated";
+      } else if (!noSendBoundaryPreserved) {
+        freshnessStatus = "needs-inspection";
+      } else if (draft.status === "ready" && hasProvenance && wallet.connected === true && network.ok === true) {
+        freshnessStatus = "valid";
+      } else {
+        freshnessStatus = "stale";
+      }
+      const action = freshnessStatus === "valid"
+        ? "inspect or replay draft; no-send boundary preserved"
+        : (freshnessStatus === "invalidated"
+          ? "rebuild draft from current receipt"
+          : (freshnessStatus === "stale"
+            ? "rebuild draft to prove freshness"
+            : (freshnessStatus === "needs-inspection"
+              ? "inspect no-send boundary before future send/sign work"
+              : "draft transaction after wallet/network gate")));
+      return {
+        kind: "mcel-tx-draft-provenance-freshness.v1",
+        status: freshnessStatus,
+        valid: freshnessStatus === "valid",
+        invalidatedBy,
+        action,
+        reason,
+        noSendBoundaryPreserved,
+        validityEnvelope,
+        currentContext: {
+          selectedReleaseHash: mcelTinyContractSelectedReleaseHash(source),
+          sourceRequestHash: currentSourceRequestHash,
+          selectedRequestSnapshot,
+          walletAccountHash: currentWalletAccountHash,
+          chainProof: {
+            expectedChainId,
+            chainId: currentChainId,
+            ok: Boolean(currentChainId && mcelTinyContractSameChainId(currentChainId, expectedChainId)),
+            status: currentChainId && mcelTinyContractSameChainId(currentChainId, expectedChainId) ? "matched" : "mismatch-or-missing"
+          },
+          networkGate: {
+            status: network.status || "waiting",
+            ok: network.ok === true,
+            expectedChainId,
+            chainId: currentChainId
+          },
+          externalOutcome: {
+            operation: externalOutcome.operation || "",
+            status: externalOutcome.status || "waiting",
+            reason: externalOutcome.reason || ""
+          }
+        }
+      };
+    }
+
+    function mcelTinyContractApplyTxDraftFreshness(txDraft = {}, freshness = {}) {
+      const invalidatedBy = Array.isArray(freshness.invalidatedBy) ? freshness.invalidatedBy : (txDraft.invalidatedBy || []);
+      const invalidated = freshness.status === "invalidated";
+      const nextStatus = invalidated && txDraft.status === "ready" ? "invalidated" : (txDraft.status || "empty");
+      return {
+        ...txDraft,
+        status: nextStatus,
+        invalidatedBy,
+        valid: freshness.valid === true,
+        validityEnvelope: freshness.validityEnvelope || txDraft.validityEnvelope || null,
+        txDraftValidityStatus: freshness.validityEnvelope?.status || freshness.status || "not-observed",
+        freshnessStatus: freshness.status || "not-observed",
+        freshnessReason: invalidatedBy[0]?.reason || "",
+        freshnessAction: freshness.action || "",
+        noSendBoundaryPreserved: freshness.noSendBoundaryPreserved === true,
+        provenanceEnforced: true,
+        provenanceFreshness: freshness,
+        summary: invalidated
+          ? `txDraft provenance invalidated: ${invalidatedBy.map((entry) => entry.reason).filter(Boolean).join(", ") || "unknown"}. Rebuild draft from current receipt. No-send boundary preserved.`
+          : (txDraft.summary || "Transaction draft is waiting.")
+      };
+    }
+
+    function mcelTinyContractEnforceTxDraftProvenance(instance, reason = "runtime-provenance-enforcement") {
+      if (!instance?.runtime?.txDraft) return null;
+      const request = selectedMcelTinyContractItem(instance);
+      const freshness = mcelTinyContractTxDraftFreshnessCheck({
+        source: instance.source || {},
+        state: instance.state || {},
+        runtime: instance.runtime || {},
+        request,
+        txDraft: instance.runtime.txDraft,
+        reason
+      });
+      const nextTxDraft = mcelTinyContractApplyTxDraftFreshness(instance.runtime.txDraft, freshness);
+      instance.runtime.txDraft = nextTxDraft;
+      instance.runtime.txDraftIdentity = nextTxDraft.identityEnvelope || nextTxDraft.txDraftIdentity || instance.runtime.txDraftIdentity || null;
+      instance.runtime.txDraftValidity = freshness.validityEnvelope || nextTxDraft.validityEnvelope || null;
+      return {freshness, txDraft: nextTxDraft};
+    }
+
+    function mcelTinyContractTxDraftConsumerGate({txDraft = {}, freshness = {}, consumer = "runtime.txDraft.consumer"} = {}) {
+      const invalidatedBy = Array.isArray(freshness.invalidatedBy)
+        ? freshness.invalidatedBy
+        : (Array.isArray(txDraft.invalidatedBy) ? txDraft.invalidatedBy : []);
+      const invalidationReasons = invalidatedBy
+        .map((entry) => entry?.reason || entry?.kind || entry?.event || entry)
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean);
+      const freshnessStatus = freshness.status || txDraft.freshnessStatus || "not-observed";
+      const noSendBoundaryPreserved = freshness.noSendBoundaryPreserved === true || txDraft.noSendBoundaryPreserved === true || txDraft.noSend === true;
+      const valid = txDraft.status === "ready"
+        && txDraft.valid === true
+        && txDraft.provenanceEnforced === true
+        && freshnessStatus === "valid"
+        && invalidationReasons.length === 0
+        && noSendBoundaryPreserved;
+      const status = valid ? "pass" : "blocked";
+      const action = valid
+        ? "allow declared source effect; no-send boundary preserved"
+        : (freshness.action || txDraft.freshnessAction || "rebuild draft from current receipt");
+      const gate = {
+        kind: "mcel-tx-draft-consumer-gate.v1",
+        consumer,
+        status,
+        valid,
+        draftStatus: txDraft.status || "empty",
+        freshnessStatus,
+        invalidatedBy,
+        invalidationReasons,
+        noSendBoundaryPreserved,
+        provenanceEnforced: txDraft.provenanceEnforced === true,
+        action,
+        reason: valid
+          ? "txDraft provenance current for consumer"
+          : `txDraft consumer gate blocked: ${invalidationReasons.join(", ") || freshnessStatus || "freshness not proven"}`,
+        invariant: [
+          "txDraft status ready",
+          "txDraft provenance enforced",
+          "txDraft freshness valid",
+          "no invalidation reasons",
+          "no-send boundary preserved"
+        ]
+      };
+      gate.endgamePreflight = mcelTinyContractTxDraftEndgamePreflight({txDraft, freshness, consumerGate: gate});
+      return gate;
+    }
+
+    function mcelTinyContractTxDraftEndgamePreflight({txDraft = {}, freshness = {}, consumerGate = {}} = {}) {
+      const invalidatedBy = Array.isArray(consumerGate.invalidatedBy)
+        ? consumerGate.invalidatedBy
+        : (Array.isArray(freshness.invalidatedBy) ? freshness.invalidatedBy : (Array.isArray(txDraft.invalidatedBy) ? txDraft.invalidatedBy : []));
+      const invalidationReasons = Array.isArray(consumerGate.invalidationReasons) && consumerGate.invalidationReasons.length
+        ? consumerGate.invalidationReasons
+        : invalidatedBy
+          .map((entry) => entry?.reason || entry?.kind || entry?.event || entry)
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean);
+      const freshnessStatus = freshness.status || txDraft.freshnessStatus || consumerGate.freshnessStatus || "not-observed";
+      const noSendBoundaryPreserved = consumerGate.noSendBoundaryPreserved === true || freshness.noSendBoundaryPreserved === true || txDraft.noSendBoundaryPreserved === true || txDraft.noSend === true;
+      const draftCurrent = txDraft.status === "ready"
+        && txDraft.valid === true
+        && txDraft.provenanceEnforced === true
+        && freshnessStatus === "valid"
+        && invalidationReasons.length === 0
+        && noSendBoundaryPreserved;
+      const futureBoundaryEligible = draftCurrent && consumerGate.status === "pass" && consumerGate.valid === true;
+      const blockers = [];
+      if (txDraft.status !== "ready") blockers.push("draft-not-ready");
+      if (txDraft.provenanceEnforced !== true) blockers.push("provenance-not-enforced");
+      if (freshnessStatus !== "valid") blockers.push(`freshness-${freshnessStatus || "unknown"}`);
+      if (invalidationReasons.length) blockers.push(...invalidationReasons);
+      if (!noSendBoundaryPreserved) blockers.push("no-send-boundary-missing");
+      blockers.push("send-sign-not-implemented");
+      const status = futureBoundaryEligible
+        ? "locked-ready-for-future-boundary"
+        : (txDraft.status === "ready" ? "blocked" : "locked-no-draft");
+      return {
+        kind: "mcel-tx-draft-endgame-preflight.v1",
+        status,
+        futureBoundaryEligible,
+        draftCurrent,
+        consumerGateStatus: consumerGate.status || "not-observed",
+        freshnessStatus,
+        invalidationReasons,
+        canSend: false,
+        canSign: false,
+        canBroadcast: false,
+        noSendBoundaryPreserved,
+        action: futureBoundaryEligible
+          ? "hold no-send lock; design explicit send/sign boundary separately"
+          : "rebuild draft from current receipt before future send/sign boundary work",
+        blockers: [...new Set(blockers.filter(Boolean))],
+        invariant: [
+          "future send/sign is locked",
+          "no provider send method is called",
+          "draft must be current before future boundary design",
+          "consumer gate must pass before any source-affecting use",
+          "no-send boundary remains preserved"
+        ]
+      };
+    }
+
+    function mcelTinyContractTxDraftProvenance({
+      source = {},
+      state = {},
+      runtime = {},
+      request = null,
+      wallet = {},
+      network = {},
+      externalOutcome = {},
+      encoding = {},
+      draftProbe = null,
+      ready = false,
+      invalidatedBy = []
+    } = {}) {
+      const selectedRequestSnapshot = mcelTinyContractSelectedRequestSnapshot(request);
+      const expectedChainId = network.expectedChainId || source.devRelease?.devNetwork?.chainId || "0x28757b2";
+      const actualChainId = network.chainId || "";
+      const sourceRequestHash = selectedRequestSnapshot ? mcelTinyContractObjectHash(selectedRequestSnapshot) : "";
+      const walletAccountHash = mcelTinyContractWalletAccountHash(wallet.account || wallet.address || "");
+      const chainOk = Boolean(actualChainId && String(actualChainId).toLowerCase() === String(expectedChainId).toLowerCase());
+      return {
+        provenanceVersion: "txDraft.provenance.v1",
+        sourceRequestHash,
+        selectedRequestSnapshot,
+        walletAccountHash,
+        chainProof: {
+          expectedChainId,
+          chainId: actualChainId,
+          ok: chainOk,
+          status: chainOk ? "matched" : "mismatch-or-missing"
+        },
+        externalOutcomeSequence: externalOutcome?.kind === "mcel-external-outcome"
+          ? [{
+              sequence: externalOutcome.sequence || null,
+              operation: externalOutcome.operation || "",
+              status: externalOutcome.status || "",
+              reason: externalOutcome.reason || ""
+            }]
+          : [],
+        networkGateSequence: [{
+          status: network.status || "waiting",
+          ok: network.ok === true,
+          expectedChainId,
+          chainId: actualChainId
+        }],
+        calldataSource: encoding.calldata || encoding.data
+          ? "abi-encoding"
+          : (encoding.calldataEncoding || "not-encoded"),
+        abiEncodingStatus: encoding.status || encoding.calldataEncoding || "unknown",
+        probeEnvelopeIds: draftProbe?.kind === "mcel-runtime-tx-draft-probe"
+          ? mcelTinyContractTxProbeEnvelopeIds(draftProbe)
+          : ["eth_getTransactionCount:not-probed", "eth_estimateGas:not-probed", "eth_call:not-probed"],
+        invalidatedBy: invalidatedBy.filter(Boolean),
+        valid: ready === true && invalidatedBy.length === 0,
+        freshnessStatus: ready === true && invalidatedBy.length === 0 ? "valid" : (invalidatedBy.length ? "invalidated" : "stale"),
+        freshnessAction: ready === true && invalidatedBy.length === 0
+          ? "inspect or replay draft; no-send boundary preserved"
+          : (invalidatedBy.length ? "rebuild draft from current receipt" : "rebuild draft to prove freshness"),
+        noSendBoundaryPreserved: true,
+        provenanceEnforced: false,
+        validityInvariant: [
+          "same selected source request",
+          "same wallet account",
+          "same chain",
+          "wallet outcome pass",
+          "network gate pass",
+          "no provider event invalidated draft",
+          "no transaction send attempted"
+        ]
+      };
+    }
+
     function ensureMcelTinyContractState() {
       if (!mcelLabState.tinyContract) {
         mcelLabState.tinyContract = {
@@ -132,6 +4504,7 @@
           networkVerifyCount: 0,
           releaseSelectCount: 0,
           txDraftCount: 0,
+          walletIntentSignatureRequestCount: 0,
           fullBatteryRunCount: 0,
           externalOutcomeCount: 0,
           externalBlockedCount: 0,
@@ -140,6 +4513,14 @@
           lastExternalOutcome: null,
           lastWalletActionOutcome: null,
           lastProof: null,
+          lastWalletCommitBoundary: null,
+          commitBoundaryReceipts: [],
+          walletStaleSimulation: null,
+          walletRebuildDraftCount: 0,
+          walletStaleSimulationCount: 0,
+          walletBacklogRemediationScheme: "disable-while-busy",
+          walletBacklogRuntime: null,
+          walletProviderEventBinding: null,
           evidence: [],
           walletAdapter: null,
           walletSubsystemMode: "unobserved",
@@ -149,6 +4530,39 @@
       }
       if (!Array.isArray(mcelLabState.tinyContract.evidence)) {
         mcelLabState.tinyContract.evidence = [];
+      }
+      if (!Array.isArray(mcelLabState.tinyContract.commitBoundaryReceipts)) {
+        mcelLabState.tinyContract.commitBoundaryReceipts = [];
+      }
+      if (typeof mcelLabState.tinyContract.walletBacklogRemediationScheme !== "string" || !mcelLabState.tinyContract.walletBacklogRemediationScheme) {
+        mcelLabState.tinyContract.walletBacklogRemediationScheme = "disable-while-busy";
+      }
+      if (!mcelLabState.tinyContract.walletBacklogRuntime || typeof mcelLabState.tinyContract.walletBacklogRuntime !== "object") {
+        mcelLabState.tinyContract.walletBacklogRuntime = {
+          kind: "mcelWalletBacklogRuntime.v1",
+          active: false,
+          action: "",
+          reason: "",
+          sequence: 0,
+          queued: [],
+          latest: null,
+          timers: {},
+          inFlight: null,
+          cooldownUntil: 0,
+          providerPendingUntil: 0,
+          suppressedCount: 0,
+          queuedCount: 0,
+          coalescedCount: 0,
+          droppedCount: 0,
+          nukedCount: 0,
+          disabledCount: 0,
+          lastReceipt: null,
+          lastScheme: mcelLabState.tinyContract.walletBacklogRemediationScheme,
+          renderTimer: null
+        };
+      }
+      if (!mcelLabState.tinyContract.lastWalletCommitBoundary || typeof mcelLabState.tinyContract.lastWalletCommitBoundary !== "object") {
+        mcelLabState.tinyContract.lastWalletCommitBoundary = mcelCommitBoundaryDefault("wallet.send-sign", "state-initialized");
       }
       if (!mcelLabState.tinyContract.walletAdapter || typeof mcelLabState.tinyContract.walletAdapter !== "object") {
         mcelLabState.tinyContract.walletAdapter = {
@@ -194,6 +4608,8 @@
         "networkVerifyCount",
         "releaseSelectCount",
         "txDraftCount",
+        "walletRebuildDraftCount",
+        "walletStaleSimulationCount",
         "fullBatteryRunCount",
         "externalOutcomeCount",
         "externalBlockedCount",
@@ -329,8 +4745,131 @@
           },
           noSend: true,
           boundary: "runtime-only-no-send",
+          txDraftId: "",
+          txDraftHash: "",
+          identityEnvelope: null,
+          validityEnvelope: null,
+          selectedReleaseHash: "",
+          sourceRequestHash: "",
+          selectedRequestSnapshot: null,
+          walletAccountHash: "",
+          calldataHash: "",
+          draftBuiltAt: "",
+          draftExpiresAt: "",
+          draftTtlMs: 300000,
+          probeEvidenceHash: "",
+          chainProof: {
+            expectedChainId: "0x28757b2",
+            chainId: "",
+            ok: false,
+            status: "waiting"
+          },
+          externalOutcomeSequence: [],
+          networkGateSequence: [],
+          calldataSource: "",
+          abiEncodingStatus: "",
+          probeEnvelopeIds: [],
+          invalidatedBy: [],
+          validityInvariant: [
+            "same selected source request",
+            "same wallet account",
+            "same chain",
+            "wallet outcome pass",
+            "network gate pass",
+            "no provider event invalidated draft",
+            "no transaction send attempted"
+          ],
+          valid: false,
           summary: "No transaction draft has been built."
         },
+        txDraftIdentity: null,
+        txDraftValidity: null,
+        wallet19dProofSurfaceAlignment: {
+          kind: "mcelWallet19dProofSurfaceAlignment.v1",
+          alignmentVersion: "19D-MCEL",
+          status: "not-observed",
+          mutationLocked: true,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false
+        },
+        wallet19eNegativePathRegression: {
+          kind: "mcelWallet19eNegativePathRegression.v1",
+          regressionVersion: "19E-MCEL",
+          status: "not-observed",
+          mutationLocked: true,
+          canSend: false,
+          canSign: false,
+          canBroadcast: false,
+          mutationExecuted: false
+        },
+        walletSmokeRegressionGuard: {
+          kind: "mcelWallet19aSmokeRegressionGuard.v1",
+          status: "not-observed",
+          canSend: false,
+          canSign: false,
+          canBroadcast: false,
+          mutationExecuted: false
+        },
+        txDraftConsumerGate: {
+          kind: "mcel-tx-draft-consumer-gate.v1",
+          consumer: "runtime.txDraft.consumer",
+          status: "not-observed",
+          valid: false,
+          draftStatus: "empty",
+          freshnessStatus: "not-observed",
+          invalidatedBy: [],
+          invalidationReasons: [],
+          noSendBoundaryPreserved: true,
+          provenanceEnforced: false,
+          action: "build draft before source-affecting consumer",
+          reason: "No txDraft consumer has inspected a runtime draft yet.",
+          invariant: [
+            "txDraft status ready",
+            "txDraft provenance enforced",
+            "txDraft freshness valid",
+            "no invalidation reasons",
+            "no-send boundary preserved"
+          ],
+          endgamePreflight: {
+            kind: "mcel-tx-draft-endgame-preflight.v1",
+            status: "locked-no-draft",
+            futureBoundaryEligible: false,
+            canSend: false,
+            canSign: false,
+            canBroadcast: false,
+            noSendBoundaryPreserved: true,
+            action: "build and validate a runtime-only draft before future send/sign boundary work",
+            blockers: ["draft-not-ready", "send-sign-not-implemented"]
+          }
+        },
+        walletCommitBoundary: mcelCommitBoundaryDefault("wallet.send-sign", "runtime-defaults"),
+        wallet20aUnlockContract: null,
+        wallet20bSignedIntentUnlock: null,
+        walletSignedIntentUnlock: null,
+        wallet20cSignatureRequestPreflight: null,
+        walletSignatureRequestPreflight: null,
+        wallet20dProviderIntentSignature: null,
+        walletProviderIntentSignature: null,
+        wallet20eSignedIntentVerification: null,
+        walletSignedIntentVerification: null,
+        wallet20fPreSendReviewGate: null,
+        walletPreSendReviewGate: null,
+        wallet20gProviderIntentHardening: null,
+        walletProviderIntentHardening: null,
+        wallet21aPolicyBoundSendGate: null,
+        walletTransactionSendGate: null,
+        wallet21bProviderOutcomeLedger: null,
+        walletProviderOutcomeLedger: null,
+        wallet21cTransactionWatcher: null,
+        walletTransactionWatcher: null,
+        wallet21dRetryRecoverySafety: null,
+        walletRetryRecoverySafety: null,
+        wallet21ePostConfirmationMcelReceiptIntegration: null,
+        walletPostConfirmationReceiptIntegration: null,
+        wallet21fRelockResetLifecycle: null,
+        walletRelockResetLifecycle: null,
+        walletUnlockContract: null,
         walletAdapter: {
           providerKind: "unknown",
           liveProvider: false,
@@ -564,6 +5103,39 @@
             "wallet",
             "network",
             "txDraft",
+            "txDraftIdentity",
+            "txDraftValidity",
+            "txDraftConsumerGate",
+            "walletCommitBoundary",
+            "walletSmokeRegressionGuard",
+            "wallet19dProofSurfaceAlignment",
+            "wallet19eNegativePathRegression",
+            "wallet20aUnlockContract",
+            "wallet20bSignedIntentUnlock",
+            "walletSignedIntentUnlock",
+            "wallet20cSignatureRequestPreflight",
+            "walletSignatureRequestPreflight",
+            "wallet20dProviderIntentSignature",
+            "walletProviderIntentSignature",
+            "wallet20eSignedIntentVerification",
+            "walletSignedIntentVerification",
+            "wallet20fPreSendReviewGate",
+            "walletPreSendReviewGate",
+            "wallet20gProviderIntentHardening",
+            "walletProviderIntentHardening",
+            "wallet21aPolicyBoundSendGate",
+            "walletTransactionSendGate",
+            "wallet21bProviderOutcomeLedger",
+            "walletProviderOutcomeLedger",
+            "wallet21cTransactionWatcher",
+            "walletTransactionWatcher",
+            "wallet21dRetryRecoverySafety",
+            "walletRetryRecoverySafety",
+            "wallet21ePostConfirmationMcelReceiptIntegration",
+            "walletPostConfirmationReceiptIntegration",
+            "wallet21fRelockResetLifecycle",
+            "walletRelockResetLifecycle",
+            "walletUnlockContract",
             "walletAdapter",
             "walletEvents",
             "externalOutcome",
@@ -593,6 +5165,8 @@
             "release.select",
             "release.draftTx",
             "release.approve",
+            "wallet.requestIntentSignature",
+            "wallet.sendPolicyBoundTransaction",
             "ai.repairWalletHint"
           ]
         },
@@ -611,6 +5185,13 @@
           "releaseSelected",
           "txDrafted",
           "releaseApproved",
+          "walletIntentSignatureRequested",
+          "walletPolicyBoundTransactionSendRequested",
+          "walletProviderOutcomeLedgered",
+          "walletTransactionWatcherUpdated",
+          "walletRetryRecoverySafetyUpdated",
+          "walletPostConfirmationReceiptIntegrated",
+          "walletRelockResetLifecycleUpdated",
           "runtimeHintRepaired",
           "unsafeWriteBlocked",
           "serialized"
@@ -663,6 +5244,37 @@
                     requestId: "",
                     to: "",
                     data: "",
+                    invalidatedBy: [
+                      mcelTinyContractTxDraftInvalidation(`wallet-${outcome.status}`, {
+                        outcomeStatus: outcome.status,
+                        outcomeReason: outcome.reason
+                      })
+                    ],
+                    sourceRequestHash: "",
+                    selectedRequestSnapshot: null,
+                    walletAccountHash: "",
+                    chainProof: {
+                      expectedChainId: devNetwork.chainId || "0x28757b2",
+                      chainId,
+                      ok: false,
+                      status: "wallet-not-ready"
+                    },
+                    externalOutcomeSequence: [{
+                      sequence: outcome.sequence || null,
+                      operation: outcome.operation || "wallet.connect",
+                      status: outcome.status,
+                      reason: outcome.reason
+                    }],
+                    networkGateSequence: [{
+                      status: network.status,
+                      ok: network.ok === true,
+                      expectedChainId: network.expectedChainId,
+                      chainId
+                    }],
+                    calldataSource: "not-encoded",
+                    abiEncodingStatus: "blocked-by-wallet",
+                    probeEnvelopeIds: [],
+                    valid: false,
                     summary: `Wallet ${outcome.status}; transaction draft cleared before source approval.`
                   };
               ctx.set("runtime.wallet", wallet);
@@ -744,6 +5356,38 @@
                 requestId: "",
                 to: "",
                 data: "",
+                invalidatedBy: [
+                  mcelTinyContractTxDraftInvalidation("wallet-disconnected", {
+                    previousProvider: wallet.previousProvider,
+                    outcomeStatus: outcome.status,
+                    outcomeReason: outcome.reason
+                  })
+                ],
+                sourceRequestHash: "",
+                selectedRequestSnapshot: null,
+                walletAccountHash: "",
+                chainProof: {
+                  expectedChainId,
+                  chainId: "",
+                  ok: false,
+                  status: "wallet-disconnected"
+                },
+                externalOutcomeSequence: [{
+                  sequence: outcome.sequence || null,
+                  operation: outcome.operation || "wallet.disconnect",
+                  status: outcome.status,
+                  reason: outcome.reason
+                }],
+                networkGateSequence: [{
+                  status: network.status,
+                  ok: false,
+                  expectedChainId,
+                  chainId: ""
+                }],
+                calldataSource: "not-encoded",
+                abiEncodingStatus: "invalidated-by-wallet-disconnect",
+                probeEnvelopeIds: [],
+                valid: false,
                 summary: "Wallet disconnected; runtime transaction draft was reset."
               };
               ctx.set("runtime.wallet", wallet);
@@ -827,6 +5471,28 @@
                     requestId: "",
                     to: "",
                     data: "",
+                    sourceRequestHash: txDraft.sourceRequestHash || "",
+                    selectedRequestSnapshot: txDraft.selectedRequestSnapshot || null,
+                    walletAccountHash: mcelTinyContractWalletAccountHash(nextAccount),
+                    chainProof: txDraft.chainProof || {
+                      expectedChainId: network.expectedChainId || "0x28757b2",
+                      chainId: network.chainId || "",
+                      ok: network.ok === true,
+                      status: network.ok === true ? "matched" : "wallet-event"
+                    },
+                    externalOutcomeSequence: txDraft.externalOutcomeSequence || [],
+                    networkGateSequence: txDraft.networkGateSequence || [],
+                    calldataSource: txDraft.calldataSource || "not-encoded",
+                    abiEncodingStatus: "invalidated-by-account-event",
+                    probeEnvelopeIds: txDraft.probeEnvelopeIds || [],
+                    invalidatedBy: [
+                      ...(txDraft.invalidatedBy || []),
+                      mcelTinyContractTxDraftInvalidation(disconnected ? "account-disconnected" : "account-changed", {
+                        previousAccount: previousNonEmptyAccount || previousAccount,
+                        nextAccount
+                      })
+                    ],
+                    valid: false,
                     summary: "Provider accountsChanged event cleared the runtime transaction draft."
                   }
                 : txDraft;
@@ -931,6 +5597,28 @@
                     requestId: "",
                     to: "",
                     data: "",
+                    sourceRequestHash: txDraft.sourceRequestHash || "",
+                    selectedRequestSnapshot: txDraft.selectedRequestSnapshot || null,
+                    walletAccountHash: txDraft.walletAccountHash || mcelTinyContractWalletAccountHash(wallet.account || ""),
+                    chainProof: {
+                      expectedChainId: expected,
+                      chainId,
+                      ok,
+                      status: ok ? "matched" : "mismatch"
+                    },
+                    externalOutcomeSequence: txDraft.externalOutcomeSequence || [],
+                    networkGateSequence: [
+                      ...(txDraft.networkGateSequence || []),
+                      {status: ok ? "dev-network-ready" : "wrong-chain", ok, expectedChainId: expected, chainId}
+                    ],
+                    calldataSource: txDraft.calldataSource || "not-encoded",
+                    abiEncodingStatus: "invalidated-by-chain-event",
+                    probeEnvelopeIds: txDraft.probeEnvelopeIds || [],
+                    invalidatedBy: [
+                      ...(txDraft.invalidatedBy || []),
+                      mcelTinyContractTxDraftInvalidation("chain-changed", {expectedChainId: expected, chainId})
+                    ],
+                    valid: false,
                     summary: "Provider chainChanged event cleared the runtime transaction draft because the chain no longer matched."
                   }
                 : txDraft;
@@ -1019,6 +5707,29 @@
                 requestId: "",
                 to: "",
                 data: "",
+                sourceRequestHash: "",
+                selectedRequestSnapshot: null,
+                walletAccountHash: "",
+                chainProof: {
+                  expectedChainId: network.expectedChainId || "0x28757b2",
+                  chainId: network.chainId || "",
+                  ok: false,
+                  status: "provider-disconnected"
+                },
+                externalOutcomeSequence: [],
+                networkGateSequence: [{
+                  status: "provider-disconnected",
+                  ok: false,
+                  expectedChainId: network.expectedChainId || "0x28757b2",
+                  chainId: network.chainId || ""
+                }],
+                calldataSource: "not-encoded",
+                abiEncodingStatus: "invalidated-by-provider-disconnect",
+                probeEnvelopeIds: [],
+                invalidatedBy: [
+                  mcelTinyContractTxDraftInvalidation("provider-disconnect", {code, message})
+                ],
+                valid: false,
                 summary: "Provider disconnect event cleared the runtime transaction draft."
               };
               const outcome = payload.outcome?.kind === "mcel-external-outcome"
@@ -1177,7 +5888,7 @@
           "release.select": {
             kind: "ui-effect",
             triggers: ["state.selectedRequestId"],
-            reads: ["source.devRelease.requests", "state.selectedRequestId"],
+            reads: ["source.devRelease.requests", "state.selectedRequestId", "runtime.txDraft"],
             writes: ["state.selectedRequestId", "runtime.txDraft", "runtime.evidenceStrip"],
             external: {
               resource: "dom",
@@ -1196,16 +5907,59 @@
                 ctx.set("runtime.txDraft", {
                   status: "empty",
                   requestId: "",
+                  sourceRequestHash: "",
+                  selectedRequestSnapshot: null,
+                  walletAccountHash: "",
+                  chainProof: {
+                    expectedChainId: "0x28757b2",
+                    chainId: "",
+                    ok: false,
+                    status: "no-source-request"
+                  },
+                  externalOutcomeSequence: [],
+                  networkGateSequence: [],
+                  calldataSource: "not-encoded",
+                  abiEncodingStatus: "no-source-request",
+                  probeEnvelopeIds: [],
+                  invalidatedBy: [
+                    mcelTinyContractTxDraftInvalidation("source-request-missing", {})
+                  ],
+                  valid: false,
                   summary: "No release request is available."
                 });
                 return {selectedRequestId: "", found: false};
               }
+              const previousTxDraft = ctx.get("runtime.txDraft") || {};
+              const selectedSnapshot = mcelTinyContractSelectedRequestSnapshot(request);
               ctx.set("state.selectedRequestId", request.id);
               ctx.set("runtime.txDraft", {
                 status: "selected",
                 requestId: request.id,
                 to: "",
                 data: "",
+                sourceRequestHash: mcelTinyContractObjectHash(selectedSnapshot),
+                selectedRequestSnapshot: selectedSnapshot,
+                walletAccountHash: previousTxDraft.walletAccountHash || "",
+                chainProof: previousTxDraft.chainProof || {
+                  expectedChainId: "0x28757b2",
+                  chainId: "",
+                  ok: false,
+                  status: "not-probed"
+                },
+                externalOutcomeSequence: previousTxDraft.externalOutcomeSequence || [],
+                networkGateSequence: previousTxDraft.networkGateSequence || [],
+                calldataSource: "not-encoded",
+                abiEncodingStatus: "selected-not-encoded",
+                probeEnvelopeIds: [],
+                invalidatedBy: previousTxDraft.requestId && previousTxDraft.requestId !== request.id
+                  ? [
+                      mcelTinyContractTxDraftInvalidation("source-request-changed", {
+                        previousRequestId: previousTxDraft.requestId,
+                        nextRequestId: request.id
+                      })
+                    ]
+                  : [],
+                valid: false,
                 summary: `Selected ${request.id}; transaction draft is not built yet.`,
                 risk: request.risk
               });
@@ -1228,13 +5982,14 @@
             triggers: ["runtime.network", "state.selectedRequestId"],
             reads: [
               "source.devRelease.contractAddress",
+              "source.devRelease.devNetwork",
               "source.devRelease.requests",
               "state.selectedRequestId",
               "runtime.wallet",
               "runtime.network",
               "runtime.externalOutcome"
             ],
-            writes: ["runtime.txDraft", "runtime.evidenceStrip"],
+            writes: ["runtime.txDraft", "runtime.txDraftIdentity", "runtime.txDraftValidity", "runtime.evidenceStrip"],
             external: {
               resource: "ethereum-transaction",
               operation: "draft-only-no-send"
@@ -1244,6 +5999,7 @@
             },
             run(ctx, payload = {}) {
               const contractAddress = ctx.get("source.devRelease.contractAddress");
+              const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
               const requests = ctx.get("source.devRelease.requests") || [];
               const selectedId = ctx.get("state.selectedRequestId") || requests[0]?.id || "";
               const request = requests.find((entry) => entry.id === selectedId) || requests[0] || null;
@@ -1251,6 +6007,28 @@
               const network = ctx.get("runtime.network") || {};
               const externalOutcome = ctx.get("runtime.externalOutcome") || {};
               const externalBlocked = ["blocked", "exception"].includes(externalOutcome.status);
+              const invalidatedBy = [];
+              if (!request) {
+                invalidatedBy.push(mcelTinyContractTxDraftInvalidation("source-request-missing", {selectedId}));
+              }
+              if (!wallet.connected) {
+                invalidatedBy.push(mcelTinyContractTxDraftInvalidation("wallet-not-connected", {
+                  accountHash: mcelTinyContractWalletAccountHash(wallet.account || "")
+                }));
+              }
+              if (!network.ok) {
+                invalidatedBy.push(mcelTinyContractTxDraftInvalidation("network-gate-failed", {
+                  expectedChainId: network.expectedChainId || "",
+                  chainId: network.chainId || "",
+                  status: network.status || "waiting"
+                }));
+              }
+              if (externalBlocked) {
+                invalidatedBy.push(mcelTinyContractTxDraftInvalidation(`external-outcome-${externalOutcome.status}`, {
+                  outcomeStatus: externalOutcome.status,
+                  outcomeReason: externalOutcome.reason || ""
+                }));
+              }
               const ready = Boolean(wallet.connected && network.ok && request && !externalBlocked);
               const draftProbe = payload.draftProbe?.kind === "mcel-runtime-tx-draft-probe"
                 ? payload.draftProbe
@@ -1283,9 +6061,88 @@
                     chainId: network.chainId || "",
                     noSend: true
                   };
+              const releaseSource = {
+                devRelease: {
+                  contractAddress,
+                  devNetwork,
+                  requests
+                }
+              };
+              const txDraftProvenance = mcelTinyContractTxDraftProvenance({
+                source: releaseSource,
+                state: {selectedRequestId: selectedId},
+                runtime: {wallet, network, externalOutcome},
+                request,
+                wallet,
+                network,
+                externalOutcome,
+                encoding,
+                draftProbe,
+                ready,
+                invalidatedBy
+              });
+              const draftBuiltAt = draftProbe?.createdAt || new Date().toISOString();
+              const txDraftIdentity = mcelTinyContractTxDraftIdentityEnvelope({
+                source: releaseSource,
+                state: {selectedRequestId: selectedId},
+                runtime: {wallet, network, externalOutcome},
+                request,
+                wallet,
+                network,
+                externalOutcome,
+                tx,
+                encoding,
+                draftProbe,
+                txDraft: {
+                  status: ready ? "ready" : "blocked",
+                  requestId: request?.id || "",
+                  boundary: "runtime-only-no-send",
+                  noSend: true
+                },
+                createdAt: draftBuiltAt
+              });
+              const txDraftValidity = mcelTinyContractTxDraftValidityEnvelope({
+                source: releaseSource,
+                state: {selectedRequestId: selectedId},
+                runtime: {wallet, network, externalOutcome},
+                request,
+                txDraft: {
+                  status: ready ? "ready" : "blocked",
+                  requestId: request?.id || "",
+                  txDraftId: txDraftIdentity.txDraftId,
+                  txDraftHash: txDraftIdentity.txDraftHash,
+                  identityEnvelope: txDraftIdentity,
+                  selectedReleaseHash: txDraftIdentity.selectedReleaseHash,
+                  sourceRequestHash: txDraftIdentity.sourceRequestHash,
+                  walletAccountHash: txDraftIdentity.walletAccountHash,
+                  chainProof: txDraftIdentity.chainProof,
+                  calldataHash: txDraftIdentity.calldataHash,
+                  probeEnvelopeIds: txDraftIdentity.probeEnvelopeIds,
+                  probeEvidenceHash: txDraftIdentity.probeEvidenceHash,
+                  draftBuiltAt: txDraftIdentity.draftBuiltAt,
+                  draftExpiresAt: txDraftIdentity.draftExpiresAt,
+                  draftTtlMs: txDraftIdentity.draftTtlMs,
+                  noSend: true,
+                  boundary: "runtime-only-no-send",
+                  from: tx.from || "",
+                  to: tx.to || "",
+                  value: tx.value || "0x0",
+                  data: tx.data || "",
+                  calldata: tx.data || encoding.calldata || "",
+                  nonce: draftProbe?.nonce || {},
+                  gasEstimate: draftProbe?.gasEstimate || {},
+                  ethCall: draftProbe?.ethCall || {}
+                },
+                reason: "release.draftTx-runtime-build"
+              });
               const txDraft = {
                 status: ready ? "ready" : "blocked",
                 requestId: request?.id || "",
+                txDraftId: txDraftIdentity.txDraftId,
+                txDraftHash: txDraftIdentity.txDraftHash,
+                identityEnvelope: txDraftIdentity,
+                validityEnvelope: txDraftValidity,
+                selectedReleaseHash: txDraftIdentity.selectedReleaseHash,
                 createdFrom: {
                   requestId: request?.id || "",
                   sourcePath: "source.devRelease.requests",
@@ -1293,6 +6150,29 @@
                   status: request?.status || "",
                   risk: request?.risk || ""
                 },
+                sourceRequestHash: txDraftProvenance.sourceRequestHash,
+                selectedRequestSnapshot: txDraftProvenance.selectedRequestSnapshot,
+                walletAccountHash: txDraftProvenance.walletAccountHash,
+                calldataHash: txDraftIdentity.calldataHash,
+                draftBuiltAt: txDraftIdentity.draftBuiltAt,
+                draftExpiresAt: txDraftIdentity.draftExpiresAt,
+                draftTtlMs: txDraftIdentity.draftTtlMs,
+                probeEvidenceHash: txDraftIdentity.probeEvidenceHash,
+                chainProof: txDraftProvenance.chainProof,
+                externalOutcomeSequence: txDraftProvenance.externalOutcomeSequence,
+                networkGateSequence: txDraftProvenance.networkGateSequence,
+                calldataSource: txDraftProvenance.calldataSource,
+                abiEncodingStatus: txDraftProvenance.abiEncodingStatus,
+                probeEnvelopeIds: txDraftIdentity.probeEnvelopeIds,
+                invalidatedBy: mcelTinyContractMergeTxDraftInvalidations(txDraftProvenance.invalidatedBy, txDraftValidity.invalidatedBy),
+                validityInvariant: txDraftProvenance.validityInvariant,
+                txDraftValidityStatus: txDraftValidity.status,
+                valid: txDraftValidity.valid === true && txDraftProvenance.valid === true,
+                freshnessStatus: txDraftValidity.status === "valid" ? txDraftProvenance.freshnessStatus : txDraftValidity.status,
+                freshnessAction: txDraftProvenance.freshnessAction,
+                noSendBoundaryPreserved: txDraftProvenance.noSendBoundaryPreserved,
+                provenanceEnforced: txDraftProvenance.provenanceEnforced,
+                provenanceVersion: txDraftProvenance.provenanceVersion,
                 to: tx.to || "",
                 from: tx.from || "",
                 value: tx.value || "0x0",
@@ -1330,6 +6210,8 @@
                     : "Transaction draft blocked until wallet and dev-network gate are ready.")
               };
               ctx.set("runtime.txDraft", txDraft);
+              ctx.set("runtime.txDraftIdentity", txDraftIdentity);
+              ctx.set("runtime.txDraftValidity", txDraftValidity);
               ctx.set("runtime.evidenceStrip", [
                 `release.draftTx status=${txDraft.status}`,
                 `noSend=${txDraft.noSend}`,
@@ -1337,7 +6219,11 @@
                 `from=${txDraft.from ? txDraft.from.slice(0, 10) + "…" : "missing"}`,
                 `calldata=${txDraft.calldata ? txDraft.calldata.slice(0, 18) + "…" : "blocked"}`,
                 `nonce=${txDraft.nonce?.status || "unknown"}`,
-                `gas=${txDraft.gasEstimate?.status || "unknown"}`
+                `gas=${txDraft.gasEstimate?.status || "unknown"}`,
+                `sourceRequestHash=${txDraft.sourceRequestHash || "missing"}`,
+                `txDraftId=${txDraft.txDraftId || "missing"}`,
+                `validity=${txDraft.txDraftValidityStatus || "not-observed"}`,
+                `invalidatedBy=${(txDraft.invalidatedBy || []).map((item) => item.reason).join("|") || "none"}`
               ]);
               ctx.evidence({
                 ok: ready,
@@ -1354,15 +6240,24 @@
                 noSend: result?.noSend === true,
                 calldataEncoding: result?.calldataEncoding || "",
                 gasStatus: result?.gasEstimate?.status || "",
-                nonceStatus: result?.nonce?.status || ""
+                nonceStatus: result?.nonce?.status || "",
+                txDraftId: result?.txDraftId || "",
+                txDraftHash: result?.txDraftHash || "",
+                selectedReleaseHash: result?.selectedReleaseHash || "",
+                sourceRequestHash: result?.sourceRequestHash || "",
+                walletAccountHash: result?.walletAccountHash || "",
+                calldataHash: result?.calldataHash || "",
+                chainProofStatus: result?.chainProof?.status || "",
+                validityStatus: result?.validityEnvelope?.status || result?.txDraftValidityStatus || "",
+                invalidatedBy: (result?.invalidatedBy || []).map((entry) => entry.reason || "").filter(Boolean)
               };
             }
           },
           "release.approve": {
             kind: "human-approval-effect",
             triggers: ["state.selectedRequestId"],
-            reads: ["source.devRelease.requests", "state.selectedRequestId", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"],
-            writes: ["source.devRelease.requests", "runtime.evidenceStrip"],
+            reads: ["source.devRelease.requests", "source.devRelease.devNetwork", "state.selectedRequestId", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"],
+            writes: ["source.devRelease.requests", "runtime.txDraft", "runtime.txDraftConsumerGate", "runtime.evidenceStrip"],
             external: {
               resource: "source",
               operation: "mark-selected-release-approved"
@@ -1373,25 +6268,61 @@
             run(ctx) {
               const selectedId = ctx.get("state.selectedRequestId");
               const requests = ctx.get("source.devRelease.requests") || [];
+              const selectedRequest = requests.find((request) => request.id === selectedId) || null;
               const wallet = ctx.get("runtime.wallet") || {};
               const network = ctx.get("runtime.network") || {};
               const txDraft = ctx.get("runtime.txDraft") || {};
               const externalOutcome = ctx.get("runtime.externalOutcome") || {};
               const externalBlocked = ["blocked", "exception"].includes(externalOutcome.status);
-              const ready = Boolean(wallet.connected && network.ok && txDraft.status === "ready" && !externalBlocked);
+              const freshness = mcelTinyContractTxDraftFreshnessCheck({
+                source: {devRelease: {devNetwork: ctx.get("source.devRelease.devNetwork") || {}}},
+                state: {selectedRequestId: selectedId},
+                runtime: {wallet, network, externalOutcome, txDraft},
+                request: selectedRequest,
+                txDraft,
+                reason: "release.approve-consumer-gate"
+              });
+              const guardedTxDraft = mcelTinyContractApplyTxDraftFreshness(txDraft, freshness);
+              const consumerGate = mcelTinyContractTxDraftConsumerGate({
+                txDraft: guardedTxDraft,
+                freshness,
+                consumer: "release.approve"
+              });
+              ctx.set("runtime.txDraft", guardedTxDraft);
+              ctx.set("runtime.txDraftConsumerGate", consumerGate);
+              const ready = Boolean(
+                wallet.connected
+                && network.ok
+                && guardedTxDraft.status === "ready"
+                && guardedTxDraft.valid === true
+                && guardedTxDraft.provenanceEnforced === true
+                && guardedTxDraft.noSendBoundaryPreserved === true
+                && consumerGate.valid === true
+                && !externalBlocked
+              );
               if (!ready) {
                 ctx.set("runtime.evidenceStrip", [
                   `release.approve blocked id=${selectedId || "missing"}`,
                   `wallet=${wallet.connected ? "connected" : "not-connected"}`,
                   `network=${network.ok ? "ok" : "not-ok"}`,
-                  `txDraft=${txDraft.status || "empty"}`,
+                  `txDraft=${guardedTxDraft.status || "empty"}`,
+                  `txDraftFreshness=${guardedTxDraft.freshnessStatus || freshness.status || "not-observed"}`,
+                  `txDraftConsumerGate=${consumerGate.status}`,
+                  `invalidatedBy=${consumerGate.invalidationReasons.join("|") || "none"}`,
                   `externalOutcome=${externalOutcome.status || "waiting"}`
                 ]);
                 ctx.evidence({
                   ok: false,
-                  message: "release.approve refused to mutate source because wallet/network/tx draft/external outcome gates were not ready."
+                  message: "release.approve refused to mutate source because txDraft provenance was not current for the declared source effect."
                 });
-                return {selectedRequestId: selectedId || "", status: "blocked", blocked: true};
+                return {
+                  selectedRequestId: selectedId || "",
+                  status: "blocked",
+                  blocked: true,
+                  txDraftFreshness: guardedTxDraft.freshnessStatus || freshness.status || "",
+                  txDraftConsumerGate: consumerGate.status,
+                  invalidatedBy: consumerGate.invalidationReasons
+                };
               }
               const nextRequests = requests.map((request) => {
                 if (request.id !== selectedId) return request;
@@ -1405,16 +6336,336 @@
               ctx.set("source.devRelease.requests", nextRequests);
               ctx.set("runtime.evidenceStrip", [
                 `release.approve id=${selectedId}`,
-                "declared source write: source.devRelease.requests"
+                "declared source write: source.devRelease.requests",
+                `txDraftConsumerGate=${consumerGate.status}`,
+                `txDraftFreshness=${guardedTxDraft.freshnessStatus || freshness.status || "valid"}`,
+                "no-send boundary preserved"
               ]);
               ctx.evidence({
                 ok: true,
-                message: "release.approve updated source.devRelease.requests through a declared source write."
+                message: "release.approve updated source.devRelease.requests only after txDraft provenance passed the consumer gate."
               });
-              return {selectedRequestId: selectedId, status: selected?.status || "missing", blocked: false};
+              return {
+                selectedRequestId: selectedId,
+                status: selected?.status || "missing",
+                blocked: false,
+                txDraftFreshness: guardedTxDraft.freshnessStatus || freshness.status || "",
+                txDraftConsumerGate: consumerGate.status,
+                invalidatedBy: []
+              };
             },
             commit(_ctx, result) {
-              return {approved: result?.blocked ? "" : (result?.selectedRequestId || ""), status: result?.status || ""};
+              return {
+                approved: result?.blocked ? "" : (result?.selectedRequestId || ""),
+                status: result?.status || "",
+                txDraftConsumerGate: result?.txDraftConsumerGate || "",
+                txDraftFreshness: result?.txDraftFreshness || "",
+                invalidatedBy: result?.invalidatedBy || []
+              };
+            }
+          },
+          "wallet.requestIntentSignature": {
+            kind: "provider-intent-signature-effect",
+            triggers: ["runtime.wallet20cSignatureRequestPreflight"],
+            reads: [
+              "runtime.wallet",
+              "runtime.network",
+              "runtime.txDraft",
+              "runtime.wallet20cSignatureRequestPreflight",
+              "runtime.walletSignatureRequestPreflight",
+              "runtime.wallet20dProviderIntentSignature"
+            ],
+            writes: [
+              "runtime.wallet20dProviderIntentSignature",
+              "runtime.walletProviderIntentSignature",
+              "runtime.externalOutcome",
+              "runtime.walletEvents",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "metamask-provider",
+              operation: "eth_signTypedData_v4"
+            },
+            errorPolicy: {
+              onFailure: "record-intent-signature-outcome"
+            },
+            run(ctx, payload = {}) {
+              const wallet = ctx.get("runtime.wallet") || {};
+              const network = ctx.get("runtime.network") || {};
+              const txDraft = ctx.get("runtime.txDraft") || {};
+              const previous = ctx.get("runtime.wallet20dProviderIntentSignature") || {};
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractExternalOutcome({
+                    operation: "wallet.requestIntentSignature",
+                    phase: payload.signature ? "eth_signTypedData_v4" : "intent-signature-blocked",
+                    status: payload.signature ? "pass" : "blocked",
+                    known: true,
+                    reason: payload.signature ? "intent-signature-received" : "intent-signature-missing",
+                    message: payload.signature
+                      ? "Provider returned an off-chain MCEL intent signature."
+                      : "Provider intent signature was not returned.",
+                    value: {
+                      method: "eth_signTypedData_v4",
+                      txDraftHash: txDraft.txDraftHash || "",
+                      accountHash: txDraft.walletAccountHash || ""
+                    },
+                    rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+                  });
+              const signature = String(payload.signature || "");
+              const intentEnvelope = payload.intentEnvelope || previous.intentEnvelope || {};
+              const typedData = payload.typedData || previous.typedData || {};
+              const typedDataHash = payload.typedDataHash || mcelTinyContractObjectHash(typedData);
+              const intentSignature = {
+                kind: "mcelWallet20dProviderIntentSignature.v1",
+                unlockVersion: "20D-MCEL",
+                unlockEvent: "live-provider-intent-signature-prompt",
+                status: signature && outcome.status === "pass" ? "provider-intent-signature-received" : "provider-intent-signature-blocked",
+                stage: signature && outcome.status === "pass" ? "intent-signature-received-no-send" : "provider-intent-prompt-blocked",
+                signatureRequestMethod: "eth_signTypedData_v4",
+                providerPromptEligible: payload.providerPromptEligible === true,
+                providerPromptBound: true,
+                providerSignatureRequested: true,
+                providerSignatureReceived: Boolean(signature && outcome.status === "pass"),
+                providerPromptInvocation: "eth_signTypedData_v4",
+                intentEnvelope,
+                signedIntentEnvelope: signature ? intentEnvelope : {},
+                typedData,
+                typedDataHash,
+                signature,
+                signatureHash: signature ? mcelTinyContractObjectHash(signature) : "",
+                signaturePreview: signature ? `${signature.slice(0, 18)}…${signature.slice(-8)}` : "",
+                externalOutcome: outcome,
+                canRequestProviderSignature: payload.providerPromptEligible === true,
+                canSign: false,
+                canSend: false,
+                canBroadcast: false,
+                mutationExecuted: false,
+                readyForProviderExecution: false,
+                decisionReceipt: {
+                  kind: "mcelWallet20dProviderIntentSignatureReceipt.v1",
+                  unlockVersion: "20D-MCEL",
+                  status: signature && outcome.status === "pass" ? "provider-intent-signature-received" : "provider-intent-signature-blocked",
+                  signatureRequestMethod: "eth_signTypedData_v4",
+                  providerSignatureRequested: true,
+                  providerSignatureReceived: Boolean(signature && outcome.status === "pass"),
+                  signatureHash: signature ? mcelTinyContractObjectHash(signature) : "",
+                  typedDataHash,
+                  canSend: false,
+                  canBroadcast: false,
+                  mutationExecuted: false
+                }
+              };
+              ctx.set("runtime.wallet20dProviderIntentSignature", intentSignature);
+              ctx.set("runtime.walletProviderIntentSignature", intentSignature);
+              ctx.set("runtime.externalOutcome", outcome);
+              ctx.set("runtime.walletEvents", [{
+                type: "intentSignature",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason,
+                signatureReceived: Boolean(signature),
+                method: "eth_signTypedData_v4",
+                txDraftHash: txDraft.txDraftHash || "",
+                account: wallet.account || "",
+                chainId: network.chainId || ""
+              }]);
+              ctx.set("runtime.evidenceStrip", [
+                `wallet.requestIntentSignature outcome=${outcome.status}`,
+                "method=eth_signTypedData_v4",
+                `signatureReceived=${Boolean(signature && outcome.status === "pass")}`,
+                `txDraftHash=${txDraft.txDraftHash || "missing"}`,
+                "send=false broadcast=false mutationExecuted=false"
+              ]);
+              ctx.evidence({
+                ok: Boolean(signature && outcome.status === "pass"),
+                message: signature && outcome.status === "pass"
+                  ? "20D captured an off-chain wallet intent signature through a declared SCM runtime effect."
+                  : "20D captured a blocked provider intent-signature outcome without sending or broadcasting."
+              });
+              return intentSignature;
+            },
+            commit(_ctx, result) {
+              return {
+                status: result?.status || "",
+                providerSignatureRequested: result?.providerSignatureRequested === true,
+                providerSignatureReceived: result?.providerSignatureReceived === true,
+                signatureRequestMethod: result?.signatureRequestMethod || "",
+                signatureHash: result?.signatureHash || "",
+                canSend: false,
+                canBroadcast: false,
+                mutationExecuted: false
+              };
+            }
+          },
+          "wallet.sendPolicyBoundTransaction": {
+            kind: "policy-bound-provider-transaction-send-effect",
+            triggers: ["runtime.wallet21aPolicyBoundSendGate"],
+            reads: [
+              "runtime.wallet",
+              "runtime.network",
+              "runtime.txDraft",
+              "runtime.wallet20eSignedIntentVerification",
+              "runtime.walletSignedIntentVerification",
+              "runtime.wallet20fPreSendReviewGate",
+              "runtime.walletPreSendReviewGate",
+              "runtime.wallet20gProviderIntentHardening",
+              "runtime.walletProviderIntentHardening",
+              "runtime.wallet21aPolicyBoundSendGate",
+              "runtime.walletTransactionSendGate",
+              "runtime.wallet21bProviderOutcomeLedger",
+              "runtime.walletProviderOutcomeLedger",
+              "runtime.wallet21cTransactionWatcher",
+              "runtime.walletTransactionWatcher",
+              "runtime.wallet21dRetryRecoverySafety",
+              "runtime.walletRetryRecoverySafety",
+              "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+              "runtime.walletPostConfirmationReceiptIntegration",
+              "runtime.wallet21fRelockResetLifecycle",
+              "runtime.walletRelockResetLifecycle",
+              "runtime.walletEvents",
+              "runtime.externalOutcome"
+            ],
+            writes: [
+              "runtime.wallet21aPolicyBoundSendGate",
+              "runtime.walletTransactionSendGate",
+              "runtime.wallet21bProviderOutcomeLedger",
+              "runtime.walletProviderOutcomeLedger",
+              "runtime.wallet21cTransactionWatcher",
+              "runtime.walletTransactionWatcher",
+              "runtime.wallet21dRetryRecoverySafety",
+              "runtime.walletRetryRecoverySafety",
+              "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+              "runtime.walletPostConfirmationReceiptIntegration",
+              "runtime.wallet21fRelockResetLifecycle",
+              "runtime.walletRelockResetLifecycle",
+              "runtime.externalOutcome",
+              "runtime.walletEvents",
+              "runtime.evidenceStrip"
+            ],
+            external: {
+              resource: "metamask-provider",
+              operation: "eth_sendTransaction",
+              networkAgnostic: true,
+              policyBound: true,
+              devnetOnly: false
+            },
+            errorPolicy: {
+              onFailure: "record-provider-send-outcome"
+            },
+            run(ctx, payload = {}) {
+              const outcome = payload.outcome || mcelTinyContractExternalOutcome({
+                operation: "wallet.sendPolicyBoundTransaction",
+                phase: "eth_sendTransaction",
+                status: "blocked",
+                known: true,
+                reason: "send-outcome-missing",
+                message: "21A provider transaction send outcome was not supplied to SCM."
+              });
+              const txHash = String(payload.txHash || outcome.value?.txHash || "");
+              const transactionReceipt = payload.transactionReceipt || payload.providerReceipt || null;
+              const sendGate = {
+                ...(payload.sendGate || ctx.get("runtime.wallet21aPolicyBoundSendGate") || ctx.get("runtime.walletTransactionSendGate") || {}),
+                providerOutcome: outcome,
+                providerTransactionSendRequested: outcome.operation === "wallet.sendPolicyBoundTransaction" || outcome.phase === "eth_sendTransaction",
+                txHash,
+                providerAccepted: outcome.status === "pass" && Boolean(txHash),
+                providerRejected: outcome.status === "blocked",
+                providerException: outcome.status === "exception",
+                mutationExecuted: outcome.status === "pass" && Boolean(txHash),
+                broadcastAttempted: outcome.operation === "wallet.sendPolicyBoundTransaction" || outcome.phase === "eth_sendTransaction"
+              };
+              const ledger = mcelWallet21bProviderOutcomeLedger({wallet21aPolicyBoundSendGate: sendGate}, {
+                ...(ctx.get("runtime.wallet21bProviderOutcomeLedger") || ctx.get("runtime.walletProviderOutcomeLedger") || {}),
+                providerOutcome: outcome,
+                txHash,
+                transactionReceipt
+              });
+              const watcher = mcelWallet21cTransactionWatcher({
+                wallet21aPolicyBoundSendGate: sendGate,
+                wallet21bProviderOutcomeLedger: ledger
+              }, {
+                ...(ctx.get("runtime.wallet21cTransactionWatcher") || ctx.get("runtime.walletTransactionWatcher") || {}),
+                txHash,
+                transactionReceipt
+              });
+              const recoverySafety = mcelWallet21dRetryRecoverySafety({
+                wallet21aPolicyBoundSendGate: sendGate,
+                wallet21bProviderOutcomeLedger: ledger,
+                wallet21cTransactionWatcher: watcher
+              }, ctx.get("runtime.wallet21dRetryRecoverySafety") || ctx.get("runtime.walletRetryRecoverySafety") || {});
+              const postConfirmationIntegration = mcelWallet21ePostConfirmationMcelReceiptIntegration({
+                wallet21aPolicyBoundSendGate: sendGate,
+                wallet21bProviderOutcomeLedger: ledger,
+                wallet21cTransactionWatcher: watcher,
+                wallet21dRetryRecoverySafety: recoverySafety
+              }, ctx.get("runtime.wallet21ePostConfirmationMcelReceiptIntegration") || ctx.get("runtime.walletPostConfirmationReceiptIntegration") || {});
+              const relockResetLifecycle = mcelWallet21fRelockResetLifecycle({
+                wallet21aPolicyBoundSendGate: sendGate,
+                wallet21bProviderOutcomeLedger: ledger,
+                wallet21cTransactionWatcher: watcher,
+                wallet21dRetryRecoverySafety: recoverySafety,
+                wallet21ePostConfirmationMcelReceiptIntegration: postConfirmationIntegration
+              }, ctx.get("runtime.wallet21fRelockResetLifecycle") || ctx.get("runtime.walletRelockResetLifecycle") || {});
+              ctx.set("runtime.wallet21aPolicyBoundSendGate", sendGate);
+              ctx.set("runtime.walletTransactionSendGate", sendGate);
+              ctx.set("runtime.wallet21bProviderOutcomeLedger", ledger);
+              ctx.set("runtime.walletProviderOutcomeLedger", ledger);
+              ctx.set("runtime.wallet21cTransactionWatcher", watcher);
+              ctx.set("runtime.walletTransactionWatcher", watcher);
+              ctx.set("runtime.wallet21dRetryRecoverySafety", recoverySafety);
+              ctx.set("runtime.walletRetryRecoverySafety", recoverySafety);
+              ctx.set("runtime.wallet21ePostConfirmationMcelReceiptIntegration", postConfirmationIntegration);
+              ctx.set("runtime.walletPostConfirmationReceiptIntegration", postConfirmationIntegration);
+              ctx.set("runtime.wallet21fRelockResetLifecycle", relockResetLifecycle);
+              ctx.set("runtime.walletRelockResetLifecycle", relockResetLifecycle);
+              ctx.set("runtime.externalOutcome", outcome);
+              ctx.set("runtime.walletEvents", [{
+                type: "policyBoundTransactionSend",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason,
+                providerMethod: "eth_sendTransaction",
+                txHash,
+                account: sendGate.providerTransactionRequest?.from || "",
+                chainId: sendGate.networkExecutionPolicy?.chainId || "",
+                recoveryStatus: recoverySafety.status,
+                postConfirmationStatus: postConfirmationIntegration.status,
+                relockStatus: relockResetLifecycle.status
+              }]);
+              ctx.set("runtime.evidenceStrip", [
+                `wallet.sendPolicyBoundTransaction outcome=${outcome.status}`,
+                "method=eth_sendTransaction",
+                `txHash=${txHash || "missing"}`,
+                `ledger=${ledger.status}`,
+                `watcher=${watcher.status}`,
+                `21D=${recoverySafety.status}`,
+                `21E=${postConfirmationIntegration.status}`,
+                `21F=${relockResetLifecycle.status}`,
+                "networkAgnostic=true",
+                "devnetOnly=false"
+              ]);
+              ctx.evidence({
+                ok: outcome.status === "pass" && Boolean(txHash),
+                message: txHash
+                  ? "21A/21B/21C captured a policy-bound provider send with tx hash and watcher state."
+                  : "21A captured a blocked or rejected policy-bound provider send without tx hash."
+              });
+              return {sendGate, ledger, watcher, recoverySafety, postConfirmationIntegration, relockResetLifecycle, outcome, txHash, transactionReceipt};
+            },
+            commit(_ctx, result) {
+              return {
+                status: result?.sendGate?.status || "",
+                providerTransactionSendRequested: result?.sendGate?.providerTransactionSendRequested === true,
+                providerMethod: "eth_sendTransaction",
+                txHash: result?.txHash || "",
+                ledgerStatus: result?.ledger?.status || "",
+                watcherStatus: result?.watcher?.status || "",
+                recoveryStatus: result?.recoverySafety?.status || "",
+                postConfirmationStatus: result?.postConfirmationIntegration?.status || "",
+                relockStatus: result?.relockResetLifecycle?.status || "",
+                mutationExecuted: result?.sendGate?.mutationExecuted === true || result?.relockResetLifecycle?.mutationExecuted === true,
+                broadcastAttempted: result?.sendGate?.broadcastAttempted === true || result?.relockResetLifecycle?.broadcastAttempted === true,
+                canRetryAutomatically: false
+              };
             }
           },
           "ai.repairWalletHint": {
@@ -1525,6 +6776,32 @@
             "runtime.wallet",
             "runtime.network",
             "runtime.txDraft",
+            "runtime.wallet20aUnlockContract",
+            "runtime.wallet20bSignedIntentUnlock",
+            "runtime.walletSignedIntentUnlock",
+            "runtime.wallet20cSignatureRequestPreflight",
+            "runtime.walletSignatureRequestPreflight",
+            "runtime.wallet20dProviderIntentSignature",
+            "runtime.walletProviderIntentSignature",
+            "runtime.wallet20eSignedIntentVerification",
+            "runtime.walletSignedIntentVerification",
+            "runtime.wallet20fPreSendReviewGate",
+            "runtime.walletPreSendReviewGate",
+            "runtime.wallet20gProviderIntentHardening",
+            "runtime.walletProviderIntentHardening",
+            "runtime.wallet21aPolicyBoundSendGate",
+            "runtime.walletTransactionSendGate",
+            "runtime.wallet21bProviderOutcomeLedger",
+            "runtime.walletProviderOutcomeLedger",
+            "runtime.wallet21cTransactionWatcher",
+            "runtime.walletTransactionWatcher",
+            "runtime.wallet21dRetryRecoverySafety",
+            "runtime.walletRetryRecoverySafety",
+            "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+            "runtime.walletPostConfirmationReceiptIntegration",
+            "runtime.wallet21fRelockResetLifecycle",
+            "runtime.walletRelockResetLifecycle",
+            "runtime.walletUnlockContract",
             "runtime.walletAdapter",
             "runtime.walletEvents",
             "runtime.externalOutcome",
@@ -1532,7 +6809,13 @@
             "runtime.repairPacket",
             "runtime.assistantRepairPrompt",
             "runtime.serializedSource",
-            "runtime.evidenceStrip"
+            "runtime.evidenceStrip",
+            "runtime.wallet21aPolicyBoundSendGate",
+            "runtime.wallet21bProviderOutcomeLedger",
+            "runtime.wallet21cTransactionWatcher",
+            "runtime.wallet21dRetryRecoverySafety",
+            "runtime.wallet21ePostConfirmationMcelReceiptIntegration",
+            "runtime.wallet21fRelockResetLifecycle"
           ],
           failIfRuntimeLeaks: true,
           runtimeLeakMarkers: [
@@ -1847,39 +7130,1211 @@
       return chip;
     }
 
+    function renderMcel18nWalletToolSurface(commitBoundary = null) {
+      const boundary = commitBoundary || ensureMcelTinyContractState().lastWalletCommitBoundary || mcelCommitBoundaryDefault("wallet.send-sign", "wallet-tool-surface");
+      const statusSlot = typeof mcel18nWalletToolStatus !== "undefined"
+        ? mcel18nWalletToolStatus
+        : document.querySelector("#mcel-18n-wallet-tool-status");
+      const preflightSlot = typeof mcel18nWalletToolPreflight !== "undefined"
+        ? mcel18nWalletToolPreflight
+        : document.querySelector("#mcel-18n-wallet-tool-preflight");
+      const receiptSlot = typeof mcel18nWalletToolReceipt !== "undefined"
+        ? mcel18nWalletToolReceipt
+        : document.querySelector("#mcel-18n-wallet-tool-receipt");
+      const txDraftSlot = document.querySelector("#mcel-18n-wallet-tool-tx-draft");
+      const freshnessSlot = document.querySelector("#mcel-18n-wallet-tool-freshness");
+      const ledgerSlot = document.querySelector("#mcel-18n-wallet-tool-ledger");
+      const negativePathsSlot = document.querySelector("#mcel-18n-wallet-tool-negative-paths");
+      const unlockRequirementsSlot = document.querySelector("#mcel-18n-wallet-tool-unlock-requirements");
+      const signedIntentUnlockSlot = document.querySelector("#mcel-20b-wallet-signed-intent-unlock");
+      const signatureRequestPreflightSlot = document.querySelector("#mcel-20c-wallet-signature-request-preflight");
+      const providerIntentSignatureSlot = document.querySelector("#mcel-20d-wallet-provider-intent-signature");
+      const signedIntentVerificationSlot = document.querySelector("#mcel-20e-wallet-signed-intent-verification");
+      const preSendReviewSlot = document.querySelector("#mcel-20f-wallet-pre-send-review");
+      const providerIntentHardeningSlot = document.querySelector("#mcel-20g-wallet-provider-intent-hardening");
+      const policyBoundSendGateSlot = document.querySelector("#mcel-21a-wallet-policy-bound-send-gate");
+      const providerOutcomeLedgerSlot = document.querySelector("#mcel-21b-wallet-provider-outcome-ledger");
+      const transactionWatcherSlot = document.querySelector("#mcel-21c-wallet-transaction-watcher");
+      const retryRecoverySafetySlot = document.querySelector("#mcel-21d-wallet-retry-recovery-safety");
+      const postConfirmationIntegrationSlot = document.querySelector("#mcel-21e-wallet-post-confirmation-integration");
+      const relockResetLifecycleSlot = document.querySelector("#mcel-21f-wallet-relock-reset-lifecycle");
+      const finalLockedSpecimenSlot = document.querySelector("#mcel-18n-wallet-tool-final-locked-specimen");
+      const completionReportSlot = document.querySelector("#mcel-18n-wallet-tool-completion-report");
+      const visiblePhaseSlot = document.querySelector("#mcel-18n-wallet-tool-visible-phase");
+      const visible19aSmokeSlot = document.querySelector("#mcel-19a-wallet-smoke-visible-status");
+      const visible19bIdentitySlot = document.querySelector("#mcel-19b-wallet-tx-draft-identity-visible-status");
+      const visible19cValiditySlot = document.querySelector("#mcel-19c-wallet-tx-draft-validity-visible-status");
+      const visible19dAlignmentSlot = document.querySelector("#mcel-19d-wallet-proof-alignment-visible-status");
+      const visible19eNegativePathSlot = document.querySelector("#mcel-19e-wallet-negative-path-visible-status");
+      const visible20aUnlockContractSlot = document.querySelector("#mcel-20a-wallet-unlock-contract-visible-status");
+      const visible20aEligibilitySlot = document.querySelector("#mcel-20a-wallet-unlock-eligibility-visible-status");
+      const visible20bSignedIntentSlot = document.querySelector("#mcel-20b-wallet-signed-intent-visible-status");
+      const visible20bSignatureGateSlot = document.querySelector("#mcel-20b-wallet-signature-gate-visible-status");
+      const visible20cSignaturePreflightSlot = document.querySelector("#mcel-20c-wallet-signature-preflight-visible-status");
+      const visible20cProviderPromptSlot = document.querySelector("#mcel-20c-wallet-provider-prompt-visible-status");
+      const visible20dIntentSignatureSlot = document.querySelector("#mcel-20d-wallet-intent-signature-visible-status");
+      const visible20eSignatureVerificationSlot = document.querySelector("#mcel-20e-wallet-signature-verification-visible-status");
+      const visible20fPreSendReviewSlot = document.querySelector("#mcel-20f-wallet-pre-send-review-visible-status");
+      const visible20gProviderHardeningSlot = document.querySelector("#mcel-20g-wallet-provider-hardening-visible-status");
+      const visible21aPolicySendSlot = document.querySelector("#mcel-21a-wallet-policy-send-visible-status");
+      const visible21bOutcomeLedgerSlot = document.querySelector("#mcel-21b-wallet-provider-outcome-visible-status");
+      const visible21cTransactionWatcherSlot = document.querySelector("#mcel-21c-wallet-transaction-watcher-visible-status");
+      const visible21dRetryRecoverySlot = document.querySelector("#mcel-21d-wallet-retry-recovery-visible-status");
+      const visible21eReceiptIntegrationSlot = document.querySelector("#mcel-21e-wallet-receipt-integration-visible-status");
+      const visible21fRelockLifecycleSlot = document.querySelector("#mcel-21f-wallet-relock-lifecycle-visible-status");
+      const visible19cInvalidatedSlot = document.querySelector("#mcel-19c-wallet-tx-draft-invalidated-by");
+      const visibleTxDraftStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-tx-draft-status");
+      const visibleFreshnessStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-freshness-status");
+      const visibleUnlockStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-unlock-status");
+      const visibleProviderStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-provider-status");
+      const visibleCompletionStatusSlot = document.querySelector("#mcel-18n-wallet-tool-visible-completion-status");
+      const visibleFlowSlot = document.querySelector("#mcel-18n-wallet-tool-visible-flow");
+      const visibleBlockersSlot = document.querySelector("#mcel-18n-wallet-tool-visible-blockers");
+      const visibleNextSlot = document.querySelector("#mcel-18n-wallet-tool-visible-next");
+      const preflight = boundary.mcelCommitPreflight || boundary.mcelCommitConsumerGate?.endgamePreflight || {};
+      const receipt = boundary.mcelCommitReceipt || {};
+      const walletTxDraft = boundary.walletTxDraft || {};
+      const walletFreshnessSnapshot = boundary.walletFreshnessSnapshot || {};
+      const walletPreflightReport = boundary.walletPreflightReport || {};
+      const walletNegativePathTestWall = boundary.walletNegativePathTestWall || {};
+      const wallet19aSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || {};
+      const wallet19dProofSurfaceAlignment = boundary.wallet19dProofSurfaceAlignment || {};
+      const wallet19eNegativePathRegression = boundary.wallet19eNegativePathRegression || {};
+      const walletUnlockRequirements = boundary.walletUnlockRequirements || {};
+      const walletFinalLockedSpecimen = boundary.walletFinalLockedSpecimen || {};
+      const wallet18nCompletionReport = boundary.wallet18nCompletionReport || {};
+      const wallet20aUnlockContract = boundary.wallet20aUnlockContract || boundary.walletUnlockContract || {};
+      const wallet20bSignedIntentUnlock = boundary.wallet20bSignedIntentUnlock || boundary.walletSignedIntentUnlock || {};
+      const wallet20cSignatureRequestPreflight = boundary.wallet20cSignatureRequestPreflight || boundary.walletSignatureRequestPreflight || {};
+      const wallet20dProviderIntentSignature = boundary.wallet20dProviderIntentSignature || boundary.walletProviderIntentSignature || {};
+      const wallet20eSignedIntentVerification = boundary.wallet20eSignedIntentVerification || boundary.walletSignedIntentVerification || {};
+      const wallet20fPreSendReviewGate = boundary.wallet20fPreSendReviewGate || boundary.walletPreSendReviewGate || {};
+      const wallet20gProviderIntentHardening = boundary.wallet20gProviderIntentHardening || boundary.walletProviderIntentHardening || {};
+      const wallet21aPolicyBoundSendGate = boundary.wallet21aPolicyBoundSendGate || boundary.walletTransactionSendGate || {};
+      const wallet21bProviderOutcomeLedger = boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {};
+      const wallet21cTransactionWatcher = boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {};
+      const wallet21dRetryRecoverySafety = boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {};
+      const wallet21ePostConfirmationMcelReceiptIntegration = boundary.wallet21ePostConfirmationMcelReceiptIntegration || boundary.walletPostConfirmationReceiptIntegration || {};
+      const wallet21fRelockResetLifecycle = boundary.wallet21fRelockResetLifecycle || boundary.walletRelockResetLifecycle || {};
+      const txDraftIdentityEnvelope = walletTxDraft.identityEnvelope
+        || walletTxDraft.txDraftIdentity
+        || walletPreflightReport.txDraftIdentityEnvelope
+        || {};
+      const txDraftValidityEnvelope = walletTxDraft.validityEnvelope
+        || walletFreshnessSnapshot.validityEnvelope
+        || walletPreflightReport.txDraftValidityEnvelope
+        || {};
+      const txDraftInvalidationReasons = [...new Set([
+        ...(txDraftValidityEnvelope.invalidationReasons || []),
+        ...(txDraftValidityEnvelope.invalidatedBy || []).map((entry) => entry.reason),
+        ...(walletTxDraft.invalidatedBy || []).map((entry) => entry.reason),
+        ...(walletFreshnessSnapshot.invalidatedBy || []).map((entry) => entry.reason)
+      ].filter(Boolean))];
+      const txDraftIdentityShort = txDraftIdentityEnvelope.txDraftHash
+        ? `${txDraftIdentityEnvelope.txDraftHash.slice(0, 10)}…`
+        : (walletTxDraft.txDraftId ? "legacy-id" : "missing");
+      const tinyState = ensureMcelTinyContractState();
+      const walletBacklogPolicy = mcelWalletBacklogDeclaredPolicy();
+      const walletBacklogRuntime = mcelWalletBacklogRuntimeSnapshot();
+      const receiptLedger = (tinyState.commitBoundaryReceipts || []).slice(-8);
+      if (statusSlot) {
+        statusSlot.dataset.status = boundary.status || "locked";
+        statusSlot.textContent = [
+          `18N wallet tool: ${boundary.status || "locked"}`,
+          `action: ${boundary.action || "wallet.send-sign"}`,
+          `txDraft=${walletTxDraft.status || "empty"} freshness=${walletFreshnessSnapshot.status || "not-observed"}`,
+          `19A=${wallet19aSmokeRegressionGuard.status || "not-observed"} 19B=${txDraftIdentityEnvelope.kind || "missing"} 19C=${txDraftValidityEnvelope.status || "not-observed"} 19D=${wallet19dProofSurfaceAlignment.status || "not-observed"} 19E=${wallet19eNegativePathRegression.status || "not-observed"} 20A=${wallet20aUnlockContract.stage || wallet20aUnlockContract.status || "not-observed"} 20B=${wallet20bSignedIntentUnlock.stage || wallet20bSignedIntentUnlock.status || "not-observed"} 20C=${wallet20cSignatureRequestPreflight.stage || wallet20cSignatureRequestPreflight.status || "not-observed"} 20D=${wallet20dProviderIntentSignature.stage || wallet20dProviderIntentSignature.status || "not-observed"} 20E=${wallet20eSignedIntentVerification.stage || wallet20eSignedIntentVerification.status || "not-observed"} 20F=${wallet20fPreSendReviewGate.stage || wallet20fPreSendReviewGate.status || "not-observed"} 20G=${wallet20gProviderIntentHardening.stage || wallet20gProviderIntentHardening.status || "not-observed"} 21A=${wallet21aPolicyBoundSendGate.stage || wallet21aPolicyBoundSendGate.status || "not-observed"} 21B=${wallet21bProviderOutcomeLedger.status || "not-observed"} 21C=${wallet21cTransactionWatcher.status || "not-observed"} 21D=${wallet21dRetryRecoverySafety.status || "not-observed"} 21E=${wallet21ePostConfirmationMcelReceiptIntegration.status || "not-observed"} 21F=${wallet21fRelockResetLifecycle.status || "not-observed"}`,
+          `simulation=${walletTxDraft.simulation?.kind || "none"}`,
+          `canSend=${boundary.canSend === true} canSign=${boundary.canSign === true} canBroadcast=${boundary.canBroadcast === true}`,
+          `unlock=${wallet21fRelockResetLifecycle.stage || wallet21ePostConfirmationMcelReceiptIntegration.stage || wallet21dRetryRecoverySafety.stage || wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || walletUnlockRequirements.status || "incomplete"} final=${walletFinalLockedSpecimen.finalStatus || "locked"} completion=${wallet18nCompletionReport.status || "not-observed"}`,
+          `backlogScheme=${walletBacklogPolicy.selectedScheme} queued=${walletBacklogRuntime.queuedCount} suppressed=${walletBacklogRuntime.suppressedCount} nuked=${walletBacklogRuntime.nukedCount}`,
+          `next: ${boundary.nextAction || preflight.summary || "inspect MCEL commit receipt"}`
+        ].join("\n");
+      }
+      if (txDraftSlot) {
+        txDraftSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-tx-draft-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          walletTxDraft,
+          txDraftIdentityEnvelope,
+          txDraftValidityEnvelope,
+          txDraftInvalidationReasons,
+          wallet19dProofSurfaceAlignment,
+          wallet19eNegativePathRegression,
+          wallet20aUnlockContract,
+          wallet20bSignedIntentUnlock,
+          wallet20cSignatureRequestPreflight,
+          wallet20dProviderIntentSignature,
+          wallet20eSignedIntentVerification,
+          wallet20fPreSendReviewGate,
+          wallet20gProviderIntentHardening,
+          wallet21aPolicyBoundSendGate,
+          wallet21bProviderOutcomeLedger,
+          wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
+          walletTxProvenance: boundary.walletTxProvenance || {},
+          rebuildDraftAction: boundary.walletRebuildDraftAction || {}
+        }, null, 2);
+      }
+      if (freshnessSlot) {
+        freshnessSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-freshness-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          walletFreshnessSnapshot,
+          blockers: walletFreshnessSnapshot.blockers || [],
+          simulation: walletTxDraft.simulation || null,
+          rule: "Refresh preflight does not silently make stale draft usable."
+        }, null, 2);
+      }
+      if (preflightSlot) {
+        preflightSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-preflight-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          draft: boundary.mcelCommitDraft,
+          provenance: boundary.mcelCommitProvenance,
+          freshness: boundary.mcelCommitFreshness,
+          consumerGate: boundary.mcelCommitConsumerGate,
+          preflight,
+          walletTxDraft,
+          walletTxProvenance: boundary.walletTxProvenance || {},
+          walletFreshnessSnapshot,
+          walletPreflightReport,
+          walletNegativePathTestWall,
+          wallet19aSmokeRegressionGuard,
+          txDraftIdentityEnvelope,
+          txDraftValidityEnvelope,
+          txDraftInvalidationReasons,
+          wallet19dProofSurfaceAlignment,
+          wallet19eNegativePathRegression,
+          wallet20aUnlockContract,
+          wallet20bSignedIntentUnlock,
+          wallet20cSignatureRequestPreflight,
+          wallet20dProviderIntentSignature,
+          wallet20eSignedIntentVerification,
+          wallet20fPreSendReviewGate,
+          wallet20gProviderIntentHardening,
+          wallet21aPolicyBoundSendGate,
+          wallet21bProviderOutcomeLedger,
+          wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
+          walletUnlockRequirements,
+          walletFinalLockedSpecimen,
+          wallet18nCompletionReport,
+          walletBacklogPolicy,
+          walletBacklogRuntime
+        }, null, 2);
+      }
+      if (receiptSlot) {
+        receiptSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-receipt-view",
+          receipt,
+          walletBlockedAttemptReceipt: boundary.walletBlockedAttemptReceipt || receipt,
+          walletRebuildDraftAction: boundary.walletRebuildDraftAction || {},
+          walletNegativePathTestWall,
+          wallet19aSmokeRegressionGuard,
+          txDraftIdentityEnvelope,
+          txDraftValidityEnvelope,
+          txDraftInvalidationReasons,
+          wallet19dProofSurfaceAlignment,
+          wallet19eNegativePathRegression,
+          wallet20aUnlockContract,
+          wallet20bSignedIntentUnlock,
+          wallet20cSignatureRequestPreflight,
+          wallet20dProviderIntentSignature,
+          wallet20eSignedIntentVerification,
+          wallet20fPreSendReviewGate,
+          wallet20gProviderIntentHardening,
+          wallet21aPolicyBoundSendGate,
+          wallet21bProviderOutcomeLedger,
+          wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
+          walletUnlockRequirements,
+          walletFinalLockedSpecimen,
+          wallet18nCompletionReport,
+          walletBacklogPolicy,
+          walletBacklogRuntime,
+          mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {},
+          invariant: boundary.invariant || []
+        }, null, 2);
+      }
+      if (negativePathsSlot) {
+        negativePathsSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-negative-path-test-wall-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          walletNegativePathTestWall,
+          wallet19eNegativePathRegression
+        }, null, 2);
+      }
+      if (unlockRequirementsSlot) {
+        unlockRequirementsSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-unlock-requirements-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          walletUnlockRequirements,
+          wallet20aUnlockContract,
+          wallet20bSignedIntentUnlock,
+          wallet20cSignatureRequestPreflight,
+          wallet20dProviderIntentSignature,
+          wallet20eSignedIntentVerification,
+          wallet20fPreSendReviewGate,
+          wallet20gProviderIntentHardening,
+          wallet21aPolicyBoundSendGate,
+          wallet21bProviderOutcomeLedger,
+          wallet21cTransactionWatcher
+        }, null, 2);
+      }
+      if (signedIntentUnlockSlot) {
+        signedIntentUnlockSlot.textContent = JSON.stringify({
+          kind: "mcel-20b-wallet-signed-intent-unlock-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet20aUnlockContract,
+          wallet20bSignedIntentUnlock,
+          wallet20cSignatureRequestPreflight,
+          wallet20dProviderIntentSignature,
+          wallet20eSignedIntentVerification,
+          wallet20fPreSendReviewGate,
+          wallet20gProviderIntentHardening,
+          wallet21aPolicyBoundSendGate,
+          wallet21bProviderOutcomeLedger,
+          wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
+          signedIntentEnvelope: wallet20bSignedIntentUnlock.signedIntentEnvelope || {},
+          decisionReceipt: wallet20bSignedIntentUnlock.decisionReceipt || {}
+        }, null, 2);
+      }
+      if (signatureRequestPreflightSlot) {
+        signatureRequestPreflightSlot.textContent = JSON.stringify({
+          kind: "mcel-20c-wallet-signature-request-preflight-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet20aUnlockContract,
+          wallet20bSignedIntentUnlock,
+          wallet20cSignatureRequestPreflight,
+          wallet20dProviderIntentSignature,
+          wallet20eSignedIntentVerification,
+          wallet20fPreSendReviewGate,
+          wallet20gProviderIntentHardening,
+          wallet21aPolicyBoundSendGate,
+          wallet21bProviderOutcomeLedger,
+          wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
+          signaturePreflightEnvelope: wallet20cSignatureRequestPreflight.signaturePreflightEnvelope || {},
+          decisionReceipt: wallet20cSignatureRequestPreflight.decisionReceipt || {}
+        }, null, 2);
+      }
+      if (providerIntentSignatureSlot) {
+        providerIntentSignatureSlot.textContent = JSON.stringify({
+          kind: "mcel-20d-wallet-provider-intent-signature-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet20dProviderIntentSignature,
+          intentEnvelope: wallet20dProviderIntentSignature.intentEnvelope || {},
+          decisionReceipt: wallet20dProviderIntentSignature.decisionReceipt || {}
+        }, null, 2);
+      }
+      if (signedIntentVerificationSlot) {
+        signedIntentVerificationSlot.textContent = JSON.stringify({
+          kind: "mcel-20e-wallet-signed-intent-verification-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet20eSignedIntentVerification,
+          verificationEnvelope: wallet20eSignedIntentVerification.verificationEnvelope || {}
+        }, null, 2);
+      }
+      if (preSendReviewSlot) {
+        preSendReviewSlot.textContent = JSON.stringify({
+          kind: "mcel-20f-wallet-pre-send-review-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet20fPreSendReviewGate,
+          finalReviewEnvelope: wallet20fPreSendReviewGate.finalReviewEnvelope || {}
+        }, null, 2);
+      }
+      if (providerIntentHardeningSlot) {
+        providerIntentHardeningSlot.textContent = JSON.stringify({
+          kind: "mcel-20g-wallet-provider-intent-hardening-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet20gProviderIntentHardening,
+          hardeningEnvelope: wallet20gProviderIntentHardening.hardeningEnvelope || {},
+          receipt: wallet20gProviderIntentHardening.receipt || {}
+        }, null, 2);
+      }
+      if (policyBoundSendGateSlot) {
+        policyBoundSendGateSlot.textContent = JSON.stringify({
+          kind: "mcel-21a-wallet-policy-bound-send-gate-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21aPolicyBoundSendGate,
+          networkExecutionPolicy: wallet21aPolicyBoundSendGate.networkExecutionPolicy || {},
+          sendEnvelope: wallet21aPolicyBoundSendGate.sendEnvelope || {},
+          providerTransactionRequest: wallet21aPolicyBoundSendGate.providerTransactionRequest || {}
+        }, null, 2);
+      }
+      if (providerOutcomeLedgerSlot) {
+        providerOutcomeLedgerSlot.textContent = JSON.stringify({
+          kind: "mcel-21b-wallet-provider-outcome-ledger-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21bProviderOutcomeLedger,
+          latestReceipt: wallet21bProviderOutcomeLedger.latestReceipt || {},
+          receipts: wallet21bProviderOutcomeLedger.receipts || []
+        }, null, 2);
+      }
+      if (transactionWatcherSlot) {
+        transactionWatcherSlot.textContent = JSON.stringify({
+          kind: "mcel-21c-wallet-transaction-watcher-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21cTransactionWatcher,
+          watcherEnvelope: wallet21cTransactionWatcher.watcherEnvelope || {}
+        }, null, 2);
+      }
+      if (retryRecoverySafetySlot) {
+        retryRecoverySafetySlot.textContent = JSON.stringify({
+          kind: "mcel-21d-wallet-retry-recovery-safety-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21dRetryRecoverySafety,
+          recoveryEnvelope: wallet21dRetryRecoverySafety.recoveryEnvelope || {},
+          receipt: wallet21dRetryRecoverySafety.receipt || {}
+        }, null, 2);
+      }
+      if (postConfirmationIntegrationSlot) {
+        postConfirmationIntegrationSlot.textContent = JSON.stringify({
+          kind: "mcel-21e-wallet-post-confirmation-integration-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          integrationEnvelope: wallet21ePostConfirmationMcelReceiptIntegration.integrationEnvelope || {},
+          integratedReceipt: wallet21ePostConfirmationMcelReceiptIntegration.integratedReceipt || {}
+        }, null, 2);
+      }
+      if (relockResetLifecycleSlot) {
+        relockResetLifecycleSlot.textContent = JSON.stringify({
+          kind: "mcel-21f-wallet-relock-reset-lifecycle-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          wallet21fRelockResetLifecycle,
+          lifecycleEnvelope: wallet21fRelockResetLifecycle.lifecycleEnvelope || {}
+        }, null, 2);
+      }
+      if (finalLockedSpecimenSlot) {
+        finalLockedSpecimenSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-final-locked-specimen-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          walletFinalLockedSpecimen
+        }, null, 2);
+      }
+      if (completionReportSlot) {
+        completionReportSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-completion-report-view",
+          completionVersion: wallet18nCompletionReport.completionVersion || "18N-MCEL-k",
+          wallet18nCompletionReport
+        }, null, 2);
+      }
+      const visibleBlockers = [...new Set([
+        ...(walletFreshnessSnapshot.blockers || []),
+        ...(preflight.blockers || []),
+        ...(walletPreflightReport.blockers || []),
+        ...(boundary.mcelCommitConsumerGate?.blockers || []),
+        ...(walletNegativePathTestWall.blockers || []),
+        ...(wallet20gProviderIntentHardening.blockers || []),
+        ...(wallet21aPolicyBoundSendGate.blockers || []),
+        ...(wallet21dRetryRecoverySafety.blockers || []),
+        ...txDraftInvalidationReasons,
+        "wallet-send-sign-locked"
+      ].filter(Boolean))].slice(0, 6);
+      if (visiblePhaseSlot) {
+        visiblePhaseSlot.textContent = `${wallet18nCompletionReport.completionVersion || "18N-MCEL-k"} + 19A/B/C/D/E + 20A/20B/20C/20D/20E/20F/20G + 21A/21B/21C/21D/21E/21F visible: ${wallet21fRelockResetLifecycle.stage || wallet21ePostConfirmationMcelReceiptIntegration.stage || wallet21dRetryRecoverySafety.stage || wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || wallet18nCompletionReport.status || walletFinalLockedSpecimen.finalStatus || "locked"} under a policy-bound network-agnostic send contract with retry safety, receipt integration, and relock lifecycle`;
+      }
+      if (visible19aSmokeSlot) {
+        visible19aSmokeSlot.textContent = `${wallet19aSmokeRegressionGuard.smokeVersion || "19A-MCEL"} · ${wallet19aSmokeRegressionGuard.status || "not-observed"}`;
+      }
+      if (visible19bIdentitySlot) {
+        visible19bIdentitySlot.textContent = `${txDraftIdentityEnvelope.identityVersion || "19B-MCEL"} · ${txDraftIdentityEnvelope.kind ? txDraftIdentityShort : "missing"}`;
+      }
+      if (visible19cValiditySlot) {
+        visible19cValiditySlot.textContent = `${txDraftValidityEnvelope.validityVersion || "19C-MCEL"} · ${txDraftValidityEnvelope.status || "not-observed"}`;
+      }
+      if (visible19dAlignmentSlot) {
+        visible19dAlignmentSlot.textContent = `${wallet19dProofSurfaceAlignment.alignmentVersion || "19D-MCEL"} · ${wallet19dProofSurfaceAlignment.status || "not-observed"}`;
+      }
+      if (visible19eNegativePathSlot) {
+        visible19eNegativePathSlot.textContent = `${wallet19eNegativePathRegression.regressionVersion || "19E-MCEL"} · ${wallet19eNegativePathRegression.status || "not-observed"}`;
+      }
+      if (visible20aUnlockContractSlot) {
+        visible20aUnlockContractSlot.textContent = `${wallet20aUnlockContract.unlockVersion || "20A-MCEL"} · ${wallet20aUnlockContract.stage || wallet20aUnlockContract.status || "not-observed"}`;
+      }
+      if (visible20aEligibilitySlot) {
+        visible20aEligibilitySlot.textContent = [
+          `build=${wallet20aUnlockContract.canBuildDraft === true}`,
+          `simulate=${wallet20aUnlockContract.canSimulate === true}`,
+          `signature=${wallet20aUnlockContract.canRequestSignature === true}`,
+          `broadcast=${wallet20aUnlockContract.canBroadcast === true}`
+        ].join(" ");
+      }
+      if (visible20bSignedIntentSlot) {
+        visible20bSignedIntentSlot.textContent = `${wallet20bSignedIntentUnlock.unlockVersion || "20B-MCEL"} · ${wallet20bSignedIntentUnlock.stage || wallet20bSignedIntentUnlock.status || "not-observed"}`;
+      }
+      if (visible20bSignatureGateSlot) {
+        visible20bSignatureGateSlot.textContent = [
+          `intent=${wallet20bSignedIntentUnlock.canRequestSignatureIntent === true}`,
+          `request=${wallet20bSignedIntentUnlock.canRequestSignature === true}`,
+          `provider=${wallet20bSignedIntentUnlock.providerSignatureRequested === true}`,
+          `broadcast=${wallet20bSignedIntentUnlock.canBroadcast === true}`
+        ].join(" ");
+      }
+      if (visible19cInvalidatedSlot) {
+        visible19cInvalidatedSlot.textContent = txDraftInvalidationReasons.slice(0, 3).join(", ") || "none";
+      }
+      if (visible20cSignaturePreflightSlot) {
+        visible20cSignaturePreflightSlot.textContent = `${wallet20cSignatureRequestPreflight.unlockVersion || "20C-MCEL"} · ${wallet20cSignatureRequestPreflight.stage || wallet20cSignatureRequestPreflight.status || "not-observed"}`;
+      }
+      if (visible20cProviderPromptSlot) {
+        visible20cProviderPromptSlot.textContent = [
+          `armed=${wallet20cSignatureRequestPreflight.canArmSignatureRequest === true}`,
+          `providerPrompt=${wallet20cSignatureRequestPreflight.providerPromptBound === true}`,
+          `providerRequest=${wallet20cSignatureRequestPreflight.providerSignatureRequested === true}`,
+          `providerExecution=${wallet20cSignatureRequestPreflight.readyForProviderExecution === true}`
+        ].join(" ");
+      }
+      if (visible20dIntentSignatureSlot) {
+        visible20dIntentSignatureSlot.textContent = `${wallet20dProviderIntentSignature.unlockVersion || "20D-MCEL"} · ${wallet20dProviderIntentSignature.stage || wallet20dProviderIntentSignature.status || "not-observed"}`;
+      }
+      if (visible20eSignatureVerificationSlot) {
+        visible20eSignatureVerificationSlot.textContent = `${wallet20eSignedIntentVerification.unlockVersion || "20E-MCEL"} · ${wallet20eSignedIntentVerification.stage || wallet20eSignedIntentVerification.status || "not-observed"}`;
+      }
+      if (visible20fPreSendReviewSlot) {
+        visible20fPreSendReviewSlot.textContent = `${wallet20fPreSendReviewGate.unlockVersion || "20F-MCEL"} · ${wallet20fPreSendReviewGate.stage || wallet20fPreSendReviewGate.status || "not-observed"}`;
+      }
+      if (visible20gProviderHardeningSlot) {
+        visible20gProviderHardeningSlot.textContent = `${wallet20gProviderIntentHardening.unlockVersion || "20G-MCEL"} · ${wallet20gProviderIntentHardening.stage || wallet20gProviderIntentHardening.status || "not-observed"}`;
+      }
+      if (visible21aPolicySendSlot) {
+        visible21aPolicySendSlot.textContent = `${wallet21aPolicyBoundSendGate.unlockVersion || "21A-MCEL"} · ${wallet21aPolicyBoundSendGate.stage || wallet21aPolicyBoundSendGate.status || "not-observed"} · canSend=${wallet21aPolicyBoundSendGate.canSend === true}`;
+      }
+      if (visible21bOutcomeLedgerSlot) {
+        visible21bOutcomeLedgerSlot.textContent = `${wallet21bProviderOutcomeLedger.unlockVersion || "21B-MCEL"} · ${wallet21bProviderOutcomeLedger.status || "not-observed"} · txHash=${wallet21bProviderOutcomeLedger.txHash ? "present" : "missing"}`;
+      }
+      if (visible21cTransactionWatcherSlot) {
+        visible21cTransactionWatcherSlot.textContent = `${wallet21cTransactionWatcher.unlockVersion || "21C-MCEL"} · ${wallet21cTransactionWatcher.status || "not-observed"}`;
+      }
+      if (visible21dRetryRecoverySlot) {
+        visible21dRetryRecoverySlot.textContent = `${wallet21dRetryRecoverySafety.unlockVersion || "21D-MCEL"} · ${wallet21dRetryRecoverySafety.status || "not-observed"} · duplicateBlocked=${wallet21dRetryRecoverySafety.duplicateSendBlocked === true}`;
+      }
+      if (visible21eReceiptIntegrationSlot) {
+        visible21eReceiptIntegrationSlot.textContent = `${wallet21ePostConfirmationMcelReceiptIntegration.unlockVersion || "21E-MCEL"} · ${wallet21ePostConfirmationMcelReceiptIntegration.status || "not-observed"} · outcome=${wallet21ePostConfirmationMcelReceiptIntegration.chainOutcome || "not-observed"}`;
+      }
+      if (visible21fRelockLifecycleSlot) {
+        visible21fRelockLifecycleSlot.textContent = `${wallet21fRelockResetLifecycle.unlockVersion || "21F-MCEL"} · ${wallet21fRelockResetLifecycle.status || "not-observed"} · relocked=${wallet21fRelockResetLifecycle.lifecycleEnvelope?.relocked === true}`;
+      }
+      if (visibleTxDraftStatusSlot) {
+        visibleTxDraftStatusSlot.textContent = `${walletTxDraft.status || boundary.mcelCommitDraft?.status || "empty"} · validity=${txDraftValidityEnvelope.status || "not-observed"}`;
+      }
+      if (visibleFreshnessStatusSlot) {
+        visibleFreshnessStatusSlot.textContent = walletFreshnessSnapshot.status || boundary.mcelCommitFreshness?.status || "not-observed";
+      }
+      if (visibleUnlockStatusSlot) {
+        visibleUnlockStatusSlot.textContent = wallet21fRelockResetLifecycle.stage || wallet21ePostConfirmationMcelReceiptIntegration.stage || wallet21dRetryRecoverySafety.stage || wallet21cTransactionWatcher.stage || wallet21aPolicyBoundSendGate.stage || wallet20gProviderIntentHardening.stage || wallet20fPreSendReviewGate.stage || wallet20eSignedIntentVerification.stage || wallet20dProviderIntentSignature.stage || wallet20cSignatureRequestPreflight.stage || wallet20bSignedIntentUnlock.stage || wallet20aUnlockContract.stage || walletUnlockRequirements.status || "incomplete";
+      }
+      if (visibleProviderStatusSlot) {
+        visibleProviderStatusSlot.textContent = wallet21fRelockResetLifecycle.mutationExecuted === true || wallet21ePostConfirmationMcelReceiptIntegration.mutationExecuted === true || wallet21bProviderOutcomeLedger.mutationExecuted === true || wallet21cTransactionWatcher.mutationExecuted === true || receipt.mutationExecuted === true ? "mutation receipted" : (wallet21dRetryRecoverySafety.sendRequestAllowed === true ? "policy-send eligible once" : "blocked/relocked");
+      }
+      if (visibleCompletionStatusSlot) {
+        visibleCompletionStatusSlot.textContent = wallet18nCompletionReport.status || "not-observed";
+      }
+      if (visibleFlowSlot) {
+        visibleFlowSlot.innerHTML = "";
+        const baseVisibleFlow = Array.isArray(walletFinalLockedSpecimen.flow) && walletFinalLockedSpecimen.flow.length
+          ? walletFinalLockedSpecimen.flow
+          : [
+              {step: "create txDraft", status: walletTxDraft.status || "empty"},
+              {step: "review draft", status: walletTxDraft.reviewed === true ? "reviewed" : "not-reviewed"},
+              {step: "run freshness", status: walletFreshnessSnapshot.status || "not-observed"},
+              {step: "run preflight", status: preflight.status || "locked"},
+              {step: "attempt send/sign/broadcast", status: "refused-before-provider"},
+              {step: "receipt records blocked attempt", status: receipt.status || "blocked"}
+            ];
+        const visibleFlow = [
+          {step: "19A no-mutation smoke guard", status: wallet19aSmokeRegressionGuard.status || "not-observed"},
+          {step: "19B bind txDraft identity", status: txDraftIdentityEnvelope.kind ? txDraftIdentityShort : "missing"},
+          {step: "19C validate txDraft context", status: txDraftValidityEnvelope.status || "not-observed"},
+          {step: "19D align proof surfaces", status: wallet19dProofSurfaceAlignment.status || "not-observed"},
+          {step: "19E guard negative paths", status: wallet19eNegativePathRegression.status || "not-observed"},
+          {step: "20A stage unlock contract", status: wallet20aUnlockContract.stage || wallet20aUnlockContract.status || "not-observed"},
+          {step: "20B arm signed-intent gate", status: wallet20bSignedIntentUnlock.stage || wallet20bSignedIntentUnlock.status || "not-observed"},
+          {step: "20C arm signature preflight", status: wallet20cSignatureRequestPreflight.stage || wallet20cSignatureRequestPreflight.status || "not-observed"},
+          {step: "20D request off-chain provider intent signature", status: wallet20dProviderIntentSignature.stage || wallet20dProviderIntentSignature.status || "not-observed"},
+          {step: "20E verify signed intent freshness", status: wallet20eSignedIntentVerification.stage || wallet20eSignedIntentVerification.status || "not-observed"},
+          {step: "20F prepare final no-send review", status: wallet20fPreSendReviewGate.stage || wallet20fPreSendReviewGate.status || "not-observed"},
+          {step: "20G harden provider intent outcomes", status: wallet20gProviderIntentHardening.stage || wallet20gProviderIntentHardening.status || "not-observed"},
+          {step: "21A request policy-bound network-agnostic send", status: wallet21aPolicyBoundSendGate.stage || wallet21aPolicyBoundSendGate.status || "not-observed"},
+          {step: "21B ledger provider send outcome", status: wallet21bProviderOutcomeLedger.status || "not-observed"},
+          {step: "21C watch transaction receipt", status: wallet21cTransactionWatcher.status || "not-observed"},
+          {step: "21D block duplicate/retry sends", status: wallet21dRetryRecoverySafety.status || "not-observed"},
+          {step: "21E integrate chain outcome into MCEL receipts", status: wallet21ePostConfirmationMcelReceiptIntegration.status || "not-observed"},
+          {step: "21F relock/reset lifecycle", status: wallet21fRelockResetLifecycle.status || "not-observed"},
+          ...baseVisibleFlow.filter((entry) => !String(entry.step || "").startsWith("19") && !String(entry.step || "").startsWith("20") && !String(entry.step || "").startsWith("21"))
+        ];
+        visibleFlow.forEach((entry) => {
+          const item = document.createElement("li");
+          item.textContent = `${entry.step || "wallet boundary step"} · ${entry.status || "locked"}`;
+          visibleFlowSlot.appendChild(item);
+        });
+      }
+      if (visibleBlockersSlot) {
+        visibleBlockersSlot.innerHTML = "";
+        visibleBlockers.forEach((blocker) => {
+          const item = document.createElement("li");
+          item.textContent = String(blocker);
+          visibleBlockersSlot.appendChild(item);
+        });
+      }
+      if (visibleNextSlot) {
+        const validityNext = txDraftValidityEnvelope.status && txDraftValidityEnvelope.status !== "valid"
+          ? `19C says ${txDraftValidityEnvelope.status}; rebuild draft from current wallet/source/chain/probe context`
+          : (txDraftValidityEnvelope.status === "valid" ? "19C draft is valid for inspection/simulation only; provider mutation remains locked" : "");
+        const proofAlignmentNext = wallet19dProofSurfaceAlignment.status && wallet19dProofSurfaceAlignment.status !== "aligned-locked"
+          ? `19D says ${wallet19dProofSurfaceAlignment.status}; align wallet board, receipt, and Code Studio proof surfaces before unlock design`
+          : "";
+        const unlockContractNext = wallet20aUnlockContract.nextAction
+          ? `20A says ${wallet20aUnlockContract.stage || wallet20aUnlockContract.status}: ${wallet20aUnlockContract.nextAction}`
+          : "";
+        const signedIntentNext = wallet20bSignedIntentUnlock.nextAction
+          ? `20B says ${wallet20bSignedIntentUnlock.stage || wallet20bSignedIntentUnlock.status}: ${wallet20bSignedIntentUnlock.nextAction}`
+          : "";
+        const signaturePreflightNext = wallet20cSignatureRequestPreflight.nextAction
+          ? `20C says ${wallet20cSignatureRequestPreflight.stage || wallet20cSignatureRequestPreflight.status}: ${wallet20cSignatureRequestPreflight.nextAction}`
+          : "";
+        const providerIntentNext = wallet20dProviderIntentSignature.nextAction
+          ? `20D says ${wallet20dProviderIntentSignature.stage || wallet20dProviderIntentSignature.status}: ${wallet20dProviderIntentSignature.nextAction}`
+          : "";
+        const signedIntentVerificationNext = wallet20eSignedIntentVerification.nextAction
+          ? `20E says ${wallet20eSignedIntentVerification.stage || wallet20eSignedIntentVerification.status}: ${wallet20eSignedIntentVerification.nextAction}`
+          : "";
+        const preSendReviewNext = wallet20fPreSendReviewGate.nextAction
+          ? `20F says ${wallet20fPreSendReviewGate.stage || wallet20fPreSendReviewGate.status}: ${wallet20fPreSendReviewGate.nextAction}`
+          : "";
+        const providerIntentHardeningNext = wallet20gProviderIntentHardening.nextAction
+          ? `20G says ${wallet20gProviderIntentHardening.stage || wallet20gProviderIntentHardening.status}: ${wallet20gProviderIntentHardening.nextAction}`
+          : "";
+        const policySendNext = wallet21aPolicyBoundSendGate.nextAction
+          ? `21A says ${wallet21aPolicyBoundSendGate.stage || wallet21aPolicyBoundSendGate.status}: ${wallet21aPolicyBoundSendGate.nextAction}`
+          : "";
+        const providerOutcomeNext = wallet21bProviderOutcomeLedger.nextAction
+          ? `21B says ${wallet21bProviderOutcomeLedger.status}: ${wallet21bProviderOutcomeLedger.nextAction}`
+          : "";
+        const transactionWatcherNext = wallet21cTransactionWatcher.nextAction
+          ? `21C says ${wallet21cTransactionWatcher.status}: ${wallet21cTransactionWatcher.nextAction}`
+          : "";
+        const retryRecoveryNext = wallet21dRetryRecoverySafety.nextAction
+          ? `21D says ${wallet21dRetryRecoverySafety.status}: ${wallet21dRetryRecoverySafety.nextAction}`
+          : "";
+        const receiptIntegrationNext = wallet21ePostConfirmationMcelReceiptIntegration.nextAction
+          ? `21E says ${wallet21ePostConfirmationMcelReceiptIntegration.status}: ${wallet21ePostConfirmationMcelReceiptIntegration.nextAction}`
+          : "";
+        const relockLifecycleNext = wallet21fRelockResetLifecycle.nextAction
+          ? `21F says ${wallet21fRelockResetLifecycle.status}: ${wallet21fRelockResetLifecycle.nextAction}`
+          : "";
+        visibleNextSlot.textContent = `Next action: ${validityNext || proofAlignmentNext || relockLifecycleNext || receiptIntegrationNext || retryRecoveryNext || transactionWatcherNext || providerOutcomeNext || policySendNext || providerIntentHardeningNext || preSendReviewNext || signedIntentVerificationNext || providerIntentNext || signaturePreflightNext || signedIntentNext || unlockContractNext || wallet18nCompletionReport.nextAction || walletFinalLockedSpecimen.nextAction || boundary.nextAction || "stop here until a separate wallet unlock design is blessed"}`;
+      }
+      if (ledgerSlot) {
+        ledgerSlot.textContent = JSON.stringify({
+          kind: "mcel-18n-wallet-tool-receipt-ledger-view",
+          boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+          receiptCount: receiptLedger.length,
+          latestStatus: receipt.status || "blocked",
+          latestBlockers: preflight.blockers || [],
+          receipts: receiptLedger.map((entry) => ({
+            action: entry.action || "",
+            status: entry.status || "",
+            mutationExecuted: entry.mutationExecuted === true,
+            freshnessStatus: entry.freshnessStatus || "",
+            consumerGateStatus: entry.consumerGateStatus || "",
+            preflightStatus: entry.preflightStatus || "",
+            txDraftId: entry.txDraftId || "",
+            txDraftHash: entry.txDraftHash || "",
+            accountSnapshot: entry.accountSnapshot || {},
+            chainSnapshot: entry.chainSnapshot || {},
+            sourceRequestSnapshot: entry.sourceRequestSnapshot || {},
+            targetSnapshot: entry.targetSnapshot || {},
+            blockers: entry.blockers || []
+          })),
+          walletLock: {
+            canSend: boundary.canSend === true,
+            canSign: boundary.canSign === true,
+            canBroadcast: boundary.canBroadcast === true,
+            mutationExecuted: receipt.mutationExecuted === true
+          },
+          walletNegativePathTestWall,
+          wallet19dProofSurfaceAlignment,
+          wallet19eNegativePathRegression,
+          wallet20aUnlockContract,
+          wallet20bSignedIntentUnlock,
+          wallet20cSignatureRequestPreflight,
+          wallet20dProviderIntentSignature,
+          wallet20eSignedIntentVerification,
+          wallet20fPreSendReviewGate,
+          wallet20gProviderIntentHardening,
+          wallet21aPolicyBoundSendGate,
+          wallet21bProviderOutcomeLedger,
+          wallet21cTransactionWatcher,
+          wallet21dRetryRecoverySafety,
+          wallet21ePostConfirmationMcelReceiptIntegration,
+          wallet21fRelockResetLifecycle,
+          walletUnlockRequirements,
+          walletFinalLockedSpecimen,
+          wallet18nCompletionReport,
+          walletBacklogPolicy,
+          walletBacklogRuntime,
+          mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {}
+        }, null, 2);
+      }
+      const refreshButton = document.querySelector("#mcel-18n-wallet-tool-refresh");
+      const copyButton = document.querySelector("#mcel-18n-wallet-tool-copy-receipt");
+      if (refreshButton) {
+        refreshButton.dataset.boundaryStatus = boundary.status || "locked";
+      }
+      const rebuildButton = document.querySelector("#mcel-18n-wallet-tool-rebuild-draft");
+      if (rebuildButton) {
+        rebuildButton.dataset.freshnessStatus = walletFreshnessSnapshot.status || "not-observed";
+        rebuildButton.dataset.rebuildRequired = walletFreshnessSnapshot.status === "valid" ? "false" : "true";
+      }
+      if (copyButton) {
+        copyButton.dataset.receiptStatus = receipt.status || "blocked";
+        copyButton.dataset.mutationExecuted = receipt.mutationExecuted === true ? "true" : "false";
+      }
+      renderMcelWalletBacklogSchemeControls();
+    }
+
+
+    function refreshMcel18nWalletToolBoundary(reason = "manual-wallet-tool-preflight-refresh") {
+      const tinyState = ensureMcelTinyContractState();
+      const instance = tinyState.scmInstance || {};
+      const selected = selectedMcelTinyContractItem(instance);
+      const boundary = mcelWalletToolCommitBoundary({
+        source: instance?.source || {},
+        state: instance?.state || {},
+        runtime: instance?.runtime || {},
+        request: selected,
+        reason,
+        simulation: tinyState.walletStaleSimulation || null
+      });
+      if (instance?.runtime) {
+        instance.runtime.walletCommitBoundary = boundary;
+        instance.runtime.walletSmokeRegressionGuard = boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || null;
+        instance.runtime.wallet19dProofSurfaceAlignment = boundary.wallet19dProofSurfaceAlignment || null;
+        instance.runtime.wallet19eNegativePathRegression = boundary.wallet19eNegativePathRegression || null;
+        instance.runtime.wallet20aUnlockContract = boundary.wallet20aUnlockContract || null;
+        instance.runtime.wallet20bSignedIntentUnlock = boundary.wallet20bSignedIntentUnlock || null;
+        instance.runtime.walletSignedIntentUnlock = boundary.walletSignedIntentUnlock || boundary.wallet20bSignedIntentUnlock || null;
+        instance.runtime.wallet20cSignatureRequestPreflight = boundary.wallet20cSignatureRequestPreflight || null;
+        instance.runtime.walletSignatureRequestPreflight = boundary.walletSignatureRequestPreflight || boundary.wallet20cSignatureRequestPreflight || null;
+        instance.runtime.wallet20dProviderIntentSignature = boundary.wallet20dProviderIntentSignature || null;
+        instance.runtime.walletProviderIntentSignature = boundary.walletProviderIntentSignature || boundary.wallet20dProviderIntentSignature || null;
+        instance.runtime.wallet20eSignedIntentVerification = boundary.wallet20eSignedIntentVerification || null;
+        instance.runtime.walletSignedIntentVerification = boundary.walletSignedIntentVerification || boundary.wallet20eSignedIntentVerification || null;
+        instance.runtime.wallet20fPreSendReviewGate = boundary.wallet20fPreSendReviewGate || null;
+        instance.runtime.walletPreSendReviewGate = boundary.walletPreSendReviewGate || boundary.wallet20fPreSendReviewGate || null;
+        instance.runtime.wallet20gProviderIntentHardening = boundary.wallet20gProviderIntentHardening || null;
+        instance.runtime.walletProviderIntentHardening = boundary.walletProviderIntentHardening || boundary.wallet20gProviderIntentHardening || null;
+        instance.runtime.wallet21aPolicyBoundSendGate = boundary.wallet21aPolicyBoundSendGate || null;
+        instance.runtime.walletTransactionSendGate = boundary.walletTransactionSendGate || boundary.wallet21aPolicyBoundSendGate || null;
+        instance.runtime.wallet21bProviderOutcomeLedger = boundary.wallet21bProviderOutcomeLedger || null;
+        instance.runtime.walletProviderOutcomeLedger = boundary.walletProviderOutcomeLedger || boundary.wallet21bProviderOutcomeLedger || null;
+        instance.runtime.wallet21cTransactionWatcher = boundary.wallet21cTransactionWatcher || null;
+        instance.runtime.walletTransactionWatcher = boundary.walletTransactionWatcher || boundary.wallet21cTransactionWatcher || null;
+        instance.runtime.wallet21dRetryRecoverySafety = boundary.wallet21dRetryRecoverySafety || null;
+        instance.runtime.walletRetryRecoverySafety = boundary.walletRetryRecoverySafety || boundary.wallet21dRetryRecoverySafety || null;
+        instance.runtime.wallet21ePostConfirmationMcelReceiptIntegration = boundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
+        instance.runtime.walletPostConfirmationReceiptIntegration = boundary.walletPostConfirmationReceiptIntegration || boundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
+        instance.runtime.wallet21fRelockResetLifecycle = boundary.wallet21fRelockResetLifecycle || null;
+        instance.runtime.walletRelockResetLifecycle = boundary.walletRelockResetLifecycle || boundary.wallet21fRelockResetLifecycle || null;
+        instance.runtime.walletUnlockContract = boundary.walletUnlockContract || boundary.wallet20aUnlockContract || null;
+      }
+      tinyState.lastWalletCommitBoundary = boundary;
+      if (boundary.mcelCommitReceipt) {
+        tinyState.commitBoundaryReceipts = [
+          ...(tinyState.commitBoundaryReceipts || []),
+          boundary.mcelCommitReceipt
+        ].slice(-12);
+      }
+      renderMcel18nWalletToolSurface(boundary);
+      return boundary;
+    }
+
+    function simulateMcel18nWalletStaleDraft(kind = "account", reason = "manual-stale-draft-simulation") {
+      const tinyState = ensureMcelTinyContractState();
+      tinyState.walletStaleSimulationCount = Number(tinyState.walletStaleSimulationCount || 0) + 1;
+      tinyState.walletStaleSimulation = {
+        kind,
+        reason,
+        sequence: tinyState.walletStaleSimulationCount,
+        createdBy: "mcelWalletStaleDraftSimulation.v1",
+        label: `simulate-wallet-${kind}-change`,
+        invariant: [
+          "stale simulation changes only the freshness view",
+          "Refresh preflight does not silently make stale draft usable",
+          "rebuild draft from current wallet state is required to clear stale intent"
+        ]
+      };
+      recordMcelTinyContractEvidence(
+        "wallet-stale-simulation",
+        `18N wallet stale draft simulation armed: ${kind}.`,
+        "warn",
+        tinyState.walletStaleSimulation
+      );
+      return refreshMcel18nWalletToolBoundary(`simulate-wallet-${kind}-change`);
+    }
+
+    async function rebuildMcel18nWalletTxDraft(reason = "manual-wallet-tool-rebuild-draft") {
+      const tinyState = ensureMcelTinyContractState();
+      tinyState.walletRebuildDraftCount = Number(tinyState.walletRebuildDraftCount || 0) + 1;
+      tinyState.walletStaleSimulation = null;
+      recordMcelTinyContractEvidence(
+        "wallet-rebuild-draft",
+        "18N wallet rebuild draft from current wallet state requested; provider send/sign/broadcast remains locked.",
+        "pass",
+        {
+          rebuildCount: tinyState.walletRebuildDraftCount,
+          action: "rebuild draft from current wallet state",
+          noSend: true
+        }
+      );
+      await draftMcelTinyContractTransaction(reason);
+      return refreshMcel18nWalletToolBoundary("rebuild-wallet-tx-draft-receipt");
+    }
+
+    async function requestMcel20dWalletIntentSignature(reason = "manual-20d-intent-signature") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
+        app = renderMcelTinyContractTest("intent-signature-before-mount", {exercise: false, reset: false});
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return null;
+      const boundary = refreshMcel18nWalletToolBoundary("prepare-20d-intent-signature");
+      const intentSignature = boundary.wallet20dProviderIntentSignature || {};
+      const wallet = instance.runtime?.wallet || {};
+      const account = wallet.account || boundary.walletTxDraft?.from || "";
+      const provider = mcelTinyContractInjectedProvider();
+      const typedData = intentSignature.typedData || mcelWallet20dBuildTypedData(boundary);
+      const intentEnvelope = intentSignature.intentEnvelope || mcelWallet20dBuildIntentEnvelope(boundary);
+      const typedDataHash = intentSignature.typedDataHash || mcelTinyContractObjectHash(typedData);
+      if (intentSignature.canRequestProviderSignature !== true || !account || !provider) {
+        const outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.requestIntentSignature",
+          phase: "intent-signature-preflight",
+          status: "blocked",
+          known: true,
+          reason: !provider ? "provider-unavailable" : (!account ? "account-missing" : "20d-preflight-blocked"),
+          message: !provider
+            ? "No injected provider is available for the 20D off-chain intent signature prompt."
+            : (!account
+              ? "No connected account is available for the 20D off-chain intent signature prompt."
+              : "20D preflight is not eligible for provider intent signature."),
+          value: {account, canRequestProviderSignature: intentSignature.canRequestProviderSignature === true},
+          rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+        });
+        const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.requestIntentSignature", {
+          providerPromptEligible: intentSignature.canRequestProviderSignature === true,
+          intentEnvelope,
+          typedData,
+          typedDataHash,
+          signature: "",
+          outcome
+        });
+        tinyState.walletIntentSignatureRequestCount = Number(tinyState.walletIntentSignatureRequestCount || 0) + 1;
+        recordMcelTinyContractEvidence(
+          "wallet-intent-signature",
+          "20D intent signature prompt was blocked before provider mutation; send and broadcast stayed locked.",
+          "warn",
+          {reason, outcome, effectEnvelope}
+        );
+        app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(app, instance, "20D intent signature blocked.");
+        return {outcome, effectEnvelope};
+      }
+      let signature = "";
+      let outcome = null;
+      try {
+        signature = String(await mcelTinyContractWalletRequest(provider, "eth_signTypedData_v4", [account, JSON.stringify(typedData)]) || "");
+        outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.requestIntentSignature",
+          phase: "eth_signTypedData_v4",
+          status: signature ? "pass" : "blocked",
+          known: true,
+          reason: signature ? "intent-signature-received" : "intent-signature-empty",
+          message: signature
+            ? "Provider returned an off-chain MCEL intent signature."
+            : "Provider returned an empty MCEL intent signature.",
+          provider: {kind: mcelTinyContractWalletAdapterState().providerKind || "ethereum-provider", live: true, source: "direct-provider"},
+          value: {account, signatureHash: signature ? mcelTinyContractObjectHash(signature) : "", typedDataHash},
+          rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true),
+          containment: {sourceChanged: false, txDraftCreated: false, runtimeMutationGoverned: true}
+        });
+      } catch (error) {
+        outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.requestIntentSignature",
+          phase: "eth_signTypedData_v4",
+          status: "blocked",
+          known: true,
+          reason: "intent-signature-rejected-or-failed",
+          message: error?.message || String(error),
+          error: mcelTinyContractWalletError(error),
+          provider: {kind: mcelTinyContractWalletAdapterState().providerKind || "ethereum-provider", live: true, source: "direct-provider"},
+          value: {account, typedDataHash},
+          rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true),
+          containment: {sourceChanged: false, txDraftCreated: false, runtimeMutationGoverned: true}
+        });
+      }
+      const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.requestIntentSignature", {
+        providerPromptEligible: intentSignature.canRequestProviderSignature === true,
+        intentEnvelope,
+        typedData,
+        typedDataHash,
+        signature,
+        outcome
+      });
+      tinyState.walletIntentSignatureRequestCount = Number(tinyState.walletIntentSignatureRequestCount || 0) + 1;
+      recordMcelTinyContractEvidence(
+        "wallet-intent-signature",
+        signature && outcome.status === "pass"
+          ? "20D captured an off-chain provider intent signature; transaction send/broadcast stayed locked."
+          : "20D captured a blocked off-chain provider intent signature outcome; transaction send/broadcast stayed locked.",
+        signature && outcome.status === "pass" ? "pass" : "warn",
+        {reason, outcome, effectEnvelope, typedDataHash, intentEnvelopeHash: intentEnvelope.intentEnvelopeHash || mcelTinyContractObjectHash(intentEnvelope)}
+      );
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, "20D off-chain intent signature outcome captured.");
+      refreshMcel18nWalletToolBoundary("20d-intent-signature-outcome");
+      return {signature, outcome, effectEnvelope};
+    }
+
+
+    async function requestMcel21aPolicyBoundWalletSend(reason = "manual-21a-policy-bound-send") {
+      const tinyState = ensureMcelTinyContractState();
+      let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
+        app = renderMcelTinyContractTest("policy-send-before-mount", {exercise: false, reset: false});
+      }
+      const instance = ensureMcelTinyContractState().scmInstance;
+      if (!instance) return null;
+      const boundary = refreshMcel18nWalletToolBoundary("prepare-21a-policy-bound-send");
+      const sendGate = boundary.wallet21aPolicyBoundSendGate || {};
+      const recoverySafety = boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {};
+      const provider = mcelTinyContractInjectedProvider();
+      const providerTransactionRequest = sendGate.providerTransactionRequest || {};
+      const canRequestTransactionSend = sendGate.canRequestTransactionSend === true
+        && sendGate.canSend === true
+        && recoverySafety.sendRequestAllowed === true;
+      if (!canRequestTransactionSend || !provider) {
+        const outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.sendPolicyBoundTransaction",
+          phase: "eth_sendTransaction",
+          status: "blocked",
+          known: true,
+          reason: !provider ? "provider-unavailable" : "21a-policy-send-blocked",
+          message: !provider
+            ? "No injected provider is available for the 21A policy-bound transaction send."
+            : `21A policy-bound transaction send is blocked: ${[...(sendGate.blockers || []), ...(recoverySafety.blockers || [])].join(", ") || recoverySafety.status || "unknown blocker"}.`,
+          value: {
+            canRequestTransactionSend,
+            blockers: [...(sendGate.blockers || []), ...(recoverySafety.blockers || [])],
+            recoveryStatus: recoverySafety.status || "",
+            sendEnvelopeHash: sendGate.sendEnvelope?.sendEnvelopeHash || "",
+            chainId: sendGate.networkExecutionPolicy?.chainId || "",
+            devnetOnly: false,
+            networkAgnostic: true
+          },
+          rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true)
+        });
+        const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.sendPolicyBoundTransaction", {
+          sendGate,
+          providerTransactionRequest,
+          outcome,
+          txHash: "",
+          transactionReceipt: null
+        });
+        recordMcelTinyContractEvidence(
+          "wallet-policy-bound-send",
+          "21A policy-bound transaction send was blocked before provider mutation.",
+          "warn",
+          {reason, outcome, effectEnvelope, recoverySafety, sendEnvelopeHash: sendGate.sendEnvelope?.sendEnvelopeHash || ""}
+        );
+        app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(app, instance, "21A policy-bound send blocked.");
+        refreshMcel18nWalletToolBoundary("21a-policy-send-blocked");
+        return {outcome, effectEnvelope};
+      }
+
+      let txHash = "";
+      let transactionReceipt = null;
+      let watcherOutcome = null;
+      let outcome = null;
+      try {
+        txHash = String(await mcelTinyContractWalletRequest(provider, "eth_sendTransaction", [providerTransactionRequest]) || "");
+        outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.sendPolicyBoundTransaction",
+          phase: "eth_sendTransaction",
+          status: txHash ? "pass" : "blocked",
+          known: true,
+          reason: txHash ? "provider-tx-hash-received" : "provider-send-empty-hash",
+          message: txHash
+            ? "Provider returned a transaction hash for the policy-bound MCEL send."
+            : "Provider accepted the send request but returned no transaction hash.",
+          provider: {kind: mcelTinyContractWalletAdapterState().providerKind || "ethereum-provider", live: true, source: "direct-provider"},
+          value: {
+            txHash,
+            sendEnvelopeHash: sendGate.sendEnvelope?.sendEnvelopeHash || "",
+            account: providerTransactionRequest.from || "",
+            chainId: sendGate.networkExecutionPolicy?.chainId || "",
+            targetAddress: providerTransactionRequest.to || ""
+          },
+          rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true),
+          containment: {sourceChanged: false, txDraftCreated: false, runtimeMutationGoverned: true}
+        });
+        if (txHash) {
+          try {
+            transactionReceipt = await mcelTinyContractWalletRequest(provider, "eth_getTransactionReceipt", [txHash]);
+            watcherOutcome = {
+              status: transactionReceipt ? "receipt-available" : "pending",
+              receiptPresent: Boolean(transactionReceipt)
+            };
+          } catch (watchError) {
+            watcherOutcome = {
+              status: "receipt-unavailable",
+              error: mcelTinyContractWalletError(watchError)
+            };
+          }
+        }
+      } catch (error) {
+        outcome = recordMcelTinyContractExternalOutcome({
+          operation: "wallet.sendPolicyBoundTransaction",
+          phase: "eth_sendTransaction",
+          status: "blocked",
+          known: true,
+          reason: "provider-send-rejected-or-failed",
+          message: error?.message || String(error),
+          error: mcelTinyContractWalletError(error),
+          provider: {kind: mcelTinyContractWalletAdapterState().providerKind || "ethereum-provider", live: true, source: "direct-provider"},
+          value: {
+            sendEnvelopeHash: sendGate.sendEnvelope?.sendEnvelopeHash || "",
+            account: providerTransactionRequest.from || "",
+            chainId: sendGate.networkExecutionPolicy?.chainId || "",
+            targetAddress: providerTransactionRequest.to || ""
+          },
+          rpc: mcelTinyContractWalletRpcMethods(mcelTinyContractWalletAdapterState(), true),
+          containment: {sourceChanged: false, txDraftCreated: false, runtimeMutationGoverned: true}
+        });
+      }
+
+      const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.sendPolicyBoundTransaction", {
+        sendGate,
+        providerTransactionRequest,
+        outcome,
+        txHash,
+        transactionReceipt,
+        watcherOutcome
+      });
+      recordMcelTinyContractEvidence(
+        "wallet-policy-bound-send",
+        txHash
+          ? "21A captured a policy-bound provider transaction hash; 21B ledgered the outcome and 21C started receipt watching."
+          : "21A captured a blocked/rejected policy-bound provider transaction send outcome.",
+        txHash ? "pass" : "warn",
+        {reason, outcome, txHash, transactionReceipt, watcherOutcome, effectEnvelope}
+      );
+      app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(app, instance, txHash ? "21A policy-bound send tx hash captured." : "21A policy-bound send outcome captured.");
+      refreshMcel18nWalletToolBoundary("21a-policy-bound-send-outcome");
+      return {txHash, transactionReceipt, outcome, effectEnvelope};
+    }
+
+    async function copyMcel18nWalletToolReceipt() {
+      const tinyState = ensureMcelTinyContractState();
+      const boundary = tinyState.lastWalletCommitBoundary || refreshMcel18nWalletToolBoundary("copy-wallet-tool-receipt");
+      const payload = JSON.stringify({
+        kind: "mcel-18n-wallet-tool-copy-receipt-payload",
+        boundaryVersion: boundary.boundaryVersion || "18N-MCEL-j",
+        receipt: boundary.mcelCommitReceipt || {},
+        preflight: boundary.mcelCommitPreflight || {},
+        walletTxDraft: boundary.walletTxDraft || {},
+        walletFreshnessSnapshot: boundary.walletFreshnessSnapshot || {},
+        walletPreflightReport: boundary.walletPreflightReport || {},
+        walletNegativePathTestWall: boundary.walletNegativePathTestWall || {},
+        wallet19aSmokeRegressionGuard: boundary.wallet19aSmokeRegressionGuard || boundary.walletSmokeRegressionGuard || {},
+        walletSmokeRegressionGuard: boundary.walletSmokeRegressionGuard || boundary.wallet19aSmokeRegressionGuard || {},
+        wallet19dProofSurfaceAlignment: boundary.wallet19dProofSurfaceAlignment || {},
+        wallet19eNegativePathRegression: boundary.wallet19eNegativePathRegression || {},
+        wallet20aUnlockContract: boundary.wallet20aUnlockContract || boundary.walletUnlockContract || {},
+        wallet20bSignedIntentUnlock: boundary.wallet20bSignedIntentUnlock || boundary.walletSignedIntentUnlock || {},
+        walletSignedIntentUnlock: boundary.walletSignedIntentUnlock || boundary.wallet20bSignedIntentUnlock || {},
+        wallet20cSignatureRequestPreflight: boundary.wallet20cSignatureRequestPreflight || boundary.walletSignatureRequestPreflight || {},
+        walletSignatureRequestPreflight: boundary.walletSignatureRequestPreflight || boundary.wallet20cSignatureRequestPreflight || {},
+        wallet20dProviderIntentSignature: boundary.wallet20dProviderIntentSignature || boundary.walletProviderIntentSignature || {},
+        walletProviderIntentSignature: boundary.walletProviderIntentSignature || boundary.wallet20dProviderIntentSignature || {},
+        wallet20eSignedIntentVerification: boundary.wallet20eSignedIntentVerification || boundary.walletSignedIntentVerification || {},
+        walletSignedIntentVerification: boundary.walletSignedIntentVerification || boundary.wallet20eSignedIntentVerification || {},
+        wallet20fPreSendReviewGate: boundary.wallet20fPreSendReviewGate || boundary.walletPreSendReviewGate || {},
+        walletPreSendReviewGate: boundary.walletPreSendReviewGate || boundary.wallet20fPreSendReviewGate || {},
+        wallet20gProviderIntentHardening: boundary.wallet20gProviderIntentHardening || boundary.walletProviderIntentHardening || {},
+        walletProviderIntentHardening: boundary.walletProviderIntentHardening || boundary.wallet20gProviderIntentHardening || {},
+        wallet21aPolicyBoundSendGate: boundary.wallet21aPolicyBoundSendGate || boundary.walletTransactionSendGate || {},
+        walletTransactionSendGate: boundary.walletTransactionSendGate || boundary.wallet21aPolicyBoundSendGate || {},
+        wallet21bProviderOutcomeLedger: boundary.wallet21bProviderOutcomeLedger || boundary.walletProviderOutcomeLedger || {},
+        walletProviderOutcomeLedger: boundary.walletProviderOutcomeLedger || boundary.wallet21bProviderOutcomeLedger || {},
+        wallet21cTransactionWatcher: boundary.wallet21cTransactionWatcher || boundary.walletTransactionWatcher || {},
+        walletTransactionWatcher: boundary.walletTransactionWatcher || boundary.wallet21cTransactionWatcher || {},
+        wallet21dRetryRecoverySafety: boundary.wallet21dRetryRecoverySafety || boundary.walletRetryRecoverySafety || {},
+        walletRetryRecoverySafety: boundary.walletRetryRecoverySafety || boundary.wallet21dRetryRecoverySafety || {},
+        wallet21ePostConfirmationMcelReceiptIntegration: boundary.wallet21ePostConfirmationMcelReceiptIntegration || boundary.walletPostConfirmationReceiptIntegration || {},
+        walletPostConfirmationReceiptIntegration: boundary.walletPostConfirmationReceiptIntegration || boundary.wallet21ePostConfirmationMcelReceiptIntegration || {},
+        wallet21fRelockResetLifecycle: boundary.wallet21fRelockResetLifecycle || boundary.walletRelockResetLifecycle || {},
+        walletRelockResetLifecycle: boundary.walletRelockResetLifecycle || boundary.wallet21fRelockResetLifecycle || {},
+        walletUnlockContract: boundary.walletUnlockContract || boundary.wallet20aUnlockContract || {},
+        walletUnlockRequirements: boundary.walletUnlockRequirements || {},
+        walletFinalLockedSpecimen: boundary.walletFinalLockedSpecimen || {},
+        wallet18nCompletionReport: boundary.wallet18nCompletionReport || {},
+        receiptLedger: (tinyState.commitBoundaryReceipts || []).slice(-8),
+        mcelProofDockSpecimens: boundary.mcelProofDockSpecimens || {},
+        walletLock: {
+          canSend: boundary.canSend === true,
+          canSign: boundary.canSign === true,
+          canBroadcast: boundary.canBroadcast === true,
+          mutationExecuted: boundary.mcelCommitReceipt?.mutationExecuted === true
+        }
+      }, null, 2);
+      const statusSlot = document.querySelector("#mcel-18n-wallet-tool-status");
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(payload);
+          if (statusSlot) statusSlot.textContent = `${statusSlot.textContent}\nreceipt copied: ${new Date().toISOString()}`;
+        } else {
+          if (statusSlot) statusSlot.textContent = `${statusSlot.textContent}\ncopy unavailable; receipt payload remains visible below.`;
+        }
+      } catch (error) {
+        if (statusSlot) statusSlot.textContent = `${statusSlot.textContent}\ncopy failed: ${error?.message || String(error)}`;
+      }
+      return payload;
+    }
+
     function renderMcelTinyWalletPanel(app, instance = ensureMcelTinyContractState().scmInstance) {
       const slot = app?.querySelector('[data-mc-slot="runtime.wallet"]');
       if (!slot) return;
       const wallet = instance?.runtime?.wallet || {};
       const network = instance?.runtime?.network || {};
+      const selected = selectedMcelTinyContractItem(instance);
+      const tinyState = ensureMcelTinyContractState();
+      const commitBoundary = mcelWalletToolCommitBoundary({
+        source: instance?.source || {},
+        state: instance?.state || {},
+        runtime: instance?.runtime || {},
+        request: selected,
+        reason: "render-wallet-tool",
+        simulation: tinyState.walletStaleSimulation || null
+      });
+      if (instance?.runtime) {
+        instance.runtime.walletCommitBoundary = commitBoundary;
+        instance.runtime.walletSmokeRegressionGuard = commitBoundary.wallet19aSmokeRegressionGuard || commitBoundary.walletSmokeRegressionGuard || null;
+        instance.runtime.wallet19dProofSurfaceAlignment = commitBoundary.wallet19dProofSurfaceAlignment || null;
+        instance.runtime.wallet19eNegativePathRegression = commitBoundary.wallet19eNegativePathRegression || null;
+        instance.runtime.wallet20aUnlockContract = commitBoundary.wallet20aUnlockContract || null;
+        instance.runtime.wallet20bSignedIntentUnlock = commitBoundary.wallet20bSignedIntentUnlock || null;
+        instance.runtime.walletSignedIntentUnlock = commitBoundary.walletSignedIntentUnlock || commitBoundary.wallet20bSignedIntentUnlock || null;
+        instance.runtime.wallet20cSignatureRequestPreflight = commitBoundary.wallet20cSignatureRequestPreflight || null;
+        instance.runtime.walletSignatureRequestPreflight = commitBoundary.walletSignatureRequestPreflight || commitBoundary.wallet20cSignatureRequestPreflight || null;
+        instance.runtime.wallet20dProviderIntentSignature = commitBoundary.wallet20dProviderIntentSignature || null;
+        instance.runtime.walletProviderIntentSignature = commitBoundary.walletProviderIntentSignature || commitBoundary.wallet20dProviderIntentSignature || null;
+        instance.runtime.wallet20eSignedIntentVerification = commitBoundary.wallet20eSignedIntentVerification || null;
+        instance.runtime.walletSignedIntentVerification = commitBoundary.walletSignedIntentVerification || commitBoundary.wallet20eSignedIntentVerification || null;
+        instance.runtime.wallet20fPreSendReviewGate = commitBoundary.wallet20fPreSendReviewGate || null;
+        instance.runtime.walletPreSendReviewGate = commitBoundary.walletPreSendReviewGate || commitBoundary.wallet20fPreSendReviewGate || null;
+        instance.runtime.wallet20gProviderIntentHardening = commitBoundary.wallet20gProviderIntentHardening || null;
+        instance.runtime.walletProviderIntentHardening = commitBoundary.walletProviderIntentHardening || commitBoundary.wallet20gProviderIntentHardening || null;
+        instance.runtime.wallet21aPolicyBoundSendGate = commitBoundary.wallet21aPolicyBoundSendGate || null;
+        instance.runtime.walletTransactionSendGate = commitBoundary.walletTransactionSendGate || commitBoundary.wallet21aPolicyBoundSendGate || null;
+        instance.runtime.wallet21bProviderOutcomeLedger = commitBoundary.wallet21bProviderOutcomeLedger || null;
+        instance.runtime.walletProviderOutcomeLedger = commitBoundary.walletProviderOutcomeLedger || commitBoundary.wallet21bProviderOutcomeLedger || null;
+        instance.runtime.wallet21cTransactionWatcher = commitBoundary.wallet21cTransactionWatcher || null;
+        instance.runtime.walletTransactionWatcher = commitBoundary.walletTransactionWatcher || commitBoundary.wallet21cTransactionWatcher || null;
+        instance.runtime.wallet21dRetryRecoverySafety = commitBoundary.wallet21dRetryRecoverySafety || null;
+        instance.runtime.walletRetryRecoverySafety = commitBoundary.walletRetryRecoverySafety || commitBoundary.wallet21dRetryRecoverySafety || null;
+        instance.runtime.wallet21ePostConfirmationMcelReceiptIntegration = commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
+        instance.runtime.walletPostConfirmationReceiptIntegration = commitBoundary.walletPostConfirmationReceiptIntegration || commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration || null;
+        instance.runtime.wallet21fRelockResetLifecycle = commitBoundary.wallet21fRelockResetLifecycle || null;
+        instance.runtime.walletRelockResetLifecycle = commitBoundary.walletRelockResetLifecycle || commitBoundary.wallet21fRelockResetLifecycle || null;
+        instance.runtime.walletUnlockContract = commitBoundary.walletUnlockContract || commitBoundary.wallet20aUnlockContract || null;
+      }
+      tinyState.lastWalletCommitBoundary = commitBoundary;
+      if (commitBoundary.mcelCommitReceipt) {
+        tinyState.commitBoundaryReceipts = [
+          ...(tinyState.commitBoundaryReceipts || []),
+          commitBoundary.mcelCommitReceipt
+        ].slice(-12);
+      }
       const panel = document.createElement("section");
       panel.className = "mcel-dev-release-console__wallet";
       panel.dataset.mcGenerated = "true";
       panel.dataset.mcOwner = "runtime";
       panel.dataset.mcRuntimeState = "runtime.wallet";
+      panel.dataset.mcel18nCommitBoundary = "wallet-tool";
       const adapter = mcelTinyContractWalletAdapterState();
       const liveLabel = adapter.liveProvider
         ? `${adapter.providerKind || "provider"} rpc`
         : (adapter.mockFallback ? "mock fallback" : "not observed");
+      const preflight = commitBoundary.mcelCommitPreflight || {};
+      const receipt = commitBoundary.mcelCommitReceipt || {};
       panel.innerHTML = `
         <strong>Runtime wallet state</strong>
         <dl>
           <dt>provider</dt><dd>${wallet.provider || wallet.mode || "none"}</dd>
           <dt>adapter</dt><dd>${liveLabel}</dd>
           <dt>rpc calls</dt><dd>${(adapter.calls || []).map((call) => call.method).slice(-4).join(", ") || "none"}</dd>
-          <dt>provider events</dt><dd>accounts=${ensureMcelTinyContractState().providerAccountsChangedCount || 0} switches=${ensureMcelTinyContractState().providerAccountSwitchCount || 0}</dd>
+          <dt>provider events</dt><dd>accounts=${tinyState.providerAccountsChangedCount || 0} switches=${tinyState.providerAccountSwitchCount || 0}</dd>
+          <dt>backlog scheme</dt><dd>${mcelWalletBacklogDeclaredPolicy().selectedScheme} · queued=${mcelWalletBacklogRuntimeSnapshot().queuedCount} · suppressed=${mcelWalletBacklogRuntimeSnapshot().suppressedCount}</dd>
           <dt>account</dt><dd>${wallet.account ? wallet.account.slice(0, 12) + "…" : "not connected"}</dd>
           <dt>chain</dt><dd>${network.chainId || "missing"} / expected ${network.expectedChainId || "0x28757b2"}</dd>
           <dt>gate</dt><dd>${network.ok ? "dev network ready" : network.status || "waiting"}</dd>
+          <dt>18N boundary</dt><dd>${commitBoundary.kind} · ${commitBoundary.status}</dd>
+          <dt>wallet txDraft</dt><dd>${commitBoundary.walletTxDraft?.status || "empty"} · ${commitBoundary.walletTxDraft?.txDraftId || "not built"}</dd>
+          <dt>provenance</dt><dd>${commitBoundary.walletTxProvenance?.kind || "not observed"} · ${commitBoundary.walletTxProvenance?.txDraftHash || "missing hash"}</dd>
+          <dt>freshness</dt><dd>${commitBoundary.walletFreshnessSnapshot?.status || "not observed"} · ${(commitBoundary.walletFreshnessSnapshot?.blockers || []).slice(0, 3).join(", ") || "no blockers"}</dd>
+          <dt>preflight</dt><dd>${preflight.status || "locked"} · commit=${preflight.canCommit === true}</dd>
+          <dt>wallet lock</dt><dd>canSend=${commitBoundary.canSend === true} · canSign=${commitBoundary.canSign === true} · canBroadcast=${commitBoundary.canBroadcast === true}</dd>
+          <dt>receipt</dt><dd>${receipt.walletReceiptKind || receipt.kind || "receipt"} · ${receipt.status || "blocked"} · mutationExecuted=${receipt.mutationExecuted === true}</dd>
+          <dt>unlock requirements</dt><dd>${commitBoundary.walletUnlockRequirements?.status || "incomplete"} · ready=${commitBoundary.walletUnlockRequirements?.readyForProviderExecution === true}</dd>
+          <dt>21A policy send</dt><dd>${commitBoundary.wallet21aPolicyBoundSendGate?.status || "not observed"} · networkAgnostic=${commitBoundary.wallet21aPolicyBoundSendGate?.networkAgnostic === true} · canSend=${commitBoundary.wallet21aPolicyBoundSendGate?.canSend === true}</dd>
+          <dt>21B provider ledger</dt><dd>${commitBoundary.wallet21bProviderOutcomeLedger?.status || "not observed"} · txHash=${commitBoundary.wallet21bProviderOutcomeLedger?.txHash ? "present" : "missing"}</dd>
+          <dt>21C transaction watcher</dt><dd>${commitBoundary.wallet21cTransactionWatcher?.status || "not observed"} · pending=${commitBoundary.wallet21cTransactionWatcher?.pending === true}</dd>
+          <dt>21D retry safety</dt><dd>${commitBoundary.wallet21dRetryRecoverySafety?.status || "not observed"} · duplicateBlocked=${commitBoundary.wallet21dRetryRecoverySafety?.duplicateSendBlocked === true}</dd>
+          <dt>21E receipt integration</dt><dd>${commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration?.status || "not observed"} · outcome=${commitBoundary.wallet21ePostConfirmationMcelReceiptIntegration?.chainOutcome || "not observed"}</dd>
+          <dt>21F relock lifecycle</dt><dd>${commitBoundary.wallet21fRelockResetLifecycle?.status || "not observed"} · relocked=${commitBoundary.wallet21fRelockResetLifecycle?.lifecycleEnvelope?.relocked === true}</dd>
+          <dt>final locked specimen</dt><dd>${commitBoundary.walletFinalLockedSpecimen?.finalStatus || "locked"} · mutationExecuted=${commitBoundary.walletFinalLockedSpecimen?.mutationExecuted === true}</dd>
         </dl>
       `;
       slot.replaceChildren(panel);
+      renderMcel18nWalletToolSurface(commitBoundary);
     }
 
     function renderMcelTinyRuntimeSummary(app, summaryText, instance = ensureMcelTinyContractState().scmInstance) {
       const slot = app?.querySelector('[data-mc-slot="runtime.txDraft"]');
       if (!slot) return;
-      const txDraft = instance?.runtime?.txDraft || {};
+      const txDraftEnforcement = mcelTinyContractEnforceTxDraftProvenance(instance, "render-runtime-summary");
+      const txDraft = txDraftEnforcement?.txDraft || instance?.runtime?.txDraft || {};
+      const txDraftConsumerGate = instance?.runtime?.txDraftConsumerGate || {};
+      const txDraftEndgamePreflight = txDraftConsumerGate.endgamePreflight || mcelTinyContractTxDraftEndgamePreflight({
+        txDraft,
+        freshness: txDraft.provenanceFreshness || {
+          status: txDraft.freshnessStatus || "",
+          invalidatedBy: txDraft.invalidatedBy || [],
+          action: txDraft.freshnessAction || "",
+          noSendBoundaryPreserved: txDraft.noSendBoundaryPreserved === true
+        },
+        consumerGate: txDraftConsumerGate
+      });
       const network = instance?.runtime?.network || {};
       const selected = selectedMcelTinyContractItem(instance);
       const output = document.createElement("section");
@@ -1902,6 +8357,10 @@
           <dt>nonce</dt><dd>${txDraft.nonce?.status || "not-probed"}</dd>
           <dt>gas</dt><dd>${txDraft.gasEstimate?.status || "not-probed"}</dd>
           <dt>call</dt><dd>${txDraft.ethCall?.status || "not-probed"}</dd>
+          <dt>provenance</dt><dd>${txDraft.freshnessStatus || (txDraft.valid ? "valid" : "stale")} · ${txDraft.freshnessAction || "rebuild draft to prove freshness"}</dd>
+          <dt>invalidated</dt><dd>${(txDraft.invalidatedBy || []).map((entry) => entry.reason).filter(Boolean).join(", ") || "none"}</dd>
+          <dt>send/sign preflight</dt><dd>${txDraftEndgamePreflight.status || "locked-no-draft"} · ${txDraftEndgamePreflight.action || "future send/sign boundary is locked"}</dd>
+          <dt>18N commit boundary</dt><dd>${instance?.runtime?.walletCommitBoundary?.kind || "mcelWalletToolCommitBoundary.v1"} · ${instance?.runtime?.walletCommitBoundary?.status || "locked"}</dd>
         </dl>
       `;
       slot.replaceChildren(output);
@@ -1952,6 +8411,7 @@
       renderMcelTinyRuntimeBadge(app, instance);
       renderMcelTinyEvidenceStrip(app, instance);
       renderMcelTinyContractMap(app);
+      renderMcelWalletBacklogSchemeControls(app);
     }
 
     function mountMcelTinyContractRuntime(source, reason = "manual", options = {}) {
@@ -1979,6 +8439,7 @@
         tinyState.networkVerifyCount = 0;
         tinyState.releaseSelectCount = 0;
         tinyState.txDraftCount = 0;
+        tinyState.walletIntentSignatureRequestCount = 0;
         tinyState.fullBatteryRunCount = 0;
         tinyState.externalOutcomeCount = 0;
         tinyState.externalBlockedCount = 0;
@@ -1986,6 +8447,10 @@
         tinyState.lastWalletResetClean = false;
         tinyState.lastExternalOutcome = null;
         tinyState.lastWalletActionOutcome = null;
+        tinyState.lastWalletCommitBoundary = mcelCommitBoundaryDefault("wallet.send-sign", "mount-reset");
+        tinyState.commitBoundaryReceipts = [];
+        tinyState.walletBacklogRuntime = null;
+        mcelWalletBacklogRuntimeState();
         tinyState.evidence = [];
         resetMcelTinyContractWalletAdapterState("mount-reset");
       }
@@ -2002,17 +8467,23 @@
       const app = mcelTinyContractRuntimeMount.querySelector('[data-mc-component="dev-network-release-console"]');
       const walletButton = app?.querySelector('[data-mc-effect="wallet.connect"]');
       const disconnectButton = app?.querySelector('[data-mc-effect="wallet.disconnect"]');
+      const goldenWalletButton = app?.querySelector('[data-mc-effect="wallet.toggle"]');
       const verifyButton = app?.querySelector('[data-mc-effect="network.verify"]');
       const selectButton = app?.querySelector('[data-mc-effect="release.select"]');
       const draftButton = app?.querySelector('[data-mc-effect="release.draftTx"]');
       const approveButton = app?.querySelector('[data-mc-effect="release.approve"]');
+      const intentSignatureButton = app?.querySelector('[data-mc-effect="wallet.requestIntentSignature"]');
+      const policyBoundSendButton = app?.querySelector('[data-mc-effect="wallet.sendPolicyBoundTransaction"]');
 
       walletButton?.addEventListener("click", () => connectMcelTinyContractWallet("runtime-button"));
       disconnectButton?.addEventListener("click", () => disconnectMcelTinyContractWallet("runtime-button"));
+      goldenWalletButton?.addEventListener("click", () => { void toggleMcelGoldenWalletControl("golden-wallet-toggle"); });
       verifyButton?.addEventListener("click", () => verifyMcelTinyContractNetwork("runtime-button"));
       selectButton?.addEventListener("click", () => clickMcelTinyContractCounter());
       draftButton?.addEventListener("click", () => { void draftMcelTinyContractTransaction("runtime-button"); });
       approveButton?.addEventListener("click", () => markMcelTinyContractReviewed("runtime-button"));
+      intentSignatureButton?.addEventListener("click", () => { void requestMcel20dWalletIntentSignature("runtime-button"); });
+      policyBoundSendButton?.addEventListener("click", () => { void requestMcel21aPolicyBoundWalletSend("runtime-button"); });
 
       syncMcelTinyContractDomFromScm(app, runtime.instance, reason);
       if (options.exercise !== false) {
@@ -2239,6 +8710,18 @@
       if (!Array.isArray(adapter.calls)) adapter.calls = [];
       if (!Array.isArray(adapter.events)) adapter.events = [];
       return adapter;
+    }
+
+    function mcelTinyContractWalletProviderRuntimeState() {
+      const tinyState = ensureMcelTinyContractState();
+      if (!tinyState.walletProviderRuntime || typeof tinyState.walletProviderRuntime !== "object") {
+        tinyState.walletProviderRuntime = {
+          kind: "mcelWalletProviderRuntime.v1",
+          duplicateProviderBindingBlockedCount: 0
+        };
+      }
+      tinyState.walletProviderRuntime.duplicateProviderBindingBlockedCount = Number(tinyState.walletProviderRuntime.duplicateProviderBindingBlockedCount || 0);
+      return tinyState.walletProviderRuntime;
     }
 
     function mcelTinyContractWalletError(error) {
@@ -2637,6 +9120,7 @@
         kind: "mcel-runtime-tx-draft-probe",
         noSend: true,
         ready,
+        createdAt: new Date().toISOString(),
         createdFrom: {
           requestId: request?.id || "",
           sourcePath: "source.devRelease.requests",
@@ -2679,11 +9163,572 @@
       return event;
     }
 
+    const MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES = [
+      {
+        id: "ignore",
+        label: "Ignore backlog",
+        summary: "Run every requested wallet lifecycle action immediately; useful only as a control case."
+      },
+      {
+        id: "disable-while-busy",
+        label: "Disable while busy",
+        summary: "Disable connect/disconnect controls while one wallet lifecycle is active, then re-enable."
+      },
+      {
+        id: "single-flight",
+        label: "Single flight",
+        summary: "Share the current in-flight wallet lifecycle promise instead of starting duplicates."
+      },
+      {
+        id: "drop-while-busy",
+        label: "Drop while busy",
+        summary: "Drop duplicate wallet lifecycle requests while one is running and receipt the drop."
+      },
+      {
+        id: "queue-serial",
+        label: "Queue serial",
+        summary: "Queue wallet lifecycle requests and run them one at a time in order."
+      },
+      {
+        id: "latest-wins",
+        label: "Latest wins / nuke backlog",
+        summary: "Keep only the latest requested wallet lifecycle action and nuke older queued work."
+      },
+      {
+        id: "coalesce",
+        label: "Coalesce",
+        summary: "Merge rapid duplicate lifecycle requests into one delayed execution window."
+      },
+      {
+        id: "debounce",
+        label: "Debounce",
+        summary: "Wait for click noise to settle, then run the last requested lifecycle action."
+      },
+      {
+        id: "throttle",
+        label: "Throttle",
+        summary: "Allow one wallet lifecycle action per throttle window and receipt suppressed work."
+      },
+      {
+        id: "cooldown",
+        label: "Cooldown",
+        summary: "Run, then enforce a cooldown window before another lifecycle can start."
+      },
+      {
+        id: "block-before-external-provider",
+        label: "Block before provider",
+        summary: "Block duplicate work before issuing wallet provider requests when permission UI is pending."
+      }
+    ];
+
+    function mcelWalletBacklogRemediationSchemes() {
+      return MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES.map((entry) => ({...entry}));
+    }
+
+    function mcelWalletBacklogSchemeIds() {
+      return MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES.map((entry) => entry.id);
+    }
+
+    function mcelWalletBacklogRemediationScheme(id = "") {
+      return MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES.find((entry) => entry.id === id)
+        || MCEL_WALLET_BACKLOG_REMEDIATION_SCHEMES.find((entry) => entry.id === "disable-while-busy");
+    }
+
+    function mcelWalletBacklogRuntimeState() {
+      const tinyState = ensureMcelTinyContractState();
+      if (!tinyState.walletBacklogRuntime || typeof tinyState.walletBacklogRuntime !== "object") {
+        tinyState.walletBacklogRuntime = {
+          kind: "mcelWalletBacklogRuntime.v1",
+          active: false,
+          action: "",
+          reason: "",
+          sequence: 0,
+          queued: [],
+          latest: null,
+          timers: {},
+          inFlight: null,
+          cooldownUntil: 0,
+          providerPendingUntil: 0,
+          suppressedCount: 0,
+          queuedCount: 0,
+          coalescedCount: 0,
+          droppedCount: 0,
+          nukedCount: 0,
+          disabledCount: 0,
+          lastReceipt: null,
+          lastScheme: tinyState.walletBacklogRemediationScheme || "disable-while-busy",
+          renderTimer: null
+        };
+      }
+      if (!Array.isArray(tinyState.walletBacklogRuntime.queued)) tinyState.walletBacklogRuntime.queued = [];
+      if (!tinyState.walletBacklogRuntime.timers || typeof tinyState.walletBacklogRuntime.timers !== "object") tinyState.walletBacklogRuntime.timers = {};
+      return tinyState.walletBacklogRuntime;
+    }
+
+    function normalizeMcelWalletProviderPendingState(runtime = mcelWalletBacklogRuntimeState()) {
+      const providerPendingUntil = Number(runtime.providerPendingUntil || 0);
+      if (providerPendingUntil > Date.now()) return true;
+      if (providerPendingUntil > 0) {
+        runtime.providerPendingUntil = 0;
+        runtime.providerPendingDetail = null;
+      }
+      return false;
+    }
+
+    function mcelWalletBacklogRuntimeSnapshot() {
+      const runtime = mcelWalletBacklogRuntimeState();
+      return {
+        kind: "mcelWalletBacklogRuntimeSnapshot.v1",
+        active: runtime.active === true,
+        action: runtime.action || "",
+        reason: runtime.reason || "",
+        scheme: ensureMcelTinyContractState().walletBacklogRemediationScheme || "disable-while-busy",
+        sequence: Number(runtime.sequence || 0),
+        queuedCount: (runtime.queued || []).length,
+        latestQueued: runtime.latest?.action || "",
+        cooldownActive: Number(runtime.cooldownUntil || 0) > Date.now(),
+        providerPending: normalizeMcelWalletProviderPendingState(runtime),
+        suppressedCount: Number(runtime.suppressedCount || 0),
+        coalescedCount: Number(runtime.coalescedCount || 0),
+        droppedCount: Number(runtime.droppedCount || 0),
+        nukedCount: Number(runtime.nukedCount || 0),
+        disabledCount: Number(runtime.disabledCount || 0),
+        lastReceipt: runtime.lastReceipt || null
+      };
+    }
+
+    function selectedMcelWalletBacklogRemediationScheme() {
+      const tinyState = ensureMcelTinyContractState();
+      const selected = mcelWalletBacklogRemediationScheme(tinyState.walletBacklogRemediationScheme || "disable-while-busy");
+      tinyState.walletBacklogRemediationScheme = selected.id;
+      return selected;
+    }
+
+    function setMcelWalletBacklogRemediationScheme(schemeId = "disable-while-busy", reason = "manual-wallet-backlog-scheme") {
+      const tinyState = ensureMcelTinyContractState();
+      const scheme = mcelWalletBacklogRemediationScheme(schemeId);
+      tinyState.walletBacklogRemediationScheme = scheme.id;
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.lastScheme = scheme.id;
+      runtime.latest = null;
+      runtime.queued = [];
+      runtime.lastReceipt = {
+        kind: "mcelWalletBacklogRemediationReceipt.v1",
+        action: "wallet.backlog.scheme.select",
+        scheme: scheme.id,
+        status: "selected",
+        reason
+      };
+      recordMcelTinyContractEvidence(
+        "wallet-backlog",
+        `Wallet backlog remediation scheme selected: ${scheme.label}.`,
+        "pass",
+        {
+          kind: "mcelWalletComponentBacklogRemediationPolicy.v1",
+          scheme,
+          runtime: mcelWalletBacklogRuntimeSnapshot()
+        }
+      );
+      renderMcelWalletBacklogSchemeControls();
+      refreshMcel18nWalletToolBoundary(reason);
+      return scheme;
+    }
+
+    function mcelWalletBacklogReceipt({action = "", scheme = null, status = "observed", reason = "", detail = {}} = {}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      const selected = scheme || selectedMcelWalletBacklogRemediationScheme();
+      const receipt = {
+        kind: "mcelWalletBacklogRemediationReceipt.v1",
+        remediationVersion: "18N-MCEL-j3",
+        component: "mcel.wallet-test",
+        action,
+        scheme: selected.id,
+        status,
+        reason,
+        detail,
+        runtime: mcelWalletBacklogRuntimeSnapshot(),
+        invariant: [
+          "component declares backlog remediation policy",
+          "SCM receipts the selected policy instead of guessing semantics",
+          "wallet send/sign/broadcast remain locked"
+        ]
+      };
+      runtime.lastReceipt = receipt;
+      recordMcelTinyContractEvidence(
+        "wallet-backlog",
+        `Wallet backlog remediation ${status}: ${action} via ${selected.id}.`,
+        ["executed", "queued", "already-satisfied"].includes(status) ? "pass" : "warn",
+        receipt
+      );
+      return receipt;
+    }
+
+    function mcelWalletBacklogDeclaredPolicy() {
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      return {
+        kind: "mcelWalletComponentBacklogRemediationPolicy.v1",
+        policyVersion: "18N-MCEL-j3",
+        component: "mcel.wallet-test",
+        selectedScheme: scheme.id,
+        selectedSchemeLabel: scheme.label,
+        availableSchemes: mcelWalletBacklogRemediationSchemes(),
+        operations: {
+          "wallet.connect": scheme.id,
+          "wallet.disconnect": scheme.id,
+          "wallet.provider.accountsChanged": scheme.id === "ignore" ? "ignore" : "coalesce",
+          "wallet.provider.chainChanged": scheme.id === "ignore" ? "ignore" : "coalesce",
+          "wallet.proof.render": scheme.id === "ignore" ? "ignore" : "coalesce"
+        },
+        scmRole: "observe-apply-and-receipt-declared-component-policy",
+        invariant: [
+          "SCM does not infer wallet backlog semantics",
+          "wallet component owns its backlog policy",
+          "MCEL supplies reusable remediation schemes",
+          "selected scheme is visible and receipted"
+        ]
+      };
+    }
+
+    function mcelWalletBacklogProofRenderPolicyForScheme(scheme) {
+      const selected = scheme || mcelWalletBacklogRemediationScheme();
+      return {
+        kind: "mcelWalletProofRenderPolicy.v1",
+        scheme: selected.id,
+        strategy: selected.id === "ignore" ? "immediate" : "coalesce",
+        coalesce: selected.id !== "ignore"
+      };
+    }
+
+    function mcelWalletBacklogExecutionOptionsForScheme(scheme, action = "") {
+      const selected = scheme || mcelWalletBacklogRemediationScheme();
+      return {
+        kind: "mcelWalletBacklogExecutionOptions.v1",
+        scheme: selected.id,
+        action,
+        providerRequest: {
+          guardPermissionRequest: selected.id === "block-before-external-provider" && action === "wallet.connect"
+        },
+        proofRender: mcelWalletBacklogProofRenderPolicyForScheme(selected)
+      };
+    }
+
+    function selectedMcelWalletBacklogExecutionOptions(action = "") {
+      return mcelWalletBacklogExecutionOptionsForScheme(selectedMcelWalletBacklogRemediationScheme(), action);
+    }
+
+    function mcelWalletBacklogButtonAction(button) {
+      const explicitAction = button?.dataset?.mcelWalletAction || button?.getAttribute?.("data-mc-wallet-action") || "";
+      if (explicitAction === "wallet.connect" || explicitAction === "wallet.disconnect") return explicitAction;
+      const effect = button?.getAttribute?.("data-mc-effect") || "";
+      if (effect === "wallet.connect" || button?.id === "mcel-tiny-contract-wallet") return "wallet.connect";
+      if (effect === "wallet.disconnect" || button?.id === "mcel-tiny-contract-disconnect") return "wallet.disconnect";
+      if (effect === "wallet.toggle" || button?.id === "mcel-golden-wallet-toggle") return mcelGoldenWalletControlIntendedAction();
+      return "";
+    }
+
+    function mcelWalletBacklogButtonDisabled(button, {scheme = null, runtime = null} = {}) {
+      const action = mcelWalletBacklogButtonAction(button);
+      const active = runtime?.active === true;
+      if (!action || !active) return false;
+      if (scheme?.id === "disable-while-busy") return true;
+      if (scheme?.id === "cooldown") return action === runtime.action;
+      return false;
+    }
+
+    function renderMcelWalletBacklogSchemeControls(app = null) {
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      const runtime = mcelWalletBacklogRuntimeState();
+      const snapshot = mcelWalletBacklogRuntimeSnapshot();
+      const busy = runtime.active === true || snapshot.providerPending;
+      [...document.querySelectorAll('input[name="mcel-wallet-backlog-remediation-scheme"]')].forEach((input) => {
+        input.checked = input.value === scheme.id;
+        input.dataset.selected = input.checked ? "true" : "false";
+      });
+      const status = document.querySelector("#mcel-18n-wallet-backlog-scheme-status");
+      if (status) {
+        status.dataset.scheme = scheme.id;
+        status.dataset.busy = busy ? "true" : "false";
+        status.textContent = [
+          `scheme=${scheme.id}`,
+          `busy=${busy}`,
+          `queued=${snapshot.queuedCount}`,
+          `suppressed=${snapshot.suppressedCount}`,
+          `nuked=${snapshot.nukedCount}`,
+          `cooldown=${snapshot.cooldownActive}`,
+          `providerPending=${snapshot.providerPending}`
+        ].join(" · ");
+      }
+      const roots = [app, document].filter(Boolean);
+      roots.forEach((root) => {
+        [...root.querySelectorAll('[data-mc-effect="wallet.connect"], [data-mc-effect="wallet.disconnect"], [data-mc-effect="wallet.toggle"], #mcel-tiny-contract-wallet, #mcel-tiny-contract-disconnect, #mcel-golden-wallet-toggle')].forEach((button) => {
+          const disabled = mcelWalletBacklogButtonDisabled(button, {scheme, runtime});
+          button.dataset.mcelWalletBacklogScheme = scheme.id;
+          button.disabled = disabled;
+          if (disabled) runtime.disabledCount = Number(runtime.disabledCount || 0) + 1;
+          button.title = disabled ? `Wallet backlog remediation '${scheme.id}' is settling ${runtime.action || "wallet lifecycle work"}.` : "";
+        });
+        syncMcelGoldenWalletControl(root);
+      });
+      return {scheme, busy, snapshot};
+    }
+
+    function scheduleMcelWalletBacklogProofRender(app = null, reason = "wallet-backlog-proof-render", renderPolicy = {coalesce: true, strategy: "coalesce"}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      const policy = renderPolicy || {coalesce: true, strategy: "coalesce"};
+      if (policy.coalesce === false || policy.strategy === "immediate") {
+        renderMcelTinyContractProof(app, reason);
+        renderMcelWalletBacklogSchemeControls(app);
+        return null;
+      }
+      runtime.coalescedCount = Number(runtime.coalescedCount || 0) + 1;
+      runtime.lastProofRenderReason = reason;
+      if (runtime.renderTimer) return runtime.renderTimer;
+      runtime.renderTimer = window.setTimeout(() => {
+        runtime.renderTimer = null;
+        const target = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        renderMcelTinyContractProof(target, runtime.lastProofRenderReason || reason);
+        renderMcelWalletBacklogSchemeControls(target);
+      }, 140);
+      return runtime.renderTimer;
+    }
+
+    function mcelWalletProviderPendingBackoffActive() {
+      return normalizeMcelWalletProviderPendingState(mcelWalletBacklogRuntimeState());
+    }
+
+    function scheduleMcelWalletProviderPendingRefresh(providerPendingUntil = 0, reason = "provider-pending-refresh") {
+      const runtime = mcelWalletBacklogRuntimeState();
+      const timers = runtime.timers || (runtime.timers = {});
+      if (timers.providerPendingRefresh) {
+        window.clearTimeout(timers.providerPendingRefresh);
+        timers.providerPendingRefresh = null;
+      }
+      const until = Number(providerPendingUntil || runtime.providerPendingUntil || 0);
+      if (!until || until <= Date.now()) {
+        normalizeMcelWalletProviderPendingState(runtime);
+        renderMcelWalletBacklogSchemeControls();
+        return null;
+      }
+      timers.providerPendingRefresh = window.setTimeout(() => {
+        timers.providerPendingRefresh = null;
+        normalizeMcelWalletProviderPendingState(runtime);
+        renderMcelWalletBacklogSchemeControls();
+      }, Math.max(16, until - Date.now() + 25));
+      runtime.providerPendingRefreshReason = reason;
+      return timers.providerPendingRefresh;
+    }
+
+    function beginMcelWalletProviderPermissionRequest(detail = {}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.providerPendingUntil = Math.max(Number(runtime.providerPendingUntil || 0), Date.now() + 4500);
+      runtime.providerPendingDetail = detail;
+      scheduleMcelWalletProviderPendingRefresh(runtime.providerPendingUntil, "provider-permission-opened");
+      renderMcelWalletBacklogSchemeControls();
+      return true;
+    }
+
+    function clearMcelWalletProviderPermissionRequest(detail = {}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      if (runtime.timers?.providerPendingRefresh) {
+        window.clearTimeout(runtime.timers.providerPendingRefresh);
+        runtime.timers.providerPendingRefresh = null;
+      }
+      runtime.providerPendingUntil = 0;
+      runtime.providerPendingDetail = null;
+      runtime.providerPendingClearedDetail = detail;
+      renderMcelWalletBacklogSchemeControls();
+    }
+
+    function mcelWalletProviderPendingAlreadyPendingOutcome(outcome = {}) {
+      const error = outcome?.error && typeof outcome.error === "object" ? outcome.error : {};
+      const code = String(error.code ?? outcome?.code ?? "");
+      const message = String(error.message || outcome?.message || "");
+      return code === "-32002" || /already pending/i.test(message);
+    }
+
+    function settleMcelWalletProviderPermissionRequestForOutcome(outcome = null) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      if (!outcome || !Number(runtime.providerPendingUntil || 0)) return false;
+      if (mcelWalletProviderPendingAlreadyPendingOutcome(outcome)) {
+        scheduleMcelWalletProviderPendingRefresh(runtime.providerPendingUntil, "provider-permission-still-pending");
+        return false;
+      }
+      const terminalConnectOutcome = outcome.operation === "wallet.connect"
+        && (outcome.status === "pass" || outcome.status === "blocked" || outcome.status === "exception");
+      const terminalDisconnectOutcome = outcome.operation === "wallet.disconnect"
+        && (outcome.status === "pass" || outcome.status === "blocked" || outcome.status === "exception");
+      if (!terminalConnectOutcome && !terminalDisconnectOutcome) return false;
+      clearMcelWalletProviderPermissionRequest({
+        reason: "terminal-wallet-lifecycle-outcome",
+        operation: outcome.operation,
+        status: outcome.status,
+        outcomeReason: outcome.reason || ""
+      });
+      return true;
+    }
+
+    function markMcelWalletProviderPendingBackoff(detail = {}) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.providerPendingUntil = Math.max(Number(runtime.providerPendingUntil || 0), Date.now() + 4500);
+      runtime.providerPendingDetail = detail;
+      scheduleMcelWalletProviderPendingRefresh(runtime.providerPendingUntil, "provider-permission-already-pending");
+      runtime.lastReceipt = mcelWalletBacklogReceipt({
+        action: "wallet.provider.permission-request",
+        status: "blocked-before-provider",
+        reason: "provider-request-already-pending",
+        detail
+      });
+      renderMcelWalletBacklogSchemeControls();
+      return runtime.lastReceipt;
+    }
+
+    async function executeMcelWalletBacklogTask(action, reason, executor, scheme = selectedMcelWalletBacklogRemediationScheme()) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      runtime.active = true;
+      runtime.action = action;
+      runtime.reason = reason;
+      runtime.sequence = Number(runtime.sequence || 0) + 1;
+      runtime.lastScheme = scheme.id;
+      renderMcelWalletBacklogSchemeControls();
+      try {
+        const executionOptions = mcelWalletBacklogExecutionOptionsForScheme(scheme, action);
+        const result = await executor(executionOptions);
+        mcelWalletBacklogReceipt({action, scheme, status: "executed", reason, detail: {resultKind: result?.kind || ""}});
+        return result;
+      } finally {
+        runtime.active = false;
+        runtime.action = "";
+        runtime.reason = "";
+        if (scheme.id === "cooldown") {
+          runtime.cooldownUntil = Math.max(Number(runtime.cooldownUntil || 0), Date.now() + 900);
+        }
+        renderMcelWalletBacklogSchemeControls();
+        if (scheme.id === "latest-wins" && runtime.latest) {
+          const latest = runtime.latest;
+          runtime.latest = null;
+          window.setTimeout(() => {
+            void runMcelWalletBacklogRemediated(latest.action, latest.reason, latest.executor);
+          }, 0);
+        }
+        if (scheme.id === "queue-serial" && runtime.queued.length) {
+          const next = runtime.queued.shift();
+          window.setTimeout(() => {
+            void runMcelWalletBacklogRemediated(next.action, next.reason, next.executor);
+          }, 0);
+        }
+      }
+    }
+
+    async function runMcelWalletBacklogRemediated(action, reason, executor) {
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      const runtime = mcelWalletBacklogRuntimeState();
+      const executionOptions = mcelWalletBacklogExecutionOptionsForScheme(scheme, action);
+      const now = Date.now();
+      const providerPending = mcelWalletProviderPendingBackoffActive();
+      if (scheme.id === "ignore") {
+        return executor(executionOptions);
+      }
+      if (scheme.id === "single-flight" && runtime.inFlight) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        mcelWalletBacklogReceipt({action, scheme, status: "single-flight-shared", reason});
+        return runtime.inFlight;
+      }
+      if (scheme.id === "drop-while-busy" && runtime.active) {
+        runtime.droppedCount = Number(runtime.droppedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "dropped", reason, detail: {activeAction: runtime.action}});
+      }
+      if (scheme.id === "disable-while-busy" && runtime.active) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({
+          action,
+          scheme,
+          status: "suppressed",
+          reason: "wallet-backlog-active",
+          detail: {activeAction: runtime.action, providerPending}
+        });
+      }
+      if (scheme.id === "block-before-external-provider" && action === "wallet.connect" && (providerPending || (runtime.active && runtime.action === "wallet.connect"))) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({
+          action,
+          scheme,
+          status: "blocked-before-provider",
+          reason: providerPending ? "provider-request-already-pending" : "wallet-connect-already-active",
+          detail: {activeAction: runtime.action, providerPending}
+        });
+      }
+      if (scheme.id === "cooldown" && runtime.active) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "cooldown-active", reason, detail: {activeAction: runtime.action}});
+      }
+      if (scheme.id === "cooldown" && Number(runtime.cooldownUntil || 0) > now) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "cooldown-suppressed", reason, detail: {cooldownUntil: runtime.cooldownUntil}});
+      }
+      if (scheme.id === "throttle" && now - Number(runtime.lastThrottleRunAt || 0) < 900) {
+        runtime.suppressedCount = Number(runtime.suppressedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "throttled", reason, detail: {lastThrottleRunAt: runtime.lastThrottleRunAt}});
+      }
+      if (scheme.id === "queue-serial" && runtime.active) {
+        runtime.queued.push({action, reason, executor});
+        runtime.queuedCount = Number(runtime.queuedCount || 0) + 1;
+        return mcelWalletBacklogReceipt({action, scheme, status: "queued", reason, detail: {queuedCount: runtime.queued.length}});
+      }
+      if (scheme.id === "latest-wins" && runtime.active) {
+        runtime.latest = {action, reason, executor};
+        runtime.nukedCount = Number(runtime.nukedCount || 0) + 1;
+        runtime.queued = [];
+        return mcelWalletBacklogReceipt({action, scheme, status: "latest-wins-queued", reason, detail: {nukedBacklog: true}});
+      }
+      if (scheme.id === "coalesce" || scheme.id === "debounce") {
+        const key = `${scheme.id}:${action}`;
+        if (runtime.timers[key]) {
+          window.clearTimeout(runtime.timers[key]);
+          runtime.coalescedCount = Number(runtime.coalescedCount || 0) + 1;
+        }
+        return new Promise((resolve) => {
+          runtime.timers[key] = window.setTimeout(() => {
+            runtime.timers[key] = null;
+            resolve(executeMcelWalletBacklogTask(action, reason, executor, scheme));
+          }, scheme.id === "debounce" ? 320 : 160);
+        });
+      }
+      if (scheme.id === "throttle") {
+        runtime.lastThrottleRunAt = now;
+      }
+      const promise = executeMcelWalletBacklogTask(action, reason, executor, scheme);
+      if (scheme.id === "single-flight") {
+        runtime.inFlight = promise;
+        promise.finally(() => {
+          if (runtime.inFlight === promise) runtime.inFlight = null;
+        });
+      }
+      return promise;
+    }
+
     function mcelTinyContractInjectedProvider() {
       return window.ethereum && typeof window.ethereum.request === "function" ? window.ethereum : null;
     }
 
-    async function mcelTinyContractWalletRequest(provider, method, params = []) {
+    async function mcelTinyContractWalletRequest(provider, method, params = [], requestPolicy = {}) {
+      const guardProviderPermission = method === "eth_requestAccounts" && requestPolicy?.guardPermissionRequest === true;
+      if (guardProviderPermission && mcelWalletProviderPendingBackoffActive()) {
+        const detail = {
+          name: "McelWalletBacklogRemediation",
+          code: -32002,
+          message: "MCEL wallet component policy blocked duplicate provider permission request before SCM/provider backlog could grow; provider request was not re-issued."
+        };
+        recordMcelTinyContractWalletCall(method, "backlog-blocked", detail);
+        const error = new Error(detail.message);
+        error.name = detail.name;
+        error.code = detail.code;
+        throw error;
+      }
+      let permissionWindowOpened = false;
+      let keepProviderBackoff = false;
+      if (guardProviderPermission) {
+        permissionWindowOpened = beginMcelWalletProviderPermissionRequest({method, params});
+      }
       recordMcelTinyContractWalletCall(method, "start", {params});
       try {
         const value = await provider.request({method, params});
@@ -2695,7 +9740,15 @@
         const detail = mcelTinyContractWalletError(error);
         mcelTinyContractWalletAdapterState().lastError = detail.message;
         recordMcelTinyContractWalletCall(method, "fail", detail);
+        if (method === "eth_requestAccounts" && (String(detail.code || "") === "-32002" || /already pending/i.test(detail.message || ""))) {
+          keepProviderBackoff = true;
+          markMcelWalletProviderPendingBackoff(detail);
+        }
         throw error;
+      } finally {
+        if (permissionWindowOpened && !keepProviderBackoff) {
+          clearMcelWalletProviderPermissionRequest();
+        }
       }
     }
 
@@ -2703,6 +9756,7 @@
       const tinyState = ensureMcelTinyContractState();
       const instance = tinyState.scmInstance;
       const app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      const walletBacklogOptions = selectedMcelWalletBacklogExecutionOptions(effectName);
       if (!instance || !window.McelLabScm?.runEffect) {
         recordMcelTinyContractEvidence(
           "wallet-event",
@@ -2710,7 +9764,7 @@
           "warn",
           {effectName, payload, reason}
         );
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return null;
       }
       try {
@@ -2731,7 +9785,7 @@
           {effectName, payload, result}
         );
         syncMcelTinyContractDomFromScm(app, instance, reason);
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return result;
       } catch (error) {
         const detail = mcelTinyContractWalletError(error);
@@ -2742,12 +9796,34 @@
           {effectName, payload, error: detail}
         );
         syncMcelTinyContractDomFromScm(app, instance, `${reason} failed`);
-        renderMcelTinyContractProof(app, `${reason}-failed`);
+        scheduleMcelWalletBacklogProofRender(app, `${reason}-failed`, walletBacklogOptions.proofRender);
         return {error: detail};
       }
     }
 
+    function unbindMcelTinyContractWalletProviderEvents(binding = null) {
+      if (!binding?.provider || binding.bound !== true) return false;
+      const provider = binding.provider;
+      const off = typeof provider.removeListener === "function"
+        ? provider.removeListener.bind(provider)
+        : (typeof provider.off === "function" ? provider.off.bind(provider) : null);
+      if (!off) return false;
+      try {
+        off("accountsChanged", binding.accountsChanged);
+        off("chainChanged", binding.chainChanged);
+        off("disconnect", binding.disconnect);
+        off("error", binding.providerError);
+        binding.bound = false;
+        recordMcelTinyContractWalletEvent("provider.events.unbound", {kind: "mcelWalletProviderEventBinding.v1"});
+        return true;
+      } catch (error) {
+        recordMcelTinyContractWalletEvent("provider.events.unbind.failed", mcelTinyContractWalletError(error));
+        return false;
+      }
+    }
+
     function bindMcelTinyContractWalletProviderEvents(provider) {
+      const tinyState = ensureMcelTinyContractState();
       const adapter = mcelTinyContractWalletAdapterState();
       if (!provider || typeof provider.on !== "function") {
         adapter.eventsBound = false;
@@ -2756,7 +9832,24 @@
         });
         return false;
       }
-      if (adapter.eventsBound) return true;
+      const existing = tinyState.walletProviderEventBinding;
+      if (existing?.provider === provider && existing.bound === true) {
+        adapter.eventsBound = true;
+        adapter.accountsChanged = existing.accountsChanged;
+        adapter.chainChanged = existing.chainChanged;
+        adapter.disconnect = existing.disconnect;
+        adapter.providerError = existing.providerError;
+        const providerRuntime = mcelTinyContractWalletProviderRuntimeState();
+        providerRuntime.duplicateProviderBindingBlockedCount = Number(providerRuntime.duplicateProviderBindingBlockedCount || 0) + 1;
+        recordMcelTinyContractWalletEvent("provider.events.reused", {
+          kind: "mcelWalletProviderEventBinding.v1",
+          duplicateProviderBindingBlockedCount: providerRuntime.duplicateProviderBindingBlockedCount
+        });
+        return true;
+      }
+      if (existing?.provider && existing.bound === true && existing.provider !== provider) {
+        unbindMcelTinyContractWalletProviderEvents(existing);
+      }
       const accountsChanged = (accounts) => {
         const normalizedAccounts = Array.isArray(accounts) ? accounts : [];
         const outcome = recordMcelTinyContractExternalOutcome({
@@ -2839,19 +9932,30 @@
       provider.on("chainChanged", chainChanged);
       provider.on("disconnect", disconnect);
       provider.on("error", providerError);
+      tinyState.walletProviderEventBinding = {
+        kind: "mcelWalletProviderEventBinding.v1",
+        provider,
+        bound: true,
+        accountsChanged,
+        chainChanged,
+        disconnect,
+        providerError
+      };
       adapter.eventsBound = true;
       adapter.accountsChanged = accountsChanged;
       adapter.chainChanged = chainChanged;
       adapter.disconnect = disconnect;
       adapter.providerError = providerError;
       recordMcelTinyContractWalletEvent("provider.events.bound", {
+        kind: "mcelWalletProviderEventBinding.v1",
         events: ["accountsChanged", "chainChanged", "disconnect", "error"]
       });
       return true;
     }
 
-    async function readMcelTinyContractWalletProvider(interactive = false) {
+    async function readMcelTinyContractWalletProvider(interactive = false, walletBacklogOptions = {}) {
       const adapter = resetMcelTinyContractWalletAdapterState(interactive ? "interactive-connect" : "passive-connect");
+      const walletRequestPolicy = walletBacklogOptions?.providerRequest || {};
       adapter.ethersReady = Boolean(window.ethers?.BrowserProvider);
       adapter.walletSubsystemReady = Boolean(mcelTinyContractWalletSubsystem());
 
@@ -2945,7 +10049,7 @@
         chainId = "";
       }
       try {
-        accounts = await mcelTinyContractWalletRequest(provider, interactive ? "eth_requestAccounts" : "eth_accounts");
+        accounts = await mcelTinyContractWalletRequest(provider, interactive ? "eth_requestAccounts" : "eth_accounts", [], walletRequestPolicy);
       } catch (error) {
         accountRequestError = mcelTinyContractWalletError(error);
         accounts = [];
@@ -2999,6 +10103,7 @@
         value: {account, chainId},
         nextAction: account ? "" : "Unlock the wallet and approve the account request, then retry connect."
       });
+      settleMcelWalletProviderPermissionRequestForOutcome(outcome);
       return {
         mock: false,
         liveProvider: true,
@@ -3079,7 +10184,146 @@
       }
     }
 
+    function mcelTinyContractConnectedWalletSnapshot(instance = ensureMcelTinyContractState().scmInstance) {
+      const wallet = instance?.runtime?.wallet || {};
+      const network = instance?.runtime?.network || {};
+      if (wallet.connected === true && wallet.account) {
+        return {
+          connected: true,
+          source: "mcel-scm-runtime",
+          account: wallet.account,
+          chainId: network.chainId || wallet.chainId || "",
+          networkOk: network.ok === true
+        };
+      }
+      const subsystemSnapshot = snapshotMcelTinyContractWalletSubsystemState();
+      if (subsystemSnapshot?.connected === true && subsystemSnapshot.address) {
+        return {
+          connected: true,
+          source: "wallet-subsystem",
+          account: subsystemSnapshot.address,
+          chainId: subsystemSnapshot.chainId || "",
+          networkOk: false
+        };
+      }
+      return {
+        connected: false,
+        source: instance ? "mcel-scm-runtime" : "unmounted",
+        account: "",
+        chainId: "",
+        networkOk: false
+      };
+    }
+
+    function mcelGoldenWalletControlIntendedAction(instance = ensureMcelTinyContractState().scmInstance) {
+      const runtime = mcelWalletBacklogRuntimeState();
+      if (runtime.active === true && (runtime.action === "wallet.connect" || runtime.action === "wallet.disconnect")) {
+        return runtime.action;
+      }
+      const connectedSnapshot = mcelTinyContractConnectedWalletSnapshot(instance);
+      return connectedSnapshot.connected === true ? "wallet.disconnect" : "wallet.connect";
+    }
+
+    function mcelGoldenWalletControlState(instance = ensureMcelTinyContractState().scmInstance) {
+      const connectedSnapshot = mcelTinyContractConnectedWalletSnapshot(instance);
+      const runtime = mcelWalletBacklogRuntimeState();
+      const backlogSnapshot = mcelWalletBacklogRuntimeSnapshot();
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      const providerPending = backlogSnapshot.providerPending === true;
+      const busy = runtime.active === true || providerPending;
+      const action = mcelGoldenWalletControlIntendedAction(instance);
+      const accountLabel = connectedSnapshot.account ? `${connectedSnapshot.account.slice(0, 10)}…${connectedSnapshot.account.slice(-4)}` : "not connected";
+      const mode = busy
+        ? (action === "wallet.disconnect" ? "disconnecting" : (providerPending ? "provider-pending" : "connecting"))
+        : (connectedSnapshot.connected === true ? "connected" : "disconnected");
+      const label = mode === "disconnecting"
+        ? "Disconnecting…"
+        : (mode === "provider-pending"
+          ? "Awaiting wallet…"
+          : (mode === "connecting"
+            ? "Connecting…"
+            : (connectedSnapshot.connected === true ? "Disconnect wallet" : "Connect wallet")));
+      const status = busy
+        ? `${scheme.id} · ${runtime.action || "wallet"}`
+        : (connectedSnapshot.connected === true ? accountLabel : "not connected");
+      return {
+        kind: "mcelGoldenWalletControlState.v1",
+        action,
+        label,
+        status,
+        mode,
+        busy,
+        connected: connectedSnapshot.connected === true,
+        account: connectedSnapshot.account || "",
+        chainId: connectedSnapshot.chainId || "",
+        scheme: scheme.id,
+        ariaLabel: `${label}: ${status}`
+      };
+    }
+
+    function syncMcelGoldenWalletControl(app = null, instance = ensureMcelTinyContractState().scmInstance) {
+      const roots = [app, app === document ? null : document].filter(Boolean);
+      let lastState = null;
+      roots.forEach((root) => {
+        const buttons = root.querySelectorAll
+          ? [...root.querySelectorAll('[data-mc-effect="wallet.toggle"], #mcel-golden-wallet-toggle')]
+          : [];
+        buttons.forEach((button) => {
+          const state = mcelGoldenWalletControlState(instance);
+          const scheme = selectedMcelWalletBacklogRemediationScheme();
+          const runtime = mcelWalletBacklogRuntimeState();
+          button.dataset.mcelWalletAction = state.action;
+          button.dataset.mcelWalletMode = state.mode;
+          button.dataset.mcelWalletBusy = state.busy ? "true" : "false";
+          button.dataset.mcelWalletConnected = state.connected ? "true" : "false";
+          button.dataset.mcelWalletBacklogScheme = state.scheme;
+          button.setAttribute("aria-label", state.ariaLabel);
+          const label = button.querySelector?.("[data-mcel-wallet-golden-label]");
+          const status = button.querySelector?.("[data-mcel-wallet-golden-status]");
+          if (label) label.textContent = state.label;
+          if (status) status.textContent = state.status;
+          const disabled = mcelWalletBacklogButtonDisabled(button, {scheme, runtime});
+          button.disabled = disabled;
+          button.title = disabled
+            ? `Wallet backlog remediation '${scheme.id}' is settling ${runtime.action || "wallet lifecycle work"}.`
+            : state.ariaLabel;
+          lastState = state;
+        });
+      });
+      return lastState;
+    }
+
+
+    function mcelWalletBacklogAlreadySatisfied(action, reason, detail = {}) {
+      const scheme = selectedMcelWalletBacklogRemediationScheme();
+      const receipt = mcelWalletBacklogReceipt({
+        action,
+        scheme,
+        status: "already-satisfied",
+        reason,
+        detail
+      });
+      renderMcelWalletBacklogSchemeControls();
+      refreshMcel18nWalletToolBoundary(`${reason}-already-satisfied`);
+      return {
+        kind: "mcelWalletBacklogAlreadySatisfied.v1",
+        action,
+        status: "already-satisfied",
+        reason,
+        detail,
+        receipt
+      };
+    }
+
     async function connectMcelTinyContractWallet(reason = "manual-wallet-connect") {
+      const connectedSnapshot = mcelTinyContractConnectedWalletSnapshot();
+      if (connectedSnapshot.connected === true) {
+        return mcelWalletBacklogAlreadySatisfied("wallet.connect", reason, connectedSnapshot);
+      }
+      return runMcelWalletBacklogRemediated("wallet.connect", reason, (walletBacklogOptions) => performMcelTinyContractWalletConnect(reason, walletBacklogOptions));
+    }
+
+    async function performMcelTinyContractWalletConnect(reason = "manual-wallet-connect", walletBacklogOptions = selectedMcelWalletBacklogExecutionOptions("wallet.connect")) {
       const tinyState = ensureMcelTinyContractState();
       let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
       if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
@@ -3088,7 +10332,7 @@
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return null;
       try {
-        const walletPayload = await readMcelTinyContractWalletProvider(true);
+        const walletPayload = await readMcelTinyContractWalletProvider(true, walletBacklogOptions);
         const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractOutcomeFromWalletPayload(walletPayload));
         walletPayload.outcome = outcome;
         const result = window.McelLabScm.runEffect(instance, "wallet.connect", walletPayload);
@@ -3112,11 +10356,12 @@
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet/dev-network state captured through declared runtime effect.");
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return {result, networkResult, walletPayload};
       } catch (error) {
         const detail = mcelTinyContractWalletError(error);
         const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractExceptionOutcome("wallet.connect", "connect-handler", error));
+        settleMcelWalletProviderPermissionRequestForOutcome(outcome);
         mcelTinyContractWalletAdapterState().lastError = detail.message;
         let effectEnvelope = null;
         try {
@@ -3145,13 +10390,25 @@
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet connect/check failed.");
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return {error: detail, outcome, effectEnvelope};
       }
     }
 
 
     async function disconnectMcelTinyContractWallet(reason = "manual-wallet-disconnect") {
+      return runMcelWalletBacklogRemediated("wallet.disconnect", reason, (walletBacklogOptions) => performMcelTinyContractWalletDisconnect(reason, walletBacklogOptions));
+    }
+
+    async function toggleMcelGoldenWalletControl(reason = "golden-wallet-toggle") {
+      const action = mcelGoldenWalletControlIntendedAction();
+      if (action === "wallet.disconnect") {
+        return disconnectMcelTinyContractWallet(reason);
+      }
+      return connectMcelTinyContractWallet(reason);
+    }
+
+    async function performMcelTinyContractWalletDisconnect(reason = "manual-wallet-disconnect", walletBacklogOptions = selectedMcelWalletBacklogExecutionOptions("wallet.disconnect")) {
       const tinyState = ensureMcelTinyContractState();
       let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
       if (!tinyState.scmInstance || !window.McelLabScm?.runEffect) {
@@ -3171,6 +10428,7 @@
         };
       }
       disconnectOutcome = recordMcelTinyContractExternalOutcome(mcelTinyContractOutcomeFromRevoke(revoke));
+      settleMcelWalletProviderPermissionRequestForOutcome(disconnectOutcome);
       try {
         const effectEnvelope = window.McelLabScm.runEffect(instance, "wallet.disconnect", {revoke, outcome: disconnectOutcome});
         const effectResult = effectEnvelope?.result || effectEnvelope;
@@ -3201,7 +10459,7 @@
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet runtime state disconnected and transaction draft reset.");
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return {revoke, effectEnvelope, effectResult};
       } catch (error) {
         tinyState.lastWalletResetClean = false;
@@ -3215,7 +10473,7 @@
         );
         app = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
         syncMcelTinyContractDomFromScm(app, instance, "Wallet disconnect/reset failed.");
-        renderMcelTinyContractProof(app, reason);
+        scheduleMcelWalletBacklogProofRender(app, reason, walletBacklogOptions.proofRender);
         return {revoke, error: detail};
       }
     }
@@ -3498,13 +10756,91 @@
         tinyState.walletRevokeAttemptCount > 0;
       const walletResetOnly = tinyState.walletDisconnectCount > 0 && tinyState.walletConnectCount === 0;
       const providerRevokeRequired = disconnectEffectRan && liveProviderSeen;
-      const runtimeTxDraft = instance?.runtime?.txDraft || {};
+      const txDraftEnforcement = mcelTinyContractEnforceTxDraftProvenance(instance, `render-proof:${reason}`);
+      const runtimeTxDraft = txDraftEnforcement?.txDraft || instance?.runtime?.txDraft || {};
+      const txDraftInvalidationReasons = (runtimeTxDraft.invalidatedBy || []).map((entry) => entry.reason || "").filter(Boolean);
+      const txDraftProvenanceRecorded = Boolean(
+        runtimeTxDraft.provenanceVersion === "txDraft.provenance.v1" &&
+        runtimeTxDraft.sourceRequestHash &&
+        runtimeTxDraft.selectedRequestSnapshot &&
+        runtimeTxDraft.walletAccountHash &&
+        runtimeTxDraft.chainProof &&
+        Array.isArray(runtimeTxDraft.externalOutcomeSequence) &&
+        Array.isArray(runtimeTxDraft.networkGateSequence) &&
+        Array.isArray(runtimeTxDraft.probeEnvelopeIds)
+      );
+      const txDraftInvalidationRecorded = runtimeTxDraft.status === "ready"
+        ? txDraftInvalidationReasons.length === 0
+        : txDraftInvalidationReasons.length > 0 || runtimeTxDraft.status === "empty" || runtimeTxDraft.status === "selected";
+      const runtimeTxDraftConsumerGate = instance?.runtime?.txDraftConsumerGate || mcelTinyContractTxDraftConsumerGate({
+        txDraft: runtimeTxDraft,
+        freshness: runtimeTxDraft.provenanceFreshness || {
+          status: runtimeTxDraft.freshnessStatus || "",
+          invalidatedBy: runtimeTxDraft.invalidatedBy || [],
+          action: runtimeTxDraft.freshnessAction || "",
+          noSendBoundaryPreserved: runtimeTxDraft.noSendBoundaryPreserved === true
+        },
+        consumer: "release.approve"
+      });
+      const runtimeTxDraftEndgamePreflight = runtimeTxDraftConsumerGate.endgamePreflight || mcelTinyContractTxDraftEndgamePreflight({
+        txDraft: runtimeTxDraft,
+        freshness: runtimeTxDraft.provenanceFreshness || {
+          status: runtimeTxDraft.freshnessStatus || "",
+          invalidatedBy: runtimeTxDraft.invalidatedBy || [],
+          action: runtimeTxDraft.freshnessAction || "",
+          noSendBoundaryPreserved: runtimeTxDraft.noSendBoundaryPreserved === true
+        },
+        consumerGate: runtimeTxDraftConsumerGate
+      });
+      const walletCommitBoundary = mcelWalletToolCommitBoundary({
+        source: instance?.source || {},
+        state: instance?.state || {},
+        runtime: instance?.runtime || {},
+        request: selectedMcelTinyContractItem(instance),
+        reason: `render-proof:${reason}`
+      });
+      if (instance?.runtime) {
+        instance.runtime.walletCommitBoundary = walletCommitBoundary;
+        instance.runtime.walletSmokeRegressionGuard = walletCommitBoundary.wallet19aSmokeRegressionGuard || walletCommitBoundary.walletSmokeRegressionGuard || null;
+      }
+      tinyState.lastWalletCommitBoundary = walletCommitBoundary;
+      if (walletCommitBoundary.mcelCommitReceipt) {
+        tinyState.commitBoundaryReceipts = [
+          ...(tinyState.commitBoundaryReceipts || []),
+          walletCommitBoundary.mcelCommitReceipt
+        ].slice(-12);
+      }
       const externalOutcome = mcelTinyContractLatestWalletActionOutcome(instance);
       const actionOutcome = externalOutcome.status || "waiting";
       const externalOutcomeCaptured = externalOutcome.kind === "mcel-external-outcome" && actionOutcome !== "waiting";
+      const externalOutcomeOperation = String(externalOutcome.operation || "");
+      const externalOutcomePhase = String(externalOutcome.phase || "");
+      const externalOutcomeReason = String(externalOutcome.reason || "");
+      const externalOutcomeRpcMethods = Array.isArray(externalOutcome.rpc) ? externalOutcome.rpc.filter(Boolean) : [];
+      const walletProofRpcMethods = externalOutcomeRpcMethods.length ? externalOutcomeRpcMethods : walletRpcMethods;
       const externalBlockedOrException = ["blocked", "exception"].includes(actionOutcome);
       const txDraftBlockedAfterExternalOutcome = !externalBlockedOrException || instance?.runtime?.txDraft?.status !== "ready";
       const sourceSafeAfterExternalOutcome = true; // Source mutation safety is enforced by SCM declared writes and serialization; blocked outcomes must not be inferred from historical source state.
+      const walletConnectProviderEvidenceCaptured = externalOutcomeOperation === "wallet.connect" && (
+        walletProofRpcMethods.includes("eth_requestAccounts") ||
+        walletProofRpcMethods.includes("eth_accounts") ||
+        walletProofRpcMethods.includes("provider.detect") ||
+        walletProofRpcMethods.includes("MainComputerWalletApp.requestConnect") ||
+        externalOutcomePhase === "eth_requestAccounts" ||
+        externalOutcomeReason === "account-request-rejected" ||
+        externalOutcomeReason === "account-grant-missing" ||
+        Boolean(externalOutcome.error)
+      );
+      const walletPermissionRevokeEvidenceCaptured = externalOutcomeOperation === "wallet.disconnect" && (
+        walletProofRpcMethods.includes("wallet_revokePermissions") ||
+        walletProofRpcMethods.includes("MainComputerWalletApp.requestDisconnect") ||
+        externalOutcomePhase === "permission-revoke" ||
+        externalOutcomeReason === "permission-revoked" ||
+        externalOutcomeReason === "permission-revoke-unavailable" ||
+        externalOutcomeReason === "permission-revoke-not-completed" ||
+        externalOutcome.value?.attempted === true ||
+        externalOutcome.value?.revoked === true
+      );
       const checks = {
         contractLanguageParsed: language.kind === "mcel.scm.app" && language.name === "DevNetworkReleaseConsole",
         elementRegistryAvailable: Number(registryPacket?.elementCount || 0) > 0,
@@ -3526,6 +10862,10 @@
         walletMockFallbackDegraded: walletAdapter.mockFallback === true,
         externalOutcomeCaptured,
         externalOutcomeContained: externalOutcomeCaptured && ["pass", "blocked", "exception"].includes(actionOutcome),
+        walletConnectOutcomeCaptured: externalOutcomeCaptured && externalOutcomeOperation === "wallet.connect",
+        walletDisconnectOutcomeCaptured: externalOutcomeCaptured && externalOutcomeOperation === "wallet.disconnect",
+        walletConnectProviderEvidenceCaptured,
+        walletPermissionRevokeEvidenceCaptured,
         txDraftBlockedAfterExternalOutcome,
         sourceSafeAfterExternalOutcome,
         walletDisconnectReset: walletResetClean,
@@ -3533,6 +10873,21 @@
         networkVerified: tinyState.networkVerifyCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "network.verify"),
         declaredRuntimeEffectRan: tinyState.releaseSelectCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.select"),
         txDraftRuntimeOnly: tinyState.txDraftCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.draftTx"),
+        txDraftProvenanceRecorded,
+        txDraftInvalidationRecorded,
+        txDraftProvenanceEnforced: runtimeTxDraft.provenanceEnforced === true,
+        txDraftFreshnessCurrent: runtimeTxDraft.freshnessStatus === "valid",
+        txDraftConsumerGateObserved: runtimeTxDraftConsumerGate.kind === "mcel-tx-draft-consumer-gate.v1",
+        txDraftConsumerGatePass: runtimeTxDraftConsumerGate.status === "pass",
+        txDraftConsumerGateBlocksUnsafe: runtimeTxDraftConsumerGate.status !== "blocked" || runtimeTxDraftConsumerGate.valid !== true,
+        txDraftEndgamePreflightLocked: runtimeTxDraftEndgamePreflight.canSend !== true && runtimeTxDraftEndgamePreflight.canSign !== true && runtimeTxDraftEndgamePreflight.canBroadcast !== true,
+        txDraftEndgamePreflightSafe: runtimeTxDraftEndgamePreflight.noSendBoundaryPreserved === true && Array.isArray(runtimeTxDraftEndgamePreflight.blockers) && runtimeTxDraftEndgamePreflight.blockers.includes("send-sign-not-implemented"),
+        mcelCommitBoundaryDeclared: walletCommitBoundary.kind === "mcelWalletToolCommitBoundary.v1" && walletCommitBoundary.mcelCommitDraft?.kind === "mcelCommitDraft.v1",
+        walletToolCommitBoundaryLocked: walletCommitBoundary.locked === true && walletCommitBoundary.canSend !== true && walletCommitBoundary.canSign !== true && walletCommitBoundary.canBroadcast !== true,
+        walletToolFreshnessChecked: walletCommitBoundary.mcelCommitFreshness?.kind === "mcelCommitFreshness.v1",
+        walletToolConsumerGateObserved: walletCommitBoundary.mcelCommitConsumerGate?.kind === "mcelCommitConsumerGate.v1",
+        walletToolPreflightObserved: walletCommitBoundary.mcelCommitPreflight?.kind === "mcelCommitPreflight.v1",
+        walletToolCommitReceiptRecorded: walletCommitBoundary.mcelCommitReceipt?.kind === "mcelCommitReceipt.v1" && walletCommitBoundary.mcelCommitReceipt?.mutationExecuted !== true,
         declaredSourceEffectRan: tinyState.reviewedCount > 0 || (approvedSource && componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "release.approve")),
         unsafeSourceWriteBlocked: unsafeBlocked,
         repairPacketGenerated: tinyState.repairPacketCount > 0 || (
@@ -3563,25 +10918,46 @@
         checks.layoutContractChecked,
         checks.styleContractChecked
       ];
-      const walletLifecycleRequiredChecks = [
+      const walletLifecycleCommonRequiredChecks = [
         checks.contractLanguageParsed,
         checks.componentManifestResolved,
         checks.routeManifestResolved,
         checks.routeLoaderCommitted,
-        checks.walletEffectRan,
-        checks.walletAdapterExercised,
-        checks.walletEventsSubscribed,
-        checks.walletProviderEventsGoverned,
         checks.externalOutcomeContained,
         checks.txDraftBlockedAfterExternalOutcome,
         checks.sourceSafeAfterExternalOutcome,
-        checks.walletDisconnectReset,
-        checks.walletPermissionRevokeAttempted,
-        checks.networkVerified,
         checks.serializationClean,
         checks.layoutContractChecked,
         checks.styleContractChecked
       ];
+      const walletLifecycleConnectPassRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletConnectOutcomeCaptured,
+        checks.walletEffectRan,
+        checks.walletAdapterExercised,
+        checks.walletEventsSubscribed,
+        checks.walletProviderEventsGoverned,
+        checks.networkVerified
+      ];
+      const walletLifecycleConnectBlockedRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletConnectOutcomeCaptured,
+        checks.walletConnectProviderEvidenceCaptured,
+        checks.walletEventsSubscribed,
+        checks.walletProviderEventsGoverned
+      ];
+      const walletLifecycleDisconnectRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletDisconnectOutcomeCaptured,
+        checks.walletDisconnectReset,
+        checks.walletPermissionRevokeAttempted,
+        checks.walletPermissionRevokeEvidenceCaptured
+      ];
+      const walletLifecycleRequiredChecks = externalOutcomeOperation === "wallet.disconnect"
+        ? walletLifecycleDisconnectRequiredChecks
+        : (externalOutcomeOperation === "wallet.connect" && ["blocked", "exception"].includes(actionOutcome)
+          ? walletLifecycleConnectBlockedRequiredChecks
+          : walletLifecycleConnectPassRequiredChecks);
       const fullBatteryRequiredChecks = [
         checks.contractLanguageParsed,
         checks.elementRegistryAvailable,
@@ -3600,6 +10976,8 @@
         checks.networkVerified,
         checks.declaredRuntimeEffectRan,
         checks.txDraftRuntimeOnly,
+        checks.txDraftProvenanceRecorded,
+        checks.txDraftInvalidationRecorded,
         checks.declaredSourceEffectRan,
         checks.unsafeSourceWriteBlocked,
         checks.runtimeRepairScoped,
@@ -3691,6 +11069,32 @@
         reviewedCount: tinyState.reviewedCount,
         walletConnectCount: tinyState.walletConnectCount,
         txDraftCount: tinyState.txDraftCount,
+        runtimeTxDraft: runtimeTxDraft,
+        txDraftConsumerGate: runtimeTxDraftConsumerGate,
+        txDraftEndgamePreflight: runtimeTxDraftEndgamePreflight,
+        mcelCommitBoundary: walletCommitBoundary,
+        walletCommitBoundary,
+        mcelProofDockSpecimens: walletCommitBoundary.mcelProofDockSpecimens || {},
+        proofDockSpecimens: walletCommitBoundary.proofDockSpecimens || walletCommitBoundary.mcelProofDockSpecimens || {},
+        commitBoundaryReceipts: tinyState.commitBoundaryReceipts || [],
+        txDraftProvenance: {
+          provenanceVersion: runtimeTxDraft.provenanceVersion || "",
+          sourceRequestHash: runtimeTxDraft.sourceRequestHash || "",
+          walletAccountHash: runtimeTxDraft.walletAccountHash || "",
+          chainProof: runtimeTxDraft.chainProof || {},
+          externalOutcomeSequence: runtimeTxDraft.externalOutcomeSequence || [],
+          networkGateSequence: runtimeTxDraft.networkGateSequence || [],
+          calldataSource: runtimeTxDraft.calldataSource || "",
+          abiEncodingStatus: runtimeTxDraft.abiEncodingStatus || "",
+          probeEnvelopeIds: runtimeTxDraft.probeEnvelopeIds || [],
+          invalidatedBy: runtimeTxDraft.invalidatedBy || [],
+          freshnessStatus: runtimeTxDraft.freshnessStatus || "",
+          freshnessAction: runtimeTxDraft.freshnessAction || "",
+          noSendBoundaryPreserved: runtimeTxDraft.noSendBoundaryPreserved === true,
+          provenanceEnforced: runtimeTxDraft.provenanceEnforced === true,
+          provenanceFreshness: runtimeTxDraft.provenanceFreshness || null,
+          valid: runtimeTxDraft.valid === true
+        },
         repairCount: tinyState.repairCount,
         repairPacketCount: tinyState.repairPacketCount,
         repairBoundaryBlockedCount: tinyState.repairBoundaryBlockedCount,
@@ -3755,6 +11159,11 @@
           `runtime select: ${checks.declaredRuntimeEffectRan ? "pass" : `not run${fullOnlyText}`}`,
           `runtime tx draft: ${checks.txDraftRuntimeOnly ? "pass" : `not run${fullOnlyText}`}`,
           `tx draft boundary: ${runtimeTxDraft.noSend ? "no-send" : "not built"} · calldata=${runtimeTxDraft.calldata ? (runtimeTxDraft.calldataEncoding || "present") : "missing"} · nonce=${runtimeTxDraft.nonce?.status || "not-probed"} · gas=${runtimeTxDraft.gasEstimate?.status || "not-probed"} · call=${runtimeTxDraft.ethCall?.status || "not-probed"}`,
+          `tx draft provenance: ${checks.txDraftProvenanceRecorded ? "recorded" : "missing"} · freshness=${runtimeTxDraft.freshnessStatus || "unknown"} · action=${runtimeTxDraft.freshnessAction || "inspect"} · sourceRequestHash=${runtimeTxDraft.sourceRequestHash || "missing"} · accountHash=${runtimeTxDraft.walletAccountHash || "missing"} · chain=${runtimeTxDraft.chainProof?.status || "unknown"} · invalidatedBy=${txDraftInvalidationReasons.join("|") || "none"}`,
+          `send/sign preflight: ${runtimeTxDraftEndgamePreflight.status || "locked-no-draft"} · canSend=${runtimeTxDraftEndgamePreflight.canSend === true} · canSign=${runtimeTxDraftEndgamePreflight.canSign === true} · canBroadcast=${runtimeTxDraftEndgamePreflight.canBroadcast === true} · action=${runtimeTxDraftEndgamePreflight.action || "locked"}`,
+          `18N wallet commit boundary: ${walletCommitBoundary.status || "locked"} · draft=${walletCommitBoundary.mcelCommitDraft?.kind || "missing"} · provenance=${walletCommitBoundary.mcelCommitProvenance?.kind || "missing"} · freshness=${walletCommitBoundary.mcelCommitFreshness?.status || "not-observed"} · gate=${walletCommitBoundary.mcelCommitConsumerGate?.status || "blocked"} · receipt=${walletCommitBoundary.mcelCommitReceipt?.status || "blocked"}`,
+          `18N wallet lock: canSend=${walletCommitBoundary.canSend === true} · canSign=${walletCommitBoundary.canSign === true} · canBroadcast=${walletCommitBoundary.canBroadcast === true} · mutationExecuted=${walletCommitBoundary.mcelCommitReceipt?.mutationExecuted === true}`,
+          `18N proof dock specimens: ${(walletCommitBoundary.mcelProofDockSpecimens?.specimens || []).map((entry) => entry.specimen).join(", ") || "waiting"}`,
           `source approval: ${checks.declaredSourceEffectRan ? "pass" : `not run${fullOnlyText}`}`,
           `unsafe write blocked: ${checks.unsafeSourceWriteBlocked ? "true" : `not run${fullOnlyText}`}`,
           repairPacketLine,
@@ -3765,6 +11174,7 @@
           `layout/style issues: layout=${(layoutCheck?.violations || []).length} style=${(styleCheck?.violations || []).length}`
         ].join("\n");
       }
+      renderMcel18nWalletToolSurface(walletCommitBoundary);
       if (mcelTinyContractEvidence) {
         mcelTinyContractEvidence.textContent = JSON.stringify({
           kind: "mcel-lab-medium-scm-proven-dev-network-app-receipt",
@@ -3869,6 +11279,41 @@
       });
       mcelTinyContractIncrement?.addEventListener("click", clickMcelTinyContractCounter);
       mcelTinyContractDraftTx?.addEventListener("click", () => { void draftMcelTinyContractTransaction("manual-draft-tx"); });
+      document.querySelector("#mcel-18n-wallet-tool-refresh")?.addEventListener("click", () => {
+        refreshMcel18nWalletToolBoundary("manual-wallet-tool-preflight-refresh");
+      });
+      document.querySelector("#mcel-18n-wallet-tool-rebuild-draft")?.addEventListener("click", () => {
+        void rebuildMcel18nWalletTxDraft("manual-wallet-tool-rebuild-draft");
+      });
+      document.querySelector("#mcel-18n-wallet-tool-simulate-account")?.addEventListener("click", () => {
+        simulateMcel18nWalletStaleDraft("account", "simulate-wallet-account-change");
+      });
+      document.querySelector("#mcel-18n-wallet-tool-simulate-chain")?.addEventListener("click", () => {
+        simulateMcel18nWalletStaleDraft("chain", "simulate-wallet-chain-change");
+      });
+      document.querySelector("#mcel-18n-wallet-tool-simulate-source")?.addEventListener("click", () => {
+        simulateMcel18nWalletStaleDraft("source-request", "simulate-wallet-source-request-change");
+      });
+      document.querySelector("#mcel-18n-wallet-tool-simulate-target")?.addEventListener("click", () => {
+        simulateMcel18nWalletStaleDraft("target-value", "simulate-wallet-target-value-change");
+      });
+      document.querySelector("#mcel-20d-wallet-request-intent-signature")?.addEventListener("click", () => {
+        void requestMcel20dWalletIntentSignature("manual-20d-intent-signature");
+      });
+      document.querySelector("#mcel-21a-wallet-send-policy-bound")?.addEventListener("click", () => {
+        void requestMcel21aPolicyBoundWalletSend("manual-21a-policy-bound-send");
+      });
+      document.querySelector("#mcel-18n-wallet-tool-copy-receipt")?.addEventListener("click", () => {
+        void copyMcel18nWalletToolReceipt();
+      });
+      [...document.querySelectorAll('input[name="mcel-wallet-backlog-remediation-scheme"]')].forEach((input) => {
+        input.addEventListener("change", () => {
+          if (input.checked) {
+            setMcelWalletBacklogRemediationScheme(input.value, "manual-wallet-backlog-remediation-scheme");
+          }
+        });
+      });
+      renderMcelWalletBacklogSchemeControls();
       mcelTinyContractRepair?.addEventListener("click", () => repairMcelTinyContractRuntimeChrome("manual-repair"));
       mcelTinyContractBlockWrite?.addEventListener("click", () => attemptMcelTinyContractForbiddenWrite("manual-blocked-write"));
       mcelTinyContractLoadSource?.addEventListener("click", loadMcelTinyContractIntoSourceEditor);

@@ -2639,7 +2639,7 @@ main:has(#code-editor-app),
 #code-editor-app .code-studio-proof-detail-panel {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 8px;
   overflow: hidden;
   padding: 8px 12px;
@@ -2666,6 +2666,59 @@ main:has(#code-editor-app),
 
 #code-editor-app .code-studio-proof-detail-heading button {
   margin-left: auto;
+}
+
+#code-editor-app .code-studio-proof-detail-summary {
+  min-height: 0;
+  max-height: 168px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  border: 1px solid #2d2d30;
+  border-radius: 6px;
+  padding: 8px;
+  background: #151515;
+}
+
+#code-editor-app .code-studio-proof-detail-summary dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px;
+}
+
+#code-editor-app .code-studio-proof-detail-summary dl div {
+  display: grid;
+  gap: 2px;
+}
+
+#code-editor-app .code-studio-proof-detail-summary dt {
+  color: #9cdcfe;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+#code-editor-app .code-studio-proof-detail-summary dd {
+  margin: 0;
+  color: #d4d4d4;
+  font-size: 12px;
+}
+
+#code-editor-app .code-studio-proof-detail-issues {
+  display: grid;
+  gap: 4px;
+}
+
+#code-editor-app .code-studio-proof-detail-issues strong {
+  color: #f4d35e;
+  font-size: 12px;
+}
+
+#code-editor-app .code-studio-proof-detail-issues ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #d4d4d4;
+  font-size: 12px;
 }
 
 #code-editor-app .code-studio-proof-detail-output {

@@ -116,14 +116,14 @@
       <h4>A dev-network release console with wallet state, route data, source approvals, runtime transaction drafts, AI repair hints, serialization, and an SCM receipt.</h4>
       <p>
         This specimen is intentionally larger than a toy counter: MetaMask/dev-network state,
-        route loaders, source-owned release requests, runtime-only transaction previews, declared
-        approval effects, blocked unsafe writes, and visual complexity all have to cooperate without
+        route loaders, source-owned release requests, runtime-only transaction previews, 18N commit-boundary preflight,
+        declared approval effects, tx draft provenance, blocked unsafe writes, and visual complexity all have to cooperate without
         leaking wallet/runtime data into durable HTML.
       </p>
     </div>
     <div class="mcel-tiny-contract-actions" role="group" aria-label="SCM-proven dev-network actions">
       <button type="button" id="mcel-tiny-contract-run">Run SCM + wallet proof</button>
-      <button type="button" id="mcel-tiny-contract-wallet">Connect/check MetaMask devnet</button>
+      <button type="button" id="mcel-tiny-contract-wallet">Check wallet + 18N preflight</button>
       <button type="button" id="mcel-tiny-contract-disconnect">Disconnect/reset wallet</button>
       <button type="button" id="mcel-tiny-contract-increment">Select next release</button>
       <button type="button" id="mcel-tiny-contract-tx-draft">Draft release transaction</button>
@@ -154,13 +154,215 @@
         </output>
         <pre id="mcel-tiny-contract-evidence" class="mcel-tiny-contract-evidence">Evidence packet is waiting.</pre>
       </article>
+      <article class="mcel-tiny-contract-card" data-mcel-18n-wallet-tool="true">
+        <h5>5 · 18N wallet commit boundary</h5>
+        <p>
+          The MCEL wallet tool now crosses the general 18N boundary: draft intent, provenance,
+          freshness, consumer gate, preflight, and receipt. Send/sign/broadcast remains locked while txDraft provenance, stale simulation, rebuild, preflight, blocked-attempt receipts, negative-path checks, unlock requirements, the final locked wallet specimen, and the 18N completion report are visible.
+        </p>
+        <div class="mcel-tiny-contract-controls" data-mcel-18n-wallet-tool-controls="true">
+          <button type="button" id="mcel-18n-wallet-tool-refresh">Refresh wallet 18N preflight</button>
+          <button type="button" id="mcel-18n-wallet-tool-rebuild-draft">Rebuild draft from current wallet state</button>
+          <button type="button" id="mcel-18n-wallet-tool-simulate-account">Simulate account stale</button>
+          <button type="button" id="mcel-18n-wallet-tool-simulate-chain">Simulate chain stale</button>
+          <button type="button" id="mcel-18n-wallet-tool-simulate-source">Simulate source request stale</button>
+          <button type="button" id="mcel-18n-wallet-tool-simulate-target">Simulate target/value stale</button>
+          <button type="button" id="mcel-20d-wallet-request-intent-signature" data-mc-effect="wallet.requestIntentSignature">Request 20D intent signature</button>
+          <button type="button" id="mcel-21a-wallet-send-policy-bound" data-mc-effect="wallet.sendPolicyBoundTransaction">Request 21A policy-bound send</button>
+          <button type="button" id="mcel-18n-wallet-tool-copy-receipt">Copy wallet receipt</button>
+        </div>
+        <fieldset class="mcel-wallet-backlog-schemes" data-mcel-wallet-backlog-remediation="true">
+          <legend>Wallet backlog remediation scheme</legend>
+          <p>
+            The wallet component chooses how its own connect/disconnect backlog is remediated.
+            SCM receipts the selected policy instead of guessing component intent.
+          </p>
+          <div class="mcel-wallet-backlog-scheme-grid">
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="ignore"> Ignore</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="disable-while-busy" checked> Disable while busy</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="single-flight"> Single flight</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="drop-while-busy"> Drop while busy</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="queue-serial"> Queue serial</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="latest-wins"> Latest wins / nuke backlog</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="coalesce"> Coalesce</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="debounce"> Debounce</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="throttle"> Throttle</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="cooldown"> Cooldown</label>
+            <label><input type="radio" name="mcel-wallet-backlog-remediation-scheme" value="block-before-external-provider"> Block before provider</label>
+          </div>
+          <output id="mcel-18n-wallet-backlog-scheme-status" data-status="disable-while-busy" aria-live="polite">
+            scheme=disable-while-busy · busy=false · queued=0 · suppressed=0
+          </output>
+        </fieldset>
+        <output id="mcel-18n-wallet-tool-status" class="mcel-tiny-contract-proof" data-status="locked" aria-live="polite">
+          18N wallet tool is locked until a current MCEL commit draft is proven.
+        </output>
+        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" data-mcel-20b-wallet-signed-intent-unlock="true" data-mcel-20c-wallet-signature-preflight="true" data-mcel-20def-wallet-provider-review="true" data-mcel-20g-wallet-provider-hardening="true" data-mcel-21abc-wallet-transaction-execution="true" data-mcel-21def-wallet-recovery-receipts-relock="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, 20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D intent signature, 20E verification, 20F pre-send review, and 20G provider hardening, 21A policy-bound send, 21B provider outcome ledger, 21C transaction watcher, 21D retry safety, 21E receipt integration, and 21F relock lifecycle board">
+          <div class="mcel-18n-wallet-board-head">
+            <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof + 20A/B/C unlock + 20D/E/F/G provider intent review + 21A/B/C/D/E/F transaction execution lifecycle</strong>
+            <span id="mcel-18n-wallet-tool-visible-phase">21A can request a policy-bound network-agnostic provider send when current signed evidence matches; 21B ledgers provider outcome and 21C watches receipts; 21D blocks duplicate retries, 21E integrates chain outcome, and 21F relocks.</span>
+          </div>
+          <div class="mcel-18n-wallet-kpis" aria-label="Wallet 18N, 19A 19B 19C 19D 19E, 20A, 20B, 20C, 20D, 20E, 20F, 20G, 21A, 21B, 21C, 21D, 21E, and 21F visible status">
+            <article>
+              <span>19A guard</span>
+              <strong id="mcel-19a-wallet-smoke-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>19B identity</span>
+              <strong id="mcel-19b-wallet-tx-draft-identity-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>19C validity</span>
+              <strong id="mcel-19c-wallet-tx-draft-validity-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>19D alignment</span>
+              <strong id="mcel-19d-wallet-proof-alignment-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>19E negative paths</span>
+              <strong id="mcel-19e-wallet-negative-path-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20A contract</span>
+              <strong id="mcel-20a-wallet-unlock-contract-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20A eligibility</span>
+              <strong id="mcel-20a-wallet-unlock-eligibility-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20B signed intent</span>
+              <strong id="mcel-20b-wallet-signed-intent-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20B signature gate</span>
+              <strong id="mcel-20b-wallet-signature-gate-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20C signature preflight</span>
+              <strong id="mcel-20c-wallet-signature-preflight-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20C provider prompt</span>
+              <strong id="mcel-20c-wallet-provider-prompt-visible-status">locked</strong>
+            </article>
+            <article>
+              <span>20D intent signature</span>
+              <strong id="mcel-20d-wallet-intent-signature-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20E signature verify</span>
+              <strong id="mcel-20e-wallet-signature-verification-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20F pre-send review</span>
+              <strong id="mcel-20f-wallet-pre-send-review-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>20G provider hardening</span>
+              <strong id="mcel-20g-wallet-provider-hardening-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21A policy send</span>
+              <strong id="mcel-21a-wallet-policy-send-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21B provider outcome</span>
+              <strong id="mcel-21b-wallet-provider-outcome-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21C tx watcher</span>
+              <strong id="mcel-21c-wallet-transaction-watcher-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21D retry safety</span>
+              <strong id="mcel-21d-wallet-retry-recovery-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21E receipt integration</span>
+              <strong id="mcel-21e-wallet-receipt-integration-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>21F relock lifecycle</span>
+              <strong id="mcel-21f-wallet-relock-lifecycle-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>Invalidated by</span>
+              <strong id="mcel-19c-wallet-tx-draft-invalidated-by">none observed</strong>
+            </article>
+            <article>
+              <span>txDraft</span>
+              <strong id="mcel-18n-wallet-tool-visible-tx-draft-status">waiting</strong>
+            </article>
+            <article>
+              <span>Freshness</span>
+              <strong id="mcel-18n-wallet-tool-visible-freshness-status">not observed</strong>
+            </article>
+            <article>
+              <span>Unlock</span>
+              <strong id="mcel-18n-wallet-tool-visible-unlock-status">incomplete</strong>
+            </article>
+            <article>
+              <span>Provider mutation</span>
+              <strong id="mcel-18n-wallet-tool-visible-provider-status">refused</strong>
+            </article>
+            <article>
+              <span>18N closure</span>
+              <strong id="mcel-18n-wallet-tool-visible-completion-status">not observed</strong>
+            </article>
+          </div>
+          <ol id="mcel-18n-wallet-tool-visible-flow" class="mcel-18n-wallet-flow" aria-label="Wallet flow with 19D proof alignment, 19E negative path regression, 20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D intent signature, 20E verification, 20F pre-send review, 20G provider hardening, 21A policy-bound send, 21B provider outcome ledger, 21C transaction watcher, 21D retry safety, 21E receipt integration, and 21F relock lifecycle">
+            <li>create txDraft · waiting</li>
+            <li>review draft · waiting</li>
+            <li>run freshness · waiting</li>
+            <li>run preflight · locked</li>
+            <li>attempt policy-bound send · blocked until 21A evidence matches</li>
+            <li>block duplicate/retry send · waiting</li>
+            <li>integrate chain outcome · waiting</li>
+            <li>relock/reset lifecycle · waiting</li>
+          </ol>
+          <div class="mcel-18n-wallet-board-foot">
+            <div>
+              <span class="mcel-18n-wallet-mini-label">Visible blockers</span>
+              <ul id="mcel-18n-wallet-tool-visible-blockers">
+                <li>wallet-send-sign-locked</li>
+              </ul>
+            </div>
+            <p id="mcel-18n-wallet-tool-visible-next">
+              Next action: request 21A policy-bound network-agnostic send only after current signed evidence, policy, and pre-send review match; 21B ledgers outcome and 21C watches receipts.
+            </p>
+          </div>
+        </section>
+        <pre id="mcel-18n-wallet-tool-tx-draft" class="mcel-tiny-contract-evidence">MCEL wallet txDraft specimen is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-freshness" class="mcel-tiny-contract-evidence">MCEL wallet freshness snapshot is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-preflight" class="mcel-tiny-contract-evidence">MCEL 18N preflight has not run yet.</pre>
+        <pre id="mcel-18n-wallet-tool-receipt" class="mcel-tiny-contract-evidence">MCEL 18N commit receipt has not been recorded yet.</pre>
+        <pre id="mcel-18n-wallet-tool-ledger" class="mcel-tiny-contract-evidence">MCEL 18N wallet receipt ledger is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-negative-paths" class="mcel-tiny-contract-evidence">MCEL 18N wallet negative-path test wall is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-unlock-requirements" class="mcel-tiny-contract-evidence">Unlock requirements: incomplete.</pre>
+        <pre id="mcel-20b-wallet-signed-intent-unlock" class="mcel-tiny-contract-evidence">20B signed-intent unlock gate is waiting.</pre>
+        <pre id="mcel-20c-wallet-signature-request-preflight" class="mcel-tiny-contract-evidence">20C signature-request preflight is waiting.</pre>
+        <pre id="mcel-20d-wallet-provider-intent-signature" class="mcel-tiny-contract-evidence">20D provider intent signature is waiting.</pre>
+        <pre id="mcel-20e-wallet-signed-intent-verification" class="mcel-tiny-contract-evidence">20E signed-intent verification is waiting.</pre>
+        <pre id="mcel-20f-wallet-pre-send-review" class="mcel-tiny-contract-evidence">20F pre-send review is waiting.</pre>
+        <pre id="mcel-20g-wallet-provider-intent-hardening" class="mcel-tiny-contract-evidence">20G provider intent hardening is waiting.</pre>
+        <pre id="mcel-21a-wallet-policy-bound-send-gate" class="mcel-tiny-contract-evidence">21A policy-bound network-agnostic send gate is waiting.</pre>
+        <pre id="mcel-21b-wallet-provider-outcome-ledger" class="mcel-tiny-contract-evidence">21B provider outcome ledger is waiting.</pre>
+        <pre id="mcel-21c-wallet-transaction-watcher" class="mcel-tiny-contract-evidence">21C transaction watcher is waiting.</pre>
+        <pre id="mcel-21d-wallet-retry-recovery-safety" class="mcel-tiny-contract-evidence">21D retry/recovery duplicate-send safety is waiting.</pre>
+        <pre id="mcel-21e-wallet-post-confirmation-integration" class="mcel-tiny-contract-evidence">21E post-confirmation MCEL receipt integration is waiting.</pre>
+        <pre id="mcel-21f-wallet-relock-reset-lifecycle" class="mcel-tiny-contract-evidence">21F relock/reset lifecycle is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-final-locked-specimen" class="mcel-tiny-contract-evidence">Final locked wallet specimen is waiting.</pre>
+        <pre id="mcel-18n-wallet-tool-completion-report" class="mcel-tiny-contract-evidence">18N completion report is waiting.</pre>
+      </article>
     </div>
     <template id="mcel-tiny-contract-language-template">
 {
   "kind": "mcel.scm.app",
   "name": "DevNetworkReleaseConsole",
   "version": "0.2.0",
-  "whyScmMatters": "Wallet/provider state, dev-network chain checks, route-loaded contract data, source-owned approvals, runtime-only transaction drafts, and bounded repair packets overlap. Without SCM it is easy for account, chain, tx preview, or repair output to leak into durable source.",
+  "whyScmMatters": "Wallet/provider state, dev-network chain checks, route-loaded contract data, source-owned approvals, runtime-only transaction drafts, tx draft provenance, and bounded repair packets overlap. Without SCM it is easy for account, chain, tx preview, provenance, or repair output to leak into durable source.",
   "route": {
     "name": "workspace.dev-network-release",
     "segments": ["workspace", "dev-network", "{contractId}", "release-console"],
@@ -182,6 +384,12 @@
       "txDraft",
       "walletAdapter",
       "walletEvents",
+      "wallet21aPolicyBoundSendGate",
+      "walletTransactionSendGate",
+      "wallet21bProviderOutcomeLedger",
+      "walletProviderOutcomeLedger",
+      "wallet21cTransactionWatcher",
+      "walletTransactionWatcher",
       "proofChip",
       "repairPacket",
       "assistantRepairPrompt",
@@ -233,8 +441,8 @@
       "writes": ["runtime.txDraft", "runtime.evidenceStrip"]
     },
     "release.approve": {
-      "reads": ["source.devRelease.requests", "state.selectedRequestId"],
-      "writes": ["source.devRelease.requests", "runtime.evidenceStrip"]
+      "reads": ["source.devRelease.requests", "source.devRelease.devNetwork", "state.selectedRequestId", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome"],
+      "writes": ["source.devRelease.requests", "runtime.txDraft", "runtime.txDraftConsumerGate", "runtime.evidenceStrip"]
     },
     "ai.repairWalletHint": {
       "reads": ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.externalOutcome", "runtime.proofChip"],
@@ -298,27 +506,45 @@
 
   <section data-mc-component="dev-release.wallet" data-mc-owner="runtime">
     <h2>Wallet + network gate</h2>
-    <button
-      type="button"
-      data-mc-effect="wallet.connect"
-      data-mc-reads="source.devRelease.devNetwork"
-      data-mc-writes="runtime.wallet runtime.network runtime.evidenceStrip"
-      data-mc-trigger="state.walletGate"
-    >Connect dev wallet</button>
-    <button
-      type="button"
-      data-mc-effect="wallet.disconnect"
-      data-mc-reads="runtime.wallet runtime.network runtime.txDraft"
-      data-mc-writes="runtime.wallet runtime.network runtime.txDraft runtime.evidenceStrip"
-      data-mc-trigger="state.walletGate"
-    >Disconnect/reset wallet</button>
-    <button
-      type="button"
-      data-mc-effect="network.verify"
-      data-mc-reads="source.devRelease.devNetwork runtime.network"
-      data-mc-writes="runtime.network runtime.evidenceStrip"
-      data-mc-trigger="state.walletGate"
-    >Verify dev network</button>
+    <div class="mcel-golden-wallet-control" data-mcel-wallet-golden-control="true">
+      <button
+        type="button"
+        id="mcel-golden-wallet-toggle"
+        data-mc-effect="wallet.toggle"
+        data-mc-reads="runtime.wallet runtime.network source.devRelease.devNetwork"
+        data-mc-writes="runtime.wallet runtime.network runtime.txDraft runtime.evidenceStrip"
+        data-mc-trigger="state.walletGate"
+        data-mcel-wallet-golden="true"
+        aria-live="polite"
+      >
+        <span class="mcel-golden-wallet-control__chrome" aria-hidden="true"></span>
+        <span class="mcel-golden-wallet-control__label" data-mcel-wallet-golden-label>Connect wallet</span>
+        <span class="mcel-golden-wallet-control__status" data-mcel-wallet-golden-status>not connected</span>
+      </button>
+    </div>
+    <div class="mcel-wallet-split-controls" aria-label="Split wallet controls for remediation testing">
+      <button
+        type="button"
+        data-mc-effect="wallet.connect"
+        data-mc-reads="source.devRelease.devNetwork"
+        data-mc-writes="runtime.wallet runtime.network runtime.evidenceStrip"
+        data-mc-trigger="state.walletGate"
+      >Connect dev wallet</button>
+      <button
+        type="button"
+        data-mc-effect="wallet.disconnect"
+        data-mc-reads="runtime.wallet runtime.network runtime.txDraft"
+        data-mc-writes="runtime.wallet runtime.network runtime.txDraft runtime.evidenceStrip"
+        data-mc-trigger="state.walletGate"
+      >Disconnect/reset wallet</button>
+      <button
+        type="button"
+        data-mc-effect="network.verify"
+        data-mc-reads="source.devRelease.devNetwork runtime.network"
+        data-mc-writes="runtime.network runtime.evidenceStrip"
+        data-mc-trigger="state.walletGate"
+      >Verify dev network</button>
+    </div>
     <aside data-mc-slot="runtime.wallet" data-mc-owner="runtime"></aside>
   </section>
 
@@ -352,8 +578,8 @@
     <button
       type="button"
       data-mc-effect="release.approve"
-      data-mc-reads="source.devRelease.requests state.selectedRequestId"
-      data-mc-writes="source.devRelease.requests runtime.evidenceStrip"
+      data-mc-reads="source.devRelease.requests source.devRelease.devNetwork state.selectedRequestId runtime.wallet runtime.network runtime.txDraft runtime.externalOutcome"
+      data-mc-writes="source.devRelease.requests runtime.txDraft runtime.txDraftConsumerGate runtime.evidenceStrip"
       data-mc-trigger="state.selectedRequestId"
     >Approve release source</button>
   </section>

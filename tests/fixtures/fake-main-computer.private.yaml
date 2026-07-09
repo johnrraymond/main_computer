@@ -1,0 +1,210 @@
+schema_version: 1
+
+coolify:
+  project_name: Main Computer
+  hosts:
+    A:
+      name: fake-coolify-a
+      public_ip: 198.51.100.10
+      vpn_ip: 10.42.0.10
+      url: https://coolify-a.example.test
+      api_token: fake-coolify-token-a-not-secret
+      server_uuid: fake-server-a
+      destination_uuid: fake-destination-a
+      project_uuid: fake-project-a
+      environment_uuid: fake-environment-a
+      runtime_root: /srv/main-computer/qbft-runtime
+    B:
+      name: fake-coolify-b
+      public_ip: 198.51.100.11
+      vpn_ip: 10.42.0.11
+      url: https://coolify-b.example.test
+      api_token: fake-coolify-token-b-not-secret
+      server_uuid: fake-server-b
+      destination_uuid: fake-destination-b
+      project_uuid: fake-project-b
+      environment_uuid: fake-environment-b
+      runtime_root: /srv/main-computer/qbft-runtime
+
+wallets: {}
+
+networks:
+  testnet:
+    kind: testnet
+    display_name: Great Library Testnet
+    chain_id: 42424241
+    remote_coolify_hosts:
+      - A
+      - B
+    rpc: https://testnet-rpc.example.test
+
+    wallets:
+      deployer:
+        address: "0x1000000000000000000000000000000000000001"
+        private_key: "0x1111111111111111111111111111111111111111111111111111111111111111"
+      captain:
+        address: "0x1000000000000000000000000000000000000002"
+        private_key: "0x2222222222222222222222222222222222222222222222222222222222222222"
+      o1:
+        address: "0x1000000000000000000000000000000000000003"
+        private_key: "0x3333333333333333333333333333333333333333333333333333333333333333"
+      o2:
+        address: "0x1000000000000000000000000000000000000004"
+        private_key: "0x4444444444444444444444444444444444444444444444444444444444444444"
+      o3:
+        address: "0x1000000000000000000000000000000000000005"
+        private_key: "0x5555555555555555555555555555555555555555555555555555555555555555"
+      hub_admin:
+        address: "0x1000000000000000000000000000000000000006"
+        private_key: "0x6666666666666666666666666666666666666666666666666666666666666666"
+      escrow_owner:
+        address: "0x1000000000000000000000000000000000000007"
+        private_key: "0x7777777777777777777777777777777777777777777777777777777777777777"
+
+    contracts:
+      AlphaBetaLockout:
+        address: null
+      HubCreditBridgeEscrow:
+        address: null
+      XLagBridgeReserve:
+        address: null
+
+    foundationdb:
+      namespace: main_computer_testnet
+      cluster_description: main-computer-testnet
+      cluster_id: fake-testnet-cluster
+      cluster_file_path: /etc/foundationdb/fdb.cluster
+      configure:
+        redundancy: double
+        storage: ssd
+
+    hub:
+      public_url: https://testnet-hub.example.test
+      bind_host: 0.0.0.0
+      bind_port: 8080
+      runtime_dir: runtime/hub/testnet
+      deployment_manifest_path: runtime/deployments/testnet/hub-latest.json
+      entry_urls:
+        - https://testnet-hub.example.test
+      instances:
+        testnet-hub1:
+          coolify_host: A
+          roles: [api, scheduler]
+        testnet-hub2:
+          coolify_host: A
+          roles: [api]
+        testnet-hub3:
+          coolify_host: B
+          roles: [api]
+
+    qbft:
+      docker_subnet: 172.28.241.0/24
+      instances:
+        validator-rpc-1:
+          coolify_host: A
+          roles: [rpc, validator]
+          rpc_host_port: 30110
+          p2p_host_port: 30410
+        validator-1:
+          coolify_host: A
+          roles: [validator]
+          p2p_host_port: 30411
+        validator-2:
+          coolify_host: B
+          roles: [validator]
+          p2p_host_port: 30412
+        rpc-1:
+          coolify_host: B
+          roles: [rpc]
+          rpc_host_port: 30120
+          p2p_host_port: 30420
+
+  mainnet:
+    kind: mainnet
+    display_name: Great Library Mainnet
+    chain_id: 42424240
+    remote_coolify_hosts:
+      - A
+      - B
+    rpc: https://mainnet-rpc.example.test
+
+    wallets:
+      deployer:
+        address: null
+        private_key: null
+      captain:
+        address: null
+        private_key: null
+      o1:
+        address: null
+        private_key: null
+      o2:
+        address: null
+        private_key: null
+      o3:
+        address: null
+        private_key: null
+      hub_admin:
+        address: null
+        private_key: null
+      escrow_owner:
+        address: null
+        private_key: null
+
+    contracts:
+      AlphaBetaLockout:
+        address: null
+      HubCreditBridgeEscrow:
+        address: null
+      XLagBridgeReserve:
+        address: null
+
+    foundationdb:
+      namespace: main_computer_mainnet
+      cluster_description: main-computer-mainnet
+      cluster_id: fake-mainnet-cluster
+      cluster_file_path: /etc/foundationdb/fdb.cluster
+      configure:
+        redundancy: double
+        storage: ssd
+
+    hub:
+      public_url: https://mainnet-hub.example.test
+      bind_host: 0.0.0.0
+      bind_port: 8080
+      runtime_dir: runtime/hub/mainnet
+      deployment_manifest_path: runtime/deployments/mainnet/hub-latest.json
+      entry_urls:
+        - https://mainnet-hub.example.test
+      instances:
+        mainnet-hub1:
+          coolify_host: A
+          roles: [api, scheduler]
+        mainnet-hub2:
+          coolify_host: A
+          roles: [api]
+        mainnet-hub3:
+          coolify_host: B
+          roles: [api]
+
+    qbft:
+      docker_subnet: 172.28.242.0/24
+      instances:
+        validator-rpc-1:
+          coolify_host: A
+          roles: [rpc, validator]
+          rpc_host_port: 31110
+          p2p_host_port: 31410
+        validator-1:
+          coolify_host: A
+          roles: [validator]
+          p2p_host_port: 31411
+        validator-2:
+          coolify_host: B
+          roles: [validator]
+          p2p_host_port: 31412
+        rpc-1:
+          coolify_host: B
+          roles: [rpc]
+          rpc_host_port: 31120
+          p2p_host_port: 31420

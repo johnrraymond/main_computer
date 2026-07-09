@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from main_computer.viewport_state import _application_route_target
@@ -7,6 +8,56 @@ from main_computer.viewport_state import _application_route_target
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_APP = ROOT / "main_computer" / "web" / "applications"
+
+
+def _extract_js_function_body(source: str, function_name: str) -> str:
+    marker = f"function {function_name}("
+    start = source.index(marker)
+    brace_start = source.index("{", start)
+    depth = 0
+    for index in range(brace_start, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace_start + 1:index]
+    raise AssertionError(f"Could not extract function body for {function_name}")
+
+
+def _extract_js_string_literals(source: str) -> set[str]:
+    return set(re.findall(r'"([^"]+)"', source))
+
+
+def _extract_mcel_runtime_top_level_defaults(runtime_defaults_body: str) -> set[str]:
+    defaults = set()
+    for line in runtime_defaults_body.splitlines():
+        match = re.match(r" {8}([A-Za-z_$][\w$]*):", line)
+        if match:
+            defaults.add(match.group(1))
+    return defaults
+
+
+def _extract_mcel_owned_runtime_fields(manifest_body: str) -> set[str]:
+    match = re.search(r"runtime:\s*\[(?P<body>.*?)\]\s*,\s*layout:", manifest_body, re.S)
+    assert match, "SCM manifest runtime ownership block was not found"
+    return _extract_js_string_literals(match.group("body"))
+
+
+def _extract_mcel_manifest_runtime_references(manifest_body: str) -> set[str]:
+    fields = set()
+    for literal in _extract_js_string_literals(manifest_body):
+        if literal.startswith("runtime."):
+            fields.add(literal.split(".", 2)[1])
+    return fields
+
+
+def _extract_mcel_runtime_write_fields(source: str) -> set[str]:
+    fields = set(re.findall(r'ctx\.set\("runtime\.([A-Za-z_$][\w$]*)"', source))
+    fields.update(re.findall(r"instance\.runtime\.([A-Za-z_$][\w$]*)\s*=", source))
+    return fields
+
 
 
 def test_mcel_lab_is_registered_as_separate_application() -> None:
@@ -2262,8 +2313,9 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
 
     assert "Medium SCM-proven MCEL app" in app
     assert "MetaMask/dev-network state" in app
+    assert "tx draft provenance" in app
     assert "Run SCM + wallet proof" in app
-    assert "Connect/check MetaMask devnet" in app
+    assert "Check wallet + 18N preflight" in app or "Connect/check MetaMask devnet" in app
     assert "Disconnect/reset wallet" in app
     assert "0x28757b2" in app
     assert "Main Computer Dev Chain" in app
@@ -2308,6 +2360,8 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert 'data-mc-effect="release.approve"' in app
     assert 'data-mc-reads="source.devRelease.contractAddress source.devRelease.requests state.selectedRequestId runtime.wallet runtime.network"' in app
     assert 'data-mc-writes="runtime.txDraft runtime.evidenceStrip"' in app
+    assert 'data-mc-reads="source.devRelease.requests source.devRelease.devNetwork state.selectedRequestId runtime.wallet runtime.network runtime.txDraft runtime.externalOutcome"' in app
+    assert 'data-mc-writes="source.devRelease.requests runtime.txDraft runtime.txDraftConsumerGate runtime.evidenceStrip"' in app
     assert 'data-mc-layout="wallet-queue-tx-evidence"' in app
     assert 'data-mc-style-token="mcel.scm.dev-wallet-console"' in app
     assert 'data-mc-repair-policy="runtime-only"' in app
@@ -2467,6 +2521,60 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "nonceStatus" in ui
     assert "gasStatus" in ui
     assert "tx draft boundary:" in ui
+    assert "txDraft.provenance.v1" in ui
+    assert "sourceRequestHash" in ui
+    assert "selectedRequestSnapshot" in ui
+    assert "walletAccountHash" in ui
+    assert "chainProof" in ui
+    assert "externalOutcomeSequence" in ui
+    assert "networkGateSequence" in ui
+    assert "calldataSource" in ui
+    assert "abiEncodingStatus" in ui
+    assert "probeEnvelopeIds" in ui
+    assert "invalidatedBy" in ui
+    assert "validityInvariant" in ui
+    assert "mcelTinyContractTxDraftProvenance" in ui
+    assert "mcelTinyContractTxDraftInvalidation" in ui
+    assert "mcelTinyContractTxDraftFreshnessCheck" in ui
+    assert "mcelTinyContractEnforceTxDraftProvenance" in ui
+    assert "mcel-tx-draft-provenance-freshness.v1" in ui
+    assert "provenanceEnforced" in ui
+    assert "mcelTinyContractTxDraftConsumerGate" in ui
+    assert "mcel-tx-draft-consumer-gate.v1" in ui
+    assert "release.approve-consumer-gate" in ui
+    assert "txDraftConsumerGateObserved" in ui
+    assert "txDraftConsumerGatePass" in ui
+    assert "txDraftConsumerGateBlocksUnsafe" in ui
+    assert "txDraft consumer gate blocked" in ui
+    assert "mcelTinyContractTxDraftEndgamePreflight" in ui
+    assert "mcel-tx-draft-endgame-preflight.v1" in ui
+    assert "send/sign preflight:" in ui
+    assert "futureBoundaryEligible" in ui
+    assert "canSend: false" in ui
+    assert "canSign: false" in ui
+    assert "canBroadcast: false" in ui
+    assert "send-sign-not-implemented" in ui
+    assert "locked-ready-for-future-boundary" in ui
+    assert "txDraftEndgamePreflightLocked" in ui
+    assert "txDraftEndgamePreflightSafe" in ui
+    assert "txDraft provenance was not current for the declared source effect" in ui
+    assert "only after txDraft provenance passed the consumer gate" in ui
+    assert "runtime.txDraftConsumerGate" in ui
+    assert '"txDraftConsumerGate"' in ui
+    assert "txDraftConsumerGate: {" in ui
+    assert "No txDraft consumer has inspected a runtime draft yet." in ui
+    assert "freshnessStatus" in ui
+    assert "freshnessAction" in ui
+    assert "noSendBoundaryPreserved" in ui
+    assert "rebuild draft from current receipt" in ui
+    assert "rebuild draft to prove freshness" in ui
+    assert "network-gate-changed" in ui
+    assert "provider-outcome-invalidated-draft" in ui
+    assert "no-send-boundary-missing" in ui
+    assert "source-request-changed" in ui
+    assert "account-changed" in ui
+    assert "chain-changed" in ui
+    assert "tx draft provenance:" in ui
     assert "function renderMcelTinyRuntimeSummary" in ui
     assert "const network = instance?.runtime?.network || {};" in ui
     assert "txDraft.expectedChainId || network.expectedChainId" in ui
@@ -2557,6 +2665,14 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "instance.runtime.network.providerEvent" not in ui
     assert "instance.runtime.wallet.account =" not in ui
     assert "instance.runtime.network.chainId =" not in ui
+    assert "eth_sendTransaction" in ui
+    assert "mcelWallet21aPolicyBoundSendGate" in ui
+    assert "policy-bound-network-agnostic-transaction-send" in ui
+    assert "eth_signTransaction" not in ui
+    assert "personal_sign" not in ui
+    assert "eth_signTypedData_v4" in ui
+    assert "mcelWallet20dProviderIntentEnvelope" in ui
+    assert not re.search(r"\.sendTransaction\s*\(", ui)
 
     assert "explicit-wallet-connect" not in ui
     assert "explicit-draft" not in ui
@@ -2580,4 +2696,41 @@ def test_mcel_lab_mounts_medium_scm_dev_network_contract_surface() -> None:
     assert "#mcel-tiny-contract-map" in style
     assert "#mcel-tiny-contract-evidence" in style
 
+def test_mcel_lab_runtime_fields_written_by_effects_are_owned_and_defaulted() -> None:
+    """Guard the SCM runtime mount against undeclared runtime fields.
+
+    The Lab runtime refuses to initialize when an effect writes a runtime field that
+    is not in the manifest-owned runtime list. New runtime fields also need a
+    default shape so render/proof code never has to guess whether the field exists.
+    """
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+
+    manifest_body = _extract_js_function_body(ui, "mcelTinyContractScmManifest")
+    runtime_defaults_body = _extract_js_function_body(ui, "mcelTinyContractRuntimeDefaults")
+
+    owned_runtime_fields = _extract_mcel_owned_runtime_fields(manifest_body)
+    defaulted_runtime_fields = _extract_mcel_runtime_top_level_defaults(runtime_defaults_body)
+    manifest_runtime_references = _extract_mcel_manifest_runtime_references(manifest_body)
+    runtime_write_fields = _extract_mcel_runtime_write_fields(ui)
+
+    assert "txDraftConsumerGate" in runtime_write_fields
+    assert "txDraftConsumerGate" in owned_runtime_fields
+    assert "txDraftConsumerGate" in defaulted_runtime_fields
+
+    assert not (runtime_write_fields - owned_runtime_fields), (
+        "Every runtime field written by SCM effects must be declared under "
+        f"mcelTinyContractScmManifest().owns.runtime. Missing: {sorted(runtime_write_fields - owned_runtime_fields)}"
+    )
+    assert not (runtime_write_fields - defaulted_runtime_fields), (
+        "Every runtime field written by SCM effects must have a default shape in "
+        f"mcelTinyContractRuntimeDefaults(). Missing: {sorted(runtime_write_fields - defaulted_runtime_fields)}"
+    )
+    assert not (manifest_runtime_references - owned_runtime_fields), (
+        "Every runtime field referenced by the SCM manifest/effects should be manifest-owned. "
+        f"Missing: {sorted(manifest_runtime_references - owned_runtime_fields)}"
+    )
+    assert not (owned_runtime_fields - defaulted_runtime_fields), (
+        "Every manifest-owned runtime field should have an initial default runtime value. "
+        f"Missing: {sorted(owned_runtime_fields - defaulted_runtime_fields)}"
+    )
 
