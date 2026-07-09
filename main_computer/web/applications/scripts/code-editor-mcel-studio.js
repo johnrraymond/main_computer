@@ -83,6 +83,17 @@
           blockedNextAction: "retry connect",
           exceptionNextAction: "inspect exception"
         },
+        "wallet.provider.initialSnapshot": {
+          label: "wallet.provider.initialSnapshot",
+          category: "provider-observation",
+          declaredReads: ["source.devRelease.devNetwork", "runtime.wallet", "runtime.network", "runtime.walletEvents"],
+          declaredWrites: ["runtime.wallet", "runtime.network", "runtime.walletAdapter", "runtime.walletProviderInitialSnapshot", "runtime.walletEvents", "runtime.externalOutcome", "runtime.evidenceStrip"],
+          passNextAction: "render connected wallet from SCM runtime",
+          blockedNextAction: "show disconnected until user explicitly connects",
+          exceptionNextAction: "inspect passive provider snapshot",
+          allowedRpc: ["eth_accounts", "eth_chainId"],
+          forbiddenRpc: ["eth_requestAccounts", "wallet_switch" + "EthereumChain", "wallet_add" + "EthereumChain"]
+        },
         "wallet.provider.accountsChanged": {
           label: "wallet.provider.accountsChanged",
           category: "provider-event",
@@ -1894,6 +1905,7 @@
             "21D/21E/21F retry safety, post-confirmation receipt integration, and relock lifecycle are visible in Code Studio.",
             "22A/22B/22C configurable network policy registry, profile import surface, and target binding are visible in Code Studio.",
             "22D/22E/22F production hardening, policy activation lifecycle, and final execution readiness are visible in Code Studio.",
+            "SCM passive provider snapshot contract keeps wallet buttons downstream of runtime.wallet instead of provider side effects.",
             "23A/23B pre-send live route readiness · 23A/23B/23C/23D route, finality, recovery, and audit proof and post-send/read-only finality observation are visible in Code Studio.",
             "21A is not devnet-only; the connected chain must satisfy the MCEL network execution policy."
 

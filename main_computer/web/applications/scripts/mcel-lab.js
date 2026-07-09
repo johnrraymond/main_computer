@@ -5788,6 +5788,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           repairBoundaryBlockedCount: 0,
           reviewedCount: 0,
           walletConnectCount: 0,
+          walletAuthorizationPendingCount: 0,
           walletDisconnectCount: 0,
           walletDisconnectCommitCount: 0,
           walletRevokeAttemptCount: 0,
@@ -5892,6 +5893,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       }
       [
         "walletConnectCount",
+        "walletAuthorizationPendingCount",
         "walletDisconnectCount",
         "walletDisconnectCommitCount",
         "walletRevokeAttemptCount",
@@ -6198,6 +6200,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           mockFallback: false,
           eventsBound: false
         },
+        walletProviderInitialSnapshot: null,
+        walletAuthorizationPending: null,
         walletEvents: [],
         externalOutcome: {
           kind: "mcel-external-outcome",
@@ -6483,6 +6487,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "walletExecutionAuditExport",
             "walletUnlockContract",
             "walletAdapter",
+            "walletProviderInitialSnapshot",
+            "walletAuthorizationPending",
             "walletEvents",
             "externalOutcome",
             "proofChip",
@@ -6502,7 +6508,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           ],
           effects: [
             "wallet.connect",
+            "wallet.connect.authorizationPending",
             "wallet.disconnect",
+            "wallet.provider.initialSnapshot",
             "wallet.provider.accountsChanged",
             "wallet.provider.chainChanged",
             "wallet.provider.disconnect",
@@ -6521,7 +6529,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         state: mcelTinyContractStateDefaults(),
         outputs: [
           "walletConnected",
+          "walletConnectAuthorizationPending",
           "walletDisconnected",
+          "walletProviderInitialSnapshotCaptured",
           "walletProviderAccountsChanged",
           "walletProviderChainChanged",
           "walletProviderDisconnected",
@@ -6663,6 +6673,167 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
               };
             }
           },
+          "wallet.connect.authorizationPending": {
+            kind: "mcelWalletConnectAuthorizationPending.v1",
+            triggers: ["state.walletGate"],
+            reads: ["source.devRelease.devNetwork", "runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletAuthorizationPending", "runtime.walletEvents", "runtime.walletAdapter", "runtime.externalOutcome", "runtime.evidenceStrip"],
+            external: {
+              resource: "metamask-interactive-authorization",
+              operation: "eth_requestAccounts pending",
+              permissionPromptMayOpen: true,
+              providerMutationRequested: false
+            },
+            errorPolicy: {
+              onFailure: "record-wallet-authorization-pending-error"
+            },
+            run(ctx, payload = {}) {
+              const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
+              const walletEvents = Array.isArray(ctx.get("runtime.walletEvents")) ? ctx.get("runtime.walletEvents") : [];
+              const previousWallet = ctx.get("runtime.wallet") || {};
+              const expectedChainId = String(devNetwork.chainId || "0x28757b2");
+              const chainId = String(payload.chainId || ctx.get("runtime.network")?.chainId || "");
+              const provider = String(payload.provider || payload.adapter?.providerKind || "ethereum-provider");
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractExternalOutcome({
+                    operation: "wallet.connect",
+                    phase: "authorization-pending",
+                    status: "pending",
+                    known: true,
+                    reason: "permission-request-pending",
+                    message: "Wallet connect requested account authorization and is waiting for the provider/user response.",
+                    provider: {kind: provider, live: payload.liveProvider !== false, source: "interactive-connect"},
+                    rpc: ["eth_requestAccounts"],
+                    value: {chainId, account: ""},
+                    containment: {
+                      sourceChanged: false,
+                      txDraftCreated: false,
+                      runtimeMutationGoverned: true,
+                      permissionRequested: true,
+                      providerMutationRequested: false
+                    },
+                    nextAction: "Approve or cancel the wallet authorization request in the provider popup."
+                  });
+              const wallet = {
+                ...previousWallet,
+                mode: provider,
+                provider,
+                account: "",
+                connected: false,
+                interactive: true,
+                authorizationPending: true,
+                providerObservation: "wallet.connect.authorizationPending",
+                status: "authorization-pending",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason
+              };
+              const network = {
+                expectedChainId,
+                chainId,
+                ok: false,
+                status: "wallet-authorization-pending",
+                providerObservation: "wallet.connect.authorizationPending",
+                outcomeStatus: outcome.status
+              };
+              const txDraft = {
+                status: "empty",
+                requestId: "",
+                to: "",
+                data: "",
+                invalidatedBy: [
+                  mcelTinyContractTxDraftInvalidation("wallet-authorization-pending", {
+                    outcomeStatus: outcome.status,
+                    outcomeReason: outcome.reason
+                  })
+                ],
+                sourceRequestHash: "",
+                selectedRequestSnapshot: null,
+                walletAccountHash: "",
+                chainProof: {
+                  expectedChainId,
+                  chainId,
+                  ok: false,
+                  status: "wallet-authorization-pending"
+                },
+                externalOutcomeSequence: [{
+                  sequence: outcome.sequence || null,
+                  operation: outcome.operation || "wallet.connect",
+                  status: outcome.status,
+                  reason: outcome.reason
+                }],
+                networkGateSequence: [{
+                  status: network.status,
+                  ok: false,
+                  expectedChainId,
+                  chainId
+                }],
+                calldataSource: "not-encoded",
+                abiEncodingStatus: "blocked-by-wallet-authorization-pending",
+                probeEnvelopeIds: [],
+                valid: false,
+                summary: "Wallet authorization is pending; runtime transaction draft remains locked."
+              };
+              const authorizationPending = {
+                kind: "mcelWalletConnectAuthorizationPending.v1",
+                lifecycle: "interactive-wallet-authorization",
+                status: "authorization-pending",
+                permissionRequested: true,
+                providerMutationRequested: false,
+                providerMutationExecuted: false,
+                allowedRpc: ["eth_requestAccounts"],
+                forbiddenRpc: ["wallet_switch" + "EthereumChain", "wallet_add" + "EthereumChain", "eth_sign" + "Transaction", "personal" + "_sign", "broadcast" + "Transaction"],
+                buttonRenderSource: "runtime.wallet",
+                nextAction: outcome.nextAction || "Approve or cancel the wallet authorization request in the provider popup."
+              };
+              ctx.set("runtime.wallet", wallet);
+              ctx.set("runtime.network", network);
+              ctx.set("runtime.txDraft", txDraft);
+              ctx.set("runtime.walletAuthorizationPending", authorizationPending);
+              ctx.set("runtime.walletAdapter", payload.adapter || {
+                providerKind: provider,
+                liveProvider: payload.liveProvider !== false,
+                mockFallback: false,
+                eventsBound: Boolean(payload.adapter?.eventsBound),
+                connectSource: "interactive-connect"
+              });
+              ctx.set("runtime.externalOutcome", outcome);
+              ctx.set("runtime.walletEvents", [...walletEvents, {
+                type: "authorizationPending",
+                provider,
+                chainId,
+                expectedChainId,
+                permissionRequested: true,
+                providerMutationRequested: false,
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason
+              }].slice(-16));
+              ctx.set("runtime.evidenceStrip", [
+                "wallet.connect.authorizationPending committed interactive authorization wait state through SCM",
+                `provider=${provider}`,
+                `chain=${chainId || "waiting"}`,
+                `expected=${expectedChainId}`,
+                "permissionRequested=true",
+                "providerMutationRequested=false",
+                "runtime.wallet.connected=false"
+              ]);
+              ctx.evidence({
+                ok: true,
+                message: "wallet.connect.authorizationPending captured an in-flight provider authorization request as a governed SCM lifecycle state."
+              });
+              return {wallet, network, txDraft, outcome, authorizationPending};
+            },
+            commit(_ctx, result) {
+              return {
+                pending: result?.authorizationPending?.status === "authorization-pending",
+                outcomeStatus: result?.outcome?.status || "",
+                outcomeReason: result?.outcome?.reason || "",
+                providerMutationExecuted: false,
+                txDraftCleared: result?.txDraft?.status === "empty"
+              };
+            }
+          },
+
           "wallet.disconnect": {
             kind: "runtime-wallet-reset-effect",
             triggers: ["state.walletGate"],
@@ -6769,6 +6940,139 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
                 previousProvider: result?.previousProvider || "",
                 outcomeStatus: result?.outcome?.status || "",
                 outcomeReason: result?.outcome?.reason || ""
+              };
+            }
+          },
+
+          "wallet.provider.initialSnapshot": {
+            kind: "mcelWalletProviderInitialSnapshot.v1",
+            triggers: ["runtime.walletAdapter"],
+            reads: ["source.devRelease.devNetwork", "runtime.wallet", "runtime.network", "runtime.walletEvents"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.walletAdapter", "runtime.walletProviderInitialSnapshot", "runtime.walletEvents", "runtime.externalOutcome", "runtime.evidenceStrip"],
+            external: {
+              resource: "metamask-passive-provider-snapshot",
+              operation: "eth_accounts + eth_chainId",
+              permissionless: true,
+              providerMutationRequested: false
+            },
+            errorPolicy: {
+              onFailure: "record-passive-provider-snapshot-error"
+            },
+            run(ctx, payload = {}) {
+              const devNetwork = ctx.get("source.devRelease.devNetwork") || {};
+              const wallet = ctx.get("runtime.wallet") || {};
+              const walletEvents = Array.isArray(ctx.get("runtime.walletEvents")) ? ctx.get("runtime.walletEvents") : [];
+              const account = String(payload.account || payload.accounts?.[0] || payload.outcome?.value?.account || "");
+              const chainId = String(payload.chainId || payload.outcome?.value?.chainId || "");
+              const expectedChainId = String(devNetwork.chainId || "0x28757b2");
+              const provider = String(payload.provider || "initial-provider-snapshot");
+              const connected = Boolean(account);
+              const networkOk = connected && chainId.toLowerCase() === expectedChainId.toLowerCase();
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractExternalOutcome({
+                    operation: "wallet.provider.initialSnapshot",
+                    phase: "passive-provider-snapshot",
+                    status: connected ? "pass" : "blocked",
+                    known: true,
+                    reason: connected ? "authorized-account-observed" : "no-authorized-account",
+                    message: connected
+                      ? "Passive provider snapshot observed an already authorized account and committed it through SCM."
+                      : "Passive provider snapshot found no authorized account; runtime wallet remains disconnected.",
+                    provider: {kind: provider, live: payload.liveProvider === true, source: "eth_accounts"},
+                    rpc: ["eth_accounts", "eth_chainId"],
+                    value: {account, chainId},
+                    nextAction: connected ? "" : "Click Connect wallet to request account authorization."
+                  });
+              const snapshot = {
+                kind: "mcelWalletProviderInitialSnapshot.v1",
+                lifecycle: "mount-passive-provider-snapshot",
+                status: connected ? "authorized-account-observed" : "no-authorized-account",
+                account,
+                accountHash: mcelTinyContractWalletAccountHash(account),
+                chainId,
+                expectedChainId,
+                networkOk,
+                provider,
+                passive: true,
+                interactive: false,
+                permissionRequested: false,
+                providerMutationRequested: false,
+                providerMutationExecuted: false,
+                allowedRpc: ["eth_accounts", "eth_chainId"],
+                forbiddenRpc: ["eth_requestAccounts", "wallet_switch" + "EthereumChain", "wallet_add" + "EthereumChain"],
+                buttonRenderSource: "runtime.wallet"
+              };
+              const nextWallet = {
+                ...wallet,
+                mode: connected ? provider : "disconnected",
+                provider: connected ? provider : "none",
+                account,
+                connected,
+                chainId,
+                interactive: false,
+                passiveInitialSnapshot: true,
+                providerObservation: "wallet.provider.initialSnapshot",
+                status: connected ? "connected" : "disconnected",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason
+              };
+              const nextNetwork = {
+                expectedChainId,
+                chainId,
+                ok: networkOk,
+                status: connected ? (networkOk ? "dev-network-ready" : "wrong-chain") : "provider-snapshot-no-authorized-account",
+                providerObservation: "wallet.provider.initialSnapshot",
+                outcomeStatus: outcome.status
+              };
+              const nextWalletEvent = {
+                type: "initialSnapshot",
+                account,
+                chainId,
+                expectedChainId,
+                connected,
+                networkOk,
+                passive: true,
+                permissionRequested: false,
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason
+              };
+              ctx.set("runtime.wallet", nextWallet);
+              ctx.set("runtime.network", nextNetwork);
+              ctx.set("runtime.walletAdapter", payload.adapter || {
+                providerKind: provider,
+                liveProvider: payload.liveProvider === true,
+                mockFallback: false,
+                eventsBound: Boolean(payload.adapter?.eventsBound),
+                connectSource: "initial-provider-snapshot"
+              });
+              ctx.set("runtime.walletProviderInitialSnapshot", snapshot);
+              ctx.set("runtime.externalOutcome", outcome);
+              ctx.set("runtime.walletEvents", [...walletEvents, nextWalletEvent].slice(-16));
+              ctx.set("runtime.evidenceStrip", [
+                "wallet.provider.initialSnapshot committed passive provider state through SCM",
+                `account=${account ? account.slice(0, 10) + "…" : "none"}`,
+                `chain=${chainId || "missing"}`,
+                `expected=${expectedChainId}`,
+                `networkOk=${networkOk}`,
+                "permissionRequested=false"
+              ]);
+              ctx.evidence({
+                ok: true,
+                message: connected
+                  ? "Passive provider snapshot hydrated runtime wallet state through a declared SCM effect."
+                  : "Passive provider snapshot preserved disconnected runtime state through a declared SCM effect."
+              });
+              return {snapshot, wallet: nextWallet, network: nextNetwork, outcome};
+            },
+            commit(_ctx, result) {
+              return {
+                connected: result?.wallet?.connected === true,
+                chainId: result?.network?.chainId || "",
+                ok: result?.network?.ok === true,
+                status: result?.snapshot?.status || "",
+                permissionRequested: false,
+                providerMutationExecuted: false
               };
             }
           },
@@ -8216,6 +8520,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "runtime.walletPolicyBoundExecutionReadinessSurface",
             "runtime.walletUnlockContract",
             "runtime.walletAdapter",
+            "runtime.walletAuthorizationPending",
             "runtime.walletEvents",
             "runtime.externalOutcome",
             "runtime.proofChip",
@@ -8237,6 +8542,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "runtime.network",
             "runtime.txDraft",
             "runtime.walletAdapter",
+            "runtime.walletAuthorizationPending",
             "runtime.walletEvents",
             "runtime.externalOutcome",
             "runtime.repairPacket",
@@ -8427,10 +8733,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       tinyState.scmRouteInstance = routeInstance;
       tinyState.reviewedCount = 0;
       tinyState.walletConnectCount = 0;
+      tinyState.walletAuthorizationPendingCount = 0;
       tinyState.walletDisconnectCount = 0;
       tinyState.walletDisconnectCommitCount = 0;
       tinyState.walletRevokeAttemptCount = 0;
       tinyState.walletRevokeSuccessCount = 0;
+      tinyState.providerInitialSnapshotCount = 0;
       tinyState.providerAccountsChangedCount = 0;
       tinyState.providerAccountSwitchCount = 0;
       tinyState.providerAccountDisconnectCount = 0;
@@ -10170,6 +10478,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         tinyState.walletDisconnectCommitCount = 0;
         tinyState.walletRevokeAttemptCount = 0;
         tinyState.walletRevokeSuccessCount = 0;
+        tinyState.providerInitialSnapshotCount = 0;
+        tinyState.providerInitialSnapshotRetry = null;
         tinyState.providerAccountsChangedCount = 0;
         tinyState.providerAccountSwitchCount = 0;
         tinyState.providerAccountDisconnectCount = 0;
@@ -10227,6 +10537,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       policyBoundSendButton?.addEventListener("click", () => { void requestMcel21aPolicyBoundWalletSend("runtime-button"); });
 
       syncMcelTinyContractDomFromScm(app, runtime.instance, reason);
+      if (options.passiveWalletSnapshot !== false) {
+        void hydrateMcelTinyContractWalletInitialSnapshot(app, runtime.instance, "mount-passive-provider-snapshot");
+      }
       if (options.exercise !== false) {
         repairMcelTinyContractRuntimeChrome("complete-dev-network-proof");
         attemptMcelTinyContractForbiddenWrite("complete-dev-network-proof");
@@ -10384,6 +10697,250 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       };
     }
 
+
+    async function readMcelTinyContractWalletInitialProviderSnapshot(reason = "mount-passive-provider-snapshot") {
+      const adapter = mcelTinyContractWalletAdapterState();
+      adapter.walletSubsystemReady = Boolean(mcelTinyContractWalletSubsystem());
+      adapter.connectSource = "initial-provider-snapshot";
+      adapter.mockFallback = false;
+      adapter.passiveInitialSnapshot = true;
+      adapter.permissionRequested = false;
+      adapter.providerMutationRequested = false;
+      adapter.providerMutationExecuted = false;
+
+      const provider = mcelTinyContractInjectedProvider();
+      let walletSubsystemSnapshot = null;
+      let walletSubsystemState = null;
+      if (adapter.walletSubsystemReady) {
+        try {
+          walletSubsystemSnapshot = await mcelTinyContractWalletSubsystemProviderSnapshot();
+        } catch (error) {
+          adapter.lastError = mcelTinyContractWalletError(error).message;
+          walletSubsystemSnapshot = null;
+        }
+        walletSubsystemState = snapshotMcelTinyContractWalletSubsystemState();
+      }
+
+      let chainId = "";
+      let accounts = [];
+      let accountRequestError = null;
+      let chainRequestError = null;
+
+      if (provider) {
+        adapter.liveProvider = true;
+        adapter.providerKind = provider.isMetaMask ? "metamask" : "ethereum-provider";
+        adapter.directProviderFallback = true;
+        bindMcelTinyContractWalletProviderEvents(provider);
+        try {
+          chainId = String(await mcelTinyContractWalletRequest(provider, "eth_chainId") || "");
+        } catch (error) {
+          chainRequestError = mcelTinyContractWalletError(error);
+          chainId = "";
+        }
+        try {
+          accounts = await mcelTinyContractWalletRequest(provider, "eth_accounts");
+        } catch (error) {
+          accountRequestError = mcelTinyContractWalletError(error);
+          accounts = [];
+        }
+      } else {
+        adapter.liveProvider = false;
+        adapter.providerKind = adapter.walletSubsystemReady ? "wallet-subsystem" : "missing";
+        adapter.directProviderFallback = false;
+        recordMcelTinyContractWalletCall("provider.detect", "unavailable", {
+          reason: "initial provider snapshot found no injected provider",
+          walletSubsystemReady: adapter.walletSubsystemReady
+        });
+      }
+
+      const subsystemAccounts = Array.isArray(walletSubsystemSnapshot?.accounts)
+        ? walletSubsystemSnapshot.accounts
+        : (walletSubsystemState?.address ? [walletSubsystemState.address] : []);
+      const mergedAccounts = accounts.length ? accounts : subsystemAccounts;
+      const account = String(mergedAccounts[0] || walletSubsystemSnapshot?.address || walletSubsystemState?.address || "");
+      const observedChainId = String(chainId || walletSubsystemSnapshot?.chainId || walletSubsystemState?.chainId || "");
+      const providerKind = provider
+        ? (provider.isMetaMask ? "metamask" : "ethereum-provider")
+        : (adapter.walletSubsystemReady ? "wallet-subsystem" : "missing-provider");
+      const outcome = mcelTinyContractExternalOutcome({
+        operation: "wallet.provider.initialSnapshot",
+        phase: "passive-provider-snapshot",
+        status: account ? "pass" : "blocked",
+        known: true,
+        reason: account ? "authorized-account-observed" : "no-authorized-account",
+        message: account
+          ? "Passive provider snapshot observed an already authorized account without requesting permission."
+          : "Passive provider snapshot found no authorized account and did not request permission.",
+        provider: {kind: providerKind, live: Boolean(provider || account), source: "passive-provider-snapshot"},
+        rpc: mcelTinyContractWalletRpcMethods(adapter, true),
+        value: {
+          account,
+          accounts: mergedAccounts,
+          chainId: observedChainId,
+          accountRequestError,
+          chainRequestError,
+          reason
+        },
+        containment: {
+          sourceChanged: false,
+          txDraftCreated: false,
+          runtimeMutationGoverned: true,
+          permissionRequested: false,
+          providerMutationRequested: false
+        },
+        nextAction: account ? "" : "Click Connect wallet to request account authorization."
+      });
+
+      return {
+        kind: "mcelWalletProviderInitialSnapshot.v1",
+        mock: false,
+        liveProvider: Boolean(provider || account),
+        provider: providerKind,
+        account,
+        accounts: mergedAccounts,
+        chainId: observedChainId,
+        interactive: false,
+        passive: true,
+        reason,
+        outcome,
+        walletSubsystemSnapshot,
+        walletSubsystemState,
+        permissionRequested: false,
+        providerMutationRequested: false,
+        providerMutationExecuted: false,
+        adapter: {
+          providerKind: adapter.providerKind,
+          liveProvider: adapter.liveProvider,
+          mockFallback: adapter.mockFallback,
+          walletSubsystemReady: adapter.walletSubsystemReady,
+          walletSubsystemUsed: false,
+          walletSubsystemPreferred: false,
+          directProviderFallback: adapter.directProviderFallback,
+          connectSource: adapter.connectSource,
+          calls: adapter.calls,
+          events: adapter.events,
+          eventsBound: adapter.eventsBound,
+          ethersReady: adapter.ethersReady,
+          lastError: adapter.lastError,
+          passiveInitialSnapshot: true,
+          permissionRequested: false,
+          providerMutationRequested: false,
+          providerMutationExecuted: false
+        }
+      };
+    }
+
+    function clearMcelTinyContractWalletInitialSnapshotRetry(reason = "initial-snapshot-satisfied") {
+      const tinyState = ensureMcelTinyContractState();
+      const retry = tinyState.providerInitialSnapshotRetry || null;
+      if (retry?.timer) {
+        window.clearTimeout(retry.timer);
+      }
+      tinyState.providerInitialSnapshotRetry = {
+        ...(retry || {}),
+        timer: null,
+        satisfied: true,
+        clearedReason: reason
+      };
+      return tinyState.providerInitialSnapshotRetry;
+    }
+
+    function scheduleMcelTinyContractWalletInitialSnapshotRetry(app = null, instance = ensureMcelTinyContractState().scmInstance, reason = "mount-passive-provider-snapshot", payload = {}) {
+      const tinyState = ensureMcelTinyContractState();
+      const providerAvailable = payload.liveProvider === true ||
+        ["metamask", "ethereum-provider", "wallet-subsystem"].includes(String(payload.provider || ""));
+      if (payload.account || !providerAvailable || !instance || !window.McelLabScm?.runEffect) {
+        if (payload.account) clearMcelTinyContractWalletInitialSnapshotRetry("authorized-account-observed");
+        return null;
+      }
+      const retry = tinyState.providerInitialSnapshotRetry || {
+        kind: "mcelWalletProviderInitialSnapshotRetry.v1",
+        attempts: 0,
+        timer: null,
+        satisfied: false,
+        maxAttempts: 3,
+        delays: [180, 700, 1600]
+      };
+      if (retry.satisfied === true || retry.timer || Number(retry.attempts || 0) >= Number(retry.maxAttempts || 3)) {
+        tinyState.providerInitialSnapshotRetry = retry;
+        return retry;
+      }
+      const attempt = Number(retry.attempts || 0) + 1;
+      const delay = retry.delays[Math.min(attempt - 1, retry.delays.length - 1)] || 1600;
+      retry.attempts = attempt;
+      retry.reason = reason;
+      retry.lastStatus = payload.outcome?.reason || payload.outcome?.status || "";
+      retry.lastAccountObserved = "";
+      retry.timer = window.setTimeout(() => {
+        retry.timer = null;
+        void hydrateMcelTinyContractWalletInitialSnapshot(
+          app,
+          instance,
+          `${reason}-provider-settle-retry-${attempt}`,
+          {retry: true, maxAttempts: retry.maxAttempts}
+        );
+      }, delay);
+      tinyState.providerInitialSnapshotRetry = retry;
+      recordMcelTinyContractEvidence(
+        "wallet-provider-initial-snapshot",
+        `mcelWalletProviderInitialSnapshot.v1 scheduled passive provider settle retry ${attempt}/${retry.maxAttempts}.`,
+        "warn",
+        {reason, attempt, delay, payloadStatus: payload.outcome?.reason || payload.outcome?.status || ""}
+      );
+      return retry;
+    }
+
+
+
+    async function hydrateMcelTinyContractWalletInitialSnapshot(app = null, instance = ensureMcelTinyContractState().scmInstance, reason = "mount-passive-provider-snapshot", options = {}) {
+      const tinyState = ensureMcelTinyContractState();
+      if (!instance || !window.McelLabScm?.runEffect) return null;
+      const connectedSnapshot = mcelTinyContractConnectedWalletSnapshot(instance);
+      if (connectedSnapshot.connected === true) {
+        recordMcelTinyContractEvidence(
+          "wallet-provider-initial-snapshot",
+          "mcelWalletProviderInitialSnapshot.v1 skipped because SCM runtime wallet is already connected.",
+          "pass",
+          connectedSnapshot
+        );
+        return {skipped: true, reason: "runtime-wallet-already-connected"};
+      }
+      try {
+        const payload = await readMcelTinyContractWalletInitialProviderSnapshot(reason);
+        const outcome = recordMcelTinyContractExternalOutcome(payload.outcome);
+        payload.outcome = outcome;
+        const result = window.McelLabScm.runEffect(instance, "wallet.provider.initialSnapshot", payload);
+        tinyState.providerInitialSnapshotCount = Number(tinyState.providerInitialSnapshotCount || 0) + 1;
+        recordMcelTinyContractEvidence(
+          "wallet-provider-initial-snapshot",
+          payload.account
+            ? "mcelWalletProviderInitialSnapshot.v1 committed an already authorized provider account through SCM."
+            : "mcelWalletProviderInitialSnapshot.v1 committed a no-account passive observation through SCM.",
+          payload.account ? "pass" : "warn",
+          {payload, result}
+        );
+        refreshMcel18nWalletToolBoundary(`${reason}-boundary-refresh`);
+        const target = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+        syncMcelTinyContractDomFromScm(target, instance, `${reason}-committed`);
+        scheduleMcelWalletBacklogProofRender(target, `${reason}-proof-render`, {coalesce: true, strategy: "coalesce"});
+        if (payload.account) {
+          clearMcelTinyContractWalletInitialSnapshotRetry("authorized-account-observed");
+        } else if (options.retry !== false) {
+          scheduleMcelTinyContractWalletInitialSnapshotRetry(target, instance, reason, payload);
+        }
+        return {payload, result};
+      } catch (error) {
+        const detail = mcelTinyContractWalletError(error);
+        recordMcelTinyContractEvidence(
+          "wallet-provider-initial-snapshot",
+          "mcelWalletProviderInitialSnapshot.v1 failed before SCM commit.",
+          "fail",
+          detail
+        );
+        return {error: detail};
+      }
+    }
+
     async function disconnectMcelTinyContractThroughWalletSubsystem() {
       const subsystem = mcelTinyContractWalletSubsystem();
       if (!subsystem?.requestDisconnect) return null;
@@ -10482,7 +11039,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
 
     function mcelTinyContractExternalOutcome(input = {}) {
       const adapter = mcelTinyContractWalletAdapterState();
-      const status = ["pass", "blocked", "exception", "waiting"].includes(input.status)
+      const status = ["pass", "blocked", "exception", "pending", "waiting"].includes(input.status)
         ? input.status
         : "exception";
       const outcome = {
@@ -11116,6 +11673,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         operations: {
           "wallet.connect": scheme.id,
           "wallet.disconnect": scheme.id,
+          "wallet.provider.initialSnapshot": "coalesce",
           "wallet.provider.accountsChanged": scheme.id === "ignore" ? "ignore" : "coalesce",
           "wallet.provider.chainChanged": scheme.id === "ignore" ? "ignore" : "coalesce",
           "wallet.proof.render": scheme.id === "ignore" ? "ignore" : "coalesce"
@@ -11937,16 +12495,6 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           networkOk: network.ok === true
         };
       }
-      const subsystemSnapshot = snapshotMcelTinyContractWalletSubsystemState();
-      if (subsystemSnapshot?.connected === true && subsystemSnapshot.address) {
-        return {
-          connected: true,
-          source: "wallet-subsystem",
-          account: subsystemSnapshot.address,
-          chainId: subsystemSnapshot.chainId || "",
-          networkOk: false
-        };
-      }
       return {
         connected: false,
         source: instance ? "mcel-scm-runtime" : "unmounted",
@@ -12057,11 +12605,96 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
     }
 
     async function connectMcelTinyContractWallet(reason = "manual-wallet-connect") {
-      const connectedSnapshot = mcelTinyContractConnectedWalletSnapshot();
+      let connectedSnapshot = mcelTinyContractConnectedWalletSnapshot();
       if (connectedSnapshot.connected === true) {
         return mcelWalletBacklogAlreadySatisfied("wallet.connect", reason, connectedSnapshot);
       }
+      const tinyState = ensureMcelTinyContractState();
+      const instance = tinyState.scmInstance;
+      const app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      if (instance && window.McelLabScm?.runEffect) {
+        await hydrateMcelTinyContractWalletInitialSnapshot(app, instance, `${reason}-preconnect-passive-snapshot`, {retry: false});
+        connectedSnapshot = mcelTinyContractConnectedWalletSnapshot(instance);
+        if (connectedSnapshot.connected === true) {
+          return mcelWalletBacklogAlreadySatisfied("wallet.connect", `${reason}-passive-snapshot`, connectedSnapshot);
+        }
+      }
       return runMcelWalletBacklogRemediated("wallet.connect", reason, (walletBacklogOptions) => performMcelTinyContractWalletConnect(reason, walletBacklogOptions));
+    }
+
+    function commitMcelTinyContractWalletConnectAuthorizationPending(app = null, instance = ensureMcelTinyContractState().scmInstance, reason = "wallet-connect-authorization-pending") {
+      const tinyState = ensureMcelTinyContractState();
+      const provider = mcelTinyContractInjectedProvider();
+      if (!instance || !window.McelLabScm?.runEffect || !provider) return null;
+      const adapter = mcelTinyContractWalletAdapterState();
+      adapter.liveProvider = true;
+      adapter.mockFallback = false;
+      adapter.directProviderFallback = true;
+      adapter.providerKind = provider.isMetaMask ? "metamask" : "ethereum-provider";
+      adapter.connectSource = "interactive-connect";
+      bindMcelTinyContractWalletProviderEvents(provider);
+      recordMcelTinyContractWalletCall("eth_requestAccounts", "authorization-pending", {
+        reason,
+        governedBy: "wallet.connect.authorizationPending",
+        providerMutationRequested: false
+      });
+      const outcome = recordMcelTinyContractExternalOutcome({
+        operation: "wallet.connect",
+        phase: "authorization-pending",
+        status: "pending",
+        known: true,
+        reason: "permission-request-pending",
+        message: "Wallet connect requested account authorization and is waiting for the provider/user response.",
+        provider: {kind: adapter.providerKind, live: true, source: "interactive-connect"},
+        rpc: ["eth_requestAccounts"],
+        value: {
+          account: "",
+          chainId: instance?.runtime?.network?.chainId || "",
+          reason
+        },
+        containment: {
+          sourceChanged: false,
+          txDraftCreated: false,
+          runtimeMutationGoverned: true,
+          permissionRequested: true,
+          providerMutationRequested: false
+        },
+        nextAction: "Approve or cancel the wallet authorization request in the provider popup."
+      });
+      const result = window.McelLabScm.runEffect(instance, "wallet.connect.authorizationPending", {
+        provider: adapter.providerKind,
+        liveProvider: true,
+        chainId: instance?.runtime?.network?.chainId || "",
+        interactive: true,
+        outcome,
+        adapter: {
+          providerKind: adapter.providerKind,
+          liveProvider: adapter.liveProvider,
+          mockFallback: adapter.mockFallback,
+          walletSubsystemReady: adapter.walletSubsystemReady,
+          walletSubsystemUsed: adapter.walletSubsystemUsed,
+          walletSubsystemPreferred: adapter.walletSubsystemPreferred,
+          directProviderFallback: adapter.directProviderFallback,
+          connectSource: adapter.connectSource,
+          calls: adapter.calls,
+          events: adapter.events,
+          eventsBound: adapter.eventsBound,
+          ethersReady: adapter.ethersReady,
+          lastError: adapter.lastError
+        }
+      });
+      tinyState.walletAuthorizationPendingCount = Number(tinyState.walletAuthorizationPendingCount || 0) + 1;
+      recordMcelTinyContractEvidence(
+        "wallet",
+        "SCM captured an interactive wallet authorization pending state before awaiting the provider popup.",
+        "pass",
+        {reason, outcome, result, walletAdapter: tinyState.walletAdapter}
+      );
+      const target = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(target, instance, "Wallet authorization pending through declared SCM effect.");
+      renderMcelTinyContractProof(target, `${reason}-authorization-pending`);
+      renderMcelWalletBacklogSchemeControls(target);
+      return {outcome, result};
     }
 
     async function performMcelTinyContractWalletConnect(reason = "manual-wallet-connect", walletBacklogOptions = selectedMcelWalletBacklogExecutionOptions("wallet.connect")) {
@@ -12073,6 +12706,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return null;
       try {
+        const authorizationPending = commitMcelTinyContractWalletConnectAuthorizationPending(app, instance, `${reason}-authorization-pending`);
+        if (authorizationPending && typeof window.setTimeout === "function") {
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
         const walletPayload = await readMcelTinyContractWalletProvider(true, walletBacklogOptions);
         const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractOutcomeFromWalletPayload(walletPayload));
         walletPayload.outcome = outcome;
@@ -12560,7 +13197,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const externalOutcomeRpcMethods = Array.isArray(externalOutcome.rpc) ? externalOutcome.rpc.filter(Boolean) : [];
       const walletProofRpcMethods = externalOutcomeRpcMethods.length ? externalOutcomeRpcMethods : walletRpcMethods;
       const externalBlockedOrException = ["blocked", "exception"].includes(actionOutcome);
-      const txDraftBlockedAfterExternalOutcome = !externalBlockedOrException || instance?.runtime?.txDraft?.status !== "ready";
+      const externalNonPassLifecycle = ["blocked", "exception", "pending"].includes(actionOutcome);
+      const txDraftBlockedAfterExternalOutcome = !externalNonPassLifecycle || instance?.runtime?.txDraft?.status !== "ready";
       const sourceSafeAfterExternalOutcome = true; // Source mutation safety is enforced by SCM declared writes and serialization; blocked outcomes must not be inferred from historical source state.
       const walletConnectProviderEvidenceCaptured = externalOutcomeOperation === "wallet.connect" && (
         walletProofRpcMethods.includes("eth_requestAccounts") ||
@@ -12570,7 +13208,21 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         externalOutcomePhase === "eth_requestAccounts" ||
         externalOutcomeReason === "account-request-rejected" ||
         externalOutcomeReason === "account-grant-missing" ||
+        externalOutcomeReason === "permission-request-pending" ||
+        externalOutcomePhase === "authorization-pending" ||
+        actionOutcome === "pending" ||
         Boolean(externalOutcome.error)
+      );
+      const walletConnectAuthorizationPendingEvidenceCaptured = externalOutcomeOperation === "wallet.connect" && (
+        actionOutcome === "pending" &&
+        externalOutcomePhase === "authorization-pending" &&
+        externalOutcomeReason === "permission-request-pending" &&
+        walletProofRpcMethods.includes("eth_requestAccounts")
+      );
+      const walletInitialSnapshotProviderEvidenceCaptured = externalOutcomeOperation === "wallet.provider.initialSnapshot" && (
+        walletProofRpcMethods.includes("eth_accounts") &&
+        walletProofRpcMethods.includes("eth_chainId") &&
+        !walletProofRpcMethods.includes("eth_requestAccounts")
       );
       const walletPermissionRevokeEvidenceCaptured = externalOutcomeOperation === "wallet.disconnect" && (
         walletProofRpcMethods.includes("wallet_revokePermissions") ||
@@ -12588,11 +13240,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         componentManifestResolved: Boolean(window.McelLabScm?.componentDefinition?.("DevNetworkReleaseConsole")),
         routeManifestResolved: Boolean(window.McelLabScm?.routeDefinition?.("workspace.dev-network-release")),
         routeLoaderCommitted: tinyState.routeLoaderCount > 0 || routeEvents.some((entry) => entry.phase === "route-loader-commit" && entry.ok === true),
-        walletEffectRan: tinyState.walletConnectCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.connect"),
+        walletEffectRan: tinyState.walletConnectCount > 0 || tinyState.walletAuthorizationPendingCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && (entry.effectName === "wallet.connect" || entry.effectName === "wallet.connect.authorizationPending")),
         walletAdapterExercised: walletConnectRpcObserved || walletResetOnly,
         walletLiveProviderObserved: liveProviderSeen,
         walletEventsSubscribed: walletAdapter.eventsBound === true || walletAdapter.mockFallback === true || walletResetOnly,
         walletProviderEventsGoverned: walletAdapter.mockFallback === true || walletResetOnly || walletAdapter.eventsBound === true,
+        walletProviderInitialSnapshotEffectRan: tinyState.providerInitialSnapshotCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.initialSnapshot"),
         walletProviderAccountsChangedEffectRan: tinyState.providerAccountsChangedCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.accountsChanged"),
         walletProviderChainChangedEffectRan: tinyState.providerChainChangedCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.chainChanged"),
         walletProviderDisconnectEffectRan: tinyState.providerDisconnectCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.provider.disconnect"),
@@ -12602,10 +13255,12 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         walletDirectProviderFallback: walletAdapter.directProviderFallback === true,
         walletMockFallbackDegraded: walletAdapter.mockFallback === true,
         externalOutcomeCaptured,
-        externalOutcomeContained: externalOutcomeCaptured && ["pass", "blocked", "exception"].includes(actionOutcome),
+        externalOutcomeContained: externalOutcomeCaptured && ["pass", "blocked", "exception", "pending"].includes(actionOutcome),
         walletConnectOutcomeCaptured: externalOutcomeCaptured && externalOutcomeOperation === "wallet.connect",
         walletDisconnectOutcomeCaptured: externalOutcomeCaptured && externalOutcomeOperation === "wallet.disconnect",
         walletConnectProviderEvidenceCaptured,
+        walletConnectAuthorizationPendingEvidenceCaptured,
+        walletInitialSnapshotProviderEvidenceCaptured,
         walletPermissionRevokeEvidenceCaptured,
         txDraftBlockedAfterExternalOutcome,
         sourceSafeAfterExternalOutcome,
@@ -12647,7 +13302,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         styleContractChecked: styleCheck?.ok === true
       };
       const fullBatteryRan = tinyState.fullBatteryRunCount > 0;
-      const walletLifecycleTouched = tinyState.walletConnectCount > 0 || tinyState.walletDisconnectCount > 0;
+      const walletLifecycleTouched = tinyState.walletConnectCount > 0 || tinyState.walletAuthorizationPendingCount > 0 || tinyState.walletDisconnectCount > 0 || tinyState.providerInitialSnapshotCount > 0;
       const walletResetOnlyRequiredChecks = [
         checks.contractLanguageParsed,
         checks.componentManifestResolved,
@@ -12671,6 +13326,14 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         checks.layoutContractChecked,
         checks.styleContractChecked
       ];
+      const walletLifecycleInitialSnapshotRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletProviderInitialSnapshotEffectRan,
+        checks.walletInitialSnapshotProviderEvidenceCaptured,
+        checks.walletAdapterExercised,
+        checks.walletEventsSubscribed,
+        checks.walletProviderEventsGoverned
+      ];
       const walletLifecycleConnectPassRequiredChecks = [
         ...walletLifecycleCommonRequiredChecks,
         checks.walletConnectOutcomeCaptured,
@@ -12679,6 +13342,14 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         checks.walletEventsSubscribed,
         checks.walletProviderEventsGoverned,
         checks.networkVerified
+      ];
+      const walletLifecycleConnectPendingRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletConnectOutcomeCaptured,
+        checks.walletEffectRan,
+        checks.walletConnectAuthorizationPendingEvidenceCaptured,
+        checks.walletEventsSubscribed,
+        checks.walletProviderEventsGoverned
       ];
       const walletLifecycleConnectBlockedRequiredChecks = [
         ...walletLifecycleCommonRequiredChecks,
@@ -12694,11 +13365,15 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         checks.walletPermissionRevokeAttempted,
         checks.walletPermissionRevokeEvidenceCaptured
       ];
-      const walletLifecycleRequiredChecks = externalOutcomeOperation === "wallet.disconnect"
-        ? walletLifecycleDisconnectRequiredChecks
-        : (externalOutcomeOperation === "wallet.connect" && ["blocked", "exception"].includes(actionOutcome)
-          ? walletLifecycleConnectBlockedRequiredChecks
-          : walletLifecycleConnectPassRequiredChecks);
+      const walletLifecycleRequiredChecks = externalOutcomeOperation === "wallet.provider.initialSnapshot"
+        ? walletLifecycleInitialSnapshotRequiredChecks
+        : (externalOutcomeOperation === "wallet.disconnect"
+          ? walletLifecycleDisconnectRequiredChecks
+          : (externalOutcomeOperation === "wallet.connect" && actionOutcome === "pending"
+            ? walletLifecycleConnectPendingRequiredChecks
+            : (externalOutcomeOperation === "wallet.connect" && ["blocked", "exception"].includes(actionOutcome)
+              ? walletLifecycleConnectBlockedRequiredChecks
+              : walletLifecycleConnectPassRequiredChecks)));
       const fullBatteryRequiredChecks = [
         checks.contractLanguageParsed,
         checks.elementRegistryAvailable,
@@ -12745,7 +13420,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         ? "waiting"
         : (governanceOutcome === "fail" || safetyOutcome === "fail" || proofCompleteness === "incomplete"
           ? "fail"
-          : (actionOutcome === "exception" ? "exception" : (actionOutcome === "blocked" ? "blocked" : "pass")));
+          : (actionOutcome === "pending" ? "pending" : (actionOutcome === "exception" ? "exception" : (actionOutcome === "blocked" ? "blocked" : "pass"))));
 
       const proof = {
         status: receiptStatus,
@@ -12860,13 +13535,15 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           ? (receiptMode === "full-scm-battery"
             ? "PASS: full SCM wallet battery is clean"
             : (receiptMode === "wallet-reset" ? "PASS: disconnected wallet reset is tamed by SCM" : "PASS: wallet lifecycle is tamed by SCM"))
-          : (proof.status === "blocked"
+          : (proof.status === "pending"
+            ? "PENDING: wallet authorization is waiting on the provider; SCM containment passed"
+            : (proof.status === "blocked"
             ? "BLOCKED: external wallet action did not complete; SCM containment passed"
             : (proof.status === "exception"
               ? "EXCEPTION: external wallet outcome was captured; SCM containment passed"
               : (proof.status === "waiting"
                 ? "WAITING: run the SCM wallet proof battery"
-                : (receiptMode === "full-scm-battery" ? "FAIL: full SCM governance/safety receipt has a gap" : "FAIL: wallet lifecycle governance/safety receipt has a gap"))));
+                : (receiptMode === "full-scm-battery" ? "FAIL: full SCM governance/safety receipt has a gap" : "FAIL: wallet lifecycle governance/safety receipt has a gap")))));
         const fullOnlyText = receiptMode === "full-scm-battery" ? "" : " (full battery only)";
         const repairPacketLine = receiptMode === "full-scm-battery"
           ? `repair packet: ${checks.repairPacketGenerated ? "generated" : "not run"} · liveAiCall=${checks.repairPacketNoLiveAiCall ? "false" : "unknown"} · boundary=${checks.repairBoundaryBlocked ? "blocked forbidden repair write" : "not proven"}`
@@ -12885,6 +13562,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           `contract language: ${checks.contractLanguageParsed ? "resolved" : "missing"}`,
           `route loader: ${checks.routeLoaderCommitted ? "committed" : "missing"}`,
           `wallet effect: ${checks.walletEffectRan ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : "missing")}`,
+          `wallet authorization pending: ${checks.walletConnectAuthorizationPendingEvidenceCaptured ? "governed" : (tinyState.walletAuthorizationPendingCount > 0 ? "missing evidence" : "not pending")}`,
           `external outcome captured: ${checks.externalOutcomeCaptured ? "true" : "false"}`,
           `tx draft after blocked/exception: ${checks.txDraftBlockedAfterExternalOutcome ? "safe" : "unsafe"}`,
           `source after blocked/exception: ${checks.sourceSafeAfterExternalOutcome ? "safe" : "unsafe"}`,
@@ -12892,6 +13570,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           `wallet rpc: ${walletRpcMethods.length ? walletRpcMethods.join(", ") : "none"}`,
           `wallet events: ${checks.walletEventsSubscribed ? "subscribed" : (receiptMode === "wallet-reset" ? "not required before connect" : "missing")}`,
           `provider event effects: ${checks.walletProviderEventsGoverned ? "governed" : "not governed"} · accounts=${tinyState.providerAccountsChangedCount || 0} switches=${tinyState.providerAccountSwitchCount || 0} accountDisconnects=${tinyState.providerAccountDisconnectCount || 0} chain=${tinyState.providerChainChangedCount || 0} disconnect=${tinyState.providerDisconnectCount || 0} error=${tinyState.providerErrorCount || 0}`,
+          `initial provider snapshot: ${checks.walletProviderInitialSnapshotEffectRan ? "governed" : "not run"} · evidence=${checks.walletInitialSnapshotProviderEvidenceCaptured ? "read-only" : "missing"} · retries=${tinyState.providerInitialSnapshotRetry?.attempts || 0}`,
           `wallet subsystem: ${checks.walletSubsystemUsed ? "used" : (checks.walletDirectProviderFallback ? "fallback to direct provider" : (walletAdapter.walletSubsystemReady ? "available but not used" : "missing (optional)"))}`,
           `wallet proof level: ${checks.walletMockFallbackDegraded ? "degraded mock" : (checks.walletSubsystemUsed ? "product subsystem" : "adapter only")}`,
           `wallet reset: ${disconnectEffectRan ? (checks.walletDisconnectReset ? "pass" : "failed") : "not run"}`,
