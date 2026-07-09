@@ -18,11 +18,6 @@ REMOTE_WALLET_ROLES = {
     "hub_admin",
     "escrow_owner",
 }
-CONTRACT_NAMES = {
-    "AlphaBetaLockout",
-    "HubCreditBridgeEscrow",
-    "XLagBridgeReserve",
-}
 
 
 def _load_fixture() -> dict[str, Any]:
@@ -44,7 +39,7 @@ def test_fake_private_state_template_has_parallel_testnet_and_mainnet_boot_shape
         assert network["remote_coolify_hosts"] == ["A", "B"]
         assert set(network["wallets"]) == REMOTE_WALLET_ROLES
         assert "main_computer" not in network["wallets"]
-        assert set(network["contracts"]) == CONTRACT_NAMES
+        assert "contracts" not in network
         assert set(network["hub"]["instances"]) == {
             f"{network_name}-hub1",
             f"{network_name}-hub2",

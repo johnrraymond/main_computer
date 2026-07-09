@@ -101,7 +101,7 @@ DEV_CONTRACT_KEYS = {
 }
 
 PREFERRED_ORDER: dict[tuple[str, ...], list[str]] = {
-    (): ["schema_version", "coolify", "wallets", "networks", "contracts", "last_check"],
+    (): ["schema_version", "coolify", "wallets", "networks", "last_check"],
     ("coolify",): [
         "project_name",
         "project_uuid",
@@ -166,7 +166,6 @@ PREFERRED_ORDER: dict[tuple[str, ...], list[str]] = {
         "hub",
         "foundationdb",
         "wallets",
-        "contracts",
         "last_seen",
     ],
     ("networks", "*", "qbft"): ["instances"],
@@ -203,19 +202,8 @@ PREFERRED_ORDER: dict[tuple[str, ...], list[str]] = {
         "smoke_client",
         "escrow_owner",
     ],
-    ("networks", "*", "wallets", "*"): ["address", "private_key", "credits"],
-    ("networks", "*", "contracts"): list(MAIN_CONTRACTS),
-    ("networks", "*", "contracts", "AlphaBetaLockout"): ["address", "code_present", "version"],
-    ("networks", "*", "contracts", "HubCreditBridgeEscrow"): [
-        "address",
-        "code_present",
-        "version",
-        "owner",
-        "bridge_controller",
-        "paused",
-    ],
-    ("networks", "*", "contracts", "XLagBridgeReserve"): ["address", "code_present", "version", "captain", "crew"],
-    ("networks", "*", "last_seen"): ["chain_rpc", "hub", "contracts"],
+    ("networks", "*", "wallets", "*"): ["address", "private_key"],
+    ("networks", "*", "last_seen"): ["chain_rpc", "hub"],
 }
 
 
@@ -433,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_s=max(0.25, float(args.live_timeout)),
         )
 
+    prune_non_private_network_state(builder)
     ordered = order_mapping(builder.state, ())
     text_state = ordered if args.show_secrets or args.write else redact_state(ordered)
     yaml_text = emit_yaml(text_state, builder.provenance)
@@ -466,6 +455,7 @@ def populate_state(builder: StateBuilder, root: Path) -> None:
     populate_remote_network(builder, root, "mainnet")
     remove_legacy_qbft_summary_fields(builder)
     sanitize_manual_coolify_host_references(builder)
+    prune_non_private_network_state(builder)
     validate_qbft_instances(builder)
 
 
@@ -622,6 +612,41 @@ def remove_legacy_qbft_summary_fields(builder: StateBuilder) -> None:
             builder.delete_path(("networks", str(network_name), "qbft", field))
 
 
+def prune_non_private_network_state(builder: StateBuilder) -> None:
+    """Remove public/spurious network data from the private-state YAML.
+
+    Contract addresses and live contract status are public deployment facts; their
+    source of truth is the deployment manifest and main_computer/config/*_contracts.json.
+    Wallet credit balances are public/accounting state, not private operator state.
+    """
+
+    builder.delete_path(("contracts",))
+
+    networks = builder.get(("networks",))
+    if not isinstance(networks, Mapping):
+        return
+
+    for network_name in list(networks):
+        network_path = ("networks", str(network_name))
+        builder.delete_path(network_path + ("contracts",))
+        builder.delete_path(network_path + ("last_seen", "contracts"))
+
+        last_seen = builder.get(network_path + ("last_seen",))
+        if isinstance(last_seen, Mapping) and not last_seen:
+            builder.delete_path(network_path + ("last_seen",))
+
+        wallets = builder.get(network_path + ("wallets",))
+        if not isinstance(wallets, Mapping):
+            continue
+
+        for role in list(wallets):
+            wallet_path = network_path + ("wallets", str(role))
+            builder.delete_path(wallet_path + ("credits",))
+            wallet_payload = builder.get(wallet_path)
+            if isinstance(wallet_payload, Mapping) and not wallet_payload:
+                builder.delete_path(wallet_path)
+
+
 def validate_qbft_instances(builder: StateBuilder) -> None:
     """Emit non-fatal structured warnings for manually-owned QBFT topology."""
 
@@ -732,9 +757,6 @@ def populate_test_network(builder: StateBuilder, root: Path) -> None:
     add_default_network_wallets(builder, "test", source="repo:anvil-default-wallets")
     builder.set_existing_or_null_network_slot(network + ("wallets", "hub_admin", "address"))
     builder.set_existing_or_null_network_slot(network + ("wallets", "hub_admin", "private_key"))
-    ensure_credits(builder, "test")
-
-    add_network_contract_template(builder, "test")
 
 
 def populate_dev_network(builder: StateBuilder, root: Path) -> None:
@@ -760,21 +782,6 @@ def populate_dev_network(builder: StateBuilder, root: Path) -> None:
             builder.set_if_known(network + ("wallets", "smoke_client", "address"), smoke_client.get("address"), source)
             populate_wallet_secret_from_record(builder, root, network + ("wallets", "smoke_client"), smoke_client)
 
-        contracts = deployment.get("contracts")
-        if isinstance(contracts, dict):
-            alpha = contracts.get(DEV_CONTRACT_KEYS["AlphaBetaLockout"])
-            if isinstance(alpha, dict):
-                builder.set_if_known(network + ("contracts", "AlphaBetaLockout", "address"), alpha.get("address"), source)
-            escrow = contracts.get(DEV_CONTRACT_KEYS["HubCreditBridgeEscrow"])
-            if isinstance(escrow, dict):
-                builder.set_if_known(network + ("contracts", "HubCreditBridgeEscrow", "address"), escrow.get("address"), source)
-                builder.set_if_known(network + ("contracts", "HubCreditBridgeEscrow", "bridge_controller"), escrow.get("bridge_controller_address"), source)
-                builder.set_if_known(network + ("contracts", "HubCreditBridgeEscrow", "owner"), ANVIL_DEFAULTS["deployer"]["address"], "repo:dev-deployer-default")
-                builder.set_if_known(network + ("contracts", "HubCreditBridgeEscrow", "paused"), False, "repo:deployment-default")
-            reserve = contracts.get(DEV_CONTRACT_KEYS["XLagBridgeReserve"])
-            if isinstance(reserve, dict):
-                builder.set_if_known(network + ("contracts", "XLagBridgeReserve", "address"), reserve.get("address"), source)
-
         offices = deployment.get("offices")
         if isinstance(offices, list):
             offices_by_code: dict[str, str] = {}
@@ -786,14 +793,7 @@ def populate_dev_network(builder: StateBuilder, root: Path) -> None:
             for office_code, role in role_for_office.items():
                 if office_code in offices_by_code:
                     builder.set_value(network + ("wallets", role, "address"), offices_by_code[office_code], source)
-            crew = [offices_by_code[k] for k in ("o1", "o2", "o3") if k in offices_by_code]
-            if "o0" in offices_by_code:
-                builder.set_value(network + ("contracts", "XLagBridgeReserve", "captain"), offices_by_code["o0"], source)
-            if crew:
-                builder.set_value(network + ("contracts", "XLagBridgeReserve", "crew"), crew, source)
 
-    ensure_credits(builder, "dev")
-    add_network_contract_template(builder, "dev")
 
 
 
@@ -802,14 +802,11 @@ def populate_remote_network(builder: StateBuilder, root: Path, network_name: str
     populate_network_config(builder, root, network_name)
     populate_remote_topology(builder, root, network_name)
     populate_remote_coolify_deployment(builder, root, network_name)
-    populate_contract_config(builder, root, network_name)
     populate_deployment_manifest(builder, root, network_name)
 
     for role in ("deployer", "escrow_owner", "hub_admin", "captain", "o1", "o2", "o3"):
         builder.set_existing_or_null_network_slot(network + ("wallets", role, "address"))
         builder.set_existing_or_null_network_slot(network + ("wallets", role, "private_key"))
-    ensure_credits(builder, network_name)
-    add_network_contract_template(builder, network_name)
 
 
 def populate_network_config(builder: StateBuilder, root: Path, network_name: str) -> None:
@@ -922,18 +919,9 @@ def populate_remote_coolify_deployment(builder: StateBuilder, root: Path, networ
 
 
 def populate_contract_config(builder: StateBuilder, root: Path, network_name: str) -> None:
-    contracts_relative_path = REMOTE_CONTRACTS_RELATIVE_PATHS.get(network_name)
-    if contracts_relative_path is None:
-        return
-    payload = read_json(root / contracts_relative_path)
-    if not isinstance(payload, dict):
-        return
-    source = f"repo:{contracts_relative_path.as_posix()}"
-    base = ("networks", network_name, "contracts")
-    for contract_name, key in DEV_CONTRACT_KEYS.items():
-        address = payload.get(key)
-        if ADDRESS_RE.match(str(address or "")):
-            builder.set_value(base + (contract_name, "address"), str(address), source)
+    """Compatibility no-op: private state no longer mirrors public contract config."""
+
+    return
 
 
 def populate_deployment_manifest(builder: StateBuilder, root: Path, network_name: str) -> None:
@@ -979,27 +967,6 @@ def apply_deployment_payload(
         if isinstance(record, dict):
             populate_wallet_from_record(builder, root, network + ("wallets", role), record, source)
 
-    contracts = deployment.get("contracts")
-    if not isinstance(contracts, dict):
-        contracts = deployment.get("deployments")
-    if isinstance(contracts, dict):
-        for contract_name, key in DEV_CONTRACT_KEYS.items():
-            record = contracts.get(key)
-            if isinstance(record, dict):
-                builder.set_if_known(network + ("contracts", contract_name, "address"), record.get("address"), source)
-
-        escrow = contracts.get(DEV_CONTRACT_KEYS["HubCreditBridgeEscrow"])
-        if isinstance(escrow, dict):
-            builder.set_if_known(
-                network + ("contracts", "HubCreditBridgeEscrow", "bridge_controller"),
-                escrow.get("bridge_controller_address"),
-                source,
-            )
-            owner = escrow.get("owner") or escrow.get("owner_address")
-            builder.set_if_known(network + ("contracts", "HubCreditBridgeEscrow", "owner"), owner, source)
-            if "paused" in escrow:
-                builder.set_if_known(network + ("contracts", "HubCreditBridgeEscrow", "paused"), escrow.get("paused"), source)
-
     offices = deployment.get("offices")
     if isinstance(offices, list):
         apply_offices(builder, root, network_name, offices, source)
@@ -1036,12 +1003,6 @@ def fill_escrow_owner_from_deployer(builder: StateBuilder, network_name: str, so
 
     if value_is_known(deployer_address):
         builder.set_value(network + ("wallets", "escrow_owner", "address"), deployer_address, source, overwrite=False)
-        builder.set_value(
-            network + ("contracts", "HubCreditBridgeEscrow", "owner"),
-            deployer_address,
-            source,
-            overwrite=False,
-        )
     if value_is_known(deployer_key):
         builder.set_value(network + ("wallets", "escrow_owner", "private_key"), deployer_key, source, overwrite=False)
 
@@ -1074,12 +1035,6 @@ def apply_offices(builder: StateBuilder, root: Path, network_name: str, offices:
             base_path = network + ("wallets", role)
             builder.set_value(base_path + ("address",), str(address), source)
             populate_office_private_key(builder, root, base_path, office, source)
-
-    crew = [offices_by_code[k] for k in ("o1", "o2", "o3") if k in offices_by_code]
-    if "o0" in offices_by_code:
-        builder.set_value(network + ("contracts", "XLagBridgeReserve", "captain"), offices_by_code["o0"], source)
-    if crew:
-        builder.set_value(network + ("contracts", "XLagBridgeReserve", "crew"), crew, source)
 
 
 def populate_office_private_key(
@@ -1136,30 +1091,18 @@ def add_default_network_wallets(builder: StateBuilder, network_name: str, *, sou
         payload = ANVIL_DEFAULTS[role]
         builder.set_value(("networks", network_name, "wallets", role, "address"), payload["address"], source)
         builder.set_value(("networks", network_name, "wallets", role, "private_key"), payload["private_key"], source)
-        builder.set_value(("networks", network_name, "wallets", role, "credits"), 0, "template", overwrite=False)
 
 
 def ensure_credits(builder: StateBuilder, network_name: str) -> None:
-    wallets = builder.get(("networks", network_name, "wallets"))
-    if not isinstance(wallets, Mapping):
-        return
-    for role in wallets:
-        builder.set_value(("networks", network_name, "wallets", str(role), "credits"), 0, "template", overwrite=False)
+    """Compatibility no-op: wallet credits are not private-state content."""
+
+    return
 
 
 def add_network_contract_template(builder: StateBuilder, network_name: str) -> None:
-    base = ("networks", network_name, "contracts")
-    for contract_name in MAIN_CONTRACTS:
-        builder.set_existing_or_null_network_slot(base + (contract_name, "address"))
-        builder.set_existing_or_null_network_slot(base + (contract_name, "version"))
+    """Compatibility no-op: contract addresses/status are public deployment state."""
 
-    escrow = base + ("HubCreditBridgeEscrow",)
-    for field in ("owner", "bridge_controller", "paused"):
-        builder.set_existing_or_null_network_slot(escrow + (field,))
-
-    reserve = base + ("XLagBridgeReserve",)
-    for field in ("captain", "crew"):
-        builder.set_existing_or_null_network_slot(reserve + (field,))
+    return
 
 
 def populate_wallet_from_record(
@@ -1404,10 +1347,7 @@ def apply_live_hub_status(builder: StateBuilder, network_name: str, hub_url: str
 
     bridge = status.get("bridge_backend")
     if isinstance(bridge, Mapping):
-        escrow = bridge.get("escrow_address")
         controller = bridge.get("bridge_controller_address")
-        set_live_value(builder, network_path + ("contracts", "HubCreditBridgeEscrow", "address"), escrow, source)
-        set_live_value(builder, network_path + ("contracts", "HubCreditBridgeEscrow", "bridge_controller"), controller, source)
         set_live_value(builder, network_path + ("wallets", "hub_admin", "address"), controller, source)
 
 
@@ -1434,35 +1374,6 @@ def check_live_chain(builder: StateBuilder, network_name: str, *, timeout_s: flo
         set_live_value(builder, network + ("chain_id",), chain_id, source)
     set_live_value(builder, network + ("last_seen", "chain_rpc"), "ok", source)
 
-    contracts = builder.get(network + ("contracts",))
-    if not isinstance(contracts, Mapping):
-        return
-
-    any_contract_checked = False
-    for contract_name in MAIN_CONTRACTS:
-        contract = contracts.get(contract_name)
-        if not isinstance(contract, Mapping):
-            continue
-        address = contract.get("address")
-        if not ADDRESS_RE.match(str(address or "")):
-            continue
-        any_contract_checked = True
-        contract_path = network + ("contracts", contract_name)
-        code_result = rpc_json(rpc_url, "eth_getCode", [str(address), "latest"], timeout_s=timeout_s)
-        if code_result.get("ok"):
-            code = str(code_result.get("result") or "")
-            set_live_value(builder, contract_path + ("code_present",), bool(code and code != "0x"), source)
-        if contract_name == "HubCreditBridgeEscrow":
-            owner = live_contract_address_call(rpc_url, str(address), OWNER_SELECTOR, timeout_s=timeout_s)
-            if owner is not None:
-                set_live_value(builder, contract_path + ("owner",), owner, source)
-                set_live_value(builder, network + ("wallets", "escrow_owner", "address"), owner, source)
-            paused = live_contract_bool_call(rpc_url, str(address), PAUSED_SELECTOR, timeout_s=timeout_s)
-            if paused is not None:
-                set_live_value(builder, contract_path + ("paused",), paused, source)
-
-    if any_contract_checked:
-        set_live_value(builder, network + ("last_seen", "contracts"), "ok", source)
 
 
 def live_contract_address_call(rpc_url: str, contract_address: str, selector: str, *, timeout_s: float) -> str | None:

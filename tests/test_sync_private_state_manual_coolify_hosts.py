@@ -25,7 +25,7 @@ def populated_state(existing: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     return sync, builder.state
 
 
-def test_mainnet_hydrates_null_readiness_without_inventing_coolify_host_c() -> None:
+def test_mainnet_hydrates_repo_known_state_without_inventing_coolify_host_c() -> None:
     sync, state = populated_state(
         {
             "coolify": {
@@ -47,24 +47,54 @@ def test_mainnet_hydrates_null_readiness_without_inventing_coolify_host_c() -> N
     assert mainnet["kind"] == "mainnet"
     assert mainnet["chain_id"] == 42424240
     assert mainnet["rpc"] == "https://mainnet-rpc.greatlibrary.io"
-    assert "remote_coolify_hosts" not in mainnet
+    assert mainnet["remote_coolify_hosts"] == ["A", "B"]
 
     hubs = mainnet["hub"]["instances"]
-    assert set(hubs) == {"mainnet-hub1"}
-    assert "coolify_host" not in hubs["mainnet-hub1"]
+    assert set(hubs) == {"mainnet-hub1", "mainnet-hub2", "mainnet-hub3"}
+    assert hubs["mainnet-hub1"]["coolify_host"] == "A"
+    assert hubs["mainnet-hub2"]["coolify_host"] == "A"
+    assert hubs["mainnet-hub3"]["coolify_host"] == "B"
 
     for role in ("deployer", "escrow_owner", "hub_admin", "captain", "o1", "o2", "o3"):
-        assert mainnet["wallets"][role]["address"] is None
         assert mainnet["wallets"][role]["private_key"] is None
 
-    for contract_name in ("AlphaBetaLockout", "HubCreditBridgeEscrow", "XLagBridgeReserve"):
-        assert mainnet["contracts"][contract_name]["address"] is None
-        assert mainnet["contracts"][contract_name]["version"] is None
-    assert mainnet["contracts"]["HubCreditBridgeEscrow"]["owner"] is None
-    assert mainnet["contracts"]["HubCreditBridgeEscrow"]["bridge_controller"] is None
-    assert mainnet["contracts"]["HubCreditBridgeEscrow"]["paused"] is None
-    assert mainnet["contracts"]["XLagBridgeReserve"]["captain"] is None
-    assert mainnet["contracts"]["XLagBridgeReserve"]["crew"] is None
+    assert "contracts" not in mainnet
+    for role, wallet in mainnet["wallets"].items():
+        assert "credits" not in wallet
+
+
+def test_sync_prunes_existing_contracts_and_wallet_credits_from_private_state() -> None:
+    _sync, state = populated_state(
+        {
+            "contracts": {"legacy": {"address": "0x0000000000000000000000000000000000000001"}},
+            "networks": {
+                "mainnet": {
+                    "contracts": {
+                        "HubCreditBridgeEscrow": {
+                            "address": "0x0000000000000000000000000000000000000002",
+                            "code_present": True,
+                        }
+                    },
+                    "last_seen": {"contracts": "ok"},
+                    "wallets": {
+                        "deployer": {
+                            "address": "0x0000000000000000000000000000000000000003",
+                            "private_key": None,
+                            "credits": 123,
+                        },
+                        "credits_only": {"credits": 999},
+                    },
+                }
+            },
+        }
+    )
+
+    assert "contracts" not in state
+    mainnet = state["networks"]["mainnet"]
+    assert "contracts" not in mainnet
+    assert "contracts" not in mainnet.get("last_seen", {})
+    assert "credits" not in mainnet["wallets"]["deployer"]
+    assert "credits_only" not in mainnet["wallets"]
 
 
 def test_stale_mainnet_coolify_host_references_are_removed_when_c_is_not_manual() -> None:
@@ -92,8 +122,8 @@ def test_stale_mainnet_coolify_host_references_are_removed_when_c_is_not_manual(
     )
 
     mainnet = state["networks"]["mainnet"]
-    assert "remote_coolify_hosts" not in mainnet
-    assert "coolify_host" not in mainnet["hub"]["instances"]["mainnet-hub1"]
+    assert mainnet["remote_coolify_hosts"] == ["A", "B"]
+    assert mainnet["hub"]["instances"]["mainnet-hub1"]["coolify_host"] == "A"
 
 
 def test_testnet_keeps_manual_coolify_host_mapping_for_a_and_b() -> None:

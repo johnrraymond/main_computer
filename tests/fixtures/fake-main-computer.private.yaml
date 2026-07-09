@@ -61,14 +61,6 @@ networks:
         address: "0x1000000000000000000000000000000000000007"
         private_key: "0x7777777777777777777777777777777777777777777777777777777777777777"
 
-    contracts:
-      AlphaBetaLockout:
-        address: null
-      HubCreditBridgeEscrow:
-        address: null
-      XLagBridgeReserve:
-        address: null
-
     foundationdb:
       namespace: main_computer_testnet
       cluster_description: main-computer-testnet
@@ -150,14 +142,6 @@ networks:
       escrow_owner:
         address: null
         private_key: null
-
-    contracts:
-      AlphaBetaLockout:
-        address: null
-      HubCreditBridgeEscrow:
-        address: null
-      XLagBridgeReserve:
-        address: null
 
     foundationdb:
       namespace: main_computer_mainnet
