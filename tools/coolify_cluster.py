@@ -569,6 +569,7 @@ def hub_args_for_cluster(args: argparse.Namespace, packet_path: Path) -> argpars
         no_deploy=args.no_deploy,
         no_traefik_sidecar=args.no_traefik_sidecar,
         force_deploy=args.force_deploy,
+        recreate_hub_stacks=args.recreate_hub_stacks,
         dry_run=args.dry_run,
         json=args.json,
     )
@@ -875,6 +876,8 @@ def next_commands(args: argparse.Namespace, packet_path: Path) -> list[str]:
         base[0] += f' --private-state "{args.private_state}"'
     if getattr(args, "no_traefik_sidecar", False):
         base[0] += " --no-traefik-sidecar"
+    if getattr(args, "recreate_hub_stacks", False):
+        base[0] += " --recreate-hub-stacks"
     apply_command = (
         "python .\\tools\\coolify_cluster.py apply "
         + args.network
@@ -890,6 +893,8 @@ def next_commands(args: argparse.Namespace, packet_path: Path) -> list[str]:
         apply_command += f' --private-state "{args.private_state}"'
     if getattr(args, "no_traefik_sidecar", False):
         apply_command += " --no-traefik-sidecar"
+    if getattr(args, "recreate_hub_stacks", False):
+        apply_command += " --recreate-hub-stacks"
     base.append(apply_command)
     return base
 
@@ -1035,6 +1040,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--install-traefik-dynamic-config", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--force-deploy", action="store_true", help="Ask Coolify to force rebuild/redeploy services.")
+    parser.add_argument(
+        "--recreate-hub-stacks",
+        action="store_true",
+        help="Delete and recreate Hub service stacks only; FoundationDB stacks are not touched.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="For apply: render plans without Coolify calls.")
     parser.add_argument("--json", action="store_true", help="Print compact machine-readable JSON.")
     return parser.parse_args(argv)

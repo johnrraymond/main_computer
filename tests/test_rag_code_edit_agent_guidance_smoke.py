@@ -2099,15 +2099,35 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_trust_boundaries_checked_for_every_case"] is True
     assert report["contracts"]["open_battery_all_target_endstates_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_result_selection_exercised"] is True
+    assert report["contracts"]["open_battery_byzantine_profile_coverage_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_profile_coverage_matches_case_reports"] is True
+    assert report["contracts"]["open_battery_byzantine_clear_majority_path_exercised"] is True
+    assert report["contracts"]["open_battery_byzantine_fault_free_and_faulty_profiles_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_round_1_three_results_returned"] is True
     assert report["contracts"]["open_battery_byzantine_quorum_membership_derivation_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_worker_membership_matches_configured_quorum"] is True
     assert report["contracts"]["open_battery_byzantine_reviewer_membership_matches_configured_quorum"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_exposes_quorum_membership"] is True
+    assert report["contracts"]["open_battery_byzantine_quorum_role_separation_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_worker_reviewer_quorums_are_disjoint"] is True
+    assert report["contracts"]["open_battery_byzantine_round_2_inputs_cover_worker_quorum_by_role"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_quorum_role_separation"] is True
+    assert report["contracts"]["open_battery_byzantine_fault_model_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_fault_model_within_tolerance"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_fault_model"] is True
+    assert report["contracts"]["open_battery_byzantine_agreement_chain_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_agreement_chain_links_payload_hashes"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_agreement_chain_derivation"] is True
+    assert report["contracts"]["open_battery_byzantine_final_round_overrides_malicious_reviewer_vote"] is True
+    assert report["contracts"]["open_battery_byzantine_final_round_rejects_malicious_worker_result_when_present"] is True
     assert report["contracts"]["open_battery_byzantine_round_1_payload_hashes_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_all_results_sent_to_all_reviewers"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_input_payload_hashes_match_round_1"] is True
+    assert report["contracts"]["open_battery_byzantine_round_2_review_derivations_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_round_2_review_derivations_match_review_payloads"] is True
+    assert report["contracts"]["open_battery_byzantine_round_2_honest_reviewers_reject_malicious_worker_result_when_present"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_round_2_review_derivations"] is True
     assert report["contracts"]["open_battery_byzantine_final_round_received_all_round_2_reviews"] is True
     assert report["contracts"]["open_battery_byzantine_final_input_review_hashes_match_round_2"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_payload_hashes_recorded"] is True
@@ -2138,6 +2158,28 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_byzantine_agreed_result_is_survivor"] is True
     assert report["contracts"]["open_battery_byzantine_malicious_result_not_selected_when_majority_rejects_it"] is True
     assert report["contracts"]["open_battery_byzantine_boundary_emits_single_result"] is True
+    assert report["contracts"]["open_battery_byzantine_action_selection_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_selected_action_derived_from_agreed_result"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_action_selection_derivation"] is True
+
+    profile_coverage = report["byzantine_profile_coverage_derivation"]
+    assert profile_coverage["rule"] == "exercise_fault_free_tie_and_faulty_clear_majority_byzantine_profiles"
+    assert profile_coverage["complete_battery"] is True
+    assert len(profile_coverage["coverage_set_sha256"]) == 64
+    assert "answer_only" in profile_coverage["tie_random_case_ids"]
+    assert "proposal_created" in profile_coverage["clear_majority_case_ids"]
+    assert "answer_only" in profile_coverage["fault_free_case_ids"]
+    assert "proposal_created" in profile_coverage["malicious_fault_case_ids"]
+    assert "tie_host_seeded_random" in profile_coverage["profiles_exercised"]
+    assert "malicious_rejected_clear_winner" in profile_coverage["profiles_exercised"]
+    assert "host_seeded_random_among_ranked_survivor_pair" in profile_coverage["selection_methods_exercised"]
+    assert "clear_majority" in profile_coverage["selection_methods_exercised"]
+    assert profile_coverage["profile_by_case"]["answer_only"] == "tie_host_seeded_random"
+    assert profile_coverage["selection_method_by_case"]["answer_only"] == "host_seeded_random_among_ranked_survivor_pair"
+    assert profile_coverage["profile_by_case"]["proposal_created"] == "malicious_rejected_clear_winner"
+    assert profile_coverage["selection_method_by_case"]["proposal_created"] == "clear_majority"
+    assert profile_coverage["malicious_worker_ids_by_case"]["proposal_created"] == ["worker_3"]
+    assert profile_coverage["malicious_reviewer_ids_by_case"]["proposal_created"] == ["reviewer_3_malicious"]
 
     expected_endstates = {
         "answer_only",
@@ -2173,6 +2215,7 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         round_1 = json.loads((case_dir / "byzantine_round_1_results.json").read_text(encoding="utf-8"))
         round_2 = json.loads((case_dir / "byzantine_round_2_reviews.json").read_text(encoding="utf-8"))
         final_selection = json.loads((case_dir / "byzantine_final_selection.json").read_text(encoding="utf-8"))
+        agreement_trace = json.loads((case_dir / "byzantine_agreement_trace.json").read_text(encoding="utf-8"))
         suspicious_docs = [
             doc for doc in corpus["documents"]
             if doc.get("kind") == "suspicious_node_output"
@@ -2214,10 +2257,26 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_worker_membership_matches_configured_quorum"] is True
         assert decision["contracts"]["byzantine_reviewer_membership_matches_configured_quorum"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_quorum_membership"] is True
+        assert decision["contracts"]["byzantine_quorum_role_separation_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_worker_reviewer_quorums_are_disjoint"] is True
+        assert decision["contracts"]["byzantine_round_2_inputs_cover_worker_quorum_by_role"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_quorum_role_separation"] is True
+        assert decision["contracts"]["byzantine_fault_model_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_fault_model_within_tolerance"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_fault_model"] is True
+        assert decision["contracts"]["byzantine_agreement_chain_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_agreement_chain_links_payload_hashes"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_agreement_chain_derivation"] is True
+        assert decision["contracts"]["byzantine_final_round_overrides_malicious_reviewer_vote"] is True
+        assert decision["contracts"]["byzantine_final_round_rejects_malicious_worker_result_when_present"] is True
         assert decision["contracts"]["byzantine_round_1_payload_hashes_recorded"] is True
         assert decision["contracts"]["byzantine_round_2_all_results_sent_to_all_reviewers"] is True
         assert decision["contracts"]["byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
         assert decision["contracts"]["byzantine_round_2_input_payload_hashes_match_round_1"] is True
+        assert decision["contracts"]["byzantine_round_2_review_derivations_recorded"] is True
+        assert decision["contracts"]["byzantine_round_2_review_derivations_match_review_payloads"] is True
+        assert decision["contracts"]["byzantine_round_2_honest_reviewers_reject_malicious_worker_result_when_present"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_round_2_review_derivations"] is True
         assert decision["contracts"]["byzantine_final_round_received_all_round_2_reviews"] is True
         assert decision["contracts"]["byzantine_final_input_review_hashes_match_round_2"] is True
         assert decision["contracts"]["byzantine_boundary_payload_hashes_recorded"] is True
@@ -2235,6 +2294,9 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_agreed_result_is_original_worker_result"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_survivor"] is True
         assert decision["contracts"]["byzantine_boundary_emits_single_result"] is True
+        assert decision["contracts"]["byzantine_action_selection_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_selected_action_derived_from_agreed_result"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_action_selection_derivation"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_random_survivor_pair"] is True
         assert decision["contracts"]["byzantine_clear_winner_derived_from_first_place_votes"] is True
         assert decision["contracts"]["byzantine_boundary_exposes_clear_winner_derivation"] is True
@@ -2269,6 +2331,76 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["byzantine_agreement"]["quorum_membership_derivation"] == membership
         assert decision["byzantine_agreement"]["configured_membership_set_sha256"] == membership["configured_membership_set_sha256"]
         assert decision["byzantine_agreement"]["observed_membership_set_sha256"] == membership["observed_membership_set_sha256"]
+        role_separation = final_selection["quorum_role_separation_derivation"]
+        assert role_separation["rule"] == "disjoint_worker_reviewer_quorums_with_full_cross_round_inputs"
+        assert role_separation["worker_reviewer_overlap"] == []
+        assert role_separation["worker_reviewer_quorums_disjoint"] is True
+        assert role_separation["observed_worker_ids"] == round_1["observed_worker_ids"]
+        assert role_separation["observed_reviewer_ids"] == round_2["observed_reviewer_ids"]
+        assert role_separation["all_reviewers_received_worker_quorum"] is True
+        assert role_separation["final_input_reviewers"] == final_selection["input_reviewers"]
+        assert role_separation["final_input_reviewers_match_review_quorum"] is True
+        assert len(role_separation["role_separation_set_sha256"]) == 64
+        assert all(
+            worker_ids == round_1["observed_worker_ids"]
+            for worker_ids in role_separation["review_input_worker_ids_by_reviewer"].values()
+        )
+        assert round_2["quorum_role_separation_derivation"] == role_separation
+        assert decision["byzantine_agreement"]["quorum_role_separation_derivation"] == role_separation
+        fault_model = final_selection["fault_model_derivation"]
+        assert fault_model["rule"] == "single_byzantine_worker_and_single_byzantine_reviewer_fault_bound"
+        assert fault_model["worker_count"] == len(round_1["results"])
+        assert fault_model["reviewer_count"] == len(round_2["reviews"])
+        assert fault_model["majority_threshold"] == final_selection["majority_threshold"]
+        assert fault_model["malicious_worker_ids"] == membership["malicious_worker_ids"]
+        assert fault_model["malicious_reviewer_ids"] == membership["malicious_reviewer_ids"]
+        assert fault_model["malicious_worker_faults_within_bound"] is True
+        assert fault_model["malicious_reviewer_faults_within_bound"] is True
+        assert fault_model["agreed_result_malicious"] is False
+        assert fault_model["fault_model_preserved"] is True
+        assert decision["byzantine_agreement"]["fault_model_derivation"] == fault_model
+        agreement_chain = final_selection["agreement_chain_derivation"]
+        assert agreement_chain["rule"] == "round_payload_and_derivation_hashes_to_single_agreed_result"
+        assert agreement_chain["case_id"] == case_id
+        assert agreement_chain["profile"] == final_selection["profile"]
+        assert agreement_chain["selection_method"] == final_selection["selection_method"]
+        assert agreement_chain["agreed_result_id"] == final_selection["agreed_result_id"]
+        assert agreement_chain["agreed_result_sha256"] == final_selection["agreed_result_sha256"]
+        assert agreement_chain["step_count"] == 7
+        assert agreement_chain["all_step_hashes_present"] is True
+        assert agreement_chain["boundary_output_preserved"] is True
+        assert len(agreement_chain["chain_sha256"]) == 64
+        assert final_selection["agreement_chain_sha256"] == agreement_chain["chain_sha256"]
+        assert [step["name"] for step in agreement_chain["steps"]] == [
+            "round_1_worker_result_payload_set",
+            "round_2_review_payload_set",
+            "round_2_review_derivation_set",
+            "final_rejection_derivation",
+            "final_survivor_ranking_completion_derivation",
+            (
+                "clear_majority_derivation"
+                if final_selection["selection_method"] == "clear_majority"
+                else "host_random_survivor_pool_derivation"
+            ),
+            "agreed_worker_result_payload",
+        ]
+        assert [step["sha256"] for step in agreement_chain["steps"][:3]] == [
+            final_selection["round_1_results_set_sha256"],
+            final_selection["input_reviews_set_sha256"],
+            final_selection["round_2_review_derivations_set_sha256"],
+        ]
+        assert agreement_chain["steps"][-1]["sha256"] == final_selection["agreed_result_sha256"]
+        assert agreement_chain["rejection_derivation_sha256"] == smoke.open_battery_payload_sha256(final_selection["rejection_derivation"])
+        assert agreement_chain["survivor_ranking_completion_derivation_sha256"] == smoke.open_battery_payload_sha256(final_selection["survivor_ranking_completion_derivation"])
+        if final_selection["selection_method"] == "clear_majority":
+            assert agreement_chain["selection_derivation_sha256"] == smoke.open_battery_payload_sha256(final_selection["clear_majority_derivation"])
+        else:
+            assert agreement_chain["selection_derivation_sha256"] == smoke.open_battery_payload_sha256(final_selection["host_random_survivor_pool_derivation"])
+        assert decision["byzantine_agreement"]["agreement_chain_derivation"] == agreement_chain
+        assert decision["byzantine_agreement"]["agreement_chain_sha256"] == agreement_chain["chain_sha256"]
+        assert report["case_reports"][case_id]["byzantine_agreement"]["agreement_chain_derivation"] == agreement_chain
+        assert agreement_trace["rounds"][2]["agreement_chain_derivation"] == agreement_chain
+        assert agreement_trace["boundary_output"]["agreement_chain_derivation"] == agreement_chain
         assert final_selection["input_reviewers"] == [review["reviewer"] for review in round_2["reviews"]]
         assert final_selection["input_reviews"] == round_2["reviews"]
         assert all(len(review["input_result_ids"]) == 3 for review in round_2["reviews"])
@@ -2295,6 +2427,29 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert round_2["reviews_set_sha256"] == expected_round_2_set_hash
         assert final_selection["input_review_sha256_by_reviewer"] == expected_round_2_hashes
         assert final_selection["input_reviews_set_sha256"] == expected_round_2_set_hash
+        review_derivations = round_2["review_derivations"]
+        assert review_derivations == [review["review_derivation"] for review in round_2["reviews"]]
+        assert final_selection["round_2_review_derivations"] == review_derivations
+        assert decision["byzantine_agreement"]["round_2_review_derivations"] == review_derivations
+        expected_review_derivation_hashes = {
+            derivation["reviewer"]: smoke.open_battery_payload_sha256(derivation)
+            for derivation in review_derivations
+        }
+        expected_review_derivation_set_hash = smoke.open_battery_payload_set_sha256(expected_review_derivation_hashes)
+        assert round_2["review_derivation_sha256_by_reviewer"] == expected_review_derivation_hashes
+        assert round_2["review_derivations_set_sha256"] == expected_review_derivation_set_hash
+        assert final_selection["round_2_review_derivation_sha256_by_reviewer"] == expected_review_derivation_hashes
+        assert final_selection["round_2_review_derivations_set_sha256"] == expected_review_derivation_set_hash
+        assert decision["byzantine_agreement"]["round_2_review_derivations_set_sha256"] == expected_review_derivation_set_hash
+        assert all(derivation["derivation_preserved"] is True for derivation in review_derivations)
+        assert all(
+            derivation["ranking_set_matches_non_rejected_results"] is True
+            for derivation in review_derivations
+        )
+        assert all(
+            derivation["honest_reviewer_rejected_malicious_result_when_present"] is True
+            for derivation in review_derivations
+        )
         agreed_result_id = final_selection["agreed_result_id"]
         assert final_selection["agreed_result_sha256"] == expected_round_1_hashes[agreed_result_id]
         assert smoke.open_battery_payload_sha256(final_selection["agreed_result"]) == final_selection["agreed_result_sha256"]
@@ -2347,6 +2502,26 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         )
         assert final_selection["consensus"] is True
         assert decision["byzantine_agreement"]["agreed_result_id"] == final_selection["agreed_result_id"]
+        action_selection = decision["byzantine_action_selection_derivation"]
+        assert action_selection["rule"] == "select_case_action_from_byzantine_agreed_result"
+        assert action_selection["agreed_result_id"] == final_selection["agreed_result_id"]
+        assert action_selection["agreed_result_sha256"] == final_selection["agreed_result_sha256"]
+        assert action_selection["agreed_result_expected_action"] == final_selection["agreed_result"]["expected_action"]
+        assert action_selection["agreed_result_target_endstate"] == final_selection["agreed_result"]["target_endstate"]
+        assert action_selection["selected_action"] == final_selection["agreed_result"]["expected_action"]
+        assert action_selection["selected_action_source"] == "byzantine_agreed_result.expected_action"
+        assert action_selection["action_matches_agreed_result"] is True
+        assert action_selection["action_matches_host_expected_action"] is True
+        assert action_selection["target_matches_host_target_endstate"] is True
+        assert action_selection["derivation_preserved"] is True
+        assert len(action_selection["action_selection_derivation_sha256"]) == 64
+        assert report["case_reports"][case_id]["byzantine_action_selection_derivation"] == action_selection
+        action_selected_stage = [
+            record for record in pathway_trace["records"]
+            if record["stage"] == "action_selected"
+        ][0]
+        assert action_selected_stage["details"]["action_selection_derivation"] == action_selection
+        assert action_selected_stage["details"]["action_selection_derivation_sha256"] == action_selection["action_selection_derivation_sha256"]
         assert decision["byzantine_agreement"]["rejection_derivation"] == rejection_derivation
         assert decision["byzantine_agreement"]["survivor_ranking_completion_derivation"] == ranking_completion
 
@@ -2383,11 +2558,31 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert clear_decision["byzantine_agreement"]["rejection_derivation"] == clear_rejection
     assert clear_decision["byzantine_agreement"]["survivor_ranking_completion_derivation"] == clear_ranking_completion
     assert clear_decision["byzantine_agreement"]["clear_majority_derivation"] == clear_derivation
+    clear_fault_model = clear_selection["fault_model_derivation"]
+    assert clear_fault_model["malicious_worker_ids"] == ["worker_3"]
+    assert clear_fault_model["malicious_worker_result_ids"] == ["r3"]
+    assert clear_fault_model["malicious_worker_results_rejected"] == ["r3"]
+    assert clear_fault_model["malicious_reviewer_ids"] == ["reviewer_3_malicious"]
+    assert clear_fault_model["malicious_review_records"][0]["reject"] == "r1"
+    assert clear_fault_model["malicious_reviewer_rejections_below_majority"] is True
+    assert clear_fault_model["agreed_result_malicious"] is False
+    assert clear_decision["byzantine_agreement"]["fault_model_derivation"] == clear_fault_model
+    clear_review_derivations = clear_selection["round_2_review_derivations"]
+    honest_clear_derivations = [
+        derivation
+        for derivation in clear_review_derivations
+        if not derivation["reviewer_malicious"]
+    ]
+    assert {derivation["reject"] for derivation in honest_clear_derivations} == {"r3"}
+    assert all(derivation["malicious_result_ids"] == ["r3"] for derivation in clear_review_derivations)
+    assert all(derivation["honest_reviewer_rejected_malicious_result_when_present"] is True for derivation in clear_review_derivations)
+    assert clear_decision["byzantine_agreement"]["round_2_review_derivations"] == clear_review_derivations
     assert clear_decision["byzantine_agreement"]["clear_majority_winning_result"] == "r2"
     assert clear_decision["byzantine_agreement"]["clear_majority_winning_vote_count"] == clear_derivation["winning_vote_count"]
     assert report["case_reports"]["proposal_created"]["byzantine_agreement"]["rejection_derivation"] == clear_rejection
     assert report["case_reports"]["proposal_created"]["byzantine_agreement"]["survivor_ranking_completion_derivation"] == clear_ranking_completion
     assert report["case_reports"]["proposal_created"]["byzantine_agreement"]["clear_majority_derivation"] == clear_derivation
+    assert report["case_reports"]["proposal_created"]["byzantine_agreement"]["fault_model_derivation"] == clear_fault_model
 
     tie_selection = json.loads((run_dir / "answer_only" / "byzantine_final_selection.json").read_text(encoding="utf-8"))
     assert tie_selection["selection_method"] == "host_seeded_random_among_ranked_survivor_pair"
@@ -2426,6 +2621,16 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert tie_decision["byzantine_agreement"]["host_random_survivor_pool"] == tie_selection["host_random_survivor_pool"]
     assert tie_decision["byzantine_agreement"]["host_random_survivor_sha256_by_id"] == tie_selection["host_random_survivor_sha256_by_id"]
     assert tie_decision["byzantine_agreement"]["host_random_survivor_pool_derivation"] == tie_selection["host_random_survivor_pool_derivation"]
+    tie_fault_model = tie_selection["fault_model_derivation"]
+    assert tie_fault_model["malicious_worker_ids"] == []
+    assert tie_fault_model["malicious_reviewer_ids"] == []
+    assert tie_fault_model["fault_model_preserved"] is True
+    assert tie_decision["byzantine_agreement"]["fault_model_derivation"] == tie_fault_model
+    tie_review_derivations = tie_selection["round_2_review_derivations"]
+    assert all(derivation["reject"] == "" for derivation in tie_review_derivations)
+    assert all(derivation["malicious_result_ids"] == [] for derivation in tie_review_derivations)
+    assert all(derivation["ranking_set_matches_non_rejected_results"] is True for derivation in tie_review_derivations)
+    assert tie_decision["byzantine_agreement"]["round_2_review_derivations"] == tie_review_derivations
     assert tie_decision["byzantine_agreement"]["host_random_pool_size"] == 2
     assert tie_decision["byzantine_agreement"]["agreed_result_id"] in tie_decision["byzantine_agreement"]["host_random_survivor_pool"]
 
@@ -2434,7 +2639,15 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert tie_case_report["byzantine_agreement"]["survivor_ranking_completion_derivation"] == tie_ranking_completion
     assert tie_case_report["byzantine_agreement"]["host_random_survivor_pool"] == tie_selection["host_random_survivor_pool"]
     assert tie_case_report["byzantine_agreement"]["host_random_survivor_pool_derivation"] == tie_selection["host_random_survivor_pool_derivation"]
+    assert tie_case_report["byzantine_agreement"]["fault_model_derivation"] == tie_fault_model
     assert tie_case_report["byzantine_agreement"]["host_random_pool_size"] == 2
+
+    assert profile_coverage["profile_by_case"]["answer_only"] == tie_selection["profile"]
+    assert profile_coverage["selection_method_by_case"]["answer_only"] == tie_selection["selection_method"]
+    assert profile_coverage["profile_by_case"]["proposal_created"] == clear_selection["profile"]
+    assert profile_coverage["selection_method_by_case"]["proposal_created"] == clear_selection["selection_method"]
+    assert profile_coverage["malicious_worker_ids_by_case"]["answer_only"] == []
+    assert profile_coverage["malicious_reviewer_ids_by_case"]["answer_only"] == []
 
     retry_decision = json.loads((run_dir / "retry_succeeded" / "open_agent_decision.json").read_text(encoding="utf-8"))
     assert retry_decision["observed_endstate"] == "retry_succeeded"
@@ -2480,6 +2693,13 @@ def test_open_battery_case_filter_runs_single_endstate(tmp_path: Path) -> None:
     assert final_selection["rejected_result"] == "r3"
     assert final_selection["rejection_derivation"]["rejected_result"] == "r3"
     assert final_selection["rejection_derivation"]["survivors"] == final_selection["surviving_results"]
+    assert final_selection["round_2_review_derivations"]
+    assert all(derivation["derivation_preserved"] is True for derivation in final_selection["round_2_review_derivations"])
+    assert final_selection["fault_model_derivation"]["fault_model_preserved"] is True
+    assert final_selection["agreement_chain_derivation"]["selection_method"] == "clear_majority"
+    assert final_selection["agreement_chain_derivation"]["boundary_output_preserved"] is True
+    assert len(final_selection["agreement_chain_sha256"]) == 64
+    assert final_selection["fault_model_derivation"]["malicious_worker_result_ids"] == ["r3"]
     assert final_selection["agreed_result"]["target_endstate"] == "proposal_rejected_stale"
     assert "trust_boundary_evaluated" in pathway_trace["summary"]["observed_stages"]
     assert "byzantine_final_selection_recorded" in pathway_trace["summary"]["observed_stages"]
@@ -2509,6 +2729,12 @@ def test_open_battery_retrieves_but_never_trusts_suspicious_node_context(tmp_pat
     assert decision["authority_resolution"]["selected_suspicious_doc_ids"]
     assert final_selection["rejected_result"] == "r3"
     assert final_selection["agreed_result"]["malicious"] is False
+    assert final_selection["fault_model_derivation"]["agreed_result_malicious"] is False
+    assert final_selection["fault_model_derivation"]["malicious_worker_results_rejected"] == ["r3"]
+    assert all(
+        derivation["honest_reviewer_rejected_malicious_result_when_present"] is True
+        for derivation in final_selection["round_2_review_derivations"]
+    )
     assert final_selection["agreed_result"]["suspicious_context_authority"] == "ignored"
     assert proposal["host_apply_authority"] == "pending"
     assert proposal["applied"] is False

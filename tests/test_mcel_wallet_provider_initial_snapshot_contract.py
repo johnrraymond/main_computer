@@ -161,7 +161,7 @@ def test_wallet_lifecycle_receipt_treats_initial_snapshot_as_governed_wallet_lif
     assert "walletLifecycleInitialSnapshotRequiredChecks" in lab
     assert "checks.walletProviderInitialSnapshotEffectRan" in lab
     assert "checks.walletInitialSnapshotProviderEvidenceCaptured" in lab
-    assert "tinyState.walletConnectCount > 0 || tinyState.walletAuthorizationPendingCount > 0 || tinyState.walletDisconnectCount > 0 || tinyState.providerInitialSnapshotCount > 0" in lab
+    assert "tinyState.walletConnectCount > 0 || tinyState.walletAuthorizationPendingCount > 0 || tinyState.walletDisconnectPendingCount > 0 || tinyState.walletDisconnectCount > 0 || tinyState.providerInitialSnapshotCount > 0" in lab
     assert "initial provider snapshot:" in lab
 
 
@@ -231,3 +231,80 @@ def test_component_effect_writes_remain_inside_declared_runtime_ownership() -> N
 
     for path in re.findall(r'"runtime\.([A-Za-z0-9_$-]+)"', manifest):
         assert path in owned_runtime_paths, f"runtime.{path} is written/read by an effect but is not owned"
+
+
+def test_wallet_lifecycle_receipt_is_not_failed_by_layout_only_transient() -> None:
+    lab = read_script("mcel-lab.js")
+
+    wallet_common = lab[lab.index("const walletLifecycleCommonRequiredChecks = ["):lab.index("const walletLifecycleInitialSnapshotRequiredChecks", lab.index("const walletLifecycleCommonRequiredChecks = ["))]
+    wallet_reset = lab[lab.index("const walletResetOnlyRequiredChecks = ["):lab.index("const walletLifecycleCommonRequiredChecks = [", lab.index("const walletResetOnlyRequiredChecks = ["))]
+    full_battery = lab[lab.index("const fullBatteryRequiredChecks = ["):lab.index("const receiptMode =", lab.index("const fullBatteryRequiredChecks = ["))]
+
+    assert "checks.layoutContractChecked" not in wallet_common
+    assert "checks.styleContractChecked" not in wallet_common
+    assert "checks.layoutContractChecked" not in wallet_reset
+    assert "checks.styleContractChecked" not in wallet_reset
+    assert "checks.layoutContractChecked" in full_battery
+    assert "checks.styleContractChecked" in full_battery
+
+    assert "walletLifecycleSafetyRequiredChecks" in lab
+    assert "fullBatterySafetyRequiredChecks" in lab
+    assert 'externalOutcomeOperation === "wallet.provider.initialSnapshot" ? "not required for passive snapshot"' in lab
+    assert "layout/style checked:" in lab
+    assert "layout/style issues:" in lab
+
+
+def test_interactive_disconnect_pending_is_a_governed_lifecycle_state_before_revoke_wait() -> None:
+    lab = read_script("mcel-lab.js")
+
+    markers = [
+        "wallet.disconnect.pending",
+        "mcelWalletDisconnectPending.v1",
+        "interactive-wallet-disconnect",
+        "permission-revoke-pending",
+        "Wallet disconnect requested provider permission revoke and is waiting for the provider response.",
+        "walletDisconnectPendingCount",
+        "walletDisconnectPendingEvidenceCaptured",
+        "walletLifecycleDisconnectPendingRequiredChecks",
+        "PENDING: wallet disconnect is waiting on provider revoke; SCM containment passed",
+        "wallet disconnect pending:",
+    ]
+    for marker in markers:
+        assert marker in lab
+
+    pending_effect = lab[lab.index('"wallet.disconnect.pending": {'):lab.index('\n          "wallet.disconnect"', lab.index('"wallet.disconnect.pending": {'))]
+    assert 'triggers: ["state.walletGate"]' in pending_effect
+    assert 'writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletDisconnectPending", "runtime.walletEvents", "runtime.walletAdapter", "runtime.externalOutcome", "runtime.evidenceStrip"]' in pending_effect
+    assert 'status: "pending"' in pending_effect
+    assert 'providerMutationRequested: true' in pending_effect
+    assert 'runtime.txDraft.status=empty' in pending_effect
+
+    perform_disconnect = function_body(lab, "performMcelTinyContractWalletDisconnect")
+    pending_call = "commitMcelTinyContractWalletDisconnectPending(app, instance, `${reason}-disconnect-pending`)"
+    revoke_call = "revokeMcelTinyContractWalletPermission()"
+    assert pending_call in perform_disconnect
+    assert revoke_call in perform_disconnect
+    assert perform_disconnect.index(pending_call) < perform_disconnect.index(revoke_call)
+
+    helper = function_body(lab, "commitMcelTinyContractWalletDisconnectPending")
+    assert 'window.McelLabScm.runEffect(instance, "wallet.disconnect.pending"' in helper
+    assert 'renderMcelTinyContractProof(target, `${reason}-disconnect-pending`)' in helper
+    assert '"eth_accounts"' not in helper
+    assert "wallet_switchEthereumChain" not in lab
+    assert "wallet_addEthereumChain" not in lab
+    assert "eth_signTransaction" not in lab
+    assert "personal_sign" not in lab
+    assert "broadcastTransaction" not in lab
+    assert not re.search(r"\.sendTransaction\s*\(", lab)
+
+
+def test_disconnect_pending_runtime_write_is_owned_by_scm_manifest() -> None:
+    lab = read_script("mcel-lab.js")
+
+    runtime_ownership = lab[lab.index("          runtime: ["):lab.index("          ],\n          layout:", lab.index("          runtime: ["))]
+    pending_effect = lab[lab.index('"wallet.disconnect.pending": {'):lab.index('\n          "wallet.disconnect"', lab.index('"wallet.disconnect.pending": {'))]
+    runtime_defaults = function_body(lab, "mcelTinyContractRuntimeDefaults")
+
+    assert '"walletDisconnectPending"' in runtime_ownership
+    assert '"runtime.walletDisconnectPending"' in pending_effect
+    assert "walletDisconnectPending: null" in runtime_defaults

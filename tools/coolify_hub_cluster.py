@@ -224,17 +224,30 @@ def coolify_domain_with_backend_port(value: str, backend_port: int, field: str) 
     return f"{parsed.scheme}://{host}:{int(backend_port)}"
 
 
-def hub_service_domains(placement: HubClusterPlacement, profile: Any, server_name: str) -> dict[str, dict[str, str]]:
-    return {
-        hub_container_key(hub): {
+def hub_service_domain_entries(placement: HubClusterPlacement, profile: Any, server_name: str) -> list[dict[str, str]]:
+    """Return Coolify's documented docker_compose_domains payload shape.
+
+    Coolify's OpenAPI schema defines ``docker_compose_domains`` as an array of
+    objects with ``name`` and ``domain`` fields.  The ``name`` is the compose
+    service name, and ``domain`` is the comma-separated domain string for that
+    service.
+    """
+
+    return [
+        {
+            "name": hub_container_key(hub),
             "domain": coolify_domain_with_backend_port(
                 hub.public_url,
                 int(profile.hub_bind_port),
                 f"hubs[{hub.hub_id}].public_url",
-            )
+            ),
         }
         for hub in hubs_for_server(placement, server_name)
-    }
+    ]
+
+
+def hub_service_domain_map(placement: HubClusterPlacement, profile: Any, server_name: str) -> dict[str, str]:
+    return {entry["name"]: entry["domain"] for entry in hub_service_domain_entries(placement, profile, server_name)}
 
 
 def shared_entry_hosts(placement: HubClusterPlacement) -> tuple[str, ...]:
@@ -853,7 +866,6 @@ def service_payload(placement: HubClusterPlacement, profile: Any, args: argparse
     compose = render_server_hub_compose(placement, profile, args, server_name)
     destination_overrides = fdb_tool.parse_binding_map(args.set_coolify_destination_uuid or [], "--set-coolify-destination-uuid")
     destination_uuid = destination_overrides.get(server_name) or args.coolify_destination_uuid
-    domains = hub_service_domains(placement, profile, server_name)
     payload: dict[str, Any] = {
         "server_uuid": context.get("server_uuid"),
         "project_uuid": context.get("project_uuid"),
@@ -862,7 +874,6 @@ def service_payload(placement: HubClusterPlacement, profile: Any, args: argparse
         "name": service_name,
         "description": f"Main Computer {placement.network_key} Hub containers on {server_name}",
         "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
-        "docker_compose_domains": domains,
         "instant_deploy": False,
     }
     if destination_uuid:
@@ -889,6 +900,29 @@ def create_service(client: Any, payload: dict[str, Any], tried: list[dict[str, A
     return uuid
 
 
+def delete_service(client: Any, service_uuid: str, tried: list[dict[str, Any]]) -> dict[str, Any]:
+    path = f"/api/v1/services/{urllib.parse.quote(service_uuid)}"
+    response = client.request("DELETE", path)
+    tried.append(
+        {
+            "operation": "delete-hub-service",
+            "method": "DELETE",
+            "path": path,
+            "response": hub_tool.response_to_dict(response),
+        }
+    )
+    if response.ok or response.status == 404:
+        return {
+            "ok": True,
+            "path": path,
+            "status": response.status,
+            "already_missing": response.status == 404,
+        }
+    raise CoolifyHubDeployError(
+        f"Coolify Hub service delete failed for {service_uuid!r} with HTTP {response.status}: {response.body}"
+    )
+
+
 def update_service(
     client: Any,
     service_uuid: str,
@@ -896,40 +930,41 @@ def update_service(
     compose: str,
     tried: list[dict[str, Any]],
     *,
-    domains: dict[str, dict[str, str]] | None = None,
+    domains: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     encoded = base64.b64encode(compose.encode("utf-8")).decode("ascii")
-    clean_domains = domains or {}
-    update_payloads: list[dict[str, Any]] = []
+    clean_domains = domains or []
+    domain_update_payloads: list[dict[str, Any]] = []
     if clean_domains:
-        # Coolify Service Stack domains are stored as docker_compose_domains,
-        # keyed by compose service name.  Include them before the compose-only
-        # fallbacks so deployments can recreate the per-service Domains UI
-        # entries that operators previously had to set by hand.
-        update_payloads.extend(
+        # Coolify rejects docker_compose_domains on service creation in some
+        # 4.1.x builds, but may accept it while updating an existing service
+        # stack.  Never silently fall back to a compose-only update when the
+        # caller supplied domain targets; that would make the deploy look clean
+        # while leaving generated wildcard domains in place.
+        domain_update_payloads.extend(
             [
                 {"docker_compose_raw": encoded, "docker_compose_domains": clean_domains, "name": service_name},
                 {"docker_compose_raw": encoded, "docker_compose_domains": clean_domains},
                 {"docker_compose": compose, "docker_compose_domains": clean_domains, "name": service_name},
             ]
         )
-    update_payloads.extend(
-        [
-            {"docker_compose_raw": encoded, "name": service_name},
-            {"docker_compose_raw": encoded},
-            {"docker_compose": compose, "name": service_name},
-            {"compose": compose, "name": service_name},
-        ]
-    )
+    compose_only_payloads = [
+        {"docker_compose_raw": encoded, "name": service_name},
+        {"docker_compose_raw": encoded},
+        {"docker_compose": compose, "name": service_name},
+        {"compose": compose, "name": service_name},
+    ]
+    payload_groups = [domain_update_payloads] if clean_domains else [compose_only_payloads]
     update_paths = [
         f"/api/v1/services/{urllib.parse.quote(service_uuid)}",
         f"/api/v1/services/{urllib.parse.quote(service_uuid)}/compose",
     ]
+    failures: list[dict[str, Any]] = []
     for path in update_paths:
-        for payload in update_payloads:
-            response = client.request("PATCH", path, payload)
-            tried.append(
-                {
+        for payloads in payload_groups:
+            for payload in payloads:
+                response = client.request("PATCH", path, payload)
+                record = {
                     "operation": "update-hub-service",
                     "method": "PATCH",
                     "path": path,
@@ -937,18 +972,18 @@ def update_service(
                     "domain_payload": payload.get("docker_compose_domains", None),
                     "response": hub_tool.response_to_dict(response),
                 }
-            )
-            if response.ok:
-                return {
-                    "ok": True,
-                    "path": path,
-                    "method": "PATCH",
-                    "domains_included": "docker_compose_domains" in payload,
-                }
-            if response.status == 405:
-                response = client.request("PUT", path, payload)
-                tried.append(
-                    {
+                tried.append(record)
+                if response.ok:
+                    return {
+                        "ok": True,
+                        "path": path,
+                        "method": "PATCH",
+                        "domains_included": "docker_compose_domains" in payload,
+                    }
+                failures.append(record)
+                if response.status == 405:
+                    response = client.request("PUT", path, payload)
+                    record = {
                         "operation": "update-hub-service",
                         "method": "PUT",
                         "path": path,
@@ -956,17 +991,236 @@ def update_service(
                         "domain_payload": payload.get("docker_compose_domains", None),
                         "response": hub_tool.response_to_dict(response),
                     }
-                )
-                if response.ok:
-                    return {
-                        "ok": True,
-                        "path": path,
-                        "method": "PUT",
-                        "domains_included": "docker_compose_domains" in payload,
-                    }
-            if response.status not in {400, 404, 405, 422}:
-                raise CoolifyHubDeployError(f"Coolify Hub service update failed with HTTP {response.status}: {response.body}")
+                    tried.append(record)
+                    if response.ok:
+                        return {
+                            "ok": True,
+                            "path": path,
+                            "method": "PUT",
+                            "domains_included": "docker_compose_domains" in payload,
+                        }
+                    failures.append(record)
+                if response.status not in {400, 404, 405, 422}:
+                    raise CoolifyHubDeployError(
+                        f"Coolify Hub service update failed with HTTP {response.status}: {response.body}"
+                    )
+    if clean_domains:
+        compact_failures = [
+            {
+                "method": item.get("method"),
+                "path": item.get("path"),
+                "payload_keys": item.get("payload_keys"),
+                "response": item.get("response"),
+            }
+            for item in failures
+        ]
+        raise CoolifyHubDeployError(
+            "Coolify Hub service domain update failed on all known endpoints; "
+            f"docker_compose_domains was rejected or ignored by the API: {compact_failures}"
+        )
     raise CoolifyHubDeployError("Coolify Hub service update failed on all known endpoints.")
+
+
+
+def _body_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _body_list(value: Any, *keys: str) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        for key in (*keys, "data", "items", "applications", "resources"):
+            item = value.get(key)
+            if isinstance(item, list):
+                return [entry for entry in item if isinstance(entry, dict)]
+    return []
+
+
+def _application_names(application: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for key in ("name", "human_name", "service_name", "description"):
+        value = application.get(key)
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+    # Coolify often displays Service Stack applications as:
+    #   Mainnet Hub1 (main-computer-mainnet-mainnet-hub1:remote)
+    # Keep both the UI name and the compose/image fragments available for matching.
+    for key in ("image", "docker_image", "container_name"):
+        value = application.get(key)
+        if isinstance(value, str) and value.strip():
+            names.update(part.strip() for part in re.split(r"[:/@]", value) if part.strip())
+    return names
+
+
+def _match_application_for_service(applications: list[dict[str, Any]], service_key: str) -> dict[str, Any] | None:
+    clean = service_key.strip()
+    clean_lower = clean.lower()
+    for application in applications:
+        names = _application_names(application)
+        if any(name == clean for name in names):
+            return application
+        if any(name.lower() == clean_lower for name in names):
+            return application
+    for application in applications:
+        # Fallback for Coolify display names such as "Mainnet Hub1" when the
+        # compose service is "mainnet-hub1".
+        haystack = " ".join(sorted(_application_names(application))).lower().replace("_", "-")
+        if clean_lower in haystack:
+            return application
+    return None
+
+
+def _service_applications_from_body(body: Any) -> list[dict[str, Any]]:
+    data = _body_dict(body)
+    applications = _body_list(data, "applications")
+    if applications:
+        return applications
+    service = data.get("service")
+    if isinstance(service, dict):
+        applications = _body_list(service, "applications")
+        if applications:
+            return applications
+    return []
+
+
+def load_service_applications(client: Any, service_uuid: str, tried: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    paths = [
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/applications",
+    ]
+    for path in paths:
+        response = client.request("GET", path)
+        applications = _service_applications_from_body(response.body)
+        tried.append(
+            {
+                "operation": "load-hub-service-applications",
+                "method": "GET",
+                "path": path,
+                "response": hub_tool.response_to_dict(response),
+                "application_count": len(applications),
+                "applications": [hub_tool.item_summary(item) for item in applications],
+            }
+        )
+        if response.ok and applications:
+            return applications
+        if not response.ok and response.status not in {404, 405}:
+            raise CoolifyHubDeployError(
+                f"Coolify Hub service application lookup failed with HTTP {response.status}: {response.body}"
+            )
+    return []
+
+
+def application_uuid(application: dict[str, Any]) -> str:
+    for key in ("uuid", "application_uuid", "id"):
+        value = str(application.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def current_application_domains(application: dict[str, Any]) -> str:
+    for key in ("fqdn", "domains", "domain", "urls"):
+        value = application.get(key)
+        if isinstance(value, list):
+            return ",".join(str(item).strip() for item in value if str(item).strip())
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def reconcile_application_domain(
+    client: Any,
+    *,
+    application: dict[str, Any],
+    service_key: str,
+    desired_domain: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    uuid = application_uuid(application)
+    if not uuid:
+        raise CoolifyHubDeployError(f"Coolify application for {service_key!r} has no uuid: {application!r}")
+
+    current = current_application_domains(application)
+    if current == desired_domain:
+        return {
+            "service_key": service_key,
+            "application_uuid": uuid,
+            "domain": desired_domain,
+            "changed": False,
+            "reason": "already-current",
+        }
+
+    # Coolify reads the value back as "fqdn" but writes it as "domains".
+    # Keep the request narrow to avoid accidentally rewriting unrelated app fields.
+    payload = {"domains": desired_domain}
+    response = client.request("PATCH", f"/api/v1/applications/{urllib.parse.quote(uuid)}", payload)
+    tried.append(
+        {
+            "operation": "reconcile-hub-application-domain",
+            "method": "PATCH",
+            "path": f"/api/v1/applications/{urllib.parse.quote(uuid)}",
+            "service_key": service_key,
+            "payload": payload,
+            "previous_domains": current,
+            "response": hub_tool.response_to_dict(response),
+        }
+    )
+    if not response.ok:
+        raise CoolifyHubDeployError(
+            f"Coolify domain update failed for {service_key!r} application {uuid!r} "
+            f"with HTTP {response.status}: {response.body}"
+        )
+    return {
+        "service_key": service_key,
+        "application_uuid": uuid,
+        "domain": desired_domain,
+        "changed": True,
+        "previous_domains": current,
+    }
+
+
+def reconcile_service_application_domains(
+    client: Any,
+    *,
+    service_uuid: str,
+    domains: list[dict[str, str]],
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Report domain reconciliation without patching generated sub-app rows.
+
+    Coolify 4.1.x returned 404 for generated Service Stack application UUIDs on
+    both global and service-scoped application PATCH routes.  For Hub stacks,
+    the supported automation path is therefore the documented
+    ``docker_compose_domains`` field on the service create/update payload.
+    """
+
+    clean_domains = [
+        {"name": str(item.get("name") or "").strip(), "domain": str(item.get("domain") or "").strip()}
+        for item in (domains or [])
+        if isinstance(item, dict)
+        and str(item.get("name") or "").strip()
+        and str(item.get("domain") or "").strip()
+    ]
+    tried.append(
+        {
+            "operation": "hub-domain-reconciliation",
+            "mode": "docker_compose_domains-service-payload",
+            "service_uuid": service_uuid,
+            "domains": clean_domains,
+            "note": (
+                "No generated application-domain PATCH was attempted; Coolify 4.1.x rejects those "
+                "routes for service-stack sub-applications."
+            ),
+        }
+    )
+    return {
+        "ok": True,
+        "changed": False,
+        "mode": "docker_compose_domains-service-payload",
+        "domains": clean_domains,
+    }
 
 
 def sync_service_for_server(
@@ -982,17 +1236,32 @@ def sync_service_for_server(
     name = hub_service_name(placement, server_name)
     service_uuid, existing = hub_tool.find_service(client, service_name=name, explicit_uuid="", tried=tried)
     compose = render_server_hub_compose(placement, profile, args, server_name)
-    domains = hub_service_domains(placement, profile, server_name)
+    domains = hub_service_domain_entries(placement, profile, server_name)
+    if service_uuid and bool(getattr(args, "recreate_hub_stacks", False)):
+        delete_result = delete_service(client, service_uuid, tried)
+        payload = service_payload(placement, profile, args, server_name=server_name, context=context)
+        service_uuid = create_service(client, payload, tried)
+        domain_update_result = update_service(client, service_uuid, name, compose, tried, domains=domains)
+        return service_uuid, "recreated", existing, {
+            "ok": True,
+            "path": "/api/v1/services",
+            "method": "POST",
+            "deleted_existing": delete_result,
+            "create_domains_included": bool(payload.get("docker_compose_domains")),
+            "domain_update_result": domain_update_result,
+        }
     if service_uuid:
         update_result = update_service(client, service_uuid, name, compose, tried, domains=domains)
         return service_uuid, "updated", existing, update_result
     payload = service_payload(placement, profile, args, server_name=server_name, context=context)
     service_uuid = create_service(client, payload, tried)
+    domain_update_result = update_service(client, service_uuid, name, compose, tried, domains=domains)
     return service_uuid, "created", existing, {
         "ok": True,
         "path": "/api/v1/services",
         "method": "POST",
-        "domains_included": bool(payload.get("docker_compose_domains")),
+        "create_domains_included": bool(payload.get("docker_compose_domains")),
+        "domain_update_result": domain_update_result,
     }
 
 
@@ -1030,7 +1299,7 @@ def server_plan(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
             }
             for hub in local_hubs
         ],
-        "coolify_service_domains": hub_service_domains(placement, profile, server_name),
+        "coolify_service_domains": hub_service_domain_entries(placement, profile, server_name),
         "docker_compose": compose,
         "traefik_dynamic_config": traefik_dynamic_config,
         "service_payload": {
@@ -1099,8 +1368,22 @@ def apply_result(placement: HubClusterPlacement, profile: Any, args: argparse.Na
             tried=tried,
         )
         deploy_result = None
+        post_domain_deploy_result = None
         if not args.no_deploy:
             deploy_result = hub_tool.trigger_deploy_service(client, service_uuid=service_uuid, force=args.force_deploy, tried=tried)
+        domain_result = reconcile_service_application_domains(
+            client,
+            service_uuid=service_uuid,
+            domains=hub_service_domain_entries(placement, profile, server_name),
+            tried=tried,
+        )
+        if bool(domain_result.get("changed")) and not args.no_deploy:
+            post_domain_deploy_result = hub_tool.trigger_deploy_service(
+                client,
+                service_uuid=service_uuid,
+                force=True,
+                tried=tried,
+            )
         phases.append(
             {
                 "server": server_name,
@@ -1112,8 +1395,10 @@ def apply_result(placement: HubClusterPlacement, profile: Any, args: argparse.Na
                 "service_action": action,
                 "existing": existing,
                 "service_update_result": update_result,
+                "domain_result": domain_result,
                 "deployed": deploy_result is not None,
                 "deploy_result": deploy_result,
+                "post_domain_deploy_result": post_domain_deploy_result,
                 "tried": tried,
             }
         )
@@ -1209,6 +1494,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--force-deploy", action="store_true", help="Ask Coolify to force rebuild/redeploy services.")
+    parser.add_argument("--recreate-hub-stacks", action="store_true", help="Delete and recreate Hub service stacks only; FoundationDB stacks are not touched.")
     parser.add_argument("--dry-run", action="store_true", help="For apply: render the plan without network or Coolify calls.")
     parser.add_argument("--json", action="store_true", help="Print compact machine-readable JSON.")
     return parser.parse_args(argv)

@@ -211,5 +211,43 @@ class CoolifyClusterOrchestratorTests(unittest.TestCase):
 
 
 
+    def test_recreate_hub_stacks_is_forwarded_to_hub_stage_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            packet_path = Path(tmp) / "testnet-packet.json"
+            args = coolify_cluster.parse_args(
+                [
+                    "plan",
+                    "testnet",
+                    "--hubs",
+                    "testnet-hub1,testnet-hub2",
+                    "--fdb",
+                    "testnet-fdb1,testnet-fdb2",
+                    "--git-repo",
+                    "https://github.com/example/main_computer",
+                    "--packet",
+                    str(packet_path),
+                    "--no-private-state",
+                    "--coolify-project-name",
+                    "Main Computer",
+                    "--set-coolify-url",
+                    "coolify-a:http://198.51.100.10:8000",
+                    "--set-coolify-url",
+                    "coolify-b:http://198.51.100.11:8000",
+                    "--set-coolify-token",
+                    "coolify-a:token-a",
+                    "--set-coolify-token",
+                    "coolify-b:token-b",
+                    "--recreate-hub-stacks",
+                ]
+            )
+
+            hub_args = coolify_cluster.hub_args_for_cluster(args, packet_path)
+            fdb_args = coolify_cluster.fdb_args_for_cluster(args, packet_path)
+
+            self.assertTrue(hub_args.recreate_hub_stacks)
+            self.assertFalse(hasattr(fdb_args, "recreate_hub_stacks"))
+
+
+
 if __name__ == "__main__":
     unittest.main()

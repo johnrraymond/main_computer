@@ -5789,6 +5789,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           reviewedCount: 0,
           walletConnectCount: 0,
           walletAuthorizationPendingCount: 0,
+          walletDisconnectPendingCount: 0,
           walletDisconnectCount: 0,
           walletDisconnectCommitCount: 0,
           walletRevokeAttemptCount: 0,
@@ -6202,6 +6203,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         },
         walletProviderInitialSnapshot: null,
         walletAuthorizationPending: null,
+        walletDisconnectPending: null,
         walletEvents: [],
         externalOutcome: {
           kind: "mcel-external-outcome",
@@ -6489,6 +6491,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "walletAdapter",
             "walletProviderInitialSnapshot",
             "walletAuthorizationPending",
+            "walletDisconnectPending",
             "walletEvents",
             "externalOutcome",
             "proofChip",
@@ -6509,6 +6512,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           effects: [
             "wallet.connect",
             "wallet.connect.authorizationPending",
+            "wallet.disconnect.pending",
             "wallet.disconnect",
             "wallet.provider.initialSnapshot",
             "wallet.provider.accountsChanged",
@@ -6530,6 +6534,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         outputs: [
           "walletConnected",
           "walletConnectAuthorizationPending",
+          "walletDisconnectPending",
           "walletDisconnected",
           "walletProviderInitialSnapshotCaptured",
           "walletProviderAccountsChanged",
@@ -6826,6 +6831,171 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             commit(_ctx, result) {
               return {
                 pending: result?.authorizationPending?.status === "authorization-pending",
+                outcomeStatus: result?.outcome?.status || "",
+                outcomeReason: result?.outcome?.reason || "",
+                providerMutationExecuted: false,
+                txDraftCleared: result?.txDraft?.status === "empty"
+              };
+            }
+          },
+
+
+          "wallet.disconnect.pending": {
+            kind: "mcelWalletDisconnectPending.v1",
+            triggers: ["state.walletGate"],
+            reads: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletEvents"],
+            writes: ["runtime.wallet", "runtime.network", "runtime.txDraft", "runtime.walletDisconnectPending", "runtime.walletEvents", "runtime.walletAdapter", "runtime.externalOutcome", "runtime.evidenceStrip"],
+            external: {
+              resource: "metamask-permission-revoke",
+              operation: "wallet_revokePermissions pending",
+              providerMutationRequested: true,
+              userInitiated: true
+            },
+            errorPolicy: {
+              onFailure: "record-wallet-disconnect-pending-error"
+            },
+            run(ctx, payload = {}) {
+              const walletEvents = Array.isArray(ctx.get("runtime.walletEvents")) ? ctx.get("runtime.walletEvents") : [];
+              const previousWallet = ctx.get("runtime.wallet") || {};
+              const previousNetwork = ctx.get("runtime.network") || {};
+              const expectedChainId = previousNetwork.expectedChainId || previousNetwork.chainId || "0x28757b2";
+              const provider = String(payload.provider || payload.adapter?.providerKind || previousWallet.provider || "ethereum-provider");
+              const outcome = payload.outcome?.kind === "mcel-external-outcome"
+                ? payload.outcome
+                : mcelTinyContractExternalOutcome({
+                    operation: "wallet.disconnect",
+                    phase: "permission-revoke-pending",
+                    status: "pending",
+                    known: true,
+                    reason: "permission-revoke-pending",
+                    message: "Wallet disconnect requested provider permission revoke and is waiting for the provider response.",
+                    provider: {kind: provider, live: payload.liveProvider !== false, source: "interactive-disconnect"},
+                    rpc: ["wallet_revokePermissions"],
+                    value: {
+                      attempted: true,
+                      revoked: false,
+                      previousProvider: previousWallet.provider || previousWallet.mode || "none"
+                    },
+                    containment: {
+                      sourceChanged: false,
+                      txDraftCreated: false,
+                      runtimeMutationGoverned: true,
+                      permissionRevokeRequested: true,
+                      providerMutationRequested: true
+                    },
+                    nextAction: "Wait for provider permission revoke to settle; MCEL has already locked runtime transaction drafting."
+                  });
+              const wallet = {
+                ...previousWallet,
+                account: "",
+                connected: false,
+                previousProvider: previousWallet.provider || previousWallet.mode || provider,
+                provider,
+                mode: provider,
+                interactive: true,
+                disconnectPending: true,
+                providerObservation: "wallet.disconnect.pending",
+                status: "disconnect-pending",
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason
+              };
+              const network = {
+                expectedChainId,
+                chainId: "",
+                ok: false,
+                status: "wallet-disconnect-pending",
+                providerObservation: "wallet.disconnect.pending",
+                outcomeStatus: outcome.status
+              };
+              const txDraft = {
+                status: "empty",
+                requestId: "",
+                to: "",
+                data: "",
+                invalidatedBy: [
+                  mcelTinyContractTxDraftInvalidation("wallet-disconnect-pending", {
+                    outcomeStatus: outcome.status,
+                    outcomeReason: outcome.reason,
+                    previousProvider: wallet.previousProvider
+                  })
+                ],
+                sourceRequestHash: "",
+                selectedRequestSnapshot: null,
+                walletAccountHash: "",
+                chainProof: {
+                  expectedChainId,
+                  chainId: "",
+                  ok: false,
+                  status: "wallet-disconnect-pending"
+                },
+                externalOutcomeSequence: [{
+                  sequence: outcome.sequence || null,
+                  operation: outcome.operation || "wallet.disconnect",
+                  status: outcome.status,
+                  reason: outcome.reason
+                }],
+                networkGateSequence: [{
+                  status: network.status,
+                  ok: false,
+                  expectedChainId,
+                  chainId: ""
+                }],
+                calldataSource: "not-encoded",
+                abiEncodingStatus: "invalidated-by-wallet-disconnect-pending",
+                probeEnvelopeIds: [],
+                valid: false,
+                summary: "Wallet disconnect is pending; runtime transaction draft is locked before provider revoke settles."
+              };
+              const disconnectPending = {
+                kind: "mcelWalletDisconnectPending.v1",
+                lifecycle: "interactive-wallet-disconnect",
+                status: "permission-revoke-pending",
+                permissionRevokeRequested: true,
+                providerMutationRequested: true,
+                providerMutationExecuted: false,
+                allowedRpc: ["wallet_revokePermissions"],
+                forbiddenRpc: ["wallet_switch" + "EthereumChain", "wallet_add" + "EthereumChain", "eth_sign" + "Transaction", "personal" + "_sign", "broadcast" + "Transaction"],
+                buttonRenderSource: "runtime.wallet",
+                nextAction: outcome.nextAction || "Wait for provider permission revoke to settle."
+              };
+              ctx.set("runtime.wallet", wallet);
+              ctx.set("runtime.network", network);
+              ctx.set("runtime.txDraft", txDraft);
+              ctx.set("runtime.walletDisconnectPending", disconnectPending);
+              ctx.set("runtime.walletAdapter", payload.adapter || {
+                providerKind: provider,
+                liveProvider: payload.liveProvider !== false,
+                mockFallback: false,
+                eventsBound: Boolean(payload.adapter?.eventsBound),
+                disconnectSource: "interactive-disconnect"
+              });
+              ctx.set("runtime.externalOutcome", outcome);
+              ctx.set("runtime.walletEvents", [...walletEvents, {
+                type: "disconnectPending",
+                provider,
+                expectedChainId,
+                permissionRevokeRequested: true,
+                providerMutationRequested: true,
+                outcomeStatus: outcome.status,
+                outcomeReason: outcome.reason
+              }].slice(-16));
+              ctx.set("runtime.evidenceStrip", [
+                "wallet.disconnect.pending committed interactive revoke wait state through SCM",
+                `provider=${provider}`,
+                `expected=${expectedChainId}`,
+                "permissionRevokeRequested=true",
+                "providerMutationRequested=true",
+                "runtime.txDraft.status=empty"
+              ]);
+              ctx.evidence({
+                ok: true,
+                message: "wallet.disconnect.pending captured an in-flight provider permission revoke as a governed SCM lifecycle state."
+              });
+              return {wallet, network, txDraft, outcome, disconnectPending};
+            },
+            commit(_ctx, result) {
+              return {
+                pending: result?.disconnectPending?.status === "permission-revoke-pending",
                 outcomeStatus: result?.outcome?.status || "",
                 outcomeReason: result?.outcome?.reason || "",
                 providerMutationExecuted: false,
@@ -8521,6 +8691,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "runtime.walletUnlockContract",
             "runtime.walletAdapter",
             "runtime.walletAuthorizationPending",
+            "runtime.walletDisconnectPending",
             "runtime.walletEvents",
             "runtime.externalOutcome",
             "runtime.proofChip",
@@ -8543,6 +8714,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             "runtime.txDraft",
             "runtime.walletAdapter",
             "runtime.walletAuthorizationPending",
+            "runtime.walletDisconnectPending",
             "runtime.walletEvents",
             "runtime.externalOutcome",
             "runtime.repairPacket",
@@ -8734,6 +8906,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       tinyState.reviewedCount = 0;
       tinyState.walletConnectCount = 0;
       tinyState.walletAuthorizationPendingCount = 0;
+      tinyState.walletDisconnectPendingCount = 0;
       tinyState.walletDisconnectCount = 0;
       tinyState.walletDisconnectCommitCount = 0;
       tinyState.walletRevokeAttemptCount = 0;
@@ -10474,6 +10647,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         tinyState.repairBoundaryBlockedCount = 0;
         tinyState.reviewedCount = 0;
         tinyState.walletConnectCount = 0;
+        tinyState.walletAuthorizationPendingCount = 0;
+        tinyState.walletDisconnectPendingCount = 0;
         tinyState.walletDisconnectCount = 0;
         tinyState.walletDisconnectCommitCount = 0;
         tinyState.walletRevokeAttemptCount = 0;
@@ -12786,6 +12961,82 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       return connectMcelTinyContractWallet(reason);
     }
 
+
+    function commitMcelTinyContractWalletDisconnectPending(app, instance, reason = "wallet-disconnect-pending") {
+      if (!instance || !window.McelLabScm?.runEffect) return null;
+      const tinyState = ensureMcelTinyContractState();
+      const adapter = mcelTinyContractWalletAdapterState();
+      const provider = mcelTinyContractInjectedProvider();
+      if (provider) {
+        adapter.liveProvider = true;
+        adapter.mockFallback = false;
+        adapter.providerKind = provider.isMetaMask ? "metamask" : "ethereum-provider";
+        adapter.disconnectSource = "interactive-disconnect";
+        bindMcelTinyContractWalletProviderEvents(provider);
+      } else {
+        adapter.mockFallback = true;
+        adapter.providerKind = adapter.providerKind || "mock-dev-provider";
+        adapter.disconnectSource = "mock-disconnect-pending";
+      }
+      const outcome = recordMcelTinyContractExternalOutcome(mcelTinyContractExternalOutcome({
+        operation: "wallet.disconnect",
+        phase: "permission-revoke-pending",
+        status: "pending",
+        known: true,
+        reason: "permission-revoke-pending",
+        message: "Wallet disconnect requested provider permission revoke and is waiting for the provider response.",
+        provider: {kind: adapter.providerKind, live: adapter.liveProvider === true, source: adapter.disconnectSource || "interactive-disconnect"},
+        rpc: ["wallet_revokePermissions"],
+        value: {
+          attempted: provider ? true : false,
+          revoked: false,
+          previousProvider: instance?.runtime?.wallet?.provider || instance?.runtime?.wallet?.mode || "none"
+        },
+        containment: {
+          sourceChanged: false,
+          txDraftCreated: false,
+          runtimeMutationGoverned: true,
+          permissionRevokeRequested: provider ? true : false,
+          providerMutationRequested: provider ? true : false
+        },
+        nextAction: provider
+          ? "Wait for provider permission revoke to settle; MCEL has already locked runtime transaction drafting."
+          : "Provider is unavailable; MCEL will still clear local wallet runtime through SCM."
+      }));
+      const result = window.McelLabScm.runEffect(instance, "wallet.disconnect.pending", {
+        provider: adapter.providerKind,
+        liveProvider: adapter.liveProvider === true,
+        outcome,
+        adapter: {
+          providerKind: adapter.providerKind,
+          liveProvider: adapter.liveProvider,
+          mockFallback: adapter.mockFallback,
+          walletSubsystemReady: adapter.walletSubsystemReady,
+          walletSubsystemUsed: adapter.walletSubsystemUsed,
+          walletSubsystemPreferred: adapter.walletSubsystemPreferred,
+          directProviderFallback: adapter.directProviderFallback,
+          disconnectSource: adapter.disconnectSource,
+          calls: adapter.calls,
+          events: adapter.events,
+          eventsBound: adapter.eventsBound,
+          ethersReady: adapter.ethersReady,
+          lastError: adapter.lastError
+        }
+      });
+      tinyState.walletDisconnectPendingCount = Number(tinyState.walletDisconnectPendingCount || 0) + 1;
+      recordMcelTinyContractEvidence(
+        "wallet",
+        "SCM captured wallet disconnect permission-revoke pending state before awaiting provider revoke.",
+        "pass",
+        {reason, outcome, result, walletAdapter: tinyState.walletAdapter}
+      );
+      const target = app || mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
+      syncMcelTinyContractDomFromScm(target, instance, "Wallet disconnect pending through declared SCM effect.");
+      renderMcelTinyContractProof(target, `${reason}-disconnect-pending`);
+      renderMcelWalletBacklogSchemeControls(target);
+      return {outcome, result};
+    }
+
     async function performMcelTinyContractWalletDisconnect(reason = "manual-wallet-disconnect", walletBacklogOptions = selectedMcelWalletBacklogExecutionOptions("wallet.disconnect")) {
       const tinyState = ensureMcelTinyContractState();
       let app = mcelTinyContractRuntimeMount?.querySelector('[data-mc-component="dev-network-release-console"]');
@@ -12794,6 +13045,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       }
       const instance = ensureMcelTinyContractState().scmInstance;
       if (!instance) return null;
+      const disconnectPending = commitMcelTinyContractWalletDisconnectPending(app, instance, `${reason}-disconnect-pending`);
+      if (disconnectPending && typeof window.setTimeout === "function") {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
       let revoke = {attempted: false, revoked: false};
       let disconnectOutcome = null;
       try {
@@ -13127,6 +13382,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const routeEvents = routeEvidence.evidence || [];
       const disconnectEffectRan = componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.disconnect") ||
         tinyState.walletDisconnectCount > 0;
+      const disconnectPendingEffectRan = componentEvents.some((entry) => entry.phase === "effect-commit" && entry.effectName === "wallet.disconnect.pending") ||
+        tinyState.walletDisconnectPendingCount > 0;
       const walletResetClean = !disconnectEffectRan || tinyState.walletDisconnectCommitCount > 0 || tinyState.lastWalletResetClean === true;
       const approvedSource = mcelTinyContractItems(instance).some((item) => item.status === "approved");
       const liveProviderSeen = walletAdapter.liveProvider === true && walletAdapter.mockFallback !== true;
@@ -13224,11 +13481,19 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         walletProofRpcMethods.includes("eth_chainId") &&
         !walletProofRpcMethods.includes("eth_requestAccounts")
       );
+      const walletDisconnectPendingEvidenceCaptured = externalOutcomeOperation === "wallet.disconnect" && (
+        actionOutcome === "pending" &&
+        externalOutcomePhase === "permission-revoke-pending" &&
+        externalOutcomeReason === "permission-revoke-pending" &&
+        walletProofRpcMethods.includes("wallet_revokePermissions")
+      );
       const walletPermissionRevokeEvidenceCaptured = externalOutcomeOperation === "wallet.disconnect" && (
         walletProofRpcMethods.includes("wallet_revokePermissions") ||
         walletProofRpcMethods.includes("MainComputerWalletApp.requestDisconnect") ||
         externalOutcomePhase === "permission-revoke" ||
+        externalOutcomePhase === "permission-revoke-pending" ||
         externalOutcomeReason === "permission-revoked" ||
+        externalOutcomeReason === "permission-revoke-pending" ||
         externalOutcomeReason === "permission-revoke-unavailable" ||
         externalOutcomeReason === "permission-revoke-not-completed" ||
         externalOutcome.value?.attempted === true ||
@@ -13241,6 +13506,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         routeManifestResolved: Boolean(window.McelLabScm?.routeDefinition?.("workspace.dev-network-release")),
         routeLoaderCommitted: tinyState.routeLoaderCount > 0 || routeEvents.some((entry) => entry.phase === "route-loader-commit" && entry.ok === true),
         walletEffectRan: tinyState.walletConnectCount > 0 || tinyState.walletAuthorizationPendingCount > 0 || componentEvents.some((entry) => entry.phase === "effect-commit" && (entry.effectName === "wallet.connect" || entry.effectName === "wallet.connect.authorizationPending")),
+        walletDisconnectPendingEffectRan: disconnectPendingEffectRan,
         walletAdapterExercised: walletConnectRpcObserved || walletResetOnly,
         walletLiveProviderObserved: liveProviderSeen,
         walletEventsSubscribed: walletAdapter.eventsBound === true || walletAdapter.mockFallback === true || walletResetOnly,
@@ -13258,6 +13524,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         externalOutcomeContained: externalOutcomeCaptured && ["pass", "blocked", "exception", "pending"].includes(actionOutcome),
         walletConnectOutcomeCaptured: externalOutcomeCaptured && externalOutcomeOperation === "wallet.connect",
         walletDisconnectOutcomeCaptured: externalOutcomeCaptured && externalOutcomeOperation === "wallet.disconnect",
+        walletDisconnectPendingEvidenceCaptured,
         walletConnectProviderEvidenceCaptured,
         walletConnectAuthorizationPendingEvidenceCaptured,
         walletInitialSnapshotProviderEvidenceCaptured,
@@ -13302,7 +13569,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         styleContractChecked: styleCheck?.ok === true
       };
       const fullBatteryRan = tinyState.fullBatteryRunCount > 0;
-      const walletLifecycleTouched = tinyState.walletConnectCount > 0 || tinyState.walletAuthorizationPendingCount > 0 || tinyState.walletDisconnectCount > 0 || tinyState.providerInitialSnapshotCount > 0;
+      const walletLifecycleTouched = tinyState.walletConnectCount > 0 || tinyState.walletAuthorizationPendingCount > 0 || tinyState.walletDisconnectPendingCount > 0 || tinyState.walletDisconnectCount > 0 || tinyState.providerInitialSnapshotCount > 0;
       const walletResetOnlyRequiredChecks = [
         checks.contractLanguageParsed,
         checks.componentManifestResolved,
@@ -13310,9 +13577,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         checks.routeLoaderCommitted,
         checks.walletDisconnectReset,
         checks.walletPermissionRevokeAttempted,
-        checks.serializationClean,
-        checks.layoutContractChecked,
-        checks.styleContractChecked
+        checks.serializationClean
       ];
       const walletLifecycleCommonRequiredChecks = [
         checks.contractLanguageParsed,
@@ -13322,9 +13587,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         checks.externalOutcomeContained,
         checks.txDraftBlockedAfterExternalOutcome,
         checks.sourceSafeAfterExternalOutcome,
-        checks.serializationClean,
-        checks.layoutContractChecked,
-        checks.styleContractChecked
+        checks.serializationClean
       ];
       const walletLifecycleInitialSnapshotRequiredChecks = [
         ...walletLifecycleCommonRequiredChecks,
@@ -13358,6 +13621,13 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         checks.walletEventsSubscribed,
         checks.walletProviderEventsGoverned
       ];
+      const walletLifecycleDisconnectPendingRequiredChecks = [
+        ...walletLifecycleCommonRequiredChecks,
+        checks.walletDisconnectOutcomeCaptured,
+        checks.walletDisconnectPendingEffectRan,
+        checks.walletDisconnectPendingEvidenceCaptured,
+        checks.walletPermissionRevokeEvidenceCaptured
+      ];
       const walletLifecycleDisconnectRequiredChecks = [
         ...walletLifecycleCommonRequiredChecks,
         checks.walletDisconnectOutcomeCaptured,
@@ -13367,13 +13637,15 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       ];
       const walletLifecycleRequiredChecks = externalOutcomeOperation === "wallet.provider.initialSnapshot"
         ? walletLifecycleInitialSnapshotRequiredChecks
-        : (externalOutcomeOperation === "wallet.disconnect"
-          ? walletLifecycleDisconnectRequiredChecks
-          : (externalOutcomeOperation === "wallet.connect" && actionOutcome === "pending"
-            ? walletLifecycleConnectPendingRequiredChecks
-            : (externalOutcomeOperation === "wallet.connect" && ["blocked", "exception"].includes(actionOutcome)
-              ? walletLifecycleConnectBlockedRequiredChecks
-              : walletLifecycleConnectPassRequiredChecks)));
+        : (externalOutcomeOperation === "wallet.disconnect" && actionOutcome === "pending"
+          ? walletLifecycleDisconnectPendingRequiredChecks
+          : (externalOutcomeOperation === "wallet.disconnect"
+            ? walletLifecycleDisconnectRequiredChecks
+            : (externalOutcomeOperation === "wallet.connect" && actionOutcome === "pending"
+              ? walletLifecycleConnectPendingRequiredChecks
+              : (externalOutcomeOperation === "wallet.connect" && ["blocked", "exception"].includes(actionOutcome)
+                ? walletLifecycleConnectBlockedRequiredChecks
+                : walletLifecycleConnectPassRequiredChecks))));
       const fullBatteryRequiredChecks = [
         checks.contractLanguageParsed,
         checks.elementRegistryAvailable,
@@ -13410,9 +13682,24 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const governanceOutcome = receiptMode === "waiting"
         ? "waiting"
         : (governanceRequiredChecks.every(Boolean) ? "pass" : "fail");
+      const walletLifecycleSafetyRequiredChecks = [
+        checks.serializationClean,
+        checks.txDraftBlockedAfterExternalOutcome,
+        checks.sourceSafeAfterExternalOutcome
+      ];
+      const fullBatterySafetyRequiredChecks = [
+        checks.serializationClean,
+        checks.layoutContractChecked,
+        checks.styleContractChecked,
+        checks.txDraftBlockedAfterExternalOutcome,
+        checks.sourceSafeAfterExternalOutcome
+      ];
+      const safetyRequiredChecks = receiptMode === "full-scm-battery"
+        ? fullBatterySafetyRequiredChecks
+        : walletLifecycleSafetyRequiredChecks;
       const safetyOutcome = receiptMode === "waiting"
         ? "waiting"
-        : ([checks.serializationClean, checks.layoutContractChecked, checks.styleContractChecked, checks.txDraftBlockedAfterExternalOutcome, checks.sourceSafeAfterExternalOutcome].every(Boolean) ? "pass" : "fail");
+        : (safetyRequiredChecks.every(Boolean) ? "pass" : "fail");
       const proofCompleteness = receiptMode === "waiting"
         ? "waiting"
         : (checks.externalOutcomeContained || receiptMode === "wallet-reset" || receiptMode === "full-scm-battery" ? "complete" : "incomplete");
@@ -13440,6 +13727,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
         runtimeChainId: instance?.runtime?.network?.chainId || "",
         walletConnected: instance?.runtime?.wallet?.connected === true,
         walletDisconnected: instance?.runtime?.wallet?.connected === false,
+        walletDisconnectPendingCount: tinyState.walletDisconnectPendingCount || 0,
         walletDisconnectCount: tinyState.walletDisconnectCount || 0,
         walletDisconnectCommitCount: tinyState.walletDisconnectCommitCount || 0,
         walletRevokeAttemptCount: tinyState.walletRevokeAttemptCount || 0,
@@ -13536,7 +13824,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
             ? "PASS: full SCM wallet battery is clean"
             : (receiptMode === "wallet-reset" ? "PASS: disconnected wallet reset is tamed by SCM" : "PASS: wallet lifecycle is tamed by SCM"))
           : (proof.status === "pending"
-            ? "PENDING: wallet authorization is waiting on the provider; SCM containment passed"
+            ? (externalOutcomeOperation === "wallet.disconnect"
+              ? "PENDING: wallet disconnect is waiting on provider revoke; SCM containment passed"
+              : "PENDING: wallet authorization is waiting on the provider; SCM containment passed")
             : (proof.status === "blocked"
             ? "BLOCKED: external wallet action did not complete; SCM containment passed"
             : (proof.status === "exception"
@@ -13561,8 +13851,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           `next action: ${externalOutcome.nextAction || "none"}`,
           `contract language: ${checks.contractLanguageParsed ? "resolved" : "missing"}`,
           `route loader: ${checks.routeLoaderCommitted ? "committed" : "missing"}`,
-          `wallet effect: ${checks.walletEffectRan ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : "missing")}`,
+          `wallet effect: ${checks.walletEffectRan ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : (externalOutcomeOperation === "wallet.provider.initialSnapshot" ? "not required for passive snapshot" : "missing"))}`,
           `wallet authorization pending: ${checks.walletConnectAuthorizationPendingEvidenceCaptured ? "governed" : (tinyState.walletAuthorizationPendingCount > 0 ? "missing evidence" : "not pending")}`,
+          `wallet disconnect pending: ${checks.walletDisconnectPendingEvidenceCaptured ? "governed" : (tinyState.walletDisconnectPendingCount > 0 ? "missing evidence" : "not pending")}`,
           `external outcome captured: ${checks.externalOutcomeCaptured ? "true" : "false"}`,
           `tx draft after blocked/exception: ${checks.txDraftBlockedAfterExternalOutcome ? "safe" : "unsafe"}`,
           `source after blocked/exception: ${checks.sourceSafeAfterExternalOutcome ? "safe" : "unsafe"}`,
@@ -13573,9 +13864,9 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           `initial provider snapshot: ${checks.walletProviderInitialSnapshotEffectRan ? "governed" : "not run"} · evidence=${checks.walletInitialSnapshotProviderEvidenceCaptured ? "read-only" : "missing"} · retries=${tinyState.providerInitialSnapshotRetry?.attempts || 0}`,
           `wallet subsystem: ${checks.walletSubsystemUsed ? "used" : (checks.walletDirectProviderFallback ? "fallback to direct provider" : (walletAdapter.walletSubsystemReady ? "available but not used" : "missing (optional)"))}`,
           `wallet proof level: ${checks.walletMockFallbackDegraded ? "degraded mock" : (checks.walletSubsystemUsed ? "product subsystem" : "adapter only")}`,
-          `wallet reset: ${disconnectEffectRan ? (checks.walletDisconnectReset ? "pass" : "failed") : "not run"}`,
-          `wallet revoke: ${disconnectEffectRan ? (checks.walletPermissionRevokeAttempted ? "attempted" : "not attempted") : "not run"}`,
-          `network gate: ${checks.networkVerified ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : "missing")}`,
+          `wallet reset: ${disconnectEffectRan ? (checks.walletDisconnectReset ? "pass" : "failed") : (checks.walletDisconnectPendingEffectRan ? "pending provider revoke" : "not run")}`,
+          `wallet revoke: ${disconnectEffectRan ? (checks.walletPermissionRevokeAttempted ? "attempted" : "not attempted") : (checks.walletDisconnectPendingEvidenceCaptured ? "pending" : "not run")}`,
+          `network gate: ${checks.networkVerified ? "pass" : (receiptMode === "wallet-reset" ? "not required for reset" : (externalOutcomeOperation === "wallet.provider.initialSnapshot" ? "not required for passive snapshot" : (externalOutcomeOperation === "wallet.disconnect" ? "not required for disconnect" : "missing")))}`,
           `runtime select: ${checks.declaredRuntimeEffectRan ? "pass" : `not run${fullOnlyText}`}`,
           `runtime tx draft: ${checks.txDraftRuntimeOnly ? "pass" : `not run${fullOnlyText}`}`,
           `tx draft boundary: ${runtimeTxDraft.noSend ? "no-send" : "not built"} · calldata=${runtimeTxDraft.calldata ? (runtimeTxDraft.calldataEncoding || "present") : "missing"} · nonce=${runtimeTxDraft.nonce?.status || "not-probed"} · gas=${runtimeTxDraft.gasEstimate?.status || "not-probed"} · call=${runtimeTxDraft.ethCall?.status || "not-probed"}`,
