@@ -2100,9 +2100,13 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_all_target_endstates_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_result_selection_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_round_1_three_results_returned"] is True
+    assert report["contracts"]["open_battery_byzantine_round_1_payload_hashes_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_all_results_sent_to_all_reviewers"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
+    assert report["contracts"]["open_battery_byzantine_round_2_input_payload_hashes_match_round_1"] is True
     assert report["contracts"]["open_battery_byzantine_final_round_received_all_round_2_reviews"] is True
+    assert report["contracts"]["open_battery_byzantine_final_input_review_hashes_match_round_2"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_payload_hashes_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_rejects_at_most_one"] is True
     assert report["contracts"]["open_battery_byzantine_final_uses_simple_majority_rejection"] is True
@@ -2189,9 +2193,13 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["observed_endstate_matches_target"] is True
         assert decision["contracts"]["case_report_written"] is True
         assert decision["contracts"]["byzantine_round_1_three_results_returned"] is True
+        assert decision["contracts"]["byzantine_round_1_payload_hashes_recorded"] is True
         assert decision["contracts"]["byzantine_round_2_all_results_sent_to_all_reviewers"] is True
         assert decision["contracts"]["byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
+        assert decision["contracts"]["byzantine_round_2_input_payload_hashes_match_round_1"] is True
         assert decision["contracts"]["byzantine_final_round_received_all_round_2_reviews"] is True
+        assert decision["contracts"]["byzantine_final_input_review_hashes_match_round_2"] is True
+        assert decision["contracts"]["byzantine_boundary_payload_hashes_recorded"] is True
         assert decision["contracts"]["byzantine_round_2_each_reviewer_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_final_rejects_at_most_one"] is True
         assert decision["contracts"]["byzantine_agreed_result_is_original_worker_result"] is True
@@ -2210,6 +2218,24 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
             for review in round_2["reviews"]
         )
         assert all(review["input_results"] == round_1["results"] for review in round_2["reviews"])
+        expected_round_1_hashes = smoke.open_battery_payload_sha256_by_id(round_1["results"], id_key="result_id")
+        expected_round_1_set_hash = smoke.open_battery_payload_set_sha256(expected_round_1_hashes)
+        assert round_1["result_sha256_by_id"] == expected_round_1_hashes
+        assert round_1["results_set_sha256"] == expected_round_1_set_hash
+        assert round_2["input_result_sha256_by_id"] == expected_round_1_hashes
+        assert round_2["input_results_set_sha256"] == expected_round_1_set_hash
+        assert all(review["input_result_sha256_by_id"] == expected_round_1_hashes for review in round_2["reviews"])
+        assert all(review["input_results_set_sha256"] == expected_round_1_set_hash for review in round_2["reviews"])
+        assert final_selection["round_1_result_sha256_by_id"] == expected_round_1_hashes
+        assert final_selection["round_1_results_set_sha256"] == expected_round_1_set_hash
+        expected_round_2_hashes = smoke.open_battery_payload_sha256_by_id(round_2["reviews"], id_key="reviewer")
+        expected_round_2_set_hash = smoke.open_battery_payload_set_sha256(expected_round_2_hashes)
+        assert round_2["review_sha256_by_reviewer"] == expected_round_2_hashes
+        assert round_2["reviews_set_sha256"] == expected_round_2_set_hash
+        assert final_selection["input_review_sha256_by_reviewer"] == expected_round_2_hashes
+        assert final_selection["input_reviews_set_sha256"] == expected_round_2_set_hash
+        assert all(len(value) == 64 for value in expected_round_1_hashes.values())
+        assert all(len(value) == 64 for value in expected_round_2_hashes.values())
         assert all(review["reject_count"] <= 1 for review in round_2["reviews"])
         assert final_selection["agreed_result_id"] in final_selection["round_1_result_ids"]
         assert final_selection["agreed_result_id"] in final_selection["surviving_results"]

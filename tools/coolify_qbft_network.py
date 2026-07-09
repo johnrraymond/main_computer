@@ -5629,6 +5629,22 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
         ]
     )
 
+    reset_runtime_dirs = tuple(dict.fromkeys(service_runtime_dir(service) for service in plan.services))
+    reset_lines: list[str] = [
+        "if [ \"${QBFT_RESET_CHAIN:-false}\" = \"true\" ]; then",
+        "  echo \"QBFT_RESET_CHAIN=true; removing persistent QBFT genesis, validator keys, and Besu data.\"",
+        "  rm -f /smoke/genesis.json /smoke/qbftConfigFile.json /smoke/network-metadata.json /smoke/static-nodes-all.json",
+    ]
+    for runtime_dir in reset_runtime_dirs:
+        quoted_runtime_dir = shlex.quote(runtime_dir)
+        reset_lines.extend(
+            [
+                f"  rm -rf /smoke/{quoted_runtime_dir}/data",
+                f"  rm -f /smoke/{quoted_runtime_dir}/static-nodes.json /smoke/{quoted_runtime_dir}/validator-address /smoke/{quoted_runtime_dir}/validator-address.tmp",
+            ]
+        )
+    reset_lines.append("fi")
+
     lines: list[str] = [
         "set -eu",
         "echo \"Main Computer QBFT bootstrap starting for " + plan.name + "\"",
@@ -5636,6 +5652,7 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
         f"EXPECTED_QBFT_VALIDATOR_COUNT={len(validators)}",
         f"EXPECTED_QBFT_RPC_COUNT={len(rpc_nodes)}",
         "REGENERATE_QBFT_TOPOLOGY=false",
+        *reset_lines,
         *refresh_lines,
         "if [ -f /smoke/network-metadata.json ] && [ \"${QBFT_RESET_CHAIN:-false}\" != \"true\" ]; then",
         "  EXISTING_QBFT_VALIDATOR_COUNT=$(grep -c '\"id\": \"validator-' /smoke/network-metadata.json || true)",
@@ -7335,6 +7352,7 @@ def render_compose_for_host(
     validator_vote: Mapping[str, Any] | None = None,
     static_refresh: Mapping[str, Any] | None = None,
     park_inactive_helpers: bool = True,
+    reset_chain: bool = False,
 ) -> str:
     host_id = safe_id(host_id, kind="host")
     hosts = host_by_id(plan)
@@ -7512,7 +7530,7 @@ def render_compose_for_host(
                 "    restart: \"no\"",
                 "    exclude_from_hc: true",
                 "    environment:",
-                "      - QBFT_RESET_CHAIN=${QBFT_RESET_CHAIN:-false}",
+                f"      - QBFT_RESET_CHAIN={'true' if reset_chain else '${QBFT_RESET_CHAIN:-false}'}",
                 "    entrypoint:",
                 "      - /bin/sh",
                 "      - -ec",
@@ -10459,6 +10477,7 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
             validator_vote=getattr(args, "_validator_vote", None),
             static_refresh=getattr(args, "_qbft_static_refresh", None),
             park_inactive_helpers=bool(getattr(args, "_park_inactive_qbft_helpers", True)),
+            reset_chain=bool(getattr(args, "reset_chain", False)),
         )
     compose_b64 = base64_compose(compose)
     service_name = str(getattr(args, "coolify_service_name", "") or project_service_name(plan, host_id))
@@ -10880,6 +10899,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--dry-run", action="store_true", help="Render/show intended changes without mutating Coolify or deploying contracts.")
     parser.add_argument("--no-bootstrap", action="store_true", help="Do not include qbft-bootstrap service in generated compose.")
+    parser.add_argument(
+        "--reset-chain",
+        action="store_true",
+        help=(
+            "Destructive QBFT bootstrap reset: regenerate genesis/key material and remove persistent Besu data "
+            "from the target runtime volume before the node starts. Intended only for pre-contract initial launch resets."
+        ),
+    )
     parser.add_argument("--bind-runtime-root", action="store_true", help="Use host bind mount with Coolify is_directory instead of a named volume.")
     parser.add_argument("--no-deploy", action="store_true", help="For coolify-sync/apply, update the service but do not trigger a deployment.")
 
@@ -11109,6 +11136,7 @@ def main(argv: list[str] | None = None) -> int:
                     host_id,
                     include_bootstrap=not bool(args.no_bootstrap),
                     managed_volume=not bool(args.bind_runtime_root),
+                    reset_chain=bool(getattr(args, "reset_chain", False)),
                 )
             )
             return 0

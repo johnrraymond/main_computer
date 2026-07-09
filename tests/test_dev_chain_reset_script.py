@@ -42,6 +42,32 @@ def test_host_port_shorthand_updates_rpc_url() -> None:
     assert reset.anvil_command(args, "unit")[reset.anvil_command(args, "unit").index("-p") + 1] == "127.0.0.1:18546:8545"
 
 
+def test_external_chain_allows_standard_https_rpc_without_explicit_port() -> None:
+    reset = load_dev_chain_reset()
+    parser = reset.build_parser()
+    args = parser.parse_args(
+        [
+            "--dry-run",
+            "--external-chain",
+            "--environment",
+            "mainnet",
+            "--chain-id",
+            "42424240",
+            "--host-rpc-url",
+            "https://mainnet-rpc.greatlibrary.io",
+            "--external-docker-network",
+            "bridge",
+            "--offices",
+            "0x1111111111111111111111111111111111111111,0x2222222222222222222222222222222222222222,0x3333333333333333333333333333333333333333,0x4444444444444444444444444444444444444444",
+        ]
+    )
+
+    reset.validate_args(args)
+
+    assert args.host_rpc_url == "https://mainnet-rpc.greatlibrary.io"
+    assert reset.host_rpc_endpoint(args.host_rpc_url, allow_default_port=True) == ("mainnet-rpc.greatlibrary.io", 443)
+
+
 def test_default_deployments_cover_governance_xlag_and_hub_escrow_contracts() -> None:
     reset = load_dev_chain_reset()
     parser = reset.build_parser()

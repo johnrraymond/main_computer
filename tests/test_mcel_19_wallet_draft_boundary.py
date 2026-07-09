@@ -198,7 +198,7 @@ def test_19abc_visible_wallet_board_surfaces_guard_identity_and_validity() -> No
         assert marker in lab
 
     render_index = lab.index("function renderMcel18nWalletToolSurface")
-    render_block = lab[render_index:render_index + 36000]
+    render_block = lab[render_index:render_index + 52000]
     assert "visible19aSmokeSlot.textContent" in render_block
     assert "visible19bIdentitySlot.textContent" in render_block
     assert "visible19cValiditySlot.textContent" in render_block

@@ -7399,6 +7399,27 @@ def open_battery_byzantine_result_selection_profile(case: OpenBatteryCaseSpec) -
     return "malicious_rejected_clear_winner"
 
 
+def open_battery_payload_sha256(payload: Mapping[str, Any]) -> str:
+    """Return the stable hash used to prove exact payload handoff between rounds."""
+
+    return text_sha256(json_dumps(dict(payload)))
+
+
+def open_battery_payload_sha256_by_id(
+    payloads: Sequence[Mapping[str, Any]],
+    *,
+    id_key: str,
+) -> dict[str, str]:
+    return {
+        str(payload.get(id_key, "")): open_battery_payload_sha256(payload)
+        for payload in payloads
+    }
+
+
+def open_battery_payload_set_sha256(payload_hashes_by_id: Mapping[str, str]) -> str:
+    return text_sha256(json_dumps({str(key): str(value) for key, value in payload_hashes_by_id.items()}))
+
+
 def open_battery_byzantine_round_1_results(
     *,
     case: OpenBatteryCaseSpec,
@@ -7495,11 +7516,15 @@ def open_battery_byzantine_round_2_reviews(
             ("reviewer_3_malicious", "r1", ["r3", "r2"], "malicious reviewer attempts to preserve forged authority"),
         ]
     input_results = [dict(result) for result in round_1_results]
+    input_result_sha256_by_id = open_battery_payload_sha256_by_id(input_results, id_key="result_id")
+    input_results_set_sha256 = open_battery_payload_set_sha256(input_result_sha256_by_id)
     return [
         {
             "reviewer": reviewer,
             "input_result_ids": result_ids,
             "input_results": input_results,
+            "input_result_sha256_by_id": input_result_sha256_by_id,
+            "input_results_set_sha256": input_results_set_sha256,
             "reject": reject,
             "ranking": ranking,
             "reason": reason,
@@ -7577,6 +7602,13 @@ def open_battery_byzantine_final_selection(
         result_id: json_dumps(dict(result_by_id.get(result_id, {})))
         for result_id in result_ids
     }
+    round_1_payload_sha256_by_id = open_battery_payload_sha256_by_id(round_1_results, id_key="result_id")
+    round_1_payloads_set_sha256 = open_battery_payload_set_sha256(round_1_payload_sha256_by_id)
+    round_2_review_sha256_by_reviewer = open_battery_payload_sha256_by_id(
+        round_2_reviews,
+        id_key="reviewer",
+    )
+    round_2_reviews_set_sha256 = open_battery_payload_set_sha256(round_2_review_sha256_by_reviewer)
     majority_threshold = 2
     rejection_votes = {result_id: 0 for result_id in result_ids}
     for review in round_2_reviews:
@@ -7650,6 +7682,11 @@ def open_battery_byzantine_final_selection(
         ),
         "byzantine_round_1_three_results_returned": len(round_1_results) == 3,
         "byzantine_round_1_result_ids_unique": len(result_id_set) == 3,
+        "byzantine_round_1_payload_hashes_recorded": (
+            len(round_1_payload_sha256_by_id) == 3
+            and bool(round_1_payloads_set_sha256)
+            and all(len(str(value)) == 64 for value in round_1_payload_sha256_by_id.values())
+        ),
         "byzantine_round_2_all_results_sent_to_all_reviewers": all(
             set(str(result_id) for result_id in (review.get("input_result_ids") or [])) == result_id_set
             for review in round_2_reviews
@@ -7660,6 +7697,11 @@ def open_battery_byzantine_final_selection(
                 for input_result in (review.get("input_results") or [])
                 if isinstance(input_result, dict)
             } == round_1_payloads_by_id
+            for review in round_2_reviews
+        ),
+        "byzantine_round_2_input_payload_hashes_match_round_1": all(
+            dict(review.get("input_result_sha256_by_id") or {}) == round_1_payload_sha256_by_id
+            and str(review.get("input_results_set_sha256", "")) == round_1_payloads_set_sha256
             for review in round_2_reviews
         ),
         "byzantine_round_2_each_reviewer_rejects_at_most_one": all(
@@ -7707,6 +7749,19 @@ def open_battery_byzantine_final_selection(
         "byzantine_malicious_result_not_selected_when_majority_rejects_it": (
             not malicious_rejected or agreed_result_id not in malicious_rejected
         ),
+        "byzantine_final_input_review_payload_hashes_recorded": (
+            len(round_2_review_sha256_by_reviewer) == 3
+            and bool(round_2_reviews_set_sha256)
+            and all(len(str(value)) == 64 for value in round_2_review_sha256_by_reviewer.values())
+        ),
+        "byzantine_final_input_review_hashes_match_round_2": (
+            open_battery_payload_sha256_by_id(round_2_reviews, id_key="reviewer")
+            == round_2_review_sha256_by_reviewer
+            and open_battery_payload_set_sha256(round_2_review_sha256_by_reviewer)
+            == round_2_reviews_set_sha256
+        ),
+        "byzantine_boundary_payload_hashes_recorded": bool(round_1_payloads_set_sha256)
+        and bool(round_2_reviews_set_sha256),
         "byzantine_boundary_emits_single_result": bool(agreed_result_id) and len([agreed_result_id]) == 1,
     }
     return {
@@ -7718,8 +7773,12 @@ def open_battery_byzantine_final_selection(
         "max_rejections_per_reviewer": 1,
         "majority_threshold": majority_threshold,
         "round_1_result_ids": result_ids,
+        "round_1_result_sha256_by_id": round_1_payload_sha256_by_id,
+        "round_1_results_set_sha256": round_1_payloads_set_sha256,
         "input_reviewers": reviewer_ids,
         "input_reviews": [dict(review) for review in round_2_reviews],
+        "input_review_sha256_by_reviewer": round_2_review_sha256_by_reviewer,
+        "input_reviews_set_sha256": round_2_reviews_set_sha256,
         "rejection_votes": rejection_votes,
         "rejected_result": rejected_result,
         "rejected_results": rejected_results,
@@ -7751,6 +7810,8 @@ def open_battery_run_byzantine_result_selection(
     pathway_trace: list[dict[str, Any]],
 ) -> dict[str, Any]:
     round_1_results = open_battery_byzantine_round_1_results(case=case, goal=goal)
+    round_1_result_sha256_by_id = open_battery_payload_sha256_by_id(round_1_results, id_key="result_id")
+    round_1_results_set_sha256 = open_battery_payload_set_sha256(round_1_result_sha256_by_id)
     round_1_path = case_dir / "byzantine_round_1_results.json"
     atomic_write_json(
         round_1_path,
@@ -7761,6 +7822,8 @@ def open_battery_run_byzantine_result_selection(
             "task": case.prompt,
             "worker_count": 3,
             "results": round_1_results,
+            "result_sha256_by_id": round_1_result_sha256_by_id,
+            "results_set_sha256": round_1_results_set_sha256,
         },
     )
     open_battery_add_pathway_stage(
@@ -7770,9 +7833,12 @@ def open_battery_run_byzantine_result_selection(
         stage="byzantine_round_1_results_returned",
         result_ids=[result.get("result_id") for result in round_1_results],
         worker_count=len(round_1_results),
+        result_payloads_set_sha256=round_1_results_set_sha256,
     )
 
     round_2_reviews = open_battery_byzantine_round_2_reviews(case=case, round_1_results=round_1_results)
+    round_2_review_sha256_by_reviewer = open_battery_payload_sha256_by_id(round_2_reviews, id_key="reviewer")
+    round_2_reviews_set_sha256 = open_battery_payload_set_sha256(round_2_review_sha256_by_reviewer)
     round_2_path = case_dir / "byzantine_round_2_reviews.json"
     atomic_write_json(
         round_2_path,
@@ -7782,9 +7848,13 @@ def open_battery_run_byzantine_result_selection(
             "case_id": case.case_id,
             "input_result_ids": [result.get("result_id") for result in round_1_results],
             "input_results": [dict(result) for result in round_1_results],
+            "input_result_sha256_by_id": round_1_result_sha256_by_id,
+            "input_results_set_sha256": round_1_results_set_sha256,
             "reviewer_count": 3,
             "max_rejections_per_reviewer": 1,
             "reviews": round_2_reviews,
+            "review_sha256_by_reviewer": round_2_review_sha256_by_reviewer,
+            "reviews_set_sha256": round_2_reviews_set_sha256,
         },
     )
     open_battery_add_pathway_stage(
@@ -7810,6 +7880,12 @@ def open_battery_run_byzantine_result_selection(
             }
             for review in round_2_reviews
         ),
+        input_payload_hashes_match_round_1=all(
+            dict(review.get("input_result_sha256_by_id") or {}) == round_1_result_sha256_by_id
+            and str(review.get("input_results_set_sha256", "")) == round_1_results_set_sha256
+            for review in round_2_reviews
+        ),
+        review_payloads_set_sha256=round_2_reviews_set_sha256,
     )
 
     final_selection = open_battery_byzantine_final_selection(
@@ -7832,18 +7908,23 @@ def open_battery_run_byzantine_result_selection(
                     "type": "worker_result_round",
                     "artifact": str(round_1_path),
                     "result_ids": [result.get("result_id") for result in round_1_results],
+                    "result_sha256_by_id": round_1_result_sha256_by_id,
+                    "results_set_sha256": round_1_results_set_sha256,
                 },
                 {
                     "round": 2,
                     "type": "reject_at_most_one_and_rank_survivors",
                     "artifact": str(round_2_path),
                     "reviewers": [review.get("reviewer") for review in round_2_reviews],
+                    "review_sha256_by_reviewer": round_2_review_sha256_by_reviewer,
+                    "reviews_set_sha256": round_2_reviews_set_sha256,
                 },
                 {
                     "round": 3,
                     "type": "aggregate_rejection_rank_and_emit_single_result",
                     "artifact": str(final_path),
                     "input_reviewers": final_selection.get("input_reviewers", []),
+                    "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
                     "agreed_result_id": final_selection.get("agreed_result_id"),
                     "selection_method": final_selection.get("selection_method"),
                 },
@@ -7851,6 +7932,8 @@ def open_battery_run_byzantine_result_selection(
             "boundary_output": {
                 "agreed_result_id": final_selection.get("agreed_result_id"),
                 "agreed_result": final_selection.get("agreed_result"),
+                "round_1_results_set_sha256": final_selection.get("round_1_results_set_sha256", ""),
+                "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
                 "consensus": final_selection.get("consensus"),
             },
         },
@@ -7864,6 +7947,8 @@ def open_battery_run_byzantine_result_selection(
         selection_method=final_selection.get("selection_method"),
         rejected_result=final_selection.get("rejected_result"),
         input_reviewers=final_selection.get("input_reviewers", []),
+        input_reviews_set_sha256=final_selection.get("input_reviews_set_sha256", ""),
+        round_1_results_set_sha256=final_selection.get("round_1_results_set_sha256", ""),
         host_random_survivor_pool=final_selection.get("host_random_survivor_pool", []),
         consensus=final_selection.get("consensus"),
     )
@@ -7883,6 +7968,8 @@ def open_battery_run_byzantine_result_selection(
             "selection_method": final_selection.get("selection_method"),
             "rejected_result": final_selection.get("rejected_result"),
             "surviving_results": final_selection.get("surviving_results", []),
+            "round_1_results_set_sha256": final_selection.get("round_1_results_set_sha256", ""),
+            "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
             "host_random_survivor_pool": final_selection.get("host_random_survivor_pool", []),
             "host_random_pool_size": final_selection.get("host_random_pool_size", 0),
             "host_random_seed_sha256": final_selection.get("host_random_seed_sha256", ""),
@@ -9158,6 +9245,10 @@ def run_open_battery(args: argparse.Namespace) -> int:
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_1_three_results_returned"))
             for case in cases
         ),
+        "open_battery_byzantine_round_1_payload_hashes_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_1_payload_hashes_recorded"))
+            for case in cases
+        ),
         "open_battery_byzantine_round_2_all_results_sent_to_all_reviewers": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_2_all_results_sent_to_all_reviewers"))
             for case in cases
@@ -9166,8 +9257,20 @@ def run_open_battery(args: argparse.Namespace) -> int:
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_2_full_result_payloads_sent_to_all_reviewers"))
             for case in cases
         ),
+        "open_battery_byzantine_round_2_input_payload_hashes_match_round_1": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_2_input_payload_hashes_match_round_1"))
+            for case in cases
+        ),
         "open_battery_byzantine_final_round_received_all_round_2_reviews": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_final_round_received_all_round_2_reviews"))
+            for case in cases
+        ),
+        "open_battery_byzantine_final_input_review_hashes_match_round_2": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_final_input_review_hashes_match_round_2"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_payload_hashes_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_payload_hashes_recorded"))
             for case in cases
         ),
         "open_battery_byzantine_round_2_each_reviewer_rejects_at_most_one": all(

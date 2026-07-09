@@ -70,6 +70,7 @@ DEFAULT_SMOKE_CLIENT_FUNDING_WEI = "5000000000000000000"
 DEFAULT_NODE_WALLET_FUNDING_WEI = "1000000000000000000"
 DEFAULT_PAYOUT_ADMIN_FUNDING_WEI = "2000000000000000000"
 DEFAULT_OFFICE_FUNDING_WEI = "2000000000000000000"
+DEFAULT_JSON_RPC_USER_AGENT = "main-computer-dev-chain-reset/1.0"
 DEFAULT_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 DEFAULT_DEPLOYER_ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 # Constructor returns 32 zero bytes using PUSH0 (0x5f), so eth_estimateGas fails on pre-Shanghai chains.
@@ -498,13 +499,15 @@ def anvil_command(args: argparse.Namespace, rid: str) -> list[str]:
     ]
 
 
-def host_rpc_endpoint(url: str) -> tuple[str, int]:
+def host_rpc_endpoint(url: str, *, allow_default_port: bool = False) -> tuple[str, int]:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"host rpc url must be http(s): {url}")
     if not parsed.hostname:
         raise ValueError(f"host rpc url must include a host: {url}")
     if parsed.port is None:
+        if allow_default_port:
+            return parsed.hostname, 443 if parsed.scheme == "https" else 80
         raise ValueError(f"host rpc url must include a port: {url}")
     return parsed.hostname, parsed.port
 
@@ -1699,7 +1702,12 @@ def require_modern_external_chain(url: str, *, wait_timeout_s: float = 0.0) -> t
 
 def rpc(url: str, method: str, params: list | None = None, *, timeout_s: float = 30.0) -> object:
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
-    request = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    request = Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": DEFAULT_JSON_RPC_USER_AGENT},
+        method="POST",
+    )
     with urlopen(request, timeout=timeout_s) as response:
         data = json.loads(response.read().decode("utf-8"))
     if "error" in data:
@@ -2084,9 +2092,9 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--office-funding-wei must be greater than zero when office wallets are generated")
     parse_offices(args.offices)
     validate_environment_name(args.environment)
-    host_rpc_endpoint(args.host_rpc_url)
     if args.host_port is not None:
         args.host_rpc_url = host_rpc_url_with_port(args.host_rpc_url, args.host_port)
+    host_rpc_endpoint(args.host_rpc_url, allow_default_port=bool(getattr(args, "external_chain", False)))
     if getattr(args, "external_chain", False):
         if not str(args.container_rpc_url or "").strip():
             args.container_rpc_url = args.host_rpc_url

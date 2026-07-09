@@ -786,3 +786,28 @@ def test_filtered_mainnet_validator_rpc_instance_satisfies_rpc_topology_policy()
     assert service.roles == ("rpc", "validator")
     assert service.rpc_host_port == 31110
     assert module.rpc_target_service(plan).id == "validator-rpc-1"
+
+
+def test_reset_chain_compose_regenerates_persistent_qbft_runtime(tmp_path: Path) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+
+    plan = module.build_plan("testnet", private_state_path=state_path, instances="validator-rpc-1")
+    compose = module.render_compose_for_host(plan, "a", reset_chain=True)
+
+    assert "QBFT_RESET_CHAIN=true" in compose
+    assert "removing persistent QBFT genesis, validator keys, and Besu data" in compose
+    assert "rm -rf /smoke/validator-rpc-1/data" in compose
+    assert "rm -f /smoke/genesis.json" in compose
+
+
+def test_default_compose_keeps_operator_controlled_qbft_reset_env(tmp_path: Path) -> None:
+    module = _load_module()
+    state_path = write_one_node_private_state(tmp_path)
+
+    plan = module.build_plan("testnet", private_state_path=state_path, instances="validator-rpc-1")
+    compose = module.render_compose_for_host(plan, "a")
+
+    assert "QBFT_RESET_CHAIN=${QBFT_RESET_CHAIN:-false}" in compose
+    assert "      - QBFT_RESET_CHAIN=true" not in compose
+
