@@ -7420,6 +7420,92 @@ def open_battery_payload_set_sha256(payload_hashes_by_id: Mapping[str, str]) -> 
     return text_sha256(json_dumps({str(key): str(value) for key, value in payload_hashes_by_id.items()}))
 
 
+def open_battery_configured_reviewer_ids(case: OpenBatteryCaseSpec) -> list[str]:
+    profile = open_battery_byzantine_result_selection_profile(case)
+    if profile == "tie_host_seeded_random":
+        return ["reviewer_1", "reviewer_2", "reviewer_3"]
+    return ["reviewer_1", "reviewer_2", "reviewer_3_malicious"]
+
+
+def open_battery_quorum_membership_derivation(
+    *,
+    case: OpenBatteryCaseSpec,
+    round_1_results: Sequence[Mapping[str, Any]],
+    round_2_reviews: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Record the configured Byzantine quorum and the observed participants.
+
+    Earlier contracts proved the worker/reviewer counts.  This derivation also
+    records the exact configured identities, observed identities, uniqueness, and
+    stable membership hashes so the boundary cannot silently swap in an
+    unconfigured worker or reviewer while preserving the same counts.
+    """
+
+    configured_worker_ids = ["worker_1", "worker_2", "worker_3"]
+    configured_reviewer_ids = open_battery_configured_reviewer_ids(case)
+    observed_worker_ids = [str(result.get("worker", "")) for result in round_1_results]
+    observed_reviewer_ids = [str(review.get("reviewer", "")) for review in round_2_reviews]
+    worker_result_ids = [str(result.get("result_id", "")) for result in round_1_results]
+    reviewer_review_ids = [str(review.get("reviewer", "")) for review in round_2_reviews]
+
+    worker_membership = {
+        "configured": configured_worker_ids,
+        "observed": observed_worker_ids,
+        "missing": [worker_id for worker_id in configured_worker_ids if worker_id not in observed_worker_ids],
+        "unexpected": [worker_id for worker_id in observed_worker_ids if worker_id not in configured_worker_ids],
+        "unique": len(observed_worker_ids) == len(set(observed_worker_ids)),
+        "matches_configured_order": observed_worker_ids == configured_worker_ids,
+    }
+    reviewer_membership = {
+        "configured": configured_reviewer_ids,
+        "observed": observed_reviewer_ids,
+        "missing": [reviewer_id for reviewer_id in configured_reviewer_ids if reviewer_id not in observed_reviewer_ids],
+        "unexpected": [reviewer_id for reviewer_id in observed_reviewer_ids if reviewer_id not in configured_reviewer_ids],
+        "unique": len(observed_reviewer_ids) == len(set(observed_reviewer_ids)),
+        "matches_configured_order": observed_reviewer_ids == configured_reviewer_ids,
+    }
+    configured_membership_payload = {
+        "workers": configured_worker_ids,
+        "reviewers": configured_reviewer_ids,
+    }
+    observed_membership_payload = {
+        "workers": observed_worker_ids,
+        "reviewers": observed_reviewer_ids,
+    }
+    malicious_worker_ids = [
+        str(result.get("worker", ""))
+        for result in round_1_results
+        if bool(result.get("malicious"))
+    ]
+    malicious_reviewer_ids = [
+        str(review.get("reviewer", ""))
+        for review in round_2_reviews
+        if "malicious" in str(review.get("reviewer", ""))
+    ]
+    return {
+        "rule": "configured_three_worker_three_reviewer_quorum",
+        "profile": open_battery_byzantine_result_selection_profile(case),
+        "configured_worker_ids": configured_worker_ids,
+        "observed_worker_ids": observed_worker_ids,
+        "worker_result_ids": worker_result_ids,
+        "worker_membership": worker_membership,
+        "configured_reviewer_ids": configured_reviewer_ids,
+        "observed_reviewer_ids": observed_reviewer_ids,
+        "reviewer_review_ids": reviewer_review_ids,
+        "reviewer_membership": reviewer_membership,
+        "malicious_worker_ids": malicious_worker_ids,
+        "malicious_reviewer_ids": malicious_reviewer_ids,
+        "configured_membership_set_sha256": text_sha256(json_dumps(configured_membership_payload)),
+        "observed_membership_set_sha256": text_sha256(json_dumps(observed_membership_payload)),
+        "membership_matches_configured": (
+            bool(worker_membership["matches_configured_order"])
+            and bool(worker_membership["unique"])
+            and bool(reviewer_membership["matches_configured_order"])
+            and bool(reviewer_membership["unique"])
+        ),
+    }
+
+
 def open_battery_byzantine_round_1_results(
     *,
     case: OpenBatteryCaseSpec,
@@ -7781,6 +7867,11 @@ def open_battery_byzantine_final_selection(
     result_id_set = set(result_ids)
     reviewer_ids = [str(review.get("reviewer", "")) for review in round_2_reviews]
     reviewer_id_set = set(reviewer_ids)
+    quorum_membership_derivation = open_battery_quorum_membership_derivation(
+        case=case,
+        round_1_results=round_1_results,
+        round_2_reviews=round_2_reviews,
+    )
     result_by_id = {str(result.get("result_id", "")): result for result in round_1_results}
     round_1_payloads_by_id = {
         result_id: json_dumps(dict(result_by_id.get(result_id, {})))
@@ -7879,6 +7970,32 @@ def open_battery_byzantine_final_selection(
         "byzantine_result_selection_exercised": True,
         "byzantine_worker_count_is_three": len(round_1_results) == 3,
         "byzantine_reviewer_count_is_three": len(round_2_reviews) == 3,
+        "byzantine_quorum_membership_derivation_recorded": (
+            quorum_membership_derivation.get("rule") == "configured_three_worker_three_reviewer_quorum"
+            and list(quorum_membership_derivation.get("configured_worker_ids") or []) == ["worker_1", "worker_2", "worker_3"]
+            and list(quorum_membership_derivation.get("configured_reviewer_ids") or []) == open_battery_configured_reviewer_ids(case)
+            and bool(quorum_membership_derivation.get("configured_membership_set_sha256"))
+            and bool(quorum_membership_derivation.get("observed_membership_set_sha256"))
+        ),
+        "byzantine_worker_membership_matches_configured_quorum": (
+            list(quorum_membership_derivation.get("observed_worker_ids") or [])
+            == list(quorum_membership_derivation.get("configured_worker_ids") or [])
+            and bool((quorum_membership_derivation.get("worker_membership") or {}).get("unique"))
+            and not (quorum_membership_derivation.get("worker_membership") or {}).get("missing")
+            and not (quorum_membership_derivation.get("worker_membership") or {}).get("unexpected")
+        ),
+        "byzantine_reviewer_membership_matches_configured_quorum": (
+            list(quorum_membership_derivation.get("observed_reviewer_ids") or [])
+            == list(quorum_membership_derivation.get("configured_reviewer_ids") or [])
+            and bool((quorum_membership_derivation.get("reviewer_membership") or {}).get("unique"))
+            and not (quorum_membership_derivation.get("reviewer_membership") or {}).get("missing")
+            and not (quorum_membership_derivation.get("reviewer_membership") or {}).get("unexpected")
+        ),
+        "byzantine_boundary_exposes_quorum_membership": (
+            bool(quorum_membership_derivation.get("membership_matches_configured"))
+            and list(quorum_membership_derivation.get("worker_result_ids") or []) == result_ids
+            and list(quorum_membership_derivation.get("reviewer_review_ids") or []) == reviewer_ids
+        ),
         "byzantine_final_round_received_all_round_2_reviews": (
             len(round_2_reviews) == 3
             and len(reviewer_id_set) == 3
@@ -8074,6 +8191,13 @@ def open_battery_byzantine_final_selection(
         "profile": profile,
         "worker_count": 3,
         "reviewer_count": 3,
+        "quorum_membership_derivation": quorum_membership_derivation,
+        "configured_worker_ids": quorum_membership_derivation.get("configured_worker_ids", []),
+        "configured_reviewer_ids": quorum_membership_derivation.get("configured_reviewer_ids", []),
+        "observed_worker_ids": quorum_membership_derivation.get("observed_worker_ids", []),
+        "observed_reviewer_ids": quorum_membership_derivation.get("observed_reviewer_ids", []),
+        "configured_membership_set_sha256": quorum_membership_derivation.get("configured_membership_set_sha256", ""),
+        "observed_membership_set_sha256": quorum_membership_derivation.get("observed_membership_set_sha256", ""),
         "max_rejections_per_reviewer": 1,
         "majority_threshold": majority_threshold,
         "round_1_result_ids": result_ids,
@@ -8128,6 +8252,9 @@ def open_battery_run_byzantine_result_selection(
     round_1_results = open_battery_byzantine_round_1_results(case=case, goal=goal)
     round_1_result_sha256_by_id = open_battery_payload_sha256_by_id(round_1_results, id_key="result_id")
     round_1_results_set_sha256 = open_battery_payload_set_sha256(round_1_result_sha256_by_id)
+    configured_worker_ids = ["worker_1", "worker_2", "worker_3"]
+    observed_worker_ids = [str(result.get("worker", "")) for result in round_1_results]
+    worker_membership_set_sha256 = text_sha256(json_dumps({"workers": observed_worker_ids}))
     round_1_path = case_dir / "byzantine_round_1_results.json"
     atomic_write_json(
         round_1_path,
@@ -8137,6 +8264,9 @@ def open_battery_run_byzantine_result_selection(
             "case_id": case.case_id,
             "task": case.prompt,
             "worker_count": 3,
+            "configured_worker_ids": configured_worker_ids,
+            "observed_worker_ids": observed_worker_ids,
+            "worker_membership_set_sha256": worker_membership_set_sha256,
             "results": round_1_results,
             "result_sha256_by_id": round_1_result_sha256_by_id,
             "results_set_sha256": round_1_results_set_sha256,
@@ -8149,10 +8279,21 @@ def open_battery_run_byzantine_result_selection(
         stage="byzantine_round_1_results_returned",
         result_ids=[result.get("result_id") for result in round_1_results],
         worker_count=len(round_1_results),
+        configured_worker_ids=configured_worker_ids,
+        observed_worker_ids=observed_worker_ids,
+        worker_membership_set_sha256=worker_membership_set_sha256,
         result_payloads_set_sha256=round_1_results_set_sha256,
     )
 
     round_2_reviews = open_battery_byzantine_round_2_reviews(case=case, round_1_results=round_1_results)
+    configured_reviewer_ids = open_battery_configured_reviewer_ids(case)
+    observed_reviewer_ids = [str(review.get("reviewer", "")) for review in round_2_reviews]
+    reviewer_membership_set_sha256 = text_sha256(json_dumps({"reviewers": observed_reviewer_ids}))
+    quorum_membership_derivation = open_battery_quorum_membership_derivation(
+        case=case,
+        round_1_results=round_1_results,
+        round_2_reviews=round_2_reviews,
+    )
     round_2_review_sha256_by_reviewer = open_battery_payload_sha256_by_id(round_2_reviews, id_key="reviewer")
     round_2_reviews_set_sha256 = open_battery_payload_set_sha256(round_2_review_sha256_by_reviewer)
     round_2_path = case_dir / "byzantine_round_2_reviews.json"
@@ -8167,6 +8308,10 @@ def open_battery_run_byzantine_result_selection(
             "input_result_sha256_by_id": round_1_result_sha256_by_id,
             "input_results_set_sha256": round_1_results_set_sha256,
             "reviewer_count": 3,
+            "configured_reviewer_ids": configured_reviewer_ids,
+            "observed_reviewer_ids": observed_reviewer_ids,
+            "reviewer_membership_set_sha256": reviewer_membership_set_sha256,
+            "quorum_membership_derivation": quorum_membership_derivation,
             "max_rejections_per_reviewer": 1,
             "reviews": round_2_reviews,
             "review_sha256_by_reviewer": round_2_review_sha256_by_reviewer,
@@ -8179,6 +8324,10 @@ def open_battery_run_byzantine_result_selection(
         case=case,
         stage="byzantine_round_2_reviews_completed",
         reviewer_count=len(round_2_reviews),
+        configured_reviewer_ids=configured_reviewer_ids,
+        observed_reviewer_ids=observed_reviewer_ids,
+        reviewer_membership_set_sha256=reviewer_membership_set_sha256,
+        quorum_membership_derivation=quorum_membership_derivation,
         input_result_ids=[result.get("result_id") for result in round_1_results],
         all_results_sent_to_all_reviewers=all(
             set(review.get("input_result_ids", [])) == {result.get("result_id") for result in round_1_results}
@@ -8224,6 +8373,9 @@ def open_battery_run_byzantine_result_selection(
                     "type": "worker_result_round",
                     "artifact": str(round_1_path),
                     "result_ids": [result.get("result_id") for result in round_1_results],
+                    "configured_worker_ids": configured_worker_ids,
+                    "observed_worker_ids": observed_worker_ids,
+                    "worker_membership_set_sha256": worker_membership_set_sha256,
                     "result_sha256_by_id": round_1_result_sha256_by_id,
                     "results_set_sha256": round_1_results_set_sha256,
                 },
@@ -8232,6 +8384,10 @@ def open_battery_run_byzantine_result_selection(
                     "type": "reject_at_most_one_and_rank_survivors",
                     "artifact": str(round_2_path),
                     "reviewers": [review.get("reviewer") for review in round_2_reviews],
+                    "configured_reviewer_ids": configured_reviewer_ids,
+                    "observed_reviewer_ids": observed_reviewer_ids,
+                    "reviewer_membership_set_sha256": reviewer_membership_set_sha256,
+                    "quorum_membership_derivation": quorum_membership_derivation,
                     "review_sha256_by_reviewer": round_2_review_sha256_by_reviewer,
                     "reviews_set_sha256": round_2_reviews_set_sha256,
                 },
@@ -8241,6 +8397,7 @@ def open_battery_run_byzantine_result_selection(
                     "artifact": str(final_path),
                     "input_reviewers": final_selection.get("input_reviewers", []),
                     "input_reviews_set_sha256": final_selection.get("input_reviews_set_sha256", ""),
+                    "quorum_membership_derivation": final_selection.get("quorum_membership_derivation", {}),
                     "rejection_derivation": final_selection.get("rejection_derivation", {}),
                     "survivor_ranking_completion_derivation": final_selection.get("survivor_ranking_completion_derivation", {}),
                     "agreed_result_id": final_selection.get("agreed_result_id"),
@@ -8253,6 +8410,7 @@ def open_battery_run_byzantine_result_selection(
                 "agreed_result_id": final_selection.get("agreed_result_id"),
                 "agreed_result": final_selection.get("agreed_result"),
                 "agreed_result_sha256": final_selection.get("agreed_result_sha256", ""),
+                "quorum_membership_derivation": final_selection.get("quorum_membership_derivation", {}),
                 "rejection_derivation": final_selection.get("rejection_derivation", {}),
                 "survivor_ranking_completion_derivation": final_selection.get("survivor_ranking_completion_derivation", {}),
                 "clear_majority_derivation": final_selection.get("clear_majority_derivation", {}),
@@ -8270,6 +8428,9 @@ def open_battery_run_byzantine_result_selection(
         agreed_result_id=final_selection.get("agreed_result_id"),
         agreed_result_sha256=final_selection.get("agreed_result_sha256", ""),
         selection_method=final_selection.get("selection_method"),
+        quorum_membership_derivation=final_selection.get("quorum_membership_derivation", {}),
+        configured_membership_set_sha256=final_selection.get("configured_membership_set_sha256", ""),
+        observed_membership_set_sha256=final_selection.get("observed_membership_set_sha256", ""),
         rejection_derivation=final_selection.get("rejection_derivation", {}),
         survivor_ranking_completion_derivation=final_selection.get("survivor_ranking_completion_derivation", {}),
         clear_majority_derivation=final_selection.get("clear_majority_derivation", {}),
@@ -8298,6 +8459,13 @@ def open_battery_run_byzantine_result_selection(
             "surviving_result_sha256_by_id": final_selection.get("surviving_result_sha256_by_id", {}),
             "host_random_survivor_sha256_by_id": final_selection.get("host_random_survivor_sha256_by_id", {}),
             "selection_method": final_selection.get("selection_method"),
+            "quorum_membership_derivation": final_selection.get("quorum_membership_derivation", {}),
+            "configured_worker_ids": final_selection.get("configured_worker_ids", []),
+            "configured_reviewer_ids": final_selection.get("configured_reviewer_ids", []),
+            "observed_worker_ids": final_selection.get("observed_worker_ids", []),
+            "observed_reviewer_ids": final_selection.get("observed_reviewer_ids", []),
+            "configured_membership_set_sha256": final_selection.get("configured_membership_set_sha256", ""),
+            "observed_membership_set_sha256": final_selection.get("observed_membership_set_sha256", ""),
             "rejection_derivation": final_selection.get("rejection_derivation", {}),
             "survivor_ranking_completion_derivation": final_selection.get("survivor_ranking_completion_derivation", {}),
             "clear_majority_derivation": final_selection.get("clear_majority_derivation", {}),
@@ -9583,6 +9751,22 @@ def run_open_battery(args: argparse.Namespace) -> int:
         ),
         "open_battery_byzantine_round_1_three_results_returned": all(
             bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_round_1_three_results_returned"))
+            for case in cases
+        ),
+        "open_battery_byzantine_quorum_membership_derivation_recorded": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_quorum_membership_derivation_recorded"))
+            for case in cases
+        ),
+        "open_battery_byzantine_worker_membership_matches_configured_quorum": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_worker_membership_matches_configured_quorum"))
+            for case in cases
+        ),
+        "open_battery_byzantine_reviewer_membership_matches_configured_quorum": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_reviewer_membership_matches_configured_quorum"))
+            for case in cases
+        ),
+        "open_battery_byzantine_boundary_exposes_quorum_membership": all(
+            bool((case_reports.get(case.case_id) or {}).get("contracts", {}).get("byzantine_boundary_exposes_quorum_membership"))
             for case in cases
         ),
         "open_battery_byzantine_round_1_payload_hashes_recorded": all(

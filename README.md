@@ -124,6 +124,22 @@ with `environment=test`, chain id `42424241`, and RPC URL
 `http://127.0.0.1:30010`.
 
 
+Remote QBFT and mainnet operator docs:
+
+```text
+pretty_docs/crypto-network-coolify-testnet-runbook.md
+pretty_docs/mainnet-chain-redeploy-runbook.md
+pretty_docs/hub-chain-testnet-mainnet-architecture.md
+```
+
+The stable rule is that private state carries secrets, private keys, and
+operator topology. Contract addresses are public deployment facts and live in
+`runtime/deployments/<network>/latest.json`,
+`runtime/deployments/<network>/runs/<run_id>/deployment.json`, and
+`main_computer/config/<network>_contracts.json`, not in
+`runtime/state/main_computer.private.yaml`.
+
+
 Local Hub topology fixtures live under `deploy/hub-topology/` so they are not
 tied to the stable-Hub lab or exp/FDB implementation names:
 

@@ -2100,6 +2100,10 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
     assert report["contracts"]["open_battery_all_target_endstates_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_result_selection_exercised"] is True
     assert report["contracts"]["open_battery_byzantine_round_1_three_results_returned"] is True
+    assert report["contracts"]["open_battery_byzantine_quorum_membership_derivation_recorded"] is True
+    assert report["contracts"]["open_battery_byzantine_worker_membership_matches_configured_quorum"] is True
+    assert report["contracts"]["open_battery_byzantine_reviewer_membership_matches_configured_quorum"] is True
+    assert report["contracts"]["open_battery_byzantine_boundary_exposes_quorum_membership"] is True
     assert report["contracts"]["open_battery_byzantine_round_1_payload_hashes_recorded"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_all_results_sent_to_all_reviewers"] is True
     assert report["contracts"]["open_battery_byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
@@ -2206,6 +2210,10 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["observed_endstate_matches_target"] is True
         assert decision["contracts"]["case_report_written"] is True
         assert decision["contracts"]["byzantine_round_1_three_results_returned"] is True
+        assert decision["contracts"]["byzantine_quorum_membership_derivation_recorded"] is True
+        assert decision["contracts"]["byzantine_worker_membership_matches_configured_quorum"] is True
+        assert decision["contracts"]["byzantine_reviewer_membership_matches_configured_quorum"] is True
+        assert decision["contracts"]["byzantine_boundary_exposes_quorum_membership"] is True
         assert decision["contracts"]["byzantine_round_1_payload_hashes_recorded"] is True
         assert decision["contracts"]["byzantine_round_2_all_results_sent_to_all_reviewers"] is True
         assert decision["contracts"]["byzantine_round_2_full_result_payloads_sent_to_all_reviewers"] is True
@@ -2234,6 +2242,33 @@ def test_open_battery_deterministic_pathway_exercises_open_ended_endstates(tmp_p
         assert decision["contracts"]["byzantine_boundary_exposes_random_pool_derivation"] is True
         assert len(round_1["results"]) == 3
         assert len(round_2["reviews"]) == 3
+        assert round_1["configured_worker_ids"] == ["worker_1", "worker_2", "worker_3"]
+        assert round_1["observed_worker_ids"] == [result["worker"] for result in round_1["results"]]
+        expected_reviewer_ids = (
+            ["reviewer_1", "reviewer_2", "reviewer_3"]
+            if case_id == "answer_only"
+            else ["reviewer_1", "reviewer_2", "reviewer_3_malicious"]
+        )
+        assert round_2["configured_reviewer_ids"] == expected_reviewer_ids
+        assert round_2["observed_reviewer_ids"] == [review["reviewer"] for review in round_2["reviews"]]
+        membership = final_selection["quorum_membership_derivation"]
+        assert membership["rule"] == "configured_three_worker_three_reviewer_quorum"
+        assert membership["configured_worker_ids"] == round_1["configured_worker_ids"]
+        assert membership["observed_worker_ids"] == round_1["observed_worker_ids"]
+        assert membership["configured_reviewer_ids"] == round_2["configured_reviewer_ids"]
+        assert membership["observed_reviewer_ids"] == round_2["observed_reviewer_ids"]
+        assert membership["worker_membership"]["matches_configured_order"] is True
+        assert membership["worker_membership"]["unique"] is True
+        assert membership["reviewer_membership"]["matches_configured_order"] is True
+        assert membership["reviewer_membership"]["unique"] is True
+        assert membership["membership_matches_configured"] is True
+        assert len(membership["configured_membership_set_sha256"]) == 64
+        assert len(membership["observed_membership_set_sha256"]) == 64
+        assert final_selection["configured_membership_set_sha256"] == membership["configured_membership_set_sha256"]
+        assert final_selection["observed_membership_set_sha256"] == membership["observed_membership_set_sha256"]
+        assert decision["byzantine_agreement"]["quorum_membership_derivation"] == membership
+        assert decision["byzantine_agreement"]["configured_membership_set_sha256"] == membership["configured_membership_set_sha256"]
+        assert decision["byzantine_agreement"]["observed_membership_set_sha256"] == membership["observed_membership_set_sha256"]
         assert final_selection["input_reviewers"] == [review["reviewer"] for review in round_2["reviews"]]
         assert final_selection["input_reviews"] == round_2["reviews"]
         assert all(len(review["input_result_ids"]) == 3 for review in round_2["reviews"])

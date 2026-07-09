@@ -178,6 +178,17 @@ coolify:
         self.assertEqual(plan["network_key"], "mainnet")
         self.assertEqual(plan["servers"][0]["service_name"], "main-computer-mainnet-hubs-coolify-a")
         self.assertEqual(plan["servers"][1]["service_name"], "main-computer-mainnet-hubs-coolify-b")
+        self.assertEqual(
+            plan["servers"][0]["coolify_service_domains"],
+            {
+                "mainnet-hub1": {"domain": "https://mainnet-hub1.greatlibrary.io:8790"},
+                "mainnet-hub2": {"domain": "https://mainnet-hub2.greatlibrary.io:8790"},
+            },
+        )
+        self.assertEqual(
+            plan["servers"][1]["coolify_service_domains"],
+            {"mainnet-hub3": {"domain": "https://mainnet-hub3.greatlibrary.io:8790"}},
+        )
         self.assertIn("mainnet-hub1:", compose)
         self.assertIn("mainnet-hub2:", compose)
         self.assertIn("https://mainnet-hub1.greatlibrary.io", compose)
@@ -245,6 +256,10 @@ coolify:
         self.assertEqual(payload["server_uuid"], "server-b")
         self.assertEqual(payload["project_uuid"], "project-b")
         self.assertEqual(payload["environment_uuid"], "env-b")
+        self.assertEqual(
+            payload["docker_compose_domains"],
+            {"testnet-hub3": {"domain": "https://testnet-hub3.greatlibrary.io:8785"}},
+        )
         compose = base64.b64decode(payload["docker_compose_raw"]).decode("utf-8")
         self.assertIn("testnet-hub3:", compose)
         self.assertIn("testnet-hub3.greatlibrary.io", compose)
@@ -425,7 +440,7 @@ coolify:
         )
         tried: list[dict[str, object]] = []
 
-        service_uuid, action, existing = coolify_hub_cluster.sync_service_for_server(
+        service_uuid, action, existing, update_result = coolify_hub_cluster.sync_service_for_server(
             client,
             placement,
             profile,
@@ -443,14 +458,76 @@ coolify:
         self.assertEqual(service_uuid, "service-uuid")
         self.assertEqual(action, "created")
         self.assertEqual(existing["source"], "missing")
+        self.assertTrue(update_result["domains_included"])
         post = next(request for request in client.requests if request[0] == "POST")
         self.assertEqual(post[1], "/api/v1/services")
         self.assertEqual(post[2]["server_uuid"], "server-a")
         self.assertEqual(post[2]["project_uuid"], "project-a")
         self.assertIn("docker_compose_raw", post[2])
+        self.assertEqual(
+            post[2]["docker_compose_domains"],
+            {
+                "testnet-hub1": {"domain": "https://testnet-hub1.greatlibrary.io:8785"},
+                "testnet-hub2": {"domain": "https://testnet-hub2.greatlibrary.io:8785"},
+            },
+        )
         decoded = base64.b64decode(post[2]["docker_compose_raw"]).decode("utf-8")
         self.assertIn("testnet-hub1:", decoded)
         self.assertIn("testnet-hub2:", decoded)
+
+
+    def test_sync_service_update_sends_compose_domains_before_plain_compose_fallback(self) -> None:
+        args = _args()
+        placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)
+        profile = coolify_hub_cluster.load_network_profile(placement, args)
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/services"): [
+                    {
+                        "services": [
+                            {
+                                "uuid": "service-uuid",
+                                "name": "main-computer-testnet-hubs-coolify-a",
+                            }
+                        ]
+                    }
+                ],
+                ("PATCH", "/api/v1/services/service-uuid"): [
+                    {"uuid": "service-uuid", "name": "main-computer-testnet-hubs-coolify-a"}
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        service_uuid, action, existing, update_result = coolify_hub_cluster.sync_service_for_server(
+            client,
+            placement,
+            profile,
+            args,
+            server_name="coolify-a",
+            context={
+                "server_uuid": "server-a",
+                "project_uuid": "project-a",
+                "environment_name": "testnet-hubs",
+                "environment_uuid": "env-a",
+            },
+            tried=tried,
+        )
+
+        self.assertEqual(service_uuid, "service-uuid")
+        self.assertEqual(action, "updated")
+        self.assertEqual(existing["source"], "name")
+        self.assertTrue(update_result["domains_included"])
+        patch = next(request for request in client.requests if request[0] == "PATCH")
+        self.assertEqual(patch[1], "/api/v1/services/service-uuid")
+        self.assertEqual(
+            patch[2]["docker_compose_domains"],
+            {
+                "testnet-hub1": {"domain": "https://testnet-hub1.greatlibrary.io:8785"},
+                "testnet-hub2": {"domain": "https://testnet-hub2.greatlibrary.io:8785"},
+            },
+        )
+        self.assertIn("docker_compose_raw", patch[2])
 
 
 if __name__ == "__main__":

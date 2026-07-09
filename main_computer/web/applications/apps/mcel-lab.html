@@ -197,7 +197,7 @@
         <output id="mcel-18n-wallet-tool-status" class="mcel-tiny-contract-proof" data-status="locked" aria-live="polite">
           18N wallet tool is locked until a current MCEL commit draft is proven.
         </output>
-        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" data-mcel-20b-wallet-signed-intent-unlock="true" data-mcel-20c-wallet-signature-preflight="true" data-mcel-20def-wallet-provider-review="true" data-mcel-20g-wallet-provider-hardening="true" data-mcel-21abc-wallet-transaction-execution="true" data-mcel-21def-wallet-recovery-receipts-relock="true" data-mcel-22abc-network-policy-registry="true" data-mcel-22def-policy-hardening-activation-readiness="true" data-mcel-23ab-live-route-finality="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, 20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D intent signature, 20E verification, 20F pre-send review, and 20G provider hardening, 21A policy-bound send, 21B provider outcome ledger, 21C transaction watcher, 21D retry safety, 21E receipt integration, 21F relock lifecycle, 22A policy decision, 22B policy profile import, and 22C target binding, 22A policy registry, 22B profile import, 22C target binding, 22D production hardening, 22E activation lifecycle, 22F execution readiness, 23A live route readiness, and 23B transaction finality observer board">
+        <section class="mcel-18n-wallet-visible-board" data-mcel-18n-wallet-visible-board="true" data-mcel-19abc-wallet-visible-board="true" data-mcel-19de-wallet-proof-alignment="true" data-mcel-20a-wallet-unlock-contract="true" data-mcel-20b-wallet-signed-intent-unlock="true" data-mcel-20c-wallet-signature-preflight="true" data-mcel-20def-wallet-provider-review="true" data-mcel-20g-wallet-provider-hardening="true" data-mcel-21abc-wallet-transaction-execution="true" data-mcel-21def-wallet-recovery-receipts-relock="true" data-mcel-22abc-network-policy-registry="true" data-mcel-22def-policy-hardening-activation-readiness="true" data-mcel-23ab-live-route-finality="true" data-mcel-23cd-recovery-audit="true" aria-label="18N locked wallet boundary with 19A 19B 19C draft validity, 19D 19E proof alignment, 20A staged unlock contract, 20B signed-intent gate, 20C signature-request preflight, 20D intent signature, 20E verification, 20F pre-send review, and 20G provider hardening, 21A policy-bound send, 21B provider outcome ledger, 21C transaction watcher, 21D retry safety, 21E receipt integration, 21F relock lifecycle, 22A policy decision, 22B policy profile import, and 22C target binding, 22A policy registry, 22B profile import, 22C target binding, 22D production hardening, 22E activation lifecycle, 22F execution readiness, 23A live route readiness, and 23B transaction finality observer board">
           <div class="mcel-18n-wallet-board-head">
             <strong>18N-K complete locked wallet boundary + 19A/B/C/D/E draft proof + 20A/B/C unlock + 20D/E/F/G provider intent review + 21A/B/C/D/E/F transaction execution lifecycle + 22A/B/C/D/E/F configurable network policy + 23A/B live route and finality observer</strong>
             <span id="mcel-18n-wallet-tool-visible-phase">21A can request a policy-bound network-agnostic provider send when current signed evidence matches; 21B ledgers provider outcome and 21C watches receipts; 21D blocks duplicate retries, 21E integrates chain outcome, and 21F relocks; 22A/B/C formalize configurable network policy, importable profiles, and per-network target bindings. 22D/E/F harden production policy, require explicit activation, and expose final execution readiness. 23A checks pre-send live route readiness without provider mutation, and 23B observes post-send transaction finality with read-only RPCs.</span>
@@ -320,6 +320,14 @@
               <strong id="mcel-23b-wallet-finality-observer-visible-status">waiting</strong>
             </article>
             <article>
+              <span>23C recovery planner</span>
+              <strong id="mcel-23c-wallet-recovery-planner-visible-status">waiting</strong>
+            </article>
+            <article>
+              <span>23D audit export</span>
+              <strong id="mcel-23d-wallet-audit-export-visible-status">waiting</strong>
+            </article>
+            <article>
               <span>Invalidated by</span>
               <strong id="mcel-19c-wallet-tx-draft-invalidated-by">none observed</strong>
             </article>
@@ -398,6 +406,8 @@
         <pre id="mcel-22f-wallet-execution-readiness" class="mcel-tiny-contract-evidence">22F policy-bound execution readiness is waiting.</pre>
         <pre id="mcel-23a-wallet-live-network-execution-polish" class="mcel-tiny-contract-evidence">23A pre-send live route readiness is waiting.</pre>
         <pre id="mcel-23b-wallet-transaction-observer-finality" class="mcel-tiny-contract-evidence">23B transaction finality observer is waiting for a tx hash.</pre>
+        <pre id="mcel-23c-wallet-safe-recovery-planner" class="mcel-tiny-contract-evidence">23C safe recovery planner is waiting for finality or failure evidence.</pre>
+        <pre id="mcel-23d-wallet-execution-audit-export" class="mcel-tiny-contract-evidence">23D execution audit export proof packet is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-final-locked-specimen" class="mcel-tiny-contract-evidence">Final locked wallet specimen is waiting.</pre>
         <pre id="mcel-18n-wallet-tool-completion-report" class="mcel-tiny-contract-evidence">18N completion report is waiting.</pre>
       </article>
@@ -439,6 +449,10 @@
       "walletLiveNetworkExecutionPolish",
       "wallet23bTransactionObserver",
       "walletTransactionFinalityObserver",
+      "wallet23cSafeRecoveryPlanner",
+      "walletSafeRecoveryPlanner",
+      "wallet23dExecutionAuditExport",
+      "walletExecutionAuditExport",
       "proofChip",
       "repairPacket",
       "assistantRepairPrompt",
