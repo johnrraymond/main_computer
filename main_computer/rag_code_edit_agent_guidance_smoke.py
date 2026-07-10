@@ -70,6 +70,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -13667,6 +13668,131 @@ def write_guidance_commands_jsonl(commands_path: Path, commands: Sequence[dict[s
     write_text_lf(commands_path, "\n".join(json.dumps(command, ensure_ascii=False, sort_keys=True) for command in commands) + "\n")
 
 
+def make_ai_restart_reset_path_writable(path: Path | str) -> None:
+    """Best-effort chmod used before deleting generated smoke state on Windows."""
+
+    try:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+    except OSError:
+        pass
+
+
+def remove_ai_restart_generated_path(path: Path) -> None:
+    """Remove one generated smoke child, tolerating read-only Git object files.
+
+    Windows can leave files under .git/objects read-only.  A plain
+    shutil.rmtree then fails before the live-AI restart smoke reaches any prompt
+    surface.  This helper clears the writable bit and retries.  If removal still
+    fails, it attempts to move the generated child aside so the fresh phase-one
+    fixture can be recreated at the expected path.
+    """
+
+    def retry_remove(function: Any, raw_path: str, exc_info: Any) -> None:
+        make_ai_restart_reset_path_writable(raw_path)
+        try:
+            function(raw_path)
+            return
+        except OSError:
+            time.sleep(0.05)
+            make_ai_restart_reset_path_writable(raw_path)
+            function(raw_path)
+
+    def remove_once(target: Path) -> None:
+        if target.is_dir() and not target.is_symlink():
+            try:
+                shutil.rmtree(target, onexc=retry_remove)
+            except TypeError:
+                shutil.rmtree(target, onerror=retry_remove)
+            return
+        make_ai_restart_reset_path_writable(target)
+        target.unlink()
+
+    try:
+        remove_once(path)
+        return
+    except PermissionError:
+        pass
+    except OSError as exc:
+        # Keep non-permission failures visible unless the move-aside fallback
+        # succeeds below.
+        last_error = exc
+    else:
+        return
+
+    stale_name = f".{path.name}.stale-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')}-{os.getpid()}"
+    stale_path = path.with_name(stale_name)
+    try:
+        path.rename(stale_path)
+    except OSError as rename_exc:
+        original = locals().get("last_error", rename_exc)
+        raise SmokeFailure(
+            f"could not reset generated smoke path {path}: {original}; move-aside failed: {rename_exc}"
+        ) from rename_exc
+    try:
+        remove_once(stale_path)
+    except OSError:
+        # The important property is that the canonical generated path is clear
+        # for the fresh phase-one fixture.  A leftover .*.stale-* child is not
+        # used by the smoke and can be deleted manually later.
+        pass
+
+
+def reset_ai_restart_recovery_fresh_run_state(
+    run_dir: Path,
+    *,
+    commands_path: Path,
+    report_path: Path,
+) -> list[str]:
+    """Remove stale generated state before phase one of the two-phase restart smoke.
+
+    The public --ai-restart-recovery-smoke wrapper owns the restart sequence
+    itself: phase one must always start from a fresh synthetic fixture, then
+    phase two resumes from the run_state.json that phase one just wrote.  When a
+    developer reruns the same --run-id, stale origin/worktree/report files from
+    the previous invocation must not make the fresh phase-one setup fail before
+    live AI prompt handling is exercised.
+
+    This reset is intentionally narrow.  It only removes known generated
+    children under run_dir and never removes arbitrary paths supplied through
+    --commands-path or --report-path when they are outside run_dir.
+    """
+
+    run_dir = run_dir.resolve()
+    direct_children = {
+        "origin",
+        "worktree",
+        "boundaries",
+        "events.jsonl",
+        "run_state.json",
+        "ai_calls.jsonl",
+        "ai_restart_recovery_smoke_summary.json",
+        "ai_restart_live_ring3_probe.json",
+    }
+
+    for maybe_child in (commands_path, report_path):
+        try:
+            relative = maybe_child.resolve().relative_to(run_dir)
+        except ValueError:
+            continue
+        if len(relative.parts) == 1:
+            direct_children.add(relative.parts[0])
+
+    removed: list[str] = []
+    for name in sorted(direct_children):
+        path = run_dir / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            relative = path.resolve().relative_to(run_dir)
+        except ValueError as exc:
+            raise SmokeFailure(f"refusing to reset path outside run_dir: {path}") from exc
+        if len(relative.parts) != 1 or relative.parts[0] != name:
+            raise SmokeFailure(f"refusing to reset non-direct generated path: {path}")
+        remove_ai_restart_generated_path(path)
+        removed.append(name)
+    return removed
+
+
 def ai_restart_recovery_agent_args(
     args: argparse.Namespace,
     *,
@@ -13728,6 +13854,11 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
     goal_directive = ai_restart_directive_from_args(args, scenario)
     goal_directive_contract = ai_restart_directive_contract(goal_directive)
 
+    reset_paths = reset_ai_restart_recovery_fresh_run_state(
+        run_dir,
+        commands_path=commands_path,
+        report_path=report_path,
+    )
     run_dir.mkdir(parents=True, exist_ok=True)
     write_guidance_commands_jsonl(
         commands_path,
@@ -13744,6 +13875,7 @@ def run_ai_restart_recovery_smoke(args: argparse.Namespace) -> int:
         run_dir=str(run_dir),
         commands_path=str(commands_path),
         report_path=str(report_path),
+        reset_generated_state_paths=reset_paths,
         ai_provider=str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
         ai_model=str(getattr(args, "ai_model", "") or ""),
         scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),

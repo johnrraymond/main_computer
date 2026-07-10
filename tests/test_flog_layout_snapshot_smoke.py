@@ -24,7 +24,7 @@ def test_synthetic_hierarchies_are_mcel_like_and_focus_declared():
 
     hierarchies = module.synthetic_hierarchies()
 
-    assert len(hierarchies) == 8
+    assert len(hierarchies) == 11
     for hierarchy in hierarchies:
         slots = {node["slot"] for node in hierarchy["nodes"]}
         contract = hierarchy["roleContract"]
@@ -48,6 +48,165 @@ def test_synthetic_hierarchies_are_mcel_like_and_focus_declared():
         assert len(focus_node["items"]) >= 6
         assert any(item["kind"] == "surface" for item in focus_node["items"])
         assert any(item["kind"] in {"collection", "status", "text"} for item in focus_node["items"])
+
+
+def test_git_tools_is_included_in_flog_battery_as_generic_repository_workflow():
+    module = load_module()
+
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "git-tools-workflow-workbench")
+    slots = {node["slot"] for node in hierarchy["nodes"]}
+    nodes_by_slot = {node["slot"]: node for node in hierarchy["nodes"]}
+
+    assert hierarchy["sourceApp"] == "git-tools"
+    assert hierarchy["rootConcern"] == "repository.workflow"
+    assert hierarchy["focusSlot"] == "workflow"
+    assert hierarchy["desiredFocusShare"] == 0.58
+    assert hierarchy["roleContract"]["requiredCompanions"] == ["command", "status"]
+    assert set(hierarchy["roleContract"]["nearbyCompanions"]) == {"server"}
+    assert set(hierarchy["roleContract"]["deferableSlots"]) == {"projects", "evidence", "advanced"}
+    assert set(hierarchy["roleContract"]["forbiddenDefaultHidden"]) == {"workflow", "command", "status"}
+    assert {"projects", "command", "workflow", "server", "status", "evidence", "advanced"}.issubset(slots)
+
+    assert nodes_by_slot["projects"]["role"] == "navigation"
+    assert nodes_by_slot["projects"]["visibility"] == "deferable"
+    assert "phase-specific-selector" in nodes_by_slot["projects"]["semantics"]["phasePersistence"]
+    assert "collapsed-trigger" in nodes_by_slot["projects"]["semantics"]["defaultRealization"]
+    assert nodes_by_slot["command"]["role"] == "command"
+    assert nodes_by_slot["workflow"]["role"] == "focus"
+    assert nodes_by_slot["server"]["role"] == "detail"
+    assert nodes_by_slot["status"]["role"] == "status"
+    assert nodes_by_slot["evidence"]["role"] == "evidence"
+    assert nodes_by_slot["evidence"]["visibility"] == "deferable"
+    assert nodes_by_slot["advanced"]["visibility"] == "deferable"
+
+    audit = module.semantic_contract_audit(hierarchy)
+    assert audit["state"] == "complete"
+    assert audit["missingPrimitives"] == []
+    assert audit["presentationSetCount"] >= 3
+    assert "repository-workflow" not in str(audit).lower()
+
+    expectations = {item["slot"]: item["expectation"] for item in module.semantic_affordance_expectations(hierarchy)}
+    assert expectations["projects"] == "phase-selector-trigger"
+    assert expectations["command"] == "command-rail"
+    assert expectations["workflow"] == "dominant-surface"
+    assert expectations["server"] == "deferable-inspector-trigger"
+    assert expectations["status"] == "persistent-status-strip"
+    assert expectations["evidence"] == "proof-trigger-or-drawer"
+
+    html = module.render_trial_html(hierarchy, "selected-context-workflow", "mcel-realistic")
+    assert 'data-mc-source-app="git-tools"' in html
+    assert 'data-mc-slot="workflow"' in html
+    assert 'data-mc-navigates="workflow"' in html
+    assert 'data-mc-controls="workflow"' in html
+    assert 'data-mc-confirms="workflow.state"' in html
+    assert 'data-mc-proves="workflow.claim"' in html
+    assert "data-mc-app-archetype" not in html
+    assert "data-mc-primary-grammar" not in html
+
+
+
+def test_worker_marketplace_policy_is_included_as_non_sidebar_workflow():
+    module = load_module()
+
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "worker-marketplace-policy-workbench")
+    slots = {node["slot"] for node in hierarchy["nodes"]}
+    nodes_by_slot = {node["slot"]: node for node in hierarchy["nodes"]}
+
+    assert hierarchy["sourceApp"] == "worker"
+    assert hierarchy["rootConcern"] == "worker.marketplace-policy"
+    assert hierarchy["focusSlot"] == "marketplace"
+    assert hierarchy["desiredFocusShare"] == 0.64
+    assert hierarchy["roleContract"]["requiredCompanions"] == ["hub", "status"]
+    assert hierarchy["roleContract"]["nearbyCompanions"] == []
+    assert set(hierarchy["roleContract"]["deferableSlots"]) == {"receipts", "guardrails"}
+    assert set(hierarchy["roleContract"]["forbiddenDefaultHidden"]) == {"hub", "marketplace", "status"}
+    assert {"hub", "marketplace", "status", "receipts", "guardrails"}.issubset(slots)
+
+    assert nodes_by_slot["hub"]["role"] == "command"
+    assert nodes_by_slot["marketplace"]["role"] == "focus"
+    assert nodes_by_slot["status"]["role"] == "status"
+    assert nodes_by_slot["receipts"]["role"] == "evidence"
+    assert nodes_by_slot["guardrails"]["role"] == "detail"
+    assert nodes_by_slot["receipts"]["visibility"] == "deferable"
+    assert nodes_by_slot["guardrails"]["visibility"] == "deferable"
+
+    dangerous = hierarchy["roleContract"]["dangerousFamilies"]
+    assert "sectioned-sidebar" in dangerous
+    assert "split-pane" in dangerous
+    assert "sidebar" in dangerous["sectioned-sidebar"]
+    assert {"top-band-dominant-surface", "top-band-focus-overlay", "progressive-workflow"}.issubset(set(hierarchy["roleContract"]["preferredFamilies"]))
+
+    audit = module.semantic_contract_audit(hierarchy)
+    assert audit["state"] == "complete"
+    assert audit["missingPrimitives"] == []
+    assert audit["presentationSetCount"] >= 3
+
+    expectations = {item["slot"]: item["expectation"] for item in module.semantic_affordance_expectations(hierarchy)}
+    assert expectations["hub"] == "command-rail"
+    assert expectations["marketplace"] == "dominant-surface"
+    assert expectations["status"] == "persistent-status-strip"
+    assert expectations["receipts"] == "proof-trigger-or-drawer"
+    assert expectations["guardrails"] == "deferable-inspector-trigger"
+
+    html = module.render_trial_html(hierarchy, "focus-priority", "mcel-realistic")
+    assert 'data-mc-source-app="worker"' in html
+    assert 'data-mc-slot="marketplace"' in html
+    assert 'data-mc-controls="marketplace"' in html
+    assert 'data-mc-confirms="marketplace.state"' in html
+    assert 'data-mc-proves="marketplace.claim"' in html
+    assert "data-mc-app-archetype" not in html
+    assert "data-mc-primary-grammar" not in html
+
+def test_document_page_overlay_workbench_models_real_document_overlay_layout():
+    module = load_module()
+
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "document-page-overlay-workbench")
+    slots = {node["slot"] for node in hierarchy["nodes"]}
+    nodes_by_slot = {node["slot"]: node for node in hierarchy["nodes"]}
+    contract = hierarchy["roleContract"]
+
+    assert hierarchy["sourceApp"] == "document"
+    assert hierarchy["rootConcern"] == "document.page-authoring"
+    assert hierarchy["focusSlot"] == "page"
+    assert hierarchy["desiredFocusShare"] == 0.66
+    assert contract["requiredCompanions"] == ["toolbar", "status"]
+    assert contract["nearbyCompanions"] == []
+    assert set(contract["deferableSlots"]) == {"library", "ai"}
+    assert set(contract["forbiddenDefaultHidden"]) == {"toolbar", "page", "status"}
+    assert {"bounded-drawer", "focus-priority", "source-order-stacked"}.issubset(set(contract["preferredFamilies"]))
+    assert {"sectioned-sidebar", "split-pane", "dashboard-grid"}.issubset(set(contract["dangerousFamilies"]))
+    assert {"toolbar", "page", "status", "library", "ai"}.issubset(slots)
+
+    assert nodes_by_slot["toolbar"]["role"] == "command"
+    assert nodes_by_slot["page"]["role"] == "focus"
+    assert nodes_by_slot["status"]["role"] == "status"
+    assert nodes_by_slot["library"]["visibility"] == "deferable"
+    assert nodes_by_slot["ai"]["visibility"] == "deferable"
+    assert nodes_by_slot["library"]["priority"] == "secondary"
+    assert nodes_by_slot["ai"]["priority"] == "secondary"
+
+    audit = module.semantic_contract_audit(hierarchy)
+    assert audit["state"] == "complete"
+    assert audit["missingPrimitives"] == []
+    assert "document-page-authoring" not in str(audit).lower()
+
+    expectations = {item["slot"]: item["expectation"] for item in module.semantic_affordance_expectations(hierarchy)}
+    assert expectations["toolbar"] == "command-rail"
+    assert expectations["page"] == "dominant-surface"
+    assert expectations["status"] == "persistent-status-strip"
+    assert expectations["library"] == "phase-selector-trigger"
+    assert expectations["ai"] == "proof-trigger-or-drawer"
+
+    html = module.render_trial_html(hierarchy, "bounded-drawer", "mcel-realistic")
+    assert 'data-mc-source-app="document"' in html
+    assert 'data-mc-slot="page"' in html
+    assert 'data-mc-controls="page"' in html
+    assert 'data-mc-confirms="page.state"' in html
+    assert 'data-mc-proves="page.claim"' in html
+    assert 'data-flog-deferable-slots="library ai"' in html
+    assert 'data-flog-nearby-companions=""' in html
+    assert "data-mc-app-archetype" not in html
+    assert "data-mc-primary-grammar" not in html
 
 
 def test_parse_candidates_supports_all_and_rejects_unknown():
@@ -241,6 +400,9 @@ def test_candidate_geometry_css_allocates_focus_without_hiding_required_companio
     assert '"collection focus command"' in css  # focus-priority integrates nearby navigation/collection as a side rail
     assert '"status status evidence"' in css  # compact status can be a persistent band rather than a full panel
     assert ".trial-bounded-drawer .flog-node[data-flog-role=\"focus\"]" in css
+    assert ".trial-top-band-focus-overlay" in css
+    assert ".trial-selected-context-workflow" in css
+    assert "data-mc-phase-persistence^=\"phase-specific\"" in css
     assert "source-order-stacked preserves visibility but starves a high-focus hierarchy" in module.MEASURE_AND_OVERLAY_JS
     assert "nearbyIntegration(record, focusRecord.rect, rootClipped)" in module.MEASURE_AND_OVERLAY_JS
     assert "Nearby was satisfied by semantic docking/integration" in module.MEASURE_AND_OVERLAY_JS
@@ -1059,3 +1221,102 @@ def test_write_reports_lists_affordance_fit(tmp_path):
     assert "Affordance realization evidence" in text
     assert "Generic affordance realization" in text
     assert "editor realizes dominant-surface" in text
+
+def test_git_tools_phase_specific_selector_does_not_force_persistent_sidebar():
+    module = load_module()
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "git-tools-workflow-workbench")
+
+    sets = module.semantic_presentation_sets(hierarchy)
+    by_phase = {item["phase"]: item for item in sets}
+
+    assert "default" in by_phase
+    assert "projects" not in by_phase["default"]["requiredSlots"]
+    assert "project-selection" in by_phase
+    assert "projects" in by_phase["project-selection"]["slots"]
+
+    pressures = module.semantic_layout_pressures(hierarchy)
+    project_pressures = [item for item in pressures if item.get("source") == "projects"]
+    assert project_pressures
+    assert all(item["expectation"] == "phase-selector-access" for item in project_pressures)
+    assert all(item["requirement"] == "soft" for item in project_pressures)
+    assert "selector-adjacent" not in {item["expectation"] for item in project_pressures}
+
+
+def test_phase_realization_fit_accepts_default_triggers_for_phase_specific_regions():
+    module = load_module()
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "git-tools-workflow-workbench")
+
+    def record(slot, left, top, width, height):
+        return {
+            "slot": slot,
+            "rect": {
+                "left": left,
+                "top": top,
+                "right": left + width,
+                "bottom": top + height,
+                "width": width,
+                "height": height,
+                "area": width * height,
+            },
+        }
+
+    measurement = {
+        "geometryFacts": {
+            "root": {
+                "clipped": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 1000,
+                    "bottom": 600,
+                    "width": 1000,
+                    "height": 600,
+                    "area": 600000,
+                }
+            },
+            "focusShare": 0.58,
+            "desiredFocusShare": 0.58,
+            "minFocusShare": 0.46,
+        },
+        "examples": {
+            "nodes": [
+                record("command", 0, 60, 1000, 56),
+                record("workflow", 0, 130, 1000, 330),
+                record("status", 0, 470, 1000, 44),
+                record("projects", 0, 520, 230, 36),
+                record("server", 240, 520, 230, 36),
+                record("evidence", 480, 520, 230, 36),
+                record("advanced", 720, 520, 230, 36),
+            ]
+        },
+        "classification": {"score": 88, "status": "pass", "warnings": [], "positiveReasons": [], "failureReasons": [], "reviewNotes": []},
+    }
+
+    phase_fit = module.semantic_phase_realization_fit(hierarchy, measurement)
+    assert phase_fit["score"] >= 86
+    assert phase_fit["state"] == "strongPhaseFit"
+    assert any("trigger/drawer" in reason for reason in phase_fit["positiveReasons"])
+
+
+def test_new_workflow_candidates_are_generic_and_available():
+    module = load_module()
+
+    for candidate in [
+        "top-band-dominant-surface",
+        "top-band-focus-overlay",
+        "selected-context-workflow",
+        "progressive-workflow",
+        "workflow-with-proof-drawer",
+    ]:
+        assert candidate in module.LAYOUT_CANDIDATES
+        assert f"trial-{candidate}" in module.TRIAL_CSS
+
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "git-tools-workflow-workbench")
+    html = module.render_trial_html(hierarchy, "progressive-workflow", "mcel-realistic")
+
+    assert 'data-flog-candidate="progressive-workflow"' in html
+    assert 'data-flog-interaction-phases=' in html
+    assert 'data-mc-phase-persistence="phase-specific-selector' in html
+    assert 'data-mc-default-realization="collapsed-trigger' in html
+    assert "data-mc-app-archetype" not in html
+    assert "data-mc-primary-grammar" not in html
+

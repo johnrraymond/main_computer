@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """FLOG synthetic layout trial smoke with PNG proof.
 
-This script is intentionally not a live-app layout fixer.  It creates eight
+This script is intentionally not a live-app layout fixer.  It creates eleven
 MCEL-like synthetic hierarchies that model what real mounted apps should look
 like once the source hierarchy is properly described.  For each hierarchy it
 tries multiple stable layout families, measures the rendered geometry in
@@ -79,6 +79,8 @@ SEMANTIC_QUALITY_KEYS = (
     "relationshipStrength",
     "hardConstraints",
     "softPreferences",
+    "phasePersistence",
+    "defaultRealization",
 )
 
 LAYOUT_CANDIDATES = [
@@ -89,6 +91,11 @@ LAYOUT_CANDIDATES = [
     "dashboard-grid",
     "focus-priority",
     "bounded-drawer",
+    "top-band-dominant-surface",
+    "top-band-focus-overlay",
+    "selected-context-workflow",
+    "progressive-workflow",
+    "workflow-with-proof-drawer",
 ]
 
 ACCEPTABLE_LAYOUT_STATUSES = {"pass", "watch"}
@@ -223,6 +230,42 @@ def _is_hard_semantic_requirement(node: dict[str, Any], primitive: str | None = 
         strength = _relationship_strength_for_primitive(semantics, primitive)
         return strength == "hard" or f"{primitive}:hard" in set(_as_list(semantics.get("relationshipStrength")))
     return False
+
+
+def _phase_persistence_for_node(node: dict[str, Any]) -> str:
+    """Return the generic persistence mode for phase-aware layout.
+
+    This is deliberately not an app type.  It distinguishes continuously-active
+    UI regions from regions that are only required while a task phase is active.
+    """
+
+    semantics = node.get("semantics") or {}
+    declared = _as_list(semantics.get("phasePersistence"))
+    if declared:
+        return declared[0]
+    if node.get("visibility") == "deferable":
+        return "deferable"
+    if node.get("visibility") in {"phase", "phase-specific"}:
+        return "phase-specific"
+    if node.get("role") == "status" or _is_hard_semantic_requirement(node):
+        return "persistent"
+    return "default"
+
+
+def _default_realization_for_node(node: dict[str, Any]) -> str:
+    semantics = node.get("semantics") or {}
+    declared = _as_list(semantics.get("defaultRealization"))
+    if declared:
+        return declared[0]
+    persistence = _phase_persistence_for_node(node)
+    if persistence in {"deferable", "phase-specific", "phase-specific-selector", "phase-specific-support"}:
+        return "collapsed-trigger"
+    return "visible-region"
+
+
+def _is_phase_specific_node(node: dict[str, Any]) -> bool:
+    persistence = _phase_persistence_for_node(node)
+    return persistence in {"phase-specific", "phase-specific-selector", "phase-specific-support", "deferable"}
 
 
 def semantic_presentation_sets(hierarchy: dict[str, Any]) -> list[dict[str, Any]]:
@@ -416,6 +459,21 @@ def enrich_nodes_with_semantic_primitives(nodes: list[dict[str, Any]], focus_slo
             _add_semantic(semantics, "hardConstraints", "must-remain-visible")
         elif node.get("visibility") == "companion":
             _add_semantic(semantics, "softPreferences", "default-visible-companion")
+
+        if not _as_list(semantics.get("phasePersistence")):
+            if node.get("visibility") == "deferable":
+                _add_semantic(semantics, "phasePersistence", "deferable")
+            elif node.get("visibility") in {"phase", "phase-specific"}:
+                _add_semantic(semantics, "phasePersistence", "phase-specific")
+            elif role in {"focus", "command", "status"} or node.get("priority") == "primary":
+                _add_semantic(semantics, "phasePersistence", "persistent")
+            else:
+                _add_semantic(semantics, "phasePersistence", "default")
+        if not _as_list(semantics.get("defaultRealization")):
+            if _phase_persistence_for_node({"visibility": node.get("visibility"), "role": role, "semantics": semantics}) in {"deferable", "phase-specific", "phase-specific-selector", "phase-specific-support"}:
+                _add_semantic(semantics, "defaultRealization", "collapsed-trigger")
+            else:
+                _add_semantic(semantics, "defaultRealization", "visible-region")
 
         node["semantics"] = semantics
         enriched.append(node)
@@ -655,9 +713,15 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
             expectation = "control-adjacent"
             weight = 12
         elif primitive in {"selects", "navigates", "scopes"} and _targets_focus(edge["target"], focus_slot):
-            kind = f"{primitive}-focus-adjacency"
-            expectation = "selector-adjacent"
-            weight = 14 if primitive in {"navigates", "scopes"} else 12
+            if _is_phase_specific_node(source_node):
+                kind = f"{primitive}-phase-selector-access"
+                expectation = "phase-selector-access"
+                weight = 8 if primitive in {"navigates", "scopes"} else 7
+                hard = False
+            else:
+                kind = f"{primitive}-focus-adjacency"
+                expectation = "selector-adjacent"
+                weight = 14 if primitive in {"navigates", "scopes"} else 12
         elif primitive == "reflects" and _targets_focus(edge["target"], focus_slot):
             kind = "reflection-adjacency"
             expectation = "reflection-adjacent"
@@ -843,6 +907,16 @@ def _score_spatial_expectation(expectation: str, relation: dict[str, Any], *, af
     near = bool(relation.get("near"))
     distance_score = float(relation.get("distanceScore", 0.0) or 0.0)
 
+    if expectation == "phase-selector-access":
+        # A phase selector only needs a default access affordance.  A full side rail
+        # may be fine, but it should not be required just because the selector is
+        # semantically meaningful during the selection phase.
+        if side or band:
+            return 96
+        if near:
+            return max(72, round(distance_score * 84))
+        return 64
+
     if expectation == "selector-adjacent":
         if "rail" in affordances:
             if side:
@@ -991,6 +1065,13 @@ def _affordance_expectation_for_node(node: dict[str, Any]) -> str:
     affordances = set(_as_list(semantics.get("layoutAffordance")))
     growth = set(_as_list(semantics.get("growth")))
     role = node.get("role", "support")
+    realization = _default_realization_for_node(node)
+    if realization == "collapsed-trigger" and role in {"navigation", "collection"}:
+        return "phase-selector-trigger"
+    if realization == "collapsed-trigger" and role == "evidence":
+        return "proof-trigger-or-drawer"
+    if realization == "collapsed-trigger" and role in {"detail", "inspector"}:
+        return "deferable-inspector-trigger"
     if "dominant-surface" in affordances or role == "focus":
         if "large-output-stream" in growth:
             return "dominant-output"
@@ -1087,7 +1168,18 @@ def _score_affordance_realization(
     band = bool(relation.get("bandDocked"))
     near = bool(relation.get("near"))
 
-    if target == "command-rail":
+    if target in {"phase-selector-trigger", "proof-trigger-or-drawer", "deferable-inspector-trigger"}:
+        if area_share <= 0.075:
+            base = 96
+        elif area_share <= 0.13:
+            base = 88
+        elif side or band:
+            base = 78
+        elif near:
+            base = 72
+        else:
+            base = 58
+    elif target == "command-rail":
         base = 100 if band else 94 if side else 74 if near else 40
         if area_share > 0.18:
             base -= 12
@@ -1191,6 +1283,84 @@ def semantic_affordance_realization_fit(hierarchy: dict[str, Any], measurement: 
         "hardRiskReasons": hard_risk_reasons,
         "limits": limits,
         "note": "Affordance realization is inferred from generic MCEL tags such as rail, inspector, status strip, proof region, and dominant owned surface; it guides FLOG ranking without declaring a perfect layout.",
+    }
+
+
+def semantic_phase_realization_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
+    """Score whether the measured default screen preserves phase-aware access.
+
+    This is not a multi-state browser proof yet.  It is the first FLOG layer that
+    distinguishes regions that must be present in the default phase from regions
+    that may be represented by a collapsed trigger until their phase is active.
+    """
+
+    records = _slot_records_by_slot(measurement)
+    nodes_by_slot = _node_by_slot(hierarchy)
+    phase_sets = semantic_presentation_sets(hierarchy)
+    evaluated: list[dict[str, Any]] = []
+    total = 0.0
+    weight_total = 0.0
+
+    for phase_set in phase_sets:
+        phase = phase_set["phase"]
+        required_slots = list(phase_set.get("requiredSlots") or [])
+        optional_slots = list(phase_set.get("optionalSlots") or [])
+        missing_required = [slot for slot in required_slots if slot not in records]
+        required_score = 100 if not missing_required else max(0, 100 - 36 * len(missing_required))
+
+        trigger_slots: list[str] = []
+        missing_triggers: list[str] = []
+        for slot in optional_slots:
+            node = nodes_by_slot.get(slot, {})
+            if _default_realization_for_node(node) == "collapsed-trigger":
+                trigger_slots.append(slot)
+                if slot not in records:
+                    missing_triggers.append(slot)
+        trigger_score = 100 if not trigger_slots else max(0, 100 - 24 * len(missing_triggers))
+
+        phase_weight = 1.35 if phase == "default" else 1.0
+        phase_score = round((required_score * 0.72) + (trigger_score * 0.28))
+        total += phase_score * phase_weight
+        weight_total += phase_weight
+        if missing_required:
+            reason = f"{phase} phase is missing required slot(s): {', '.join(missing_required)}"
+        elif trigger_slots:
+            reason = f"{phase} phase keeps required slots visible and {len(trigger_slots)} phase/deferable slot(s) accessible as trigger/drawer candidates"
+        else:
+            reason = f"{phase} phase keeps required slots visible"
+        evaluated.append(
+            {
+                "phase": phase,
+                "score": int(phase_score),
+                "requiredSlots": required_slots,
+                "optionalSlots": optional_slots,
+                "triggerSlots": trigger_slots,
+                "missingRequiredSlots": missing_required,
+                "missingTriggerSlots": missing_triggers,
+                "reason": reason,
+            }
+        )
+
+    raw_score = round(total / weight_total) if weight_total else 0
+    risks = [item for item in evaluated if item["score"] < 72]
+    if raw_score >= 86 and not risks:
+        state = "strongPhaseFit"
+    elif raw_score >= 72:
+        state = "usablePhaseFit"
+    elif raw_score >= 56:
+        state = "weakPhaseFit"
+    else:
+        state = "phaseRisk"
+
+    return {
+        "score": int(raw_score),
+        "rawScore": int(raw_score),
+        "state": state,
+        "phaseCount": len(evaluated),
+        "phases": evaluated,
+        "positiveReasons": [item["reason"] for item in evaluated if item["score"] >= 82][:4],
+        "riskReasons": [item["reason"] for item in evaluated if item["score"] < 72][:4],
+        "note": "Phase fit treats persistent regions, phase-specific selectors, proof drawers, and deferable recovery panels as different default-screen obligations; it does not claim the final Git Tools layout is known.",
     }
 
 
@@ -1319,9 +1489,10 @@ def semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]
 def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
     fit = semantic_contract_fit(hierarchy, measurement)
     affordance_fit = semantic_affordance_realization_fit(hierarchy, measurement)
+    phase_fit = semantic_phase_realization_fit(hierarchy, measurement)
     classification = measurement.setdefault("classification", {})
     geometry_score = int(classification.get("score", 0) or 0)
-    selection_score = round((geometry_score * 0.54) + (fit["score"] * 0.26) + (affordance_fit["score"] * 0.20))
+    selection_score = round((geometry_score * 0.45) + (fit["score"] * 0.22) + (affordance_fit["score"] * 0.18) + (phase_fit["score"] * 0.15))
 
     original_status = str(classification.get("status") or "fail")
     warnings = list(classification.get("warnings") or [])
@@ -1349,6 +1520,10 @@ def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str
     classification["affordanceFitState"] = affordance_fit["state"]
     classification["hardAffordanceMissCount"] = hard_affordance_miss_count
     classification["missedAffordanceCount"] = int(affordance_fit.get("missedAffordanceCount", 0) or 0)
+    classification["phaseFitScore"] = phase_fit["score"]
+    classification["phaseFitRawScore"] = phase_fit.get("rawScore", phase_fit["score"])
+    classification["phaseFitState"] = phase_fit["state"]
+    classification["phaseFitRiskCount"] = len(phase_fit.get("riskReasons", []) or [])
     classification["selectionScore"] = selection_score
     classification["score"] = selection_score
     classification["status"] = status
@@ -1357,6 +1532,10 @@ def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str
     failure_reasons = classification.setdefault("failureReasons", [])
     review_notes = classification.setdefault("reviewNotes", [])
 
+    if phase_fit["positiveReasons"]:
+        positive_reasons.insert(0, f"phase-aware fit is {phase_fit['score']}%: {phase_fit['positiveReasons'][0]}")
+    if phase_fit["riskReasons"]:
+        review_notes.insert(0, f"phase-fit review: {phase_fit['riskReasons'][0]}")
     if affordance_fit["positiveReasons"]:
         positive_reasons.insert(0, f"generic affordance fit is {affordance_fit['score']}%: {affordance_fit['positiveReasons'][0]}")
     if fit["positiveReasons"]:
@@ -1387,6 +1566,7 @@ def apply_semantic_contract_fit(hierarchy: dict[str, Any], measurement: dict[str
 
     measurement["contractFit"] = fit
     measurement["affordanceFit"] = affordance_fit
+    measurement["phaseFit"] = phase_fit
     return measurement
 
 
@@ -1447,6 +1627,7 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
         visibility: str = "required",
         proximity: str = "loose",
         min_visible_share: float | None = None,
+        semantics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "slot": slot,
@@ -1461,6 +1642,7 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
             "scroll": scroll,
             "minVisibleShare": role_min_visible_share(role, priority) if min_visible_share is None else min_visible_share,
             "items": items,
+            "semantics": semantics or {},
         }
 
     def hierarchy(
@@ -1598,6 +1780,54 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                 ]),
                 node("evidence", "evidence", "Source Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["editor", "inspector"], items=[
                     item("evidence", "Serialization proof: generated wrappers are runtime-only."), item("evidence", "Layout proof: editor remains the focus."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="document-page-overlay-workbench",
+            title="Document Page Overlay Workbench",
+            description="Page authoring app with top document controls, a dominant page canvas, and invoked library/AI overlays.",
+            source_app="document",
+            root_concern="document.page-authoring",
+            focus_slot="page",
+            desired_focus_share=0.66,
+            min_focus_share=0.55,
+            max_focus_share=0.82,
+            required_companions=["toolbar", "status"],
+            nearby_companions=[],
+            deferable_slots=["library", "ai"],
+            forbidden_default_hidden=["toolbar", "page", "status"],
+            preferred_families=["top-band-focus-overlay", "top-band-dominant-surface", "bounded-drawer", "focus-priority", "source-order-stacked"],
+            dangerous_families={
+                "sectioned-sidebar": "library and AI are invoked overlays, not default persistent sidebars",
+                "split-pane": "the document page should not be split with optional overlays by default",
+                "dashboard-grid": "page authoring must not become a peer dashboard of document utilities",
+            },
+            nodes=[
+                node("toolbar", "authority-command", "Document Header + Toolbar", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["page", "status", "library", "ai"], items=[
+                    item("button", "Pretty Docs"), item("button", "Document AI"), item("select", "Block format"), item("button", "Bold"), item("button", "Italic"),
+                    item("button", "Export PDF"), item("button", "Page Layout"), item("control", "Auto-save draft"),
+                ]),
+                node("page", "primary-page-editor-canvas", "Paged Document Canvas", role="focus", priority="focus", visibility="required", proximity="self", weight=12, connects=["toolbar", "status", "library", "ai"], items=[
+                    item("surface", "Outer document object stage owns the plugin rail and the page canvas as internal editor structure", role="document-stage"),
+                    item("surface", "Page sheet with fixed margins, active caret, overlay layer, and editable content", role="page-surface"),
+                    item("text", "Heading block · title and document metadata"),
+                    item("text", "Paragraph block · user-authored content with inline math marker"),
+                    item("collection", "Editor-only hidden plugin marker rail is inside the page work surface, not a global sidebar"),
+                    item("status", "Selection/caret context: paragraph 2, range 44-78"),
+                    item("text", "Page layout popover changes page geometry while the canvas remains the dominant owned surface."),
+                    item("collection", "Embedded scene/object handle belongs to the document stage."),
+                ]),
+                node("status", "status", "Document State", role="status", priority="primary", visibility="required", proximity="near", weight=1, scroll="no", connects=["toolbar", "page"], items=[
+                    item("status", "document ready"), item("status", "backend draft saved"), item("status", "local draft path visible"),
+                ]),
+                node("library", "deferable-document-library", "Pretty Docs Library Overlay", role="collection", priority="secondary", visibility="deferable", proximity="loose", weight=2, min_visible_share=0.012, connects=["page", "toolbar"], items=[
+                    item("collection", "Pretty doc: MCEL system guide"), item("collection", "Pretty doc: user-space contract"), item("button", "Refresh library"), item("button", "Close overlay"),
+                    item("text", "Fixed left overlay appears when invoked; it should not force a permanent sidebar in the default layout."),
+                ]),
+                node("ai", "deferable-ai-proof-pane", "Document AI Overlay", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=3, min_visible_share=0.012, connects=["page", "toolbar", "status"], items=[
+                    item("button", "Lock anchor"), item("button", "Improve"), item("button", "Summarize"), item("evidence", "Preview: proposed edit remains staged before apply."),
+                    item("evidence", "AI proof/critique is claim-dependent and may slide in as an overlay."),
                 ]),
             ],
         ),
@@ -1768,6 +1998,137 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                 ]),
                 node("evidence", "evidence", "SCM Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, connects=["command", "editor"], items=[
                     item("evidence", "SCM receipt proves source/runtime separation."), item("evidence", "Repair evidence stays runtime-owned."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="git-tools-workflow-workbench",
+            title="Git Tools Workflow Workbench",
+            description="Repository workflow app with project selection, guided action planning, publish controls, operation evidence, and advanced Git support.",
+            source_app="git-tools",
+            root_concern="repository.workflow",
+            focus_slot="workflow",
+            desired_focus_share=0.58,
+            min_focus_share=0.46,
+            max_focus_share=0.76,
+            required_companions=["command", "status"],
+            nearby_companions=["server"],
+            deferable_slots=["projects", "evidence", "advanced"],
+            forbidden_default_hidden=["workflow", "command", "status"],
+            preferred_families=["selected-context-workflow", "progressive-workflow", "workflow-with-proof-drawer", "split-pane", "inspector"],
+            dangerous_families={
+                "dashboard-grid": "repository action planning should not become unrelated peer cards",
+                "source-order-stacked": "repository workflow loses selected-project context when every Git surface is merely stacked",
+            },
+            nodes=[
+                node("projects", "navigation-outline", "Project Roster / Switcher", role="navigation", priority="secondary", visibility="deferable", proximity="near", weight=2, scroll="allowed", min_visible_share=0.012, connects=["workflow", "status"], semantics={
+                    "phasePersistence": ["phase-specific-selector"],
+                    "defaultRealization": ["collapsed-trigger"],
+                    "presentationSet": ["project-selection"],
+                    "phase": ["project-selection"],
+                    "availability": ["selection-phase"],
+                    "softPreferences": ["selected-context-after-selection", "collapsible-selector"],
+                }, items=[
+                    item("collection", "Selected project: main_computer_test"), item("collection", "Recent project: hub-site"), item("collection", "Recent project: worker-lab"),
+                    item("control", "Add local path"), item("status", "Repository inspected · branch available"),
+                ]),
+                node("command", "authority-command", "Workflow Commands", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["workflow", "status", "evidence"], items=[
+                    item("button", "Inspect"), item("button", "Plan commit"), item("button", "Publish"), item("button", "Open remote"), item("control", "Remote target"),
+                ]),
+                node("workflow", "primary-workspace", "Selected Project Workflow", role="focus", priority="focus", visibility="required", proximity="self", weight=10, connects=["projects", "command", "server", "status", "evidence"], semantics={
+                    "phase": ["planning", "execution", "proof-review"],
+                    "presentationSet": ["default", "planning", "execution", "proof-review"],
+                    "softPreferences": ["dominant-progressive-workflow", "selected-context-remains-visible"],
+                }, items=[
+                    item("surface", "Selected project context: path, branch, dirty state, upstream state", role="repo-summary"),
+                    item("surface", "Guided action plan: inspect → stage → commit → publish", role="workflow-plan"),
+                    item("collection", "Changed file: main_computer/web/applications/apps/git-tools.html"),
+                    item("collection", "Changed file: tests/test_git_page_wizard_workflow.py"),
+                    item("collection", "Planned action: create branch and commit semantic remock"),
+                    item("status", "Workflow state: project selected, publish target unresolved"),
+                    item("text", "The selected project workflow is the readable work surface; project selection, commands, status, and evidence remain connected to it."),
+                ]),
+                node("server", "inspector-detail", "Remote and Server Context", role="detail", priority="secondary", visibility="companion", proximity="near", weight=2, connects=["workflow", "command", "evidence"], semantics={
+                    "phasePersistence": ["phase-specific-support"],
+                    "defaultRealization": ["collapsed-trigger"],
+                    "presentationSet": ["planning", "execution"],
+                    "phase": ["remote-binding"],
+                    "availability": ["context-dependent"],
+                }, items=[
+                    item("status", "Local Gitea reachable"), item("control", "Remote owner"), item("control", "Repository name"), item("button", "Refresh server"),
+                ]),
+                node("status", "status", "Operation Status", role="status", priority="primary", visibility="required", proximity="near", weight=1, scroll="no", connects=["projects", "command", "workflow"], items=[
+                    item("status", "No active operation"), item("status", "Selected project is clean enough to plan"),
+                ]),
+                node("evidence", "evidence", "Operation Evidence", role="evidence", priority="secondary", visibility="deferable", proximity="near", weight=3, min_visible_share=0.012, connects=["command", "workflow", "server"], semantics={
+                    "phasePersistence": ["phase-specific-support"],
+                    "defaultRealization": ["collapsed-trigger"],
+                    "presentationSet": ["execution", "proof-review"],
+                    "phase": ["execution", "proof-review"],
+                    "availability": ["operation-dependent"],
+                }, items=[
+                    item("evidence", "Dry-run transcript and Git receipt stay tied to the selected project."),
+                    item("evidence", "Publish proof records remote URL, branch, commit hash, and exit state."),
+                ]),
+                node("advanced", "inspector-detail", "Advanced Git Controls", role="detail", priority="secondary", visibility="deferable", proximity="loose", weight=2, min_visible_share=0.012, connects=["workflow", "evidence"], semantics={
+                    "phasePersistence": ["deferable"],
+                    "defaultRealization": ["collapsed-trigger"],
+                    "presentationSet": ["recovery"],
+                    "phase": ["recovery", "advanced"],
+                    "availability": ["manual-recovery"],
+                }, items=[
+                    item("button", "Manual fetch"), item("button", "Force push guard"), item("control", "Refspec"), item("text", "Advanced controls may defer after the main workflow is readable."),
+                ]),
+            ],
+        ),
+        hierarchy(
+            id="worker-marketplace-policy-workbench",
+            title="Worker Marketplace Policy Workbench",
+            description="Worker marketplace configuration app with top hub controls, a dominant policy surface, persistent runtime status, and deferable receipts/guardrails.",
+            source_app="worker",
+            root_concern="worker.marketplace-policy",
+            focus_slot="marketplace",
+            desired_focus_share=0.64,
+            min_focus_share=0.52,
+            max_focus_share=0.84,
+            required_companions=["hub", "status"],
+            nearby_companions=[],
+            deferable_slots=["receipts", "guardrails"],
+            forbidden_default_hidden=["hub", "marketplace", "status"],
+            preferred_families=["top-band-dominant-surface", "top-band-focus-overlay", "progressive-workflow", "focus-priority", "source-order-stacked", "bounded-drawer"],
+            dangerous_families={
+                "sectioned-sidebar": "worker configuration is a sequential marketplace policy surface, not a permanent navigation-sidebar app",
+                "split-pane": "sell/use policy sections should not be split away from the worker marketplace surface by default",
+                "dashboard-grid": "worker setup is a staged configuration workflow, not unrelated peer dashboard cards",
+            },
+            nodes=[
+                node("hub", "authority-command", "Hub + Availability Controls", role="command", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["marketplace", "status", "receipts"], items=[
+                    item("button", "Mainnet"), item("button", "Testnet"), item("button", "Test"), item("button", "Dev"),
+                    item("control", "Accept paid jobs"), item("control", "Only when totally idle"), item("control", "When AI is idle"),
+                    item("button", "Retry Hub"), item("button", "Disconnect"),
+                ]),
+                node("marketplace", "primary-worker-marketplace-surface", "Worker Marketplace Policy", role="focus", priority="focus", visibility="required", proximity="self", weight=13, connects=["hub", "status", "receipts", "guardrails"], items=[
+                    item("surface", "One worker marketplace surface owns both sell-work and use-remote-workers policy sections.", role="worker-policy-surface"),
+                    item("collection", "Sell Work: output-token offer, model offer, minimum ETH per estimated token, requested ring"),
+                    item("collection", "Worker setup: wallet, credit wallet, assigned ring, worker ID, registration, pool, runtime status"),
+                    item("collection", "Use Remote Workers: overflow mode, max ETH per token, max output tokens, daily spend guard"),
+                    item("collection", "Wallet readiness: primary wallet, recovery contacts, multi-session key, bridge account funding"),
+                    item("status", "Runtime policy: local first, paid jobs disabled until setup and hub registration succeed"),
+                    item("text", "The app reads as a top-to-bottom configuration workflow; nothing in the core task wants a permanent sidebar."),
+                    item("text", "Buyer and seller controls are internal sections of the marketplace policy surface, not separate navigation panes."),
+                ]),
+                node("status", "status", "Runtime State", role="status", priority="primary", visibility="required", proximity="near", weight=2, scroll="no", connects=["hub", "marketplace", "receipts"], items=[
+                    item("status", "Network: None"), item("status", "Hub session offline"), item("status", "Offer: local only"),
+                    item("status", "Worker runtime: not accepting"), item("status", "Requester idle"),
+                ]),
+                node("receipts", "worker-operation-proof", "Registration + Funding Receipts", role="evidence", priority="secondary", visibility="deferable", proximity="loose", weight=2, min_visible_share=0.012, connects=["hub", "marketplace", "status"], items=[
+                    item("evidence", "Hub registration receipt records worker id, pricing policy, ring, and pool."),
+                    item("evidence", "Faucet/funding receipt records tx hash, chain id, and bridge balance."),
+                    item("evidence", "Runtime sync proof confirms the worker availability state that the status strip summarizes."),
+                ]),
+                node("guardrails", "deferable-worker-guardrails", "Future Remote-use Guardrails", role="detail", priority="secondary", visibility="deferable", proximity="loose", weight=2, min_visible_share=0.012, connects=["marketplace", "status"], items=[
+                    item("control", "Only use remote workers when local AI is busy"), item("control", "Ask before spending"),
+                    item("control", "Do not send private files"), item("text", "Future guardrails live in a disclosure/drawer and should not force a default sidebar."),
                 ]),
             ],
         ),
@@ -1950,6 +2311,7 @@ def render_trial_html(hierarchy: dict[str, Any], candidate: str, chrome: str) ->
     focus_slot = hierarchy["focusSlot"]
     nodes = "\n".join(node_markup(node, focus_slot) for node in hierarchy["nodes"])
     contract = hierarchy.get("roleContract", {})
+    phase_names = [item["phase"] for item in semantic_presentation_sets(hierarchy)]
     root_attrs = {
         "id": hierarchy["id"],
         "class": f"flog-root trial-{candidate}",
@@ -1973,6 +2335,7 @@ def render_trial_html(hierarchy: dict[str, Any], candidate: str, chrome: str) ->
         "data-flog-forbidden-default-hidden": " ".join(contract.get("forbiddenDefaultHidden", [])),
         "data-flog-preferred-families": " ".join(contract.get("preferredFamilies", [])),
         "data-flog-dangerous-families": " ".join((contract.get("dangerousFamilies") or {}).keys()),
+        "data-flog-interaction-phases": " ".join(phase_names),
     }
     root_attr_text = " ".join(f'{name}="{html.escape(str(value), quote=True)}"' for name, value in root_attrs.items())
 
@@ -2297,6 +2660,103 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   flex: 0 0 92px;
 }
 
+.trial-top-band-dominant-surface,
+.trial-top-band-focus-overlay,
+.trial-selected-context-workflow,
+.trial-progressive-workflow,
+.trial-workflow-with-proof-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  overflow: hidden;
+}
+.trial-top-band-dominant-surface .root-title,
+.trial-top-band-focus-overlay .root-title,
+.trial-selected-context-workflow .root-title,
+.trial-progressive-workflow .root-title,
+.trial-workflow-with-proof-drawer .root-title {
+  flex: 0 0 auto;
+}
+.trial-top-band-dominant-surface .flog-node[data-flog-role="command"],
+.trial-top-band-focus-overlay .flog-node[data-flog-role="command"],
+.trial-selected-context-workflow .flog-node[data-flog-role="command"],
+.trial-progressive-workflow .flog-node[data-flog-role="command"],
+.trial-workflow-with-proof-drawer .flog-node[data-flog-role="command"] {
+  order: 10;
+  flex: 0 0 58px;
+}
+.trial-top-band-dominant-surface .flog-node[data-flog-focus="true"],
+.trial-top-band-focus-overlay .flog-node[data-flog-focus="true"],
+.trial-selected-context-workflow .flog-node[data-flog-focus="true"],
+.trial-progressive-workflow .flog-node[data-flog-focus="true"],
+.trial-workflow-with-proof-drawer .flog-node[data-flog-focus="true"] {
+  order: 20;
+  flex: 1 1 68%;
+  min-height: 360px;
+}
+.trial-top-band-dominant-surface .flog-node[data-flog-role="status"],
+.trial-top-band-focus-overlay .flog-node[data-flog-role="status"],
+.trial-selected-context-workflow .flog-node[data-flog-role="status"],
+.trial-progressive-workflow .flog-node[data-flog-role="status"],
+.trial-workflow-with-proof-drawer .flog-node[data-flog-role="status"] {
+  order: 30;
+  flex: 0 0 48px;
+}
+.trial-top-band-dominant-surface .flog-node[data-flog-visibility="deferable"],
+.trial-top-band-dominant-surface .flog-node[data-mc-phase-persistence^="phase-specific"],
+.trial-top-band-focus-overlay .flog-node[data-flog-visibility="deferable"],
+.trial-top-band-focus-overlay .flog-node[data-mc-phase-persistence^="phase-specific"],
+.trial-selected-context-workflow .flog-node[data-flog-visibility="deferable"],
+.trial-selected-context-workflow .flog-node[data-mc-phase-persistence^="phase-specific"],
+.trial-progressive-workflow .flog-node[data-flog-visibility="deferable"],
+.trial-progressive-workflow .flog-node[data-mc-phase-persistence^="phase-specific"],
+.trial-workflow-with-proof-drawer .flog-node[data-flog-visibility="deferable"],
+.trial-workflow-with-proof-drawer .flog-node[data-mc-phase-persistence^="phase-specific"] {
+  order: 40;
+  flex: 0 0 40px;
+  min-height: 40px;
+  padding: 8px 10px;
+  overflow: hidden;
+}
+.trial-top-band-dominant-surface .flog-node[data-flog-visibility="companion"],
+.trial-top-band-focus-overlay .flog-node[data-flog-visibility="companion"],
+.trial-selected-context-workflow .flog-node[data-flog-visibility="companion"],
+.trial-progressive-workflow .flog-node[data-flog-visibility="companion"] {
+  order: 38;
+  flex: 0 0 46px;
+  min-height: 46px;
+  overflow: hidden;
+}
+.trial-top-band-dominant-surface .flog-node[data-flog-visibility="deferable"] .node-body,
+.trial-top-band-focus-overlay .flog-node[data-flog-visibility="deferable"] .node-body,
+.trial-selected-context-workflow .flog-node[data-flog-visibility="deferable"] .node-body,
+.trial-progressive-workflow .flog-node[data-flog-visibility="deferable"] .node-body,
+.trial-workflow-with-proof-drawer .flog-node[data-flog-visibility="deferable"] .node-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 4px;
+}
+.trial-selected-context-workflow .flog-node[data-flog-role="navigation"],
+.trial-selected-context-workflow .flog-node[data-flog-role="collection"] {
+  order: 12;
+  flex: 0 0 44px;
+  min-height: 44px;
+  overflow: hidden;
+}
+.trial-progressive-workflow .flog-node[data-flog-focus="true"] {
+  flex-basis: 64%;
+}
+.trial-workflow-with-proof-drawer .flog-node[data-flog-role="evidence"] {
+  order: 32;
+  flex: 0 0 86px;
+  min-height: 74px;
+  overflow: hidden;
+}
+.trial-workflow-with-proof-drawer .flog-node[data-flog-focus="true"] {
+  flex-basis: 58%;
+}
+
+
 @media (max-width: 720px) {
   .flog-stage { padding: 10px; }
   .flog-root { width: calc(100vw - 20px); height: calc(100vh - 20px); min-height: 0; }
@@ -2305,7 +2765,12 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   .trial-inspector,
   .trial-dashboard-grid,
   .trial-focus-priority,
-  .trial-bounded-drawer {
+  .trial-bounded-drawer,
+  .trial-top-band-dominant-surface,
+  .trial-top-band-focus-overlay,
+  .trial-selected-context-workflow,
+  .trial-progressive-workflow,
+  .trial-workflow-with-proof-drawer {
     display: flex;
     flex-direction: column;
     overflow: auto;
@@ -3044,11 +3509,15 @@ def measurement_selection_row(
         "contractFitState": classification.get("contractFitState", "notEvaluated"),
         "affordanceFitScore": classification.get("affordanceFitScore", 0),
         "affordanceFitState": classification.get("affordanceFitState", "notEvaluated"),
+        "phaseFitScore": classification.get("phaseFitScore", 0),
+        "phaseFitState": classification.get("phaseFitState", "notEvaluated"),
         "contractFitReasons": (item.get("contractFit") or {}).get("positiveReasons", []),
         "contractFitRisks": (item.get("contractFit") or {}).get("riskReasons", []),
         "hardContractRisks": (item.get("contractFit") or {}).get("hardRiskReasons", []),
         "softContractRisks": (item.get("contractFit") or {}).get("softRiskReasons", []),
         "presentationSetReasons": (item.get("contractFit") or {}).get("presentationSetReasons", []),
+        "phaseFitReasons": (item.get("phaseFit") or {}).get("positiveReasons", []),
+        "phaseFitRisks": (item.get("phaseFit") or {}).get("riskReasons", []),
         "affordanceFitReasons": (item.get("affordanceFit") or {}).get("positiveReasons", []),
         "affordanceFitRisks": (item.get("affordanceFit") or {}).get("riskReasons", []),
         "hardAffordanceRisks": (item.get("affordanceFit") or {}).get("hardRiskReasons", []),
@@ -3435,7 +3904,7 @@ def generate_rollup_pngs(
             draw.text((x + 6, y + 6 + ROLLUP_IMAGE_HEIGHT + 4), title[:28], fill=(0, 0, 0))
             meta = (
                 f"{classification.get('score', 0)} {classification.get('status', 'fail')} "
-                f"C{classification.get('contractFitScore', 0)} A{classification.get('affordanceFitScore', 0)} "
+                f"C{classification.get('contractFitScore', 0)} A{classification.get('affordanceFitScore', 0)} P{classification.get('phaseFitScore', 0)} "
                 f"F{focus_share:.0%}/{target_share:.0%}"
             )
             draw.text((x + 6, y + 6 + ROLLUP_IMAGE_HEIGHT + 20), meta[:33], fill=(32, 32, 32))
@@ -3549,7 +4018,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                 lines.append(f"  - Presentation sets: `{phase_text}`")
             quality_counts = audit.get("qualityCounts", {})
             if quality_counts:
-                keys = ["phase", "availability", "presentationSet", "relationshipStrength", "hardConstraints", "softPreferences"]
+                keys = ["phase", "availability", "presentationSet", "relationshipStrength", "hardConstraints", "softPreferences", "phasePersistence", "defaultRealization"]
                 quality_text = ", ".join(f"{key}={quality_counts.get(key, 0)}" for key in keys)
                 lines.append(f"  - Generic quality tags: `{quality_text}`")
             affordances = audit.get("affordanceExpectations", [])[:8]
@@ -3564,7 +4033,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
     for item in report["bestByHierarchyViewport"]:
         selection_state = item.get("selectionState", "bestPassingCandidate")
         no_passing = bool(item.get("noPassingCandidate"))
-        lines.append(f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['candidate']}` score=`{item['score']}` status=`{item['status']}` selectionState=`{selection_state}` unclaimed=`{item['unclaimedAreaRatio']:.4f}` focus=`{item['focusShare']:.4f}` target=`{item['desiredFocusShare']:.2f}` occupancy=`{item.get('usefulFocusOccupancy', 0):.4f}` proximity=`{item.get('companionProximityScore', 1):.4f}` contractFit=`{item.get('contractFitScore', 0)}` affordanceFit=`{item.get('affordanceFitScore', 0)}` contractState=`{item.get('contractFitState', 'notEvaluated')}` affordanceState=`{item.get('affordanceFitState', 'notEvaluated')}`")
+        lines.append(f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['candidate']}` score=`{item['score']}` status=`{item['status']}` selectionState=`{selection_state}` unclaimed=`{item['unclaimedAreaRatio']:.4f}` focus=`{item['focusShare']:.4f}` target=`{item['desiredFocusShare']:.2f}` occupancy=`{item.get('usefulFocusOccupancy', 0):.4f}` proximity=`{item.get('companionProximityScore', 1):.4f}` contractFit=`{item.get('contractFitScore', 0)}` affordanceFit=`{item.get('affordanceFitScore', 0)}` phaseFit=`{item.get('phaseFitScore', 0)}` contractState=`{item.get('contractFitState', 'notEvaluated')}` affordanceState=`{item.get('affordanceFitState', 'notEvaluated')}` phaseState=`{item.get('phaseFitState', 'notEvaluated')}`")
         if no_passing:
             highest = item.get("highestScoringFailure") or item.get("highestScoringCandidate") or {}
             lines.append(f"  - No passing candidate: showing highest-scoring failure `{highest.get('candidate', item['candidate'])}` score=`{highest.get('score', item['score'])}` status=`{highest.get('status', item['status'])}`.")
@@ -3602,6 +4071,14 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
         if item.get("presentationSetReasons"):
             lines.append("  - Phase co-presence evidence:")
             for reason in item.get("presentationSetReasons", [])[:4]:
+                lines.append(f"    - {reason}")
+        if item.get("phaseFitReasons"):
+            lines.append("  - Phase-aware realization evidence:")
+            for reason in item.get("phaseFitReasons", [])[:4]:
+                lines.append(f"    - {reason}")
+        if item.get("phaseFitRisks"):
+            lines.append("  - Phase-aware realization risks:")
+            for reason in item.get("phaseFitRisks", [])[:4]:
                 lines.append(f"    - {reason}")
         if item.get("reasons"):
             lines.append("  - Why it ranked well:")
@@ -3648,6 +4125,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
         lines.append(f"- Geometry score: `{classification.get('geometryScore', classification.get('score'))}`")
         lines.append(f"- Contract fit score: `{classification.get('contractFitScore', 0)}` state=`{classification.get('contractFitState', 'notEvaluated')}`")
         lines.append(f"- Affordance fit score: `{classification.get('affordanceFitScore', 0)}` state=`{classification.get('affordanceFitState', 'notEvaluated')}`")
+        lines.append(f"- Phase fit score: `{classification.get('phaseFitScore', 0)}` state=`{classification.get('phaseFitState', 'notEvaluated')}`")
         lines.append(f"- Focus slot: `{item.get('focusSlot')}`")
         lines.append(f"- Unclaimed layout area ratio: `{facts.get('unclaimedAreaRatio', 0):.4f}`")
         lines.append(f"- Node coverage ratio: `{facts.get('nodeCoverageRatio', 0):.4f}`")
@@ -3690,6 +4168,14 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
             for reason in contract_fit.get("hardRiskReasons", [])[:4]:
                 lines.append(f"  - Hard risk: {reason}")
             for reason in contract_fit.get("riskReasons", [])[:4]:
+                lines.append(f"  - Risk: {reason}")
+        phase_fit = item.get("phaseFit") or {}
+        if phase_fit:
+            lines.append("- Generic phase-aware realization:")
+            lines.append(f"  - Score: `{phase_fit.get('score', 0)}` raw=`{phase_fit.get('rawScore', phase_fit.get('score', 0))}` state=`{phase_fit.get('state', 'unknown')}`")
+            for reason in phase_fit.get("positiveReasons", [])[:4]:
+                lines.append(f"  - Preserved: {reason}")
+            for reason in phase_fit.get("riskReasons", [])[:4]:
                 lines.append(f"  - Risk: {reason}")
         affordance_fit = item.get("affordanceFit") or {}
         if affordance_fit:
