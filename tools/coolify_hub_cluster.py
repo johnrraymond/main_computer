@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -33,6 +34,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 HUB_SERVICE_TOOL_PATH = Path(__file__).resolve().with_name("coolify_hub_service.py")
 FDB_CLUSTER_TOOL_PATH = Path(__file__).resolve().with_name("coolify_fdb_cluster.py")
 DEPLOY_PACKET_TOOL_PATH = Path(__file__).resolve().with_name("deploy_packet.py")
+HUB_GIT_REPO_ENV = "MAIN_COMPUTER_HUB_GIT_REPO"
+HUB_GIT_BRANCH_ENV = "MAIN_COMPUTER_HUB_GIT_BRANCH"
+DEFAULT_COOLIFY_PROJECT_NAME = "My first project"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -57,6 +61,15 @@ CoolifyClient = hub_tool.CoolifyClient
 CoolifyResponse = hub_tool.CoolifyResponse
 CoolifyHubDeployError = hub_tool.CoolifyHubDeployError
 HubNetworkConfigError = hub_tool.HubNetworkConfigError
+
+
+class CoolifyHubActionRequired(CoolifyHubDeployError):
+    """Operator checkpoint with a specific next command suggestion."""
+
+    def __init__(self, message: str, *, add_flags: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.add_flags = add_flags
+
 
 DEFAULT_PLACEMENT_PATH = REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json"
 DEFAULT_TIMEOUT_S = hub_tool.DEFAULT_TIMEOUT_S
@@ -114,6 +127,66 @@ def repo_relative_path(value: str | Path) -> Path:
     if path.is_absolute():
         return path
     return REPO_ROOT / path
+
+
+def _git_output(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return str(result.stdout or "").strip()
+
+
+def _infer_git_repo() -> str:
+    env_value = str(os.environ.get(HUB_GIT_REPO_ENV) or "").strip()
+    if env_value:
+        return env_value
+    return _git_output("config", "--get", "remote.origin.url")
+
+
+def _infer_git_branch() -> str:
+    env_value = str(os.environ.get(HUB_GIT_BRANCH_ENV) or "").strip()
+    if env_value:
+        return env_value
+    branch = _git_output("rev-parse", "--abbrev-ref", "HEAD")
+    if branch and branch != "HEAD":
+        return branch
+    return "main"
+
+
+def apply_remote_git_defaults(args: argparse.Namespace) -> None:
+    if not str(getattr(args, "git_repo", "") or "").strip():
+        args.git_repo = _infer_git_repo()
+    if not str(getattr(args, "git_branch", "") or "").strip():
+        args.git_branch = _infer_git_branch()
+
+
+def require_remote_git_context(args: argparse.Namespace) -> None:
+    apply_remote_git_defaults(args)
+    if str(getattr(args, "git_repo", "") or "").strip():
+        return
+    raise CoolifyHubDeployError(
+        "action required: remote Hub builds need a Git repository. "
+        f"Set {HUB_GIT_REPO_ENV}, or rerun with --git-repo \"<repo-url>\" --git-branch \"<branch>\". "
+        "Use --git-branch to choose the branch Coolify builds."
+    )
+
+
+def apply_coolify_project_defaults(args: argparse.Namespace) -> None:
+    if str(getattr(args, "coolify_project_uuid", "") or "").strip():
+        return
+    if str(getattr(args, "coolify_project_name", "") or "").strip():
+        return
+    args.coolify_project_name = DEFAULT_COOLIFY_PROJECT_NAME
 
 
 def repo_relative_posix(value: str | Path) -> str:
@@ -257,6 +330,7 @@ def application_args_for_hub(args: argparse.Namespace, context: dict[str, Any], 
             "coolify_environment_name": context.get("environment_name") or values.get("coolify_environment_name", ""),
             "coolify_environment_uuid": context.get("environment_uuid") or values.get("coolify_environment_uuid", ""),
             "coolify_application_uuid": "",
+            "hub_id": hub.hub_id,
             "github_app_uuid": values.get("github_app_uuid", ""),
             "deploy_key_uuid": values.get("deploy_key_uuid", ""),
             "no_create_storage": bool(values.get("no_create_storage", False)),
@@ -514,10 +588,73 @@ def _application_update_attempt_summary(label: str, method: str, path: str, payl
         "domains": payload.get("domains"),
         "fqdn": payload.get("fqdn"),
         "ports_exposes": payload.get("ports_exposes"),
+        "force_domain_override": bool(payload.get("force_domain_override", False)),
         "has_start_command": "start_command" in payload,
         "has_health_check": any(str(key).startswith("health_check_") for key in payload),
         "response": hub_tool.response_to_dict(response),
     }
+
+
+def _response_body(response: Any) -> Any:
+    if response is None:
+        return None
+    if isinstance(response, dict):
+        response_dict = response
+    else:
+        response_dict = hub_tool.response_to_dict(response)
+    if isinstance(response_dict, dict) and "body" in response_dict:
+        return response_dict.get("body")
+    return response_dict
+
+
+def _response_status(response: Any) -> int:
+    if response is None:
+        return 0
+    if isinstance(response, dict):
+        response_obj = response.get("response")
+        if isinstance(response_obj, dict):
+            return int(response_obj.get("status") or 0)
+        return int(response.get("status") or 0)
+    return int(getattr(response, "status", 0) or 0)
+
+
+def _body_mentions_force_domain_override(body: Any) -> bool:
+    if isinstance(body, dict):
+        if "force_domain_override" in str(body.get("message") or ""):
+            return True
+        if "force_domain_override" in str(body.get("warning") or ""):
+            return True
+        for value in body.values():
+            if _body_mentions_force_domain_override(value):
+                return True
+        return False
+    if isinstance(body, list):
+        return any(_body_mentions_force_domain_override(item) for item in body)
+    return "force_domain_override" in str(body or "")
+
+
+def _is_domain_conflict_failure(item: dict[str, Any]) -> bool:
+    response = item.get("response")
+    status = _response_status(response if response is not None else item)
+    body = _response_body(response if response is not None else item)
+    if status != 409:
+        return False
+    if _body_mentions_force_domain_override(body):
+        return True
+    if isinstance(body, dict) and isinstance(body.get("conflicts"), list):
+        return True
+    return False
+
+
+def _domain_conflict_detected(failures: list[dict[str, Any]]) -> bool:
+    return any(_is_domain_conflict_failure(item) for item in failures)
+
+
+def _with_force_domain_override(payload: dict[str, Any], force_domain_override: bool) -> dict[str, Any]:
+    result = dict(payload)
+    if force_domain_override:
+        result["force_domain_override"] = True
+    return result
 
 
 def _try_hub_application_update_variants(
@@ -557,23 +694,31 @@ def _try_hub_application_update_variants(
             failures.append(attempt)
             if response.status == 405:
                 break
-            if response.status not in {400, 404, 405, 422, 500}:
+            if response.status not in {400, 404, 405, 409, 422, 500}:
                 return None, failures
     return None, failures
 
 
-def update_hub_application(client: Any, application_uuid: str, payload: dict[str, Any], tried: list[dict[str, Any]]) -> dict[str, Any]:
+def update_hub_application(
+    client: Any,
+    application_uuid: str,
+    payload: dict[str, Any],
+    tried: list[dict[str, Any]],
+    *,
+    force_domain_override: bool = False,
+) -> dict[str, Any]:
     domain = str(payload.get("domains") or "").strip()
     fqdn_domain = domain
     start_command = str(payload.get("start_command") or "").strip()
     port = str(payload.get("ports_exposes") or "").strip()
+    update_payload = _with_force_domain_override(payload, force_domain_override)
 
     all_in_one_variants = [
-        ("full", payload),
+        ("full", update_payload),
         (
             "runtime-and-routing",
             _clean_payload_subset(
-                payload,
+                update_payload,
                 (
                     "name",
                     "description",
@@ -582,12 +727,13 @@ def update_hub_application(client: Any, application_uuid: str, payload: dict[str
                     "start_command",
                     "health_check_enabled",
                     "health_check_path",
+                    "force_domain_override",
                 ),
             ),
         ),
         (
             "routing-and-command",
-            _clean_payload_subset(payload, ("domains", "ports_exposes", "start_command")),
+            _clean_payload_subset(update_payload, ("domains", "ports_exposes", "start_command", "force_domain_override")),
         ),
     ]
     all_in_one_result, all_in_one_failures = _try_hub_application_update_variants(
@@ -608,13 +754,16 @@ def update_hub_application(client: Any, application_uuid: str, payload: dict[str
     if domain:
         domain_variants.extend(
             [
-                ("domains-and-port", {"domains": domain, "ports_exposes": port}),
-                ("domains-only", {"domains": domain}),
+                (
+                    "domains-and-port",
+                    _with_force_domain_override({"domains": domain, "ports_exposes": port}, force_domain_override),
+                ),
+                ("domains-only", _with_force_domain_override({"domains": domain}, force_domain_override)),
                 # Some Coolify versions read the value as fqdn but write it as
                 # domains; keep fqdn as a last-resort compatibility probe so
                 # the failure report distinguishes field-name rejection from
                 # server-side crashes.
-                ("fqdn-only", {"fqdn": fqdn_domain}),
+                ("fqdn-only", _with_force_domain_override({"fqdn": fqdn_domain}, force_domain_override)),
             ]
         )
     domain_result, domain_failures = _try_hub_application_update_variants(
@@ -624,6 +773,13 @@ def update_hub_application(client: Any, application_uuid: str, payload: dict[str
         tried,
     )
     if domain and domain_result is None:
+        update_failures = [*all_in_one_failures, *domain_failures]
+        if not force_domain_override and _domain_conflict_detected(update_failures):
+            raise CoolifyHubActionRequired(
+                "action required: Coolify domain is already assigned to another resource. "
+                "Confirm this Hub should take over the configured domain, then rerun with --force-domain-override.",
+                add_flags=("--force-domain-override",),
+            )
         raise CoolifyHubDeployError(
             "Coolify Hub application domain update failed on all payload variants: "
             + json.dumps(
@@ -636,9 +792,10 @@ def update_hub_application(client: Any, application_uuid: str, payload: dict[str
                         "domains": item.get("domains"),
                         "fqdn": item.get("fqdn"),
                         "ports_exposes": item.get("ports_exposes"),
+                        "force_domain_override": item.get("force_domain_override"),
                         "response": item.get("response"),
                     }
-                    for item in [*all_in_one_failures, *domain_failures]
+                    for item in update_failures
                 ],
                 sort_keys=True,
             )
@@ -831,6 +988,7 @@ def sync_hub_application(
             application_uuid,
             hub_application_update_payload(placement, profile, args, hub=hub, server_name=server_name, context=context),
             tried,
+            force_domain_override=bool(getattr(args, "force_domain_override", False)),
         )
         action = "updated"
     else:
@@ -846,6 +1004,7 @@ def sync_hub_application(
             application_uuid,
             hub_application_update_payload(placement, profile, args, hub=hub, server_name=server_name, context=context),
             tried,
+            force_domain_override=bool(getattr(args, "force_domain_override", False)),
         )
         update_result = {**update_result, "created": True}
         action = "created"
@@ -2143,8 +2302,8 @@ def plan_result(placement: HubClusterPlacement, profile: Any, args: argparse.Nam
     hub_tool.apply_bridge_signer_defaults(profile, args)
     fdb_tool.validate_coolify_url_bindings(placement.servers, args)
 
-    if not str(getattr(args, "git_repo", "") or "").strip():
-        raise CoolifyHubDeployError("--git-repo is required so the remote Hub services can build the Hub image.")
+    apply_coolify_project_defaults(args)
+    require_remote_git_context(args)
 
     return {
         "network_key": placement.network_key,
@@ -2269,7 +2428,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--set-coolify-token-file", action="append", default=[], help="Per-server token file. Format: <server-name>:<path>")
 
     parser.add_argument("--coolify-project-uuid", default="", help="Coolify project UUID used by all servers unless overridden.")
-    parser.add_argument("--coolify-project-name", default="", help="Coolify project name resolved on every server.")
+    parser.add_argument("--coolify-project-name", default=DEFAULT_COOLIFY_PROJECT_NAME, help=f"Coolify project name resolved on every server. Defaults to {DEFAULT_COOLIFY_PROJECT_NAME!r}.")
     parser.add_argument("--set-coolify-project-uuid", action="append", default=[], help="Per-server project UUID. Format: <server-name>:<uuid>")
     parser.add_argument("--coolify-environment-name", default="", help="Coolify environment name. Defaults to <network>-hubs.")
     parser.add_argument("--coolify-environment-uuid", default="", help="Coolify environment UUID used by all servers unless overridden.")
@@ -2282,8 +2441,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-destination-uuid", default="", help="Coolify Docker destination UUID used by all servers unless overridden.")
     parser.add_argument("--set-coolify-destination-uuid", action="append", default=[], help="Per-server destination UUID. Format: <server-name>:<uuid>")
 
-    parser.add_argument("--git-repo", default="", help="Git repository URL for remote Hub service builds.")
-    parser.add_argument("--git-branch", default="main", help="Git branch to deploy.")
+    parser.add_argument("--git-repo", default="", help=f"Git repository URL for remote Hub service builds. Defaults to {HUB_GIT_REPO_ENV} or git remote.origin.url.")
+    parser.add_argument("--git-branch", default="", help=f"Git branch to deploy. Defaults to {HUB_GIT_BRANCH_ENV}, the current Git branch, then main.")
     parser.add_argument("--git-commit-sha", default="", help="Optional exact commit SHA.")
     parser.add_argument("--base-directory", default=hub_tool.DEFAULT_BASE_DIRECTORY)
     parser.add_argument("--dockerfile-location", default="", help="Dockerfile path. Defaults to /Dockerfile.hub.exp-fdb.")
@@ -2323,12 +2482,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--force-deploy", action="store_true", help="Ask Coolify to force rebuild/redeploy services.")
+    parser.add_argument(
+        "--force-domain-override",
+        action="store_true",
+        help="Pass force_domain_override=true when Coolify reports that a Hub domain is already assigned to another resource.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="For apply: render the plan without network or Coolify calls.")
     parser.add_argument("--json", action="store_true", help="Print compact machine-readable JSON.")
     return parser.parse_args(argv)
 
 
+
+def _command_with_added_flags(argv: list[str], flags: tuple[str, ...]) -> str:
+    current = list(argv)
+    for flag in flags:
+        if flag not in current:
+            current.append(flag)
+    script = sys.argv[0] if sys.argv and sys.argv[0] else "tools/coolify_hub_cluster.py"
+    return "python " + " ".join(shlex.quote(part) for part in [script, *current])
+
+
 def main(argv: list[str] | None = None) -> int:
+    original_argv = list(argv) if argv is not None else sys.argv[1:]
     args = parse_args(argv)
     try:
         if args.action in {"list-components", "prep-packet"}:
@@ -2366,6 +2541,10 @@ def main(argv: list[str] | None = None) -> int:
             )
     except (CoolifyHubDeployError, HubNetworkConfigError, packet_tool.DeployPacketError) as exc:
         result = {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+        if isinstance(exc, CoolifyHubActionRequired):
+            result["action_required"] = str(exc)
+            if exc.add_flags:
+                result["next_useful_command"] = _command_with_added_flags(original_argv, exc.add_flags)
         if args.json:
             print(json.dumps(result, sort_keys=True))
         else:

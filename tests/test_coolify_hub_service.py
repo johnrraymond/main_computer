@@ -60,6 +60,8 @@ def _args(**overrides):
         "hub_status_user_agent": coolify_hub_service.DEFAULT_JSON_RPC_USER_AGENT,
         "network": "mainnet",
         "network_config": None,
+        "private_state": None,
+        "hub_id": "",
         "local_coolify_token_file": "",
         "local_coolify_state_dir": "",
         "applications_service_env_file": "",
@@ -1037,6 +1039,69 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(decoded["chain_rpc_url"], "https://testnet-rpc.greatlibrary.io")
         self.assertEqual(bundle["bridge_controller_address"], "0x1D23F92c6AcF4c47A26aB48Fd3F3075AD619Baf6")
         self.assertNotIn("private_key", json.dumps({k: v for k, v in bundle.items() if k != "bundle_b64"}))
+
+    def test_build_bridge_signer_bundle_prefers_private_state_hub_key(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        temp_dir = self.enterContext(tempfile.TemporaryDirectory())
+        base = Path(temp_dir)
+        manifest_path = base / "latest.json"
+        private_state_path = base / "main_computer.private.yaml"
+        escrow = "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318"
+        shared_admin = "0x8B122051325fD185ec17Fd5dF39deBC1c250A021"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "chain": {"chain_id": 42424241, "rpc_url": "http://stale-rpc.invalid"},
+                    "contracts": {
+                        "hub_credit_bridge_escrow": {
+                            "address": escrow,
+                            "bridge_controller_address": shared_admin,
+                            "chain_id": 42424241,
+                        }
+                    },
+                    "hub_admin": {
+                        "address": "0x9d3B686Da68b3DC312AEC0f9dcD29A5955b65C69",
+                        "private_key": "0x" + "9" * 64,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        private_state_path.write_text(
+            "\n".join(
+                [
+                    "networks:",
+                    "  testnet:",
+                    "    hubs:",
+                    "      testnet-hub1:",
+                    "        hub_admin_keys:",
+                    "          address1:",
+                    f"            address: '{shared_admin}'",
+                    f"            private_key: '{'0x' + '8' * 64}'",
+                    "            state: active",
+                    "            deployed_to_hub: true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        args = _args(
+            network="testnet",
+            hub_id="testnet-hub1",
+            private_state=private_state_path,
+            bridge_signer_source_manifest=str(manifest_path),
+            hub_chain_rpc_url="https://testnet-rpc.greatlibrary.io",
+        )
+
+        bundle = coolify_hub_service.build_bridge_signer_bundle(profile, args)
+        decoded = json.loads(__import__("base64").b64decode(bundle["bundle_b64"]).decode("utf-8"))
+
+        self.assertEqual(decoded["contracts"]["hub_credit_bridge_escrow"]["address"], escrow)
+        self.assertEqual(decoded["bridge_controller"]["address"], shared_admin)
+        self.assertEqual(decoded["bridge_controller"]["private_key"], "0x" + "8" * 64)
+        self.assertIn("main_computer.private.yaml", decoded["source"]["wallet_path"])
+        self.assertEqual(bundle["bridge_controller_address"], shared_admin)
+
 
     def test_sync_service_env_var_uses_service_env_endpoint_and_redacts_value(self) -> None:
         secret_value = "not-a-real-secret"

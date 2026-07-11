@@ -75,8 +75,10 @@ class CutoverContext:
     network: str
     profile: NetworkProfile
     private_state_path: Path
-    deployment_path: Path
-    public_contracts_path: Path
+    deployment_source_path: Path
+    public_contracts_source_path: Path
+    deployment_output_path: Path
+    public_contracts_output_path: Path
     placement_path: Path
     private_state: dict[str, Any]
     deployment: dict[str, Any]
@@ -86,6 +88,21 @@ class CutoverContext:
     shared_hub_admin_address: str
     officer_addresses: tuple[str, str, str, str]
     foundry_image: str
+
+
+@dataclass(frozen=True)
+class ChainPreflightResult:
+    """Live-chain baseline classification for the cutover.
+
+    The existing escrow is allowed to be missing because replacing a stale or
+    unusable escrow deployment is the purpose of this command. Non-escrow
+    contracts are different: if the tool is going to preserve them while merging
+    metadata, they must exist on the selected RPC.
+    """
+
+    old_escrow_has_code: bool
+    old_escrow_balance_wei: int | None
+    preserved_contract_count: int
 
 
 def log(message: str = "") -> None:
@@ -170,6 +187,37 @@ def docker_mount_path(path: Path) -> str:
 
 def display_command(command: list[str]) -> str:
     return " ".join(_quote_arg(part) for part in command)
+
+
+def preflight_to_dry_run_deploy_command(args: argparse.Namespace) -> str:
+    """Render the exact deploy preview command implied by the preflight args."""
+
+    command = [
+        "python",
+        ".\\tools\\testnet_escrow_cutover.py",
+        "deploy",
+        "--network",
+        str(args.network),
+    ]
+    optional_value_flags = (
+        ("private_file", "--private-file"),
+        ("deployment", "--deployment"),
+        ("contracts_path", "--contracts-path"),
+        ("placement", "--placement"),
+        ("hubs", "--hubs"),
+        ("rpc_url", "--rpc-url"),
+    )
+    for attr, flag in optional_value_flags:
+        value = getattr(args, attr, "")
+        if value:
+            command.extend([flag, str(value)])
+    if getattr(args, "skip_chain_preflight", False):
+        command.append("--skip-chain-preflight")
+    if getattr(args, "allow_nonzero_old_escrow_balance", False):
+        command.append("--allow-nonzero-old-escrow-balance")
+    command.append("--dry-run")
+    return display_command(command)
+
 
 
 def _quote_arg(value: str) -> str:
@@ -262,65 +310,6 @@ def relative_hint_for_label(network: str, label: str, expected: Path) -> Path | 
         return None
 
 
-def qbft_deploy_contracts_command(network: str) -> str:
-    return display_command(["python", ".\\tools\\coolify_qbft_network.py", "deploy-contracts", network, "--dry-run"])
-
-
-def missing_private_state_message(*, path: Path, network: str, command: str) -> str:
-    return "\n".join(
-        [
-            "action required: operator private state is required.",
-            "reason: testnet escrow cutover needs the private operator state before it can resolve RPC, Hub admin signer, officers, and deployment metadata hints.",
-            "next useful command:",
-            f"  python .\\tools\\testnet_escrow_cutover.py {command or 'preflight'} --network {network} --private-file \"<path-to-main_computer.private.yaml>\"",
-            "default sync destination if you choose to copy the private state into this checkout:",
-            f"  {path}",
-        ]
-    )
-
-
-def missing_deployment_metadata_message(*, path: Path, network: str) -> str:
-    return "\n".join(
-        [
-            f"action required: {network} deployment metadata is missing.",
-            f"reason: the cutover needs current {network} contract addresses so it can replace only hub_credit_bridge_escrow and preserve the other deployed contracts.",
-            "next useful commands:",
-            "  1. If current contract metadata exists elsewhere, rerun with private state plus that metadata:",
-            f"     python .\\tools\\testnet_escrow_cutover.py preflight --network {network} --private-file \"<path-to-main_computer.private.yaml>\" --deployment \"<path-to-latest.json>\"",
-            "  2. If current contract metadata does not exist, publish/deploy through the QBFT operator surface:",
-            f"     {qbft_deploy_contracts_command(network)}",
-            "sync destination if you choose to copy existing contract metadata into this checkout:",
-            f"  {path}",
-        ]
-    )
-
-
-def missing_public_contracts_message(*, path: Path, network: str) -> str:
-    return "\n".join(
-        [
-            "action required: public Hub contract config is missing.",
-            f"reason: the cutover must update the Hub-facing contract config for {network} after the new escrow is verified.",
-            "next useful command:",
-            f"  python .\\tools\\testnet_escrow_cutover.py preflight --network {network} --private-file \"<path-to-main_computer.private.yaml>\" --contracts-path \"<path-to-{network}_contracts.json>\"",
-            "sync destination if you choose to copy existing public contract config into this checkout:",
-            f"  {path}",
-        ]
-    )
-
-
-def missing_placement_message(*, path: Path, network: str) -> str:
-    return "\n".join(
-        [
-            "action required: Coolify Hub placement is missing.",
-            f"reason: the cutover needs the {network} Hub placement to confirm the exact Hub ids before reading deployed Hub admin signer state.",
-            "next useful command:",
-            f"  python .\\tools\\testnet_escrow_cutover.py preflight --network {network} --private-file \"<path-to-main_computer.private.yaml>\" --placement \"<path-to-{network}-coolify-deployment.json>\"",
-            "sync destination if you choose to copy existing placement config into this checkout:",
-            f"  {path}",
-        ]
-    )
-
-
 def missing_file_message(
     *,
     label: str,
@@ -332,24 +321,98 @@ def missing_file_message(
     chain_id: int | None = None,
     relative_hint: Path | None = None,
 ) -> str:
-    del root, chain_id, relative_hint
+    del root, chain_id, relative_hint  # Missing-file checkpoints should not guess or scan.
 
-    normalized = label.strip().lower()
-    if normalized == "private state":
-        return missing_private_state_message(path=path, network=network, command=command)
-    if normalized == "deployment metadata":
-        return missing_deployment_metadata_message(path=path, network=network)
-    if normalized == "public contract config":
-        return missing_public_contracts_message(path=path, network=network)
-    if normalized == "coolify hub placement":
-        return missing_placement_message(path=path, network=network)
+    command_name = command or "preflight"
+    if label in {"private state", "operator private state"}:
+        return "\n".join(
+            [
+                "action required: operator private state is required.",
+                "reason: cutover needs the testnet RPC, current shared Hub admin, officer addresses, and deployer/governance material.",
+                "next useful command:",
+                (
+                    "  "
+                    + display_command(
+                        [
+                            "python",
+                            ".\\tools\\testnet_escrow_cutover.py",
+                            command_name,
+                            "--network",
+                            network,
+                            "--private-file",
+                            "<path-to-main_computer.private.yaml>",
+                        ]
+                    )
+                ),
+            ]
+        )
+
+    if label == "deployment metadata":
+        return "\n".join(
+            [
+                "action required: testnet deployment metadata is required.",
+                "reason: escrow-only cutover needs current metadata so it can replace only hub_credit_bridge_escrow while preserving the other live contract addresses.",
+                "next useful commands:",
+                "  1. Re-run with the deployment metadata that belongs to this operator private state:",
+                (
+                    "     "
+                    + display_command(
+                        [
+                            "python",
+                            ".\\tools\\testnet_escrow_cutover.py",
+                            command_name,
+                            "--network",
+                            network,
+                            "--private-file",
+                            "<path-to-main_computer.private.yaml>",
+                            flag,
+                            "<path-to-latest.json>",
+                        ]
+                    )
+                ),
+                "  2. After that preflight is clean, preview the escrow-only deploy:",
+                (
+                    "     "
+                    + display_command(
+                        [
+                            "python",
+                            ".\\tools\\testnet_escrow_cutover.py",
+                            "deploy",
+                            "--network",
+                            network,
+                            "--private-file",
+                            "<path-to-main_computer.private.yaml>",
+                            flag,
+                            "<path-to-latest.json>",
+                            "--dry-run",
+                        ]
+                    )
+                ),
+                "note: if alpha-beta-lockout or xlag-bridge-reserve also need deployment, stop; that is a separate root-contract deployment, not this escrow-only cutover.",
+                "sync destination if you choose to copy existing metadata into this checkout:",
+                f"  {path}",
+            ]
+        )
 
     return "\n".join(
         [
-            f"action required: {label} is missing.",
+            f"action required: {label} is required.",
             f"expected path: {path}",
             "next useful command:",
-            f"  python .\\tools\\testnet_escrow_cutover.py {command or 'preflight'} --network {network} {flag} \"<path>\"",
+            (
+                "  "
+                + display_command(
+                    [
+                        "python",
+                        ".\\tools\\testnet_escrow_cutover.py",
+                        command_name,
+                        "--network",
+                        network,
+                        flag,
+                        f"<path-to-{path.name}>",
+                    ]
+                )
+            ),
         ]
     )
 
@@ -467,74 +530,39 @@ def rpc_balance_wei(rpc_url: str, address: str, *, timeout_s: float = 20.0) -> i
     return int(value, 16)
 
 
-def private_network_record(private_state: dict[str, Any], network: str) -> dict[str, Any]:
-    networks = private_state.get("networks")
-    if not isinstance(networks, dict) or not isinstance(networks.get(network), dict):
-        raise TestnetEscrowCutoverError(
-            "\n".join(
-                [
-                    f"action required: operator private state has no networks.{network} entry.",
-                    "reason: testnet escrow cutover needs the network private-state record before it can resolve RPC, Hub admin signer, officers, and deployment metadata hints.",
-                    "next useful command:",
-                    f"  python .\\tools\\testnet_escrow_cutover.py preflight --network {network} --private-file \"<path-to-main_computer.private.yaml>\"",
-                ]
-            )
-        )
-    return networks[network]
-
-
-def string_field(mapping: dict[str, Any], *names: str) -> str:
-    for name in names:
-        value = mapping.get(name)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+def private_state_rpc_url(private_state: dict[str, Any], network: str) -> str:
+    try:
+        net = network_private_state(private_state, network)
+    except TestnetEscrowCutoverError:
+        return ""
+    for key in ("rpc_url", "rpc", "chain_rpc_url", "host_rpc_url"):
+        value = str(net.get(key) or "").strip()
+        if value:
+            return value
+    chain = net.get("chain")
+    if isinstance(chain, dict):
+        for key in ("rpc_url", "rpc", "chain_rpc_url", "host_rpc_url"):
+            value = str(chain.get(key) or "").strip()
+            if value:
+                return value
     return ""
 
 
-def private_deployment_manifest_hint(private_network: dict[str, Any]) -> str:
-    """Return a contract deployment metadata path from private state, if present.
-
-    Do not use networks.<network>.hub.deployment_manifest_path here: that path is
-    the Hub runtime manifest path, not the root contract deployment metadata that
-    this cutover must merge.
-    """
-
-    direct = string_field(
-        private_network,
-        "contract_deployment_manifest_path",
-        "deployment_metadata_path",
-        "deployment_manifest_path",
-    )
-    if direct:
-        return direct
-
-    contracts = private_network.get("contracts")
-    if isinstance(contracts, dict):
-        nested = string_field(
-            contracts,
-            "deployment_manifest_path",
-            "deployment_metadata_path",
-            "latest_json",
-            "latest_path",
-            "path",
-        )
-        if nested:
-            return nested
-
-    deployment = private_network.get("deployment")
-    if isinstance(deployment, dict):
-        nested = string_field(
-            deployment,
-            "contract_manifest_path",
-            "deployment_manifest_path",
-            "metadata_path",
-            "latest_json",
-            "latest_path",
-            "path",
-        )
-        if nested:
-            return nested
-
+def private_state_deployment_manifest_path(private_state: dict[str, Any], network: str) -> str:
+    try:
+        net = network_private_state(private_state, network)
+    except TestnetEscrowCutoverError:
+        return ""
+    for key in ("deployment_manifest_path", "deployment_metadata_path", "latest_deployment_path"):
+        value = str(net.get(key) or "").strip()
+        if value:
+            return value
+    deployments = net.get("deployments")
+    if isinstance(deployments, dict):
+        for key in ("latest", "latest_json", "manifest", "manifest_path"):
+            value = str(deployments.get(key) or "").strip()
+            if value:
+                return value
     return ""
 
 
@@ -547,60 +575,43 @@ def load_network_profile(
     deployment_override: Path | None = None,
     rpc_url_override: str | None = None,
 ) -> NetworkProfile:
-    private_network = private_network_record(private_state, network)
-
     path = hub_networks_path or root / DEFAULT_HUB_NETWORKS_RELATIVE_PATH
     payload = read_json(path, label="hub networks config")
     networks = payload.get("networks")
     if not isinstance(networks, dict) or not isinstance(networks.get(network), dict):
         raise TestnetEscrowCutoverError(f"network {network!r} is not defined in {path}")
-    public_network = networks[network]
-
-    raw_chain_id = private_network.get("chain_id")
-    if raw_chain_id is None:
-        raw_chain_id = public_network.get("chain_id")
+    item = networks[network]
     try:
-        chain_id = int(raw_chain_id)
+        chain_id = int(item.get("chain_id"))
     except (TypeError, ValueError) as exc:
-        raise TestnetEscrowCutoverError(f"invalid chain_id for network {network!r}") from exc
+        raise TestnetEscrowCutoverError(f"invalid chain_id for network {network!r} in {path}") from exc
 
-    rpc_url = str(
-        rpc_url_override
-        or private_network.get("rpc")
-        or private_network.get("rpc_url")
-        or private_network.get("chain_rpc")
-        or private_network.get("chain_rpc_url")
-        or public_network.get("chain_rpc_url")
-        or ""
-    ).strip()
+    rpc_url = str(rpc_url_override or private_state_rpc_url(private_state, network) or item.get("chain_rpc_url") or "").strip()
     if not rpc_url:
         raise TestnetEscrowCutoverError(
-            "\n".join(
-                [
-                    f"action required: RPC URL is missing for {network}.",
-                    "reason: testnet escrow cutover needs a live RPC before it can prove deployment metadata against chain reality.",
-                    "next useful commands:",
-                    f"  1. Add networks.{network}.rpc to the operator private state and rerun preflight.",
-                    f"  2. Or pass it explicitly:",
-                    f"     python .\\tools\\testnet_escrow_cutover.py preflight --network {network} --private-file \"<path-to-main_computer.private.yaml>\" --rpc-url \"<RPC_URL>\"",
-                ]
-            )
+            f"network {network!r} has no RPC URL in --rpc-url, private state, or {path}"
         )
 
-    raw_deployment_path = (
-        deployment_override
-        or private_deployment_manifest_hint(private_network)
-        or public_network.get("deployment_manifest_path")
-        or (DEFAULT_DEPLOYMENTS_RELATIVE_ROOT / network / "latest.json")
+    private_deployment = private_state_deployment_manifest_path(private_state, network)
+    raw_deployment_path = deployment_override or private_deployment or item.get("deployment_manifest_path") or (
+        DEFAULT_DEPLOYMENTS_RELATIVE_ROOT / network / "latest.json"
     )
     deployment_path = resolve_path(root, raw_deployment_path)
     return NetworkProfile(network=network, chain_id=chain_id, rpc_url=rpc_url, deployment_manifest_path=deployment_path)
 
 
-def public_contracts_path(root: Path, network: str, explicit: Path | None = None) -> Path:
+def default_deployment_output_path(root: Path, network: str) -> Path:
+    return root / DEFAULT_DEPLOYMENTS_RELATIVE_ROOT / network / "latest.json"
+
+
+def default_public_contracts_output_path(root: Path, network: str) -> Path:
+    return root / "main_computer" / "config" / f"{network}_contracts.json"
+
+
+def public_contracts_source_path(root: Path, network: str, explicit: Path | None = None) -> Path:
     if explicit is not None:
         return resolve_path(root, explicit)
-    return root / "main_computer" / "config" / f"{network}_contracts.json"
+    return default_public_contracts_output_path(root, network)
 
 
 def default_placement_path(root: Path, network: str, explicit: Path | None = None) -> Path:
@@ -772,7 +783,6 @@ def build_context(args: argparse.Namespace) -> CutoverContext:
         root=root,
         network=network,
         command=command,
-        chain_id=None,
     )
     private_state = read_yaml(private_state_path, label="private state")
 
@@ -783,12 +793,14 @@ def build_context(args: argparse.Namespace) -> CutoverContext:
         deployment_override=Path(args.deployment) if args.deployment else None,
         rpc_url_override=args.rpc_url or None,
     )
-    deployment_path = profile.deployment_manifest_path
-    contracts_path = public_contracts_path(root, network, Path(args.contracts_path) if args.contracts_path else None)
+    deployment_source = profile.deployment_manifest_path
+    contracts_source = public_contracts_source_path(root, network, Path(args.contracts_path) if args.contracts_path else None)
+    deployment_output = default_deployment_output_path(root, network)
+    contracts_output = default_public_contracts_output_path(root, network)
     placement_path = default_placement_path(root, network, Path(args.placement) if args.placement else None)
 
     require_existing_file(
-        deployment_path,
+        deployment_source,
         label="deployment metadata",
         flag="--deployment",
         root=root,
@@ -797,7 +809,7 @@ def build_context(args: argparse.Namespace) -> CutoverContext:
         chain_id=profile.chain_id,
     )
     require_existing_file(
-        contracts_path,
+        contracts_source,
         label="public contract config",
         flag="--contracts-path",
         root=root,
@@ -815,8 +827,8 @@ def build_context(args: argparse.Namespace) -> CutoverContext:
         chain_id=profile.chain_id,
     )
 
-    deployment = read_json(deployment_path, label="deployment metadata")
-    public_contracts = read_json(contracts_path, label="public contract config")
+    deployment = read_json(deployment_source, label="deployment metadata")
+    public_contracts = read_json(contracts_source, label="public contract config")
     hub_ids = configured_hub_ids(root, network, placement_path, explicit_hubs=args.hubs or None)
     old_escrow = escrow_address_from_deployment(deployment, public_contracts)
     shared_admin = shared_hub_admin_address(private_state, network, hub_ids)
@@ -827,8 +839,10 @@ def build_context(args: argparse.Namespace) -> CutoverContext:
         network=network,
         profile=profile,
         private_state_path=private_state_path,
-        deployment_path=deployment_path,
-        public_contracts_path=contracts_path,
+        deployment_source_path=deployment_source,
+        public_contracts_source_path=contracts_source,
+        deployment_output_path=deployment_output,
+        public_contracts_output_path=contracts_output,
         placement_path=placement_path,
         private_state=private_state,
         deployment=deployment,
@@ -964,16 +978,16 @@ def write_cutover_outputs(ctx: CutoverContext, *, new_address: str, transaction_
     merged_deployment = merged_deployment_payload(ctx, new_address=new_address, transaction_hash=transaction_hash)
     merged_contracts = merged_public_contracts(ctx, new_address=new_address)
 
-    run_dir = ctx.deployment_path.parent / "runs" / actual_run_id
+    run_dir = ctx.deployment_output_path.parent / "runs" / actual_run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     run_deployment = run_dir / "deployment.json"
     write_json_atomic(run_deployment, merged_deployment)
-    write_json_atomic(ctx.deployment_path, merged_deployment)
-    write_json_atomic(ctx.public_contracts_path, merged_contracts)
+    write_json_atomic(ctx.deployment_output_path, merged_deployment)
+    write_json_atomic(ctx.public_contracts_output_path, merged_contracts)
 
     log(f"Wrote {relative_or_abs(run_deployment, ctx.root)}")
-    log(f"Wrote {relative_or_abs(ctx.deployment_path, ctx.root)}")
-    log(f"Wrote {relative_or_abs(ctx.public_contracts_path, ctx.root)}")
+    log(f"Wrote {relative_or_abs(ctx.deployment_output_path, ctx.root)}")
+    log(f"Wrote {relative_or_abs(ctx.public_contracts_output_path, ctx.root)}")
 
 
 def relative_or_abs(path: Path, root: Path) -> str:
@@ -981,6 +995,49 @@ def relative_or_abs(path: Path, root: Path) -> str:
         return str(path.resolve().relative_to(root.resolve())).replace("\\", "/")
     except ValueError:
         return str(path)
+
+
+def command_arg(value: str) -> str:
+    text = str(value)
+    if not text:
+        return '""'
+    if re.fullmatch(r"[A-Za-z0-9_./:\\-]+", text):
+        return text
+    return '"' + text.replace('"', '\\"') + '"'
+
+
+def git_output(root: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return str(result.stdout or "").strip()
+
+
+def infer_git_repo(root: Path) -> str:
+    env_value = str(os.environ.get("MAIN_COMPUTER_HUB_GIT_REPO") or "").strip()
+    if env_value:
+        return env_value
+    return git_output(root, "config", "--get", "remote.origin.url")
+
+
+def infer_git_branch(root: Path) -> str:
+    env_value = str(os.environ.get("MAIN_COMPUTER_HUB_GIT_BRANCH") or "").strip()
+    if env_value:
+        return env_value
+    branch = git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch and branch != "HEAD":
+        return branch
+    return "main"
 
 
 def deployer_private_key_from_state_or_env(ctx: CutoverContext, args: argparse.Namespace, *, required: bool) -> str | None:
@@ -1246,51 +1303,103 @@ def verify_deployed_shape(ctx: CutoverContext, *, escrow_address: str) -> None:
     )
 
 
-def old_escrow_no_code_message(ctx: CutoverContext) -> str:
-    private_arg = cli_quote(relative_or_abs(ctx.private_state_path, ctx.root))
-    deployment_arg = cli_quote(relative_or_abs(ctx.deployment_path, ctx.root))
-    rerun_prefix = (
-        f"python .\\tools\\testnet_escrow_cutover.py preflight --network {ctx.network} "
-        f"--private-file {private_arg} --deployment {deployment_arg}"
-    )
-    return "\n".join(
-        [
-            "action required: supplied deployment metadata is stale for the selected RPC.",
-            "reason: the escrow address from deployment metadata has no deployed code on the RPC selected from private state.",
-            "values used:",
-            "  - RPC comes from --rpc-url if supplied, otherwise private state networks.<network>.rpc, otherwise hub_networks.json",
-            "  - escrow address comes from deployment metadata/public contract config",
-            "next useful commands:",
-            "  1. If the RPC in private state is wrong, rerun with the correct RPC:",
-            f"     {rerun_prefix} --rpc-url \"<RPC_URL>\"",
-            "  2. If the RPC is right, publish/deploy current testnet contract metadata through the QBFT operator surface:",
-            f"     {qbft_deploy_contracts_command(ctx.network)}",
-        ]
-    )
+def preserved_contract_addresses(ctx: CutoverContext) -> dict[str, str]:
+    """Return non-escrow contract addresses that metadata merge would preserve."""
+
+    result: dict[str, str] = {}
+
+    def add(name: object, value: object) -> None:
+        key = str(name or "").strip()
+        if not key or key == HUB_CREDIT_BRIDGE_ESCROW_KEY:
+            return
+        address = ""
+        if isinstance(value, dict):
+            address = str(value.get("address") or "").strip()
+        elif isinstance(value, str):
+            address = value.strip()
+        if is_address(address):
+            result.setdefault(key, address)
+
+    for section_name in ("contracts", "deployments"):
+        section = ctx.deployment.get(section_name)
+        if isinstance(section, dict):
+            for name, value in section.items():
+                add(name, value)
+
+    if isinstance(ctx.public_contracts, dict):
+        for name, value in ctx.public_contracts.items():
+            add(name, value)
+
+    return dict(sorted(result.items()))
 
 
-def preflight_chain(ctx: CutoverContext, args: argparse.Namespace) -> int:
+def require_preserved_contracts_live(ctx: CutoverContext) -> int:
+    preserved = preserved_contract_addresses(ctx)
+    missing = [
+        name
+        for name, address in preserved.items()
+        if not rpc_code_exists(ctx.profile.rpc_url, address)
+    ]
+    if missing:
+        missing_list = ",".join(missing)
+        raise TestnetEscrowCutoverError(
+            "\n".join(
+                [
+                    "action required: preserved contract metadata is not valid for the selected RPC.",
+                    "reason: escrow-only cutover would preserve non-escrow contract addresses, but at least one preserved address has no deployed code on that chain.",
+                    f"missing preserved contracts: {missing_list}",
+                    "next useful actions:",
+                    "  1. Supply deployment metadata/public contract config containing the live alpha-beta-lockout and xlag-bridge-reserve addresses for this RPC.",
+                    "  2. If those contracts also need deployment, stop; that is a separate root-contract deployment, not this escrow-only cutover.",
+                ]
+            )
+        )
+    return len(preserved)
+
+
+def preflight_chain(ctx: CutoverContext, args: argparse.Namespace) -> ChainPreflightResult:
     if args.skip_chain_preflight:
         log("chain preflight: skipped")
-        return 0
-    if not rpc_code_exists(ctx.profile.rpc_url, ctx.old_escrow_address):
-        raise TestnetEscrowCutoverError(old_escrow_no_code_message(ctx))
+        return ChainPreflightResult(old_escrow_has_code=False, old_escrow_balance_wei=None, preserved_contract_count=0)
+
+    old_escrow_has_code = rpc_code_exists(ctx.profile.rpc_url, ctx.old_escrow_address)
+    preserved_count = require_preserved_contracts_live(ctx)
+
+    if not old_escrow_has_code:
+        log("current escrow baseline: not live on selected RPC")
+        log("old escrow state: not verified; escrow-only deploy may continue without old-state migration")
+        if preserved_count:
+            log(f"preserved non-escrow contracts checked: {preserved_count}")
+        return ChainPreflightResult(
+            old_escrow_has_code=False,
+            old_escrow_balance_wei=None,
+            preserved_contract_count=preserved_count,
+        )
+
     balance = rpc_balance_wei(ctx.profile.rpc_url, ctx.old_escrow_address)
     log(f"old escrow balance wei: {balance}")
+    if preserved_count:
+        log(f"preserved non-escrow contracts checked: {preserved_count}")
     if balance != 0 and not args.allow_nonzero_old_escrow_balance:
         raise TestnetEscrowCutoverError(
             "old escrow balance is nonzero. Clean redeploy is unsafe unless this is intentionally disposable testnet state; "
             "rerun with --allow-nonzero-old-escrow-balance to acknowledge."
         )
-    return balance
+    return ChainPreflightResult(
+        old_escrow_has_code=True,
+        old_escrow_balance_wei=balance,
+        preserved_contract_count=preserved_count,
+    )
 
 
 def log_context_summary(ctx: CutoverContext) -> None:
     log(f"network: {ctx.network}")
     log(f"chain_id: {ctx.profile.chain_id}")
     log(f"rpc_url: {ctx.profile.rpc_url}")
-    log(f"deployment: {relative_or_abs(ctx.deployment_path, ctx.root)}")
-    log(f"public_contracts: {relative_or_abs(ctx.public_contracts_path, ctx.root)}")
+    log(f"deployment_source: {relative_or_abs(ctx.deployment_source_path, ctx.root)}")
+    log(f"public_contracts_source: {relative_or_abs(ctx.public_contracts_source_path, ctx.root)}")
+    log(f"deployment_output: {relative_or_abs(ctx.deployment_output_path, ctx.root)}")
+    log(f"public_contracts_output: {relative_or_abs(ctx.public_contracts_output_path, ctx.root)}")
     log(f"placement: {relative_or_abs(ctx.placement_path, ctx.root)}")
     log(f"old_escrow: {ctx.old_escrow_address}")
     log(f"shared_hub_admin: {ctx.shared_hub_admin_address}")
@@ -1300,18 +1409,20 @@ def log_context_summary(ctx: CutoverContext) -> None:
 
 def command_preflight(args: argparse.Namespace) -> int:
     ctx = build_context(args)
-    preflight_chain(ctx, args)
     log("testnet escrow cutover preflight")
-    log_context_summary(ctx)
-    log("result: ready to deploy new HubCreditBridgeEscrow shape")
+    log(f"network: {ctx.network}")
+    preflight_chain(ctx, args)
+    log("result: ready for escrow-only HubCreditBridgeEscrow deploy preview")
+    log("next useful command:")
+    log("  " + preflight_to_dry_run_deploy_command(args))
     return 0
 
 
 def command_deploy(args: argparse.Namespace) -> int:
     ctx = build_context(args)
-    preflight_chain(ctx, args)
     log("testnet escrow cutover deploy")
     log_context_summary(ctx)
+    preflight_chain(ctx, args)
 
     private_key = deployer_private_key_from_state_or_env(ctx, args, required=bool(args.yes and not args.dry_run))
     if args.dry_run:
@@ -1325,8 +1436,8 @@ def command_deploy(args: argparse.Namespace) -> int:
         preview_address = "0x000000000000000000000000000000000000c0de"
         merged = merged_deployment_payload(ctx, new_address=preview_address, transaction_hash=None)
         log(f"would update only {HUB_CREDIT_BRIDGE_ESCROW_KEY} in:")
-        log(f"  {relative_or_abs(ctx.deployment_path, ctx.root)}")
-        log(f"  {relative_or_abs(ctx.public_contracts_path, ctx.root)}")
+        log(f"  {relative_or_abs(ctx.deployment_output_path, ctx.root)}")
+        log(f"  {relative_or_abs(ctx.public_contracts_output_path, ctx.root)}")
         log(f"preview_new_escrow: {merged['deployments'][HUB_CREDIT_BRIDGE_ESCROW_KEY]['address']}")
         return 0
 
@@ -1385,19 +1496,27 @@ def command_verify(args: argparse.Namespace) -> int:
 
 
 def print_next_actions(ctx: CutoverContext) -> None:
-    log()
-    log("next: redeploy/restart all Coolify Hubs with the updated public contract config and existing shared signer bundle")
-    log("suggested command shape:")
-    log(
+    git_repo = infer_git_repo(ctx.root) or "<repo-url>"
+    git_branch = infer_git_branch(ctx.root) or "<branch>"
+    command = (
         "  python .\\tools\\coolify_hub_cluster.py apply "
-        f"--placement {relative_or_abs(ctx.placement_path, ctx.root)} "
+        f"--placement {command_arg(relative_or_abs(ctx.placement_path, ctx.root))} "
+        f"--git-repo {command_arg(git_repo)} "
+        f"--git-branch {command_arg(git_branch)} "
+        "--coolify-project-name \"My first project\" "
+        f"--private-state {command_arg(relative_or_abs(ctx.private_state_path, ctx.root))} "
         "--bridge-backend dev-chain "
         "--enable-bridge-writes "
-        f"--bridge-signer-source-manifest {relative_or_abs(ctx.deployment_path, ctx.root)} "
+        f"--bridge-signer-source-manifest {command_arg(relative_or_abs(ctx.deployment_output_path, ctx.root))} "
         "--force-deploy"
     )
+    log()
+    log("next: redeploy/restart all Coolify Hubs with the updated public contract config and existing shared signer bundle")
+    log("next useful command:")
+    log(command)
+    if git_repo == "<repo-url>":
+        log("action required: replace <repo-url> with the Git repository Coolify should build.")
     log("then verify Hubs before starting any per-Hub rotation session")
-
 
 def command_plan_coolify(args: argparse.Namespace) -> int:
     ctx = build_context(args)
@@ -1414,7 +1533,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--placement", default="", help="Coolify Hub placement JSON override.")
     parser.add_argument("--hubs", default="", help="Comma-separated Hub ids override. Defaults to placement hubs.")
     parser.add_argument("--rpc-url", default="", help="Chain RPC URL override.")
-    parser.add_argument("--skip-chain-preflight", action="store_true", help="Skip old escrow code/balance preflight.")
+    parser.add_argument("--skip-chain-preflight", action="store_true", help="Skip live chain checks for old escrow and preserved metadata.")
     parser.add_argument(
         "--allow-nonzero-old-escrow-balance",
         action="store_true",
@@ -1426,7 +1545,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Safely deploy and publish the testnet HubCreditBridgeEscrow governance cutover.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    preflight = subparsers.add_parser("preflight", help="Validate local metadata/private state and old escrow safety.")
+    preflight = subparsers.add_parser("preflight", help="Validate private state, metadata, and escrow-only cutover readiness.")
     add_common_arguments(preflight)
     preflight.set_defaults(func=command_preflight)
 
@@ -1462,7 +1581,7 @@ def main(argv: list[str] | None = None) -> int:
     except TestnetEscrowCutoverError as exc:
         message = str(exc)
         if message.startswith("action required:"):
-            print(message)
+            print(message, file=sys.stdout)
         else:
             print(f"error: {message}", file=sys.stderr)
         return 1

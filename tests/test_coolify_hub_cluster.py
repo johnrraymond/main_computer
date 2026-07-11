@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,7 @@ def _args(**overrides):
         "no_deploy": False,
         "no_traefik_sidecar": False,
         "force_deploy": False,
+        "force_domain_override": False,
         "dry_run": False,
         "json": False,
     }
@@ -120,6 +122,20 @@ class CoolifyHubClusterTests(unittest.TestCase):
         self.assertEqual(placement.cluster_file_path, "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster")
         self.assertEqual(placement.namespace, "main-computer-testnet-exp-fdb-stable-live-sessions")
         self.assertEqual(placement.topology_container_path, "/app/deploy/hub-topology/testnet-topology.json")
+
+
+    def test_application_args_for_hub_passes_private_state_and_hub_id(self) -> None:
+        placement = coolify_hub_cluster.load_hub_cluster_placement(_args().placement)
+        hub = next(item for item in placement.hubs if item.hub_id == "testnet-hub1")
+        args = _args(private_state=Path("runtime/state/main_computer.private.yaml"))
+        app_args = coolify_hub_cluster.application_args_for_hub(
+            args,
+            {"project_uuid": "project-uuid", "server_uuid": "server-uuid", "environment_name": "testnet-hubs"},
+            hub,
+        )
+
+        self.assertEqual(app_args.private_state, Path("runtime/state/main_computer.private.yaml"))
+        self.assertEqual(app_args.hub_id, "testnet-hub1")
 
     def test_plan_resolves_coolify_bindings_from_private_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -433,6 +449,47 @@ coolify:
         self.assertIn("testnet-hub.greatlibrary.io", config["contents"])
         self.assertIn("testnet-hub1:8785", config["contents"])
         self.assertIn("testnet-hub2:8785", config["contents"])
+
+    def test_plan_infers_git_repo_and_branch_when_not_supplied(self) -> None:
+        args = _args(git_repo="", git_branch="")
+        placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)
+        profile = coolify_hub_cluster.load_network_profile(placement, args)
+
+        def fake_git_output(*parts: str) -> str:
+            if parts == ("config", "--get", "remote.origin.url"):
+                return "https://github.com/example/main-computer"
+            if parts == ("rev-parse", "--abbrev-ref", "HEAD"):
+                return "testnet-cutover"
+            return ""
+
+        with mock.patch.dict(coolify_hub_cluster.os.environ, {}, clear=True), mock.patch.object(
+            coolify_hub_cluster,
+            "_git_output",
+            side_effect=fake_git_output,
+        ):
+            plan = coolify_hub_cluster.plan_result(placement, profile, args)
+
+        self.assertEqual(args.git_repo, "https://github.com/example/main-computer")
+        self.assertEqual(args.git_branch, "testnet-cutover")
+        self.assertIn("https://github.com/example/main-computer.git#testnet-cutover", plan["hub"]["git_context"])
+
+    def test_missing_git_repo_checkpoint_mentions_branch_flag(self) -> None:
+        args = _args(git_repo="", git_branch="")
+        placement = coolify_hub_cluster.load_hub_cluster_placement(args.placement)
+        profile = coolify_hub_cluster.load_network_profile(placement, args)
+
+        with mock.patch.dict(coolify_hub_cluster.os.environ, {}, clear=True), mock.patch.object(
+            coolify_hub_cluster,
+            "_git_output",
+            return_value="",
+        ):
+            with self.assertRaises(coolify_hub_cluster.CoolifyHubDeployError) as ctx:
+                coolify_hub_cluster.plan_result(placement, profile, args)
+
+        message = str(ctx.exception)
+        self.assertIn("action required", message)
+        self.assertIn("--git-repo", message)
+        self.assertIn("--git-branch", message)
 
     def test_packet_selects_enabled_hubs_and_renders_config_layer_for_unselected_host(self) -> None:
         packet = coolify_hub_cluster.packet_tool.build_packet(
@@ -861,6 +918,67 @@ coolify:
             coolify_hub_cluster.update_hub_application(client, "app-uuid", payload, tried)
 
 
+    def test_update_hub_application_domain_conflict_requests_force_override(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("PATCH", "/api/v1/applications/app-uuid"): [
+                    {
+                        "_status": 409,
+                        "message": "Domain conflicts detected. Use force_domain_override=true to proceed.",
+                        "conflicts": [
+                            {
+                                "domain": "https://testnet-hub1.greatlibrary.io:8785",
+                                "resource_name": "main-computer-testnet-hubs-coolify-a",
+                                "resource_type": "service",
+                                "resource_uuid": "service-uuid",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+        payload = {
+            "domains": "https://testnet-hub1.greatlibrary.io:8785",
+            "ports_exposes": "8785",
+        }
+
+        with self.assertRaises(coolify_hub_cluster.CoolifyHubActionRequired) as cm:
+            coolify_hub_cluster.update_hub_application(client, "app-uuid", payload, tried)
+
+        self.assertIn("--force-domain-override", cm.exception.add_flags)
+        self.assertIn("--force-domain-override", str(cm.exception))
+
+
+    def test_update_hub_application_force_domain_override_payload_succeeds(self) -> None:
+        client = RouteCoolifyClient(
+            {
+                ("PATCH", "/api/v1/applications/app-uuid"): [
+                    {"_status": 500, "message": "Server Error"},
+                    {"uuid": "app-uuid", "domains": "https://testnet-hub1.greatlibrary.io:8785"},
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+        payload = {
+            "domains": "https://testnet-hub1.greatlibrary.io:8785",
+            "ports_exposes": "8785",
+        }
+
+        result = coolify_hub_cluster.update_hub_application(
+            client,
+            "app-uuid",
+            payload,
+            tried,
+            force_domain_override=True,
+        )
+
+        self.assertTrue(result["ok"])
+        patches = [request for request in client.requests if request[0] == "PATCH"]
+        self.assertTrue(patches[0][2]["force_domain_override"])
+        self.assertTrue(patches[1][2]["force_domain_override"])
+
+
     def test_hub_command_parts_explicit_mainnet_contracts_path_omits_missing_signer_manifest(self) -> None:
         placement = coolify_hub_cluster.load_hub_cluster_placement(
             REPO_ROOT / "deploy" / "hub-topology" / "mainnet-coolify-deployment.json"
@@ -974,3 +1092,28 @@ coolify:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_plan_defaults_coolify_project_name_to_my_first_project_when_missing(monkeypatch):
+    placement = coolify_hub_cluster.load_hub_cluster_placement(
+        REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json"
+    )
+    profile = coolify_hub_cluster.load_network_profile(placement, _args())
+    args = _args(coolify_project_name="", git_repo="https://github.com/example/main-computer")
+
+    result = coolify_hub_cluster.plan_result(placement, profile, args)
+
+    assert args.coolify_project_name == "My first project"
+    assert result["coolify_project_name"] == "My first project"
+
+
+def test_parse_args_defaults_coolify_project_name_to_my_first_project():
+    args = coolify_hub_cluster.parse_args(
+        [
+            "apply",
+            "--placement",
+            str(REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json"),
+        ]
+    )
+
+    assert args.coolify_project_name == "My first project"
