@@ -1834,16 +1834,405 @@ def resolve_ai_hub_url(requested_hub_url: str = "") -> str:
     return DEFAULT_MAINNET_HUB_URL
 
 
-def call_hub_ai_json(
+
+def _hub_ai_api_headers(*, json_body: bool = False) -> dict[str, str]:
+    """Return API-client headers for Hub AI request surfaces."""
+
+    user_agent = str(os.environ.get("MAIN_COMPUTER_HUB_USER_AGENT", "") or "").strip() or "main-computer-data-agent-cli/1.0 (+https://greatlibrary.io)"
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": user_agent,
+        "X-Main-Computer-Client": "data-god-mode-agent",
+    }
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def _hub_ai_http_error_message(url: str, exc: BaseException, body: str = "") -> str:
+    code = getattr(exc, "code", "")
+    prefix = f"Hub request failed for {url}"
+    if code:
+        prefix += f" with HTTP {code}"
+    if body:
+        prefix += f": {body}"
+    else:
+        prefix += f": {exc}"
+    text = f"{body} {exc}".lower()
+    if "/api/hub/sessions/start" in str(url):
+        prefix += "\nData --agent must use the worker-pull lane; secure-session start is the wrong lane for engaged Data workers."
+    if "no hub workers" in text or "no upstream hub" in text or "unreachable" in text:
+        prefix += "\nNo matching Data/O3 worker-pull worker answered. Start or check: main-computer data engage computer --agent"
+    return prefix
+
+
+def _open_hub_ai_json(
+    hub_url: str,
+    path: str,
     *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    query: dict[str, str] | None = None,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    clean_hub_url = hub_url.rstrip("/")
+    query_text = ""
+    if query:
+        query_text = "?" + urllib.parse.urlencode(query)
+    url = clean_hub_url + path + query_text
+    body = None
+    headers = _hub_ai_api_headers(json_body=payload is not None)
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=max(1.0, float(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(_hub_ai_http_error_message(url, exc, body_text)) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(_hub_ai_http_error_message(url, exc)) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Hub returned a non-object JSON response for {url}.")
+    if data.get("error") and not data.get("ok", False):
+        raise RuntimeError(f"Hub request failed for {url}: {data.get('error')}")
+    return data
+
+
+def _hub_request_id_from_payload(payload: Mapping[str, Any]) -> str:
+    request = payload.get("request") if isinstance(payload.get("request"), Mapping) else payload
+    if not isinstance(request, Mapping):
+        return ""
+    return str(request.get("request_id") or request.get("id") or "").strip()
+
+
+def _hub_request_state_from_payload(payload: Mapping[str, Any]) -> str:
+    request = payload.get("request") if isinstance(payload.get("request"), Mapping) else payload
+    if not isinstance(request, Mapping):
+        return ""
+    return str(request.get("state", "") or "").strip().lower()
+
+
+def _wait_for_hub_worker_pull_result(
+    *,
+    hub_url: str,
+    request_id: str,
+    client_node_id: str,
+    account_id: str = "",
+    timeout_seconds: float,
+    poll_interval_seconds: float = 1.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))
+    last: dict[str, Any] = {}
+    while time.monotonic() <= deadline:
+        last = _open_hub_ai_json(
+            hub_url,
+            f"/api/hub/v1/requests/{request_id}",
+            timeout_seconds=min(30.0, max(1.0, float(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))),
+        )
+        state = _hub_request_state_from_payload(last)
+        if state in {"completed", "failed", "cancelled"}:
+            if state != "completed":
+                request = last.get("request") if isinstance(last.get("request"), Mapping) else last
+                error = str(request.get("error", "") if isinstance(request, Mapping) else "") or json_dumps(last)
+                raise RuntimeError(
+                    "Hub worker-pull request did not complete successfully: "
+                    f"state={state} request_id={request_id} error={error}"
+                )
+            break
+        time.sleep(max(0.1, float(poll_interval_seconds or 1.0)))
+    else:
+        raise RuntimeError(
+            f"Timed out waiting for Hub worker-pull request {request_id}. "
+            "Check that `main-computer data engage computer --agent` is still running."
+        )
+
+    for suffix in ("result", "pickup"):
+        try:
+            return _open_hub_ai_json(
+                hub_url,
+                f"/api/hub/v1/requests/{request_id}/{suffix}",
+                query={"account_id": account_id or client_node_id, "client_node_id": client_node_id},
+                timeout_seconds=min(30.0, max(1.0, float(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))),
+            )
+        except RuntimeError as exc:
+            if "HTTP 404" not in str(exc) and "not found" not in str(exc).lower():
+                raise
+    return last
+
+
+def _extract_hub_chat_response_payload(payload: Any) -> dict[str, Any]:
+    """Find the worker ChatResponse payload inside a Hub request/result/status object."""
+
+    seen: set[int] = set()
+
+    def visit(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        ident = id(value)
+        if ident in seen:
+            return {}
+        seen.add(ident)
+
+        response = value.get("response")
+        if isinstance(response, dict) and str(response.get("content", "") or ""):
+            return response
+        if str(value.get("content", "") or ""):
+            return value
+
+        for key in ("result", "request", "payload", "data"):
+            nested = value.get(key)
+            found = visit(nested)
+            if found:
+                return found
+        for nested in value.values():
+            found = visit(nested)
+            if found:
+                return found
+        return {}
+
+    return visit(payload)
+
+
+DATA_AGENT_REQUIRED_RING = 3
+
+
+def _hub_payload_first_int(payload: Any, keys: Sequence[str]) -> int | None:
+    seen: set[int] = set()
+
+    def visit(value: Any) -> int | None:
+        if not isinstance(value, Mapping):
+            return None
+        ident = id(value)
+        if ident in seen:
+            return None
+        seen.add(ident)
+        for key in keys:
+            raw = value.get(key)
+            if raw is None:
+                continue
+            try:
+                text = str(raw).strip()
+                if text:
+                    return int(text)
+            except (TypeError, ValueError):
+                continue
+        for nested in value.values():
+            found = visit(nested)
+            if found is not None:
+                return found
+        return None
+
+    return visit(payload)
+
+
+def _hub_worker_pull_ring_contract(
+    *,
+    result_payload: Mapping[str, Any],
+    response_payload: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    required_ring: int = DATA_AGENT_REQUIRED_RING,
+) -> dict[str, Any]:
+    """Return proof that a worker-pull answer was produced by the required ring."""
+
+    keys = (
+        "worker_assigned_ring",
+        "answering_ring",
+        "effective_ring",
+        "assigned_ring",
+        "selected_worker_assigned_ring",
+        "ring",
+        "requested_ring",
+    )
+    metadata_ring = _hub_payload_first_int(metadata, keys)
+    response_ring = _hub_payload_first_int(response_payload, keys)
+    payload_ring = _hub_payload_first_int(result_payload, keys)
+    observed_ring = metadata_ring if metadata_ring is not None else response_ring if response_ring is not None else payload_ring
+    return {
+        "format": "main_computer_data_agent_ring3_answer_contract_v1",
+        "required_ring": int(required_ring),
+        "requested_ring": int(required_ring),
+        "metadata_ring": metadata_ring,
+        "response_ring": response_ring,
+        "payload_ring": payload_ring,
+        "observed_ring": observed_ring,
+        "ok": observed_ring == int(required_ring),
+    }
+
+
+def _hub_ring3_contract_from_byzantine(byzantine: Mapping[str, Any]) -> dict[str, Any]:
+    """Summarize whether every Hub worker-pull AI call in this report proved Ring 3."""
+
+    records: list[Mapping[str, Any]] = []
+    workers = byzantine.get("workers", []) if isinstance(byzantine, Mapping) else []
+    if isinstance(workers, Sequence) and not isinstance(workers, (str, bytes)):
+        records.extend(record for record in workers if isinstance(record, Mapping))
+    reviews = byzantine.get("reviews", []) if isinstance(byzantine, Mapping) else []
+    if isinstance(reviews, Sequence) and not isinstance(reviews, (str, bytes)):
+        records.extend(record for record in reviews if isinstance(record, Mapping))
+
+    checked: list[dict[str, Any]] = []
+    for record in records:
+        metadata = record.get("metadata", {}) if isinstance(record.get("metadata"), Mapping) else {}
+        if str(metadata.get("provider", "") or "").lower() != "hub" and str(metadata.get("hub_transport", "") or "") != "worker_pull_v0":
+            continue
+        checked.append(
+            {
+                "stage": str(metadata.get("stage", "") or ""),
+                "hub_request_id": str(metadata.get("hub_request_id", "") or ""),
+                "hub_transport": str(metadata.get("hub_transport", "") or ""),
+                "required_ring": metadata.get("required_ring"),
+                "requested_ring": metadata.get("requested_ring"),
+                "answering_ring": metadata.get("answering_ring"),
+                "ring3_answer_verified": bool(metadata.get("ring3_answer_verified")),
+            }
+        )
+    return {
+        "format": "main_computer_data_agent_ring3_byzantine_summary_v1",
+        "required_ring": DATA_AGENT_REQUIRED_RING,
+        "checked_call_count": len(checked),
+        "calls": checked,
+        "ok": bool(checked) and all(bool(item.get("ring3_answer_verified")) for item in checked),
+    }
+
+
+def call_hub_worker_pull_ai_json(
+    *,
+    stage: str,
     system_prompt: str,
     user_prompt: str,
     model: str,
     hub_url: str,
     client_node_id: str,
+    account_id: str = "",
+    timeout_seconds: float,
+) -> LiveAIResult:
+    """Submit a single AI JSON call through the Captain-style Hub worker-pull lane."""
+
+    resolved_model = model or DEFAULT_HUB_AI_MODEL
+    resolved_hub_url = resolve_ai_hub_url(hub_url)
+    resolved_client_node_id = str(client_node_id or os.environ.get("MAIN_COMPUTER_AI_SMOKE_HUB_CLIENT_NODE_ID", "") or DEFAULT_HUB_AI_CLIENT_NODE_ID).strip()
+    resolved_account_id = str(
+        account_id
+        or os.environ.get("MAIN_COMPUTER_AI_SMOKE_HUB_ACCOUNT_ID", "")
+        or resolved_client_node_id
+    ).strip()
+    request_payload = {
+        "model": resolved_model,
+        "client_node_id": resolved_client_node_id,
+        "account_id": resolved_account_id,
+        "max_credits": 1,
+        "deadline_seconds": max(1.0, float(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS)),
+        "requested_ring": DATA_AGENT_REQUIRED_RING,
+        "required_ring": DATA_AGENT_REQUIRED_RING,
+        "ring": DATA_AGENT_REQUIRED_RING,
+        "idempotency_key": "data-god-mode-ai-json:"
+        + text_sha256("|".join([stage, resolved_client_node_id, resolved_model, system_prompt, user_prompt, str(time.time_ns())])),
+        "execution_mode": "worker_pull_v0",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "metadata": {
+            "mode": "data-god-mode-ai-json-worker-pull-v1",
+            "data_god_mode": True,
+            "ai_stage": stage,
+            "requested_ring": DATA_AGENT_REQUIRED_RING,
+            "required_ring": DATA_AGENT_REQUIRED_RING,
+            "ring": DATA_AGENT_REQUIRED_RING,
+            "officer": "data",
+            "officer_number": 3,
+            "requested_officer": "o3",
+            "ring_contract": "exact_ring3_worker_pull_v1",
+            "execution_mode": "worker_pull_v0",
+            "worker_pull_v0": True,
+            "client_node_id": resolved_client_node_id,
+            "account_id": resolved_account_id,
+        },
+    }
+    submitted = _open_hub_ai_json(
+        resolved_hub_url,
+        "/api/hub/v1/requests",
+        method="POST",
+        payload=request_payload,
+        timeout_seconds=min(30.0, max(1.0, float(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))),
+    )
+    request_id = _hub_request_id_from_payload(submitted)
+    if not request_id:
+        raise RuntimeError(f"Hub worker-pull submission did not return a request_id: {json_dumps(submitted)}")
+    result_payload = _wait_for_hub_worker_pull_result(
+        hub_url=resolved_hub_url,
+        request_id=request_id,
+        client_node_id=resolved_client_node_id,
+        account_id=resolved_account_id,
+        timeout_seconds=timeout_seconds,
+    )
+    response = _extract_hub_chat_response_payload(result_payload)
+    content = str(response.get("content", "") or "")
+    if not content:
+        raise RuntimeError(f"Hub worker-pull request {request_id} completed without response content: {json_dumps(result_payload)}")
+    metadata = dict(response.get("metadata", {})) if isinstance(response.get("metadata"), dict) else {}
+    metadata.setdefault("hub_url", resolved_hub_url)
+    metadata.setdefault("hub_client_node_id", resolved_client_node_id)
+    metadata.setdefault("hub_account_id", resolved_account_id)
+    metadata.setdefault("hub_transport", "worker_pull_v0")
+    metadata.setdefault("hub_request_id", request_id)
+    metadata.setdefault("hub_worker_pool", "mainnet" if resolved_hub_url == DEFAULT_MAINNET_HUB_URL else "configured")
+    ring_contract = _hub_worker_pull_ring_contract(
+        result_payload=result_payload,
+        response_payload=response,
+        metadata=metadata,
+        required_ring=DATA_AGENT_REQUIRED_RING,
+    )
+    if not bool(ring_contract.get("ok")):
+        raise RuntimeError(
+            "Hub worker-pull answer did not prove Data/O3 Ring 3 execution: "
+            + json_dumps(ring_contract)
+        )
+    metadata.setdefault("requested_ring", DATA_AGENT_REQUIRED_RING)
+    metadata.setdefault("required_ring", DATA_AGENT_REQUIRED_RING)
+    metadata.setdefault("answering_ring", DATA_AGENT_REQUIRED_RING)
+    metadata["ring3_answer_verified"] = True
+    metadata["ring3_contract"] = ring_contract
+    return LiveAIResult(
+        provider="hub",
+        model=str(response.get("model") or resolved_model),
+        content=content,
+        metadata=metadata,
+    )
+
+
+def call_hub_ai_json(
+    *,
+    stage: str,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    hub_url: str,
+    client_node_id: str,
+    account_id: str = "",
     timeout_seconds: float,
     allow_insecure_dev_network: bool = False,
+    transport: str = "secure-session",
 ) -> LiveAIResult:
+    resolved_transport = str(transport or "secure-session").strip().lower().replace("-", "_")
+    if resolved_transport in {"worker_pull", "worker_pull_v0"}:
+        return call_hub_worker_pull_ai_json(
+            stage=stage,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            hub_url=hub_url,
+            client_node_id=client_node_id,
+            account_id=account_id,
+            timeout_seconds=timeout_seconds,
+        )
+
     from main_computer.models import ChatMessage
     from main_computer.providers.hub import HubProvider
 
@@ -1867,6 +2256,7 @@ def call_hub_ai_json(
     metadata = dict(response.metadata or {})
     metadata.setdefault("hub_url", resolved_hub_url)
     metadata.setdefault("hub_client_node_id", resolved_client_node_id)
+    metadata.setdefault("hub_transport", "secure_session")
     metadata.setdefault("hub_worker_pool", "mainnet" if resolved_hub_url == DEFAULT_MAINNET_HUB_URL else "configured")
     return LiveAIResult(
         provider="hub",
@@ -2062,7 +2452,9 @@ def call_live_ai_json(
     trace_path: str | Path = "",
     ai_hub_url: str = "",
     ai_hub_client_node_id: str = "",
+    ai_hub_account_id: str = "",
     ai_hub_allow_insecure_dev_network: bool = False,
+    ai_hub_transport: str = "secure-session",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     provider = resolve_ai_provider(
         requested_provider=requested_provider,
@@ -2085,6 +2477,12 @@ def call_live_ai_json(
         "system_prompt_sha256": text_sha256(system_prompt),
         "user_prompt_sha256": text_sha256(user_prompt),
     }
+    if provider == "hub" and str(ai_hub_transport or "").strip().lower().replace("-", "_") in {"worker_pull", "worker_pull_v0"}:
+        started_payload["hub_transport"] = "worker_pull_v0"
+        started_payload["requested_ring"] = DATA_AGENT_REQUIRED_RING
+        started_payload["required_ring"] = DATA_AGENT_REQUIRED_RING
+        if str(ai_hub_account_id or "").strip():
+            started_payload["hub_account_id"] = str(ai_hub_account_id).strip()
     emit_event("ai_call_started", **{key: value for key, value in started_payload.items() if key != "event"})
     write_ai_trace_event(trace_path, started_payload)
     try:
@@ -2112,13 +2510,16 @@ def call_live_ai_json(
             )
         elif provider == "hub":
             result = call_hub_ai_json(
+                stage=stage,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 model=model,
                 hub_url=ai_hub_url,
                 client_node_id=ai_hub_client_node_id,
+                account_id=ai_hub_account_id,
                 timeout_seconds=timeout_seconds,
                 allow_insecure_dev_network=ai_hub_allow_insecure_dev_network,
+                transport=ai_hub_transport,
             )
         else:
             raise SmokeFailure(f"unsupported live AI provider: {provider!r}")
@@ -2152,6 +2553,10 @@ def call_live_ai_json(
         "content_sha256": text_sha256(result.content),
         "payload_keys": sorted(str(key) for key in payload.keys()),
     }
+    if result.provider == "hub":
+        for key in ("hub_transport", "hub_request_id", "hub_account_id", "requested_ring", "required_ring", "answering_ring", "ring3_answer_verified"):
+            if key in result.metadata:
+                finished_payload[key] = result.metadata[key]
     emit_event("ai_call_finished", **{key: value for key, value in finished_payload.items() if key != "event"})
     write_ai_trace_event(trace_path, finished_payload)
     metadata = {
@@ -2174,7 +2579,9 @@ def ai_hub_call_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "ai_hub_url": str(getattr(args, "ai_hub_url", "") or ""),
         "ai_hub_client_node_id": str(getattr(args, "ai_hub_client_node_id", "") or ""),
+        "ai_hub_account_id": str(getattr(args, "ai_hub_account_id", "") or ""),
         "ai_hub_allow_insecure_dev_network": bool(getattr(args, "ai_hub_allow_insecure_dev_network", False)),
+        "ai_hub_transport": str(getattr(args, "ai_hub_transport", "") or "secure-session"),
     }
 
 
@@ -4848,6 +5255,7 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         ai_timeout_seconds: float = DEFAULT_AI_TIMEOUT_SECONDS,
         ai_hub_url: str = "",
         ai_hub_client_node_id: str = "",
+        ai_hub_account_id: str = "",
         ai_hub_allow_insecure_dev_network: bool = False,
         scripted_ai_smoke: bool = False,
         run_id: str = "",
@@ -4863,7 +5271,9 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         self.ai_timeout_seconds = ai_timeout_seconds
         self.ai_hub_url = ai_hub_url
         self.ai_hub_client_node_id = ai_hub_client_node_id
+        self.ai_hub_account_id = ai_hub_account_id
         self.ai_hub_allow_insecure_dev_network = bool(ai_hub_allow_insecure_dev_network)
+        self.ai_hub_transport = str(ai_hub_transport or "secure-session")
         self.run_id = run_id
         self.ai_trace_path = ai_trace_path
         self.scripted_ai_smoke = scripted_ai_smoke or ai_provider == "scripted"
@@ -4897,6 +5307,8 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
             "ai_model": self.resolved_ai_model,
             "ai_hub_url": resolve_ai_hub_url(self.ai_hub_url) if self.resolved_ai_provider == "hub" else "",
             "ai_hub_client_node_id": self.ai_hub_client_node_id if self.resolved_ai_provider == "hub" else "",
+            "ai_hub_account_id": self.ai_hub_account_id if self.resolved_ai_provider == "hub" else "",
+            "ai_hub_transport": self.ai_hub_transport if self.resolved_ai_provider == "hub" else "",
             "scripted_ai_smoke": self.scripted_ai_smoke,
             "ai_trace_path": self.ai_trace_path,
             "ai_direct_write_access": False,
@@ -4920,7 +5332,9 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
             trace_path=self.ai_trace_path,
             ai_hub_url=self.ai_hub_url,
             ai_hub_client_node_id=self.ai_hub_client_node_id,
+            ai_hub_account_id=self.ai_hub_account_id,
             ai_hub_allow_insecure_dev_network=self.ai_hub_allow_insecure_dev_network,
+            ai_hub_transport=self.ai_hub_transport,
         )
 
     def _scripted_metadata(self, *, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -6182,7 +6596,9 @@ def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
             ai_timeout_seconds=float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS)),
             ai_hub_url=str(getattr(args, "ai_hub_url", "") or ""),
             ai_hub_client_node_id=str(getattr(args, "ai_hub_client_node_id", "") or ""),
+            ai_hub_account_id=str(getattr(args, "ai_hub_account_id", "") or ""),
             ai_hub_allow_insecure_dev_network=bool(getattr(args, "ai_hub_allow_insecure_dev_network", False)),
+            ai_hub_transport=str(getattr(args, "ai_hub_transport", "") or "secure-session"),
             scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
             run_id=str(getattr(args, "run_id", "") or ""),
             ai_trace_path=str(
@@ -15517,6 +15933,7 @@ def run_real_agent_prompt_delegate(
         ai_timeout_seconds=float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS)),
         ai_hub_url=str(getattr(args, "ai_hub_url", "") or ""),
         ai_hub_client_node_id=str(getattr(args, "ai_hub_client_node_id", "") or ""),
+        ai_hub_account_id=str(getattr(args, "ai_hub_account_id", "") or ""),
         ai_hub_allow_insecure_dev_network=bool(getattr(args, "ai_hub_allow_insecure_dev_network", False)),
         ai_trace_path=str(ai_trace_path),
         scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
@@ -15735,6 +16152,10 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         ai_model=str(getattr(args, "ai_model", "") or ""),
         ai_hub_url=resolve_ai_hub_url(str(getattr(args, "ai_hub_url", "") or "")) if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
         ai_hub_client_node_id=str(getattr(args, "ai_hub_client_node_id", "") or "") if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
+        ai_hub_account_id=str(getattr(args, "ai_hub_account_id", "") or "") if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
+        ai_hub_transport=str(getattr(args, "ai_hub_transport", "") or "") if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
+        requested_ring=DATA_AGENT_REQUIRED_RING if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" and str(getattr(args, "ai_hub_transport", "") or "").strip().lower().replace("-", "_") in {"worker_pull", "worker_pull_v0"} else None,
+        required_ring=DATA_AGENT_REQUIRED_RING if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" and str(getattr(args, "ai_hub_transport", "") or "").strip().lower().replace("-", "_") in {"worker_pull", "worker_pull_v0"} else None,
         scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
         real_agent_byzantine=use_byzantine,
         real_agent_no_oracle_hints=real_agent_no_oracle_hints,
@@ -15962,6 +16383,13 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
 
 
     failed_contracts = sorted(name for name, ok in final_contracts.items() if not ok)
+    hub_ring3_contract = (
+        _hub_ring3_contract_from_byzantine(byzantine)
+        if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub"
+        and str(getattr(args, "ai_hub_transport", "") or "").strip().lower().replace("-", "_") in {"worker_pull", "worker_pull_v0"}
+        else {}
+    )
+
     report = {
         "ok": not failed_contracts,
         "mode": MODE,
@@ -15974,8 +16402,14 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         "prompt_sha256": text_sha256(real_prompt),
         "ai_provider": str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
         "ai_model": str(getattr(args, "ai_model", "") or ""),
+        "scripted_ai_smoke": bool(getattr(args, "scripted_ai_smoke", False)),
         "ai_hub_url": resolve_ai_hub_url(str(getattr(args, "ai_hub_url", "") or "")) if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
         "ai_hub_client_node_id": str(getattr(args, "ai_hub_client_node_id", "") or "") if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
+        "ai_hub_account_id": str(getattr(args, "ai_hub_account_id", "") or "") if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
+        "ai_hub_transport": str(getattr(args, "ai_hub_transport", "") or "") if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
+        "requested_ring": DATA_AGENT_REQUIRED_RING if hub_ring3_contract else None,
+        "required_ring": DATA_AGENT_REQUIRED_RING if hub_ring3_contract else None,
+        "hub_ring3_contract": hub_ring3_contract,
         "goal_directive": goal_contract,
         "expected_endstate": expected_endstate,
         "selector_expected_endstate": selector_expected_endstate,
@@ -16023,6 +16457,9 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         ),
         full_byzantine_reference_path=bool(full_byzantine_reference_path.get("full_byzantine_reference_path")),
         single_ai_trust_points=list(full_byzantine_reference_path.get("single_ai_trust_points", []) or []),
+        requested_ring=hub_ring3_contract.get("requested_ring") if hub_ring3_contract else None,
+        required_ring=hub_ring3_contract.get("required_ring") if hub_ring3_contract else None,
+        hub_ring3_contract_ok=hub_ring3_contract.get("ok") if hub_ring3_contract else None,
     )
     return 0 if report["ok"] else 1
 
@@ -17632,10 +18069,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ai-hub-url", default="", help="Hub base URL for --ai-provider hub. Defaults to the mainnet hub profile.")
     parser.add_argument("--ai-hub-client-node-id", default=DEFAULT_HUB_AI_CLIENT_NODE_ID, help="Hub client node id for --ai-provider hub.")
+    parser.add_argument("--ai-hub-account-id", default="", help="Hub account id for worker-pull Hub requests. Data --agent uses O3's wallet account.")
     parser.add_argument(
         "--ai-hub-allow-insecure-dev-network",
         action="store_true",
         help="Allow non-HTTPS non-loopback hub URLs for local development only.",
+    )
+    parser.add_argument(
+        "--ai-hub-transport",
+        choices=("secure-session", "worker-pull", "worker-pull-v0"),
+        default="secure-session",
+        help="Hub transport for --ai-provider hub. Data --agent uses worker-pull so engaged workers can answer.",
     )
     parser.add_argument("--ai-timeout-seconds", type=float, default=DEFAULT_AI_TIMEOUT_SECONDS)
     parser.add_argument(

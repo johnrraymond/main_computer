@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -19,39 +18,6 @@ from main_computer.hub_security import (
 )
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.providers.base import LLMProvider
-
-
-HUB_PROVIDER_API_USER_AGENT = "main-computer-data-agent-cli/1.0 (+https://greatlibrary.io)"
-
-
-def _hub_provider_api_headers(*, json_body: bool = False) -> dict[str, str]:
-    """Return explicit API-client headers for Hub provider requests.
-
-    Mainnet Hub sits behind an edge filter; using Python's default urllib
-    signature can be rejected before the request reaches the Hub app.
-    """
-
-    user_agent = str(os.environ.get("MAIN_COMPUTER_HUB_USER_AGENT") or "").strip() or HUB_PROVIDER_API_USER_AGENT
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": user_agent,
-        "X-Main-Computer-Client": "data-god-mode-agent",
-    }
-    if json_body:
-        headers["Content-Type"] = "application/json"
-    return headers
-
-
-def _hub_provider_http_error_message(url: str, exc: HTTPError, body: str) -> str:
-    message = f"Hub request failed for {url} with HTTP {exc.code}: {body}"
-    if exc.code == 403 and "error code: 1010" in body.lower():
-        message += (
-            "\nCloudflare rejected this HTTP client signature before the request reached a Hub worker. "
-            "The Hub provider now sends explicit API client headers; if this still fails, the mainnet "
-            "Hub edge rules need to allow "
-            f"{HUB_PROVIDER_API_USER_AGENT!r}, or set MAIN_COMPUTER_HUB_USER_AGENT to an allowed client signature."
-        )
-    return message
 
 
 def _message_payload(message: ChatMessage) -> dict[str, Any]:
@@ -294,7 +260,7 @@ class HubProvider(LLMProvider):
         request = Request(
             url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=_hub_provider_api_headers(json_body=True),
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
@@ -302,7 +268,7 @@ class HubProvider(LLMProvider):
                 data = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(_hub_provider_http_error_message(url, exc, body)) from exc
+            raise RuntimeError(f"Hub request failed for {url} with HTTP {exc.code}: {body}") from exc
         except URLError as exc:
             raise RuntimeError(f"Hub request failed for {url}: {exc}") from exc
 

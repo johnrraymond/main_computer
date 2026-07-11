@@ -81,7 +81,7 @@ def _hub_worker_api_headers(*, json_body: bool = False) -> dict[str, str]:
     headers = {
         "Accept": "application/json",
         "User-Agent": user_agent,
-        "X-Main-Computer-Client": "captain-engage-worker",
+        "X-Main-Computer-Client": "main-computer-worker-cli",
     }
     if json_body:
         headers["Content-Type"] = "application/json"

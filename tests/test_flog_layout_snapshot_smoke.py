@@ -3199,7 +3199,7 @@ def test_stage_d_css_reserves_distinct_tracks_for_declared_local_policies():
     assert '"support"\n    "main"\n    "feedback"' in css
     assert "unit-policy-phase-selector-unit" in css
     assert "unit-policy-compact-project-rail" in css
-    assert "minmax(300px, 32fr)" in css
+    assert "minmax(300px, 33fr)" in css
     assert "minmax(210px, 21fr)" in css
 
 
@@ -4684,14 +4684,15 @@ def test_layout_hint_milestone2_derives_capacity_bands_from_authored_minima():
         "compact",
     ]
     assert [item["minWidth"] for item in derivation["bands"]] == [
-        1240,
-        960,
+        1440,
+        1024,
         720,
         0,
     ]
     assert contract["mode"] == "derived-from-layout-hints"
     assert contract["bands"] == derivation["bands"]
     assert contract["capacityDerivation"]["inputs"]["phaseSupportMinInline"] == 300.0
+    assert contract["capacityDerivation"]["inputs"]["robustnessFactor"] == 1.368
 
 
 def test_layout_hint_milestone2_changes_the_semantic_presentation_by_capacity():
@@ -4737,6 +4738,121 @@ def test_layout_hint_milestone2_changes_the_semantic_presentation_by_capacity():
     assert compact_proof["presentationMode"] == "sequential-support-stage"
     assert compact_proof["summarySlots"] == ["workflow"]
     assert compact_proof["returnToSlot"] == "workflow"
+
+
+def test_layout_hint_milestone21_binds_semantics_to_the_rendered_realization():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    planning = next(
+        item
+        for item in module.phase_trial_scenarios(hierarchy)
+        if item["phase"] == "planning"
+    )
+    candidates = {
+        item["responsivePlacement"]: item
+        for item in [
+            module.layout_hint_shadow_candidate_spec(hierarchy),
+            *module.compile_layout_hint_responsive_candidates(hierarchy),
+        ]
+        if item is not None
+    }
+
+    right_below_boundary = module.responsive_phase_scenario(
+        hierarchy,
+        planning,
+        module.ViewportProfile(
+            "boundary-right-bottom-below-1439", 1439, 900, True
+        ),
+        candidates["right"],
+    )
+    bottom_above_boundary = module.responsive_phase_scenario(
+        hierarchy,
+        planning,
+        module.ViewportProfile(
+            "boundary-right-bottom-above-1441", 1441, 900, True
+        ),
+        candidates["bottom"],
+    )
+
+    assert right_below_boundary["responsivePresentation"]["presentationBand"] == "wide"
+    assert right_below_boundary["responsivePresentation"]["contractSource"] == "realization-policy"
+    assert right_below_boundary["dominantSlot"] == "workflow"
+    assert right_below_boundary["minDominantShare"] == 0.56
+
+    assert bottom_above_boundary["responsivePresentation"]["presentationBand"] == "medium"
+    assert bottom_above_boundary["responsivePresentation"]["contractSource"] == "realization-policy"
+    assert bottom_above_boundary["dominantSlot"] == "workflow"
+    assert bottom_above_boundary["minDominantShare"] == 0.40
+
+
+def test_layout_hint_milestone21_compact_default_replaces_full_command_controls():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    selected_default = next(
+        item
+        for item in module.phase_trial_scenarios(hierarchy)
+        if item["phase"] == "selected-project-default"
+    )
+    stage = next(
+        item
+        for item in module.compile_layout_hint_responsive_candidates(hierarchy)
+        if item["responsivePlacement"] == "stage"
+    )
+    scenario = module.responsive_phase_scenario(
+        hierarchy,
+        selected_default,
+        module.ViewportProfile("compact", 680, 720, True),
+        stage,
+    )
+    realized = module.realize_phase(hierarchy, stage, scenario)
+    command = next(item for item in realized["nodes"] if item["slot"] == "command")
+    markup = module.node_markup(command, realized["focusSlot"])
+
+    assert realized["realizationStates"]["command"] == "compact-summary"
+    assert 'data-flog-realization="compact-summary"' in markup
+    assert "<button" in markup  # the semantic return control only
+    assert "Plan commit" not in markup
+    assert "Publish" not in markup
+
+
+def test_layout_hint_milestone21_authored_policy_does_not_use_legacy_rescue():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    profile = module.ViewportProfile("medium", 1200, 820, True)
+
+    hinted = _responsive_measurement(
+        hierarchy_id=hierarchy["id"],
+        viewport="medium",
+        candidate="hint-responsive-bottom",
+        support_policy="bounded-bottom-drawer",
+        status="fail",
+        score=70,
+        headroom=-0.03,
+    )
+    hinted["candidateMode"] = "layout-hint-responsive-shadow"
+    hinted["responsiveEligible"] = True
+    hinted["shadowOnly"] = True
+
+    legacy = _responsive_measurement(
+        hierarchy_id=hierarchy["id"],
+        viewport="medium",
+        candidate="compose-legacy-rescue",
+        support_policy="bounded-side-drawer",
+        status="pass",
+        score=99,
+        headroom=0.08,
+    )
+
+    policy = module.responsive_policy_for_hierarchy(
+        hierarchy=hierarchy,
+        measurements=[hinted, legacy],
+        profiles=[profile],
+    )
+
+    assert policy["selectionMode"] == "authored-hint-chain"
+    assert policy["state"] == "fail"
+    assert policy["selections"][0]["candidate"] == "hint-responsive-bottom"
+    assert policy["transitionGapCount"] == 1
 
 
 def test_layout_hint_milestone2_realizes_compact_context_as_a_summary_not_a_panel():
@@ -4899,45 +5015,64 @@ def test_layout_hint_milestone2_css_contains_distinct_tab_and_stage_realizations
         "mcel-realistic",
     )
     assert "compact-summary" in html
-    assert module.RESPONSIVE_POLICY_VERSION == "capacity-derived-presentation-contract-v2"
+    assert module.RESPONSIVE_POLICY_VERSION == "capacity-derived-presentation-contract-v6"
 
 
-def test_layout_hint_milestone2_policy_covers_all_capacity_probes_without_forcing():
+def test_layout_hint_milestone21_policy_covers_all_capacity_probes_with_verified_overlap():
     module = load_module()
     hierarchy = _git_hierarchy_for_milestone2(module)
     profiles = [
         module.ViewportProfile("wide", 1600, 1000, True),
         module.ViewportProfile("desktop", 1440, 900, True),
+        module.ViewportProfile("boundary-right-bottom-above-1441", 1441, 900, True),
+        module.ViewportProfile("boundary-right-bottom-below-1439", 1439, 900, True),
         module.ViewportProfile("medium", 1200, 820, True),
         module.ViewportProfile("constrained", 1024, 768, True),
+        module.ViewportProfile("boundary-bottom-tab-above-1025", 1025, 768, True),
+        module.ViewportProfile("boundary-bottom-tab-below-1023", 1023, 768, True),
         module.ViewportProfile("narrow", 840, 720, True),
+        module.ViewportProfile("boundary-tab-stage-trigger-above-721", 721, 720, True),
+        module.ViewportProfile("boundary-tab-stage-trigger-below-719", 719, 720, True),
         module.ViewportProfile("compact", 680, 720, True),
         module.ViewportProfile("small", 560, 720, True),
     ]
-    placement_by_viewport = {
-        "wide": ("right", "bounded-side-drawer"),
-        "desktop": ("right", "bounded-side-drawer"),
-        "medium": ("bottom", "bounded-bottom-drawer"),
-        "constrained": ("bottom", "bounded-bottom-drawer"),
-        "narrow": ("tab", "tabbed-phase-support"),
-        "compact": ("stage", "sequential-phase-stage"),
-        "small": ("stage", "sequential-phase-stage"),
+    policy_by_placement = {
+        "right": "bounded-side-drawer",
+        "bottom": "bounded-bottom-drawer",
+        "tab": "tabbed-phase-support",
+        "stage": "sequential-phase-stage",
     }
+    placements_by_viewport = {
+        "wide": ["right"],
+        "desktop": ["right"],
+        "boundary-right-bottom-above-1441": ["right", "bottom"],
+        "boundary-right-bottom-below-1439": ["right", "bottom"],
+        "medium": ["bottom"],
+        "constrained": ["bottom"],
+        "boundary-bottom-tab-above-1025": ["bottom", "tab"],
+        "boundary-bottom-tab-below-1023": ["bottom", "tab"],
+        "narrow": ["tab"],
+        "boundary-tab-stage-trigger-above-721": ["tab", "stage"],
+        "boundary-tab-stage-trigger-below-719": ["tab", "stage"],
+        "compact": ["stage"],
+        "small": ["stage"],
+    }
+
     measurements = []
     for profile in profiles:
-        placement, policy = placement_by_viewport[profile.name]
-        item = _responsive_measurement(
-            hierarchy_id=hierarchy["id"],
-            viewport=profile.name,
-            candidate=f"hint-responsive-{placement}",
-            support_policy=policy,
-            score=95,
-            headroom=0.025,
-        )
-        item["candidateMode"] = "layout-hint-responsive-shadow"
-        item["shadowOnly"] = True
-        item["responsiveEligible"] = True
-        measurements.append(item)
+        for placement in placements_by_viewport[profile.name]:
+            item = _responsive_measurement(
+                hierarchy_id=hierarchy["id"],
+                viewport=profile.name,
+                candidate=f"hint-responsive-{placement}",
+                support_policy=policy_by_placement[placement],
+                score=95,
+                headroom=0.025,
+            )
+            item["candidateMode"] = "layout-hint-responsive-shadow"
+            item["shadowOnly"] = True
+            item["responsiveEligible"] = True
+            measurements.append(item)
 
     policy = module.responsive_policy_for_hierarchy(
         hierarchy=hierarchy,
@@ -4945,17 +5080,26 @@ def test_layout_hint_milestone2_policy_covers_all_capacity_probes_without_forcin
         profiles=profiles,
     )
 
-    assert policy["state"] == "pass"
+    assert policy["state"] == "watch"
+    assert policy["selectionMode"] == "authored-hint-chain"
     assert policy["semanticContractStable"] is True
     assert policy["coverageComplete"] is True
     assert policy["transitionGapCount"] == 0
+    assert policy["unverifiedTransitionCount"] == 0
+    assert policy["insufficientHysteresisTransitionCount"] == 3
     assert policy["forcedBeyondBandCount"] == 0
     assert policy["monotonicViolationCount"] == 0
     assert [item["remediationLevel"] for item in policy["selections"]] == [
         0,
         0,
+        0,
+        0,
         1,
         1,
+        1,
+        1,
+        2,
+        2,
         2,
         3,
         3,
@@ -4964,7 +5108,16 @@ def test_layout_hint_milestone2_policy_covers_all_capacity_probes_without_forcin
         item["capacityAdmissibilityState"] == "admissible"
         for item in policy["selections"]
     )
-
+    assert len(policy["transitions"]) == 3
+    assert all(item["overlapVerified"] for item in policy["transitions"])
+    assert {
+        tuple(item["overlapProbeWidths"])
+        for item in policy["transitions"]
+    } == {
+        (1439, 1441),
+        (1023, 1025),
+        (719, 721),
+    }
 
 def test_layout_hint_milestone2_marks_out_of_band_selection_as_forced_not_valid():
     module = load_module()
@@ -5018,10 +5171,10 @@ def test_layout_hint_milestone2_samples_both_sides_of_derived_capacity_boundarie
     assert sorted(item.width for item in probes) == [
         719,
         721,
-        959,
-        961,
-        1239,
-        1241,
+        1023,
+        1025,
+        1439,
+        1441,
     ]
     assert all(item.responsive_probe for item in probes)
     assert all(item.height > 0 for item in probes)
@@ -5040,8 +5193,8 @@ def test_layout_hint_milestone2_boundary_probes_run_only_adjacent_authored_fallb
         if isinstance(item, dict) and item.get("responsivePlacement")
     }
     probe = module.ViewportProfile(
-        "boundary-right-bottom-below-1239",
-        1239,
+        "boundary-right-bottom-below-1439",
+        1439,
         830,
         True,
     )
@@ -5055,3 +5208,272 @@ def test_layout_hint_milestone2_boundary_probes_run_only_adjacent_authored_fallb
         if isinstance(item, dict) and item.get("mode") == "recursive-composition"
     )
     assert not module.candidate_applies_to_viewport(normal, probe)
+
+
+def test_layout_hint_milestone24_generates_all_transition_envelope_probes():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    reference = [
+        module.ViewportProfile("wide", 1600, 1000, True),
+        module.ViewportProfile("desktop", 1440, 900, True),
+        module.ViewportProfile("medium", 1200, 820, True),
+        module.ViewportProfile("constrained", 1024, 768, True),
+        module.ViewportProfile("narrow", 840, 720, True),
+        module.ViewportProfile("compact", 680, 720, True),
+        module.ViewportProfile("small", 560, 720, True),
+    ]
+
+    probes = module.responsive_transition_proof_viewports_for_hierarchy(
+        hierarchy,
+        reference_profiles=reference,
+    )
+
+    by_pair = {}
+    for probe in probes:
+        pair = probe.name.split("transition-proof-", 1)[1].rsplit("-", 1)[0]
+        by_pair.setdefault(pair, []).append(probe.width)
+
+    assert by_pair == {
+        "right-bottom": [1345, 1370, 1395, 1420, 1445, 1470, 1495],
+        "bottom-tab": [937, 955, 972, 990, 1007, 1025, 1042],
+        "tab-stage": [660, 680, 700, 720, 740, 760, 780],
+    }
+    assert all(item.responsive_probe for item in probes)
+    assert len(probes) == 21
+
+
+def test_layout_hint_milestone24_bisection_widths_cover_a_bounded_envelope():
+    module = load_module()
+
+    assert module._transition_bisection_widths(
+        lower=920,
+        upper=1060,
+        max_depth=1,
+    ) == [990]
+    assert module._transition_bisection_widths(
+        lower=920,
+        upper=1060,
+        max_depth=2,
+    ) == [955, 990, 1025]
+    assert module._transition_bisection_widths(
+        lower=920,
+        upper=1060,
+        max_depth=3,
+    ) == [937, 955, 972, 990, 1007, 1025, 1042]
+
+
+def test_layout_hint_milestone24_transition_probes_render_only_adjacent_pairs():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    candidates = module.candidate_specs_for_hierarchy(
+        hierarchy,
+        module.LAYOUT_CANDIDATES,
+    )
+    by_placement = {
+        item.get("responsivePlacement"): item
+        for item in candidates
+        if isinstance(item, dict) and item.get("responsivePlacement")
+    }
+    probes = [
+        ("transition-proof-right-bottom-1420", {"right", "bottom"}),
+        ("transition-proof-bottom-tab-990", {"bottom", "tab"}),
+        ("transition-proof-tab-stage-720", {"tab", "stage"}),
+    ]
+
+    for name, allowed in probes:
+        probe = module.ViewportProfile(name, int(name.rsplit("-", 1)[1]), 760, True)
+        for placement, candidate in by_placement.items():
+            assert module.candidate_applies_to_viewport(candidate, probe) is (
+                placement in allowed
+            )
+        normal = next(
+            item
+            for item in candidates
+            if isinstance(item, dict) and item.get("mode") == "recursive-composition"
+        )
+        assert not module.candidate_applies_to_viewport(normal, probe)
+        assert not module.candidate_applies_to_viewport("split-pane", probe)
+
+
+def _transition_profile_row(
+    module,
+    *,
+    width: int,
+    from_candidate: str = "hint-responsive-bottom",
+    to_candidate: str = "hint-responsive-tab",
+    from_headroom: float = 0.006,
+    to_headroom: float = 0.004,
+    from_raw_headroom: float | None = None,
+    to_raw_headroom: float | None = None,
+):
+    return {
+        "profile": module.ViewportProfile(
+            f"transition-proof-bottom-tab-{width}",
+            width,
+            744,
+            True,
+        ),
+        "allOptions": [
+            {
+                "candidate": from_candidate,
+                "status": "pass",
+                "headroom": from_headroom,
+                "rawHeadroom": (
+                    from_headroom
+                    if from_raw_headroom is None
+                    else from_raw_headroom
+                ),
+            },
+            {
+                "candidate": to_candidate,
+                "status": "pass",
+                "headroom": to_headroom,
+                "rawHeadroom": (
+                    to_headroom
+                    if to_raw_headroom is None
+                    else to_raw_headroom
+                ),
+            },
+        ],
+    }
+
+
+def test_layout_hint_milestone24_requires_full_positive_hysteresis_envelope():
+    module = load_module()
+    selections = [
+        {
+            "candidate": "hint-responsive-bottom",
+            "width": 1023,
+            "remediationLevel": 1,
+            "band": "medium",
+        },
+        {
+            "candidate": "hint-responsive-tab",
+            "width": 840,
+            "remediationLevel": 2,
+            "band": "narrow",
+        },
+    ]
+    profile_rows = [
+        _transition_profile_row(module, width=960),
+        _transition_profile_row(module, width=984),
+        _transition_profile_row(module, width=1008),
+    ]
+
+    transition = module.responsive_transition_rules(
+        selections,
+        hysteresis_px=48,
+        profile_rows=profile_rows,
+    )[0]
+
+    assert transition["overlapVerified"] is True
+    assert transition["positiveOverlapVerified"] is True
+    assert transition["positiveOverlapProbeWidths"] == [960, 984, 1008]
+    assert transition["positiveOverlapMinWidth"] == 960
+    assert transition["positiveOverlapMaxWidth"] == 1008
+    assert transition["positiveOverlapWidthPx"] == 48
+    assert transition["requiredHysteresisPx"] == 48
+    assert transition["hysteresisRequirementMet"] is True
+    assert transition["transitionState"] == "verified"
+    assert transition["switchDownBelow"] == 960
+    assert transition["switchUpAbove"] == 1008
+    assert transition["hysteresisPx"] == 48
+
+
+def test_layout_hint_milestone24_marks_narrow_positive_overlap_as_watch_evidence():
+    module = load_module()
+    selections = [
+        {
+            "candidate": "hint-responsive-bottom",
+            "width": 1023,
+            "remediationLevel": 1,
+            "band": "medium",
+        },
+        {
+            "candidate": "hint-responsive-tab",
+            "width": 840,
+            "remediationLevel": 2,
+            "band": "narrow",
+        },
+    ]
+    profile_rows = [
+        _transition_profile_row(module, width=984),
+        _transition_profile_row(module, width=1008),
+    ]
+
+    transition = module.responsive_transition_rules(
+        selections,
+        hysteresis_px=48,
+        profile_rows=profile_rows,
+    )[0]
+
+    assert transition["positiveOverlapVerified"] is True
+    assert transition["positiveOverlapWidthPx"] == 24
+    assert transition["hysteresisRequirementMet"] is False
+    assert transition["transitionState"] == "narrow-positive-overlap"
+    assert transition["hysteresisPx"] == 24
+
+
+def test_layout_hint_milestone24_rejects_tolerance_only_overlap_as_unverified():
+    module = load_module()
+    selections = [
+        {
+            "candidate": "hint-responsive-bottom",
+            "width": 1023,
+            "remediationLevel": 1,
+            "band": "medium",
+        },
+        {
+            "candidate": "hint-responsive-tab",
+            "width": 840,
+            "remediationLevel": 2,
+            "band": "narrow",
+        },
+    ]
+    profile_rows = [
+        _transition_profile_row(
+            module,
+            width=960,
+            from_headroom=0.0,
+            to_headroom=0.0,
+            from_raw_headroom=-0.0001,
+            to_raw_headroom=-0.0002,
+        ),
+        _transition_profile_row(
+            module,
+            width=1008,
+            from_headroom=0.0,
+            to_headroom=0.0,
+            from_raw_headroom=-0.0001,
+            to_raw_headroom=-0.0002,
+        ),
+    ]
+
+    transition = module.responsive_transition_rules(
+        selections,
+        hysteresis_px=48,
+        profile_rows=profile_rows,
+    )[0]
+
+    assert transition["overlapVerified"] is True
+    assert transition["positiveOverlapVerified"] is False
+    assert transition["hysteresisRequirementMet"] is False
+    assert transition["transitionState"] == "tolerance-only-overlap"
+    assert transition["toleranceOnlyProbeWidths"] == [960, 1008]
+
+
+def test_layout_hint_milestone24_css_expands_transition_envelopes_without_lowering_floors():
+    module = load_module()
+
+    assert "minmax(300px, 33fr) minmax(0, 67fr)" in module.TRIAL_CSS
+    assert "minmax(112px, 15%)" in module.TRIAL_CSS
+    assert "minmax(48px, 8%)" in module.TRIAL_CSS
+    assert module.PHASE_SHARE_FLOOR_TOLERANCE == 0.0005
+    assert (
+        module.RESPONSIVE_POLICY_VERSION
+        == "capacity-derived-presentation-contract-v6"
+    )
+    assert (
+        module.RESPONSIVE_TRANSITION_PROOF_VERSION
+        == "robust-transition-envelope-proof-v3"
+    )

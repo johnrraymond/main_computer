@@ -54,9 +54,10 @@ DEFAULT_RESPONSIVE_VIEWPORTS = (
     "constrained=1024x768,narrow=840x720,compact=680x720,small=560x720"
 )
 DEFAULT_RESPONSIVE_HYSTERESIS_PX = 48
-RESPONSIVE_POLICY_VERSION = "capacity-derived-presentation-contract-v2"
-RESPONSIVE_PRESENTATION_CONTRACT_VERSION = "mcel-responsive-presentations-v1"
-RESPONSIVE_COVERAGE_VERSION = "sampled-capacity-coverage-v1"
+RESPONSIVE_POLICY_VERSION = "capacity-derived-presentation-contract-v6"
+RESPONSIVE_PRESENTATION_CONTRACT_VERSION = "mcel-responsive-presentations-v2"
+RESPONSIVE_COVERAGE_VERSION = "sampled-capacity-coverage-v2"
+RESPONSIVE_TRANSITION_PROOF_VERSION = "robust-transition-envelope-proof-v3"
 DEFAULT_CHROME = "mcel-realistic"
 DEFAULT_CANDIDATES = "all"
 DEFAULT_OUTPUT_DIR = "runtime/reports/flog"
@@ -333,6 +334,103 @@ def responsive_boundary_viewports_for_hierarchy(
     return probes
 
 
+def _transition_bisection_widths(
+    *,
+    lower: int,
+    upper: int,
+    max_depth: int,
+) -> list[int]:
+    """Return dyadic midpoint probes inside one known pass/fail bracket.
+
+    The proof run is planned before Chromium starts, so it cannot literally wait
+    for each midpoint result.  A bounded bisection tree is the deterministic
+    equivalent: it samples the midpoint first, then the two remaining brackets,
+    and continues only to the declared depth.  This concentrates evidence inside
+    the unresolved interval instead of spending probes below or above it.
+    """
+
+    lower = int(lower)
+    upper = int(upper)
+    if upper < lower:
+        lower, upper = upper, lower
+    depth = max(1, min(6, int(max_depth)))
+    intervals = [(lower, upper)]
+    widths: set[int] = set()
+    for _ in range(depth):
+        next_intervals: list[tuple[int, int]] = []
+        for left, right in intervals:
+            if right - left <= 1:
+                continue
+            midpoint = (left + right) // 2
+            if midpoint <= left or midpoint >= right:
+                continue
+            widths.add(midpoint)
+            next_intervals.append((left, midpoint))
+            next_intervals.append((midpoint, right))
+        intervals = next_intervals
+        if not intervals:
+            break
+    return sorted(widths)
+
+
+def responsive_transition_proof_viewports_for_hierarchy(
+    hierarchy: dict[str, Any],
+    *,
+    reference_profiles: list[ViewportProfile],
+) -> list[ViewportProfile]:
+    """Add bounded multi-resolution probes for authored transition envelopes.
+
+    Each plan supplies a finite search envelope around one adjacent authored pair.
+    Dyadic sampling concentrates evidence near the center while still reaching
+    both sides of the envelope.  Only the named pair renders, so the proof does
+    not re-enable broad candidate search or touch the live application.
+    """
+
+    contract = responsive_contract_for_hierarchy(hierarchy)
+    plans = list(contract.get("transitionProofPlans") or [])
+    if not plans:
+        return []
+
+    by_name = {profile.name: profile for profile in reference_profiles}
+    probes: list[ViewportProfile] = []
+    for raw in plans:
+        from_placement = slugify(str(raw.get("fromPlacement") or ""))
+        to_placement = slugify(str(raw.get("toPlacement") or ""))
+        upper_profile = by_name.get(slugify(str(raw.get("upperProfile") or "")))
+        lower_profile = by_name.get(slugify(str(raw.get("lowerProfile") or "")))
+
+        explicit_upper = raw.get("upperWidth")
+        explicit_lower = raw.get("lowerWidth")
+        if explicit_upper is not None and explicit_lower is not None:
+            upper = max(int(explicit_upper), int(explicit_lower))
+            lower = min(int(explicit_upper), int(explicit_lower))
+        elif upper_profile is not None and lower_profile is not None:
+            upper = max(int(upper_profile.width), int(lower_profile.width))
+            lower = min(int(upper_profile.width), int(lower_profile.width))
+        else:
+            continue
+
+        if not from_placement or not to_placement or upper - lower < 2:
+            continue
+
+        widths = _transition_bisection_widths(
+            lower=lower,
+            upper=upper,
+            max_depth=int(raw.get("maxDepth", 3) or 3),
+        )
+        placement_token = f"{from_placement}-{to_placement}"
+        for width in widths:
+            probes.append(
+                ViewportProfile(
+                    name=f"transition-proof-{placement_token}-{width}",
+                    width=width,
+                    height=_interpolated_probe_height(width, reference_profiles),
+                    responsive_probe=True,
+                )
+            )
+    return probes
+
+
 def responsive_viewports_for_hierarchy(
     hierarchy: dict[str, Any],
     *,
@@ -352,7 +450,14 @@ def responsive_viewports_for_hierarchy(
         hierarchy,
         reference_profiles=merged,
     )
-    return merge_viewport_profiles(merged, boundary)
+    transition_proof = responsive_transition_proof_viewports_for_hierarchy(
+        hierarchy,
+        reference_profiles=merged,
+    )
+    return merge_viewport_profiles(
+        merge_viewport_profiles(merged, boundary),
+        transition_proof,
+    )
 
 
 def parse_candidates(value: str) -> list[str]:
@@ -2248,6 +2353,18 @@ def layout_hint_shadow_candidate_spec(
     # realization instead of rendering a duplicate responsive candidate.
     result["responsiveEligible"] = True
     result["responsivePlacement"] = "right"
+    result["presentationContractKey"] = "wide"
+    derivation = derive_responsive_capacity_bands_from_hints(hierarchy)
+    wide_band = next(
+        (
+            item
+            for item in derivation.get("bands") or []
+            if str(item.get("id") or "") == "wide"
+        ),
+        {},
+    )
+    result["minViewportWidth"] = int(wide_band.get("minWidth", 1320) or 1320)
+    result["viewportProfiles"] = ["wide", "desktop"]
     return result
 
 
@@ -2260,8 +2377,8 @@ def candidate_applies_to_viewport(
     viewport: ViewportProfile,
 ) -> bool:
     if not isinstance(candidate, dict):
-        return not viewport.name.startswith("boundary-")
-    if viewport.name.startswith("boundary-"):
+        return not viewport.name.startswith(("boundary-", "transition-proof-"))
+    if viewport.name.startswith(("boundary-", "transition-proof-")):
         if not candidate_responsive_eligible(candidate):
             return False
         placement = str(candidate.get("responsivePlacement") or "")
@@ -2365,6 +2482,12 @@ def compile_layout_hint_responsive_candidates(
                 "shadowOnly": True,
                 "responsiveEligible": True,
                 "responsivePlacement": placement,
+                "presentationContractKey": {
+                    "bottom": "medium",
+                    "tab": "narrow",
+                    "stage": "compact",
+                    "trigger": "compact",
+                }.get(placement, ""),
                 "viewportProfiles": profiles,
                 "layoutHintCompilation": {
                     "version": LAYOUT_HINT_RESPONSIVE_VERSION,
@@ -3166,16 +3289,66 @@ def phase_trial_scenarios(hierarchy: dict[str, Any]) -> list[dict[str, Any]]:
     return [copy.deepcopy(canonical_phase_scenario(hierarchy))]
 
 
+def responsive_presentation_band_for_candidate(
+    hierarchy: dict[str, Any],
+    candidate: str | dict[str, Any] | None,
+    viewport: ViewportProfile,
+) -> tuple[str, str]:
+    """Bind responsive semantics to the rendered realization.
+
+    Milestone 2.1 treats geometry and semantic presentation as one atomic state.
+    Width still decides which authored candidates are sampled, but it may not swap
+    a desktop contract underneath an unchanged side-drawer realization.
+    """
+
+    if candidate is None:
+        contract = responsive_contract_for_hierarchy(hierarchy)
+        band = responsive_capacity_band(contract, viewport.width)
+        return str(band.get("id") or "wide"), "viewport-fallback"
+
+    placement = ""
+    if isinstance(candidate, dict):
+        explicit_key = str(candidate.get("presentationContractKey") or "")
+        if explicit_key:
+            return explicit_key, "realization-policy"
+        placement = str(candidate.get("responsivePlacement") or "")
+    if not placement:
+        policy = candidate_phase_policy(candidate)
+        placement = {
+            "side-drawer": "right",
+            "bottom-drawer": "bottom",
+            "inline-stage": "tab",
+            "tab-group": "tab",
+            "sequential-stage": "stage",
+            "neutral-phase-stage": "trigger",
+        }.get(str(policy.get("activeSupportPlacement") or ""), "")
+
+    band_by_placement = {
+        "right": "wide",
+        "bottom": "medium",
+        "tab": "narrow",
+        "stage": "compact",
+        "trigger": "compact",
+    }
+    if placement in band_by_placement:
+        return band_by_placement[placement], "realization-policy"
+
+    contract = responsive_contract_for_hierarchy(hierarchy)
+    band = responsive_capacity_band(contract, viewport.width)
+    return str(band.get("id") or "wide"), "viewport-fallback"
+
+
 def responsive_phase_scenario(
     hierarchy: dict[str, Any],
     scenario: dict[str, Any],
     viewport: ViewportProfile,
+    candidate: str | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resolve one phase into the presentation contract for the current capacity.
+    """Resolve one phase using the contract owned by the rendered realization.
 
-    The phase identity remains stable while the dominant surface and summary
-    obligations may change.  This is the Milestone 2 semantic half of responsive
-    layout: compact stages are no longer judged by the desktop co-presence floor.
+    Capacity selects which authored realization is eligible.  The realization then
+    selects its semantic presentation contract.  Geometry and semantics therefore
+    change atomically instead of changing the floor under an unchanged layout.
     """
 
     base = copy.deepcopy(scenario)
@@ -3183,10 +3356,15 @@ def responsive_phase_scenario(
         return base
 
     contract = responsive_contract_for_hierarchy(hierarchy)
-    band = responsive_capacity_band(contract, viewport.width)
+    viewport_band = responsive_capacity_band(contract, viewport.width)
+    presentation_band_id, contract_source = responsive_presentation_band_for_candidate(
+        hierarchy,
+        candidate,
+        viewport,
+    )
     phase = str(base.get("phase") or "default")
     presentations = contract.get("phasePresentations") or {}
-    band_presentations = presentations.get(str(band.get("id") or "")) or {}
+    band_presentations = presentations.get(presentation_band_id) or {}
     override = copy.deepcopy(
         band_presentations.get(phase)
         or band_presentations.get("*")
@@ -3195,7 +3373,9 @@ def responsive_phase_scenario(
     if not override:
         base["responsivePresentation"] = {
             "version": RESPONSIVE_PRESENTATION_CONTRACT_VERSION,
-            "capacityBand": str(band.get("id") or ""),
+            "capacityBand": str(viewport_band.get("id") or ""),
+            "presentationBand": presentation_band_id,
+            "contractSource": contract_source,
             "mode": "base-phase-contract",
             "viewportWidth": viewport.width,
             "viewportHeight": viewport.height,
@@ -3222,7 +3402,9 @@ def responsive_phase_scenario(
         base["reason"] = f"{original_reason} {suffix}".strip()
     base["responsivePresentation"] = {
         "version": RESPONSIVE_PRESENTATION_CONTRACT_VERSION,
-        "capacityBand": str(band.get("id") or ""),
+        "capacityBand": str(viewport_band.get("id") or ""),
+        "presentationBand": presentation_band_id,
+        "contractSource": contract_source,
         "mode": str(override.get("presentationMode") or "capacity-relative"),
         "viewportWidth": viewport.width,
         "viewportHeight": viewport.height,
@@ -3234,7 +3416,6 @@ def responsive_phase_scenario(
         "returnToSlot": str(base.get("returnToSlot") or ""),
     }
     return base
-
 
 def realize_phase(
     hierarchy: dict[str, Any],
@@ -5843,6 +6024,44 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                 "switchPenalty": 1.75,
                 "unnecessaryRemediationPenalty": 12.0,
                 "hysteresisPx": DEFAULT_RESPONSIVE_HYSTERESIS_PX,
+                "transitionProofPlans": [
+                    {
+                        "fromPlacement": "right",
+                        "toPlacement": "bottom",
+                        "upperWidth": 1520,
+                        "lowerWidth": 1320,
+                        "maxDepth": 3,
+                        "requiredPositiveOverlapPx": DEFAULT_RESPONSIVE_HYSTERESIS_PX,
+                        "bracketEvidence": {
+                            "center": "both realizations pass near the authored 1440px boundary",
+                            "purpose": "measure the complete positive-headroom overlap envelope",
+                        },
+                    },
+                    {
+                        "fromPlacement": "bottom",
+                        "toPlacement": "tab",
+                        "upperWidth": 1060,
+                        "lowerWidth": 920,
+                        "maxDepth": 3,
+                        "requiredPositiveOverlapPx": DEFAULT_RESPONSIVE_HYSTERESIS_PX,
+                        "bracketEvidence": {
+                            "upper": "bottom passes while tab approaches its identity-stage floor",
+                            "lower": "tab passes while bottom approaches its workflow floor",
+                        },
+                    },
+                    {
+                        "fromPlacement": "tab",
+                        "toPlacement": "stage",
+                        "upperWidth": 800,
+                        "lowerWidth": 640,
+                        "maxDepth": 3,
+                        "requiredPositiveOverlapPx": DEFAULT_RESPONSIVE_HYSTERESIS_PX,
+                        "bracketEvidence": {
+                            "center": "both realizations pass near the authored 720px boundary",
+                            "purpose": "measure the complete positive-headroom overlap envelope",
+                        },
+                    },
+                ],
                 "semanticInvariants": [
                     "project identity remains available",
                     "active workflow phase remains unambiguous",
@@ -5891,8 +6110,21 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                         },
                         "selected-project-default": {
                             "presentationMode": "workflow-tab",
+                            "dominantSlot": "workflow",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command"],
+                            "activeSupportSlots": [],
+                            "collapsedSlots": [
+                                "project-selector",
+                                "server",
+                                "evidence",
+                                "advanced",
+                            ],
+                            "reachableSlots": ["server", "evidence", "advanced"],
+                            "returnToSlot": "workflow",
                             "minDominantShare": 0.48,
                             "targetDominantShare": 0.58,
+                            "reasonSuffix": "The command surface is replaced by a compact summary while workflow owns the active tab.",
                         },
                         "planning": {
                             "presentationMode": "support-tab",
@@ -5910,15 +6142,15 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                         "execution": {
                             "presentationMode": "workflow-tab",
                             "dominantSlot": "workflow",
-                            "requiredSlots": ["project-context", "command", "workflow", "status"],
-                            "summarySlots": [],
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command"],
                             "activeSupportSlots": [],
                             "collapsedSlots": ["project-selector", "server", "evidence", "advanced"],
                             "reachableSlots": ["evidence"],
                             "returnToSlot": "workflow",
                             "minDominantShare": 0.46,
                             "targetDominantShare": 0.58,
-                            "reasonSuffix": "Execution keeps workflow active and makes evidence reachable through the support tab strip.",
+                            "reasonSuffix": "Execution keeps workflow active, replaces command controls with a compact summary, and makes evidence reachable through the support tab strip.",
                         },
                         "proof-review": {
                             "presentationMode": "support-tab",
@@ -5955,8 +6187,21 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                         },
                         "selected-project-default": {
                             "presentationMode": "workflow-stage",
+                            "dominantSlot": "workflow",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command"],
+                            "activeSupportSlots": [],
+                            "collapsedSlots": [
+                                "project-selector",
+                                "server",
+                                "evidence",
+                                "advanced",
+                            ],
+                            "reachableSlots": ["server", "evidence", "advanced"],
+                            "returnToSlot": "workflow",
                             "minDominantShare": 0.44,
                             "targetDominantShare": 0.58,
+                            "reasonSuffix": "Compact default replaces the full command payload with a returnable summary.",
                         },
                         "planning": {
                             "presentationMode": "sequential-support-stage",
@@ -7991,7 +8236,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
     > .flog-layout-unit.unit-policy-phase-selector-unit[data-flog-unit-id="project-identity"][data-flog-unit-realization="active"]
   ) {
-  grid-template-columns: minmax(300px, 32fr) minmax(0, 68fr);
+  grid-template-columns: minmax(300px, 33fr) minmax(0, 67fr);
 }
 .has-layout-units.policy-phase-aware
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
@@ -8071,7 +8316,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     > .flog-layout-unit.unit-policy-bounded-bottom-drawer[data-flog-unit-has-active-support="true"]
   ) {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto minmax(150px, 20%);
+  grid-template-rows: minmax(0, 1fr) auto minmax(112px, 15%);
   grid-template-areas:
     "main"
     "feedback"
@@ -8141,7 +8386,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
   ) {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(86px, 13%) minmax(0, 1fr) auto;
+  grid-template-rows: minmax(72px, 10%) minmax(0, 1fr) auto;
   grid-template-areas:
     "main"
     "support"
@@ -8167,6 +8412,51 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   font-weight: 700;
 }
 
+/* Tab and stage modes compact non-active chrome before taking space from the
+   active stage.  Full command payloads have already been replaced by summaries. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+  )
+  > .flog-layout-unit[data-flog-unit-id="command-workflow"] {
+  gap: 3px;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit:is(
+      .unit-policy-tabbed-phase-support,
+      .unit-policy-sequential-phase-stage,
+      .unit-policy-one-active-plus-triggers
+    )[data-flog-unit-has-active-support="true"]
+  )
+  > .flog-layout-unit[data-flog-unit-id="persistent-feedback"] {
+  min-height: 32px;
+  gap: 4px;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit:is(
+      .unit-policy-tabbed-phase-support,
+      .unit-policy-sequential-phase-stage,
+      .unit-policy-one-active-plus-triggers
+    )[data-flog-unit-has-active-support="true"]
+  )
+  > .flog-layout-unit[data-flog-unit-id="persistent-feedback"]
+  > .flog-node {
+  padding: 4px 6px;
+  min-height: 30px;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+  )
+  > .flog-layout-unit[data-flog-unit-id="command-workflow"]
+  > .flog-node.flog-summary {
+  min-height: 32px;
+  max-height: 34px;
+  padding-block: 3px;
+}
+
 /* A sequential stage gives the active phase surface the primary track and moves
    the workflow summary below it as an explicit return path. */
 .has-layout-units.policy-phase-aware
@@ -8174,7 +8464,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     > .flog-layout-unit.unit-policy-sequential-phase-stage[data-flog-unit-has-active-support="true"]
   ) {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) minmax(54px, 10%) auto;
+  grid-template-rows: minmax(0, 1fr) minmax(48px, 8%) auto;
   grid-template-areas:
     "support"
     "main"
@@ -10354,6 +10644,23 @@ def measurement_margin_evidence(item: dict[str, Any]) -> dict[str, float | int]:
     else:
         worst_headroom = float(declared_headroom)
 
+    declared_raw_headroom = phase_fit.get("worstRawDominantHeadroom")
+    if declared_raw_headroom is None:
+        raw_headrooms = [
+            float(
+                row.get(
+                    "dominantRawHeadroom",
+                    float(row.get("dominantShare", 0) or 0)
+                    - float(row.get("minDominantShare", 0) or 0),
+                )
+                or 0
+            )
+            for row in phase_rows
+        ]
+        worst_raw_headroom = min(raw_headrooms, default=worst_headroom)
+    else:
+        worst_raw_headroom = float(declared_raw_headroom)
+
     declared_variance = phase_fit.get("scoreVariance")
     if declared_variance is None:
         phase_scores = [
@@ -10388,6 +10695,7 @@ def measurement_margin_evidence(item: dict[str, Any]) -> dict[str, float | int]:
             or 0.0
         ),
         "worstPhaseHeadroom": float(worst_headroom),
+        "worstPhaseRawHeadroom": float(worst_raw_headroom),
         "worstUnitScore": float(
             unit_fit.get("worstScoreRaw", unit_fit.get("worstScore", 100)) or 0.0
         ),
@@ -10504,11 +10812,16 @@ def derive_responsive_capacity_bands_from_hints(
     def ceil_track(value: float) -> int:
         return int(math.ceil(max(0.0, value) / 8.0) * 8)
 
+    # A shared robustness factor reserves enough width for real text wrapping,
+    # control chrome, and the required 1% phase-floor safety margin.  It is applied
+    # to authored minima rather than acting as an application-specific breakpoint.
+    robustness_factor = 1.368
     side_required = ceil_track(
-        (command + support + chrome_allowance + gap_allowance) * 1.18
+        (command + support + chrome_allowance + gap_allowance) * robustness_factor
     )
     bottom_required = ceil_track(
-        (max(command, feedback, support) + chrome_allowance + gap_allowance) * 1.28
+        (max(command, feedback, support) + chrome_allowance + gap_allowance)
+        * robustness_factor
     )
     tab_required = ceil_track(
         (max(support, identity) + chrome_allowance + gap_allowance) * 1.35
@@ -10529,6 +10842,7 @@ def derive_responsive_capacity_bands_from_hints(
             "persistentFeedbackMinInline": feedback,
             "chromeAllowance": chrome_allowance,
             "gapAllowance": gap_allowance,
+            "robustnessFactor": robustness_factor,
         },
         "bands": [
             {
@@ -10722,24 +11036,35 @@ def _responsive_profile_options(
     profile: ViewportProfile,
     contract: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create capacity-aware options for one measured viewport."""
+    """Create feasibility-derived authored options for one measured viewport.
+
+    Milestone 2.1 does not let general recursive candidates silently rescue holes
+    in the authored hint chain.  Among hint-compiled candidates, the least
+    restrictive robust realization wins.  A stronger realization becomes
+    admissible only when all lower levels fail or lack the required safety margin.
+    """
 
     band = responsive_capacity_band(contract, profile.width)
-    representatives = [
+    hierarchy_measurements = [
         item
         for item in measurements
         if str(item.get("hierarchyId") or "") == str(hierarchy.get("id") or "")
-        and str(item.get("viewportProfile") or "") == profile.name
-        and (
-            not bool(item.get("renderedEquivalenceExcludedFromRanking"))
-            or bool(item.get("responsiveEligible"))
-        )
     ]
-    passing = [
+    authored_mode = any(
+        bool(item.get("responsiveEligible")) for item in hierarchy_measurements
+    )
+    representatives = [
         item
-        for item in representatives
-        if measurement_status(item) in ACCEPTABLE_LAYOUT_STATUSES
+        for item in hierarchy_measurements
+        if str(item.get("viewportProfile") or "") == profile.name
+        and (
+            bool(item.get("responsiveEligible"))
+            if authored_mode
+            else True
+        )
+        and not bool(item.get("renderedEquivalenceExcludedFromRanking"))
     ]
+
     option_rows: list[dict[str, Any]] = []
     for item in representatives:
         remediation = measurement_remediation_evidence(item)
@@ -10752,11 +11077,17 @@ def _responsive_profile_options(
                 "score": measurement_score(item),
                 "rawScore": float(evidence["selectionScoreRaw"]),
                 "headroom": float(evidence["worstPhaseHeadroom"]),
+                "rawHeadroom": float(
+                    evidence.get(
+                        "worstPhaseRawHeadroom",
+                        evidence["worstPhaseHeadroom"],
+                    )
+                ),
                 "worstUnitScore": float(evidence["worstUnitScore"]),
                 "remediationLevel": int(remediation["level"]),
                 "remediationLabel": str(remediation["label"]),
                 "remediationPolicies": copy.deepcopy(remediation["policies"]),
-                "capacityAdmissible": int(remediation["level"])
+                "declaredBandCompatible": int(remediation["level"])
                 <= int(band["maxRemediationLevel"]),
                 "quality": _responsive_option_quality(item),
             }
@@ -10767,45 +11098,94 @@ def _responsive_profile_options(
         for row in option_rows
         if row["status"] in ACCEPTABLE_LAYOUT_STATUSES
     ]
-    capacity_rows = [row for row in passing_rows if row["capacityAdmissible"]]
-    forced_beyond_band = False
-    transition_gap = False
-    if capacity_rows:
-        usable = capacity_rows
-    elif passing_rows:
-        # The viewport has no passing realization inside its declared remediation
-        # ceiling. Keep the least-restrictive passing level so the report exposes
-        # that the capacity contract itself needs another realization.
-        forced_beyond_band = True
-        lowest_level = min(row["remediationLevel"] for row in passing_rows)
-        usable = [
-            row for row in passing_rows if row["remediationLevel"] == lowest_level
-        ]
-    else:
-        transition_gap = True
-        usable = sorted(option_rows, key=lambda row: measurement_ranking_sort_key(row["measurement"]))[:1]
-
     robust_headroom = float(contract["minimumRobustHeadroom"])
-    robust_levels = [
-        row["remediationLevel"]
-        for row in usable
-        if row["headroom"] >= robust_headroom
-        and row["status"] in ACCEPTABLE_LAYOUT_STATUSES
+    robust_rows = [
+        row
+        for row in passing_rows
+        if float(row["headroom"]) + PHASE_SHARE_FLOOR_TOLERANCE
+        >= robust_headroom
     ]
-    passing_levels = [
-        row["remediationLevel"]
-        for row in usable
-        if row["status"] in ACCEPTABLE_LAYOUT_STATUSES
-    ]
-    baseline_level = min(
-        robust_levels or passing_levels or [row["remediationLevel"] for row in usable] or [3]
-    )
-    for row in usable:
-        row["unnecessaryRemediationLevels"] = max(
-            0, int(row["remediationLevel"]) - int(baseline_level)
+
+    transition_gap = not passing_rows
+    if robust_rows:
+        selected_level = min(int(row["remediationLevel"]) for row in robust_rows)
+        usable = [
+            row
+            for row in robust_rows
+            if int(row["remediationLevel"]) == selected_level
+        ]
+        admissibility_reason = (
+            "least restrictive browser-verified realization with robust headroom"
         )
-        row["forcedBeyondBand"] = forced_beyond_band
+    elif passing_rows:
+        selected_level = min(int(row["remediationLevel"]) for row in passing_rows)
+        usable = [
+            row
+            for row in passing_rows
+            if int(row["remediationLevel"]) == selected_level
+        ]
+        admissibility_reason = (
+            "least restrictive passing realization; robust headroom unavailable"
+        )
+    else:
+        selected_level = min(
+            (int(row["remediationLevel"]) for row in option_rows),
+            default=3,
+        )
+        usable = sorted(
+            option_rows,
+            key=lambda row: measurement_ranking_sort_key(row["measurement"]),
+        )[:1]
+        admissibility_reason = "no authored realization passed"
+
+    lower_level_rows = [
+        row for row in option_rows if int(row["remediationLevel"]) < selected_level
+    ]
+    lower_level_failures = [
+        {
+            "candidate": row["candidate"],
+            "level": int(row["remediationLevel"]),
+            "status": row["status"],
+            "headroom": float(row["headroom"]),
+        }
+        for row in lower_level_rows
+        if row["status"] not in ACCEPTABLE_LAYOUT_STATUSES
+        or float(row["headroom"]) + PHASE_SHARE_FLOOR_TOLERANCE
+        < robust_headroom
+    ]
+
+    selected_candidates = {row["candidate"] for row in usable}
+    selected_beyond_band = selected_level > int(band["maxRemediationLevel"])
+    lower_failure_evidence = bool(lower_level_rows) and all(
+        row["status"] not in ACCEPTABLE_LAYOUT_STATUSES
+        or float(row["headroom"]) + PHASE_SHARE_FLOOR_TOLERANCE
+        < robust_headroom
+        for row in lower_level_rows
+    )
+    forced_beyond_band = bool(
+        selected_beyond_band and not lower_failure_evidence
+    )
+    for row in option_rows:
+        acceptable = row["status"] in ACCEPTABLE_LAYOUT_STATUSES
+        at_selected_level = int(row["remediationLevel"]) == selected_level
+        row["capacityAdmissible"] = bool(
+            acceptable
+            and at_selected_level
+            and row["candidate"] in selected_candidates
+            and not forced_beyond_band
+        )
+        row["unnecessaryRemediationLevels"] = max(
+            0, int(row["remediationLevel"]) - int(selected_level)
+        )
+        row["forcedBeyondBand"] = bool(
+            forced_beyond_band
+            and at_selected_level
+            and row["candidate"] in selected_candidates
+        )
         row["transitionGap"] = transition_gap
+        row["admissibilitySource"] = "browser-feasibility"
+        row["admissibilityReason"] = admissibility_reason
+        row["lowerLevelRejected"] = copy.deepcopy(lower_level_failures)
         item = row["measurement"]
         item["responsiveCapacityBand"] = band["id"]
         item["responsiveMaxRemediationLevel"] = int(band["maxRemediationLevel"])
@@ -10818,6 +11198,8 @@ def _responsive_profile_options(
         item["responsiveUnnecessaryRemediationLevels"] = int(
             row["unnecessaryRemediationLevels"]
         )
+        item["responsiveAdmissibilitySource"] = row["admissibilitySource"]
+        item["responsiveAdmissibilityReason"] = row["admissibilityReason"]
 
     return {
         "profile": profile,
@@ -10826,34 +11208,227 @@ def _responsive_profile_options(
         "allOptions": option_rows,
         "forcedBeyondBand": forced_beyond_band,
         "transitionGap": transition_gap,
-        "baselineLevel": baseline_level,
+        "baselineLevel": selected_level,
+        "authoredMode": authored_mode,
+        "admissibilitySource": "browser-feasibility",
+        "admissibilityReason": admissibility_reason,
+        "lowerLevelRejected": lower_level_failures,
     }
+
+def _widest_transition_overlap_run(
+    evidence_rows: list[dict[str, Any]],
+    *,
+    predicate_key: str,
+    target_width: float,
+) -> list[dict[str, Any]]:
+    """Return the widest sampled contiguous overlap run around one transition.
+
+    "Contiguous" means no sampled counterexample appears between the retained
+    widths.  The browser proof remains sampled evidence; missing integer widths
+    are not silently described as measured.
+    """
+
+    runs: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for row in sorted(evidence_rows, key=lambda item: int(item["width"])):
+        if bool(row.get(predicate_key)):
+            current.append(row)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    if not runs:
+        return []
+
+    def run_key(run: list[dict[str, Any]]) -> tuple[float, int, float]:
+        lower = int(run[0]["width"])
+        upper = int(run[-1]["width"])
+        span = upper - lower
+        midpoint = (lower + upper) / 2.0
+        return (float(span), len(run), -abs(midpoint - target_width))
+
+    return max(runs, key=run_key)
 
 
 def responsive_transition_rules(
     selections: list[dict[str, Any]],
     *,
     hysteresis_px: int,
+    profile_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build stable entry/exit thresholds between sampled selections."""
+    """Build transitions from positive raw-headroom browser overlap.
 
+    A tolerance-only pass proves that a state is not broken; it does not prove a
+    safe resize envelope.  The declared hysteresis is certified only when both
+    adjacent authored realizations have strictly positive *raw* phase headroom
+    over a sampled interval at least that wide.
+    """
+
+    profile_rows = list(profile_rows or [])
+    required_hysteresis = max(1, int(hysteresis_px))
     rules: list[dict[str, Any]] = []
     for previous, current in zip(selections, selections[1:]):
         if previous["candidate"] == current["candidate"]:
             continue
+
+        from_candidate = str(previous["candidate"])
+        to_candidate = str(current["candidate"])
         upper_width = int(previous["width"])
         lower_width = int(current["width"])
-        gap = max(2, upper_width - lower_width)
-        hysteresis = min(max(0, int(hysteresis_px)), max(0, gap - 2))
-        midpoint = (upper_width + lower_width) / 2.0
-        down_below = int(math.floor(midpoint - (hysteresis / 2.0)))
-        up_above = int(math.ceil(midpoint + (hysteresis / 2.0)))
-        down_below = max(lower_width, min(upper_width - 1, down_below))
-        up_above = max(down_below + 1, min(upper_width, up_above))
+        target_width = (upper_width + lower_width) / 2.0
+
+        evidence_rows: list[dict[str, Any]] = []
+        for profile_row in profile_rows:
+            by_candidate = {
+                str(option.get("candidate") or ""): option
+                for option in profile_row.get("allOptions") or []
+            }
+            left = by_candidate.get(from_candidate)
+            right = by_candidate.get(to_candidate)
+            if not left or not right:
+                continue
+
+            left_status_ok = (
+                str(left.get("status") or "") in ACCEPTABLE_LAYOUT_STATUSES
+            )
+            right_status_ok = (
+                str(right.get("status") or "") in ACCEPTABLE_LAYOUT_STATUSES
+            )
+            left_headroom = float(left.get("headroom", -1.0))
+            right_headroom = float(right.get("headroom", -1.0))
+            left_raw = float(left.get("rawHeadroom", left_headroom))
+            right_raw = float(right.get("rawHeadroom", right_headroom))
+            tolerance_overlap = bool(
+                left_status_ok
+                and right_status_ok
+                and left_headroom >= -PHASE_SHARE_FLOOR_TOLERANCE
+                and right_headroom >= -PHASE_SHARE_FLOOR_TOLERANCE
+            )
+            positive_overlap = bool(
+                left_status_ok
+                and right_status_ok
+                and left_raw > 0.0
+                and right_raw > 0.0
+            )
+            profile = profile_row["profile"]
+            evidence_rows.append(
+                {
+                    "width": int(profile.width),
+                    "profile": str(profile.name),
+                    "toleranceOverlap": tolerance_overlap,
+                    "positiveOverlap": positive_overlap,
+                    "toleranceOnly": bool(
+                        tolerance_overlap and not positive_overlap
+                    ),
+                    "fromHeadroom": left_headroom,
+                    "toHeadroom": right_headroom,
+                    "fromRawHeadroom": left_raw,
+                    "toRawHeadroom": right_raw,
+                }
+            )
+
+        tolerance_run = _widest_transition_overlap_run(
+            evidence_rows,
+            predicate_key="toleranceOverlap",
+            target_width=target_width,
+        )
+        positive_run = _widest_transition_overlap_run(
+            evidence_rows,
+            predicate_key="positiveOverlap",
+            target_width=target_width,
+        )
+
+        overlap_widths = [int(row["width"]) for row in tolerance_run]
+        overlap_profiles = [str(row["profile"]) for row in tolerance_run]
+        positive_widths = [int(row["width"]) for row in positive_run]
+        positive_profiles = [str(row["profile"]) for row in positive_run]
+        tolerance_only_widths = sorted(
+            {
+                int(row["width"])
+                for row in evidence_rows
+                if bool(row.get("toleranceOnly"))
+            }
+        )
+
+        overlap_verified = (
+            len(overlap_widths) >= 2
+            and overlap_widths[-1] > overlap_widths[0]
+        )
+        positive_overlap_verified = (
+            len(positive_widths) >= 2
+            and positive_widths[-1] > positive_widths[0]
+        )
+        overlap_min = overlap_widths[0] if overlap_verified else 0
+        overlap_max = overlap_widths[-1] if overlap_verified else 0
+        positive_min = positive_widths[0] if positive_overlap_verified else 0
+        positive_max = positive_widths[-1] if positive_overlap_verified else 0
+        positive_span = (
+            positive_max - positive_min if positive_overlap_verified else 0
+        )
+        hysteresis_requirement_met = bool(
+            positive_overlap_verified
+            and positive_span >= required_hysteresis
+        )
+
+        if positive_overlap_verified:
+            available = max(1, positive_span)
+            desired = (
+                required_hysteresis
+                if hysteresis_requirement_met
+                else available
+            )
+            midpoint = (positive_min + positive_max) / 2.0
+            down_below = int(math.floor(midpoint - desired / 2.0))
+            up_above = int(math.ceil(midpoint + desired / 2.0))
+            down_below = max(
+                positive_min,
+                min(positive_max - 1, down_below),
+            )
+            up_above = max(
+                down_below + 1,
+                min(positive_max, up_above),
+            )
+        elif overlap_verified:
+            available = max(1, overlap_max - overlap_min)
+            midpoint = (overlap_min + overlap_max) / 2.0
+            down_below = int(math.floor(midpoint - available / 2.0))
+            up_above = int(math.ceil(midpoint + available / 2.0))
+            down_below = max(overlap_min, min(overlap_max - 1, down_below))
+            up_above = max(down_below + 1, min(overlap_max, up_above))
+        else:
+            midpoint = (upper_width + lower_width) / 2.0
+            down_below = int(math.floor(midpoint))
+            up_above = int(math.ceil(midpoint))
+            if up_above <= down_below:
+                up_above = down_below + 1
+
+        if hysteresis_requirement_met:
+            transition_state = "verified"
+            reason = (
+                "both authored realizations have positive raw phase headroom "
+                "across the required hysteresis envelope"
+            )
+        elif positive_overlap_verified:
+            transition_state = "narrow-positive-overlap"
+            reason = (
+                "positive raw-headroom overlap exists, but it is narrower than "
+                f"the required {required_hysteresis}px hysteresis"
+            )
+        elif overlap_verified:
+            transition_state = "tolerance-only-overlap"
+            reason = (
+                "both realizations pass only through phase-floor tolerance; "
+                "no positive raw-headroom envelope is verified"
+            )
+        else:
+            transition_state = "unverified"
+            reason = "no browser-verified shared passing interval exists"
+
         rules.append(
             {
-                "fromCandidate": previous["candidate"],
-                "toCandidate": current["candidate"],
+                "fromCandidate": from_candidate,
+                "toCandidate": to_candidate,
                 "fromRemediationLevel": previous["remediationLevel"],
                 "toRemediationLevel": current["remediationLevel"],
                 "upperProbeWidth": upper_width,
@@ -10861,15 +11436,26 @@ def responsive_transition_rules(
                 "switchDownBelow": down_below,
                 "switchUpAbove": up_above,
                 "hysteresisPx": up_above - down_below,
-                "reason": (
-                    f"{previous['band']} capacity gives way to {current['band']} "
-                    f"capacity; remediation {previous['remediationLevel']}→"
-                    f"{current['remediationLevel']}"
-                ),
+                "requiredHysteresisPx": required_hysteresis,
+                "hysteresisRequirementMet": hysteresis_requirement_met,
+                "transitionState": transition_state,
+                "overlapVerified": overlap_verified,
+                "overlapMinWidth": overlap_min,
+                "overlapMaxWidth": overlap_max,
+                "overlapProbeWidths": overlap_widths,
+                "overlapProfiles": overlap_profiles,
+                "positiveOverlapVerified": positive_overlap_verified,
+                "positiveOverlapMinWidth": positive_min,
+                "positiveOverlapMaxWidth": positive_max,
+                "positiveOverlapWidthPx": positive_span,
+                "positiveOverlapProbeWidths": positive_widths,
+                "positiveOverlapProfiles": positive_profiles,
+                "toleranceOnlyProbeWidths": tolerance_only_widths,
+                "overlapEvidence": evidence_rows,
+                "reason": reason,
             }
         )
     return rules
-
 
 def responsive_presentation_evidence(item: dict[str, Any]) -> dict[str, Any]:
     """Summarize the capacity-relative semantic presentation for one candidate."""
@@ -10888,6 +11474,8 @@ def responsive_presentation_evidence(item: dict[str, Any]) -> dict[str, Any]:
             {
                 "phase": str(phase_measurement.get("phase") or ""),
                 "capacityBand": str(presentation.get("capacityBand") or ""),
+                "presentationBand": str(presentation.get("presentationBand") or ""),
+                "contractSource": str(presentation.get("contractSource") or ""),
                 "presentationMode": str(presentation.get("mode") or ""),
                 "dominantSlot": str(
                     scenario.get("dominantSlot")
@@ -11199,11 +11787,25 @@ def responsive_policy_for_hierarchy(
                 "score": option["score"],
                 "rawScore": option["rawScore"],
                 "worstPhaseHeadroom": option["headroom"],
+                "worstPhaseRawHeadroom": option.get(
+                    "rawHeadroom",
+                    option["headroom"],
+                ),
                 "worstUnitScore": option["worstUnitScore"],
                 "remediationLevel": option["remediationLevel"],
                 "remediationLabel": option["remediationLabel"],
                 "capacityAdmissible": option["capacityAdmissible"],
                 "forcedBeyondBand": option["forcedBeyondBand"],
+                "admissibilitySource": option.get(
+                    "admissibilitySource", "browser-feasibility"
+                ),
+                "admissibilityReason": option.get("admissibilityReason", ""),
+                "lowerLevelRejected": copy.deepcopy(
+                    option.get("lowerLevelRejected") or []
+                ),
+                "declaredBandCompatible": bool(
+                    option.get("declaredBandCompatible", False)
+                ),
                 "unnecessaryRemediationLevels": option[
                     "unnecessaryRemediationLevels"
                 ],
@@ -11226,6 +11828,7 @@ def responsive_policy_for_hierarchy(
     transitions = responsive_transition_rules(
         selections,
         hysteresis_px=int(contract["hysteresisPx"]),
+        profile_rows=profile_rows,
     )
     coverage = responsive_sampled_coverage(selections)
     down = simulate_responsive_resize(
@@ -11234,6 +11837,19 @@ def responsive_policy_for_hierarchy(
     up = simulate_responsive_resize(selections, transitions, direction="up")
     gaps = [item for item in selections if item["transitionGap"]]
     forced = [item for item in selections if item["forcedBeyondBand"]]
+    authored_mode = any(bool(row.get("authoredMode")) for row in profile_rows)
+    unverified_transitions = [
+        item
+        for item in transitions
+        if authored_mode and not bool(item.get("positiveOverlapVerified"))
+    ]
+    insufficient_hysteresis_transitions = [
+        item
+        for item in transitions
+        if authored_mode
+        and bool(item.get("positiveOverlapVerified"))
+        and not bool(item.get("hysteresisRequirementMet"))
+    ]
     unnecessary = [
         item for item in selections if item["unnecessaryRemediationLevels"] > 0
     ]
@@ -11251,14 +11867,19 @@ def responsive_policy_for_hierarchy(
         gaps
         or floor_failures
         or monotonic_violations
+        or unverified_transitions
         or not all_acceptable
         or not coverage["coverageComplete"]
         or not down["stable"]
         or not up["stable"]
     ):
         state = "fail"
-    elif forced or unnecessary or min(headrooms, default=0.0) < float(
-        contract["minimumRobustHeadroom"]
+    elif (
+        forced
+        or unnecessary
+        or insufficient_hysteresis_transitions
+        or min(headrooms, default=0.0)
+        < float(contract["minimumRobustHeadroom"])
     ):
         state = "watch"
 
@@ -11266,12 +11887,16 @@ def responsive_policy_for_hierarchy(
         "hierarchyId": hierarchy.get("id", ""),
         "state": state,
         "policyVersion": RESPONSIVE_POLICY_VERSION,
+        "selectionMode": (
+            "authored-hint-chain" if authored_mode else "generic-responsive"
+        ),
         "contract": contract,
         "semanticContractStable": bool(
             all_acceptable
             and not floor_failures
             and not gaps
             and not forced
+            and not unverified_transitions
             and coverage["coverageComplete"]
         ),
         "selections": selections,
@@ -11282,6 +11907,18 @@ def responsive_policy_for_hierarchy(
         "resizeSimulation": {"down": down, "up": up},
         "transitionGapCount": len(gaps),
         "forcedBeyondBandCount": len(forced),
+        "unverifiedTransitionCount": len(unverified_transitions),
+        "insufficientHysteresisTransitionCount": len(
+            insufficient_hysteresis_transitions
+        ),
+        "minimumVerifiedHysteresisPx": min(
+            (
+                int(item.get("positiveOverlapWidthPx", 0) or 0)
+                for item in transitions
+                if bool(item.get("positiveOverlapVerified"))
+            ),
+            default=0,
+        ),
         "unnecessaryRemediationCount": len(unnecessary),
         "monotonicViolationCount": int(monotonic_violations),
         "switchCount": len(transitions),
@@ -11768,6 +12405,7 @@ def run_synthetic_trials(
                                     hierarchy,
                                     scenario,
                                     viewport,
+                                    candidate,
                                 )
                                 phase = str(
                                     responsive_scenario.get("phase") or "default"
@@ -11990,6 +12628,7 @@ def run_synthetic_trials(
             RESPONSIVE_PRESENTATION_CONTRACT_VERSION
         ),
         "responsiveCoverageVersion": RESPONSIVE_COVERAGE_VERSION,
+        "responsiveTransitionProofVersion": RESPONSIVE_TRANSITION_PROOF_VERSION,
         "responsiveMode": responsive_mode,
         "responsivePolicyVersion": RESPONSIVE_POLICY_VERSION,
         "responsiveHysteresisPx": int(responsive_hysteresis_px),
@@ -12614,6 +13253,10 @@ def write_reports(
         f"hysteresis=`{int(report.get('responsiveHysteresisPx', 0) or 0)}px`"
     )
     lines.append(
+        f"- Responsive transition proof: "
+        f"`{report.get('responsiveTransitionProofVersion', 'off')}`"
+    )
+    lines.append(
         f"- Rendered-policy fingerprint: "
         f"`{report.get('renderedPolicyFingerprintVersion', 'unavailable')}` "
         f"bins=`{report.get('renderedPolicyFingerprintBins', 0)}`"
@@ -12657,6 +13300,7 @@ def write_reports(
     lines.append("Stage F ranks a responsive policy across capacity bands, permits stronger remediation only when the viewport contract allows it, requires remediation to be monotonic as space shrinks, and derives separate shrink/grow thresholds to prevent resize oscillation.")
     lines.append("Milestone 1E compares the deterministic authored hint result with already-rendered one-policy alternatives, reports the smallest browser-verified hint correction, and prepares the authored fallback chain without editing live application files.")
     lines.append("Milestone 2 compiles distinct right, bottom, tab, sequential-stage, and trigger realizations; transforms each phase into a capacity-relative presentation contract; derives capacity bands from authored minimum geometry; samples both sides of every derived boundary; and treats invalid sampled intervals as uncovered rather than ranking through them.")
+    lines.append("Milestone 2.4 samples all adjacent authored transitions, distinguishes tolerance-only passing from positive raw headroom, and certifies hysteresis only when the browser proves the full declared overlap width.")
     lines.append("Raw rectangles remain in the report for diagnosis, but ranking, pass/fail, phase minimums, contract visibility, and recursive unit scoring use effective painted geometry.")
     lines.append("It does **not** prove that the live app hierarchy is good enough yet; the synthetic hierarchies are training/evidence fixtures for the FLOG method.")
     lines.append("")
@@ -12839,9 +13483,9 @@ def write_reports(
         lines.append("## Responsive resize policies")
         lines.append("")
         lines.append(
-            "Selections are optimized as one wide-to-compact policy rather than "
-            "as unrelated per-viewport winners. Higher remediation levels are "
-            "inadmissible until the active capacity band permits them."
+            "Selections are optimized as one authored wide-to-compact policy rather than "
+            "as unrelated per-viewport winners. A stronger remediation becomes "
+            "admissible only after lower levels fail or lose robust headroom."
         )
         lines.append("")
         for policy in report.get("responsivePolicies") or []:
@@ -12865,6 +13509,8 @@ def write_reports(
             lines.append(
                 f"- Switches: `{policy.get('switchCount', 0)}` "
                 f"gaps=`{policy.get('transitionGapCount', 0)}` "
+                f"unverifiedTransitions=`{policy.get('unverifiedTransitionCount', 0)}` "
+                f"shortHysteresis=`{policy.get('insufficientHysteresisTransitionCount', 0)}` "
                 f"forcedBeyondBand=`{policy.get('forcedBeyondBandCount', 0)}` "
                 f"unnecessaryRemediation=`{policy.get('unnecessaryRemediationCount', 0)}` "
                 f"monotonicViolations=`{policy.get('monotonicViolationCount', 0)}`"
@@ -12886,6 +13532,7 @@ def write_reports(
                     f"headroom=`{float(selection.get('worstPhaseHeadroom', 0) or 0):+.4f}` "
                     f"status=`{selection.get('status')}` "
                     f"admissibility=`{selection.get('capacityAdmissibilityState', 'unknown')}` "
+                    f"source=`{selection.get('admissibilitySource', '')}` "
                     f"presentations=`{', '.join((selection.get('responsivePresentation') or {}).get('modes') or [])}`"
                 )
             for transition in policy.get("transitions") or []:
@@ -12894,7 +13541,12 @@ def write_reports(
                     f"`{transition.get('toCandidate')}`: shrink below "
                     f"`{transition.get('switchDownBelow')}px`, grow above "
                     f"`{transition.get('switchUpAbove')}px` "
-                    f"(hysteresis `{transition.get('hysteresisPx')}px`)"
+                    f"(hysteresis `{transition.get('hysteresisPx')}px`/"
+                    f"`{transition.get('requiredHysteresisPx', 0)}px` required, "
+                    f"state=`{transition.get('transitionState', 'unknown')}`, "
+                    f"positiveOverlap=`{transition.get('positiveOverlapMinWidth', 0)}–"
+                    f"{transition.get('positiveOverlapMaxWidth', 0)}px`, "
+                    f"requirementMet=`{bool(transition.get('hysteresisRequirementMet', False))}`)"
                 )
             lines.append("")
 
