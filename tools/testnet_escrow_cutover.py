@@ -1495,28 +1495,50 @@ def command_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def fdb_ids_from_placement(path: Path) -> tuple[str, ...]:
+    placement = read_json(path, label="Coolify placement")
+    foundationdb = placement.get("foundationdb", {})
+    instances = foundationdb.get("instances", []) if isinstance(foundationdb, dict) else []
+    ids: list[str] = []
+    if isinstance(instances, list):
+        for item in instances:
+            if isinstance(item, dict):
+                value = str(item.get("id") or "").strip()
+                if value:
+                    ids.append(value)
+    return tuple(ids)
+
+
 def print_next_actions(ctx: CutoverContext) -> None:
     git_repo = infer_git_repo(ctx.root) or "<repo-url>"
     git_branch = infer_git_branch(ctx.root) or "<branch>"
+    fdb_ids = fdb_ids_from_placement(ctx.placement_path)
+    fdb_value = ",".join(fdb_ids) if fdb_ids else "<fdb-instance-ids>"
     command = (
-        "  python .\\tools\\coolify_hub_cluster.py apply "
+        "  python .\\tools\\coolify_cluster.py apply "
+        f"{command_arg(ctx.network)} "
         f"--placement {command_arg(relative_or_abs(ctx.placement_path, ctx.root))} "
+        f"--hubs {command_arg(','.join(ctx.hub_ids))} "
+        f"--fdb {command_arg(fdb_value)} "
         f"--git-repo {command_arg(git_repo)} "
         f"--git-branch {command_arg(git_branch)} "
-        "--coolify-project-name \"My first project\" "
         f"--private-state {command_arg(relative_or_abs(ctx.private_state_path, ctx.root))} "
         "--bridge-backend dev-chain "
         "--enable-bridge-writes "
         f"--bridge-signer-source-manifest {command_arg(relative_or_abs(ctx.deployment_output_path, ctx.root))} "
+        f"--contracts-path {command_arg(relative_or_abs(ctx.public_contracts_output_path, ctx.root))} "
         "--force-deploy"
     )
     log()
-    log("next: redeploy/restart all Coolify Hubs with the updated public contract config and existing shared signer bundle")
+    log("next: run the documented fresh FoundationDB + Hub Coolify deploy path with the updated public contract config and private-state signer bundle")
     log("next useful command:")
     log(command)
     if git_repo == "<repo-url>":
         log("action required: replace <repo-url> with the Git repository Coolify should build.")
+    if fdb_value == "<fdb-instance-ids>":
+        log("action required: replace <fdb-instance-ids> with the FoundationDB instance ids from the placement file.")
     log("then verify Hubs before starting any per-Hub rotation session")
+
 
 def command_plan_coolify(args: argparse.Namespace) -> int:
     ctx = build_context(args)

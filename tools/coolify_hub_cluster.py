@@ -215,6 +215,40 @@ def load_json_object(path: Path) -> dict[str, Any]:
     return data
 
 
+def local_contracts_source_path(profile: Any, args: argparse.Namespace) -> Path:
+    raw = str(getattr(args, "contracts_path", "") or "").strip()
+    if not raw:
+        raw = f"main_computer/config/{profile.network_key}_contracts.json"
+    path = Path(raw)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def staged_contract_config_contents(profile: Any, args: argparse.Namespace) -> str:
+    """Return runtime-staged public contract config JSON for remote Hubs.
+
+    Remote Coolify apps are built from Git. The local cutover metadata/config can
+    be newer than the branch being built, so bridge-writer Hubs get a small
+    runtime-mounted public config generated from the operator's local source.
+    """
+
+    source_path = local_contracts_source_path(profile, args)
+    payload = load_json_object(source_path)
+    staged = dict(payload)
+    staged.setdefault("network", profile.network_key)
+    if getattr(profile, "chain_id", None) is not None:
+        staged.setdefault("chain_id", int(profile.chain_id))
+    rpc_url = hub_tool.hub_chain_rpc_url(profile, args)
+    if rpc_url:
+        staged["chain_rpc_url"] = rpc_url
+        chain = dict(staged.get("chain") if isinstance(staged.get("chain"), dict) else {})
+        if getattr(profile, "chain_id", None) is not None:
+            chain.setdefault("chain_id", int(profile.chain_id))
+        chain["rpc_url"] = rpc_url
+        chain["host_rpc_url"] = rpc_url
+        staged["chain"] = chain
+    return json.dumps(staged, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
 def clean_required_string(value: Any, field: str) -> str:
     clean = str(value or "").strip()
     if not clean:
@@ -330,7 +364,6 @@ def application_args_for_hub(args: argparse.Namespace, context: dict[str, Any], 
             "coolify_environment_name": context.get("environment_name") or values.get("coolify_environment_name", ""),
             "coolify_environment_uuid": context.get("environment_uuid") or values.get("coolify_environment_uuid", ""),
             "coolify_application_uuid": "",
-            "hub_id": hub.hub_id,
             "github_app_uuid": values.get("github_app_uuid", ""),
             "deploy_key_uuid": values.get("deploy_key_uuid", ""),
             "no_create_storage": bool(values.get("no_create_storage", False)),
@@ -346,6 +379,8 @@ def application_args_for_hub(args: argparse.Namespace, context: dict[str, Any], 
 
 def hub_application_start_command(placement: HubClusterPlacement, profile: Any, hub: HubPlacement, args: argparse.Namespace) -> str:
     command = hub_command_parts(profile, placement, hub, args)
+    if placement.packet_topology_contents or hub_tool.hub_enable_bridge_writes(args):
+        return "sh -euc " + shlex.quote(render_packet_hub_start_script(placement, profile, args, hub, command))
     return " ".join(hub_tool.command_token(part) for part in command)
 
 
@@ -1724,12 +1759,13 @@ def hub_command_parts(profile: Any, placement: HubClusterPlacement, hub: HubPlac
     if hub_tool.hub_bridge_backend(args) not in {"mock", "mock-chain", "mock-chain-lite"}:
         if hub_tool.hub_enable_bridge_writes(args):
             parts.extend(["--dev-chain-deployment-path", hub_tool.bridge_signer_remote_path(profile, args, runtime_dir=hub.runtime_dir)])
+            parts.append("--strict-bridge-signer")
         elif str(getattr(args, "dev_chain_deployment_path", "") or "").strip() or not hub_tool.hub_allow_missing_bridge_signer(profile, args):
             parts.extend(["--dev-chain-deployment-path", hub_tool.dev_chain_deployment_path(profile, args)])
-        parts.extend(["--contracts-path", hub_tool.contracts_path(profile, args)])
+        parts.extend(["--contracts-path", hub_tool.hub_contracts_path_for_runtime(profile, args, runtime_dir=hub.runtime_dir)])
         if hub_tool.hub_allow_missing_bridge_signer(profile, args):
             parts.append("--allow-missing-bridge-signer")
-        if hub_tool.hub_enable_smoke_bridge(args):
+        if (not hub_tool.hub_enable_bridge_writes(args)) and hub_tool.hub_enable_smoke_bridge(args):
             parts.append("--enable-smoke-bridge")
     if profile.chain_id is not None:
         parts.extend(["--chain-id", str(profile.chain_id)])
@@ -1743,27 +1779,54 @@ def render_hub_command_yaml(parts: list[str]) -> list[str]:
     return [f"      - {yaml_quote(part)}" for part in parts]
 
 
-def render_packet_hub_start_script(placement: HubClusterPlacement, hub: HubPlacement, command: list[str]) -> str:
+def render_packet_hub_start_script(
+    placement: HubClusterPlacement,
+    profile: Any,
+    args: argparse.Namespace,
+    hub: HubPlacement,
+    command: list[str],
+) -> str:
     topology_contents = placement.packet_topology_contents.rstrip("\n")
     fdb_cluster_contents = placement.packet_fdb_cluster_contents.rstrip("\n")
     topology_dir = fdb_tool.posix_dirname(placement.topology_container_path)
     cluster_dir = fdb_tool.posix_dirname(hub.cluster_file_path)
+    mkdir_dirs = [topology_dir, cluster_dir]
+    contracts_path = ""
+    contracts_contents = ""
+    if hub_tool.hub_enable_bridge_writes(args):
+        contracts_path = hub_tool.remote_contracts_path(profile, args, runtime_dir=hub.runtime_dir)
+        mkdir_dirs.append(fdb_tool.posix_dirname(contracts_path))
+        contracts_contents = staged_contract_config_contents(profile, args).rstrip("\n")
     lines = [
         "set -eu",
-        f"mkdir -p {sh_quote(topology_dir)} {sh_quote(cluster_dir)}",
+        "mkdir -p " + " ".join(sh_quote(item) for item in mkdir_dirs),
         f"cat > {sh_quote(placement.topology_container_path)} <<'MAINCOMPUTERTOPOLOGY'",
         topology_contents,
         "MAINCOMPUTERTOPOLOGY",
         f"printf '%s\\n' {sh_quote(fdb_cluster_contents)} > {sh_quote(hub.cluster_file_path)}",
-        "exec " + shlex.join(command),
     ]
+    if contracts_path:
+        lines.extend(
+            [
+                f"cat > {sh_quote(contracts_path)} <<'MAINCOMPUTERCONTRACTS'",
+                contracts_contents,
+                "MAINCOMPUTERCONTRACTS",
+            ]
+        )
+    lines.append("exec " + shlex.join(command))
     return "\n".join(lines)
 
 
-def hub_container_command_parts(placement: HubClusterPlacement, hub: HubPlacement, command: list[str]) -> list[str]:
+def hub_container_command_parts(
+    placement: HubClusterPlacement,
+    profile: Any,
+    args: argparse.Namespace,
+    hub: HubPlacement,
+    command: list[str],
+) -> list[str]:
     if not placement.packet_topology_contents:
         return command
-    return ["/bin/sh", "-euc", render_packet_hub_start_script(placement, hub, command)]
+    return ["/bin/sh", "-euc", render_packet_hub_start_script(placement, profile, args, hub, command)]
 
 
 def render_disabled_hub_compose(placement: HubClusterPlacement, profile: Any, args: argparse.Namespace, server_name: str) -> str:
@@ -1829,7 +1892,7 @@ def render_server_hub_compose(placement: HubClusterPlacement, profile: Any, args
         rid = router_id(key)
         runtime_bind = f"{hub_tool.remote_runtime_bind_source(hub.runtime_dir)}:{hub.runtime_dir}"
         image = f"main-computer-{placement.network_key}-{key}:remote"
-        command = hub_container_command_parts(placement, hub, hub_command_parts(profile, placement, hub, args))
+        command = hub_container_command_parts(placement, profile, args, hub, hub_command_parts(profile, placement, hub, args))
         lines.extend(
             [
                 f"  {key}:",

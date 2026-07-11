@@ -123,20 +123,6 @@ class CoolifyHubClusterTests(unittest.TestCase):
         self.assertEqual(placement.namespace, "main-computer-testnet-exp-fdb-stable-live-sessions")
         self.assertEqual(placement.topology_container_path, "/app/deploy/hub-topology/testnet-topology.json")
 
-
-    def test_application_args_for_hub_passes_private_state_and_hub_id(self) -> None:
-        placement = coolify_hub_cluster.load_hub_cluster_placement(_args().placement)
-        hub = next(item for item in placement.hubs if item.hub_id == "testnet-hub1")
-        args = _args(private_state=Path("runtime/state/main_computer.private.yaml"))
-        app_args = coolify_hub_cluster.application_args_for_hub(
-            args,
-            {"project_uuid": "project-uuid", "server_uuid": "server-uuid", "environment_name": "testnet-hubs"},
-            hub,
-        )
-
-        self.assertEqual(app_args.private_state, Path("runtime/state/main_computer.private.yaml"))
-        self.assertEqual(app_args.hub_id, "testnet-hub1")
-
     def test_plan_resolves_coolify_bindings_from_private_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "main_computer.private.yaml"
@@ -1022,9 +1008,34 @@ coolify:
         command = coolify_hub_cluster.hub_command_parts(profile, placement, hub, args)
 
         self.assertIn("--contracts-path", command)
-        self.assertIn("main_computer/config/mainnet_contracts.json", command)
+        self.assertIn("/data/main-computer/hub/mainnet-exp-fdb/public/contracts.json", command)
         self.assertIn("--dev-chain-deployment-path", command)
+        self.assertIn("--strict-bridge-signer", command)
         self.assertNotIn("--allow-missing-bridge-signer", command)
+        self.assertNotIn("--enable-smoke-bridge", command)
+
+    def test_bridge_writer_start_script_stages_contracts_with_rpc(self) -> None:
+        placement = coolify_hub_cluster.load_hub_cluster_placement(
+            REPO_ROOT / "deploy" / "hub-topology" / "testnet-coolify-deployment.json"
+        )
+        profile = coolify_hub_cluster.load_network_profile(placement, _args(network="testnet"))
+        hub = placement.hubs[0]
+        args = _args(
+            network="testnet",
+            bridge_backend="dev-chain",
+            contracts_path="main_computer/config/testnet_contracts.json",
+            hub_chain_rpc_url="https://testnet-rpc.greatlibrary.io",
+            enable_bridge_writes=True,
+        )
+        command = coolify_hub_cluster.hub_command_parts(profile, placement, hub, args)
+        script = coolify_hub_cluster.render_packet_hub_start_script(placement, profile, args, hub, command)
+
+        self.assertIn("/data/main-computer/hub/testnet-exp-fdb/public/contracts.json", script)
+        self.assertIn("MAINCOMPUTERCONTRACTS", script)
+        self.assertIn('"chain_rpc_url": "https://testnet-rpc.greatlibrary.io"', script)
+        self.assertIn('"hub_credit_bridge_escrow"', script)
+        self.assertIn("--strict-bridge-signer", script)
+        self.assertNotIn("--enable-smoke-bridge", script)
 
     def test_wait_for_hub_ready_uses_concrete_hub_public_url(self) -> None:
         placement = coolify_hub_cluster.load_hub_cluster_placement(_args().placement)

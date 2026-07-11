@@ -211,6 +211,52 @@ class CoolifyClusterOrchestratorTests(unittest.TestCase):
 
 
 
+    def test_preflight_next_commands_preserve_fresh_install_contract_branch_and_signer_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            packet_path = Path(tmp) / "testnet-packet.json"
+            state_path = Path(tmp) / "main_computer.private.yaml"
+            state_path.write_text(PRIVATE_STATE, encoding="utf-8")
+            args = coolify_cluster.parse_args(
+                [
+                    "preflight",
+                    "testnet",
+                    "--hubs",
+                    "testnet-hub1,testnet-hub2,testnet-hub3",
+                    "--fdb",
+                    "testnet-fdb1,testnet-fdb2,testnet-fdb3",
+                    "--git-repo",
+                    "https://github.com/johnrraymond/main_computer",
+                    "--git-branch",
+                    "robust_contracts",
+                    "--packet",
+                    str(packet_path),
+                    "--private-state",
+                    str(state_path),
+                    "--bridge-backend",
+                    "dev-chain",
+                    "--enable-bridge-writes",
+                    "--bridge-signer-source-manifest",
+                    "runtime/deployments/testnet/latest.json",
+                    "--contracts-path",
+                    "main_computer/config/testnet_contracts.json",
+                ]
+            )
+            packet = coolify_cluster.build_candidate_packet(args)
+            result = coolify_cluster.preflight_result(args, packet)
+
+            self.assertTrue(result["ok"])
+            commands = result["preflight"]["next_commands"]
+            self.assertEqual(len(commands), 2)
+            for command in commands:
+                self.assertIn("--git-branch robust_contracts", command)
+                self.assertIn("--bridge-backend dev-chain", command)
+                self.assertIn("--enable-bridge-writes", command)
+                self.assertIn("--bridge-signer-source-manifest runtime/deployments/testnet/latest.json", command)
+                self.assertIn("--contracts-path main_computer/config/testnet_contracts.json", command)
+                self.assertIn(f"--private-state {state_path}", command)
+
+
+
     def test_recreate_hub_stacks_is_forwarded_to_hub_stage_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             packet_path = Path(tmp) / "testnet-packet.json"

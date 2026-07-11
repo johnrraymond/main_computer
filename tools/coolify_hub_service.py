@@ -25,8 +25,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-
-import yaml
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -74,8 +72,8 @@ DEFAULT_LOCAL_COOLIFY_TOKEN_FILE = REPO_ROOT / "runtime" / "coolify-local-docker
 DEFAULT_APPLICATIONS_SERVICE_ENV_FILE = REPO_ROOT / "runtime" / "applications_service" / "applications.env"
 DEFAULT_BRIDGE_SIGNER_ENV_KEY = "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64"
 DEFAULT_BRIDGE_SIGNER_RELATIVE_PATH = "private/bridge-signer/bridge-signer-bundle.json"
+DEFAULT_REMOTE_CONTRACTS_RELATIVE_PATH = "public/contracts.json"
 BRIDGE_SIGNER_SCHEMA = "main-computer.bridge-signer.v1"
-DEFAULT_PRIVATE_STATE_RELATIVE_PATH = Path("runtime") / "state" / "main_computer.private.yaml"
 HUB_IMPLEMENTATION_REGULAR = "regular"
 HUB_IMPLEMENTATION_EXP_FDB = "exp-fdb"
 HUB_IMPLEMENTATION_CHOICES = (HUB_IMPLEMENTATION_EXP_FDB,)
@@ -722,6 +720,29 @@ def bridge_signer_remote_path(profile: HubNetworkProfile, args: argparse.Namespa
     return container_posix_path(f"{runtime_dir.rstrip('/')}/{DEFAULT_BRIDGE_SIGNER_RELATIVE_PATH}")
 
 
+def remote_contracts_path(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
+    """Return the runtime-mounted public contract config path used by bridge-writer Hubs."""
+
+    explicit = str(getattr(args, "remote_contracts_path", "") or "").strip()
+    if explicit:
+        return container_posix_path(explicit)
+    return container_posix_path(f"{runtime_dir.rstrip('/')}/{DEFAULT_REMOTE_CONTRACTS_RELATIVE_PATH}")
+
+
+def hub_contracts_path_for_runtime(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
+    """Return the contracts path that the remote Hub process should read.
+
+    Bridge-writer Hubs must not read the static config baked into the Git image:
+    that file can lag behind the local cutover metadata.  The deployer stages a
+    runtime contract config beside the private signer bundle and points Hubs at
+    that mounted file instead.
+    """
+
+    if hub_enable_bridge_writes(args):
+        return remote_contracts_path(profile, args, runtime_dir=runtime_dir)
+    return contracts_path(profile, args)
+
+
 def bridge_signer_plan(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> dict[str, Any]:
     return {
         "sync_requested": bridge_signer_sync_requested(args),
@@ -826,177 +847,46 @@ def _contract_record_from_payload(payload: dict[str, Any], key: str) -> dict[str
     return {}
 
 
-
-def private_state_path(args: argparse.Namespace) -> Path | None:
-    explicit = str(getattr(args, "private_state", "") or "").strip()
-    if explicit:
-        path = Path(explicit)
-        return path if path.is_absolute() else REPO_ROOT / path
-    default = REPO_ROOT / DEFAULT_PRIVATE_STATE_RELATIVE_PATH
-    return default if default.is_file() else None
-
-
-def _load_yaml_object(path: Path, *, label: str) -> dict[str, Any]:
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise CoolifyHubDeployError(f"missing {label}: {path}") from exc
-    except yaml.YAMLError as exc:
-        raise CoolifyHubDeployError(f"invalid {label} YAML: {path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise CoolifyHubDeployError(f"{label} YAML must be a mapping: {path}")
-    return payload
-
-
-def _network_private_state(state: dict[str, Any], network: str, *, path: Path) -> dict[str, Any]:
-    networks = state.get("networks")
-    if not isinstance(networks, dict) or not isinstance(networks.get(network), dict):
-        raise CoolifyHubDeployError(f"private state is missing networks.{network}: {path}")
-    return networks[network]
-
-
-def _strict_true(value: object) -> bool:
-    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
-
-
-def _private_state_hub_id(args: argparse.Namespace) -> str:
-    for attr in ("hub_id", "hub", "fdb_namespace"):
-        value = str(getattr(args, attr, "") or "").strip()
-        if not value:
-            continue
-        if attr == "fdb_namespace" and value.startswith("main-computer-") and value.endswith("-exp-fdb"):
-            value = value[len("main-computer-") : -len("-exp-fdb")]
-        if value:
-            return value
-    return ""
-
-
-def _active_hub_admin_from_private_state(
-    state: dict[str, Any],
-    *,
-    network: str,
-    hub_id: str,
-    path: Path,
-) -> dict[str, str]:
-    net = _network_private_state(state, network, path=path)
-    hubs = net.get("hubs")
-    if not isinstance(hubs, dict) or not isinstance(hubs.get(hub_id), dict):
-        raise CoolifyHubDeployError(f"private state is missing networks.{network}.hubs.{hub_id}: {path}")
-    keys = hubs[hub_id].get("hub_admin_keys")
-    if not isinstance(keys, dict) or not keys:
-        raise CoolifyHubDeployError(f"private state is missing networks.{network}.hubs.{hub_id}.hub_admin_keys: {path}")
-
-    active: list[tuple[str, dict[str, Any]]] = [
-        (str(key_id), item)
-        for key_id, item in sorted(keys.items())
-        if isinstance(item, dict) and str(item.get("state") or "").strip() == "active"
-    ]
-    if len(active) != 1:
-        raise CoolifyHubDeployError(
-            f"private state networks.{network}.hubs.{hub_id}.hub_admin_keys must have exactly one active key; found {len(active)}"
-        )
-
-    key_id, item = active[0]
-    address = str(item.get("address") or "").strip()
-    private_key = str(item.get("private_key") or "").strip()
-    if not _looks_like_address(address):
-        raise CoolifyHubDeployError(f"private state networks.{network}.hubs.{hub_id}.hub_admin_keys.{key_id}.address is invalid")
-    if not _looks_like_private_key(private_key):
-        raise CoolifyHubDeployError(f"private state networks.{network}.hubs.{hub_id}.hub_admin_keys.{key_id}.private_key is missing or invalid")
-    if not _strict_true(item.get("deployed_to_hub")):
-        raise CoolifyHubDeployError(
-            f"private state networks.{network}.hubs.{hub_id}.hub_admin_keys.{key_id}.deployed_to_hub must be true before syncing Hub signer material"
-        )
-    return {
-        "address": address,
-        "private_key": private_key,
-        "source": f"{path}:networks.{network}.hubs.{hub_id}.hub_admin_keys.{key_id}",
-    }
-
-
-def _legacy_hub_admin_from_private_state(state: dict[str, Any], *, network: str, path: Path) -> dict[str, str] | None:
-    net = _network_private_state(state, network, path=path)
-    wallets = net.get("wallets")
-    if not isinstance(wallets, dict):
-        return None
-    hub_admin = wallets.get("hub_admin")
-    if not isinstance(hub_admin, dict):
-        return None
-    address = str(hub_admin.get("address") or "").strip()
-    private_key = str(hub_admin.get("private_key") or "").strip()
-    if not _looks_like_address(address) or not _looks_like_private_key(private_key):
-        return None
-    return {
-        "address": address,
-        "private_key": private_key,
-        "source": f"{path}:networks.{network}.wallets.hub_admin",
-    }
-
-
-def _bridge_controller_from_private_state(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, str] | None:
-    path = private_state_path(args)
-    if path is None:
-        return None
-
-    state = _load_yaml_object(path, label="private state")
-    hub_id = _private_state_hub_id(args)
-    if hub_id:
-        return _active_hub_admin_from_private_state(state, network=profile.network_key, hub_id=hub_id, path=path)
-
-    legacy = _legacy_hub_admin_from_private_state(state, network=profile.network_key, path=path)
-    if legacy is not None:
-        return legacy
-
-    raise CoolifyHubDeployError(
-        "private state signer source needs a Hub id. Use the cluster deployer or pass --hub-id <hub-id>."
-    )
-
 def _build_bridge_signer_bundle_payload(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = bridge_signer_source_manifest_path(profile, args)
     manifest = _load_json_object(manifest_path, label="bridge signer source manifest")
 
-    private_state_controller = _bridge_controller_from_private_state(profile, args)
-    if private_state_controller is not None:
-        controller_address = private_state_controller["address"]
-        private_key = private_state_controller["private_key"]
-        wallet_source = private_state_controller["source"]
-    else:
-        hub_admin = manifest.get("hub_admin")
-        if not isinstance(hub_admin, dict):
-            raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_admin metadata: {manifest_path}")
-        controller_address = str(hub_admin.get("address") or "").strip()
-        if not _looks_like_address(controller_address):
-            raise CoolifyHubDeployError(f"invalid hub_admin.address in bridge signer source manifest: {controller_address!r}")
+    hub_admin = manifest.get("hub_admin")
+    if not isinstance(hub_admin, dict):
+        raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_admin metadata: {manifest_path}")
+    controller_address = str(hub_admin.get("address") or "").strip()
+    if not _looks_like_address(controller_address):
+        raise CoolifyHubDeployError(f"invalid hub_admin.address in bridge signer source manifest: {controller_address!r}")
 
-        explicit_wallet = str(getattr(args, "bridge_controller_wallet_path", "") or "").strip()
-        wallet_path_text = explicit_wallet or str(hub_admin.get("wallet_path") or "").strip()
-        inline_private_key = str(hub_admin.get("private_key") or "").strip()
-        wallet_source = "hub_admin.private_key"
-        if wallet_path_text:
-            wallet_path = _resolve_local_runtime_path(wallet_path_text, manifest_path=manifest_path)
-            if wallet_path.exists():
-                wallet = _load_json_object(wallet_path, label="bridge controller wallet")
-                wallet_address = str(wallet.get("address") or "").strip()
-                private_key = str(wallet.get("private_key") or "").strip()
-                if not _looks_like_address(wallet_address):
-                    raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid address: {wallet_path}")
-                if wallet_address.lower() != controller_address.lower():
-                    raise CoolifyHubDeployError(
-                        f"bridge controller wallet address does not match hub_admin.address: {wallet_address} != {controller_address}"
-                    )
-                if not _looks_like_private_key(private_key):
-                    raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid private_key: {wallet_path}")
-                wallet_source = str(wallet_path)
-            elif inline_private_key:
-                private_key = inline_private_key
-            else:
-                raise CoolifyHubDeployError(f"missing bridge controller wallet file: {wallet_path}")
+    explicit_wallet = str(getattr(args, "bridge_controller_wallet_path", "") or "").strip()
+    wallet_path_text = explicit_wallet or str(hub_admin.get("wallet_path") or "").strip()
+    inline_private_key = str(hub_admin.get("private_key") or "").strip()
+    wallet_source = "hub_admin.private_key"
+    if wallet_path_text:
+        wallet_path = _resolve_local_runtime_path(wallet_path_text, manifest_path=manifest_path)
+        if wallet_path.exists():
+            wallet = _load_json_object(wallet_path, label="bridge controller wallet")
+            wallet_address = str(wallet.get("address") or "").strip()
+            private_key = str(wallet.get("private_key") or "").strip()
+            if not _looks_like_address(wallet_address):
+                raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid address: {wallet_path}")
+            if wallet_address.lower() != controller_address.lower():
+                raise CoolifyHubDeployError(
+                    f"bridge controller wallet address does not match hub_admin.address: {wallet_address} != {controller_address}"
+                )
+            if not _looks_like_private_key(private_key):
+                raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid private_key: {wallet_path}")
+            wallet_source = str(wallet_path)
         elif inline_private_key:
             private_key = inline_private_key
         else:
-            raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_admin.wallet_path or hub_admin.private_key: {manifest_path}")
-        if not _looks_like_private_key(private_key):
-            raise CoolifyHubDeployError(f"hub_admin.private_key in bridge signer source manifest is not a valid private key: {manifest_path}")
+            raise CoolifyHubDeployError(f"missing bridge controller wallet file: {wallet_path}")
+    elif inline_private_key:
+        private_key = inline_private_key
+    else:
+        raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_admin.wallet_path or hub_admin.private_key: {manifest_path}")
+    if not _looks_like_private_key(private_key):
+        raise CoolifyHubDeployError(f"hub_admin.private_key in bridge signer source manifest is not a valid private key: {manifest_path}")
 
     chain = manifest.get("chain") if isinstance(manifest.get("chain"), dict) else {}
     escrow = _contract_record_from_payload(manifest, "hub_credit_bridge_escrow")
@@ -1126,12 +1016,13 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
         explicit_deployment_path = str(getattr(args, "dev_chain_deployment_path", "") or "").strip()
         if hub_enable_bridge_writes(args):
             parts.extend(["--dev-chain-deployment-path", bridge_signer_remote_path(profile, args, runtime_dir=runtime_dir)])
+            parts.append("--strict-bridge-signer")
         elif explicit_deployment_path or not allow_missing_bridge_signer:
             parts.extend(["--dev-chain-deployment-path", dev_chain_deployment_path(profile, args)])
-        parts.extend(["--contracts-path", contracts_path(profile, args)])
+        parts.extend(["--contracts-path", hub_contracts_path_for_runtime(profile, args, runtime_dir=runtime_dir)])
         if allow_missing_bridge_signer:
             parts.append("--allow-missing-bridge-signer")
-        if hub_enable_smoke_bridge(args):
+        if (not hub_enable_bridge_writes(args)) and hub_enable_smoke_bridge(args):
             parts.append("--enable-smoke-bridge")
     if profile.chain_id is not None:
         parts.extend(["--chain-id", str(profile.chain_id)])
@@ -1412,7 +1303,7 @@ def hub_runtime_env_defaults(profile: HubNetworkProfile, args: argparse.Namespac
         "MAIN_COMPUTER_HUB_FDB_NAMESPACE": exp_fdb_namespace(profile, args),
         "MAIN_COMPUTER_HUB_BRIDGE_BACKEND": hub_bridge_backend(args),
         "MAIN_COMPUTER_HUB_CHAIN_ID": str(profile.chain_id or ""),
-        "MAIN_COMPUTER_HUB_CONTRACTS_PATH": contracts_path(profile, args),
+        "MAIN_COMPUTER_HUB_CONTRACTS_PATH": hub_contracts_path_for_runtime(profile, args, runtime_dir=runtime_dir),
     }
     chain_rpc = hub_chain_rpc_url(profile, args)
     if chain_rpc:
@@ -1434,6 +1325,8 @@ def hub_runtime_env_defaults(profile: HubNetworkProfile, args: argparse.Namespac
             values["MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE"] = "true"
     if hub_enable_bridge_writes(args):
         values["MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES"] = "true"
+        values["MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE"] = "false"
+        values["MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER"] = "false"
     runtime_env_file = hub_runtime_env_file_path(profile, args, runtime_dir=runtime_dir)
     if runtime_env_file:
         values["MAIN_COMPUTER_HUB_RUNTIME_ENV_FILE"] = runtime_env_file
@@ -1655,7 +1548,7 @@ def render_remote_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argp
         f"      HUB_HEALTH_PORT: {yaml_quote(str(profile.hub_bind_port))}",
         f"      PORT: {yaml_quote(str(profile.hub_bind_port))}",
         f"      MAIN_COMPUTER_HUB_NETWORK: {yaml_quote(profile.network_key)}",
-        f"      MAIN_COMPUTER_HUB_CONTRACTS_PATH: {yaml_quote(contracts_path(profile, args))}",
+        f"      MAIN_COMPUTER_HUB_CONTRACTS_PATH: {yaml_quote(hub_contracts_path_for_runtime(profile, args, runtime_dir=runtime_dir))}",
         *(
             [f"      MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER: {yaml_quote('true')}"]
             if hub_allow_missing_bridge_signer(profile, args)
@@ -1663,7 +1556,7 @@ def render_remote_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argp
         ),
         *(
             [f"      MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE: {yaml_quote('true')}"]
-            if hub_enable_smoke_bridge(args)
+            if (not hub_enable_bridge_writes(args)) and hub_enable_smoke_bridge(args)
             else []
         ),
         *(
@@ -2950,7 +2843,8 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
             if hub_enable_bridge_writes(args)
             else dev_chain_deployment_path(profile, args)
         ),
-        "contracts_path": contracts_path(profile, args),
+        "contracts_path": hub_contracts_path_for_runtime(profile, args, runtime_dir=runtime_dir),
+        "contracts_source_path": contracts_path(profile, args, container_path=False),
         "bridge_signer": bridge_signer_plan(profile, args, runtime_dir=runtime_dir),
         "application_payload": application_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir),
         "hub_start_command": hub_start_command(profile, runtime_dir, args),
@@ -3265,8 +3159,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("network", choices=["test", "testnet", "mainnet"], help="Hub network to deploy. `test` targets the local Coolify/Besu-QBFT surface.")
 
     parser.add_argument("--network-config", type=Path, default=None, help="Path to hub_networks.json.")
-    parser.add_argument("--private-state", type=Path, default=None, help="Private operator state YAML used as the preferred bridge signer source.")
-    parser.add_argument("--hub-id", default="", help="Hub id used to select the active per-Hub admin key from private state.")
     parser.add_argument("--hub-runtime-dir", default="", help="Container path for persistent Hub runtime state.")
     parser.add_argument(
         "--runtime-env-file",
@@ -3413,6 +3305,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Container path to public contract-address config. Defaults to "
             "/app/main_computer/config/<network>_contracts.json."
         ),
+    )
+    parser.add_argument(
+        "--remote-contracts-path",
+        default="",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--allow-missing-bridge-signer",

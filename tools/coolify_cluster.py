@@ -566,6 +566,7 @@ def hub_args_for_cluster(args: argparse.Namespace, packet_path: Path) -> argpars
         bridge_controller_wallet_path=args.bridge_controller_wallet_path,
         bridge_signer_env_key=args.bridge_signer_env_key,
         bridge_signer_remote_path=args.bridge_signer_remote_path,
+        remote_contracts_path=args.remote_contracts_path,
         coolify_timeout_s=args.coolify_timeout_s,
         coolify_retries=args.coolify_retries,
         coolify_retry_sleep_s=args.coolify_retry_sleep_s,
@@ -1206,6 +1207,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bridge-backend", choices=["dev-chain", "credit-bridge-contract", "mock-chain"], default="")
     parser.add_argument("--dev-chain-deployment-path", default="")
     parser.add_argument("--contracts-path", default="")
+    parser.add_argument("--remote-contracts-path", default="", help=argparse.SUPPRESS)
     parser.add_argument("--allow-missing-bridge-signer", action="store_true")
     parser.add_argument("--enable-smoke-bridge", action="store_true")
     parser.add_argument("--enable-bridge-writes", action="store_true")

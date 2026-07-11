@@ -59,6 +59,13 @@ def write_fixture_repo(tmp_path: Path, *, mismatched_hubs: bool = False, private
         json.dumps(
             {
                 "network_key": "testnet",
+                "foundationdb": {
+                    "instances": [
+                        {"id": "testnet-fdb1"},
+                        {"id": "testnet-fdb2"},
+                        {"id": "testnet-fdb3"},
+                    ]
+                },
                 "hubs": [
                     {"hub_id": "testnet-hub1", "public_url": "https://hub1.example.invalid"},
                     {"hub_id": "testnet-hub2", "public_url": "https://hub2.example.invalid"},
@@ -435,7 +442,7 @@ def test_preflight_skip_chain_prints_ready_without_chain_checks(tmp_path, monkey
     assert "result: ready for escrow-only HubCreditBridgeEscrow deploy preview" in output
 
 
-def test_plan_coolify_defaults_project_name_in_next_command(tmp_path, monkeypatch, capsys) -> None:
+def test_plan_coolify_prints_full_fdb_hub_cluster_next_command(tmp_path, monkeypatch, capsys) -> None:
     cutover = load_cutover()
     write_fixture_repo(tmp_path)
     monkeypatch.setattr(cutover, "repo_root", lambda: tmp_path)
@@ -446,7 +453,11 @@ def test_plan_coolify_defaults_project_name_in_next_command(tmp_path, monkeypatc
 
     assert code == 0
     output = capsys.readouterr().out
-    assert "--coolify-project-name \"My first project\"" in output
+    assert "coolify_cluster.py apply testnet" in output
+    assert '--hubs "testnet-hub1,testnet-hub2,testnet-hub3"' in output
+    assert '--fdb "testnet-fdb1,testnet-fdb2,testnet-fdb3"' in output
     assert "--git-branch testnet-cutover" in output
     assert "--private-state runtime/state/main_computer.private.yaml" in output
+    assert "--bridge-signer-source-manifest runtime/deployments/testnet/latest.json" in output
+    assert "--contracts-path main_computer/config/testnet_contracts.json" in output
     assert "--force-domain-override" not in output
