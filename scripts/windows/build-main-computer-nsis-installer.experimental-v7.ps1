@@ -487,8 +487,8 @@ param(
 
     [string]$Mode = "Unleashed",
 
-    [ValidateSet("auto", "docker", "podman")]
-    [string]$ContainerRuntime = "auto",
+    [ValidateSet("docker", "podman")]
+    [string]$ContainerRuntime = "docker",
 
     [string]$InstallRoot = "",
 
@@ -784,35 +784,19 @@ function Test-ContainerRuntimeRequirement {
 function Resolve-InstallerContainerRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$LogPath,
-        [Parameter(Mandatory = $true)][ValidateSet("auto", "docker", "podman")][string]$SelectedRuntime
+        [Parameter(Mandatory = $true)][ValidateSet("docker", "podman")][string]$SelectedRuntime
     )
 
     # Deliberately use the installer selection, not the environment of the shell
     # that built or launched the setup EXE. The setup maker's
     # MAIN_COMPUTER_CONTAINER_RUNTIME must not change the generated installer.
-    $selected = $SelectedRuntime.Trim().ToLowerInvariant()
-    if ($selected -eq "docker" -or $selected -eq "podman") {
-        return $selected
-    }
-
-    Write-RequirementLog -LogPath $LogPath -Message "Container runtime selection: auto-detect on this computer."
-    foreach ($candidate in @("docker", "podman")) {
-        Write-RequirementLog -LogPath $LogPath -Message "Trying container runtime candidate: $candidate"
-        if (Test-ContainerRuntimeRequirement -LogPath $LogPath -Runtime $candidate -Quiet) {
-            Write-RequirementLog -LogPath $LogPath -Message "Auto-detected container runtime: $candidate"
-            return $candidate
-        }
-    }
-
-    Fail-ContainerRuntimeRequirement -LogPath $LogPath -Runtime "auto" -Reason "Neither Docker Desktop nor Podman passed version, compose version, and ps checks on this computer."
+    # The NSIS page requires an explicit Docker Desktop or Podman choice.
+    return $SelectedRuntime.Trim().ToLowerInvariant()
 }
 
 function Get-ContainerRuntimeDisplayName {
-    param([Parameter(Mandatory = $true)][ValidateSet("auto", "docker", "podman")][string]$Runtime)
+    param([Parameter(Mandatory = $true)][ValidateSet("docker", "podman")][string]$Runtime)
 
-    if ($Runtime -eq "auto") {
-        return "Auto-detect"
-    }
     if ($Runtime -eq "podman") {
         return "Podman"
     }
@@ -822,7 +806,7 @@ function Get-ContainerRuntimeDisplayName {
 function Fail-ContainerRuntimeRequirement {
     param(
         [Parameter(Mandatory = $true)][string]$LogPath,
-        [Parameter(Mandatory = $true)][ValidateSet("auto", "docker", "podman")][string]$Runtime,
+        [Parameter(Mandatory = $true)][ValidateSet("docker", "podman")][string]$Runtime,
         [Parameter(Mandatory = $true)][string]$Reason
     )
 
@@ -836,19 +820,6 @@ function Fail-ContainerRuntimeRequirement {
     Write-RequirementLog -LogPath $LogPath -Message "Reason: $Reason"
     Write-RequirementLog -LogPath $LogPath -Message ""
 
-    if ($Runtime -eq "auto") {
-        Write-RequirementLog -LogPath $LogPath -Message "Auto-detect could not find a working Docker-compatible runtime on this computer."
-        Write-RequirementLog -LogPath $LogPath -Message "Install/start Docker Desktop or install/initialize Podman, then rerun this installer."
-        Write-RequirementLog -LogPath $LogPath -Message "Docker install guide: $dockerInstallUrl"
-        Write-RequirementLog -LogPath $LogPath -Message "Podman install guide: $podmanInstallUrl"
-        Write-RequirementLog -LogPath $LogPath -Message ""
-        Write-RequirementLog -LogPath $LogPath -Message "After installing one runtime, one of these command sets should work:"
-        Write-RequirementLog -LogPath $LogPath -Message "  docker version ; docker compose version ; docker ps"
-        Write-RequirementLog -LogPath $LogPath -Message "  podman version ; podman compose version ; podman ps"
-        Write-RequirementLog -LogPath $LogPath -Message "No working Docker-compatible container runtime was auto-detected."
-        exit 43
-    }
-
     if ($Runtime -eq "podman") {
         Write-RequirementLog -LogPath $LogPath -Message "The installer Podman runtime choice requires Podman to be installed and resolvable on PATH or in the standard per-user Podman install directory."
         Write-RequirementLog -LogPath $LogPath -Message "Install guide: $podmanInstallUrl"
@@ -860,7 +831,7 @@ function Fail-ContainerRuntimeRequirement {
         exit 43
     }
 
-    Write-RequirementLog -LogPath $LogPath -Message "Docker Desktop is the default container runtime for the NSIS installer unless Podman is selected on the installer runtime page."
+    Write-RequirementLog -LogPath $LogPath -Message "The installer Docker Desktop runtime choice requires Docker Desktop to be installed, running, and resolvable on PATH."
     Write-RequirementLog -LogPath $LogPath -Message "Install Docker Desktop for Windows, start Docker Desktop once, complete any first-run prompts, then rerun this installer."
     Write-RequirementLog -LogPath $LogPath -Message "Install guide: $dockerInstallUrl"
     Write-RequirementLog -LogPath $LogPath -Message ""
@@ -1349,7 +1320,7 @@ function Write-NsisDefinition {
 ; This keeps the NSIS experiment additive and avoids depending on an external
 ; installer definition while the installer flow is still being proven.
 ;
-; v7 keeps v6 mode/shortcut behavior, checks host requirements, and uses requirements.txt during the Python install path. It keeps the real installer question page for Unleashed/Debug/Safe mode and
+; v7 keeps v6 mode/shortcut behavior, checks host requirements, and uses requirements.txt during the Python install path. It keeps the real installer question page for Unleashed/Debug/Safe mode, adds a separate required Docker/Podman runtime page, and
 ; creates a user-visible shortcut that starts the installed tree with
 ; start_v2.bat -OpenBrowser.
 
@@ -1389,13 +1360,13 @@ Var ShortcutModeName
 Var ResolvedInstallRoot
 Var ShouldCreateDesktopShortcut
 Var ContainerRuntimeDialog
-Var ContainerRuntimeRadioAuto
 Var ContainerRuntimeRadioDocker
 Var ContainerRuntimeRadioPodman
 Var ContainerRuntimeArg
 Var ContainerRuntimeName
 
 Page custom ModePage ModePageLeave
+Page custom ContainerRuntimePage ContainerRuntimePageLeave
 Page instfiles
 
 Function .onInit
@@ -1404,8 +1375,8 @@ Function .onInit
   StrCpy $ShortcutModeName "Unleashed"
   StrCpy $ResolvedInstallRoot "$PROFILE\.main-computer-tools\installs\main_computer_test-test-unleashed"
   StrCpy $ShouldCreateDesktopShortcut "1"
-  StrCpy $ContainerRuntimeArg "auto"
-  StrCpy $ContainerRuntimeName "Auto-detect"
+  StrCpy $ContainerRuntimeArg ""
+  StrCpy $ContainerRuntimeName ""
 FunctionEnd
 
 Function ResolveSelectedInstallRoot
@@ -1420,7 +1391,7 @@ Function ModePage
     Abort
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 0 100% 16u "Choose the Main Computer install mode and container runtime."
+  ${NSD_CreateLabel} 0 0 100% 16u "Choose the Main Computer install mode."
   Pop $0
 
   ${NSD_CreateLabel} 0 20u 100% 10u "Install mode"
@@ -1438,18 +1409,6 @@ Function ModePage
   ${NSD_CreateCheckbox} 0 92u 100% 12u "Create a desktop shortcut that starts Main Computer and opens the browser"
   Pop $DesktopShortcutCheckbox
 
-  ${NSD_CreateLabel} 0 120u 100% 10u "Docker-compatible container runtime"
-  Pop $0
-
-  ${NSD_CreateRadioButton} 0 134u 100% 12u "Auto-detect on this computer"
-  Pop $ContainerRuntimeRadioAuto
-
-  ${NSD_CreateRadioButton} 0 152u 100% 12u "Docker Desktop"
-  Pop $ContainerRuntimeRadioDocker
-
-  ${NSD_CreateRadioButton} 0 170u 100% 12u "Podman"
-  Pop $ContainerRuntimeRadioPodman
-
   ${If} $InstallModeKey == "debug"
     ${NSD_Check} $ModeRadioDebug
   ${ElseIf} $InstallModeKey == "safe"
@@ -1460,14 +1419,6 @@ Function ModePage
 
   ${If} $ShouldCreateDesktopShortcut == "1"
     ${NSD_Check} $DesktopShortcutCheckbox
-  ${EndIf}
-
-  ${If} $ContainerRuntimeArg == "podman"
-    ${NSD_Check} $ContainerRuntimeRadioPodman
-  ${ElseIf} $ContainerRuntimeArg == "docker"
-    ${NSD_Check} $ContainerRuntimeRadioDocker
-  ${Else}
-    ${NSD_Check} $ContainerRuntimeRadioAuto
   ${EndIf}
 
   nsDialogs::Show
@@ -1499,22 +1450,55 @@ Function ModePageLeave
     StrCpy $ShouldCreateDesktopShortcut "0"
   ${EndIf}
 
+  Call ResolveSelectedInstallRoot
+FunctionEnd
+
+Function ContainerRuntimePage
+  nsDialogs::Create 1018
+  Pop $ContainerRuntimeDialog
+
+  ${If} $ContainerRuntimeDialog == error
+    Abort
+  ${EndIf}
+
+  ${NSD_CreateLabel} 0 0 100% 16u "Choose the Docker-compatible container runtime Main Computer should use."
+  Pop $0
+
+  ${NSD_CreateLabel} 0 22u 100% 20u "This installer will not auto-detect here. Pick Docker Desktop or Podman before files are installed."
+  Pop $0
+
+  ${NSD_CreateRadioButton} 0 54u 100% 12u "Docker Desktop"
+  Pop $ContainerRuntimeRadioDocker
+
+  ${NSD_CreateRadioButton} 0 76u 100% 12u "Podman"
+  Pop $ContainerRuntimeRadioPodman
+
+  ${If} $ContainerRuntimeArg == "docker"
+    ${NSD_Check} $ContainerRuntimeRadioDocker
+  ${ElseIf} $ContainerRuntimeArg == "podman"
+    ${NSD_Check} $ContainerRuntimeRadioPodman
+  ${EndIf}
+
+  nsDialogs::Show
+FunctionEnd
+
+Function ContainerRuntimePageLeave
+  ${NSD_GetState} $ContainerRuntimeRadioDocker $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $ContainerRuntimeArg "docker"
+    StrCpy $ContainerRuntimeName "Docker Desktop"
+    Return
+  ${EndIf}
+
   ${NSD_GetState} $ContainerRuntimeRadioPodman $0
   ${If} $0 == ${BST_CHECKED}
     StrCpy $ContainerRuntimeArg "podman"
     StrCpy $ContainerRuntimeName "Podman"
-  ${Else}
-    ${NSD_GetState} $ContainerRuntimeRadioDocker $0
-    ${If} $0 == ${BST_CHECKED}
-      StrCpy $ContainerRuntimeArg "docker"
-      StrCpy $ContainerRuntimeName "Docker Desktop"
-    ${Else}
-      StrCpy $ContainerRuntimeArg "auto"
-      StrCpy $ContainerRuntimeName "Auto-detect"
-    ${EndIf}
+    Return
   ${EndIf}
 
-  Call ResolveSelectedInstallRoot
+  MessageBox MB_ICONEXCLAMATION "Choose Docker Desktop or Podman before continuing."
+  Abort
 FunctionEnd
 
 Function CreateMainComputerModeShortcuts
@@ -1585,7 +1569,7 @@ Section "Run Main Computer Python installer" SecBootstrap
     Abort "Main Computer installer failed with exit code $0. See $INSTDIR\logs."
 
   bootstrap_runtime_failed:
-    MessageBox MB_ICONSTOP "Main Computer installer failed with exit code $0.$\r$\n$\r$\nContainer runtime selection: $ContainerRuntimeName.$\r$\nNo selected or auto-detected Docker-compatible container runtime is ready.$\r$\n$\r$\nDocker Desktop: install/start Docker Desktop for Windows.$\r$\nPodman: install/initialize Podman or select Podman explicitly on the runtime page.$\r$\n$\r$\nSee installer details and log files under:$\r$\n$INSTDIR\logs"
+    MessageBox MB_ICONSTOP "Main Computer installer failed with exit code $0.$\r$\n$\r$\nContainer runtime selection: $ContainerRuntimeName.$\r$\nNo selected Docker-compatible container runtime is ready.$\r$\n$\r$\nDocker Desktop: install/start Docker Desktop for Windows.$\r$\nPodman: install/initialize Podman, then select Podman on the runtime page.$\r$\n$\r$\nSee installer details and log files under:$\r$\n$INSTDIR\logs"
     Abort "Main Computer installer failed with exit code $0. See $INSTDIR\logs."
 
   bootstrap_archive_failed:
@@ -1666,7 +1650,7 @@ $packageJson = [ordered]@{
     payloadRoot = "payload/main_computer_test"
     payloadIntegrityVerified = $payloadIntegrity
     hostRequirementsPolicy = [ordered]@{
-        containerRuntime = "required; installer defaults to target-machine auto-detect; Docker Desktop and Podman can be selected explicitly; setup-maker environment variables are ignored; fail with runtime-specific install guidance when unusable"
+        containerRuntime = "required; installer shows a separate required Docker Desktop or Podman choice page; setup-maker environment variables are ignored; fail with runtime-specific install guidance when unusable"
         podmanCompose = "installed into the Main Computer Python venv from requirements.txt and pinned through PODMAN_COMPOSE_PROVIDER when Podman is selected so Podman does not delegate Compose to Docker Desktop"
         git = "install or repair with winget when missing"
         opensshClient = "install or repair Windows OpenSSH Client capability when ssh/scp/ssh-keygen are missing"

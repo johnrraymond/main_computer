@@ -30,6 +30,7 @@ from main_computer.hub_networks import (
     resolve_profile_runtime_defaults,
 )
 from main_computer import openclaw_ops_smoke
+from main_computer.captain_cli import CaptainCliError, run_captain
 from main_computer.openclaw_bridge import DEFAULT_OPENCLAW_BRIDGE_PORT, serve as serve_openclaw_bridge
 from main_computer.recurrent_thinking import run_from_args as run_recurrent_thinking_from_args
 from main_computer.static_code_analyzer import emit_report as emit_code_stats_report
@@ -201,6 +202,14 @@ def cmd_chat(args: argparse.Namespace) -> int:
     response = computer.chat(args.prompt)
     print(response.content)
     return 0
+
+
+def cmd_captain(args: argparse.Namespace) -> int:
+    try:
+        return run_captain(list(getattr(args, "captain_args", []) or []), config=_config_from_args(args), cwd=Path.cwd())
+    except CaptainCliError as exc:
+        print(f"ERROR: {exc}")
+        return 2
 
 
 def cmd_projects(args: argparse.Namespace) -> int:
@@ -428,6 +437,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_options(chat)
     chat.add_argument("prompt")
     chat.set_defaults(func=cmd_chat)
+
+    captain = sub.add_parser(
+        "captain",
+        help="Connect as the Captain/officer backend wallet and run the ring-3 make-it-so smoke flow.",
+    )
+    add_common_options(captain)
+    captain.add_argument(
+        "captain_args",
+        nargs=argparse.REMAINDER,
+        help="Use: smoke [wallet-or-captain-or-officer] <free prompt> [--captain-options].",
+    )
+    captain.set_defaults(func=cmd_captain)
 
     projects = sub.add_parser("projects", help="List local project folders.")
     add_common_options(projects)

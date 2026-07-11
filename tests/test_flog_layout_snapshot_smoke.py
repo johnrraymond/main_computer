@@ -60,17 +60,19 @@ def test_git_tools_is_included_in_flog_battery_as_generic_repository_workflow():
     assert hierarchy["sourceApp"] == "git-tools"
     assert hierarchy["rootConcern"] == "repository.workflow"
     assert hierarchy["focusSlot"] == "workflow"
-    assert hierarchy["desiredFocusShare"] == 0.58
-    assert hierarchy["roleContract"]["requiredCompanions"] == ["command", "status"]
-    assert set(hierarchy["roleContract"]["nearbyCompanions"]) == {"server"}
-    assert set(hierarchy["roleContract"]["deferableSlots"]) == {"projects", "evidence", "advanced"}
-    assert set(hierarchy["roleContract"]["forbiddenDefaultHidden"]) == {"workflow", "command", "status"}
-    assert {"projects", "command", "workflow", "server", "status", "evidence", "advanced"}.issubset(slots)
+    assert hierarchy["desiredFocusShare"] == 0.64
+    assert hierarchy["roleContract"]["requiredCompanions"] == ["project-context", "command", "status"]
+    assert hierarchy["roleContract"]["nearbyCompanions"] == []
+    assert set(hierarchy["roleContract"]["deferableSlots"]) == {"project-selector", "server", "evidence", "advanced"}
+    assert set(hierarchy["roleContract"]["forbiddenDefaultHidden"]) == {"project-context", "workflow", "command", "status"}
+    assert {"project-selector", "project-context", "command", "workflow", "server", "status", "evidence", "advanced"}.issubset(slots)
 
-    assert nodes_by_slot["projects"]["role"] == "navigation"
-    assert nodes_by_slot["projects"]["visibility"] == "deferable"
-    assert "phase-specific-selector" in nodes_by_slot["projects"]["semantics"]["phasePersistence"]
-    assert "collapsed-trigger" in nodes_by_slot["projects"]["semantics"]["defaultRealization"]
+    assert nodes_by_slot["project-selector"]["role"] == "navigation"
+    assert nodes_by_slot["project-selector"]["visibility"] == "deferable"
+    assert "phase-specific-selector" in nodes_by_slot["project-selector"]["semantics"]["phasePersistence"]
+    assert "collapsed-trigger" in nodes_by_slot["project-selector"]["semantics"]["defaultRealization"]
+    assert nodes_by_slot["project-context"]["role"] == "status"
+    assert "persistent-after-selection" in nodes_by_slot["project-context"]["semantics"]["phasePersistence"]
     assert nodes_by_slot["command"]["role"] == "command"
     assert nodes_by_slot["workflow"]["role"] == "focus"
     assert nodes_by_slot["server"]["role"] == "detail"
@@ -86,7 +88,7 @@ def test_git_tools_is_included_in_flog_battery_as_generic_repository_workflow():
     assert "repository-workflow" not in str(audit).lower()
 
     expectations = {item["slot"]: item["expectation"] for item in module.semantic_affordance_expectations(hierarchy)}
-    assert expectations["projects"] == "phase-selector-trigger"
+    assert expectations["project-selector"] == "phase-selector-trigger"
     assert expectations["command"] == "command-rail"
     assert expectations["workflow"] == "dominant-surface"
     assert expectations["server"] == "deferable-inspector-trigger"
@@ -96,6 +98,8 @@ def test_git_tools_is_included_in_flog_battery_as_generic_repository_workflow():
     html = module.render_trial_html(hierarchy, "selected-context-workflow", "mcel-realistic")
     assert 'data-mc-source-app="git-tools"' in html
     assert 'data-mc-slot="workflow"' in html
+    assert 'data-mc-slot="project-context"' in html
+    assert 'data-mc-slot="project-selector"' in html
     assert 'data-mc-navigates="workflow"' in html
     assert 'data-mc-controls="workflow"' in html
     assert 'data-mc-confirms="workflow.state"' in html
@@ -402,7 +406,9 @@ def test_candidate_geometry_css_allocates_focus_without_hiding_required_companio
     assert ".trial-bounded-drawer .flog-node[data-flog-role=\"focus\"]" in css
     assert ".trial-top-band-focus-overlay" in css
     assert ".trial-selected-context-workflow" in css
-    assert "data-mc-phase-persistence^=\"phase-specific\"" in css
+    assert 'data-flog-phase-support="true"' in css
+    assert ".policy-phase-aware .flog-trigger-strip" in css
+    assert 'data-mc-default-realization^="collapsed-trigger"' not in css
     assert "source-order-stacked preserves visibility but starves a high-focus hierarchy" in module.MEASURE_AND_OVERLAY_JS
     assert "nearbyIntegration(record, focusRecord.rect, rootClipped)" in module.MEASURE_AND_OVERLAY_JS
     assert "Nearby was satisfied by semantic docking/integration" in module.MEASURE_AND_OVERLAY_JS
@@ -1230,12 +1236,12 @@ def test_git_tools_phase_specific_selector_does_not_force_persistent_sidebar():
     by_phase = {item["phase"]: item for item in sets}
 
     assert "default" in by_phase
-    assert "projects" not in by_phase["default"]["requiredSlots"]
+    assert "project-selector" not in by_phase.get("selected-project-default", by_phase.get("default", {})).get("requiredSlots", [])
     assert "project-selection" in by_phase
-    assert "projects" in by_phase["project-selection"]["slots"]
+    assert "project-selector" in by_phase["project-selection"]["slots"]
 
     pressures = module.semantic_layout_pressures(hierarchy)
-    project_pressures = [item for item in pressures if item.get("source") == "projects"]
+    project_pressures = [item for item in pressures if item.get("source") == "project-selector"]
     assert project_pressures
     assert all(item["expectation"] == "phase-selector-access" for item in project_pressures)
     assert all(item["requirement"] == "soft" for item in project_pressures)
@@ -1279,22 +1285,491 @@ def test_phase_realization_fit_accepts_default_triggers_for_phase_specific_regio
         },
         "examples": {
             "nodes": [
-                record("command", 0, 60, 1000, 56),
-                record("workflow", 0, 130, 1000, 330),
-                record("status", 0, 470, 1000, 44),
-                record("projects", 0, 520, 230, 36),
-                record("server", 240, 520, 230, 36),
-                record("evidence", 480, 520, 230, 36),
-                record("advanced", 720, 520, 230, 36),
+                record("project-context", 0, 52, 1000, 44),
+                    record("command", 0, 102, 1000, 50),
+                    record("workflow", 0, 158, 1000, 400),
+                    record("status", 0, 562, 1000, 32),
+                    record("project-selector", 10, 566, 132, 28),
+                    record("server", 152, 566, 132, 28),
+                    record("evidence", 294, 566, 132, 28),
+                    record("advanced", 436, 566, 132, 28),
             ]
         },
         "classification": {"score": 88, "status": "pass", "warnings": [], "positiveReasons": [], "failureReasons": [], "reviewNotes": []},
     }
 
     phase_fit = module.semantic_phase_realization_fit(hierarchy, measurement)
-    assert phase_fit["score"] >= 86
-    assert phase_fit["state"] == "strongPhaseFit"
-    assert any("trigger/drawer" in reason for reason in phase_fit["positiveReasons"])
+    assert 72 <= phase_fit["score"] < 100
+    assert phase_fit["state"] in {"usablePhaseFit", "strongPhaseFit"}
+    assert phase_fit["worstScore"] < 100
+    assert any("trigger" in reason or "inactive support" in reason for reason in phase_fit["positiveReasons"] + phase_fit["riskReasons"])
+
+
+
+def test_phase_realization_fit_penalizes_static_project_roster_tax():
+    module = load_module()
+    hierarchy = next(item for item in module.synthetic_hierarchies() if item["id"] == "git-tools-workflow-workbench")
+
+    def record(slot, left, top, width, height):
+        return {
+            "slot": slot,
+            "rect": {
+                "left": left,
+                "top": top,
+                "right": left + width,
+                "bottom": top + height,
+                "width": width,
+                "height": height,
+                "area": width * height,
+            },
+        }
+
+    root = {
+        "left": 0,
+        "top": 0,
+        "right": 1000,
+        "bottom": 600,
+        "width": 1000,
+        "height": 600,
+        "area": 600000,
+    }
+    compact_trigger_measurement = {
+        "geometryFacts": {"root": {"clipped": root}},
+        "examples": {
+            "nodes": [
+                record("project-context", 0, 52, 1000, 44),
+                record("command", 0, 102, 1000, 50),
+                record("workflow", 0, 158, 1000, 400),
+                record("status", 0, 562, 1000, 32),
+                record("project-selector", 10, 566, 132, 28),
+                record("server", 152, 566, 132, 28),
+                record("evidence", 294, 566, 132, 28),
+                record("advanced", 436, 566, 132, 28),
+            ]
+        },
+    }
+    static_roster_measurement = {
+        "geometryFacts": {"root": {"clipped": root}},
+        "examples": {
+            "nodes": [
+                record("project-context", 0, 0, 1000, 44),
+                record("command", 240, 52, 760, 50),
+                record("workflow", 240, 110, 760, 330),
+                record("status", 240, 450, 760, 34),
+                record("project-selector", 0, 52, 230, 500),
+                record("server", 240, 492, 200, 84),
+                record("evidence", 450, 492, 200, 84),
+                record("advanced", 660, 492, 200, 84),
+            ]
+        },
+    }
+
+    compact_fit = module.semantic_phase_realization_fit(hierarchy, compact_trigger_measurement)
+    static_fit = module.semantic_phase_realization_fit(hierarchy, static_roster_measurement)
+
+    assert compact_fit["score"] > static_fit["score"]
+    assert static_fit["score"] < 72
+    assert any("inactive phase-specific support" in reason for reason in static_fit["riskReasons"])
+
+
+def test_git_phase_realization_replaces_inactive_panels_with_real_triggers():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    scenarios = {
+        item["phase"]: item for item in module.phase_trial_scenarios(hierarchy)
+    }
+
+    default_realized = module.realize_phase(
+        hierarchy,
+        "progressive-workflow",
+        scenarios["selected-project-default"],
+    )
+    assert default_realized["focusSlot"] == "workflow"
+    assert default_realized["realizationStates"]["workflow"] == "full-active"
+    assert default_realized["realizationStates"]["project-context"] == "persistent"
+    assert {
+        slot
+        for slot, state in default_realized["realizationStates"].items()
+        if state == "compact-trigger"
+    } == {"project-selector", "server", "evidence", "advanced"}
+
+    default_html = module.render_realized_trial_html(
+        default_realized,
+        "progressive-workflow",
+        "mcel-realistic",
+    )
+    assert default_html.count('data-flog-trigger-for=') == 4
+    assert 'data-flog-trigger-for="evidence"' in default_html
+    assert 'id="flog-surface-evidence"' not in default_html
+    assert "Dry-run transcript and Git receipt" not in default_html
+    assert 'data-flog-realization="compact-trigger"' in default_html
+
+    planning_realized = module.realize_phase(
+        hierarchy,
+        "progressive-workflow",
+        scenarios["planning"],
+    )
+    planning_html = module.render_realized_trial_html(
+        planning_realized,
+        "progressive-workflow",
+        "mcel-realistic",
+    )
+    assert planning_realized["realizationStates"]["server"] == "full-active"
+    assert 'id="flog-surface-server"' in planning_html
+    assert 'data-flog-trigger-for="server"' not in planning_html
+    assert "Refresh server" in planning_html
+
+    proof_realized = module.realize_phase(
+        hierarchy,
+        "workflow-with-proof-drawer",
+        scenarios["proof-review"],
+    )
+    proof_html = module.render_realized_trial_html(
+        proof_realized,
+        "workflow-with-proof-drawer",
+        "mcel-realistic",
+    )
+    assert proof_realized["realizationStates"]["evidence"] == "full-active"
+    assert 'id="flog-surface-evidence"' in proof_html
+    assert 'data-flog-trigger-for="evidence"' not in proof_html
+    assert "Dry-run transcript and Git receipt" in proof_html
+
+
+def test_git_browser_battery_contains_six_independent_states():
+    module = load_module()
+    git = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    generic = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "document-workbench"
+    )
+
+    assert [item["phase"] for item in module.phase_trial_scenarios(git)] == [
+        "project-selection",
+        "selected-project-default",
+        "planning",
+        "execution",
+        "proof-review",
+        "recovery",
+    ]
+    assert len(module.phase_trial_scenarios(generic)) == 1
+    assert module.phase_trial_scenarios(generic)[0]["phase"] == "default"
+
+
+def test_phase_policy_score_uses_independent_measurements_and_absolute_hard_failures():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    scenarios = module.phase_trial_scenarios(hierarchy)
+    root = {
+        "left": 0,
+        "top": 0,
+        "right": 1000,
+        "bottom": 1000,
+        "width": 1000,
+        "height": 1000,
+        "area": 1_000_000,
+    }
+
+    def record(slot, share, realization):
+        height = share * 1000
+        return {
+            "slot": slot,
+            "realization": realization,
+            "rect": {
+                "left": 0,
+                "top": 0,
+                "right": 1000,
+                "bottom": height,
+                "width": 1000,
+                "height": height,
+                "area": 1000 * height,
+            },
+        }
+
+    measurements = []
+    for scenario in scenarios:
+        dominant = scenario["dominantSlot"]
+        records = [
+            record(
+                dominant,
+                scenario["targetDominantShare"],
+                "full-active",
+            )
+        ]
+        for slot in scenario["requiredSlots"]:
+            if slot == dominant:
+                continue
+            records.append(
+                record(
+                    slot,
+                    0.06 if slot in {"command", "status"} else 0.03,
+                    "persistent",
+                )
+            )
+        for slot in scenario["activeSupportSlots"]:
+            if slot not in {item["slot"] for item in records}:
+                records.append(
+                    record(
+                        slot,
+                        0.20 if slot == "evidence" else 0.18,
+                        "full-active",
+                    )
+                )
+        active = {
+            dominant,
+            *scenario["requiredSlots"],
+            *scenario["activeSupportSlots"],
+        }
+        for slot in scenario["collapsedSlots"]:
+            if slot not in active:
+                records.append(record(slot, 0.003, "compact-trigger"))
+        measurements.append(
+            {
+                "phase": scenario["phase"],
+                "geometryFacts": {
+                    "root": {"clipped": root},
+                    "clippedCriticalControlCount": 0,
+                    "hiddenCriticalControlCount": 0,
+                },
+                "examples": {"nodes": records},
+                "classification": {
+                    "score": 92,
+                    "geometryScore": 92,
+                    "status": "pass",
+                },
+                "snapshots": {
+                    "viewport": f"git--{scenario['phase']}--viewport.png"
+                },
+            }
+        )
+
+    fit = module.semantic_phase_realization_fit(hierarchy, measurements)
+    expected = round(
+        (0.50 * fit["worstScore"])
+        + (0.30 * fit["selectedDefaultScore"])
+        + (0.20 * fit["meanScore"])
+    )
+    assert fit["phaseCount"] == 6
+    assert fit["selectedDefaultPhase"] == "selected-project-default"
+    assert fit["score"] == expected
+    assert fit["hardFailureCount"] == 0
+    assert fit["state"] in {"strongPhaseFit", "usablePhaseFit"}
+
+    broken = [dict(item) for item in measurements]
+    broken[4] = {
+        **broken[4],
+        "geometryFacts": {
+            **broken[4]["geometryFacts"],
+            "clippedCriticalControlCount": 1,
+        },
+    }
+    broken_fit = module.semantic_phase_realization_fit(hierarchy, broken)
+    assert broken_fit["hardFailureCount"] >= 1
+    assert broken_fit["state"] in {"weakPhaseFit", "phaseRisk"}
+    assert any(
+        "proof-review phase has 1 clipped or hidden active critical control"
+        in reason
+        for reason in broken_fit["hardFailureReasons"]
+    )
+
+
+
+def test_generic_canonical_trial_does_not_fail_unrendered_fallback_phases():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "document-workbench"
+    )
+    scenario = module.phase_trial_scenarios(hierarchy)[0]
+    assert scenario["phase"] == "default"
+    assert not hierarchy.get("phaseScenarios")
+
+    root = {
+        "left": 0,
+        "top": 0,
+        "right": 1000,
+        "bottom": 1000,
+        "width": 1000,
+        "height": 1000,
+        "area": 1_000_000,
+    }
+
+    def record(slot, share, realization):
+        height = share * 1000
+        return {
+            "slot": slot,
+            "realization": realization,
+            "rect": {
+                "left": 0,
+                "top": 0,
+                "right": 1000,
+                "bottom": height,
+                "width": 1000,
+                "height": height,
+                "area": 1000 * height,
+            },
+        }
+
+    active = {
+        scenario["dominantSlot"],
+        *scenario["requiredSlots"],
+        *scenario["activeSupportSlots"],
+    }
+    records = [
+        record(
+            scenario["dominantSlot"],
+            scenario["targetDominantShare"],
+            "full-active",
+        )
+    ]
+    records.extend(
+        record(slot, 0.05, "persistent")
+        for slot in scenario["requiredSlots"]
+        if slot != scenario["dominantSlot"]
+    )
+    records.extend(
+        record(slot, 0.015, "inactive-panel")
+        for slot in scenario["collapsedSlots"]
+        if slot not in active
+    )
+    measurement = {
+        "phase": "default",
+        "candidate": "focus-priority",
+        "candidatePolicy": module.candidate_phase_policy("focus-priority"),
+        "geometryFacts": {
+            "root": {"clipped": root},
+            "clippedCriticalControlCount": 0,
+            "hiddenCriticalControlCount": 0,
+        },
+        "examples": {"nodes": records},
+        "classification": {
+            "score": 92,
+            "geometryScore": 92,
+            "status": "pass",
+        },
+        "snapshots": {"viewport": "document--default--viewport.png"},
+    }
+
+    fit = module.semantic_phase_realization_fit(hierarchy, [measurement])
+
+    assert fit["phaseCount"] == 1
+    assert fit["selectedDefaultPhase"] == "default"
+    assert fit["hardFailureCount"] == 0
+    assert not any(
+        "no independent browser measurement" in reason
+        for reason in fit["hardFailureReasons"]
+    )
+    assert fit["phases"][0]["supportsCompactTriggers"] is False
+    assert fit["phases"][0]["panelLikeTriggerSlots"] == []
+
+
+def test_explicit_phase_battery_still_requires_every_browser_measurement():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    scenario = module.phase_trial_scenarios(hierarchy)[0]
+    root = {
+        "left": 0,
+        "top": 0,
+        "right": 1000,
+        "bottom": 1000,
+        "width": 1000,
+        "height": 1000,
+        "area": 1_000_000,
+    }
+
+    def record(slot, share, realization):
+        height = share * 1000
+        return {
+            "slot": slot,
+            "realization": realization,
+            "rect": {
+                "left": 0,
+                "top": 0,
+                "right": 1000,
+                "bottom": height,
+                "width": 1000,
+                "height": height,
+                "area": 1000 * height,
+            },
+        }
+
+    active = {
+        scenario["dominantSlot"],
+        *scenario["requiredSlots"],
+        *scenario["activeSupportSlots"],
+    }
+    records = [
+        record(
+            scenario["dominantSlot"],
+            scenario["targetDominantShare"],
+            "full-active",
+        )
+    ]
+    records.extend(
+        record(slot, 0.05, "persistent")
+        for slot in scenario["requiredSlots"]
+        if slot != scenario["dominantSlot"]
+    )
+    records.extend(
+        record(slot, 0.003, "compact-trigger")
+        for slot in scenario["collapsedSlots"]
+        if slot not in active
+    )
+    measurement = {
+        "phase": scenario["phase"],
+        "candidate": "selected-context-workflow",
+        "candidatePolicy": module.candidate_phase_policy(
+            "selected-context-workflow"
+        ),
+        "geometryFacts": {
+            "root": {"clipped": root},
+            "clippedCriticalControlCount": 0,
+            "hiddenCriticalControlCount": 0,
+        },
+        "examples": {"nodes": records},
+        "classification": {
+            "score": 92,
+            "geometryScore": 92,
+            "status": "pass",
+        },
+        "snapshots": {"viewport": "git--project-selection--viewport.png"},
+    }
+
+    fit = module.semantic_phase_realization_fit(hierarchy, [measurement])
+
+    assert fit["phaseCount"] == 6
+    assert fit["hardFailureCount"] >= 5
+    assert any(
+        "selected-project-default phase has no independent browser measurement"
+        in reason
+        for reason in fit["hardFailureReasons"]
+    )
+
+
+def test_active_phase_form_controls_are_constrained_to_their_panel():
+    module = load_module()
+
+    assert ".flog-node input," in module.TRIAL_CSS
+    assert ".flog-node select," in module.TRIAL_CSS
+    assert ".flog-node textarea {" in module.TRIAL_CSS
+    assert "max-width: 100%;" in module.TRIAL_CSS
 
 
 def test_new_workflow_candidates_are_generic_and_available():
@@ -1320,3 +1795,913 @@ def test_new_workflow_candidates_are_generic_and_available():
     assert "data-mc-app-archetype" not in html
     assert "data-mc-primary-grammar" not in html
 
+
+
+
+def test_git_layout_is_decomposed_into_recursive_responsibility_units():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    specs = module.layout_unit_specs(hierarchy)
+    by_id = {item["id"]: item for item in specs}
+    leaves = {item["id"]: item for item in specs if item["leaf"]}
+
+    assert by_id["git-tools-application"]["childIds"] == [
+        "project-identity",
+        "command-workflow",
+        "persistent-feedback",
+        "phase-support",
+    ]
+    assert leaves["project-identity"]["slots"] == ["project-selector"]
+    assert leaves["command-workflow"]["slots"] == ["command", "workflow"]
+    assert leaves["persistent-feedback"]["slots"] == ["project-context", "status"]
+    assert leaves["phase-support"]["slots"] == ["server", "evidence", "advanced"]
+
+    owners = module.layout_unit_slot_map(hierarchy)
+    assert set(owners) == {node["slot"] for node in hierarchy["nodes"]}
+    assert owners["workflow"]["id"] == "command-workflow"
+    assert owners["status"]["id"] == "persistent-feedback"
+    assert all("/" not in unit["id"] for unit in specs)
+
+
+def test_candidate_is_resolved_as_a_composition_of_local_unit_policies():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    selected = module.candidate_unit_composition(
+        hierarchy, "selected-context-workflow"
+    )
+    proof = module.candidate_unit_composition(
+        hierarchy, "workflow-with-proof-drawer"
+    )
+    static = module.candidate_unit_composition(hierarchy, "split-pane")
+
+    assert selected["enabled"] is True
+    assert selected["searchMode"] == "bounded-recursive-composition"
+    assert selected["rootPolicy"] == "dominant-workflow-stack"
+    assert selected["unitPolicies"]["persistent-feedback"] == "shared-horizontal-band"
+    assert selected["unitPolicies"]["phase-support"] == "side-active-support"
+    assert proof["unitPolicies"]["phase-support"] == "proof-drawer-or-side-support"
+    assert static["rootPolicy"] == "legacy-flat"
+    assert set(selected["parallelBranches"]) == {
+        "project-identity",
+        "command-workflow",
+        "persistent-feedback",
+        "phase-support",
+    }
+
+
+def test_phase_realization_propagates_to_local_layout_units():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    scenario = next(
+        item
+        for item in hierarchy["phaseScenarios"]
+        if item["phase"] == "planning"
+    )
+
+    realized = module.realize_phase(
+        hierarchy, "selected-context-workflow", scenario
+    )
+    units = {item["id"]: item for item in realized["layoutUnits"]}
+
+    assert units["project-identity"]["realization"] == "trigger-only"
+    assert units["command-workflow"]["activeSlots"] == ["command", "workflow"]
+    assert units["persistent-feedback"]["activeSlots"] == [
+        "project-context",
+        "status",
+    ]
+    assert units["phase-support"]["activeSupportSlots"] == ["server"]
+    assert units["phase-support"]["activeSlots"] == ["server"]
+    assert units["phase-support"]["triggerSlots"] == ["advanced", "evidence"]
+    assert realized["unitComposition"]["unitPolicies"]["persistent-feedback"] == (
+        "shared-horizontal-band"
+    )
+
+
+def test_recursive_unit_html_wraps_responsibilities_and_keeps_one_trigger_strip():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    scenario = next(
+        item
+        for item in hierarchy["phaseScenarios"]
+        if item["phase"] == "selected-project-default"
+    )
+
+    html = module.render_trial_html(
+        hierarchy,
+        "selected-context-workflow",
+        "mcel-realistic",
+        scenario,
+    )
+
+    assert 'class="flog-unit-tree"' in html
+    assert 'data-flog-unit-search-mode="bounded-recursive-composition"' in html
+    assert 'data-flog-unit-id="command-workflow"' in html
+    assert 'data-flog-unit-id="persistent-feedback"' in html
+    assert 'data-flog-unit-policy="shared-horizontal-band"' in html
+    assert html.count('class="flog-trigger-strip"') == 1
+    assert 'data-flog-trigger-count="4"' in html
+    assert 'data-flog-unit-id="project-identity"' in html
+    assert 'data-flog-unit-id="phase-support"' in html
+    assert (
+        '.flog-layout-unit[data-flog-unit-id="persistent-feedback"]'
+        in module.TRIAL_CSS
+    )
+    assert "grid-template-columns: repeat(auto-fit, minmax(0, 1fr));" in module.TRIAL_CSS
+
+
+def _git_selected_default_unit_measurement(module, *, stacked_feedback=False):
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    scenario = next(
+        item
+        for item in hierarchy["phaseScenarios"]
+        if item["phase"] == "selected-project-default"
+    )
+    realized = module.realize_phase(
+        hierarchy, "selected-context-workflow", scenario
+    )
+
+    def rect(left, top, right, bottom):
+        return {
+            "x": left,
+            "y": top,
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "width": right - left,
+            "height": bottom - top,
+            "area": (right - left) * (bottom - top),
+        }
+
+    if stacked_feedback:
+        context_rect = rect(0, 860, 1000, 900)
+        status_rect = rect(0, 900, 1000, 940)
+        feedback_rect = rect(0, 860, 1000, 940)
+    else:
+        context_rect = rect(0, 860, 500, 920)
+        status_rect = rect(500, 860, 1000, 920)
+        feedback_rect = rect(0, 860, 1000, 920)
+
+    geometry = {
+        "command": rect(0, 0, 1000, 60),
+        "workflow": rect(0, 60, 1000, 860),
+        "project-context": context_rect,
+        "status": status_rect,
+        "project-selector": rect(0, 930, 250, 970),
+        "server": rect(250, 930, 500, 970),
+        "evidence": rect(500, 930, 750, 970),
+        "advanced": rect(750, 930, 1000, 970),
+    }
+    roles = {
+        "command": "command",
+        "workflow": "focus",
+        "project-context": "status",
+        "status": "status",
+        "project-selector": "navigation",
+        "server": "detail",
+        "evidence": "evidence",
+        "advanced": "detail",
+    }
+    unit_for_slot = {
+        slot: unit["id"]
+        for slot, unit in module.layout_unit_slot_map(hierarchy).items()
+    }
+    nodes = []
+    for slot, item_rect in geometry.items():
+        state = realized["realizationStates"][slot]
+        nodes.append(
+            {
+                "slot": slot,
+                "role": roles[slot],
+                "unitId": unit_for_slot[slot],
+                "realization": state,
+                "rect": item_rect,
+            }
+        )
+
+    units = [
+        {
+            "unitId": "command-workflow",
+            "role": "primary-work",
+            "policy": "command-over-dominant",
+            "rect": rect(0, 0, 1000, 860),
+        },
+        {
+            "unitId": "persistent-feedback",
+            "role": "persistent-feedback",
+            "policy": "shared-horizontal-band",
+            "rect": feedback_rect,
+        },
+    ]
+    return hierarchy, realized, {
+        "phase": "selected-project-default",
+        "geometryFacts": {
+            "root": {"clipped": rect(0, 0, 1000, 1000)},
+            "clippedCriticalControlCount": 0,
+            "hiddenCriticalControlCount": 0,
+        },
+        "examples": {
+            "nodes": nodes,
+            "units": units,
+            "clippedCriticalControls": [],
+            "hiddenCriticalControls": [],
+        },
+        "classification": {"score": 90, "status": "pass"},
+    }
+
+
+def test_recursive_unit_fit_identifies_the_lowest_failing_feedback_unit():
+    module = load_module()
+    _, realized, shared = _git_selected_default_unit_measurement(module)
+    shared_fit = module.semantic_layout_unit_state_fit(realized, shared)
+
+    _, realized, stacked = _git_selected_default_unit_measurement(
+        module, stacked_feedback=True
+    )
+    stacked_fit = module.semantic_layout_unit_state_fit(realized, stacked)
+    stacked_by_id = {item["unitId"]: item for item in stacked_fit["units"]}
+
+    assert shared_fit["hardFailureCount"] == 0
+    assert shared_fit["score"] >= 88
+    assert stacked_by_id["persistent-feedback"]["hardFailureCount"] == 1
+    assert stacked_by_id["command-workflow"]["hardFailureCount"] == 0
+    assert any(
+        "persistent-feedback violates local policy shared-horizontal-band"
+        in reason
+        for reason in stacked_fit["hardFailureReasons"]
+    )
+    assert stacked_fit["state"] == "unitRisk"
+
+
+def test_recursive_unit_aggregation_retains_worst_branch_and_hard_failures():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    measurements = [
+        {
+            "phase": "selected-project-default",
+            "layoutUnitFit": {
+                "score": 96,
+                "hardFailureReasons": [],
+                "units": [
+                    {
+                        "unitId": "persistent-feedback",
+                        "score": 96,
+                        "hardFailureCount": 0,
+                    },
+                    {
+                        "unitId": "command-workflow",
+                        "score": 98,
+                        "hardFailureCount": 0,
+                    },
+                ],
+            },
+        },
+        {
+            "phase": "recovery",
+            "layoutUnitFit": {
+                "score": 62,
+                "hardFailureReasons": [
+                    "phase-support has 1 clipped or hidden active critical control(s)"
+                ],
+                "units": [
+                    {
+                        "unitId": "phase-support",
+                        "score": 40,
+                        "hardFailureCount": 1,
+                    },
+                    {
+                        "unitId": "persistent-feedback",
+                        "score": 94,
+                        "hardFailureCount": 0,
+                    },
+                ],
+            },
+        },
+    ]
+
+    fit = module.aggregate_layout_unit_fit(hierarchy, measurements)
+    branches = {item["unitId"]: item for item in fit["parallelBranches"]}
+
+    assert fit["worstScore"] == 62
+    assert fit["selectedDefaultScore"] == 96
+    assert fit["hardFailureCount"] == 1
+    assert fit["state"] == "unitRisk"
+    assert branches["phase-support"]["worstScore"] == 40
+    assert branches["phase-support"]["hardFailureCount"] == 1
+
+
+
+
+def test_recursive_unit_feed_graph_matches_responsibility_ownership():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    audit = module.layout_unit_dataflow_audit(hierarchy)
+    edges = {
+        (item["sourceUnit"], item["targetUnit"], item["signal"])
+        for item in audit["edges"]
+    }
+
+    assert audit["state"] == "complete"
+    assert audit["missingInputs"] == []
+    assert audit["cycles"] == []
+    assert audit["duplicateOutputs"] == []
+    assert audit["parallelRoots"] == ["project-identity"]
+    assert (
+        "project-identity",
+        "command-workflow",
+        "selected-project-scope",
+    ) in edges
+    assert (
+        "command-workflow",
+        "persistent-feedback",
+        "workflow-state",
+    ) in edges
+    assert (
+        "command-workflow",
+        "phase-support",
+        "workflow-claim",
+    ) in edges
+
+
+
+def test_recursive_policy_catalog_exposes_real_local_alternatives():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    catalog = module.layout_unit_policy_catalog(hierarchy)
+
+    assert {item["policy"] for item in catalog["project-identity"]} == {
+        "phase-selector-unit",
+        "compact-project-rail",
+        "selector-overlay",
+    }
+    assert {item["policy"] for item in catalog["command-workflow"]} == {
+        "command-over-dominant",
+        "command-inline-header",
+        "side-command-rail",
+    }
+    assert {item["policy"] for item in catalog["persistent-feedback"]} == {
+        "shared-horizontal-band",
+        "stacked-feedback",
+        "workflow-footer-overlay",
+    }
+    assert {item["policy"] for item in catalog["phase-support"]} == {
+        "one-active-plus-triggers",
+        "bounded-bottom-drawer",
+        "bounded-side-drawer",
+        "inline-phase-stage",
+    }
+
+
+def test_default_recursive_search_generates_composition_identities_not_legacy_families():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    candidates = module.candidate_specs_for_hierarchy(
+        hierarchy, list(module.LAYOUT_CANDIDATES)
+    )
+
+    assert len(candidates) == len(module.LAYOUT_CANDIDATES)
+    assert all(isinstance(item, dict) for item in candidates)
+    assert all(item["id"].startswith("compose--") for item in candidates)
+    assert all(item["renderFamily"] == "recursive-composition" for item in candidates)
+    assert all(item["mode"] == "recursive-composition" for item in candidates)
+    assert len({item["id"] for item in candidates}) == len(candidates)
+
+    support_policies = {
+        item["composition"]["unitPolicies"]["phase-support"]
+        for item in candidates
+    }
+    command_policies = {
+        item["composition"]["unitPolicies"]["command-workflow"]
+        for item in candidates
+    }
+    assert {
+        "one-active-plus-triggers",
+        "bounded-bottom-drawer",
+        "bounded-side-drawer",
+        "inline-phase-stage",
+    }.issubset(support_policies)
+    assert {
+        "command-over-dominant",
+        "command-inline-header",
+        "side-command-rail",
+    }.issubset(command_policies)
+
+
+def test_explicit_legacy_candidate_subset_remains_an_exact_request():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    assert module.candidate_specs_for_hierarchy(
+        hierarchy, ["progressive-workflow"]
+    ) == ["progressive-workflow"]
+
+
+def test_generated_composition_drives_html_and_report_identity():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    candidate = module.recursive_composition_candidate_specs(
+        hierarchy, max_candidates=1
+    )[0]
+    scenario = next(
+        item
+        for item in hierarchy["phaseScenarios"]
+        if item["phase"] == "selected-project-default"
+    )
+
+    realized = module.realize_phase(hierarchy, candidate, scenario)
+    html = module.render_realized_trial_html(
+        realized, candidate, "mcel-realistic"
+    )
+
+    assert realized["unitComposition"]["origin"] == "generated-policy-tuple"
+    assert (
+        realized["unitComposition"]["searchMode"]
+        == "generated-bounded-recursive-composition"
+    )
+    assert realized["unitComposition"]["candidate"] == candidate["id"]
+    assert 'trial-recursive-composition' in html
+    assert f'data-flog-candidate="{candidate["id"]}"' in html
+    assert 'data-flog-candidate-mode="recursive-composition"' in html
+    assert 'data-flog-render-family="recursive-composition"' in html
+    assert (
+        f'data-flog-unit-policy="{candidate["composition"]["unitPolicies"]["phase-support"]}"'
+        in html
+    )
+    assert 'class="flog-root trial-bounded-drawer ' not in html
+
+
+def test_local_support_policy_scoring_distinguishes_side_and_bottom_geometry():
+    module = load_module()
+
+    def rect(left, top, right, bottom):
+        return {
+            "x": left,
+            "y": top,
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "width": right - left,
+            "height": bottom - top,
+            "area": (right - left) * (bottom - top),
+        }
+
+    root = rect(0, 0, 1000, 1000)
+    unit = {
+        "activeSupportSlots": ["evidence"],
+        "activeSlots": ["evidence"],
+        "triggerSlots": ["server", "advanced"],
+    }
+    records = {
+        "evidence": {
+            "realization": "full-active",
+            "rect": rect(720, 120, 1000, 900),
+        }
+    }
+    side_record = {"rect": rect(720, 120, 1000, 900)}
+    bottom_record = {"rect": rect(0, 740, 1000, 940)}
+
+    side_score, _, side_hard = module._phase_support_policy_score(
+        "bounded-side-drawer", unit, records, root, side_record
+    )
+    wrong_bottom_score, _, wrong_bottom_hard = module._phase_support_policy_score(
+        "bounded-bottom-drawer", unit, records, root, side_record
+    )
+    bottom_score, _, bottom_hard = module._phase_support_policy_score(
+        "bounded-bottom-drawer", unit, records, root, bottom_record
+    )
+
+    assert side_hard is False
+    assert bottom_hard is False
+    assert wrong_bottom_hard is True
+    assert side_score > wrong_bottom_score
+    assert bottom_score > wrong_bottom_score
+
+
+def test_recursive_beam_records_preflight_scores_and_collision_penalties():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    candidates = module.recursive_composition_candidate_specs(
+        hierarchy, max_candidates=12
+    )
+
+    assert candidates[0]["preflightScore"] >= candidates[-1]["preflightScore"]
+    assert all(item["localPolicyPreflight"] for item in candidates)
+    assert all(
+        item["compositionLabel"].startswith("project-identity=")
+        for item in candidates
+    )
+    assert module._composition_compatibility_penalty(
+        {
+            "command-workflow": "side-command-rail",
+            "phase-support": "bounded-side-drawer",
+        }
+    ) == 12
+
+
+def test_painted_ownership_policy_metadata_distinguishes_layout_intent():
+    module = load_module()
+
+    assert module.layout_unit_ownership_spec(
+        "bounded-side-drawer", "active"
+    ) == {
+        "mode": "partition",
+        "overlayTarget": "",
+        "maxOcclusionShare": 0.0,
+    }
+    assert module.layout_unit_ownership_spec(
+        "workflow-footer-overlay", "active"
+    ) == {
+        "mode": "overlay",
+        "overlayTarget": "workflow",
+        "maxOcclusionShare": 0.06,
+    }
+    assert module.layout_unit_ownership_spec(
+        "selector-overlay", "active"
+    ) == {
+        "mode": "overlay",
+        "overlayTarget": "workflow",
+        "maxOcclusionShare": 0.10,
+    }
+    assert module.layout_unit_ownership_spec(
+        "bounded-bottom-drawer", "trigger-only"
+    )["mode"] == "trigger"
+    assert module.layout_unit_ownership_spec(
+        "bounded-bottom-drawer", "absent"
+    )["mode"] == "absent"
+
+
+def test_recursive_html_emits_shadow_ownership_contracts():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    candidate = {
+        "id": "compose--shadow-ownership-test",
+        "mode": "recursive-composition",
+        "renderFamily": "recursive-composition",
+        "compositionLabel": "shadow ownership test",
+        "composition": {
+            "rootPolicy": "dominant-workflow-stack",
+            "unitPolicies": {
+                "project-identity": "phase-selector-unit",
+                "command-workflow": "command-over-dominant",
+                "persistent-feedback": "workflow-footer-overlay",
+                "phase-support": "bounded-side-drawer",
+            },
+        },
+    }
+    scenario = next(
+        item
+        for item in hierarchy["phaseScenarios"]
+        if item["phase"] == "selected-project-default"
+    )
+
+    realized = module.realize_phase(hierarchy, candidate, scenario)
+    html = module.render_realized_trial_html(
+        realized, candidate, "mcel-realistic"
+    )
+
+    rendered_body = html[html.index("</style>") :]
+    feedback_start = rendered_body.index(
+        'data-flog-unit-id="persistent-feedback"'
+    )
+    feedback_section = rendered_body[feedback_start : feedback_start + 900]
+    assert 'data-flog-ownership-mode="overlay"' in feedback_section
+    assert 'data-flog-overlay-target="workflow"' in feedback_section
+    assert 'data-flog-max-occlusion-share="0.06"' in feedback_section
+
+    support_start = rendered_body.index(
+        'data-flog-unit-id="phase-support"'
+    )
+    support_section = rendered_body[support_start : support_start + 900]
+    assert 'data-flog-ownership-mode="trigger"' in support_section
+    assert 'data-flog-overlay-target=""' in support_section
+
+    evidence_trigger = next(
+        line for line in html.splitlines()
+        if 'data-flog-trigger-for="evidence"' in line
+    )
+    assert 'data-flog-ownership-mode="trigger"' in evidence_trigger
+
+
+def test_measurement_javascript_collects_shadow_geometry_without_enforcement():
+    module = load_module()
+    javascript = module.MEASURE_AND_OVERLAY_JS
+
+    assert "paintedOwnershipShadowFor" in javascript
+    assert "doc.elementsFromPoint" in javascript
+    assert 'mode: "shadow-only"' in javascript
+    assert "controlInterceptionShadowFor" in javascript
+    assert "overlayBudgetExceeded" in javascript
+    assert "effectiveFocusShareShadow" in javascript
+    assert "undeclaredPartitionOverlapShare" in javascript
+    assert "partitionOverlapCellShare" in javascript
+    assert "foreignInterceptedPointCount" in javascript
+    assert "pointerEventsNonePassThroughPointCount" in javascript
+    assert 'data-flog-control-proxy-for' in javascript
+
+    scoring_block = javascript[
+        javascript.index("  let score = 100;") :
+        javascript.index("  score = Math.max", javascript.index("  let score = 100;"))
+    ]
+    hard_gate_block = javascript[
+        javascript.index("  const hardGeometryGatePassed") :
+        javascript.index("  if (preferredFamilyMatch", javascript.index("  const hardGeometryGatePassed"))
+    ]
+    assert "paintedOwnershipShadow" not in scoring_block
+    assert "effectiveFocusShare" not in scoring_block
+    assert "paintedOwnershipShadow" not in hard_gate_block
+    assert "effectiveFocusShare" not in hard_gate_block
+
+
+def test_shadow_hit_testing_distinguishes_self_owned_from_foreign_interception():
+    module = load_module()
+    javascript = module.MEASURE_AND_OVERLAY_JS
+
+    control_block = javascript[
+        javascript.index("  function controlInterceptionShadowFor(el) {") :
+        javascript.index("  function isCriticalControl(el) {")
+    ]
+
+    assert "controlOwner === targetOwner" in control_block
+    assert 'outcome: "foreign-intercepted"' in control_block
+    assert '"self-owned"' in control_block
+    assert '"no-pointer-target"' in control_block
+    assert '"pointer-events-none-pass-through"' in control_block
+    assert "interceptedPointCount: foreignInterceptedPointCount" in control_block
+    assert "fullyIntercepted: fullyForeignIntercepted" in control_block
+    assert "partiallyIntercepted: partiallyForeignIntercepted" in control_block
+
+
+def test_shadow_partition_overlap_is_reported_separately_from_overlay_budget():
+    module = load_module()
+    javascript = module.MEASURE_AND_OVERLAY_JS
+
+    ownership_block = javascript[
+        javascript.index("  function paintedOwnershipShadowFor(") :
+        javascript.index("  function associatedLabelsForControl(")
+    ]
+
+    assert "partitionClaimsForeignCell" in ownership_block
+    assert 'topOwner.record.ownershipMode === "partition"' in ownership_block
+    assert "topOwner.record.unitId !== lower.record.unitId" in ownership_block
+    assert "undeclaredPartitionOverlapArea" in ownership_block
+    assert "doubleClaimedArea - declaredOverlayArea" in ownership_block
+    assert "undeclaredPartitionOverlapMatrix" in ownership_block
+
+
+def test_selection_row_surfaces_shadow_diagnostics_without_changing_rank():
+    module = load_module()
+    item = {
+        "hierarchyId": "git-tools-workflow-workbench",
+        "viewportProfile": "desktop",
+        "candidate": "compose--shadow",
+        "classification": {
+            "score": 92,
+            "status": "pass",
+            "selectionScore": 92,
+            "positiveReasons": [],
+            "failureReasons": [],
+            "reviewNotes": [],
+        },
+        "geometryFacts": {
+            "focusShare": 0.71,
+            "desiredFocusShare": 0.68,
+            "paintedOwnershipMode": "shadow-only",
+            "paintedOwnershipEnforced": False,
+            "paintedOwnershipShadow": {
+                "effectiveFocusShare": 0.49,
+                "focusOccludedShare": 0.22,
+                "exclusiveOwnedShare": 0.78,
+                "doubleClaimedShare": 0.27,
+                "declaredOverlayShare": 0.18,
+                "undeclaredPartitionOverlapShare": 0.09,
+                "partitionOverlapCellShare": 0.08,
+                "partitionOverlapByUnit": [
+                    {
+                        "unitId": "phase-support",
+                        "area": 800,
+                        "shareOfRoot": 0.08,
+                    }
+                ],
+                "undeclaredPartitionOverlapMatrix": [
+                    {
+                        "occludedSlot": "workflow",
+                        "occludingSlot": "server",
+                        "shareOfRoot": 0.08,
+                        "undeclaredPartitionOverlap": True,
+                    }
+                ],
+                "overlayBudgetExceeded": [
+                    {
+                        "unitId": "phase-support",
+                        "occlusionShare": 0.18,
+                        "maxOcclusionShare": 0.0,
+                    }
+                ],
+                "overlapMatrix": [
+                    {
+                        "occludedSlot": "workflow",
+                        "occludingSlot": "server",
+                        "shareOfRoot": 0.18,
+                        "shareOfOccludedNode": 0.25,
+                    }
+                ],
+            },
+            "interceptedCriticalControlCountShadow": 1,
+            "partiallyInterceptedCriticalControlCountShadow": 2,
+            "foreignInterceptedCriticalControlCountShadow": 2,
+            "controlInterceptionOutcomeTotalsShadow": {
+                "actionable": 20,
+                "selfOwned": 22,
+                "foreignIntercepted": 3,
+                "noPointerTarget": 0,
+                "pointerEventsNonePassThrough": 1,
+                "unownedPointerTarget": 0,
+            },
+        },
+        "phaseFit": {},
+        "layoutUnitFit": {},
+        "unitComposition": {},
+        "snapshots": {},
+    }
+
+    row = module.measurement_selection_row(
+        item,
+        selection_state="bestPassingCandidate",
+        highest_scoring=item,
+    )
+
+    assert row["score"] == 92
+    assert row["selectionScore"] == 92
+    assert row["focusShare"] == 0.71
+    assert row["effectiveFocusShareShadow"] == 0.49
+    assert row["focusOccludedShareShadow"] == 0.22
+    assert row["doubleClaimedShareShadow"] == 0.27
+    assert row["undeclaredPartitionOverlapShareShadow"] == 0.09
+    assert row["partitionOverlapCellShareShadow"] == 0.08
+    assert row["foreignInterceptedCriticalControlCountShadow"] == 2
+    assert row["controlInterceptionOutcomeTotalsShadow"]["selfOwned"] == 22
+    assert row["interceptedCriticalControlCountShadow"] == 1
+    assert row["paintedOwnershipEnforced"] is False
+    assert row["paintedOwnershipOverlapMatrixShadow"][0][
+        "occludingSlot"
+    ] == "server"
+
+
+def test_markdown_report_marks_painted_ownership_as_shadow_only(tmp_path):
+    module = load_module()
+    measurement = {
+        "hierarchyId": "git-tools-workflow-workbench",
+        "viewportProfile": "desktop",
+        "candidate": "compose--shadow",
+        "focusSlot": "workflow",
+        "classification": {
+            "score": 92,
+            "status": "pass",
+            "positiveReasons": [],
+            "failureReasons": [],
+            "reviewNotes": [],
+            "warnings": [],
+        },
+        "geometryFacts": {
+            "focusShare": 0.71,
+            "desiredFocusShare": 0.68,
+            "paintedOwnershipMode": "shadow-only",
+            "paintedOwnershipEnforced": False,
+            "paintedOwnershipShadow": {
+                "rawFocusShare": 0.71,
+                "effectiveFocusShare": 0.49,
+                "focusOccludedShare": 0.22,
+                "exclusiveOwnedShare": 0.78,
+                "doubleClaimedShare": 0.27,
+                "declaredOverlayShare": 0.18,
+                "undeclaredPartitionOverlapShare": 0.09,
+                "partitionOverlapCellShare": 0.08,
+                "partitionOverlapByUnit": [
+                    {
+                        "unitId": "phase-support",
+                        "area": 800,
+                        "shareOfRoot": 0.08,
+                    }
+                ],
+                "undeclaredPartitionOverlapMatrix": [],
+                "overlapMatrix": [
+                    {
+                        "occludedSlot": "workflow",
+                        "occludingSlot": "server",
+                        "shareOfRoot": 0.18,
+                        "shareOfOccludedNode": 0.25,
+                    }
+                ],
+                "overlayBudgetExceeded": [],
+            },
+            "interceptedCriticalControlCountShadow": 1,
+            "partiallyInterceptedCriticalControlCountShadow": 2,
+            "foreignInterceptedCriticalControlCountShadow": 2,
+            "controlInterceptionOutcomeTotalsShadow": {
+                "actionable": 20,
+                "selfOwned": 22,
+                "foreignIntercepted": 3,
+                "noPointerTarget": 0,
+                "pointerEventsNonePassThrough": 1,
+                "unownedPointerTarget": 0,
+            },
+        },
+        "snapshots": {},
+        "phaseMeasurements": [],
+        "humanLoop": {
+            "proved": [],
+            "inferred": [],
+            "unknowns": [],
+        },
+    }
+    report = {
+        "generatedAt": "2026-07-10T00:00:00+00:00",
+        "smokeLevel": "synthetic-hierarchy-layout-trials",
+        "geometryEngine": "playwright-chromium",
+        "paintedOwnershipMode": "shadow-only",
+        "paintedOwnershipEnforced": False,
+        "hierarchySource": "generated-mcel-like-html",
+        "chrome": "mcel-realistic",
+        "candidates": ["compose--shadow"],
+        "candidateCatalogByHierarchy": {},
+        "viewports": [{"name": "desktop", "width": 1440, "height": 900}],
+        "snapshotDirectory": ".",
+        "snapshotFiles": [],
+        "hierarchies": [],
+        "semanticContracts": [],
+        "bestByHierarchyViewport": [],
+        "rollups": [],
+        "measurements": [measurement],
+    }
+
+    _, markdown_path = module.write_reports(report, tmp_path)
+    markdown = markdown_path.read_text(encoding="utf-8")
+
+    assert "Painted ownership: `shadow-only` (enforced=`False`)" in markdown
+    assert "Shadow ownership does **not** affect ranking" in markdown
+    assert "Painted ownership shadow diagnostics (not enforced)" in markdown
+    assert "Effective focus share: `0.4900`" in markdown
+    assert "Undeclared partition overlap share: `0.0900`" in markdown
+    assert "Critical controls with any foreign interception: `2`" in markdown
+    assert "selfOwned=`22` foreignIntercepted=`3`" in markdown
+    assert "Undeclared partition overlap: `phase-support` rootShare=`0.0800`" in markdown
+    assert "`workflow` occluded by `server`" in markdown
