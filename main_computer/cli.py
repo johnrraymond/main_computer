@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 from dataclasses import replace
@@ -298,6 +300,547 @@ def _run_captain_engage_computer(args: argparse.Namespace, option_tokens: list[s
     return 0
 
 
+
+_DATA_DEFAULT_OFFICER_SELECTOR = "o3"
+_DATA_AGENT_MAINNET_NETWORK = "mainnet"
+_DATA_AGENT_CLIENT_NODE_ID = "main-computer-data-agent-cli"
+_DATA_ENGAGE_COMPUTER_PHRASE = ("engage", "computer")
+
+
+def _data_mainnet_hub_url(explicit_hub_url: str = "", args: argparse.Namespace | None = None) -> str:
+    """Resolve Data's agent Hub URL from explicit input, CLI config, network profile, or env.
+
+    Data agent commands should not require operators to restate the mainnet Hub URL.
+    The override order intentionally mirrors Captain smoke defaults.
+    """
+
+    explicit = str(explicit_hub_url or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    arg_hub_url = str(getattr(args, "hub_url", "") or "").strip() if args is not None else ""
+    if arg_hub_url:
+        return arg_hub_url.rstrip("/")
+    try:
+        config = _config_from_args(args) if args is not None else MainComputerConfig.from_env()
+        config_hub_url = str(getattr(config, "hub_url", "") or "").strip()
+    except Exception:
+        config_hub_url = ""
+    try:
+        profile = load_hub_network_registry().get(_DATA_AGENT_MAINNET_NETWORK)
+        if profile is not None and str(profile.hub_url).strip():
+            return str(profile.hub_url).strip().rstrip("/")
+    except (HubNetworkConfigError, FileNotFoundError, KeyError):
+        pass
+    if config_hub_url:
+        return config_hub_url.rstrip("/")
+    return "https://mainnet-hub.greatlibrary.io"
+
+
+def _data_agent_model(args: argparse.Namespace | None = None, explicit_model: str = "") -> str:
+    """Resolve Data's agent model from an explicit option or local Main Computer config.
+
+    This keeps `data engage computer --agent` and `data ... --god-mode --agent`
+    on the same inferred model without requiring `--model gemma4:26b`.
+    """
+
+    explicit = str(explicit_model or "").strip()
+    if explicit:
+        return explicit
+    arg_model = str(getattr(args, "model", "") or "").strip() if args is not None else ""
+    if arg_model:
+        return arg_model
+    try:
+        config = _config_from_args(args) if args is not None else MainComputerConfig.from_env()
+        config_model = str(getattr(config, "model", "") or "").strip()
+    except Exception:
+        config_model = ""
+    return config_model
+
+
+def _data_args_enable_agent(argv: list[str]) -> bool:
+    return any(str(token).strip() == "--agent" for token in argv)
+
+
+
+def _data_args_enable_god_mode(argv: list[str]) -> bool:
+    return any(str(token).strip() == "--god-mode" for token in argv)
+
+
+def _split_data_free_and_option_tokens(argv: list[str]) -> tuple[list[str], list[str]]:
+    """Split Captain-style free prompt tokens from option tokens without lowercasing the prompt."""
+
+    free_tokens: list[str] = []
+    option_tokens: list[str] = []
+    in_options = False
+    for token in argv:
+        text = str(token)
+        if not in_options and text.startswith("-"):
+            in_options = True
+        if in_options:
+            option_tokens.append(text)
+        elif text.strip():
+            free_tokens.append(text)
+    return free_tokens, option_tokens
+
+
+def _build_data_engage_options_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="main-computer data engage computer --agent",
+        description=(
+            "Engage the local Main Computer model as Data/O3's ring-3 worker-pull worker. "
+            "The Hub URL and model are inferred from the mainnet profile and local config unless overridden."
+        ),
+    )
+    parser.add_argument("--agent", action="store_true", help="Engage the mainnet Hub worker-pull lane for Data/O3.")
+    parser.add_argument("--hub-url", default="", help="Hub base URL override. Defaults to the inferred mainnet Hub.")
+    parser.add_argument("--model", default="", help="Model override. Defaults to the configured local model.")
+    parser.add_argument("--public-endpoint", default="", help="Optional public worker endpoint to advertise. Worker-pull mode does not require inbound access.")
+    parser.add_argument("--ring", type=int, default=3, help="Worker ring to advertise. Defaults to 3 for Data/O3.")
+    parser.add_argument("--poll-interval-s", type=float, default=2.0, help="Seconds between empty worker-pull polls.")
+    parser.add_argument("--heartbeat-interval-s", type=float, default=30.0, help="Seconds between worker availability heartbeats.")
+    parser.add_argument("--lease-seconds", type=float, default=None, help="Optional requested lease duration for worker-pull work.")
+    parser.add_argument("--max-requests", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "-noverbose",
+        "--noverbose",
+        dest="verbose",
+        action="store_false",
+        default=True,
+        help="Suppress worker-pull status output.",
+    )
+    return parser
+
+
+def _run_data_engage_computer(args: argparse.Namespace, option_tokens: list[str]) -> int:
+    engage_options = _build_data_engage_options_parser().parse_args(option_tokens)
+    if not bool(engage_options.agent or getattr(args, "data_agent", False)):
+        print("ERROR: Data engage computer currently requires --agent so it registers the worker-pull Hub lane.")
+        print("Run: main-computer data engage computer --agent")
+        return 2
+
+    worker_config = _config_from_args(args)
+    if worker_config.provider == "hub":
+        print("ERROR: data engage computer --agent cannot use provider=hub because that would recurse back into the hub.")
+        return 2
+
+    hub_url = _data_mainnet_hub_url(engage_options.hub_url, args)
+    model = _data_agent_model(args, engage_options.model) or worker_config.model
+    worker_config = replace(
+        worker_config,
+        hub_url=hub_url,
+        model=model,
+    )
+    worker = MainComputer.build(worker_config)
+    if engage_options.verbose:
+        print("Engaging Data/O3 as a ring 3 worker-pull worker.")
+        print(f"Hub URL: {hub_url}")
+        print(f"Worker node: {worker_config.hub_worker_node_id}")
+        print(f"Model: {worker_config.model}")
+        print("Submit Data work in another window, for example:")
+        print('  main-computer data "What is 4 + 9" --god-mode --agent')
+
+    try:
+        serve_hub_worker_pull(
+            worker_config,
+            worker.provider.chat,
+            hub_url=hub_url,
+            public_endpoint=engage_options.public_endpoint or worker_config.hub_worker_endpoint,
+            assigned_ring=engage_options.ring,
+            poll_interval_s=engage_options.poll_interval_s,
+            heartbeat_interval_s=engage_options.heartbeat_interval_s,
+            lease_seconds=engage_options.lease_seconds,
+            verbose=engage_options.verbose,
+            max_requests=engage_options.max_requests,
+        )
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        return 2
+    return 0
+
+
+def _build_data_god_mode_options_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="main-computer data ... --god-mode",
+        description=(
+            "Run Data's O3 command-runner identity through the full Byzantine reference "
+            "god-mode pathway. AI calls remain untrusted; each AI-derived phase collapses "
+            "only at a deterministic controller boundary."
+        ),
+    )
+    parser.add_argument("prompt_tail", nargs="*", help="Prompt tokens when the prompt is written after --god-mode/options.")
+    parser.add_argument("--prompt", default="", help="Prompt override. Otherwise free text before --god-mode/options is used.")
+    parser.add_argument("--god-mode", action="store_true", help="Required for the full Byzantine reference command-runner pathway.")
+    parser.add_argument(
+        "--agent",
+        action="store_true",
+        help="Force Data god-mode through the mainnet Hub worker pool instead of a local model.",
+    )
+    parser.add_argument("--ai-provider", "--provider", dest="ai_provider", default="", help="AI provider for the smoke path.")
+    parser.add_argument("--ai-model", "--model", dest="ai_model", default="", help="AI model for the smoke path.")
+    parser.add_argument("--ai-command", default="", help="Command provider adapter command.")
+    parser.add_argument("--hub-url", "--ai-hub-url", dest="ai_hub_url", default="", help="Hub URL for --agent. Defaults to the mainnet hub profile.")
+    parser.add_argument("--hub-client-node-id", "--ai-hub-client-node-id", dest="ai_hub_client_node_id", default="", help="Hub client node id for --agent.")
+    parser.add_argument(
+        "--hub-allow-insecure-dev-network",
+        "--ai-hub-allow-insecure-dev-network",
+        dest="ai_hub_allow_insecure_dev_network",
+        action="store_true",
+        help="Allow non-HTTPS non-loopback hub URLs for local development only.",
+    )
+    parser.add_argument("--ai-timeout-seconds", type=float, default=300.0, help="AI timeout in seconds.")
+    parser.add_argument("--work-root", default=".smoke-runs", help="Smoke run root.")
+    parser.add_argument("--run-id", default="", help="Smoke run id. Defaults inside the smoke harness.")
+    parser.add_argument("--run-dir", default="", help="Explicit smoke run directory.")
+    parser.add_argument("--report-path", default="", help="Explicit real-agent report path.")
+    parser.add_argument("--ai-trace-path", default="", help="Explicit AI trace path.")
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=0,
+        help="Set both worker and reviewer counts. God mode floors this to 4; larger values such as 5 are preserved.",
+    )
+    parser.add_argument("--worker-count", "--real-agent-worker-count", dest="worker_count", type=int, default=0)
+    parser.add_argument("--reviewer-count", "--real-agent-reviewer-count", dest="reviewer_count", type=int, default=0)
+    parser.add_argument("--expected-endstate", "--real-agent-expected-endstate", dest="expected_endstate", default="")
+    parser.add_argument("--expected-changed-files", "--real-agent-expected-changed-files", dest="expected_changed_files", default="")
+    parser.add_argument("--expected-unchanged-files", "--real-agent-expected-unchanged-files", dest="expected_unchanged_files", default="")
+    parser.add_argument(
+        "--scripted-ai-smoke",
+        action="store_true",
+        help="Use deterministic scripted AI for local reference verification instead of live provider calls.",
+    )
+    parser.add_argument(
+        "--verbose-events",
+        action="store_true",
+        help="Print the raw smoke JSONL event stream. By default Data prints a compact summary.",
+    )
+    return parser
+
+
+def _data_god_mode_smoke_argv(args: argparse.Namespace, data_args: list[str]) -> list[str]:
+    free_tokens, option_tokens = _split_data_free_and_option_tokens(data_args)
+    parser = _build_data_god_mode_options_parser()
+    data_options, unknown = parser.parse_known_args(option_tokens)
+    if unknown:
+        parser.error(f"unsupported --god-mode option(s): {' '.join(unknown)}")
+    if not data_options.god_mode:
+        parser.error("main-computer data god-mode path requires --god-mode")
+
+    prompt = str(data_options.prompt or " ".join([*free_tokens, *data_options.prompt_tail])).strip()
+    if not prompt:
+        parser.error("main-computer data --god-mode requires a prompt.")
+
+    agent_mode = bool(data_options.agent or _data_args_enable_agent(data_args))
+    provider = str(data_options.ai_provider or getattr(args, "provider", "") or "ollama").strip()
+    if agent_mode:
+        provider = "hub"
+    model = str(data_options.ai_model or getattr(args, "model", "") or "").strip()
+    hub_url = str(data_options.ai_hub_url or "").strip()
+    hub_client_node_id = str(data_options.ai_hub_client_node_id or "").strip()
+    if agent_mode:
+        model = _data_agent_model(args, model)
+        hub_url = _data_mainnet_hub_url(hub_url, args)
+        hub_client_node_id = hub_client_node_id or str(getattr(args, "hub_client_node_id", "") or "").strip() or _DATA_AGENT_CLIENT_NODE_ID
+    count = max(0, int(data_options.count or 0))
+    worker_count = max(count, int(data_options.worker_count or 0))
+    reviewer_count = max(count, int(data_options.reviewer_count or 0))
+
+    smoke_argv: list[str] = [
+        "--real-agent-prompt",
+        prompt,
+        "--god-mode",
+        "--ai-provider",
+        provider,
+        "--work-root",
+        str(data_options.work_root),
+        "--ai-timeout-seconds",
+        str(float(data_options.ai_timeout_seconds)),
+    ]
+    if model:
+        smoke_argv.extend(["--ai-model", model])
+    if data_options.ai_command:
+        smoke_argv.extend(["--ai-command", str(data_options.ai_command)])
+    if hub_url:
+        smoke_argv.extend(["--ai-hub-url", hub_url])
+    if hub_client_node_id:
+        smoke_argv.extend(["--ai-hub-client-node-id", hub_client_node_id])
+    if bool(data_options.ai_hub_allow_insecure_dev_network):
+        smoke_argv.append("--ai-hub-allow-insecure-dev-network")
+    if data_options.run_id:
+        smoke_argv.extend(["--run-id", str(data_options.run_id)])
+    if data_options.run_dir:
+        smoke_argv.extend(["--run-dir", str(data_options.run_dir)])
+    if data_options.report_path:
+        smoke_argv.extend(["--report-path", str(data_options.report_path)])
+    if data_options.ai_trace_path:
+        smoke_argv.extend(["--ai-trace-path", str(data_options.ai_trace_path)])
+    if worker_count > 0:
+        smoke_argv.extend(["--real-agent-worker-count", str(worker_count)])
+    if reviewer_count > 0:
+        smoke_argv.extend(["--real-agent-reviewer-count", str(reviewer_count)])
+    if data_options.expected_endstate:
+        smoke_argv.extend(["--real-agent-expected-endstate", str(data_options.expected_endstate)])
+    if data_options.expected_changed_files:
+        smoke_argv.extend(["--real-agent-expected-changed-files", str(data_options.expected_changed_files)])
+    if data_options.expected_unchanged_files:
+        smoke_argv.extend(["--real-agent-expected-unchanged-files", str(data_options.expected_unchanged_files)])
+    if data_options.scripted_ai_smoke:
+        smoke_argv.append("--scripted-ai-smoke")
+    if data_options.verbose_events:
+        smoke_argv.append("--verbose-events")
+    return smoke_argv
+
+
+
+def _data_prefix_option_tokens(args: argparse.Namespace) -> list[str]:
+    """Recreate data options parsed before the free prompt so the inner parser sees one orderly shape."""
+
+    tokens: list[str] = []
+    if bool(getattr(args, "data_god_mode", False)):
+        tokens.append("--god-mode")
+    if bool(getattr(args, "data_agent", False)):
+        tokens.append("--agent")
+    for attr, option in (
+        ("data_ai_provider", "--ai-provider"),
+        ("data_ai_model", "--ai-model"),
+        ("data_ai_command", "--ai-command"),
+        ("data_ai_hub_url", "--ai-hub-url"),
+        ("data_ai_hub_client_node_id", "--ai-hub-client-node-id"),
+        ("data_work_root", "--work-root"),
+        ("data_run_id", "--run-id"),
+        ("data_run_dir", "--run-dir"),
+        ("data_report_path", "--report-path"),
+        ("data_ai_trace_path", "--ai-trace-path"),
+        ("data_expected_endstate", "--expected-endstate"),
+        ("data_expected_changed_files", "--expected-changed-files"),
+        ("data_expected_unchanged_files", "--expected-unchanged-files"),
+    ):
+        value = str(getattr(args, attr, "") or "").strip()
+        if value:
+            tokens.extend([option, value])
+    for attr, option in (
+        ("data_ai_timeout_seconds", "--ai-timeout-seconds"),
+        ("data_count", "--count"),
+        ("data_worker_count", "--worker-count"),
+        ("data_reviewer_count", "--reviewer-count"),
+    ):
+        value = getattr(args, attr, None)
+        if value not in (None, "", 0, 0.0):
+            tokens.extend([option, str(value)])
+    if bool(getattr(args, "data_scripted_ai_smoke", False)):
+        tokens.append("--scripted-ai-smoke")
+    if bool(getattr(args, "data_ai_hub_allow_insecure_dev_network", False)):
+        tokens.append("--ai-hub-allow-insecure-dev-network")
+    if bool(getattr(args, "data_verbose_events", False)):
+        tokens.append("--verbose-events")
+    return tokens
+
+
+
+def _data_god_mode_jsonl_objects(text: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            events.append(value)
+    return events
+
+
+def _data_god_mode_report_path(smoke_argv: list[str], event_text: str) -> str:
+    if "--report-path" in smoke_argv:
+        idx = smoke_argv.index("--report-path")
+        if idx + 1 < len(smoke_argv):
+            return str(smoke_argv[idx + 1])
+    for event in reversed(_data_god_mode_jsonl_objects(event_text)):
+        report_path = str(event.get("report_path", "") or "").strip()
+        if report_path:
+            return report_path
+    return ""
+
+
+def _data_god_mode_decision_answer(report: dict[str, object]) -> str:
+    decision = report.get("decision")
+    if isinstance(decision, dict):
+        for key in ("answer", "clarifying_question", "proposal_summary"):
+            value = str(decision.get(key, "") or "").strip()
+            if value:
+                return value
+    byzantine = report.get("byzantine")
+    if isinstance(byzantine, dict):
+        selected_payload = byzantine.get("selected_payload")
+        if isinstance(selected_payload, dict):
+            for key in ("answer", "clarifying_question", "proposal_summary"):
+                value = str(selected_payload.get(key, "") or "").strip()
+                if value:
+                    return value
+    return ""
+
+
+def _data_god_mode_print_summary(*, rc: int, smoke_argv: list[str], event_text: str) -> None:
+    report_path = _data_god_mode_report_path(smoke_argv, event_text)
+    report: dict[str, object] = {}
+    if report_path:
+        try:
+            raw_report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+            if isinstance(raw_report, dict):
+                report = raw_report
+        except Exception:
+            report = {}
+
+    if not report:
+        status = "OK" if rc == 0 else "FAILED"
+        print(f"Data god-mode: {status}")
+        if report_path:
+            print(f"report: {report_path}")
+        print("summary: report unavailable; rerun with --verbose-events for the raw JSONL event stream.")
+        return
+
+    ok = bool(report.get("ok")) and rc == 0
+    final_endstate = str(report.get("final_endstate", "") or "unknown")
+    live_calls = report.get("ai_call_summary", {})
+    live_call_count = 0
+    if isinstance(live_calls, dict):
+        live_call_count = int(live_calls.get("finished_live_call_count", 0) or 0)
+    if not live_call_count:
+        live_call_count = int(report.get("live_ai_call_count", 0) or 0)
+    worker_count = int(report.get("real_agent_worker_count", 0) or 0)
+    reviewer_count = int(report.get("real_agent_reviewer_count", 0) or 0)
+    expected_floor = int(report.get("expected_byzantine_ai_phase_call_floor", 0) or 0)
+    changed_files = report.get("changed_files", [])
+    if not isinstance(changed_files, list):
+        changed_files = []
+    reference = report.get("full_byzantine_reference_path")
+    reference_ok = False
+    single_ai_trust_points: list[str] = []
+    if isinstance(reference, dict):
+        reference_ok = bool(reference.get("full_byzantine_reference_path"))
+        points = reference.get("single_ai_trust_points", [])
+        if isinstance(points, list):
+            single_ai_trust_points = [str(point) for point in points]
+    failed_contracts = report.get("failed_contracts", [])
+    if not isinstance(failed_contracts, list):
+        failed_contracts = []
+
+    print(f"Data god-mode: {'OK' if ok else 'FAILED'}")
+    answer = _data_god_mode_decision_answer(report)
+    if answer and final_endstate in {"answer_only", "needs_clarification", "proposal_created", "already_satisfied", "proposal_rejected_unsafe"}:
+        print(f"answer: {answer}")
+    print(f"endstate: {final_endstate}")
+    print(f"calls: {live_call_count} live AI calls; {worker_count} workers / {reviewer_count} reviewers; floor {expected_floor}")
+    provider = str(report.get("ai_provider", "") or "")
+    hub_url = str(report.get("ai_hub_url", "") or "")
+    if provider == "hub" or "--ai-provider" in smoke_argv and "hub" in smoke_argv:
+        if not hub_url and "--ai-hub-url" in smoke_argv:
+            hub_url = smoke_argv[smoke_argv.index("--ai-hub-url") + 1]
+        print(f"agent: mainnet hub worker pool via {hub_url or 'configured hub'}")
+    if changed_files:
+        print(f"changed: {', '.join(str(path) for path in changed_files)}")
+    if reference_ok:
+        print("reference: full Byzantine apply path; single_ai_trust_points=[]")
+    elif final_endstate not in {"applied_verified", "retry_succeeded", "applied_verification_failed", "retry_required"}:
+        print("reference: Byzantine action boundary only; no edit/apply path selected")
+    else:
+        print(f"reference: not clean; single_ai_trust_points={single_ai_trust_points}")
+    if failed_contracts:
+        shown = [str(name) for name in failed_contracts[:8]]
+        print(f"failed_contracts: {', '.join(shown)}")
+        if len(failed_contracts) > len(shown):
+            print(f"failed_contracts_more: {len(failed_contracts) - len(shown)}")
+    print(f"report: {report.get('report_path') or report_path}")
+    print(f"trace: {report.get('ai_trace_path') or ''}")
+
+
+
+
+def _data_god_mode_print_runtime_error(*, smoke_argv: list[str], event_text: str, exc: BaseException) -> None:
+    report_path = _data_god_mode_report_path(smoke_argv, event_text)
+    provider = ""
+    hub_url = ""
+    if "--ai-provider" in smoke_argv:
+        idx = smoke_argv.index("--ai-provider")
+        if idx + 1 < len(smoke_argv):
+            provider = str(smoke_argv[idx + 1])
+    if "--ai-hub-url" in smoke_argv:
+        idx = smoke_argv.index("--ai-hub-url")
+        if idx + 1 < len(smoke_argv):
+            hub_url = str(smoke_argv[idx + 1])
+    message = str(exc)
+    print("Data god-mode: FAILED")
+    if provider == "hub":
+        print(f"agent: mainnet hub worker pool via {hub_url or 'configured hub'}")
+    if "HTTP 403" in message and "1010" in message and provider == "hub":
+        print("error: mainnet Hub rejected this client before assigning a worker.")
+        print("cause: HTTP 403 / Cloudflare 1010 from the Hub session-start endpoint.")
+        print("next: the Hub edge must allow this CLI client signature, or set MAIN_COMPUTER_HUB_USER_AGENT to an allowed API client signature.")
+    elif "No hub workers or upstream hubs are registered or available" in message and provider == "hub":
+        print("error: no matching Data/O3 agent worker is available on the inferred Hub/model lane.")
+        print("next: start a matching worker with: main-computer data engage computer --agent")
+        print(f"detail: {message}")
+    else:
+        print(f"error: {message}")
+    if report_path:
+        print(f"report: {report_path}")
+    trace_path = ""
+    if "--ai-trace-path" in smoke_argv:
+        idx = smoke_argv.index("--ai-trace-path")
+        if idx + 1 < len(smoke_argv):
+            trace_path = str(smoke_argv[idx + 1])
+    if not trace_path:
+        for event in reversed(_data_god_mode_jsonl_objects(event_text)):
+            value = str(event.get("ai_trace_path", "") or "").strip()
+            if value:
+                trace_path = value
+                break
+    if trace_path:
+        print(f"trace: {trace_path}")
+    print("raw_error: rerun with --verbose-events for the captured event stream and provider stack context.")
+
+
+def cmd_data(args: argparse.Namespace) -> int:
+    """Run Data's O3 command path.
+
+    Without --god-mode this is a Captain-style shortcut that submits the prompt as O3.
+    With --god-mode it invokes the local full-Byzantine reference smoke so Data can
+    command the agent/angel fanout without trusting any single AI call.
+    """
+
+    data_args = [*list(getattr(args, "data_args", []) or []), *_data_prefix_option_tokens(args)]
+    data_free_tokens, data_option_tokens = _split_data_free_and_option_tokens(data_args)
+    if tuple(str(token).strip().lower() for token in data_free_tokens) == _DATA_ENGAGE_COMPUTER_PHRASE:
+        return _run_data_engage_computer(args, data_option_tokens)
+
+    if _data_args_enable_god_mode(data_args):
+        smoke_argv = _data_god_mode_smoke_argv(args, data_args)
+        verbose_events = "--verbose-events" in smoke_argv
+        if verbose_events:
+            smoke_argv = [token for token in smoke_argv if token != "--verbose-events"]
+        from main_computer.rag_code_edit_agent_guidance_smoke import main as run_guidance_smoke
+
+        if verbose_events:
+            return run_guidance_smoke(smoke_argv)
+
+        event_buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(event_buffer):
+                rc = run_guidance_smoke(smoke_argv)
+        except Exception as exc:
+            _data_god_mode_print_runtime_error(smoke_argv=smoke_argv, event_text=event_buffer.getvalue(), exc=exc)
+            return 2
+        _data_god_mode_print_summary(rc=rc, smoke_argv=smoke_argv, event_text=event_buffer.getvalue())
+        return rc
+
+    # Captain-style fallback: Data is the O3/third-officer command identity.
+    # --agent is a Data-side routing flag; Captain already defaults this smoke path
+    # to the mainnet Hub worker pool, so do not pass the flag through to Captain's parser.
+    captain_data_args = [token for token in data_args if str(token).strip() != "--agent"]
+    return run_captain(["smoke", _DATA_DEFAULT_OFFICER_SELECTOR, *captain_data_args], config=_config_from_args(args), cwd=Path.cwd())
+
 def cmd_captain(args: argparse.Namespace) -> int:
     captain_args = list(getattr(args, "captain_args", []) or [])
     free_tokens, option_tokens = _split_captain_free_and_option_tokens(captain_args)
@@ -548,6 +1091,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use: smoke [wallet-or-captain-or-officer] <free prompt> [--captain-options].",
     )
     captain.set_defaults(func=cmd_captain)
+
+    data = sub.add_parser(
+        "data",
+        help=(
+            "Run Data's O3 command path. Use --god-mode for the full Byzantine "
+            "reference command-runner smoke."
+        ),
+    )
+    add_common_options(data)
+    data.add_argument("--god-mode", dest="data_god_mode", action="store_true", help="Run the full Byzantine reference god-mode pathway.")
+    data.add_argument("--agent", dest="data_agent", action="store_true", help="Force Data through the inferred mainnet Hub worker pool.")
+    data.add_argument("--ai-provider", dest="data_ai_provider", default="", help="AI provider for --god-mode.")
+    data.add_argument("--ai-model", dest="data_ai_model", default="", help="AI model for --god-mode.")
+    data.add_argument("--ai-command", dest="data_ai_command", default="", help="Command provider adapter command for --god-mode.")
+    data.add_argument("--ai-hub-url", dest="data_ai_hub_url", default="", help="Hub URL for --agent. Defaults to the mainnet hub profile.")
+    data.add_argument("--ai-hub-client-node-id", dest="data_ai_hub_client_node_id", default="", help="Hub client node id for --agent.")
+    data.add_argument("--ai-hub-allow-insecure-dev-network", dest="data_ai_hub_allow_insecure_dev_network", action="store_true", help="Allow non-HTTPS non-loopback hub URLs for local development only.")
+    data.add_argument("--ai-timeout-seconds", dest="data_ai_timeout_seconds", type=float, default=0.0, help="AI timeout for --god-mode.")
+    data.add_argument("--work-root", dest="data_work_root", default="", help="Smoke work root for --god-mode.")
+    data.add_argument("--run-id", dest="data_run_id", default="", help="Smoke run id for --god-mode.")
+    data.add_argument("--run-dir", dest="data_run_dir", default="", help="Explicit smoke run dir for --god-mode.")
+    data.add_argument("--report-path", dest="data_report_path", default="", help="Explicit report path for --god-mode.")
+    data.add_argument("--ai-trace-path", dest="data_ai_trace_path", default="", help="Explicit AI trace path for --god-mode.")
+    data.add_argument("--count", dest="data_count", type=int, default=0, help="Set both worker and reviewer counts for --god-mode.")
+    data.add_argument("--worker-count", "--real-agent-worker-count", dest="data_worker_count", type=int, default=0)
+    data.add_argument("--reviewer-count", "--real-agent-reviewer-count", dest="data_reviewer_count", type=int, default=0)
+    data.add_argument("--expected-endstate", "--real-agent-expected-endstate", dest="data_expected_endstate", default="")
+    data.add_argument("--expected-changed-files", "--real-agent-expected-changed-files", dest="data_expected_changed_files", default="")
+    data.add_argument("--expected-unchanged-files", "--real-agent-expected-unchanged-files", dest="data_expected_unchanged_files", default="")
+    data.add_argument("--scripted-ai-smoke", dest="data_scripted_ai_smoke", action="store_true", help="Use deterministic scripted AI for local verification.")
+    data.add_argument("--verbose-events", dest="data_verbose_events", action="store_true", help="Print the raw smoke JSONL event stream instead of only the compact Data summary.")
+    data.add_argument(
+        "data_args",
+        nargs=argparse.REMAINDER,
+        help=(
+            "Captain-style free prompt/options. Without --god-mode this delegates as O3; "
+            "with --god-mode it runs the full Byzantine reference pathway."
+        ),
+    )
+    data.set_defaults(func=cmd_data)
 
     projects = sub.add_parser("projects", help="List local project folders.")
     add_common_options(projects)

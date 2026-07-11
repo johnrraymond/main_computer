@@ -120,9 +120,12 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_COMMIT_POLICY = "auto-after-verification"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 10.0
 COMMIT_POLICIES = ("auto-after-verification", "require-approval", "never")
-AI_PROVIDERS = ("auto", "openai", "ollama", "command", "scripted")
+AI_PROVIDERS = ("auto", "openai", "ollama", "command", "scripted", "hub")
 DEFAULT_AI_PROVIDER = "auto"
 DEFAULT_AI_TIMEOUT_SECONDS = 300.0
+DEFAULT_HUB_AI_MODEL = "hub-auto"
+DEFAULT_HUB_AI_CLIENT_NODE_ID = "main-computer-data-agent-cli"
+DEFAULT_MAINNET_HUB_URL = "https://mainnet-hub.greatlibrary.io"
 DEFAULT_OLLAMA_AI_JSON_NUM_PREDICT = 2048
 MIN_LIVE_AI_RESTART_RECOVERY_CALLS = 3
 DEFAULT_OPENAI_AI_MODEL = "gpt-5.2"
@@ -1741,6 +1744,8 @@ def resolve_ai_provider(*, requested_provider: str, ai_command: str, scripted_ai
     if provider == "auto":
         if ai_command or os.environ.get("MAIN_COMPUTER_AI_SMOKE_COMMAND"):
             return "command"
+        if os.environ.get("MAIN_COMPUTER_AI_SMOKE_USE_HUB", "").strip().lower() in {"1", "true", "yes", "on"}:
+            return "hub"
         if os.environ.get("OPENAI_API_KEY"):
             return "openai"
         return "ollama"
@@ -1755,6 +1760,8 @@ def resolve_ai_model(provider: str, requested_model: str) -> str:
         return os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_AI_MODEL)
     if provider == "ollama":
         return os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_AI_MODEL)
+    if provider == "hub":
+        return os.environ.get("MAIN_COMPUTER_AI_SMOKE_HUB_MODEL", os.environ.get("MAIN_COMPUTER_HUB_MODEL", DEFAULT_HUB_AI_MODEL))
     return ""
 
 
@@ -1805,6 +1812,68 @@ def _open_url_json(url: str, payload: dict[str, Any], *, headers: dict[str, str]
     if not isinstance(parsed, dict):
         raise SmokeFailure(f"AI provider response must be a JSON object from {url}")
     return parsed
+
+
+def resolve_ai_hub_url(requested_hub_url: str = "") -> str:
+    explicit = str(
+        requested_hub_url
+        or os.environ.get("MAIN_COMPUTER_AI_SMOKE_HUB_URL", "")
+        or os.environ.get("MAIN_COMPUTER_HUB_URL", "")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit.rstrip("/")
+    try:
+        from main_computer.hub_networks import load_hub_network_registry
+
+        profile = load_hub_network_registry().get("mainnet")
+        if profile is not None and str(profile.hub_url).strip():
+            return str(profile.hub_url).strip().rstrip("/")
+    except Exception:
+        pass
+    return DEFAULT_MAINNET_HUB_URL
+
+
+def call_hub_ai_json(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    hub_url: str,
+    client_node_id: str,
+    timeout_seconds: float,
+    allow_insecure_dev_network: bool = False,
+) -> LiveAIResult:
+    from main_computer.models import ChatMessage
+    from main_computer.providers.hub import HubProvider
+
+    resolved_model = model or DEFAULT_HUB_AI_MODEL
+    resolved_hub_url = resolve_ai_hub_url(hub_url)
+    resolved_client_node_id = str(client_node_id or os.environ.get("MAIN_COMPUTER_AI_SMOKE_HUB_CLIENT_NODE_ID", "") or DEFAULT_HUB_AI_CLIENT_NODE_ID).strip()
+    provider = HubProvider(
+        model=resolved_model,
+        hub_url=resolved_hub_url,
+        timeout_s=max(1.0, float(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS)),
+        client_node_id=resolved_client_node_id,
+        high_security=True,
+        allow_insecure_dev_network=bool(allow_insecure_dev_network),
+    )
+    response = provider.chat(
+        [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=user_prompt),
+        ]
+    )
+    metadata = dict(response.metadata or {})
+    metadata.setdefault("hub_url", resolved_hub_url)
+    metadata.setdefault("hub_client_node_id", resolved_client_node_id)
+    metadata.setdefault("hub_worker_pool", "mainnet" if resolved_hub_url == DEFAULT_MAINNET_HUB_URL else "configured")
+    return LiveAIResult(
+        provider="hub",
+        model=str(response.model or resolved_model),
+        content=str(response.content or ""),
+        metadata=metadata,
+    )
 
 
 def call_openai_ai_json(*, system_prompt: str, user_prompt: str, model: str, timeout_seconds: float) -> LiveAIResult:
@@ -1991,6 +2060,9 @@ def call_live_ai_json(
     scripted_ai_smoke: bool,
     run_id: str = "",
     trace_path: str | Path = "",
+    ai_hub_url: str = "",
+    ai_hub_client_node_id: str = "",
+    ai_hub_allow_insecure_dev_network: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     provider = resolve_ai_provider(
         requested_provider=requested_provider,
@@ -2037,6 +2109,16 @@ def call_live_ai_json(
                 model=model,
                 command=ai_command,
                 timeout_seconds=timeout_seconds,
+            )
+        elif provider == "hub":
+            result = call_hub_ai_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                hub_url=ai_hub_url,
+                client_node_id=ai_hub_client_node_id,
+                timeout_seconds=timeout_seconds,
+                allow_insecure_dev_network=ai_hub_allow_insecure_dev_network,
             )
         else:
             raise SmokeFailure(f"unsupported live AI provider: {provider!r}")
@@ -2085,6 +2167,15 @@ def call_live_ai_json(
         **result.metadata,
     }
     return payload, metadata
+
+
+
+def ai_hub_call_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "ai_hub_url": str(getattr(args, "ai_hub_url", "") or ""),
+        "ai_hub_client_node_id": str(getattr(args, "ai_hub_client_node_id", "") or ""),
+        "ai_hub_allow_insecure_dev_network": bool(getattr(args, "ai_hub_allow_insecure_dev_network", False)),
+    }
 
 
 
@@ -2295,6 +2386,7 @@ def run_ai_restart_live_ring3_probe(
                     scripted_ai_smoke=False,
                     run_id=run_id,
                     trace_path=run_dir / "ai_calls.jsonl",
+                    **ai_hub_call_kwargs_from_args(args),
                 )
             except Exception as exc:
                 stage_counts[round_type]["failed"] += 1
@@ -4754,6 +4846,9 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         ai_model: str = "",
         ai_command: str = "",
         ai_timeout_seconds: float = DEFAULT_AI_TIMEOUT_SECONDS,
+        ai_hub_url: str = "",
+        ai_hub_client_node_id: str = "",
+        ai_hub_allow_insecure_dev_network: bool = False,
         scripted_ai_smoke: bool = False,
         run_id: str = "",
         ai_trace_path: str = "",
@@ -4766,6 +4861,9 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         self.requested_ai_model = ai_model
         self.ai_command = ai_command
         self.ai_timeout_seconds = ai_timeout_seconds
+        self.ai_hub_url = ai_hub_url
+        self.ai_hub_client_node_id = ai_hub_client_node_id
+        self.ai_hub_allow_insecure_dev_network = bool(ai_hub_allow_insecure_dev_network)
         self.run_id = run_id
         self.ai_trace_path = ai_trace_path
         self.scripted_ai_smoke = scripted_ai_smoke or ai_provider == "scripted"
@@ -4797,6 +4895,8 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
             "uses_live_ai": not self.scripted_ai_smoke,
             "ai_backend": self.resolved_ai_provider,
             "ai_model": self.resolved_ai_model,
+            "ai_hub_url": resolve_ai_hub_url(self.ai_hub_url) if self.resolved_ai_provider == "hub" else "",
+            "ai_hub_client_node_id": self.ai_hub_client_node_id if self.resolved_ai_provider == "hub" else "",
             "scripted_ai_smoke": self.scripted_ai_smoke,
             "ai_trace_path": self.ai_trace_path,
             "ai_direct_write_access": False,
@@ -4818,6 +4918,9 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
             scripted_ai_smoke=self.scripted_ai_smoke,
             run_id=self.run_id,
             trace_path=self.ai_trace_path,
+            ai_hub_url=self.ai_hub_url,
+            ai_hub_client_node_id=self.ai_hub_client_node_id,
+            ai_hub_allow_insecure_dev_network=self.ai_hub_allow_insecure_dev_network,
         )
 
     def _scripted_metadata(self, *, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -6077,6 +6180,9 @@ def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
             ai_model=str(getattr(args, "ai_model", "") or ""),
             ai_command=str(getattr(args, "ai_command", "") or ""),
             ai_timeout_seconds=float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS)),
+            ai_hub_url=str(getattr(args, "ai_hub_url", "") or ""),
+            ai_hub_client_node_id=str(getattr(args, "ai_hub_client_node_id", "") or ""),
+            ai_hub_allow_insecure_dev_network=bool(getattr(args, "ai_hub_allow_insecure_dev_network", False)),
             scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
             run_id=str(getattr(args, "run_id", "") or ""),
             ai_trace_path=str(
@@ -14435,6 +14541,25 @@ def real_agent_prompt_user_prompt(
     )
 
 
+def scripted_real_agent_answer(real_prompt: str) -> str:
+    text = str(real_prompt or "").strip()
+    normalized = text.lower().replace("?", "")
+    math_match = re.search(r"what\s+is\s+(-?\d+)\s*([+\-*/])\s*(-?\d+)", normalized)
+    if math_match:
+        left = int(math_match.group(1))
+        op = math_match.group(2)
+        right = int(math_match.group(3))
+        if op == "+":
+            return str(left + right)
+        if op == "-":
+            return str(left - right)
+        if op == "*":
+            return str(left * right)
+        if op == "/" and right != 0:
+            return str(left / right)
+    return "Scripted decision-only answer."
+
+
 def scripted_real_agent_prompt_decision(
     *,
     real_prompt: str,
@@ -14446,12 +14571,24 @@ def scripted_real_agent_prompt_decision(
     prompt_lower = real_prompt.lower()
     observed = expected_endstate
     if not observed:
-        if "do not modify" in prompt_lower or "explain" in prompt_lower:
+        if (
+            "do not modify" in prompt_lower
+            or "explain" in prompt_lower
+            or prompt_lower.startswith(("what ", "who ", "when ", "where ", "why ", "how "))
+            or "what is" in prompt_lower
+            or "?" in real_prompt
+        ):
             observed = "answer_only"
         elif "improve" in prompt_lower and "app.py" not in prompt_lower:
             observed = "needs_clarification"
         elif "proposal" in prompt_lower or "do not apply" in prompt_lower:
             observed = "proposal_created"
+        elif (
+            ("apply this change now" in prompt_lower or "trim trailing whitespace" in prompt_lower)
+            and "app.py" in prompt_lower
+            and ("do not edit readme" in prompt_lower or "untrusted" in prompt_lower or "host-authorized" in prompt_lower)
+        ):
+            observed = "applied_verified"
         elif "readme" in prompt_lower or "override" in prompt_lower:
             observed = "proposal_rejected_unsafe"
         elif "stale" in prompt_lower or "old patch" in prompt_lower:
@@ -14484,7 +14621,7 @@ def scripted_real_agent_prompt_decision(
         "should_mutate": observed in REAL_AGENT_MUTATING_ENDSTATES,
         "selected_files": ["app.py"] if observed in REAL_AGENT_MUTATING_ENDSTATES else [],
         "forbidden_files": ["README.md"],
-        "answer": "Scripted decision-only answer." if observed == "answer_only" else "",
+        "answer": scripted_real_agent_answer(real_prompt) if observed == "answer_only" else "",
         "clarifying_question": "Which file and success condition should I use?" if observed == "needs_clarification" else "",
         "proposal_summary": f"Scripted endpoint decision: {observed}.",
         "rationale": "scripted real-agent-prompt decision for offline smoke coverage",
@@ -14727,6 +14864,7 @@ def real_agent_prompt_byzantine_worker_payload(
         scripted_ai_smoke=False,
         run_id=run_id,
         trace_path=trace_path,
+        **ai_hub_call_kwargs_from_args(args),
     )
     return normalize_real_agent_byzantine_worker_payload(payload, result_id=worker_id), metadata
 
@@ -14768,6 +14906,7 @@ def real_agent_prompt_byzantine_reviewer_payload(
         scripted_ai_smoke=False,
         run_id=run_id,
         trace_path=trace_path,
+        **ai_hub_call_kwargs_from_args(args),
     )
 
 
@@ -15029,6 +15168,7 @@ def real_agent_prompt_decision_payload(
         scripted_ai_smoke=False,
         run_id=run_id,
         trace_path=trace_path,
+        **ai_hub_call_kwargs_from_args(args),
     )
 
 
@@ -15120,6 +15260,211 @@ def real_agent_delegate_scenario_for_endstate(endstate: str) -> str:
     return "single_file_python_edit"
 
 
+
+def _reference_boundary_names(boundaries: Sequence[Mapping[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for boundary in boundaries:
+        if not isinstance(boundary, Mapping):
+            continue
+        name = str(boundary.get("name", "") or boundary.get("boundary_name", "") or "")
+        if name:
+            names.append(name)
+    return names
+
+
+def _reference_stage_matches(finished_stages: set[str], prefix: str) -> list[str]:
+    return sorted(stage for stage in finished_stages if stage.startswith(prefix))
+
+
+def _reference_phase_boundary_summary(
+    *,
+    phase: str,
+    boundary_name: str,
+    phase_report: Mapping[str, Any],
+    worker_stage_prefix: str,
+    reviewer_stage_prefix: str,
+    finished_stages: set[str],
+    expected_worker_count: int,
+    expected_reviewer_count: int,
+) -> dict[str, Any]:
+    selection = phase_report.get("selection", {}) if isinstance(phase_report.get("selection"), Mapping) else {}
+    worker_stages = _reference_stage_matches(finished_stages, worker_stage_prefix)
+    reviewer_stages = _reference_stage_matches(finished_stages, reviewer_stage_prefix)
+    worker_count = int(phase_report.get("worker_count", 0) or 0)
+    reviewer_count = int(phase_report.get("reviewer_count", 0) or 0)
+    return {
+        "phase": phase,
+        "boundary_name": boundary_name,
+        "worker_count": worker_count,
+        "reviewer_count": reviewer_count,
+        "expected_worker_count": expected_worker_count,
+        "expected_reviewer_count": expected_reviewer_count,
+        "worker_stage_prefix": worker_stage_prefix,
+        "reviewer_stage_prefix": reviewer_stage_prefix,
+        "worker_stages_finished": worker_stages,
+        "reviewer_stages_finished": reviewer_stages,
+        "selected_result_id": str(phase_report.get("selected_result_id", "") or selection.get("selected_result_id", "") or ""),
+        "selection_seed_sha256": str(selection.get("selection_seed_sha256", "") or ""),
+        "collapsed_at_controller_boundary": bool(selection),
+        "ok": bool(phase_report.get("ok"))
+        and worker_count >= expected_worker_count
+        and reviewer_count >= expected_reviewer_count
+        and bool(selection),
+    }
+
+
+def build_real_agent_full_byzantine_reference_report(
+    *,
+    real_agent_full_path: bool,
+    real_agent_no_oracle_hints: bool,
+    use_byzantine: bool,
+    expected_worker_count: int,
+    expected_reviewer_count: int,
+    ai_summary: Mapping[str, Any],
+    byzantine: Mapping[str, Any],
+    delegate: Mapping[str, Any],
+    final_endstate: str,
+    changed_files: Sequence[str],
+) -> dict[str, Any]:
+    """Summarize the reference guarantee in terms of boundaries, not trust.
+
+    A phase may collapse to one result only at a deterministic controller
+    boundary.  That collapsed boundary result can authorize the next phase, but
+    it does not make the next AI call trusted; the next AI-derived phase must
+    fan out again.
+    """
+    finished_stages = set(str(stage) for stage in ai_summary.get("finished_live_stages", []) or [])
+    # Scripted deterministic runs do not produce live-stage trace entries, so
+    # boundary phase reports remain the primary source of truth for deterministic
+    # verification.  Live runs add stage-name evidence on top.
+    bare_single_ai_stages = sorted({"real_agent_open_decision", "planning", "editor_generation", "editor_generation_retry"} & finished_stages)
+    controller_boundaries = [
+        dict(boundary)
+        for boundary in (delegate.get("controller_boundaries", []) if isinstance(delegate.get("controller_boundaries"), list) else [])
+        if isinstance(boundary, Mapping)
+    ]
+    controller_boundary_names = _reference_boundary_names(controller_boundaries)
+    byz_planning = delegate.get("byzantine_planning", {}) if isinstance(delegate.get("byzantine_planning"), Mapping) else {}
+    byz_editor_history = delegate.get("byzantine_editor_history", []) if isinstance(delegate.get("byzantine_editor_history"), list) else []
+    editor_reports = [dict(report) for report in byz_editor_history if isinstance(report, Mapping)]
+    action_boundary = _reference_phase_boundary_summary(
+        phase="action",
+        boundary_name="real_agent_action_boundary",
+        phase_report=byzantine if isinstance(byzantine, Mapping) else {},
+        worker_stage_prefix="real_agent_byzantine_worker_",
+        reviewer_stage_prefix="real_agent_byzantine_reviewer_",
+        finished_stages=finished_stages,
+        expected_worker_count=expected_worker_count,
+        expected_reviewer_count=expected_reviewer_count,
+    )
+    planning_boundary = _reference_phase_boundary_summary(
+        phase="planning",
+        boundary_name="edit_plan_boundary",
+        phase_report=byz_planning,
+        worker_stage_prefix="byz_planning_worker_",
+        reviewer_stage_prefix="byz_planning_reviewer_",
+        finished_stages=finished_stages,
+        expected_worker_count=expected_worker_count,
+        expected_reviewer_count=expected_reviewer_count,
+    )
+    editor_boundaries = [
+        _reference_phase_boundary_summary(
+            phase=str(report.get("phase", "") or "editor"),
+            boundary_name="generated_editor_boundary" if str(report.get("phase", "") or "editor") == "editor" else "generated_editor_retry_boundary",
+            phase_report=report,
+            worker_stage_prefix=f"byz_{str(report.get('phase', '') or 'editor')}_worker_",
+            reviewer_stage_prefix=f"byz_{str(report.get('phase', '') or 'editor')}_reviewer_",
+            finished_stages=finished_stages,
+            expected_worker_count=expected_worker_count,
+            expected_reviewer_count=expected_reviewer_count,
+        )
+        for report in editor_reports
+    ]
+    retry_boundaries = [boundary for boundary in editor_boundaries if boundary["phase"] == "editor_retry"]
+    editor_primary_boundaries = [boundary for boundary in editor_boundaries if boundary["phase"] == "editor"]
+    controller_boundary_summary = [
+        {
+            "name": "generated_editor_static_preflight_boundary",
+            "present": "generated_editor_static_preflight_boundary" in controller_boundary_names,
+            "kind": "deterministic_controller_preflight",
+        },
+        {
+            "name": "generated_editor_sandbox_boundary",
+            "present": "generated_editor_sandbox_boundary" in controller_boundary_names,
+            "kind": "deterministic_controller_sandbox_materialization",
+        },
+        {
+            "name": "host_apply_boundary",
+            "reference_name": "controller_apply_boundary",
+            "present": "host_apply_boundary" in controller_boundary_names,
+            "kind": "deterministic_controller_apply",
+        },
+        {
+            "name": "verification_boundary",
+            "present": "verification_boundary" in controller_boundary_names,
+            "kind": "deterministic_controller_verification",
+        },
+        {
+            "name": "commit_boundary",
+            "present": "commit_boundary" in controller_boundary_names,
+            "kind": "deterministic_controller_commit",
+        },
+    ]
+    single_ai_trust_points: list[str] = []
+    if not action_boundary["ok"]:
+        single_ai_trust_points.append("action_selection")
+    if not planning_boundary["ok"]:
+        single_ai_trust_points.append("planning")
+    if not editor_primary_boundaries or not all(boundary["ok"] for boundary in editor_primary_boundaries):
+        single_ai_trust_points.append("editor_generation")
+    if final_endstate == "retry_succeeded" and not retry_boundaries:
+        single_ai_trust_points.append("editor_retry_generation")
+    single_ai_trust_points.extend(f"legacy_stage:{stage}" for stage in bare_single_ai_stages)
+
+    contracts = {
+        "reference_full_byzantine_path_enabled": real_agent_full_path and use_byzantine,
+        "reference_no_oracle_hints": real_agent_no_oracle_hints,
+        "reference_no_single_ai_stage_names_seen": not bare_single_ai_stages,
+        "reference_no_single_ai_action_source": action_boundary["ok"],
+        "reference_no_single_ai_planning_source": planning_boundary["ok"],
+        "reference_no_single_ai_editor_source": bool(editor_primary_boundaries)
+        and all(boundary["ok"] for boundary in editor_primary_boundaries),
+        "reference_action_collapsed_at_boundary": bool(action_boundary.get("collapsed_at_controller_boundary")),
+        "reference_planning_collapsed_at_boundary": bool(planning_boundary.get("collapsed_at_controller_boundary")),
+        "reference_editor_collapsed_at_boundary": bool(editor_primary_boundaries)
+        and all(bool(boundary.get("collapsed_at_controller_boundary")) for boundary in editor_primary_boundaries),
+        "reference_controller_preflight_boundary_present": "generated_editor_static_preflight_boundary" in controller_boundary_names,
+        "reference_controller_sandbox_boundary_present": "generated_editor_sandbox_boundary" in controller_boundary_names,
+        "reference_controller_apply_boundary_present": "host_apply_boundary" in controller_boundary_names,
+        "reference_controller_applied_only_boundary_result": sorted(str(path) for path in changed_files) == ["app.py"],
+        "reference_verification_boundary_present": "verification_boundary" in controller_boundary_names,
+        "reference_commit_boundary_present": "commit_boundary" in controller_boundary_names,
+        "reference_single_ai_trust_points_empty": not single_ai_trust_points,
+    }
+    return {
+        "format": "main_computer_full_byzantine_reference_path_v1",
+        "reference_path": "real_prompt_to_apply_verify_commit",
+        "guarantee": (
+            "No AI output is trusted directly. Every AI-derived phase fans out "
+            "to workers and reviewers, then collapses only at a deterministic "
+            "controller boundary. A boundary result can authorize the next phase "
+            "but never makes the next AI call trusted."
+        ),
+        "full_byzantine_reference_path": all(contracts.values()),
+        "single_ai_trust_points": single_ai_trust_points,
+        "single_ai_stage_names_seen": bare_single_ai_stages,
+        "ai_phase_boundaries": [
+            action_boundary,
+            planning_boundary,
+            *editor_boundaries,
+        ],
+        "deterministic_controller_boundaries": controller_boundary_summary,
+        "controller_boundary_names": controller_boundary_names,
+        "contracts": contracts,
+        "failed_contracts": sorted(name for name, ok in contracts.items() if not ok),
+    }
+
+
 def run_real_agent_prompt_delegate(
     *,
     args: argparse.Namespace,
@@ -15129,7 +15474,13 @@ def run_real_agent_prompt_delegate(
     terminal_endstate: str,
     ai_trace_path: Path,
 ) -> dict[str, Any]:
-    """Delegate mutating endpoints to the existing live-AI generated-editor smoke path."""
+    """Delegate mutating endpoints into the controlled edit/apply/verify pipeline.
+
+    In full-reference mode this delegate must keep every AI-derived phase
+    Byzantine: action selection has already collapsed at its boundary, then
+    planning and editor generation each run their own worker/reviewer fanout
+    before the deterministic controller applies, verifies, and commits.
+    """
 
     agent_run_dir = run_dir / "agent_run"
     agent_commands_path = agent_run_dir / "commands.jsonl"
@@ -15164,9 +15515,14 @@ def run_real_agent_prompt_delegate(
         ai_model=str(getattr(args, "ai_model", "") or ""),
         ai_command=str(getattr(args, "ai_command", "") or ""),
         ai_timeout_seconds=float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS)),
+        ai_hub_url=str(getattr(args, "ai_hub_url", "") or ""),
+        ai_hub_client_node_id=str(getattr(args, "ai_hub_client_node_id", "") or ""),
+        ai_hub_allow_insecure_dev_network=bool(getattr(args, "ai_hub_allow_insecure_dev_network", False)),
         ai_trace_path=str(ai_trace_path),
         scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
         full_byzantine_pipeline=bool(getattr(args, "real_agent_full_path", False)),
+        real_agent_worker_count=real_agent_boundary_counts(args, full_path=bool(getattr(args, "real_agent_full_path", False)))[0],
+        real_agent_reviewer_count=real_agent_boundary_counts(args, full_path=bool(getattr(args, "real_agent_full_path", False)))[1],
         restart=False,
         run_id=f"{run_id}-agent",
         run_dir=str(agent_run_dir),
@@ -15262,6 +15618,12 @@ def run_real_agent_prompt_delegate(
         "commit_created": bool(commit.get("created")),
         "failed_contracts": failed_contracts,
         "ai_call_summary": report.get("ai_call_summary", {}) if isinstance(report.get("ai_call_summary"), dict) else {},
+        "controller_boundaries": report.get("boundaries", []) if isinstance(report.get("boundaries"), list) else [],
+        "controller_boundary_names": [
+            str(boundary.get("name", ""))
+            for boundary in (report.get("boundaries", []) if isinstance(report.get("boundaries"), list) else [])
+            if isinstance(boundary, Mapping)
+        ],
         "byzantine_planning": edit_plan.get("byzantine_planning", {}) if isinstance(edit_plan.get("byzantine_planning"), dict) else {},
         "byzantine_editor": generated_editor.get("byzantine_editor", {}) if isinstance(generated_editor.get("byzantine_editor"), dict) else {},
         "byzantine_editor_history": generated_editor.get("byzantine_editor_history", []) if isinstance(generated_editor.get("byzantine_editor_history"), list) else [],
@@ -15269,15 +15631,72 @@ def run_real_agent_prompt_delegate(
     }
 
 
-def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
-    """Run one arbitrary prompt through the live open-ended action selector.
 
-    This is intentionally a fixture-backed smoke harness, not direct mutation of
-    the user's checkout.  The first live call classifies the real prompt into an
-    open-ended endpoint.  Mutating endpoints are then delegated to the existing
-    live-AI generated-editor path so host apply, verification, retry, and commit
-    contracts are still exercised by the current smoke machinery.
+GOD_MODE_MIN_BYZANTINE_COUNT = 4
+
+
+def real_agent_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return parsed if parsed > 0 else default
+
+
+def real_agent_god_mode_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "god_mode", False))
+
+
+def real_agent_boundary_counts(args: argparse.Namespace, *, full_path: bool = False) -> tuple[int, int]:
+    """Return worker/reviewer counts using one orderly rule.
+
+    God mode raises the count floor to 4.  A caller can still ask for a larger
+    count, for example 5, and all phase math follows that same count instead of
+    relying on hard-coded call totals.
     """
+
+    count_floor = GOD_MODE_MIN_BYZANTINE_COUNT if real_agent_god_mode_enabled(args) else (3 if full_path else 1)
+    worker_count = max(count_floor, real_agent_positive_int(getattr(args, "real_agent_worker_count", count_floor), count_floor))
+    reviewer_count = max(count_floor, real_agent_positive_int(getattr(args, "real_agent_reviewer_count", count_floor), count_floor))
+    return worker_count, reviewer_count
+
+
+def real_agent_byzantine_call_floor(*, worker_count: int, reviewer_count: int, ai_phase_count: int) -> int:
+    return max(0, int(ai_phase_count)) * (max(1, int(worker_count)) + max(1, int(reviewer_count)))
+
+
+def apply_real_agent_god_mode_defaults(args: argparse.Namespace) -> None:
+    """Expand --god-mode into no-oracle Byzantine mode without inventing an answer.
+
+    God mode is adaptive: the action-selection boundary decides whether the
+    prompt is informational, clarifying, unsafe, or mutating.  Only a mutating
+    selected endstate escalates into the full planning/editor/apply reference
+    pathway.  This keeps a prompt such as "What is 4 + 8?" from being forced
+    into an edit smoke while still requiring every AI-derived phase to fan out
+    before it can collapse at a controller boundary.
+    """
+
+    if not real_agent_god_mode_enabled(args):
+        return
+    args.real_agent_no_oracle_hints = True
+    args.real_agent_byzantine = True
+    args.real_agent_decision_only = False
+    args.real_agent_worker_count, args.real_agent_reviewer_count = real_agent_boundary_counts(args, full_path=True)
+    if not str(getattr(args, "real_agent_expected_unchanged_files", "") or "").strip():
+        args.real_agent_expected_unchanged_files = "README.md"
+
+
+def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
+    """Run one arbitrary prompt through the fixture-backed real-agent smoke.
+
+    Plain mode is a legacy endpoint smoke.  Full-path mode is the reference
+    pathway: action selection, planning, and editor generation each run their own
+    Byzantine worker/reviewer boundary before the deterministic controller
+    preflights, sandboxes, applies, verifies, and commits.  A boundary result
+    authorizes only the next phase; it never makes a later AI call trusted.
+    """
+
+    apply_real_agent_god_mode_defaults(args)
 
     real_prompt = str(getattr(args, "real_agent_prompt", "") or "").strip()
     if not real_prompt:
@@ -15296,6 +15715,7 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
     real_agent_full_path = bool(getattr(args, "real_agent_full_path", False))
     real_agent_no_oracle_hints = bool(getattr(args, "real_agent_no_oracle_hints", False)) or real_agent_full_path
     use_byzantine = bool(getattr(args, "real_agent_byzantine", False)) or real_agent_full_path
+    boundary_worker_count, boundary_reviewer_count = real_agent_boundary_counts(args, full_path=real_agent_full_path)
     selector_expected_endstate = "" if real_agent_no_oracle_hints else expected_endstate
     selector_expected_changed_files: list[str] = [] if real_agent_no_oracle_hints else list(expected_changed_files)
 
@@ -15313,13 +15733,21 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         prompt_sha256=text_sha256(real_prompt),
         ai_provider=str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
         ai_model=str(getattr(args, "ai_model", "") or ""),
+        ai_hub_url=resolve_ai_hub_url(str(getattr(args, "ai_hub_url", "") or "")) if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
+        ai_hub_client_node_id=str(getattr(args, "ai_hub_client_node_id", "") or "") if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
         scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
         real_agent_byzantine=use_byzantine,
         real_agent_no_oracle_hints=real_agent_no_oracle_hints,
         real_agent_full_path=real_agent_full_path,
         selector_expected_endstate=selector_expected_endstate,
-        real_agent_worker_count=max(1, int(getattr(args, "real_agent_worker_count", 3) or 3)),
-        real_agent_reviewer_count=max(1, int(getattr(args, "real_agent_reviewer_count", 3) or 3)),
+        god_mode=real_agent_god_mode_enabled(args),
+        real_agent_worker_count=boundary_worker_count,
+        real_agent_reviewer_count=boundary_reviewer_count,
+        expected_byzantine_ai_phase_call_floor=real_agent_byzantine_call_floor(
+            worker_count=boundary_worker_count,
+            reviewer_count=boundary_reviewer_count,
+            ai_phase_count=3 if real_agent_full_path else (1 if use_byzantine else 0),
+        ),
     )
     goal_contract = ai_restart_directive_contract(real_prompt)
     byzantine: dict[str, Any] = {"enabled": False}
@@ -15357,6 +15785,16 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         terminal_endstate = decision_endstate or expected_endstate
     else:
         terminal_endstate = expected_endstate or decision_endstate
+
+    # God mode must not use the expected endstate as an oracle.  After the
+    # Byzantine action boundary has collapsed, a mutating selected endpoint
+    # escalates into the full no-single-AI-trust planning/editor pipeline.
+    if real_agent_god_mode_enabled(args) and terminal_endstate in REAL_AGENT_MUTATING_ENDSTATES:
+        real_agent_full_path = True
+        args.real_agent_full_path = True
+        real_agent_no_oracle_hints = True
+        use_byzantine = True
+
     delegate: dict[str, Any] = {
         "delegated": False,
         "ok": True,
@@ -15404,7 +15842,7 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
     ai_summary = summarize_ai_trace(read_jsonl(ai_trace_path))
     if not bool(getattr(args, "scripted_ai_smoke", False)):
         if use_byzantine:
-            expected_byzantine_calls = max(1, int(getattr(args, "real_agent_worker_count", 3) or 3)) + max(1, int(getattr(args, "real_agent_reviewer_count", 3) or 3))
+            expected_byzantine_calls = boundary_worker_count + boundary_reviewer_count
             final_contracts["real_agent_byzantine_used_live_worker_reviewer_calls"] = (
                 ai_summary.get("finished_live_call_count", 0) >= expected_byzantine_calls
             )
@@ -15417,7 +15855,7 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
                 ai_summary.get("finished_live_call_count", 0) >= 3
             )
     if real_agent_full_path:
-        expected_byzantine_calls = max(1, int(getattr(args, "real_agent_worker_count", 3) or 3)) + max(1, int(getattr(args, "real_agent_reviewer_count", 3) or 3))
+        expected_byzantine_calls = boundary_worker_count + boundary_reviewer_count
         finished_stages = set(str(stage) for stage in ai_summary.get("finished_live_stages", []) or [])
         byz_planning = delegate.get("byzantine_planning", {}) if isinstance(delegate.get("byzantine_planning"), dict) else {}
         byz_editor_history = delegate.get("byzantine_editor_history", []) if isinstance(delegate.get("byzantine_editor_history"), list) else []
@@ -15450,15 +15888,15 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
                 and "editor_generation_retry" not in finished_stages,
                 "real_agent_full_path_planning_boundary_ok": bool(byz_planning.get("ok")),
                 "real_agent_full_path_planning_worker_count_met": int(byz_planning.get("worker_count", 0) or 0)
-                >= max(3, int(getattr(args, "real_agent_worker_count", 3) or 3)),
+                >= boundary_worker_count,
                 "real_agent_full_path_planning_reviewer_count_met": int(byz_planning.get("reviewer_count", 0) or 0)
-                >= max(3, int(getattr(args, "real_agent_reviewer_count", 3) or 3)),
+                >= boundary_reviewer_count,
                 "real_agent_full_path_editor_boundary_ok": bool(byz_editor_reports)
                 and all(bool(report.get("ok")) for report in byz_editor_reports),
                 "real_agent_full_path_editor_worker_count_met": bool(byz_editor_reports)
-                and all(int(report.get("worker_count", 0) or 0) >= max(3, int(getattr(args, "real_agent_worker_count", 3) or 3)) for report in byz_editor_reports),
+                and all(int(report.get("worker_count", 0) or 0) >= boundary_worker_count for report in byz_editor_reports),
                 "real_agent_full_path_editor_reviewer_count_met": bool(byz_editor_reports)
-                and all(int(report.get("reviewer_count", 0) or 0) >= max(3, int(getattr(args, "real_agent_reviewer_count", 3) or 3)) for report in byz_editor_reports),
+                and all(int(report.get("reviewer_count", 0) or 0) >= boundary_reviewer_count for report in byz_editor_reports),
                 "real_agent_full_path_collapses_each_ai_phase_at_boundary": bool(byz_planning.get("selection"))
                 and bool(byz_editor_reports)
                 and all(bool(report.get("selection")) for report in byz_editor_reports),
@@ -15474,13 +15912,13 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
                 {
                     "real_agent_full_path_uses_live_ai_transport": True,
                     "real_agent_full_path_live_planning_workers_finished": len(planning_worker_stages)
-                    >= max(3, int(getattr(args, "real_agent_worker_count", 3) or 3)),
+                    >= boundary_worker_count,
                     "real_agent_full_path_live_planning_reviewers_finished": len(planning_reviewer_stages)
-                    >= max(3, int(getattr(args, "real_agent_reviewer_count", 3) or 3)),
+                    >= boundary_reviewer_count,
                     "real_agent_full_path_live_editor_workers_finished": len(editor_worker_stages)
-                    >= max(3, int(getattr(args, "real_agent_worker_count", 3) or 3)),
+                    >= boundary_worker_count,
                     "real_agent_full_path_live_editor_reviewers_finished": len(editor_reviewer_stages)
-                    >= max(3, int(getattr(args, "real_agent_reviewer_count", 3) or 3)),
+                    >= boundary_reviewer_count,
                     "real_agent_full_path_used_byzantine_all_ai_phase_live_calls": ai_summary.get("finished_live_call_count", 0)
                     >= expected_byzantine_calls * 3,
                 }
@@ -15490,6 +15928,37 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
                 getattr(args, "scripted_ai_smoke", False)
             )
             final_contracts["real_agent_full_path_scripted_has_byzantine_phase_reports"] = bool(byz_planning.get("ok")) and bool(byz_editor_reports)
+
+    full_byzantine_reference_path: dict[str, Any] = {
+        "format": "main_computer_full_byzantine_reference_path_v1",
+        "full_byzantine_reference_path": False,
+        "single_ai_trust_points": ["full_path_mode_not_enabled"],
+        "contracts": {},
+        "failed_contracts": [],
+    }
+    if real_agent_full_path:
+        full_byzantine_reference_path = build_real_agent_full_byzantine_reference_report(
+            real_agent_full_path=real_agent_full_path,
+            real_agent_no_oracle_hints=real_agent_no_oracle_hints,
+            use_byzantine=use_byzantine,
+            expected_worker_count=boundary_worker_count,
+            expected_reviewer_count=boundary_reviewer_count,
+            ai_summary=ai_summary,
+            byzantine=byzantine,
+            delegate=delegate,
+            final_endstate=final_endstate,
+            changed_files=changed_files,
+        )
+        final_contracts.update(
+            {
+                f"full_byzantine_reference:{name}": ok
+                for name, ok in (
+                    full_byzantine_reference_path.get("contracts", {})
+                    if isinstance(full_byzantine_reference_path.get("contracts"), dict)
+                    else {}
+                ).items()
+            }
+        )
 
 
     failed_contracts = sorted(name for name, ok in final_contracts.items() if not ok)
@@ -15503,12 +15972,25 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         "ai_trace_path": str(ai_trace_path),
         "real_agent_prompt": real_prompt,
         "prompt_sha256": text_sha256(real_prompt),
+        "ai_provider": str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
+        "ai_model": str(getattr(args, "ai_model", "") or ""),
+        "ai_hub_url": resolve_ai_hub_url(str(getattr(args, "ai_hub_url", "") or "")) if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
+        "ai_hub_client_node_id": str(getattr(args, "ai_hub_client_node_id", "") or "") if str(getattr(args, "ai_provider", "") or "").strip().lower() == "hub" else "",
         "goal_directive": goal_contract,
         "expected_endstate": expected_endstate,
         "selector_expected_endstate": selector_expected_endstate,
+        "god_mode": real_agent_god_mode_enabled(args),
+        "god_mode_min_byzantine_count": GOD_MODE_MIN_BYZANTINE_COUNT if real_agent_god_mode_enabled(args) else None,
         "real_agent_no_oracle_hints": real_agent_no_oracle_hints,
         "real_agent_full_path": real_agent_full_path,
         "real_agent_byzantine": use_byzantine,
+        "real_agent_worker_count": boundary_worker_count,
+        "real_agent_reviewer_count": boundary_reviewer_count,
+        "expected_byzantine_ai_phase_call_floor": real_agent_byzantine_call_floor(
+            worker_count=boundary_worker_count,
+            reviewer_count=boundary_reviewer_count,
+            ai_phase_count=3 if real_agent_full_path else (1 if use_byzantine else 0),
+        ),
         "observed_decision_endstate": decision.get("observed_endstate"),
         "final_endstate": final_endstate,
         "expected_changed_files": expected_changed_files,
@@ -15518,6 +16000,7 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         "decision_metadata": decision_metadata,
         "byzantine": byzantine,
         "delegate": delegate,
+        "full_byzantine_reference_path": full_byzantine_reference_path,
         "ai_call_summary": ai_summary,
         "contracts": final_contracts,
         "failed_contracts": failed_contracts,
@@ -15532,6 +16015,14 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         final_endstate=final_endstate,
         failed_contracts=failed_contracts,
         live_ai_call_count=ai_summary.get("finished_live_call_count", 0),
+        god_mode=real_agent_god_mode_enabled(args),
+        expected_byzantine_ai_phase_call_floor=real_agent_byzantine_call_floor(
+            worker_count=boundary_worker_count,
+            reviewer_count=boundary_reviewer_count,
+            ai_phase_count=3 if real_agent_full_path else (1 if use_byzantine else 0),
+        ),
+        full_byzantine_reference_path=bool(full_byzantine_reference_path.get("full_byzantine_reference_path")),
+        single_ai_trust_points=list(full_byzantine_reference_path.get("single_ai_trust_points", []) or []),
     )
     return 0 if report["ok"] else 1
 
@@ -17139,6 +17630,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Shell command for --ai-provider command. It receives JSON on stdin and must print JSON on stdout.",
     )
+    parser.add_argument("--ai-hub-url", default="", help="Hub base URL for --ai-provider hub. Defaults to the mainnet hub profile.")
+    parser.add_argument("--ai-hub-client-node-id", default=DEFAULT_HUB_AI_CLIENT_NODE_ID, help="Hub client node id for --ai-provider hub.")
+    parser.add_argument(
+        "--ai-hub-allow-insecure-dev-network",
+        action="store_true",
+        help="Allow non-HTTPS non-loopback hub URLs for local development only.",
+    )
     parser.add_argument("--ai-timeout-seconds", type=float, default=DEFAULT_AI_TIMEOUT_SECONDS)
     parser.add_argument(
         "--ai-trace-path",
@@ -17217,6 +17715,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "For --real-agent-prompt, stop after the live open-ended endpoint decision instead "
             "of delegating mutating endpoints into the generated-editor fixture."
+        ),
+    )
+    parser.add_argument(
+        "--god-mode",
+        action="store_true",
+        help=(
+            "Reference full-Byzantine apply smoke preset for --real-agent-prompt. "
+            "Expands to full path, no oracle hints, Byzantine mode, applied_verified/app.py/README.md assertions, "
+            "and a worker/reviewer count floor of 4. Larger explicit counts, such as 5, are preserved."
         ),
     )
     parser.add_argument(

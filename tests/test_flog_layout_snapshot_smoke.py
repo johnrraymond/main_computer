@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sys
@@ -2185,6 +2186,8 @@ def test_recursive_policy_catalog_exposes_real_local_alternatives():
         "bounded-bottom-drawer",
         "bounded-side-drawer",
         "inline-phase-stage",
+        "tabbed-phase-support",
+        "sequential-phase-stage",
     }
 
 
@@ -2200,20 +2203,30 @@ def test_default_recursive_search_generates_composition_identities_not_legacy_fa
         hierarchy, list(module.LAYOUT_CANDIDATES)
     )
 
-    assert len(candidates) == len(module.LAYOUT_CANDIDATES)
+    generated = [
+        item for item in candidates if item["mode"] == "recursive-composition"
+    ]
+    shadow = [
+        item for item in candidates if item["mode"] == "layout-hint-shadow"
+    ]
+
+    assert len(generated) == len(module.LAYOUT_CANDIDATES)
+    assert len(shadow) == 1
     assert all(isinstance(item, dict) for item in candidates)
-    assert all(item["id"].startswith("compose--") for item in candidates)
+    assert all(item["id"].startswith("compose--") for item in generated)
     assert all(item["renderFamily"] == "recursive-composition" for item in candidates)
-    assert all(item["mode"] == "recursive-composition" for item in candidates)
+    assert all(item["mode"] == "recursive-composition" for item in generated)
+    assert shadow[0]["id"].startswith("hint-compiled-default--")
+    assert shadow[0]["shadowOnly"] is True
     assert len({item["id"] for item in candidates}) == len(candidates)
 
     support_policies = {
         item["composition"]["unitPolicies"]["phase-support"]
-        for item in candidates
+        for item in generated
     }
     command_policies = {
         item["composition"]["unitPolicies"]["command-workflow"]
-        for item in candidates
+        for item in generated
     }
     assert {
         "one-active-plus-triggers",
@@ -4143,3 +4156,902 @@ def test_stage_f1_cli_defaults_to_compact_report_detail():
     args = parser.parse_args([])
 
     assert args.report_detail == module.REPORT_DETAIL_COMPACT
+
+
+def test_layout_hint_milestone1_compiles_a_deterministic_shadow_dock_tree():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    normalized = module.normalize_layout_hint_contract(hierarchy)
+    compilation = module.compile_layout_hint_default(hierarchy)
+
+    assert normalized["state"] == "complete"
+    assert normalized["sourceKind"] == "synthetic-data-mc-layout-attributes"
+    assert normalized["version"] == module.LAYOUT_HINT_CONTRACT_VERSION
+    assert normalized["root"]["model"] == "dock-workbench"
+    assert normalized["root"]["zones"] == [
+        "top",
+        "left",
+        "center",
+        "right",
+        "bottom",
+        "tab",
+        "stage",
+        "trigger",
+    ]
+
+    assert compilation["state"] == "complete"
+    assert compilation["mode"] == "shadow-only"
+    assert compilation["liveApplicationFilesTouched"] is False
+    assert compilation["issues"] == []
+    assert compilation["dockTree"]["unitPlacements"] == {
+        "project-identity": "left",
+        "command-workflow": "center",
+        "persistent-feedback": "bottom",
+        "phase-support": "right",
+    }
+    assert compilation["candidate"]["composition"] == {
+        "rootPolicy": "dominant-workflow-stack",
+        "unitPolicies": {
+            "project-identity": "phase-selector-unit",
+            "command-workflow": "command-inline-header",
+            "persistent-feedback": "shared-horizontal-band",
+            "phase-support": "bounded-side-drawer",
+        },
+    }
+    assert len(compilation["annotationRecommendations"]) == 4
+    assert all(
+        recommendation["reason"].startswith("Shadow recommendation only")
+        for recommendation in compilation["annotationRecommendations"]
+    )
+
+
+def test_layout_hint_parser_fails_closed_on_an_invalid_preferred_placement():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    broken = copy.deepcopy(hierarchy)
+    broken["layoutHintSource"]["units"]["phase-support"][
+        "data-mc-layout-prefer"
+    ] = "left"
+    broken["layoutHintSource"]["units"]["phase-support"][
+        "data-mc-layout-allowed"
+    ] = "right bottom tab stage trigger"
+
+    normalized = module.normalize_layout_hint_contract(broken)
+    compilation = module.compile_layout_hint_default(broken)
+
+    assert normalized["state"] == "invalid"
+    assert any(
+        "phase-support prefers 'left'" in issue
+        for issue in normalized["issues"]
+    )
+    assert compilation["state"] == "invalid"
+    assert compilation["candidate"] is None
+
+
+def test_layout_hint_shadow_candidate_is_wide_only_phase_aware_and_not_ranked():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    candidate = module.layout_hint_shadow_candidate_spec(hierarchy)
+    assert candidate is not None
+
+    assert module.candidate_shadow_only(candidate) is True
+    assert module.candidate_applies_to_viewport(
+        candidate,
+        module.ViewportProfile(name="wide", width=1600, height=1000),
+    )
+    assert module.candidate_applies_to_viewport(
+        candidate,
+        module.ViewportProfile(name="desktop", width=1440, height=900),
+    )
+    assert not module.candidate_applies_to_viewport(
+        candidate,
+        module.ViewportProfile(name="medium", width=1200, height=820),
+    )
+    assert module.candidate_phase_policy(candidate)["phaseAware"] is True
+
+    scenario = next(
+        item
+        for item in hierarchy["phaseScenarios"]
+        if item["phase"] == "selected-project-default"
+    )
+    realized = module.realize_phase(hierarchy, candidate, scenario)
+    html = module.render_realized_trial_html(
+        realized,
+        candidate,
+        "mcel-realistic",
+    )
+
+    assert (
+        realized["unitComposition"]["searchMode"]
+        == "deterministic-layout-hint-compilation"
+    )
+    assert (
+        realized["unitComposition"]["origin"]
+        == "authored-layout-hints-shadow"
+    )
+    assert 'data-flog-candidate-mode="layout-hint-shadow"' in html
+    assert candidate["id"] in html
+
+    measurement = {
+        "hierarchyId": hierarchy["id"],
+        "viewportProfile": "wide",
+        "candidate": candidate["id"],
+        "candidateMode": "layout-hint-shadow",
+        "shadowOnly": True,
+        "phaseMeasurements": [],
+    }
+    module.annotate_rendered_policy_equivalence([measurement])
+    assert measurement["renderedEquivalenceExcludedFromRanking"] is True
+
+
+def test_compact_measurement_preserves_layout_hint_shadow_evidence():
+    module = load_module()
+    item = {
+        "hierarchyId": "git-tools-workflow-workbench",
+        "viewportProfile": "wide",
+        "viewportWidth": 1600,
+        "viewportHeight": 1000,
+        "candidate": "hint-compiled-default--git-tools-workflow-workbench",
+        "candidateMode": "layout-hint-shadow",
+        "renderFamily": "recursive-composition",
+        "shadowOnly": True,
+        "layoutHintCompilation": {
+            "version": module.LAYOUT_HINT_CONTRACT_VERSION,
+            "capacity": "wide",
+            "state": "complete",
+            "dockTree": {
+                "id": "git-tools-application",
+                "model": "dock-workbench",
+            },
+        },
+        "classification": {"status": "pass", "score": 90},
+        "geometryFacts": {},
+        "phaseFit": {},
+        "layoutUnitFit": {},
+        "unitComposition": {},
+        "snapshots": {},
+        "phaseSnapshots": {},
+    }
+
+    compact = module.compact_measurement_summary(item)
+
+    assert compact["shadowOnly"] is True
+    assert compact["candidateMode"] == "layout-hint-shadow"
+    assert compact["layoutHintCompilation"]["state"] == "complete"
+    assert (
+        compact["layoutHintCompilation"]["dockTree"]["model"]
+        == "dock-workbench"
+    )
+
+
+def _layout_hint_refinement_measurement(
+    module,
+    *,
+    candidate,
+    viewport,
+    policies,
+    status="pass",
+    headroom=0.01,
+    raw_score=95.0,
+    shadow=False,
+    responsive=False,
+):
+    return {
+        "hierarchyId": "git-tools-workflow-workbench",
+        "viewportProfile": viewport,
+        "viewportWidth": {
+            "wide": 1600,
+            "desktop": 1440,
+            "medium": 1200,
+            "constrained": 1024,
+            "narrow": 840,
+            "compact": 680,
+            "small": 560,
+        }[viewport],
+        "viewportHeight": 900,
+        "candidate": candidate,
+        "candidateMode": (
+            "layout-hint-responsive-shadow"
+            if responsive
+            else ("layout-hint-shadow" if shadow else "recursive-composition")
+        ),
+        "shadowOnly": shadow or responsive,
+        "responsiveEligible": responsive,
+        "classification": {
+            "status": status,
+            "score": round(raw_score),
+            "selectionScore": round(raw_score),
+            "selectionScoreRaw": raw_score,
+            "failureReasons": (
+                [] if status in module.ACCEPTABLE_LAYOUT_STATUSES
+                else ["phase floor was not met"]
+            ),
+        },
+        "phaseFit": {
+            "worstDominantHeadroom": headroom,
+            "hardFailureCount": 0 if status in module.ACCEPTABLE_LAYOUT_STATUSES else 1,
+            "scoreVariance": 1.0,
+            "phases": [
+                {
+                    "phase": "planning",
+                    "dominantShare": 0.56 + headroom,
+                    "minDominantShare": 0.56,
+                    "score": 95,
+                    "rawScore": 95.0,
+                }
+            ],
+        },
+        "layoutUnitFit": {
+            "hardFailureCount": 0,
+            "worstScore": 97,
+            "worstScoreRaw": 97.0,
+        },
+        "geometryFacts": {"usefulFocusOccupancy": 0.8},
+        "unitComposition": {
+            "rootUnitId": "git-tools-application",
+            "unitPolicies": {
+                **policies,
+                "git-tools-application": "dominant-workflow-stack",
+            },
+            "preflightScore": 98,
+        },
+        "phaseMeasurements": [],
+        "snapshots": {},
+        "phaseSnapshots": {},
+    }
+
+
+def test_layout_hint_milestone1e_finds_the_smallest_browser_verified_refinement():
+    module = load_module()
+    hierarchy = copy.deepcopy(
+        next(
+            item
+            for item in module.synthetic_hierarchies()
+            if item["id"] == "git-tools-workflow-workbench"
+        )
+    )
+    hierarchy["layoutHintSource"]["units"]["command-workflow"][
+        "data-mc-layout-policy"
+    ] = "command-over-dominant"
+    hierarchy["layoutHintSource"]["units"]["command-workflow"][
+        "data-mc-layout-internal"
+    ] = "command-top workflow-center"
+    authored = {
+        "project-identity": "phase-selector-unit",
+        "command-workflow": "command-over-dominant",
+        "persistent-feedback": "shared-horizontal-band",
+        "phase-support": "bounded-side-drawer",
+    }
+    refined = {
+        **authored,
+        "command-workflow": "command-inline-header",
+    }
+    measurements = [
+        _layout_hint_refinement_measurement(
+            module,
+            candidate="hint-compiled-default--git-tools-workflow-workbench",
+            viewport="wide",
+            policies=authored,
+            headroom=0.0303,
+            raw_score=97.0,
+            shadow=True,
+        ),
+        _layout_hint_refinement_measurement(
+            module,
+            candidate="hint-compiled-default--git-tools-workflow-workbench",
+            viewport="desktop",
+            policies=authored,
+            headroom=0.00016,
+            raw_score=96.0,
+            shadow=True,
+        ),
+        _layout_hint_refinement_measurement(
+            module,
+            candidate="compose--selector-trigger--command-inline--feedback-band--support-side",
+            viewport="desktop",
+            policies=refined,
+            headroom=0.0101,
+            raw_score=96.2,
+        ),
+    ]
+    module.annotate_rendered_policy_equivalence(measurements)
+
+    reports = module.analyze_layout_hint_refinements(
+        hierarchies=[hierarchy],
+        measurements=measurements,
+    )
+
+    assert len(reports) == 1
+    report = reports[0]
+    assert report["state"] == "complete"
+    assert report["liveApplicationFilesTouched"] is False
+    assert report["applicationMutationAllowed"] is False
+    assert (
+        report["authoredEvidenceByViewport"]["desktop"]["outcome"]
+        == "accepted-with-warning"
+    )
+    assert report["authoredEvidenceByViewport"]["wide"]["outcome"] == "accepted"
+    assert len(report["recommendedContractRevisions"]) == 1
+    recommendation = report["recommendedContractRevisions"][0]
+    assert recommendation["unitId"] == "command-workflow"
+    assert recommendation["currentPolicy"] == "command-over-dominant"
+    assert recommendation["suggestedPolicy"] == "command-inline-header"
+    assert abs(recommendation["headroomImprovement"] - 0.00994) < 1e-9
+    assert recommendation["browserVerified"] is True
+    assert recommendation["applyAutomatically"] is False
+
+
+def test_layout_hint_milestone2_prepares_distinct_responsive_fallbacks():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    plan = module.layout_hint_fallback_plan(hierarchy)
+
+    assert plan["state"] == "complete"
+    assert plan["unitId"] == "phase-support"
+    assert [entry["placement"] for entry in plan["chain"]] == [
+        "right",
+        "bottom",
+        "tab",
+        "stage",
+        "trigger",
+    ]
+    by_placement = {entry["placement"]: entry for entry in plan["chain"]}
+    assert by_placement["right"]["policy"] == "bounded-side-drawer"
+    assert by_placement["bottom"]["policy"] == "bounded-bottom-drawer"
+    assert by_placement["tab"]["policy"] == "tabbed-phase-support"
+    assert by_placement["stage"]["policy"] == "sequential-phase-stage"
+    assert by_placement["trigger"]["policy"] == "one-active-plus-triggers"
+    assert all(entry["state"] == "ready" for entry in plan["chain"])
+    assert by_placement["bottom"]["viewportProfiles"] == [
+        "medium",
+        "constrained",
+    ]
+    assert by_placement["tab"]["viewportProfiles"] == ["narrow"]
+    assert by_placement["stage"]["viewportProfiles"] == ["compact", "small"]
+
+
+def test_layout_hint_milestone2_uses_responsive_shadow_trials_for_fallback_evidence():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    authored = {
+        "project-identity": "phase-selector-unit",
+        "command-workflow": "command-inline-header",
+        "persistent-feedback": "shared-horizontal-band",
+        "phase-support": "bounded-side-drawer",
+    }
+    measurements = [
+        _layout_hint_refinement_measurement(
+            module,
+            candidate="hint-compiled-default--git-tools-workflow-workbench",
+            viewport="desktop",
+            policies=authored,
+            headroom=0.0101,
+            shadow=True,
+        ),
+        _layout_hint_refinement_measurement(
+            module,
+            candidate="hint-responsive-bottom--git-tools-workflow-workbench",
+            viewport="medium",
+            policies={**authored, "phase-support": "bounded-bottom-drawer"},
+            headroom=0.018,
+            raw_score=94.0,
+            responsive=True,
+        ),
+        _layout_hint_refinement_measurement(
+            module,
+            candidate="hint-responsive-tab--git-tools-workflow-workbench",
+            viewport="narrow",
+            policies={**authored, "phase-support": "tabbed-phase-support"},
+            headroom=0.024,
+            raw_score=93.0,
+            responsive=True,
+        ),
+        _layout_hint_refinement_measurement(
+            module,
+            candidate="hint-responsive-stage--git-tools-workflow-workbench",
+            viewport="compact",
+            policies={**authored, "phase-support": "sequential-phase-stage"},
+            headroom=0.03,
+            raw_score=92.0,
+            responsive=True,
+        ),
+        _layout_hint_refinement_measurement(
+            module,
+            candidate="hint-responsive-trigger--git-tools-workflow-workbench",
+            viewport="small",
+            policies={**authored, "phase-support": "one-active-plus-triggers"},
+            headroom=0.012,
+            raw_score=90.0,
+            responsive=True,
+        ),
+    ]
+    module.annotate_rendered_policy_equivalence(measurements)
+
+    report = module.analyze_layout_hint_refinements(
+        hierarchies=[hierarchy],
+        measurements=measurements,
+    )[0]
+    chain = {
+        entry["placement"]: entry
+        for entry in report["fallbackPreparation"]["chain"]
+    }
+
+    assert chain["bottom"]["measurements"][0]["outcome"] == "accepted"
+    assert chain["tab"]["measurements"][0]["outcome"] == "accepted"
+    assert chain["stage"]["measurements"][0]["outcome"] == "accepted"
+    assert any(
+        item["outcome"] == "accepted"
+        for item in chain["trigger"]["measurements"]
+    )
+    assert chain["tab"]["state"] == "ready"
+
+
+def test_layout_hint_milestone2_adds_only_bounded_responsive_shadow_candidates():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    candidates = module.candidate_specs_for_hierarchy(
+        hierarchy,
+        module.LAYOUT_CANDIDATES,
+    )
+
+    shadow = [item for item in candidates if module.candidate_shadow_only(item)]
+    responsive = [
+        item for item in candidates if module.candidate_responsive_eligible(item)
+    ]
+    assert len(candidates) == len(module.LAYOUT_CANDIDATES) + 5
+    assert len(shadow) == 5
+    assert len(responsive) == 5
+    assert {
+        item["responsivePlacement"] for item in responsive
+    } == {"right", "bottom", "tab", "stage", "trigger"}
+    assert any(
+        item["id"] == "hint-compiled-default--git-tools-workflow-workbench"
+        for item in shadow
+    )
+
+
+def test_compact_measurement_preserves_layout_hint_refinement_outcome():
+    module = load_module()
+    item = _layout_hint_refinement_measurement(
+        module,
+        candidate="hint-compiled-default--git-tools-workflow-workbench",
+        viewport="desktop",
+        policies={
+            "project-identity": "phase-selector-unit",
+            "command-workflow": "command-over-dominant",
+            "persistent-feedback": "shared-horizontal-band",
+            "phase-support": "bounded-side-drawer",
+        },
+        headroom=0.00016,
+        shadow=True,
+    )
+    item["layoutHintOutcome"] = module.layout_hint_measurement_outcome(item)
+
+    compact = module.compact_measurement_summary(item)
+
+    assert compact["layoutHintOutcome"]["outcome"] == "accepted-with-warning"
+    assert abs(compact["layoutHintOutcome"]["worstPhaseHeadroom"] - 0.00016) < 1e-9
+
+
+def _git_hierarchy_for_milestone2(module):
+    return next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+
+def test_layout_hint_milestone2_derives_capacity_bands_from_authored_minima():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+
+    derivation = module.derive_responsive_capacity_bands_from_hints(hierarchy)
+    contract = module.responsive_contract_for_hierarchy(hierarchy)
+
+    assert derivation["state"] == "complete"
+    assert derivation["version"] == module.RESPONSIVE_PRESENTATION_CONTRACT_VERSION
+    assert [item["id"] for item in derivation["bands"]] == [
+        "wide",
+        "medium",
+        "narrow",
+        "compact",
+    ]
+    assert [item["minWidth"] for item in derivation["bands"]] == [
+        1240,
+        960,
+        720,
+        0,
+    ]
+    assert contract["mode"] == "derived-from-layout-hints"
+    assert contract["bands"] == derivation["bands"]
+    assert contract["capacityDerivation"]["inputs"]["phaseSupportMinInline"] == 300.0
+
+
+def test_layout_hint_milestone2_changes_the_semantic_presentation_by_capacity():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    planning = next(
+        item
+        for item in module.phase_trial_scenarios(hierarchy)
+        if item["phase"] == "planning"
+    )
+    proof = next(
+        item
+        for item in module.phase_trial_scenarios(hierarchy)
+        if item["phase"] == "proof-review"
+    )
+
+    medium = module.responsive_phase_scenario(
+        hierarchy,
+        planning,
+        module.ViewportProfile("medium", 1200, 820, True),
+    )
+    narrow = module.responsive_phase_scenario(
+        hierarchy,
+        planning,
+        module.ViewportProfile("narrow", 840, 720, True),
+    )
+    compact_proof = module.responsive_phase_scenario(
+        hierarchy,
+        proof,
+        module.ViewportProfile("compact", 680, 720, True),
+    )
+
+    assert medium["dominantSlot"] == "workflow"
+    assert medium["presentationMode"] == "workflow-with-bottom-support"
+    assert medium["minDominantShare"] == 0.40
+
+    assert narrow["dominantSlot"] == "server"
+    assert narrow["presentationMode"] == "support-tab"
+    assert narrow["summarySlots"] == ["command", "workflow"]
+    assert narrow["returnToSlot"] == "workflow"
+
+    assert compact_proof["dominantSlot"] == "evidence"
+    assert compact_proof["presentationMode"] == "sequential-support-stage"
+    assert compact_proof["summarySlots"] == ["workflow"]
+    assert compact_proof["returnToSlot"] == "workflow"
+
+
+def test_layout_hint_milestone2_realizes_compact_context_as_a_summary_not_a_panel():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    planning = next(
+        item
+        for item in module.phase_trial_scenarios(hierarchy)
+        if item["phase"] == "planning"
+    )
+    scenario = module.responsive_phase_scenario(
+        hierarchy,
+        planning,
+        module.ViewportProfile("compact", 680, 720, True),
+    )
+    candidate = next(
+        item
+        for item in module.compile_layout_hint_responsive_candidates(hierarchy)
+        if item["responsivePlacement"] == "stage"
+    )
+
+    realized = module.realize_phase(hierarchy, candidate, scenario)
+    workflow = next(
+        item for item in realized["nodes"] if item["slot"] == "workflow"
+    )
+    markup = module.node_markup(workflow, realized["focusSlot"])
+
+    assert realized["realizationStates"]["workflow"] == "compact-summary"
+    assert workflow["items"]
+    assert 'data-flog-realization="compact-summary"' in markup
+    assert 'data-flog-return-to="workflow"' in markup
+    assert "Return to workflow" in markup
+    assert "Changed file:" not in markup
+
+
+def test_layout_hint_milestone2_compiles_distinct_dock_tree_placements():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+
+    candidates = [
+        module.layout_hint_shadow_candidate_spec(hierarchy),
+        *module.compile_layout_hint_responsive_candidates(hierarchy),
+    ]
+    candidates = [item for item in candidates if item is not None]
+    by_placement = {item["responsivePlacement"]: item for item in candidates}
+
+    assert set(by_placement) == {"right", "bottom", "tab", "stage", "trigger"}
+    assert {
+        item["composition"]["unitPolicies"]["phase-support"]
+        for item in candidates
+    } == {
+        "bounded-side-drawer",
+        "bounded-bottom-drawer",
+        "tabbed-phase-support",
+        "sequential-phase-stage",
+        "one-active-plus-triggers",
+    }
+    for placement, candidate in by_placement.items():
+        dock_tree = candidate["layoutHintCompilation"]["dockTree"]
+        assert dock_tree["unitPlacements"]["phase-support"] == placement
+        target_zone = next(
+            item for item in dock_tree["zones"] if item["id"] == placement
+        )
+        assert "phase-support" in target_zone["units"]
+
+
+def test_layout_hint_milestone2_sampled_coverage_fails_closed_on_bad_probe():
+    module = load_module()
+    selections = [
+        {
+            "width": 1600,
+            "candidate": "wide",
+            "band": "wide",
+            "remediationLevel": 0,
+            "capacityAdmissible": True,
+            "status": "pass",
+            "phaseFloorFailureCount": 0,
+            "transitionGap": False,
+        },
+        {
+            "width": 1200,
+            "candidate": "medium",
+            "band": "medium",
+            "remediationLevel": 1,
+            "capacityAdmissible": True,
+            "status": "pass",
+            "phaseFloorFailureCount": 0,
+            "transitionGap": False,
+        },
+        {
+            "width": 680,
+            "candidate": "compact",
+            "band": "compact",
+            "remediationLevel": 3,
+            "capacityAdmissible": True,
+            "status": "pass",
+            "phaseFloorFailureCount": 0,
+            "transitionGap": False,
+        },
+    ]
+
+    complete = module.responsive_sampled_coverage(selections)
+    assert complete["coverageComplete"] is True
+    assert complete["uncoveredIntervals"] == []
+
+    selections[1]["capacityAdmissible"] = False
+    gapped = module.responsive_sampled_coverage(selections)
+    assert gapped["coverageComplete"] is False
+    assert gapped["state"] == "gapped"
+    assert len(gapped["uncoveredIntervals"]) == 1
+    assert "outside its capacity contract" in gapped["uncoveredIntervals"][0]["reason"]
+
+
+def test_layout_hint_milestone2_css_contains_distinct_tab_and_stage_realizations():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    planning = next(
+        item
+        for item in module.phase_trial_scenarios(hierarchy)
+        if item["phase"] == "planning"
+    )
+    scenario = module.responsive_phase_scenario(
+        hierarchy,
+        planning,
+        module.ViewportProfile("narrow", 840, 720, True),
+    )
+    candidate = next(
+        item
+        for item in module.compile_layout_hint_responsive_candidates(hierarchy)
+        if item["responsivePlacement"] == "tab"
+    )
+    realized = module.realize_phase(hierarchy, candidate, scenario)
+
+    html = module.render_realized_trial_html(
+        realized,
+        candidate,
+        "mcel-realistic",
+    )
+
+    assert "unit-policy-tabbed-phase-support" in html
+    assert "unit-policy-sequential-phase-stage" in module.render_realized_trial_html(
+        module.realize_phase(
+            hierarchy,
+            next(
+                item
+                for item in module.compile_layout_hint_responsive_candidates(hierarchy)
+                if item["responsivePlacement"] == "stage"
+            ),
+            module.responsive_phase_scenario(
+                hierarchy,
+                planning,
+                module.ViewportProfile("compact", 680, 720, True),
+            ),
+        ),
+        next(
+            item
+            for item in module.compile_layout_hint_responsive_candidates(hierarchy)
+            if item["responsivePlacement"] == "stage"
+        ),
+        "mcel-realistic",
+    )
+    assert "compact-summary" in html
+    assert module.RESPONSIVE_POLICY_VERSION == "capacity-derived-presentation-contract-v2"
+
+
+def test_layout_hint_milestone2_policy_covers_all_capacity_probes_without_forcing():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    profiles = [
+        module.ViewportProfile("wide", 1600, 1000, True),
+        module.ViewportProfile("desktop", 1440, 900, True),
+        module.ViewportProfile("medium", 1200, 820, True),
+        module.ViewportProfile("constrained", 1024, 768, True),
+        module.ViewportProfile("narrow", 840, 720, True),
+        module.ViewportProfile("compact", 680, 720, True),
+        module.ViewportProfile("small", 560, 720, True),
+    ]
+    placement_by_viewport = {
+        "wide": ("right", "bounded-side-drawer"),
+        "desktop": ("right", "bounded-side-drawer"),
+        "medium": ("bottom", "bounded-bottom-drawer"),
+        "constrained": ("bottom", "bounded-bottom-drawer"),
+        "narrow": ("tab", "tabbed-phase-support"),
+        "compact": ("stage", "sequential-phase-stage"),
+        "small": ("stage", "sequential-phase-stage"),
+    }
+    measurements = []
+    for profile in profiles:
+        placement, policy = placement_by_viewport[profile.name]
+        item = _responsive_measurement(
+            hierarchy_id=hierarchy["id"],
+            viewport=profile.name,
+            candidate=f"hint-responsive-{placement}",
+            support_policy=policy,
+            score=95,
+            headroom=0.025,
+        )
+        item["candidateMode"] = "layout-hint-responsive-shadow"
+        item["shadowOnly"] = True
+        item["responsiveEligible"] = True
+        measurements.append(item)
+
+    policy = module.responsive_policy_for_hierarchy(
+        hierarchy=hierarchy,
+        measurements=measurements,
+        profiles=profiles,
+    )
+
+    assert policy["state"] == "pass"
+    assert policy["semanticContractStable"] is True
+    assert policy["coverageComplete"] is True
+    assert policy["transitionGapCount"] == 0
+    assert policy["forcedBeyondBandCount"] == 0
+    assert policy["monotonicViolationCount"] == 0
+    assert [item["remediationLevel"] for item in policy["selections"]] == [
+        0,
+        0,
+        1,
+        1,
+        2,
+        3,
+        3,
+    ]
+    assert all(
+        item["capacityAdmissibilityState"] == "admissible"
+        for item in policy["selections"]
+    )
+
+
+def test_layout_hint_milestone2_marks_out_of_band_selection_as_forced_not_valid():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    profile = module.ViewportProfile("wide", 1600, 1000, True)
+    measurement = _responsive_measurement(
+        hierarchy_id=hierarchy["id"],
+        viewport="wide",
+        candidate="hint-responsive-stage",
+        support_policy="sequential-phase-stage",
+        score=98,
+        headroom=0.04,
+    )
+    measurement["candidateMode"] = "layout-hint-responsive-shadow"
+    measurement["shadowOnly"] = True
+    measurement["responsiveEligible"] = True
+
+    policy = module.responsive_policy_for_hierarchy(
+        hierarchy=hierarchy,
+        measurements=[measurement],
+        profiles=[profile],
+    )
+
+    selection = policy["selections"][0]
+    assert selection["capacityAdmissible"] is False
+    assert selection["forcedBeyondBand"] is True
+    assert selection["capacityAdmissibilityState"] == "forced"
+    assert policy["semanticContractStable"] is False
+    assert policy["forcedBeyondBandCount"] == 1
+    assert policy["state"] == "fail"
+
+
+def test_layout_hint_milestone2_samples_both_sides_of_derived_capacity_boundaries():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    reference = [
+        module.ViewportProfile("wide", 1600, 1000, True),
+        module.ViewportProfile("desktop", 1440, 900, True),
+        module.ViewportProfile("medium", 1200, 820, True),
+        module.ViewportProfile("constrained", 1024, 768, True),
+        module.ViewportProfile("narrow", 840, 720, True),
+        module.ViewportProfile("compact", 680, 720, True),
+        module.ViewportProfile("small", 560, 720, True),
+    ]
+
+    probes = module.responsive_boundary_viewports_for_hierarchy(
+        hierarchy,
+        reference_profiles=reference,
+    )
+
+    assert sorted(item.width for item in probes) == [
+        719,
+        721,
+        959,
+        961,
+        1239,
+        1241,
+    ]
+    assert all(item.responsive_probe for item in probes)
+    assert all(item.height > 0 for item in probes)
+
+
+def test_layout_hint_milestone2_boundary_probes_run_only_adjacent_authored_fallbacks():
+    module = load_module()
+    hierarchy = _git_hierarchy_for_milestone2(module)
+    candidates = module.candidate_specs_for_hierarchy(
+        hierarchy,
+        module.LAYOUT_CANDIDATES,
+    )
+    by_placement = {
+        item.get("responsivePlacement"): item
+        for item in candidates
+        if isinstance(item, dict) and item.get("responsivePlacement")
+    }
+    probe = module.ViewportProfile(
+        "boundary-right-bottom-below-1239",
+        1239,
+        830,
+        True,
+    )
+
+    assert module.candidate_applies_to_viewport(by_placement["right"], probe)
+    assert module.candidate_applies_to_viewport(by_placement["bottom"], probe)
+    assert not module.candidate_applies_to_viewport(by_placement["tab"], probe)
+    normal = next(
+        item
+        for item in candidates
+        if isinstance(item, dict) and item.get("mode") == "recursive-composition"
+    )
+    assert not module.candidate_applies_to_viewport(normal, probe)

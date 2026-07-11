@@ -54,7 +54,9 @@ DEFAULT_RESPONSIVE_VIEWPORTS = (
     "constrained=1024x768,narrow=840x720,compact=680x720,small=560x720"
 )
 DEFAULT_RESPONSIVE_HYSTERESIS_PX = 48
-RESPONSIVE_POLICY_VERSION = "capacity-admissible-monotonic-v1"
+RESPONSIVE_POLICY_VERSION = "capacity-derived-presentation-contract-v2"
+RESPONSIVE_PRESENTATION_CONTRACT_VERSION = "mcel-responsive-presentations-v1"
+RESPONSIVE_COVERAGE_VERSION = "sampled-capacity-coverage-v1"
 DEFAULT_CHROME = "mcel-realistic"
 DEFAULT_CANDIDATES = "all"
 DEFAULT_OUTPUT_DIR = "runtime/reports/flog"
@@ -66,6 +68,40 @@ ROLLUP_CANVAS_MARGIN = 14
 ROLLUP_ROW_LABEL_WIDTH = 210
 ROLLUP_FILE_NAME = "layout-snapshot-final-rollup.png"
 PHASE_SHARE_FLOOR_TOLERANCE = 0.0005
+
+LAYOUT_HINT_CONTRACT_VERSION = "mcel-layout-hints-v1"
+LAYOUT_HINT_MODE = "shadow-only"
+LAYOUT_HINT_STRENGTHS = {"required", "strong", "preferred", "opportunistic"}
+LAYOUT_HINT_PLACEMENTS = {
+    "top",
+    "left",
+    "center",
+    "right",
+    "bottom",
+    "tab",
+    "stage",
+    "trigger",
+    "overlay",
+}
+LAYOUT_HINT_ROOT_MODELS = {"dock-workbench", "stack", "grid"}
+LAYOUT_HINT_REFINEMENT_VERSION = "mcel-layout-hint-refinement-v1"
+LAYOUT_HINT_RESPONSIVE_VERSION = "mcel-layout-hints-responsive-v1"
+LAYOUT_HINT_MIN_ROBUST_HEADROOM = 0.01
+LAYOUT_HINT_REFINEMENT_IMPROVEMENT_FLOOR = 0.002
+LAYOUT_HINT_FALLBACK_POLICY_BY_PLACEMENT = {
+    "right": "bounded-side-drawer",
+    "bottom": "bounded-bottom-drawer",
+    "tab": "tabbed-phase-support",
+    "stage": "sequential-phase-stage",
+    "trigger": "one-active-plus-triggers",
+}
+LAYOUT_HINT_FALLBACK_PROFILES = {
+    "right": ["wide", "desktop"],
+    "bottom": ["medium", "constrained"],
+    "tab": ["narrow"],
+    "stage": ["compact", "small"],
+    "trigger": ["compact", "small"],
+}
 
 SEMANTIC_RELATION_KEYS = (
     "controls",
@@ -224,6 +260,79 @@ def merge_viewport_profiles(
     return sorted(merged, key=lambda item: (-item.width, -item.height, item.name))
 
 
+def _interpolated_probe_height(
+    width: int,
+    profiles: list[ViewportProfile],
+) -> int:
+    """Estimate a representative height without inventing a third search axis."""
+
+    ordered = sorted(profiles, key=lambda item: item.width)
+    if not ordered:
+        return 720
+    if width <= ordered[0].width:
+        return ordered[0].height
+    if width >= ordered[-1].width:
+        return ordered[-1].height
+    for lower, upper in zip(ordered, ordered[1:]):
+        if lower.width <= width <= upper.width:
+            span = max(1, upper.width - lower.width)
+            ratio = (width - lower.width) / span
+            return int(round(lower.height + ratio * (upper.height - lower.height)))
+    return ordered[-1].height
+
+
+def responsive_boundary_viewports_for_hierarchy(
+    hierarchy: dict[str, Any],
+    *,
+    reference_profiles: list[ViewportProfile],
+) -> list[ViewportProfile]:
+    """Sample both sides of every capacity boundary.
+
+    Milestone 2 keeps the search finite: only the authored adjacent fallback
+    realizations are rendered at these probes.  The profile name carries those
+    placements so ``candidate_applies_to_viewport`` can avoid rerunning the broad
+    candidate catalog at every one-pixel boundary sample.
+    """
+
+    if not hierarchy.get("responsiveContract"):
+        return []
+    contract = responsive_contract_for_hierarchy(hierarchy)
+    bands = sorted(
+        contract.get("bands") or [],
+        key=lambda item: -int(item.get("minWidth", 0) or 0),
+    )
+    placement_by_band = {
+        "wide": ["right"],
+        "medium": ["bottom"],
+        "narrow": ["tab"],
+        "compact": ["stage", "trigger"],
+    }
+    probes: list[ViewportProfile] = []
+    for upper, lower in zip(bands, bands[1:]):
+        boundary = int(upper.get("minWidth", 0) or 0)
+        if boundary <= 0:
+            continue
+        placements = [
+            *placement_by_band.get(str(upper.get("id") or ""), []),
+            *placement_by_band.get(str(lower.get("id") or ""), []),
+        ]
+        placement_token = "-".join(dict.fromkeys(placements)) or "responsive"
+        for side, width in (("below", boundary - 1), ("above", boundary + 1)):
+            if width <= 0:
+                continue
+            probes.append(
+                ViewportProfile(
+                    name=(
+                        f"boundary-{placement_token}-{side}-{width}"
+                    ),
+                    width=width,
+                    height=_interpolated_probe_height(width, reference_profiles),
+                    responsive_probe=True,
+                )
+            )
+    return probes
+
+
 def responsive_viewports_for_hierarchy(
     hierarchy: dict[str, Any],
     *,
@@ -238,7 +347,12 @@ def responsive_viewports_for_hierarchy(
         return list(base_profiles)
     if mode == "recursive" and not hierarchy.get("layoutUnitTree"):
         return list(base_profiles)
-    return merge_viewport_profiles(base_profiles, responsive_profiles)
+    merged = merge_viewport_profiles(base_profiles, responsive_profiles)
+    boundary = responsive_boundary_viewports_for_hierarchy(
+        hierarchy,
+        reference_profiles=merged,
+    )
+    return merge_viewport_profiles(merged, boundary)
 
 
 def parse_candidates(value: str) -> list[str]:
@@ -1452,7 +1566,12 @@ def candidate_phase_policy(candidate: str | dict[str, Any]) -> dict[str, Any]:
         (composition.get("unitPolicies") or {}).get("phase-support") or ""
     )
     phase_aware = (
-        candidate_mode(candidate) == "recursive-composition"
+        candidate_mode(candidate)
+        in {
+            "recursive-composition",
+            "layout-hint-shadow",
+            "layout-hint-responsive-shadow",
+        }
         or identity.startswith("compose--")
         or render_family in PHASE_AWARE_CANDIDATES
     )
@@ -1460,6 +1579,10 @@ def candidate_phase_policy(candidate: str | dict[str, Any]) -> dict[str, Any]:
         placement = "bottom-drawer"
     elif support_policy == "inline-phase-stage":
         placement = "inline-stage"
+    elif support_policy == "tabbed-phase-support":
+        placement = "tab-group"
+    elif support_policy == "sequential-phase-stage":
+        placement = "sequential-stage"
     elif support_policy == "one-active-plus-triggers":
         placement = "neutral-phase-stage"
     elif support_policy == "bounded-side-drawer":
@@ -1745,6 +1868,945 @@ def layout_unit_policy_catalog(
     return catalog
 
 
+
+def _layout_hint_tokens(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw_values = [str(item) for item in value]
+    else:
+        raw_values = re.split(r"[\s,]+", str(value or "").strip())
+    return list(dict.fromkeys(item.strip() for item in raw_values if item.strip()))
+
+
+def _layout_hint_float(
+    value: Any,
+    *,
+    default: float = 0.0,
+) -> float:
+    if value in (None, ""):
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def normalize_layout_hint_contract(hierarchy: dict[str, Any]) -> dict[str, Any]:
+    """Normalize HTML-shaped layout hints into one deterministic shadow contract.
+
+    Milestone 1 deliberately reads a Python fixture that uses future-facing
+    ``data-mc-layout-*`` names.  It does not inspect or modify the live app HTML.
+    """
+
+    source = copy.deepcopy(hierarchy.get("layoutHintSource") or {})
+    if not source:
+        return {
+            "hierarchyId": hierarchy.get("id", ""),
+            "version": LAYOUT_HINT_CONTRACT_VERSION,
+            "mode": LAYOUT_HINT_MODE,
+            "state": "notDeclared",
+            "issues": [],
+            "warnings": [],
+            "root": {},
+            "units": [],
+            "sourceKind": "none",
+        }
+
+    issues: list[str] = []
+    warnings: list[str] = []
+    declared_version = str(source.get("version") or LAYOUT_HINT_CONTRACT_VERSION)
+    if declared_version != LAYOUT_HINT_CONTRACT_VERSION:
+        issues.append(
+            f"unsupported layout-hint version {declared_version!r}; "
+            f"expected {LAYOUT_HINT_CONTRACT_VERSION!r}"
+        )
+
+    specs = layout_unit_specs(hierarchy)
+    specs_by_id = {str(unit["id"]): unit for unit in specs}
+    roots = [unit for unit in specs if unit.get("parentId") is None]
+    root_spec = roots[0] if len(roots) == 1 else None
+    if root_spec is None:
+        issues.append("layout-hint compilation requires exactly one recursive root unit")
+
+    root_attrs = dict(source.get("attributes") or {})
+    root_id = str(
+        source.get("rootUnitId")
+        or root_attrs.get("data-mc-layout-root")
+        or (root_spec or {}).get("id")
+        or ""
+    )
+    if root_id not in specs_by_id:
+        issues.append(f"layout-hint root {root_id!r} is not a declared layout unit")
+
+    root_model = str(root_attrs.get("data-mc-layout") or "").strip()
+    if root_model not in LAYOUT_HINT_ROOT_MODELS:
+        issues.append(
+            f"layout-hint root model {root_model!r} is not one of "
+            f"{sorted(LAYOUT_HINT_ROOT_MODELS)!r}"
+        )
+
+    root_zones = _layout_hint_tokens(root_attrs.get("data-mc-layout-zones"))
+    unknown_root_zones = sorted(set(root_zones) - LAYOUT_HINT_PLACEMENTS)
+    if unknown_root_zones:
+        issues.append(
+            "layout-hint root declares unknown zone(s): "
+            + ", ".join(unknown_root_zones)
+        )
+    if "center" not in root_zones:
+        issues.append("layout-hint dock workbench must expose a center zone")
+
+    policy_catalog = layout_unit_policy_catalog(hierarchy)
+    declared_units = dict(source.get("units") or {})
+    normalized_units: list[dict[str, Any]] = []
+    leaf_ids = {
+        str(unit["id"])
+        for unit in specs
+        if bool(unit.get("leaf"))
+    }
+    unknown_units = sorted(set(declared_units) - set(specs_by_id))
+    if unknown_units:
+        issues.append(
+            "layout hints reference unknown unit(s): " + ", ".join(unknown_units)
+        )
+
+    for unit_id, raw_value in declared_units.items():
+        if unit_id not in specs_by_id:
+            continue
+        attrs = dict(raw_value or {})
+        prefer = str(attrs.get("data-mc-layout-prefer") or "").strip()
+        allowed = _layout_hint_tokens(attrs.get("data-mc-layout-allowed"))
+        fallback = _layout_hint_tokens(attrs.get("data-mc-layout-fallback"))
+        strength = str(
+            attrs.get("data-mc-layout-strength") or "preferred"
+        ).strip()
+        policy = str(attrs.get("data-mc-layout-policy") or "").strip()
+        inactive = str(
+            attrs.get("data-mc-layout-inactive") or "preserve"
+        ).strip()
+        internal = str(attrs.get("data-mc-layout-internal") or "").strip()
+        min_inline = _layout_hint_float(
+            attrs.get("data-mc-layout-min-inline"),
+            default=0.0,
+        )
+        min_block = _layout_hint_float(
+            attrs.get("data-mc-layout-min-block"),
+            default=0.0,
+        )
+        max_share = _layout_hint_float(
+            attrs.get("data-mc-layout-max-share"),
+            default=1.0,
+        )
+
+        unknown_placements = sorted(
+            (set(allowed) | set(fallback) | ({prefer} if prefer else set()))
+            - LAYOUT_HINT_PLACEMENTS
+        )
+        if unknown_placements:
+            issues.append(
+                f"{unit_id} declares unknown placement(s): "
+                + ", ".join(unknown_placements)
+            )
+        if not allowed:
+            issues.append(f"{unit_id} must declare data-mc-layout-allowed")
+        if not prefer:
+            issues.append(f"{unit_id} must declare data-mc-layout-prefer")
+        elif prefer not in allowed:
+            issues.append(
+                f"{unit_id} prefers {prefer!r}, but it is not in its allowed placements"
+            )
+        invalid_fallbacks = [item for item in fallback if item not in allowed]
+        if invalid_fallbacks:
+            issues.append(
+                f"{unit_id} fallback placement(s) are not allowed: "
+                + ", ".join(invalid_fallbacks)
+            )
+        if strength not in LAYOUT_HINT_STRENGTHS:
+            issues.append(
+                f"{unit_id} declares invalid layout-hint strength {strength!r}"
+            )
+        allowed_policies = {
+            str(item.get("policy") or "")
+            for item in policy_catalog.get(unit_id, [])
+        }
+        if not policy:
+            issues.append(f"{unit_id} must declare data-mc-layout-policy")
+        elif policy not in allowed_policies:
+            issues.append(
+                f"{unit_id} policy {policy!r} is not available in its local policy catalog"
+            )
+        if min_inline < 0 or min_block < 0:
+            issues.append(f"{unit_id} minimum dimensions cannot be negative")
+        if not 0 < max_share <= 1:
+            issues.append(
+                f"{unit_id} data-mc-layout-max-share must be in the interval (0, 1]"
+            )
+
+        normalized_units.append(
+            {
+                "id": unit_id,
+                "role": str(specs_by_id[unit_id].get("role") or "support"),
+                "slots": list(specs_by_id[unit_id].get("slots") or []),
+                "prefer": prefer,
+                "allowed": allowed,
+                "fallback": fallback,
+                "strength": strength,
+                "policy": policy,
+                "inactive": inactive,
+                "internal": internal,
+                "minInline": min_inline,
+                "minBlock": min_block,
+                "maxShare": max_share,
+                "attributes": attrs,
+            }
+        )
+
+    missing_leaf_hints = sorted(
+        leaf_ids - {str(unit["id"]) for unit in normalized_units}
+    )
+    if missing_leaf_hints:
+        issues.append(
+            "layout-hint source omits leaf unit(s): "
+            + ", ".join(missing_leaf_hints)
+        )
+
+    if root_spec and root_id != str(root_spec.get("id") or ""):
+        warnings.append(
+            f"layout-hint root {root_id!r} differs from recursive root "
+            f"{root_spec.get('id')!r}"
+        )
+
+    return {
+        "hierarchyId": hierarchy.get("id", ""),
+        "version": declared_version,
+        "mode": LAYOUT_HINT_MODE,
+        "state": "complete" if not issues else "invalid",
+        "sourceKind": str(
+            source.get("sourceKind") or "synthetic-data-mc-layout-attributes"
+        ),
+        "root": {
+            "id": root_id,
+            "model": root_model,
+            "zones": root_zones,
+            "policy": str(
+                root_attrs.get("data-mc-layout-policy")
+                or (root_spec or {}).get("defaultPolicy")
+                or "source-order"
+            ),
+            "capacity": str(
+                root_attrs.get("data-mc-layout-capacity") or "wide"
+            ),
+            "attributes": root_attrs,
+        },
+        "units": normalized_units,
+        "issues": issues,
+        "warnings": warnings,
+    }
+
+
+def compile_layout_hint_default(
+    hierarchy: dict[str, Any],
+    *,
+    capacity: str = "wide",
+) -> dict[str, Any]:
+    """Compile authored hints into one deterministic, shadow-only dock tree."""
+
+    contract = normalize_layout_hint_contract(hierarchy)
+    if contract["state"] != "complete":
+        return {
+            "hierarchyId": hierarchy.get("id", ""),
+            "version": LAYOUT_HINT_CONTRACT_VERSION,
+            "mode": LAYOUT_HINT_MODE,
+            "state": "invalid",
+            "capacity": capacity,
+            "issues": list(contract.get("issues") or []),
+            "warnings": list(contract.get("warnings") or []),
+            "dockTree": {},
+            "candidate": None,
+            "annotationRecommendations": [],
+        }
+
+    issues: list[str] = []
+    root_zones = list(contract["root"]["zones"])
+    unit_placements: dict[str, str] = {}
+    zones: dict[str, list[str]] = {zone: [] for zone in root_zones}
+    unit_policies: dict[str, str] = {}
+    annotation_recommendations: list[dict[str, Any]] = []
+
+    for unit in contract["units"]:
+        candidates = [unit["prefer"], *unit["fallback"]]
+        placement = next((item for item in candidates if item in root_zones), "")
+        if not placement:
+            issues.append(
+                f"{unit['id']} has no preferred or fallback placement accepted by "
+                f"root zones {root_zones!r}"
+            )
+            continue
+        unit_placements[unit["id"]] = placement
+        zones.setdefault(placement, []).append(unit["id"])
+        unit_policies[unit["id"]] = unit["policy"]
+        annotation_recommendations.append(
+            {
+                "targetUnitId": unit["id"],
+                "attributes": copy.deepcopy(unit["attributes"]),
+                "reason": (
+                    "Shadow recommendation only; no live HTML or runtime file is "
+                    "modified by Milestone 1."
+                ),
+            }
+        )
+
+    if issues:
+        return {
+            "hierarchyId": hierarchy.get("id", ""),
+            "version": LAYOUT_HINT_CONTRACT_VERSION,
+            "mode": LAYOUT_HINT_MODE,
+            "state": "invalid",
+            "capacity": capacity,
+            "issues": issues,
+            "warnings": list(contract.get("warnings") or []),
+            "dockTree": {},
+            "candidate": None,
+            "annotationRecommendations": annotation_recommendations,
+        }
+
+    root_policy = str(contract["root"]["policy"])
+    root_catalog = layout_unit_policy_catalog(hierarchy).get(
+        str(contract["root"]["id"]), []
+    )
+    root_policies = {str(item.get("policy") or "") for item in root_catalog}
+    if root_policy not in root_policies:
+        issues.append(
+            f"root policy {root_policy!r} is not available in the root policy catalog"
+        )
+
+    dock_tree = {
+        "id": str(contract["root"]["id"]),
+        "model": str(contract["root"]["model"]),
+        "capacity": str(capacity),
+        "policy": root_policy,
+        "zones": [
+            {
+                "id": zone,
+                "units": list(zones.get(zone) or []),
+            }
+            for zone in root_zones
+            if zones.get(zone)
+        ],
+        "unitPlacements": unit_placements,
+    }
+    candidate_id = f"hint-compiled-default--{slugify(hierarchy.get('id', 'layout'))}"
+    composition = {
+        "rootPolicy": root_policy,
+        "unitPolicies": unit_policies,
+    }
+    candidate = {
+        "id": candidate_id,
+        "mode": "layout-hint-shadow",
+        "renderFamily": "recursive-composition",
+        "compositionLabel": (
+            "authored layout hints → deterministic wide default"
+        ),
+        "preflightScore": 100,
+        "compatibilityPenalty": 0,
+        "localPolicyPreflight": {
+            unit_id: 100 for unit_id in unit_policies
+        },
+        "composition": composition,
+        "shadowOnly": True,
+        "minViewportWidth": 1320,
+        "layoutHintCompilation": {
+            "version": LAYOUT_HINT_CONTRACT_VERSION,
+            "capacity": capacity,
+            "dockTree": copy.deepcopy(dock_tree),
+            "state": "complete" if not issues else "invalid",
+        },
+    }
+    return {
+        "hierarchyId": hierarchy.get("id", ""),
+        "version": LAYOUT_HINT_CONTRACT_VERSION,
+        "mode": LAYOUT_HINT_MODE,
+        "state": "complete" if not issues else "invalid",
+        "capacity": capacity,
+        "issues": issues,
+        "warnings": list(contract.get("warnings") or []),
+        "contract": contract,
+        "dockTree": dock_tree,
+        "candidate": candidate if not issues else None,
+        "annotationRecommendations": annotation_recommendations,
+        "liveApplicationFilesTouched": False,
+    }
+
+
+def layout_hint_shadow_candidate_spec(
+    hierarchy: dict[str, Any],
+) -> dict[str, Any] | None:
+    compilation = compile_layout_hint_default(hierarchy)
+    candidate = compilation.get("candidate")
+    if not isinstance(candidate, dict):
+        return None
+    result = copy.deepcopy(candidate)
+    # Milestone 2 reuses the deterministic wide default as the authored right-dock
+    # realization instead of rendering a duplicate responsive candidate.
+    result["responsiveEligible"] = True
+    result["responsivePlacement"] = "right"
+    return result
+
+
+def candidate_shadow_only(candidate: str | dict[str, Any]) -> bool:
+    return bool(isinstance(candidate, dict) and candidate.get("shadowOnly"))
+
+
+def candidate_applies_to_viewport(
+    candidate: str | dict[str, Any],
+    viewport: ViewportProfile,
+) -> bool:
+    if not isinstance(candidate, dict):
+        return not viewport.name.startswith("boundary-")
+    if viewport.name.startswith("boundary-"):
+        if not candidate_responsive_eligible(candidate):
+            return False
+        placement = str(candidate.get("responsivePlacement") or "")
+        return bool(placement and f"-{placement}-" in f"-{viewport.name}-")
+    minimum = int(candidate.get("minViewportWidth", 0) or 0)
+    maximum = int(candidate.get("maxViewportWidth", 0) or 0)
+    if viewport.width < minimum:
+        return False
+    if maximum and viewport.width > maximum:
+        return False
+    names = _layout_hint_tokens(candidate.get("viewportProfiles"))
+    return not names or viewport.name in names
+
+
+def candidate_responsive_eligible(candidate: str | dict[str, Any]) -> bool:
+    """Return whether a shadow candidate may participate in responsive selection."""
+
+    return bool(isinstance(candidate, dict) and candidate.get("responsiveEligible"))
+
+
+def compile_layout_hint_responsive_candidates(
+    hierarchy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Compile the authored fallback chain into deterministic FLOG-only candidates.
+
+    Milestone 2 still does not inspect or mutate live application files.  It turns
+    the normalized hint contract into one explicit composition per responsive
+    placement so Chromium can verify the authored chain rather than rediscovering
+    it through broad family search.
+    """
+
+    compilation = compile_layout_hint_default(hierarchy)
+    candidate = compilation.get("candidate")
+    if compilation.get("state") != "complete" or not isinstance(candidate, dict):
+        return []
+
+    base_composition = copy.deepcopy(candidate.get("composition") or {})
+    unit_policies = dict(base_composition.get("unitPolicies") or {})
+    # Milestone 1E established the safer default.  The synthetic contract is also
+    # updated below, but keeping this normalization here makes the compiler robust
+    # to older fixture snapshots.
+    if unit_policies.get("command-workflow") == "command-over-dominant":
+        unit_policies["command-workflow"] = "command-inline-header"
+
+    result: list[dict[str, Any]] = []
+    for placement in ("bottom", "tab", "stage", "trigger"):
+        support_policy = LAYOUT_HINT_FALLBACK_POLICY_BY_PLACEMENT.get(placement, "")
+        profiles = list(LAYOUT_HINT_FALLBACK_PROFILES.get(placement, []))
+        if not support_policy or not profiles:
+            continue
+        composition = {
+            "rootPolicy": str(
+                base_composition.get("rootPolicy") or "dominant-workflow-stack"
+            ),
+            "unitPolicies": {
+                **unit_policies,
+                "phase-support": support_policy,
+            },
+        }
+        dock_tree = copy.deepcopy(compilation.get("dockTree") or {})
+        unit_placements = dict(dock_tree.get("unitPlacements") or {})
+        unit_placements["phase-support"] = placement
+        dock_tree["unitPlacements"] = unit_placements
+        zones = []
+        for zone in dock_tree.get("zones") or []:
+            zone_copy = copy.deepcopy(zone)
+            zone_copy["units"] = [
+                unit_id
+                for unit_id in zone_copy.get("units") or []
+                if unit_id != "phase-support"
+            ]
+            zones.append(zone_copy)
+        target_zone = next(
+            (zone for zone in zones if zone.get("id") == placement),
+            None,
+        )
+        if target_zone is None:
+            target_zone = {"id": placement, "units": []}
+            zones.append(target_zone)
+        target_zone.setdefault("units", []).append("phase-support")
+        dock_tree["zones"] = zones
+
+        result.append(
+            {
+                "id": (
+                    f"hint-responsive-{slugify(placement)}--"
+                    f"{slugify(hierarchy.get('id', 'layout'))}"
+                ),
+                "mode": "layout-hint-responsive-shadow",
+                "renderFamily": "recursive-composition",
+                "compositionLabel": (
+                    f"authored responsive hints → {placement} realization"
+                ),
+                "preflightScore": 100,
+                "compatibilityPenalty": 0,
+                "localPolicyPreflight": {
+                    unit_id: 100
+                    for unit_id in composition["unitPolicies"]
+                },
+                "composition": composition,
+                "shadowOnly": True,
+                "responsiveEligible": True,
+                "responsivePlacement": placement,
+                "viewportProfiles": profiles,
+                "layoutHintCompilation": {
+                    "version": LAYOUT_HINT_RESPONSIVE_VERSION,
+                    "capacity": placement,
+                    "dockTree": dock_tree,
+                    "state": "complete",
+                    "liveApplicationFilesTouched": False,
+                },
+            }
+        )
+    return result
+
+
+
+
+def layout_hint_policy_differences(
+    authored_policies: dict[str, Any],
+    candidate_policies: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Return the smallest local-policy edits between two compositions."""
+
+    unit_ids = sorted(set(authored_policies) | set(candidate_policies))
+    return [
+        {
+            "unitId": unit_id,
+            "currentPolicy": str(authored_policies.get(unit_id) or ""),
+            "suggestedPolicy": str(candidate_policies.get(unit_id) or ""),
+        }
+        for unit_id in unit_ids
+        if str(authored_policies.get(unit_id) or "")
+        != str(candidate_policies.get(unit_id) or "")
+    ]
+
+
+def layout_hint_measurement_outcome(
+    item: dict[str, Any],
+    *,
+    robust_headroom: float = LAYOUT_HINT_MIN_ROBUST_HEADROOM,
+) -> dict[str, Any]:
+    """Classify hint evidence without allowing a score to repair infeasibility."""
+
+    status = measurement_status(item)
+    evidence = measurement_margin_evidence(item)
+    headroom = float(evidence["worstPhaseHeadroom"])
+    hard_failure_count = int(
+        (item.get("phaseFit") or {}).get("hardFailureCount", 0) or 0
+    ) + int(
+        (item.get("layoutUnitFit") or {}).get("hardFailureCount", 0) or 0
+    )
+    acceptable = (
+        status in ACCEPTABLE_LAYOUT_STATUSES
+        and hard_failure_count == 0
+        and headroom >= -PHASE_SHARE_FLOOR_TOLERANCE
+    )
+    robust = acceptable and (
+        headroom + PHASE_SHARE_FLOOR_TOLERANCE >= float(robust_headroom)
+    )
+    if robust:
+        outcome = "accepted"
+    elif acceptable:
+        outcome = "accepted-with-warning"
+    else:
+        outcome = "rejected"
+
+    classification = item.get("classification") or {}
+    return {
+        "outcome": outcome,
+        "status": status,
+        "score": measurement_score(item),
+        "selectionScoreRaw": float(evidence["selectionScoreRaw"]),
+        "worstPhaseHeadroom": headroom,
+        "requiredRobustHeadroom": float(robust_headroom),
+        "hardFailureCount": hard_failure_count,
+        "firstFailure": str(
+            next(iter(classification.get("failureReasons") or []), "")
+        ),
+    }
+
+
+def layout_hint_fallback_plan(
+    hierarchy: dict[str, Any],
+    *,
+    unit_id: str = "phase-support",
+) -> dict[str, Any]:
+    """Prepare authored fallback placements for browser-evidence lookup."""
+
+    contract = normalize_layout_hint_contract(hierarchy)
+    unit = next(
+        (
+            item
+            for item in contract.get("units") or []
+            if str(item.get("id") or "") == unit_id
+        ),
+        None,
+    )
+    if contract.get("state") != "complete" or unit is None:
+        return {
+            "unitId": unit_id,
+            "state": "notDeclared",
+            "preferredPlacement": "",
+            "preferredPolicy": "",
+            "chain": [],
+        }
+
+    available_policies = {
+        str(item.get("policy") or "")
+        for item in layout_unit_policy_catalog(hierarchy).get(unit_id, [])
+    }
+    placements = [str(unit.get("prefer") or ""), *list(unit.get("fallback") or [])]
+    chain: list[dict[str, Any]] = []
+    for index, placement in enumerate(item for item in placements if item):
+        policy = LAYOUT_HINT_FALLBACK_POLICY_BY_PLACEMENT.get(placement, "")
+        if not policy:
+            state = "unmapped"
+            reason = (
+                f"placement {placement!r} has no distinct local realization policy "
+                "in the current FLOG catalog"
+            )
+        elif policy not in available_policies:
+            state = "unavailable"
+            reason = (
+                f"placement {placement!r} maps to policy {policy!r}, but that policy "
+                f"is not available for {unit_id}"
+            )
+        else:
+            state = "ready"
+            reason = "placement has a distinct local policy available for browser evidence"
+        chain.append(
+            {
+                "index": index,
+                "placement": placement,
+                "policy": policy,
+                "state": state,
+                "viewportProfiles": list(
+                    LAYOUT_HINT_FALLBACK_PROFILES.get(placement, [])
+                ),
+                "reason": reason,
+            }
+        )
+    return {
+        "unitId": unit_id,
+        "state": "complete",
+        "preferredPlacement": str(unit.get("prefer") or ""),
+        "preferredPolicy": str(unit.get("policy") or ""),
+        "chain": chain,
+    }
+
+
+def _layout_hint_authored_policies(
+    hierarchy: dict[str, Any],
+) -> dict[str, str]:
+    compilation = compile_layout_hint_default(hierarchy)
+    candidate = compilation.get("candidate") or {}
+    composition = candidate.get("composition") or {}
+    return {
+        str(unit_id): str(policy)
+        for unit_id, policy in (composition.get("unitPolicies") or {}).items()
+    }
+
+
+def _layout_hint_measurements_for(
+    measurements: list[dict[str, Any]],
+    *,
+    hierarchy_id: str,
+    viewport_profile: str | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in measurements
+        if str(item.get("hierarchyId") or "") == hierarchy_id
+        and (
+            viewport_profile is None
+            or str(item.get("viewportProfile") or "") == viewport_profile
+        )
+    ]
+
+
+def _layout_hint_candidate_policies(item: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(unit_id): str(policy)
+        for unit_id, policy in (
+            (item.get("unitComposition") or {}).get("unitPolicies") or {}
+        ).items()
+        if str(unit_id) != str(
+            (item.get("unitComposition") or {}).get("rootUnitId") or ""
+        )
+    }
+
+
+def _layout_hint_best_matching_candidate(
+    measurements: list[dict[str, Any]],
+    *,
+    authored_policies: dict[str, str],
+    required_policy: tuple[str, str] | None = None,
+    exact_difference_count: int | None = None,
+) -> dict[str, Any] | None:
+    candidates: list[tuple[int, tuple[Any, ...], dict[str, Any]]] = []
+    for item in measurements:
+        if bool(item.get("shadowOnly")) and not bool(item.get("responsiveEligible")):
+            continue
+        if str(item.get("candidateMode") or "") not in {
+            "recursive-composition",
+            "layout-hint-responsive-shadow",
+        }:
+            continue
+        if bool(item.get("renderedEquivalenceExcludedFromRanking")):
+            continue
+        policies = _layout_hint_candidate_policies(item)
+        if required_policy:
+            unit_id, policy = required_policy
+            if policies.get(unit_id) != policy:
+                continue
+        differences = layout_hint_policy_differences(authored_policies, policies)
+        if exact_difference_count is not None and len(differences) != exact_difference_count:
+            continue
+        candidates.append(
+            (
+                len(differences),
+                measurement_ranking_sort_key(item),
+                item,
+            )
+        )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda entry: (entry[0], entry[1]))
+    return candidates[0][2]
+
+
+def analyze_layout_hint_refinements(
+    *,
+    hierarchies: list[dict[str, Any]],
+    measurements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Turn browser measurements into minimal shadow hint corrections.
+
+    This is Milestone 1E: it compares the deterministic authored default with
+    already-rendered recursive alternatives and prepares fallback evidence.  It
+    never edits HTML, CSS, or application runtime files.
+    """
+
+    reports: list[dict[str, Any]] = []
+    for hierarchy in hierarchies:
+        if not hierarchy.get("layoutHintSource"):
+            continue
+        hierarchy_id = str(hierarchy.get("id") or "")
+        compilation = compile_layout_hint_default(hierarchy)
+        authored_policies = _layout_hint_authored_policies(hierarchy)
+        hierarchy_measurements = _layout_hint_measurements_for(
+            measurements,
+            hierarchy_id=hierarchy_id,
+        )
+        shadow_measurements = [
+            item
+            for item in hierarchy_measurements
+            if bool(item.get("shadowOnly"))
+        ]
+        for item in shadow_measurements:
+            item["layoutHintOutcome"] = layout_hint_measurement_outcome(item)
+
+        authored_by_profile = {
+            str(item.get("viewportProfile") or ""): item
+            for item in shadow_measurements
+            if str(item.get("candidate") or "")
+            == str((compilation.get("candidate") or {}).get("id") or "")
+        }
+        reference_profile = (
+            "desktop"
+            if "desktop" in authored_by_profile
+            else ("wide" if "wide" in authored_by_profile else "")
+        )
+        authored_reference = authored_by_profile.get(reference_profile)
+        authored_evidence = (
+            layout_hint_measurement_outcome(authored_reference)
+            if authored_reference
+            else {}
+        )
+
+        single_hint_comparisons: list[dict[str, Any]] = []
+        recommended_revisions: list[dict[str, Any]] = []
+        if authored_reference:
+            peers = _layout_hint_measurements_for(
+                hierarchy_measurements,
+                hierarchy_id=hierarchy_id,
+                viewport_profile=reference_profile,
+            )
+            alternatives = []
+            for item in peers:
+                if bool(item.get("shadowOnly")):
+                    continue
+                policies = _layout_hint_candidate_policies(item)
+                differences = layout_hint_policy_differences(
+                    authored_policies, policies
+                )
+                if len(differences) != 1:
+                    continue
+                alternatives.append(item)
+            alternatives.sort(key=measurement_ranking_sort_key)
+            for alternative in alternatives:
+                policies = _layout_hint_candidate_policies(alternative)
+                differences = layout_hint_policy_differences(
+                    authored_policies, policies
+                )
+                alternative_evidence = layout_hint_measurement_outcome(alternative)
+                improvement = (
+                    float(alternative_evidence["worstPhaseHeadroom"])
+                    - float(authored_evidence.get("worstPhaseHeadroom", -1.0))
+                )
+                row = {
+                    "candidate": str(alternative.get("candidate") or ""),
+                    "viewportProfile": reference_profile,
+                    "changeCount": 1,
+                    "changes": differences,
+                    "authoredOutcome": copy.deepcopy(authored_evidence),
+                    "alternativeOutcome": alternative_evidence,
+                    "headroomImprovement": improvement,
+                    "browserVerified": True,
+                }
+                single_hint_comparisons.append(row)
+
+            viable = [
+                row
+                for row in single_hint_comparisons
+                if row["alternativeOutcome"]["outcome"] != "rejected"
+                and (
+                    row["alternativeOutcome"]["outcome"] == "accepted"
+                    or row["headroomImprovement"]
+                    >= LAYOUT_HINT_REFINEMENT_IMPROVEMENT_FLOOR
+                )
+            ]
+            if viable:
+                viable.sort(
+                    key=lambda row: (
+                        0
+                        if row["alternativeOutcome"]["outcome"] == "accepted"
+                        else 1,
+                        -float(row["headroomImprovement"]),
+                        -float(
+                            row["alternativeOutcome"]["selectionScoreRaw"]
+                        ),
+                        row["candidate"],
+                    )
+                )
+                best = viable[0]
+                change = best["changes"][0]
+                recommended_revisions.append(
+                    {
+                        **change,
+                        "candidate": best["candidate"],
+                        "viewportProfile": reference_profile,
+                        "reason": (
+                            "A one-unit policy change improves the browser-verified "
+                            "worst-phase safety margin."
+                        ),
+                        "currentHeadroom": authored_evidence.get(
+                            "worstPhaseHeadroom", -1
+                        ),
+                        "suggestedHeadroom": best["alternativeOutcome"][
+                            "worstPhaseHeadroom"
+                        ],
+                        "headroomImprovement": best["headroomImprovement"],
+                        "browserVerified": True,
+                        "applyAutomatically": False,
+                    }
+                )
+
+        fallback_plan = layout_hint_fallback_plan(hierarchy)
+        fallback_evidence: list[dict[str, Any]] = []
+        for entry in fallback_plan.get("chain") or []:
+            row = copy.deepcopy(entry)
+            row["measurements"] = []
+            if entry.get("state") == "ready":
+                for profile in entry.get("viewportProfiles") or []:
+                    profile_measurements = _layout_hint_measurements_for(
+                        hierarchy_measurements,
+                        hierarchy_id=hierarchy_id,
+                        viewport_profile=str(profile),
+                    )
+                    match = _layout_hint_best_matching_candidate(
+                        profile_measurements,
+                        authored_policies=authored_policies,
+                        required_policy=(
+                            str(fallback_plan["unitId"]),
+                            str(entry["policy"]),
+                        ),
+                    )
+                    if match is None:
+                        row["measurements"].append(
+                            {
+                                "viewportProfile": profile,
+                                "state": "notMeasured",
+                                "outcome": "unknown",
+                            }
+                        )
+                    else:
+                        outcome = layout_hint_measurement_outcome(match)
+                        row["measurements"].append(
+                            {
+                                "viewportProfile": profile,
+                                "candidate": str(match.get("candidate") or ""),
+                                "policyDifferences": layout_hint_policy_differences(
+                                    authored_policies,
+                                    _layout_hint_candidate_policies(match),
+                                ),
+                                **outcome,
+                            }
+                        )
+            fallback_evidence.append(row)
+
+        reports.append(
+            {
+                "hierarchyId": hierarchy_id,
+                "version": LAYOUT_HINT_REFINEMENT_VERSION,
+                "mode": LAYOUT_HINT_MODE,
+                "state": (
+                    "complete"
+                    if compilation.get("state") == "complete"
+                    and authored_reference is not None
+                    else "incomplete"
+                ),
+                "robustHeadroom": LAYOUT_HINT_MIN_ROBUST_HEADROOM,
+                "referenceViewportProfile": reference_profile,
+                "authoredCandidate": str(
+                    (compilation.get("candidate") or {}).get("id") or ""
+                ),
+                "authoredPolicies": authored_policies,
+                "authoredEvidenceByViewport": {
+                    profile: layout_hint_measurement_outcome(item)
+                    for profile, item in sorted(authored_by_profile.items())
+                },
+                "singleHintComparisons": single_hint_comparisons,
+                "recommendedContractRevisions": recommended_revisions,
+                "fallbackPreparation": {
+                    **fallback_plan,
+                    "chain": fallback_evidence,
+                },
+                "liveApplicationFilesTouched": False,
+                "applicationMutationAllowed": False,
+            }
+        )
+    return reports
+
+
 def _composition_compatibility_penalty(unit_policies: dict[str, str]) -> int:
     """Reject obvious resource collisions before expensive browser rendering."""
 
@@ -1877,10 +2939,15 @@ def candidate_specs_for_hierarchy(
             and set(legacy_candidates) == set(LAYOUT_CANDIDATES)
         )
         if default_full_set:
-            return recursive_composition_candidate_specs(
+            generated = recursive_composition_candidate_specs(
                 hierarchy,
                 max_candidates=len(LAYOUT_CANDIDATES),
             )
+            hinted = layout_hint_shadow_candidate_spec(hierarchy)
+            if hinted:
+                generated.append(hinted)
+            generated.extend(compile_layout_hint_responsive_candidates(hierarchy))
+            return generated
         # An explicit --candidates subset remains an exact legacy-family request.
         return list(legacy_candidates)
     return list(legacy_candidates)
@@ -1934,7 +3001,12 @@ def candidate_unit_composition(
     )
     unit_policies[root["id"]] = root_policy
     dataflow = layout_unit_dataflow_audit(hierarchy)
-    generated = isinstance(candidate, dict) and candidate_mode(candidate) == "recursive-composition"
+    mode = candidate_mode(candidate)
+    generated = isinstance(candidate, dict) and mode == "recursive-composition"
+    hinted = isinstance(candidate, dict) and mode in {
+        "layout-hint-shadow",
+        "layout-hint-responsive-shadow",
+    }
     return {
         "candidate": identity,
         "enabled": True,
@@ -1943,11 +3015,27 @@ def candidate_unit_composition(
         "unitPolicies": unit_policies,
         "parallelBranches": [unit["id"] for unit in specs if unit.get("leaf")],
         "searchMode": (
-            "generated-bounded-recursive-composition"
-            if generated
-            else "bounded-recursive-composition"
+            (
+                "deterministic-responsive-layout-hint-compilation"
+                if mode == "layout-hint-responsive-shadow"
+                else "deterministic-layout-hint-compilation"
+            )
+            if hinted
+            else (
+                "generated-bounded-recursive-composition"
+                if generated
+                else "bounded-recursive-composition"
+            )
         ),
-        "origin": "generated-policy-tuple" if generated else "legacy-family-mapping",
+        "origin": (
+            (
+                "authored-responsive-layout-hints-shadow"
+                if mode == "layout-hint-responsive-shadow"
+                else "authored-layout-hints-shadow"
+            )
+            if hinted
+            else ("generated-policy-tuple" if generated else "legacy-family-mapping")
+        ),
         "compositionLabel": (
             str(candidate.get("compositionLabel") or identity)
             if isinstance(candidate, dict)
@@ -2001,7 +3089,8 @@ def realize_layout_unit_tree(
         active_slots = sorted(
             slot
             for slot in descendant_slots
-            if realization_states.get(slot) in {"full-active", "persistent", "inactive-panel"}
+            if realization_states.get(slot)
+            in {"full-active", "persistent", "compact-summary", "inactive-panel"}
         )
         trigger_slots = sorted(
             slot
@@ -2077,6 +3166,76 @@ def phase_trial_scenarios(hierarchy: dict[str, Any]) -> list[dict[str, Any]]:
     return [copy.deepcopy(canonical_phase_scenario(hierarchy))]
 
 
+def responsive_phase_scenario(
+    hierarchy: dict[str, Any],
+    scenario: dict[str, Any],
+    viewport: ViewportProfile,
+) -> dict[str, Any]:
+    """Resolve one phase into the presentation contract for the current capacity.
+
+    The phase identity remains stable while the dominant surface and summary
+    obligations may change.  This is the Milestone 2 semantic half of responsive
+    layout: compact stages are no longer judged by the desktop co-presence floor.
+    """
+
+    base = copy.deepcopy(scenario)
+    if not hierarchy.get("responsiveContract"):
+        return base
+
+    contract = responsive_contract_for_hierarchy(hierarchy)
+    band = responsive_capacity_band(contract, viewport.width)
+    phase = str(base.get("phase") or "default")
+    presentations = contract.get("phasePresentations") or {}
+    band_presentations = presentations.get(str(band.get("id") or "")) or {}
+    override = copy.deepcopy(
+        band_presentations.get(phase)
+        or band_presentations.get("*")
+        or {}
+    )
+    if not override:
+        base["responsivePresentation"] = {
+            "version": RESPONSIVE_PRESENTATION_CONTRACT_VERSION,
+            "capacityBand": str(band.get("id") or ""),
+            "mode": "base-phase-contract",
+            "viewportWidth": viewport.width,
+            "viewportHeight": viewport.height,
+            "transformed": False,
+        }
+        return base
+
+    list_fields = {
+        "requiredSlots",
+        "activeSupportSlots",
+        "collapsedSlots",
+        "summarySlots",
+        "reachableSlots",
+    }
+    for key, value in override.items():
+        if key in list_fields:
+            base[key] = list(dict.fromkeys(str(item) for item in (value or [])))
+        elif key not in {"reasonSuffix"}:
+            base[key] = copy.deepcopy(value)
+
+    original_reason = str(scenario.get("reason") or "")
+    suffix = str(override.get("reasonSuffix") or "").strip()
+    if suffix:
+        base["reason"] = f"{original_reason} {suffix}".strip()
+    base["responsivePresentation"] = {
+        "version": RESPONSIVE_PRESENTATION_CONTRACT_VERSION,
+        "capacityBand": str(band.get("id") or ""),
+        "mode": str(override.get("presentationMode") or "capacity-relative"),
+        "viewportWidth": viewport.width,
+        "viewportHeight": viewport.height,
+        "transformed": True,
+        "baseDominantSlot": str(scenario.get("dominantSlot") or hierarchy["focusSlot"]),
+        "dominantSlot": str(base.get("dominantSlot") or hierarchy["focusSlot"]),
+        "summarySlots": list(base.get("summarySlots") or []),
+        "reachableSlots": list(base.get("reachableSlots") or []),
+        "returnToSlot": str(base.get("returnToSlot") or ""),
+    }
+    return base
+
+
 def realize_phase(
     hierarchy: dict[str, Any],
     candidate: str | dict[str, Any],
@@ -2094,7 +3253,16 @@ def realize_phase(
     required_slots = list(dict.fromkeys(str(slot) for slot in (scenario.get("requiredSlots") or [])))
     active_support_slots = list(dict.fromkeys(str(slot) for slot in (scenario.get("activeSupportSlots") or [])))
     collapsed_slots = list(dict.fromkeys(str(slot) for slot in (scenario.get("collapsedSlots") or [])))
-    referenced = {dominant_slot, *required_slots, *active_support_slots, *collapsed_slots}
+    summary_slots = list(dict.fromkeys(str(slot) for slot in (scenario.get("summarySlots") or [])))
+    reachable_slots = list(dict.fromkeys(str(slot) for slot in (scenario.get("reachableSlots") or [])))
+    referenced = {
+        dominant_slot,
+        *required_slots,
+        *active_support_slots,
+        *collapsed_slots,
+        *summary_slots,
+        *reachable_slots,
+    }
     unknown = sorted(referenced - known_slots)
     if unknown:
         raise ValueError(
@@ -2102,8 +3270,13 @@ def realize_phase(
             f"references unknown slot(s): {', '.join(unknown)}"
         )
 
-    active_set = {dominant_slot, *required_slots, *active_support_slots}
-    collapsed_set = set(collapsed_slots) - active_set
+    active_set = {
+        dominant_slot,
+        *required_slots,
+        *active_support_slots,
+        *summary_slots,
+    }
+    collapsed_set = (set(collapsed_slots) | set(reachable_slots)) - active_set
     if policy["phaseAware"]:
         declared_deferable = set(
             (hierarchy.get("roleContract") or {}).get("deferableSlots", [])
@@ -2123,6 +3296,8 @@ def realize_phase(
         if policy["phaseAware"]:
             if slot == dominant_slot or slot in active_support_slots:
                 state = "full-active"
+            elif slot in summary_slots:
+                state = "compact-summary"
             elif slot in required_slots:
                 state = "persistent"
             elif slot in collapsed_set:
@@ -2144,6 +3319,14 @@ def realize_phase(
         node["realization"] = state
         node["phaseDominant"] = slot == dominant_slot
         node["phaseSupport"] = slot in active_support_slots
+        if state == "compact-summary":
+            node["summaryReturnTo"] = str(
+                scenario.get("returnToSlot") or hierarchy.get("focusSlot") or ""
+            )
+            node["summaryReason"] = str(
+                scenario.get("summaryReason")
+                or "Compact context retained for the active responsive stage."
+            )
         unit = unit_slot_map.get(slot)
         if unit:
             node["layoutUnitId"] = unit["id"]
@@ -2177,11 +3360,15 @@ def realize_phase(
     minimum_share = float(scenario.get("minDominantShare", hierarchy.get("minFocusShare", 0.32)) or 0.32)
     maximum_share = min(0.94, max(float(hierarchy.get("maxFocusShare", 0.82) or 0.82), target_share + 0.16))
     base_contract = copy.deepcopy(hierarchy.get("roleContract") or {})
-    required_companions = [slot for slot in required_slots if slot != dominant_slot]
+    required_companions = [
+        slot
+        for slot in [*required_slots, *summary_slots]
+        if slot != dominant_slot
+    ]
     visible_full_slots = {
         slot
         for slot, state in realization_states.items()
-        if state in {"full-active", "persistent", "inactive-panel"}
+        if state in {"full-active", "persistent", "compact-summary", "inactive-panel"}
     }
     nearby = [
         slot
@@ -2208,7 +3395,12 @@ def realize_phase(
         if node["slot"] in collapsed_set and node["slot"] not in deferable_order
     )
     base_contract["deferableSlots"] = deferable_order
-    base_contract["forbiddenDefaultHidden"] = list(dict.fromkeys([dominant_slot, *required_slots]))
+    base_contract["forbiddenDefaultHidden"] = list(
+        dict.fromkeys([dominant_slot, *required_slots, *summary_slots])
+    )
+    base_contract["summarySlots"] = list(summary_slots)
+    base_contract["reachableSlots"] = list(reachable_slots)
+    base_contract["returnToSlot"] = str(scenario.get("returnToSlot") or "")
 
     realized["baseFocusSlot"] = hierarchy["focusSlot"]
     realized["focusSlot"] = dominant_slot
@@ -2223,6 +3415,11 @@ def realize_phase(
     realized["realizationStates"] = realization_states
     realized["phaseActiveSlots"] = sorted(active_set)
     realized["phaseCollapsedSlots"] = sorted(collapsed_set)
+    realized["phaseSummarySlots"] = sorted(summary_slots)
+    realized["phaseReachableSlots"] = sorted(reachable_slots)
+    realized["responsivePresentation"] = copy.deepcopy(
+        scenario.get("responsivePresentation") or {}
+    )
     realized["unitComposition"] = unit_composition
     realized["layoutUnitTree"] = realize_layout_unit_tree(
         hierarchy,
@@ -2473,19 +3670,37 @@ def semantic_phase_realization_fit(
     for scenario in scenarios:
         phase = str(scenario["phase"])
         measurement = measurements_by_phase.get(phase)
-        phase_weight = float(scenario.get("weight", 1.0) or 1.0)
-        dominant_slot = str(scenario.get("dominantSlot") or hierarchy["focusSlot"])
-        required_slots = list(scenario.get("requiredSlots") or [])
-        active_support_slots = list(scenario.get("activeSupportSlots") or [])
-        collapsed_slots = list(scenario.get("collapsedSlots") or [])
+        effective_scenario = (
+            copy.deepcopy(measurement.get("phaseScenario") or {})
+            if measurement
+            else {}
+        ) or copy.deepcopy(scenario)
+        phase_weight = float(effective_scenario.get("weight", 1.0) or 1.0)
+        dominant_slot = str(
+            effective_scenario.get("dominantSlot") or hierarchy["focusSlot"]
+        )
+        required_slots = list(effective_scenario.get("requiredSlots") or [])
+        summary_slots = list(effective_scenario.get("summarySlots") or [])
+        active_support_slots = list(
+            effective_scenario.get("activeSupportSlots") or []
+        )
+        collapsed_slots = list(effective_scenario.get("collapsedSlots") or [])
         min_dominant = float(
-            scenario.get("minDominantShare", hierarchy.get("minFocusShare", 0.32)) or 0.0
+            effective_scenario.get(
+                "minDominantShare", hierarchy.get("minFocusShare", 0.32)
+            )
+            or 0.0
         )
         target_dominant = float(
-            scenario.get("targetDominantShare", hierarchy.get("desiredFocusShare", min_dominant))
+            effective_scenario.get(
+                "targetDominantShare",
+                hierarchy.get("desiredFocusShare", min_dominant),
+            )
             or min_dominant
         )
-        max_inactive_tax = float(scenario.get("maxInactiveTax", 0.12) or 0.12)
+        max_inactive_tax = float(
+            effective_scenario.get("maxInactiveTax", 0.12) or 0.12
+        )
 
         if not measurement:
             reason = f"{phase} phase has no independent browser measurement"
@@ -2507,6 +3722,7 @@ def semantic_phase_realization_fit(
                     "dominantHeadroom": -min_dominant,
                     "dominantTargetDelta": -target_dominant,
                     "requiredSlots": required_slots,
+                    "summarySlots": summary_slots,
                     "activeSupportSlots": active_support_slots,
                     "collapsedSlots": collapsed_slots,
                     "inactiveSlots": collapsed_slots,
@@ -2545,7 +3761,7 @@ def semantic_phase_realization_fit(
         weak_required: list[str] = []
         required_parts: list[tuple[float, float]] = []
         required_parts_raw: list[tuple[float, float]] = []
-        for slot in required_slots:
+        for slot in [*required_slots, *summary_slots]:
             record = records.get(slot)
             node = nodes_by_slot.get(slot, {})
             share = _visible_share_for_record(record, root_rect)
@@ -2597,7 +3813,12 @@ def semantic_phase_realization_fit(
             if support_score < 72:
                 weak_active_support.append(slot)
 
-        active_set = set(active_support_slots) | {dominant_slot} | set(required_slots)
+        active_set = (
+            set(active_support_slots)
+            | {dominant_slot}
+            | set(required_slots)
+            | set(summary_slots)
+        )
         inactive_slots = [slot for slot in collapsed_slots if slot not in active_set]
         inactive_tax = sum(
             _visible_share_for_record(records.get(slot), root_rect) for slot in inactive_slots
@@ -3303,6 +4524,32 @@ def _phase_support_policy_score(
             not orientation or share < floor,
         )
 
+    if policy == "tabbed-phase-support":
+        stage_ok = width_ratio >= 0.72 and height_ratio >= 0.48
+        floor = 0.38
+        score = round(
+            (62 if stage_ok else 24)
+            + _target_closeness_score(share, 0.58, 0.30) * 0.34
+        )
+        return (
+            min(100, score),
+            f"{policy} gives the active support tab {share:.0%} of root with a separate summary row",
+            not stage_ok or share < floor,
+        )
+
+    if policy == "sequential-phase-stage":
+        stage_ok = width_ratio >= 0.76 and height_ratio >= 0.56
+        floor = 0.48
+        score = round(
+            (64 if stage_ok else 22)
+            + _target_closeness_score(share, 0.66, 0.28) * 0.34
+        )
+        return (
+            min(100, score),
+            f"{policy} gives the active phase stage {share:.0%} of root and preserves a returnable summary",
+            not stage_ok or share < floor,
+        )
+
     target = 0.17 if active_role == "evidence" else 0.13
     floor = 0.12 if active_role == "evidence" else 0.08
     horizontal = width_ratio >= 0.72 and height_ratio <= 0.34
@@ -3478,6 +4725,8 @@ def semantic_layout_unit_state_fit(
             "bounded-bottom-drawer",
             "bounded-side-drawer",
             "inline-phase-stage",
+            "tabbed-phase-support",
+            "sequential-phase-stage",
             "side-active-support",
             "narrow-side-active-support",
             "proof-drawer-or-side-support",
@@ -4188,6 +5437,7 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
         layout_unit_tree: dict[str, Any] | None = None,
         unit_compositions: dict[str, Any] | None = None,
         responsive_contract: dict[str, Any] | None = None,
+        layout_hint_source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         nodes = enrich_nodes_with_semantic_primitives(nodes, focus_slot)
         slots = {entry["slot"] for entry in nodes}
@@ -4223,9 +5473,17 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
             "layoutUnitTree": copy.deepcopy(layout_unit_tree),
             "unitCompositions": copy.deepcopy(unit_compositions or {}),
             "responsiveContract": copy.deepcopy(responsive_contract or {}),
+            "layoutHintSource": copy.deepcopy(layout_hint_source or {}),
         }
         # Fail at fixture construction time rather than during browser rendering.
         layout_unit_specs(result)
+        if result["layoutHintSource"]:
+            normalized_hints = normalize_layout_hint_contract(result)
+            if normalized_hints["state"] != "complete":
+                raise ValueError(
+                    f"Hierarchy {id} declares invalid layout hints: "
+                    + "; ".join(normalized_hints["issues"])
+                )
         return result
 
     return [
@@ -4553,7 +5811,7 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                 "source-order-stacked": "repository workflow loses selected-project context when every Git surface is merely stacked",
             },
             responsive_contract={
-                "mode": "capacity-bands",
+                "mode": "derived-from-layout-hints",
                 "policyVersion": RESPONSIVE_POLICY_VERSION,
                 "bands": [
                     {
@@ -4592,6 +5850,228 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                     "status remains attributable to the selected project",
                     "active evidence or recovery support remains reachable",
                 ],
+                "phasePresentations": {
+                    "medium": {
+                        "project-selection": {
+                            "presentationMode": "identity-partition",
+                            "minDominantShare": 0.22,
+                            "targetDominantShare": 0.30,
+                        },
+                        "selected-project-default": {
+                            "presentationMode": "workflow-only",
+                            "minDominantShare": 0.54,
+                            "targetDominantShare": 0.64,
+                        },
+                        "planning": {
+                            "presentationMode": "workflow-with-bottom-support",
+                            "minDominantShare": 0.40,
+                            "targetDominantShare": 0.50,
+                        },
+                        "execution": {
+                            "presentationMode": "workflow-with-bottom-support",
+                            "minDominantShare": 0.40,
+                            "targetDominantShare": 0.50,
+                        },
+                        "proof-review": {
+                            "presentationMode": "workflow-with-bottom-support",
+                            "minDominantShare": 0.38,
+                            "targetDominantShare": 0.48,
+                        },
+                        "recovery": {
+                            "presentationMode": "workflow-with-bottom-support",
+                            "minDominantShare": 0.38,
+                            "targetDominantShare": 0.48,
+                        },
+                    },
+                    "narrow": {
+                        "project-selection": {
+                            "presentationMode": "identity-stage",
+                            "minDominantShare": 0.24,
+                            "targetDominantShare": 0.34,
+                        },
+                        "selected-project-default": {
+                            "presentationMode": "workflow-tab",
+                            "minDominantShare": 0.48,
+                            "targetDominantShare": 0.58,
+                        },
+                        "planning": {
+                            "presentationMode": "support-tab",
+                            "dominantSlot": "server",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command", "workflow"],
+                            "activeSupportSlots": ["server"],
+                            "collapsedSlots": ["project-selector", "evidence", "advanced"],
+                            "reachableSlots": ["workflow", "evidence", "advanced"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.46,
+                            "targetDominantShare": 0.60,
+                            "reasonSuffix": "Narrow capacity makes server the active tab while workflow remains as a compact returnable summary.",
+                        },
+                        "execution": {
+                            "presentationMode": "workflow-tab",
+                            "dominantSlot": "workflow",
+                            "requiredSlots": ["project-context", "command", "workflow", "status"],
+                            "summarySlots": [],
+                            "activeSupportSlots": [],
+                            "collapsedSlots": ["project-selector", "server", "evidence", "advanced"],
+                            "reachableSlots": ["evidence"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.46,
+                            "targetDominantShare": 0.58,
+                            "reasonSuffix": "Execution keeps workflow active and makes evidence reachable through the support tab strip.",
+                        },
+                        "proof-review": {
+                            "presentationMode": "support-tab",
+                            "dominantSlot": "evidence",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["workflow"],
+                            "activeSupportSlots": ["evidence"],
+                            "collapsedSlots": ["project-selector", "server", "advanced"],
+                            "reachableSlots": ["workflow", "advanced"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.48,
+                            "targetDominantShare": 0.62,
+                            "reasonSuffix": "Proof becomes the active tab while workflow context remains visible as a summary.",
+                        },
+                        "recovery": {
+                            "presentationMode": "support-tab",
+                            "dominantSlot": "advanced",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["workflow"],
+                            "activeSupportSlots": ["advanced"],
+                            "collapsedSlots": ["project-selector", "server", "evidence"],
+                            "reachableSlots": ["workflow", "evidence"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.48,
+                            "targetDominantShare": 0.62,
+                            "reasonSuffix": "Recovery becomes the active tab while workflow context remains visible as a summary.",
+                        },
+                    },
+                    "compact": {
+                        "project-selection": {
+                            "presentationMode": "identity-stage",
+                            "minDominantShare": 0.30,
+                            "targetDominantShare": 0.42,
+                        },
+                        "selected-project-default": {
+                            "presentationMode": "workflow-stage",
+                            "minDominantShare": 0.44,
+                            "targetDominantShare": 0.58,
+                        },
+                        "planning": {
+                            "presentationMode": "sequential-support-stage",
+                            "dominantSlot": "server",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["workflow"],
+                            "activeSupportSlots": ["server"],
+                            "collapsedSlots": ["project-selector", "evidence", "advanced", "command"],
+                            "reachableSlots": ["workflow", "evidence", "advanced"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.52,
+                            "targetDominantShare": 0.68,
+                            "reasonSuffix": "Compact capacity gives server the full active stage and preserves workflow as a returnable summary.",
+                        },
+                        "execution": {
+                            "presentationMode": "workflow-stage",
+                            "dominantSlot": "workflow",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command"],
+                            "activeSupportSlots": [],
+                            "collapsedSlots": ["project-selector", "server", "evidence", "advanced"],
+                            "reachableSlots": ["evidence"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.48,
+                            "targetDominantShare": 0.62,
+                            "reasonSuffix": "Compact execution keeps workflow active and evidence reachable through a trigger.",
+                        },
+                        "proof-review": {
+                            "presentationMode": "sequential-support-stage",
+                            "dominantSlot": "evidence",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["workflow"],
+                            "activeSupportSlots": ["evidence"],
+                            "collapsedSlots": ["project-selector", "server", "advanced", "command"],
+                            "reachableSlots": ["workflow"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.54,
+                            "targetDominantShare": 0.70,
+                            "reasonSuffix": "Compact proof review gives evidence the active stage and preserves a workflow return path.",
+                        },
+                        "recovery": {
+                            "presentationMode": "sequential-support-stage",
+                            "dominantSlot": "advanced",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["workflow"],
+                            "activeSupportSlots": ["advanced"],
+                            "collapsedSlots": ["project-selector", "server", "evidence", "command"],
+                            "reachableSlots": ["workflow"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.54,
+                            "targetDominantShare": 0.70,
+                            "reasonSuffix": "Compact recovery gives advanced controls the active stage and preserves a workflow return path.",
+                        },
+                    },
+                },
+            },
+            layout_hint_source={
+                "version": LAYOUT_HINT_CONTRACT_VERSION,
+                "sourceKind": "synthetic-data-mc-layout-attributes",
+                "rootUnitId": "git-tools-application",
+                "attributes": {
+                    "data-mc-layout-root": "git-tools-application",
+                    "data-mc-layout": "dock-workbench",
+                    "data-mc-layout-zones": (
+                        "top left center right bottom tab stage trigger"
+                    ),
+                    "data-mc-layout-policy": "dominant-workflow-stack",
+                    "data-mc-layout-capacity": "wide",
+                },
+                "units": {
+                    "project-identity": {
+                        "data-mc-layout-prefer": "left",
+                        "data-mc-layout-allowed": "left top trigger",
+                        "data-mc-layout-fallback": "top trigger",
+                        "data-mc-layout-strength": "strong",
+                        "data-mc-layout-policy": "phase-selector-unit",
+                        "data-mc-layout-inactive": "trigger",
+                        "data-mc-layout-min-inline": "220",
+                        "data-mc-layout-min-block": "120",
+                        "data-mc-layout-max-share": "0.24",
+                    },
+                    "command-workflow": {
+                        "data-mc-layout-prefer": "center",
+                        "data-mc-layout-allowed": "center",
+                        "data-mc-layout-fallback": "",
+                        "data-mc-layout-strength": "required",
+                        "data-mc-layout-policy": "command-inline-header",
+                        "data-mc-layout-internal": "command-inline workflow-center",
+                        "data-mc-layout-min-inline": "520",
+                        "data-mc-layout-min-block": "360",
+                        "data-mc-layout-max-share": "0.78",
+                    },
+                    "persistent-feedback": {
+                        "data-mc-layout-prefer": "bottom",
+                        "data-mc-layout-allowed": "bottom top",
+                        "data-mc-layout-fallback": "top",
+                        "data-mc-layout-strength": "strong",
+                        "data-mc-layout-policy": "shared-horizontal-band",
+                        "data-mc-layout-internal": "project-context status",
+                        "data-mc-layout-min-inline": "420",
+                        "data-mc-layout-min-block": "44",
+                        "data-mc-layout-max-share": "0.10",
+                    },
+                    "phase-support": {
+                        "data-mc-layout-prefer": "right",
+                        "data-mc-layout-allowed": "right bottom tab stage trigger",
+                        "data-mc-layout-fallback": "bottom tab stage trigger",
+                        "data-mc-layout-strength": "preferred",
+                        "data-mc-layout-policy": "bounded-side-drawer",
+                        "data-mc-layout-inactive": "trigger",
+                        "data-mc-layout-min-inline": "300",
+                        "data-mc-layout-min-block": "260",
+                        "data-mc-layout-max-share": "0.32",
+                    },
+                },
             },
             phase_scenarios=[
                 {
@@ -4805,6 +6285,16 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                                 "policy": "inline-phase-stage",
                                 "alias": "support-inline",
                                 "preflightScore": 90,
+                            },
+                            {
+                                "policy": "tabbed-phase-support",
+                                "alias": "support-tabs",
+                                "preflightScore": 93,
+                            },
+                            {
+                                "policy": "sequential-phase-stage",
+                                "alias": "support-stage",
+                                "preflightScore": 92,
                             },
                         ],
                         "hardConstraints": [
@@ -5138,6 +6628,37 @@ def node_markup(node: dict[str, Any], focus_slot: str) -> str:
         values = _as_list(semantics.get(semantic_key))
         if values:
             attrs[_semantic_attr_name(semantic_key)] = " ".join(values)
+
+    if realization == "compact-summary":
+        attrs["class"] = f"flog-node flog-summary {base_class}"
+        attrs["data-flog-min-visible-share"] = "0.008"
+        attrs["data-flog-summary-for"] = slot
+        attrs["id"] = f"flog-summary-{slugify(slot)}"
+        attr_text = " ".join(
+            f'{name}="{html.escape(str(value), quote=True)}"'
+            for name, value in attrs.items()
+        )
+        summary_items = list(node.get("items") or [])
+        summary_label = (
+            str(summary_items[0].get("label") or "")
+            if summary_items
+            else str(node.get("summaryReason") or "")
+        )
+        return_target = str(node.get("summaryReturnTo") or "")
+        return_markup = (
+            f'<button type="button" class="summary-return" '
+            f'data-flog-return-to="{html.escape(return_target, quote=True)}">'
+            f'Return to {html.escape(return_target)}</button>'
+            if return_target
+            else ""
+        )
+        return (
+            f"<section {attr_text}>"
+            f"<header class=\"node-header\"><h2>{html.escape(node['title'])}</h2>"
+            "<span>compact summary</span></header>"
+            f"<div class=\"summary-body\"><span>{html.escape(summary_label)}</span>"
+            f"{return_markup}</div></section>"
+        )
 
     if realization == "compact-trigger":
         attrs["class"] = f"flog-trigger {base_class}"
@@ -6568,6 +8089,141 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     "feedback";
 }
 
+/* Milestone 2 responsive presentation primitives.  A compact summary is a
+   semantic return/context surface, not a clipped copy of the full panel. */
+.flog-node.flog-summary {
+  min-height: 38px;
+  height: auto;
+  max-height: 54px;
+  padding: 5px 8px;
+  display: grid;
+  grid-template-columns: minmax(110px, 0.28fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+.flog-node.flog-summary > .node-header {
+  min-width: 0;
+}
+.flog-node.flog-summary > .node-header h2 {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flog-node.flog-summary > .node-header span {
+  display: none;
+}
+.flog-node.flog-summary > .summary-body {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+.flog-node.flog-summary > .summary-body > span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flog-node.flog-summary .summary-return {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 4px 8px;
+}
+
+/* A tab realization keeps exactly one large support surface active and reserves a
+   compact semantic summary row for the displaced workflow. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+  ) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(86px, 13%) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main"
+    "support"
+    "feedback";
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"] {
+  position: relative !important;
+  display: block;
+  padding-top: 28px;
+  border-top: 2px solid rgba(74, 116, 152, 0.55);
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"]::before {
+  content: "Active support tab";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 26px;
+  padding: 5px 9px;
+  background: rgba(219, 232, 245, 0.96);
+  border-bottom: 1px solid rgba(74, 116, 152, 0.35);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* A sequential stage gives the active phase surface the primary track and moves
+   the workflow summary below it as an explicit return path. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-sequential-phase-stage[data-flog-unit-has-active-support="true"]
+  ) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(54px, 10%) auto;
+  grid-template-areas:
+    "support"
+    "main"
+    "feedback";
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit.unit-policy-sequential-phase-stage[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"] {
+  position: static !important;
+  inset: auto !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Trigger-mode compact support uses the same exclusive stage ownership when the
+   active support surface is the phase dominant; inactive support remains in the
+   global trigger strip. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-one-active-plus-triggers[data-flog-unit-has-active-support="true"]
+      > .flog-node[data-flog-phase-dominant="true"]
+  ) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(76px, 14%) auto;
+  grid-template-areas:
+    "support"
+    "main"
+    "feedback";
+}
+
+/* Compact command/workflow summaries must not preserve desktop minimum heights. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="command-workflow"]:has(
+    > .flog-node[data-flog-realization="compact-summary"]
+  ) {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="command-workflow"]
+  > .flog-node[data-flog-realization="compact-summary"] {
+  flex: 1 1 auto;
+  min-height: 38px;
+  height: auto;
+}
+
 /* A declared feedback overlay shares only the main grid cell. */
 .has-layout-units.policy-phase-aware
   .flog-layout-unit.unit-policy-workflow-footer-overlay[data-flog-unit-id="persistent-feedback"] {
@@ -6595,8 +8251,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   .trial-top-band-focus-overlay,
   .trial-selected-context-workflow,
   .trial-progressive-workflow,
-  .trial-workflow-with-proof-drawer,
-  .trial-recursive-composition {
+  .trial-workflow-with-proof-drawer {
     display: flex;
     flex-direction: column;
     overflow: auto;
@@ -8583,12 +10238,16 @@ def annotate_rendered_policy_equivalence(
         item["renderedPolicyFingerprintVersion"] = (
             RENDERED_POLICY_FINGERPRINT_VERSION if fingerprint else ""
         )
-        item["renderedEquivalenceExcludedFromRanking"] = False
+        item["renderedEquivalenceExcludedFromRanking"] = bool(
+            item.get("shadowOnly")
+            and not item.get("responsiveEligible")
+        )
         item["renderedEquivalentAliases"] = []
         item["renderedEquivalenceGroupSize"] = 1
         item["policyRealizationAliasDiagnostics"] = []
         if (
             fingerprint
+            and not bool(item.get("shadowOnly"))
             and str(item.get("candidateMode") or "") == "recursive-composition"
         ):
             grouped[
@@ -8780,7 +10439,9 @@ RESPONSIVE_REMEDIATION_POLICY_LEVELS: dict[str, int] = {
     "selector-overlay": 2,
     "workflow-footer-overlay": 2,
     "inline-phase-stage": 2,
+    "tabbed-phase-support": 2,
     # Level 3 replaces inactive or competing surfaces with sequential triggers/stages.
+    "sequential-phase-stage": 3,
     "one-active-plus-triggers": 3,
 }
 
@@ -8807,10 +10468,102 @@ RESPONSIVE_REMEDIATION_LABELS = {
 }
 
 
+def derive_responsive_capacity_bands_from_hints(
+    hierarchy: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive capacity thresholds from the normalized layout-hint minima.
+
+    The constants are small chrome/gap allowances, not application breakpoints.
+    The application-specific part comes from the declared unit minimums.
+    """
+
+    contract = normalize_layout_hint_contract(hierarchy)
+    units = {
+        str(item.get("id") or ""): item
+        for item in contract.get("units") or []
+    }
+    if contract.get("state") != "complete" or not units:
+        return {
+            "state": "unavailable",
+            "bands": [
+                {"id": "wide", "minWidth": 1320, "maxRemediationLevel": 0},
+                {"id": "medium", "minWidth": 1040, "maxRemediationLevel": 1},
+                {"id": "narrow", "minWidth": 760, "maxRemediationLevel": 2},
+                {"id": "compact", "minWidth": 0, "maxRemediationLevel": 3},
+            ],
+            "inputs": {},
+        }
+
+    command = float((units.get("command-workflow") or {}).get("minInline", 520) or 520)
+    support = float((units.get("phase-support") or {}).get("minInline", 300) or 300)
+    identity = float((units.get("project-identity") or {}).get("minInline", 220) or 220)
+    feedback = float((units.get("persistent-feedback") or {}).get("minInline", 420) or 420)
+    chrome_allowance = 180.0
+    gap_allowance = 48.0
+
+    def ceil_track(value: float) -> int:
+        return int(math.ceil(max(0.0, value) / 8.0) * 8)
+
+    side_required = ceil_track(
+        (command + support + chrome_allowance + gap_allowance) * 1.18
+    )
+    bottom_required = ceil_track(
+        (max(command, feedback, support) + chrome_allowance + gap_allowance) * 1.28
+    )
+    tab_required = ceil_track(
+        (max(support, identity) + chrome_allowance + gap_allowance) * 1.35
+    )
+    # Preserve a useful separation between adjacent bands even if future hints
+    # declare surprisingly small minima.
+    side_required = max(side_required, bottom_required + 240)
+    bottom_required = max(bottom_required, tab_required + 200)
+    tab_required = max(tab_required, 640)
+
+    return {
+        "state": "complete",
+        "version": RESPONSIVE_PRESENTATION_CONTRACT_VERSION,
+        "inputs": {
+            "commandWorkflowMinInline": command,
+            "phaseSupportMinInline": support,
+            "projectIdentityMinInline": identity,
+            "persistentFeedbackMinInline": feedback,
+            "chromeAllowance": chrome_allowance,
+            "gapAllowance": gap_allowance,
+        },
+        "bands": [
+            {
+                "id": "wide",
+                "minWidth": side_required,
+                "maxRemediationLevel": 0,
+                "reason": "Authored center and right support minima fit simultaneously.",
+            },
+            {
+                "id": "medium",
+                "minWidth": bottom_required,
+                "maxRemediationLevel": 1,
+                "reason": "Center remains viable after support reflows to a bottom partition.",
+            },
+            {
+                "id": "narrow",
+                "minWidth": tab_required,
+                "maxRemediationLevel": 2,
+                "reason": "One large active tab fits with compact semantic summaries.",
+            },
+            {
+                "id": "compact",
+                "minWidth": 0,
+                "maxRemediationLevel": 3,
+                "reason": "Only sequential active-stage replacement is guaranteed.",
+            },
+        ],
+    }
+
+
 def responsive_contract_for_hierarchy(hierarchy: dict[str, Any]) -> dict[str, Any]:
     """Return a validated capacity contract for responsive policy selection."""
 
     declared = copy.deepcopy(hierarchy.get("responsiveContract") or {})
+    derived_capacity = derive_responsive_capacity_bands_from_hints(hierarchy)
     contract = {
         "mode": "capacity-bands",
         "policyVersion": RESPONSIVE_POLICY_VERSION,
@@ -8831,8 +10584,24 @@ def responsive_contract_for_hierarchy(hierarchy: dict[str, Any]) -> dict[str, An
             "no undeclared overlap or interception is introduced",
         ],
     }
-    contract.update({key: value for key, value in declared.items() if key != "bands"})
-    if declared.get("bands"):
+    contract.update(
+        {
+            key: value
+            for key, value in declared.items()
+            if key not in {"bands", "phasePresentations"}
+        }
+    )
+    if declared.get("phasePresentations"):
+        contract["phasePresentations"] = copy.deepcopy(
+            declared["phasePresentations"]
+        )
+    if (
+        str(declared.get("mode") or "") == "derived-from-layout-hints"
+        and derived_capacity.get("state") == "complete"
+    ):
+        contract["bands"] = copy.deepcopy(derived_capacity["bands"])
+        contract["capacityDerivation"] = copy.deepcopy(derived_capacity)
+    elif declared.get("bands"):
         contract["bands"] = copy.deepcopy(declared["bands"])
 
     bands: list[dict[str, Any]] = []
@@ -8961,7 +10730,10 @@ def _responsive_profile_options(
         for item in measurements
         if str(item.get("hierarchyId") or "") == str(hierarchy.get("id") or "")
         and str(item.get("viewportProfile") or "") == profile.name
-        and not bool(item.get("renderedEquivalenceExcludedFromRanking"))
+        and (
+            not bool(item.get("renderedEquivalenceExcludedFromRanking"))
+            or bool(item.get("responsiveEligible"))
+        )
     ]
     passing = [
         item
@@ -9097,6 +10869,127 @@ def responsive_transition_rules(
             }
         )
     return rules
+
+
+def responsive_presentation_evidence(item: dict[str, Any]) -> dict[str, Any]:
+    """Summarize the capacity-relative semantic presentation for one candidate."""
+
+    phases: list[dict[str, Any]] = []
+    for phase_measurement in item.get("phaseMeasurements") or []:
+        presentation = copy.deepcopy(
+            phase_measurement.get("responsivePresentation")
+            or (phase_measurement.get("phaseScenario") or {}).get(
+                "responsivePresentation"
+            )
+            or {}
+        )
+        scenario = phase_measurement.get("phaseScenario") or {}
+        phases.append(
+            {
+                "phase": str(phase_measurement.get("phase") or ""),
+                "capacityBand": str(presentation.get("capacityBand") or ""),
+                "presentationMode": str(presentation.get("mode") or ""),
+                "dominantSlot": str(
+                    scenario.get("dominantSlot")
+                    or phase_measurement.get("focusSlot")
+                    or ""
+                ),
+                "summarySlots": list(scenario.get("summarySlots") or []),
+                "reachableSlots": list(scenario.get("reachableSlots") or []),
+                "returnToSlot": str(scenario.get("returnToSlot") or ""),
+            }
+        )
+    return {
+        "version": RESPONSIVE_PRESENTATION_CONTRACT_VERSION,
+        "phases": phases,
+        "modes": sorted(
+            {
+                str(phase.get("presentationMode") or "")
+                for phase in phases
+                if phase.get("presentationMode")
+            }
+        ),
+    }
+
+
+def responsive_sampled_coverage(
+    selections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Turn discrete probes into explicit sampled coverage intervals.
+
+    These intervals are evidence between adjacent probes, not a claim that every
+    unsampled browser width was rendered.  Invalid or inadmissible selections
+    become uncovered intervals instead of being hidden by a numerical rank.
+    """
+
+    if not selections:
+        return {
+            "version": RESPONSIVE_COVERAGE_VERSION,
+            "state": "notMeasured",
+            "intervals": [],
+            "uncoveredIntervals": [],
+            "coverageComplete": False,
+        }
+    ordered = sorted(selections, key=lambda item: -int(item["width"]))
+    boundaries = [
+        int(round((int(left["width"]) + int(right["width"])) / 2.0))
+        for left, right in zip(ordered, ordered[1:])
+    ]
+    intervals: list[dict[str, Any]] = []
+    for index, item in enumerate(ordered):
+        upper = (
+            int(ordered[0]["width"])
+            if index == 0
+            else boundaries[index - 1]
+        )
+        lower = (
+            int(ordered[-1]["width"])
+            if index == len(ordered) - 1
+            else boundaries[index]
+        )
+        admissible = bool(item.get("capacityAdmissible"))
+        acceptable = str(item.get("status") or "") in ACCEPTABLE_LAYOUT_STATUSES
+        valid = (
+            acceptable
+            and admissible
+            and not bool(item.get("transitionGap"))
+            and int(item.get("phaseFloorFailureCount", 0) or 0) == 0
+        )
+        intervals.append(
+            {
+                "minWidth": min(lower, upper),
+                "maxWidth": max(lower, upper),
+                "candidate": str(item.get("candidate") or ""),
+                "band": str(item.get("band") or ""),
+                "remediationLevel": int(item.get("remediationLevel", 0) or 0),
+                "valid": valid,
+                "reason": (
+                    "sampled state is acceptable and capacity-admissible"
+                    if valid
+                    else (
+                        "selected state is outside its capacity contract"
+                        if not admissible
+                        else "selected state failed a semantic or geometry gate"
+                    )
+                ),
+            }
+        )
+    uncovered = [item for item in intervals if not item["valid"]]
+    return {
+        "version": RESPONSIVE_COVERAGE_VERSION,
+        "state": "complete" if not uncovered else "gapped",
+        "domain": {
+            "minWidth": int(ordered[-1]["width"]),
+            "maxWidth": int(ordered[0]["width"]),
+        },
+        "intervals": intervals,
+        "uncoveredIntervals": uncovered,
+        "coverageComplete": not uncovered,
+        "note": (
+            "Coverage is bounded by rendered probes and transition intervals; "
+            "future adaptive sampling may refine a boundary further."
+        ),
+    }
 
 
 def simulate_responsive_resize(
@@ -9319,6 +11212,13 @@ def responsive_policy_for_hierarchy(
                     (item.get("phaseFit") or {}).get("phaseFloorFailureCount", 0)
                     or 0
                 ),
+                "capacityAdmissibilityState": (
+                    "admissible"
+                    if option["capacityAdmissible"]
+                    else ("forced" if option["forcedBeyondBand"] else "invalid")
+                ),
+                "responsivePresentation": responsive_presentation_evidence(item),
+                "responsiveEligibleShadow": bool(item.get("responsiveEligible")),
                 "snapshots": copy.deepcopy(item.get("phaseSnapshots") or {}),
             }
         )
@@ -9327,6 +11227,7 @@ def responsive_policy_for_hierarchy(
         selections,
         hysteresis_px=int(contract["hysteresisPx"]),
     )
+    coverage = responsive_sampled_coverage(selections)
     down = simulate_responsive_resize(
         selections, transitions, direction="down"
     )
@@ -9351,6 +11252,7 @@ def responsive_policy_for_hierarchy(
         or floor_failures
         or monotonic_violations
         or not all_acceptable
+        or not coverage["coverageComplete"]
         or not down["stable"]
         or not up["stable"]
     ):
@@ -9366,10 +11268,17 @@ def responsive_policy_for_hierarchy(
         "policyVersion": RESPONSIVE_POLICY_VERSION,
         "contract": contract,
         "semanticContractStable": bool(
-            all_acceptable and not floor_failures and not gaps
+            all_acceptable
+            and not floor_failures
+            and not gaps
+            and not forced
+            and coverage["coverageComplete"]
         ),
         "selections": selections,
         "transitions": transitions,
+        "sampledCoverage": coverage,
+        "coverageComplete": bool(coverage["coverageComplete"]),
+        "uncoveredIntervalCount": len(coverage["uncoveredIntervals"]),
         "resizeSimulation": {"down": down, "up": up},
         "transitionGapCount": len(gaps),
         "forcedBeyondBandCount": len(forced),
@@ -9848,13 +11757,26 @@ def run_synthetic_trials(
                             hierarchy, candidates
                         )
                         for candidate in trial_candidates:
+                            if not candidate_applies_to_viewport(candidate, viewport):
+                                continue
                             candidate_id = candidate_identity(candidate)
                             render_family = candidate_render_family(candidate)
                             phase_measurements: list[dict[str, Any]] = []
                             realized_by_phase: dict[str, dict[str, Any]] = {}
                             for scenario in scenarios:
-                                phase = str(scenario.get("phase") or "default")
-                                realized = realize_phase(hierarchy, candidate, scenario)
+                                responsive_scenario = responsive_phase_scenario(
+                                    hierarchy,
+                                    scenario,
+                                    viewport,
+                                )
+                                phase = str(
+                                    responsive_scenario.get("phase") or "default"
+                                )
+                                realized = realize_phase(
+                                    hierarchy,
+                                    candidate,
+                                    responsive_scenario,
+                                )
                                 realized_by_phase[phase] = realized
                                 html_text = render_realized_trial_html(
                                     realized, candidate, chrome
@@ -9911,7 +11833,10 @@ def run_synthetic_trials(
                                 )
                                 measurement["phase"] = phase
                                 measurement["phaseScenario"] = copy.deepcopy(
-                                    scenario
+                                    responsive_scenario
+                                )
+                                measurement["responsivePresentation"] = copy.deepcopy(
+                                    realized.get("responsivePresentation") or {}
                                 )
                                 measurement["candidatePolicy"] = copy.deepcopy(
                                     realized.get("candidatePolicy") or {}
@@ -9927,6 +11852,15 @@ def run_synthetic_trials(
                                 )
                                 measurement["renderFamily"] = render_family
                                 measurement["candidateMode"] = candidate_mode(candidate)
+                                measurement["shadowOnly"] = candidate_shadow_only(candidate)
+                                measurement["responsiveEligible"] = (
+                                    candidate_responsive_eligible(candidate)
+                                )
+                                measurement["layoutHintCompilation"] = (
+                                    copy.deepcopy(candidate.get("layoutHintCompilation") or {})
+                                    if isinstance(candidate, dict)
+                                    else {}
+                                )
                                 measurement["unitComposition"] = copy.deepcopy(
                                     realized.get("unitComposition") or {}
                                 )
@@ -9994,6 +11928,15 @@ def run_synthetic_trials(
                             aggregate["canonicalPhase"] = str(
                                 canonical_state.get("phase") or canonical_phase
                             )
+                            aggregate["shadowOnly"] = candidate_shadow_only(candidate)
+                            aggregate["responsiveEligible"] = (
+                                candidate_responsive_eligible(candidate)
+                            )
+                            aggregate["layoutHintCompilation"] = (
+                                copy.deepcopy(candidate.get("layoutHintCompilation") or {})
+                                if isinstance(candidate, dict)
+                                else {}
+                            )
                             apply_semantic_contract_fit(
                                 hierarchy,
                                 aggregate,
@@ -10005,6 +11948,10 @@ def run_synthetic_trials(
                 browser.close()
 
     rendered_equivalence_groups = annotate_rendered_policy_equivalence(measurements)
+    layout_hint_refinements = analyze_layout_hint_refinements(
+        hierarchies=hierarchies,
+        measurements=measurements,
+    )
     responsive_policies = build_responsive_policies(
         hierarchies=hierarchies,
         measurements=measurements,
@@ -10016,6 +11963,11 @@ def run_synthetic_trials(
         measurements,
         responsive_policies=responsive_policies,
     )
+    layout_hint_contracts = [
+        compile_layout_hint_default(item)
+        for item in hierarchies
+        if item.get("layoutHintSource")
+    ]
 
     return {
         "kind": "mcel.flog.synthetic.layout.trial.report",
@@ -10028,6 +11980,16 @@ def run_synthetic_trials(
         "phaseFloorTolerance": PHASE_SHARE_FLOOR_TOLERANCE,
         "densityScoringMode": "phase-relative-active-presentation",
         "candidateRankingMode": "rendered-equivalence-deduplicated-margin-ranking",
+        "layoutHintMode": LAYOUT_HINT_MODE,
+        "layoutHintContractVersion": LAYOUT_HINT_CONTRACT_VERSION,
+        "layoutHintContracts": layout_hint_contracts,
+        "layoutHintRefinementVersion": LAYOUT_HINT_REFINEMENT_VERSION,
+        "layoutHintRefinements": layout_hint_refinements,
+        "layoutHintResponsiveVersion": LAYOUT_HINT_RESPONSIVE_VERSION,
+        "responsivePresentationContractVersion": (
+            RESPONSIVE_PRESENTATION_CONTRACT_VERSION
+        ),
+        "responsiveCoverageVersion": RESPONSIVE_COVERAGE_VERSION,
         "responsiveMode": responsive_mode,
         "responsivePolicyVersion": RESPONSIVE_POLICY_VERSION,
         "responsiveHysteresisPx": int(responsive_hysteresis_px),
@@ -10074,6 +12036,12 @@ def run_synthetic_trials(
                 "layoutUnitTree": copy.deepcopy(item.get("layoutUnitTree")),
                 "layoutUnits": layout_unit_specs(item),
                 "layoutUnitDataflow": layout_unit_dataflow_audit(item),
+                "layoutHintSourceDeclared": bool(item.get("layoutHintSource")),
+                "layoutHintCompilation": (
+                    compile_layout_hint_default(item)
+                    if item.get("layoutHintSource")
+                    else {}
+                ),
                 "responsiveContract": (
                     responsive_contract_for_hierarchy(item)
                     if (
@@ -10447,6 +12415,13 @@ def compact_measurement_summary(item: dict[str, Any]) -> dict[str, Any]:
         "responsiveProbe": bool(item.get("responsiveProbe", False)),
         "candidate": str(item.get("candidate") or ""),
         "candidateMode": str(item.get("candidateMode") or "legacy-family"),
+        "shadowOnly": bool(item.get("shadowOnly", False)),
+        "responsiveEligible": bool(item.get("responsiveEligible", False)),
+        "responsivePresentation": responsive_presentation_evidence(item),
+        "layoutHintCompilation": copy.deepcopy(
+            item.get("layoutHintCompilation") or {}
+        ),
+        "layoutHintOutcome": copy.deepcopy(item.get("layoutHintOutcome") or {}),
         "renderFamily": str(item.get("renderFamily") or item.get("candidate") or ""),
         "canonicalPhase": str(item.get("canonicalPhase") or item.get("phase") or ""),
         "status": str(classification.get("status") or "fail"),
@@ -10617,6 +12592,22 @@ def write_reports(
         f"- Candidate ranking: `{report.get('candidateRankingMode', 'integer-score-only')}`"
     )
     lines.append(
+        f"- Layout-hint compiler: "
+        f"`{report.get('layoutHintContractVersion', 'not-declared')}` "
+        f"mode=`{report.get('layoutHintMode', 'off')}`"
+    )
+    lines.append(
+        f"- Layout-hint refinement: "
+        f"`{report.get('layoutHintRefinementVersion', 'off')}` "
+        "(shadow evidence only)"
+    )
+    lines.append(
+        f"- Responsive hint compiler: "
+        f"`{report.get('layoutHintResponsiveVersion', 'off')}` "
+        f"presentation=`{report.get('responsivePresentationContractVersion', 'off')}` "
+        "(FLOG-only)"
+    )
+    lines.append(
         f"- Responsive resize policy: "
         f"`{report.get('responsivePolicyVersion', 'off')}` "
         f"mode=`{report.get('responsiveMode', 'off')}` "
@@ -10664,6 +12655,8 @@ def write_reports(
     lines.append("Stage D fingerprints cross-phase painted geometry without policy names, removes rendered-equivalent recursive aliases before ranking, and reports which declared local policies collapsed to the same browser realization.")
     lines.append("Stage E applies one absolute effective-share phase-floor gate in browser classification and aggregate phase scoring, with a shared subpixel tolerance; any real floor miss remains a hard failure.")
     lines.append("Stage F ranks a responsive policy across capacity bands, permits stronger remediation only when the viewport contract allows it, requires remediation to be monotonic as space shrinks, and derives separate shrink/grow thresholds to prevent resize oscillation.")
+    lines.append("Milestone 1E compares the deterministic authored hint result with already-rendered one-policy alternatives, reports the smallest browser-verified hint correction, and prepares the authored fallback chain without editing live application files.")
+    lines.append("Milestone 2 compiles distinct right, bottom, tab, sequential-stage, and trigger realizations; transforms each phase into a capacity-relative presentation contract; derives capacity bands from authored minimum geometry; samples both sides of every derived boundary; and treats invalid sampled intervals as uncovered rather than ranking through them.")
     lines.append("Raw rectangles remain in the report for diagnosis, but ranking, pass/fail, phase minimums, contract visibility, and recursive unit scoring use effective painted geometry.")
     lines.append("It does **not** prove that the live app hierarchy is good enough yet; the synthetic hierarchies are training/evidence fixtures for the FLOG method.")
     lines.append("")
@@ -10717,6 +12710,131 @@ def write_reports(
             lines.append(f"- Responsive capacity bands: `{band_text}`")
         lines.append("")
 
+    if report.get("layoutHintContracts"):
+        lines.append("## Shadow layout-hint compilation")
+        lines.append("")
+        lines.append(
+            "Milestone 1 compiles HTML-shaped `data-mc-layout-*` hints inside "
+            "FLOG only. The resulting candidate is rendered as evidence but is "
+            "excluded from ranking, responsive selection, and all live application "
+            "files."
+        )
+        lines.append("")
+        for compilation in report.get("layoutHintContracts") or []:
+            lines.append(
+                f"### `{compilation.get('hierarchyId', '')}` — "
+                f"state=`{compilation.get('state', 'unknown')}`"
+            )
+            lines.append("")
+            lines.append(
+                f"- Contract version: `{compilation.get('version', '')}` "
+                f"mode=`{compilation.get('mode', '')}` "
+                f"capacity=`{compilation.get('capacity', '')}`"
+            )
+            lines.append(
+                f"- Live application files touched: "
+                f"`{bool(compilation.get('liveApplicationFilesTouched', False))}`"
+            )
+            dock_tree = compilation.get("dockTree") or {}
+            if dock_tree:
+                lines.append(
+                    f"- Dock root: `{dock_tree.get('id', '')}` "
+                    f"model=`{dock_tree.get('model', '')}` "
+                    f"policy=`{dock_tree.get('policy', '')}`"
+                )
+                for zone in dock_tree.get("zones") or []:
+                    lines.append(
+                        f"  - `{zone.get('id', '')}`: "
+                        f"`{', '.join(zone.get('units') or [])}`"
+                    )
+            candidate = compilation.get("candidate") or {}
+            if candidate:
+                lines.append(
+                    f"- Shadow candidate: `{candidate.get('id', '')}` "
+                    "(excluded from ranking)"
+                )
+            if compilation.get("issues"):
+                lines.append("- Issues:")
+                for issue in compilation.get("issues") or []:
+                    lines.append(f"  - {issue}")
+            else:
+                lines.append("- Issues: `none`")
+            lines.append(
+                f"- Future HTML annotation targets: "
+                f"`{len(compilation.get('annotationRecommendations') or [])}`"
+            )
+            lines.append("")
+
+    if report.get("layoutHintRefinements"):
+        lines.append("## Shadow layout-hint refinement")
+        lines.append("")
+        lines.append(
+            "Milestone 1E uses existing Chromium trials to find the smallest "
+            "one-unit policy change that improves the authored default, and to "
+            "prepare the declared fallback chain. Recommendations remain "
+            "machine-readable evidence; they are never applied to live HTML."
+        )
+        lines.append("")
+        for refinement in report.get("layoutHintRefinements") or []:
+            lines.append(
+                f"### `{refinement.get('hierarchyId', '')}` — "
+                f"state=`{refinement.get('state', 'unknown')}`"
+            )
+            lines.append("")
+            lines.append(
+                f"- Reference viewport: "
+                f"`{refinement.get('referenceViewportProfile', '')}`"
+            )
+            lines.append(
+                f"- Required robust headroom: "
+                f"`{float(refinement.get('robustHeadroom', 0) or 0):.2%}`"
+            )
+            lines.append(
+                f"- Live application files touched: "
+                f"`{bool(refinement.get('liveApplicationFilesTouched', False))}`"
+            )
+            authored = refinement.get("authoredEvidenceByViewport") or {}
+            for profile, evidence in authored.items():
+                lines.append(
+                    f"- Authored `{profile}`: "
+                    f"outcome=`{evidence.get('outcome', 'unknown')}` "
+                    f"headroom=`{float(evidence.get('worstPhaseHeadroom', -1) or 0):+.3%}`"
+                )
+            revisions = refinement.get("recommendedContractRevisions") or []
+            if revisions:
+                lines.append("- Recommended minimal contract revision(s):")
+                for revision in revisions:
+                    lines.append(
+                        f"  - `{revision.get('unitId', '')}`: "
+                        f"`{revision.get('currentPolicy', '')}` → "
+                        f"`{revision.get('suggestedPolicy', '')}`; "
+                        f"headroom "
+                        f"`{float(revision.get('currentHeadroom', 0) or 0):+.3%}` → "
+                        f"`{float(revision.get('suggestedHeadroom', 0) or 0):+.3%}`"
+                    )
+            else:
+                lines.append("- Recommended minimal contract revisions: `none`")
+            fallback = refinement.get("fallbackPreparation") or {}
+            if fallback:
+                lines.append(
+                    f"- Fallback unit: `{fallback.get('unitId', '')}` "
+                    f"preferred=`{fallback.get('preferredPlacement', '')}`"
+                )
+                for entry in fallback.get("chain") or []:
+                    lines.append(
+                        f"  - `{entry.get('placement', '')}` → "
+                        f"`{entry.get('policy', '') or 'unmapped'}` "
+                        f"state=`{entry.get('state', '')}`"
+                    )
+                    for evidence in entry.get("measurements") or []:
+                        lines.append(
+                            f"    - `{evidence.get('viewportProfile', '')}`: "
+                            f"outcome=`{evidence.get('outcome', 'unknown')}` "
+                            f"candidate=`{evidence.get('candidate', '')}` "
+                            f"headroom=`{float(evidence.get('worstPhaseHeadroom', -1) or 0):+.3%}`"
+                        )
+            lines.append("")
+
     if report.get("responsivePolicies"):
         lines.append("## Responsive resize policies")
         lines.append("")
@@ -10753,7 +12871,9 @@ def write_reports(
             )
             lines.append(
                 f"- Probe coverage: count=`{policy.get('probeCount', 0)}` "
-                f"maxGap=`{policy.get('maxProbeGapPx', 0)}px`"
+                f"maxGap=`{policy.get('maxProbeGapPx', 0)}px` "
+                f"complete=`{bool(policy.get('coverageComplete', False))}` "
+                f"uncoveredIntervals=`{policy.get('uncoveredIntervalCount', 0)}`"
             )
             for selection in policy.get("selections") or []:
                 lines.append(
@@ -10764,7 +12884,9 @@ def write_reports(
                     f"remediation=`{selection.get('remediationLevel')}:"
                     f"{selection.get('remediationLabel')}` "
                     f"headroom=`{float(selection.get('worstPhaseHeadroom', 0) or 0):+.4f}` "
-                    f"status=`{selection.get('status')}`"
+                    f"status=`{selection.get('status')}` "
+                    f"admissibility=`{selection.get('capacityAdmissibilityState', 'unknown')}` "
+                    f"presentations=`{', '.join((selection.get('responsivePresentation') or {}).get('modes') or [])}`"
                 )
             for transition in policy.get("transitions") or []:
                 lines.append(
