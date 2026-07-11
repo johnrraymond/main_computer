@@ -15,7 +15,6 @@ REMOTE_WALLET_ROLES = {
     "o1",
     "o2",
     "o3",
-    "hub_admin",
     "escrow_owner",
 }
 
@@ -40,11 +39,15 @@ def test_fake_private_state_template_has_parallel_testnet_and_mainnet_boot_shape
         assert set(network["wallets"]) == REMOTE_WALLET_ROLES
         assert "main_computer" not in network["wallets"]
         assert "contracts" not in network
-        assert set(network["hub"]["instances"]) == {
+        expected_hubs = {
             f"{network_name}-hub1",
             f"{network_name}-hub2",
             f"{network_name}-hub3",
         }
+        assert set(network["hub"]["instances"]) == expected_hubs
+        assert set(network["hubs"]) == expected_hubs
+        for hub_id in expected_hubs:
+            assert set(network["hubs"][hub_id]["hub_admin_keys"]) == {"address1"}
         assert network["foundationdb"]["configure"] == {"redundancy": "double", "storage": "ssd"}
         assert set(network["qbft"]["instances"]) == {
             "validator-rpc-1",
@@ -76,9 +79,29 @@ def test_fake_private_state_template_uses_only_fake_or_null_private_values() -> 
         assert str(wallet["private_key"]).startswith("0x")
         assert len(str(wallet["private_key"])) == 66
 
+    testnet_hub_private_keys = []
+    for hub in state["networks"]["testnet"]["hubs"].values():
+        key_payload = hub["hub_admin_keys"]["address1"]
+        assert str(key_payload["address"]).startswith("0x100000000000000000000000000000000000000")
+        assert str(key_payload["private_key"]).startswith("0x")
+        assert len(str(key_payload["private_key"])) == 66
+        assert key_payload["state"] == "active"
+        assert key_payload["chain_authorized"] is True
+        assert key_payload["deployed_to_hub"] is True
+        testnet_hub_private_keys.append(key_payload["private_key"])
+    assert len(set(testnet_hub_private_keys)) == 3
+
     for wallet in state["networks"]["mainnet"]["wallets"].values():
         assert wallet["address"] is None
         assert wallet["private_key"] is None
+
+    for hub in state["networks"]["mainnet"]["hubs"].values():
+        key_payload = hub["hub_admin_keys"]["address1"]
+        assert key_payload["address"] is None
+        assert key_payload["private_key"] is None
+        assert key_payload["state"] is None
+        assert key_payload["chain_authorized"] is None
+        assert key_payload["deployed_to_hub"] is None
 
     rendered = FIXTURE.read_text(encoding="utf-8")
     assert "greatlibrary.io" not in rendered

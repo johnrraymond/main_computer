@@ -50,6 +50,25 @@ contract EscrowActor {
         escrow.transferOwnership(newOwner);
     }
 
+    function proposeAuthorizeBridgeController(HubCreditBridgeEscrow escrow, address controller) external returns (uint256) {
+        return escrow.proposeAuthorizeBridgeController(controller);
+    }
+
+    function proposeRetireBridgeController(HubCreditBridgeEscrow escrow, address controller) external returns (uint256) {
+        return escrow.proposeRetireBridgeController(controller);
+    }
+
+    function proposeSetActionSecondsRequired(HubCreditBridgeEscrow escrow, bytes32 action, uint8 secondsRequired)
+        external
+        returns (uint256)
+    {
+        return escrow.proposeSetActionSecondsRequired(action, secondsRequired);
+    }
+
+    function secondOfficerProposal(HubCreditBridgeEscrow escrow, uint256 proposalId) external returns (bool) {
+        return escrow.secondOfficerProposal(proposalId);
+    }
+
     function sendRawEth(HubCreditBridgeEscrow escrow) external payable {
         (bool sent, ) = address(escrow).call{value: msg.value}("");
         require(sent, "raw send failed");
@@ -64,7 +83,7 @@ contract HubCreditBridgeEscrowTest {
     EscrowActor private outsider = new EscrowActor();
 
     function testDepositRectifyAndReleaseWithdrawal() public {
-        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
 
         bytes32 depositId = keccak256("deposit-100");
         bool depositApplied = requester.depositFor{value: 100 * CREDIT}(
@@ -120,7 +139,7 @@ contract HubCreditBridgeEscrowTest {
     }
 
     function testDepositRecordStartsIncompleteWithPayer() public {
-        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
 
         bytes32 depositId = keccak256("deposit-record");
         requester.depositFor{value: 3 * CREDIT}(
@@ -323,7 +342,7 @@ contract HubCreditBridgeEscrowTest {
     }
 
     function testOnlyOwnerCanChangeBridgeController() public {
-        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
 
         try outsider.setBridgeController(escrow, address(outsider)) {
             revert("expected owner rejection");
@@ -421,7 +440,7 @@ contract HubCreditBridgeEscrowTest {
     }
 
     function testOnlyOwnerCanTransferOwnershipAndNewOwnerReceivesOwnerPowers() public {
-        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
 
         assertEq(escrow.owner(), address(this));
 
@@ -528,7 +547,7 @@ contract HubCreditBridgeEscrowTest {
     }
 
     function testHubAdminCannotUseOwnerOnlyControls() public {
-        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
 
         try bridge.setBridgeController(escrow, address(outsider)) {
             revert("expected hub admin bridge-controller rejection");
@@ -547,21 +566,107 @@ contract HubCreditBridgeEscrowTest {
         assertFalse(escrow.paused());
     }
 
+
+    function testOfficerCanAuthorizeAdditionalBridgeControllerWithoutSecondingAtBootstrap() public {
+        HubCreditBridgeEscrow escrow = fundedEscrow();
+
+        uint256 proposalId = escrow.proposeAuthorizeBridgeController(address(outsider));
+
+        assertEq(proposalId, 1);
+        assertTrue(escrow.authorizedBridgeControllers(address(bridge)));
+        assertTrue(escrow.authorizedBridgeControllers(address(outsider)));
+        assertEq(escrow.authorizedBridgeControllerCount(), 2);
+
+        bool rectified = outsider.rectifySpend(
+            escrow,
+            address(requester),
+            1 * CREDIT,
+            keccak256("second-bridge-rectify"),
+            "second bridge"
+        );
+        assertTrue(rectified);
+    }
+
+    function testOfficerCanRaiseAuthorizeThresholdAndRequireSecondOfficer() public {
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
+
+        uint256 thresholdProposalId = escrow.proposeSetActionSecondsRequired(
+            escrow.ACTION_AUTHORIZE_BRIDGE_CONTROLLER(),
+            1
+        );
+
+        assertEq(thresholdProposalId, 1);
+        assertEq(escrow.actionSecondsRequired(escrow.ACTION_AUTHORIZE_BRIDGE_CONTROLLER()), 1);
+
+        uint256 proposalId = bridge.proposeAuthorizeBridgeController(escrow, address(requester));
+        assertFalse(escrow.authorizedBridgeControllers(address(requester)));
+
+        bool executed = outsider.secondOfficerProposal(escrow, proposalId);
+
+        assertTrue(executed);
+        assertTrue(escrow.authorizedBridgeControllers(address(requester)));
+        assertEq(escrow.authorizedBridgeControllerCount(), 2);
+    }
+
+    function testOfficerRetiresOldBridgeControllerAfterReplacement() public {
+        HubCreditBridgeEscrow escrow = fundedEscrow();
+
+        escrow.proposeAuthorizeBridgeController(address(outsider));
+        assertTrue(escrow.authorizedBridgeControllers(address(bridge)));
+        assertTrue(escrow.authorizedBridgeControllers(address(outsider)));
+
+        uint256 proposalId = escrow.proposeRetireBridgeController(address(bridge));
+
+        assertEq(proposalId, 2);
+        assertFalse(escrow.authorizedBridgeControllers(address(bridge)));
+        assertTrue(escrow.authorizedBridgeControllers(address(outsider)));
+        assertEq(escrow.authorizedBridgeControllerCount(), 1);
+        assertEq(escrow.bridgeController(), address(0));
+
+        bytes32 depositId = keccak256("retired-old-complete");
+        requester.depositFor{value: 2 * CREDIT}(
+            escrow,
+            address(requester),
+            2 * CREDIT,
+            depositId,
+            "retire old deposit"
+        );
+
+        try bridge.completeDeposit(escrow, depositId) {
+            revert("expected retired bridge complete rejection");
+        } catch {}
+
+        bool completed = outsider.completeDeposit(escrow, depositId);
+        assertTrue(completed);
+    }
+
     function testConstructorRejectsZeroBridgeAndInitializesAuthorities() public {
-        try new HubCreditBridgeEscrow(address(0)) returns (HubCreditBridgeEscrow rejected) {
+        address[4] memory officeAddresses = [
+            address(this),
+            address(bridge),
+            address(requester),
+            address(outsider)
+        ];
+
+        try new HubCreditBridgeEscrow(address(0), officeAddresses) returns (HubCreditBridgeEscrow rejected) {
             assertTrue(address(rejected) != address(0));
             revert("expected zero bridge constructor rejection");
         } catch {}
 
-        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
 
         assertEq(escrow.owner(), address(this));
         assertEq(escrow.bridgeController(), address(bridge));
+        assertTrue(escrow.authorizedBridgeControllers(address(bridge)));
+        assertEq(escrow.authorizedBridgeControllerCount(), 1);
+        assertEq(escrow.actionSecondsRequired(escrow.ACTION_AUTHORIZE_BRIDGE_CONTROLLER()), 0);
+        assertEq(escrow.actionSecondsRequired(escrow.ACTION_RETIRE_BRIDGE_CONTROLLER()), 0);
+        assertEq(escrow.actionSecondsRequired(escrow.ACTION_SET_ACTION_SECONDS_REQUIRED()), 0);
         assertFalse(escrow.paused());
     }
 
     function testRawEthReceiveRevertsAndDepositForIsRequired() public {
-        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
 
         try requester.sendRawEth{value: 1 * CREDIT}(escrow) {
             revert("expected raw eth rejection");
@@ -583,8 +688,19 @@ contract HubCreditBridgeEscrowTest {
         assertEq(escrow.depositedUnits(address(requester)), 1 * CREDIT);
     }
 
+
+    function newEscrow(address controller) private returns (HubCreditBridgeEscrow) {
+        address[4] memory officeAddresses = [
+            address(this),
+            address(bridge),
+            address(requester),
+            address(outsider)
+        ];
+        return new HubCreditBridgeEscrow(controller, officeAddresses);
+    }
+
     function fundedEscrow() private returns (HubCreditBridgeEscrow) {
-        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+        HubCreditBridgeEscrow escrow = newEscrow(address(bridge));
         requester.depositFor{value: 100 * CREDIT}(
             escrow,
             address(requester),

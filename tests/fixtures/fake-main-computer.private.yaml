@@ -54,9 +54,6 @@ networks:
       o3:
         address: "0x1000000000000000000000000000000000000005"
         private_key: "0x5555555555555555555555555555555555555555555555555555555555555555"
-      hub_admin:
-        address: "0x1000000000000000000000000000000000000006"
-        private_key: "0x6666666666666666666666666666666666666666666666666666666666666666"
       escrow_owner:
         address: "0x1000000000000000000000000000000000000007"
         private_key: "0x7777777777777777777777777777777777777777777777777777777777777777"
@@ -88,6 +85,32 @@ networks:
         testnet-hub3:
           coolify_host: B
           roles: [api]
+
+    hubs:
+      testnet-hub1:
+        hub_admin_keys:
+          address1:
+            address: "0x1000000000000000000000000000000000000006"
+            private_key: "0x6666666666666666666666666666666666666666666666666666666666666666"
+            state: active
+            chain_authorized: true
+            deployed_to_hub: true
+      testnet-hub2:
+        hub_admin_keys:
+          address1:
+            address: "0x1000000000000000000000000000000000000008"
+            private_key: "0x8888888888888888888888888888888888888888888888888888888888888888"
+            state: active
+            chain_authorized: true
+            deployed_to_hub: true
+      testnet-hub3:
+        hub_admin_keys:
+          address1:
+            address: "0x1000000000000000000000000000000000000009"
+            private_key: "0x9999999999999999999999999999999999999999999999999999999999999999"
+            state: active
+            chain_authorized: true
+            deployed_to_hub: true
 
     qbft:
       docker_subnet: 172.28.241.0/24
@@ -136,9 +159,6 @@ networks:
       o3:
         address: null
         private_key: null
-      hub_admin:
-        address: null
-        private_key: null
       escrow_owner:
         address: null
         private_key: null
@@ -170,6 +190,32 @@ networks:
         mainnet-hub3:
           coolify_host: B
           roles: [api]
+
+    hubs:
+      mainnet-hub1:
+        hub_admin_keys:
+          address1:
+            address: null
+            private_key: null
+            state: null
+            chain_authorized: null
+            deployed_to_hub: null
+      mainnet-hub2:
+        hub_admin_keys:
+          address1:
+            address: null
+            private_key: null
+            state: null
+            chain_authorized: null
+            deployed_to_hub: null
+      mainnet-hub3:
+        hub_admin_keys:
+          address1:
+            address: null
+            private_key: null
+            state: null
+            chain_authorized: null
+            deployed_to_hub: null
 
     qbft:
       docker_subnet: 172.28.242.0/24

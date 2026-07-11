@@ -71,11 +71,26 @@ def test_sensitive_local_secret_values_collects_wallet_keys_and_public_coolify_i
                     "captain": {"private_key": key("5")},
                     "placeholder": {"private_key": "<redacted>"},
                 },
+                "hubs": {
+                    "testnet-hub1": {
+                        "hub_admin_keys": {
+                            "address1": {"private_key": key("7")},
+                        },
+                    },
+                },
             },
             "mainnet": {
                 "wallets": {
                     "deployer": {"private_key": key("6")},
                     "duplicate": {"private_key": key("4")},
+                },
+                "hubs": {
+                    "mainnet-hub1": {
+                        "hub_admin_keys": {
+                            "address1": {"private_key": key("8")},
+                            "address2": {"private_key": key("7")},
+                        },
+                    },
                 },
             },
         },
@@ -84,7 +99,9 @@ def test_sensitive_local_secret_values_collects_wallet_keys_and_public_coolify_i
     assert sync_private_state.sensitive_wallet_private_keys(state) == [
         key("4"),
         key("5"),
+        key("7"),
         key("6"),
+        key("8"),
     ]
     assert sync_private_state.manual_coolify_host_ip_values(state) == [
         "203.0.113.10",
@@ -93,7 +110,9 @@ def test_sensitive_local_secret_values_collects_wallet_keys_and_public_coolify_i
     assert sync_private_state.sensitive_local_secret_values(state) == [
         key("4"),
         key("5"),
+        key("7"),
         key("6"),
+        key("8"),
         "203.0.113.10",
         "203.0.113.11",
     ]
@@ -146,6 +165,13 @@ def test_ensure_local_secrets_appends_missing_sensitive_values(sync_private_stat
                 "wallets": {
                     "deployer": {"private_key": key("6")},
                 },
+                "hubs": {
+                    "mainnet-hub1": {
+                        "hub_admin_keys": {
+                            "address1": {"private_key": key("8")},
+                        },
+                    },
+                },
             },
             "dev": {
                 "wallets": {
@@ -157,12 +183,13 @@ def test_ensure_local_secrets_appends_missing_sensitive_values(sync_private_stat
 
     added = sync_private_state.ensure_local_secrets_for_sensitive_values(tmp_path, state)
 
-    assert added == 3
+    assert added == 4
     lines = local_secrets.read_text(encoding="utf-8").splitlines()
     assert key("4") in lines
     assert key("5") in lines
     assert key("6") in lines
     assert key("7") not in lines
+    assert key("8") in lines
     assert "203.0.113.10" in lines
     assert "10.0.0.10" not in lines
     assert "203.0.113.11" in lines
@@ -249,11 +276,23 @@ def test_fake_private_template_local_secrets_coverage_is_test_only(sync_private_
         for wallet in state["networks"]["testnet"]["wallets"].values()
         if wallet.get("private_key")
     ]
+    testnet_hub_admin_keys = [
+        key_payload["private_key"]
+        for hub in state["networks"]["testnet"]["hubs"].values()
+        for key_payload in hub["hub_admin_keys"].values()
+        if key_payload.get("private_key")
+    ]
     assert testnet_wallet_keys
-    for private_key in testnet_wallet_keys:
+    assert testnet_hub_admin_keys
+    for private_key in [*testnet_wallet_keys, *testnet_hub_admin_keys]:
         assert private_key in values
 
     assert all(wallet["private_key"] is None for wallet in state["networks"]["mainnet"]["wallets"].values())
+    assert all(
+        key_payload["private_key"] is None
+        for hub in state["networks"]["mainnet"]["hubs"].values()
+        for key_payload in hub["hub_admin_keys"].values()
+    )
     assert "198.51.100.10" in values
     assert "198.51.100.11" in values
     assert "10.42.0.10" not in values

@@ -62,6 +62,8 @@ IP_ADDRESS_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 LIVE_NETWORKS = ("test", "dev", "testnet", "mainnet")
 SENSITIVE_WALLET_NETWORKS = ("testnet", "mainnet")
+DEFAULT_DEV_HUB_ID = "dev-hub1"
+HUB_ADMIN_KEY_FIELDS = ("address", "private_key", "state", "chain_authorized", "deployed_to_hub")
 OWNER_SELECTOR = "0x8da5cb5b"
 PAUSED_SELECTOR = "0x5c975abb"
 
@@ -164,6 +166,7 @@ PREFERRED_ORDER: dict[tuple[str, ...], list[str]] = {
         "rpc",
         "qbft",
         "hub",
+        "hubs",
         "foundationdb",
         "wallets",
         "last_seen",
@@ -198,11 +201,12 @@ PREFERRED_ORDER: dict[tuple[str, ...], list[str]] = {
         "o1",
         "o2",
         "o3",
-        "hub_admin",
         "smoke_client",
         "escrow_owner",
     ],
     ("networks", "*", "wallets", "*"): ["address", "private_key"],
+    ("networks", "*", "hubs", "*"): ["hub_admin_keys"],
+    ("networks", "*", "hubs", "*", "hub_admin_keys", "*"): list(HUB_ADMIN_KEY_FIELDS),
     ("networks", "*", "last_seen"): ["chain_rpc", "hub"],
 }
 
@@ -457,6 +461,7 @@ def populate_state(builder: StateBuilder, root: Path) -> None:
     sanitize_manual_coolify_host_references(builder)
     prune_non_private_network_state(builder)
     validate_qbft_instances(builder)
+    validate_hub_admin_keys(builder)
 
 
 
@@ -639,6 +644,8 @@ def prune_non_private_network_state(builder: StateBuilder) -> None:
         if not isinstance(wallets, Mapping):
             continue
 
+        builder.delete_path(network_path + ("wallets", "hub_admin"))
+
         for role in list(wallets):
             wallet_path = network_path + ("wallets", str(role))
             builder.delete_path(wallet_path + ("credits",))
@@ -733,6 +740,73 @@ def validate_qbft_instances(builder: StateBuilder) -> None:
                 )
 
 
+def validate_hub_admin_keys(builder: StateBuilder) -> None:
+    """Emit non-fatal warnings for per-Hub hub_admin key inventory issues."""
+
+    networks = builder.get(("networks",))
+    if not isinstance(networks, Mapping):
+        return
+
+    for network_name, _network_payload in list(networks.items()):
+        network_name = str(network_name)
+        hubs = builder.get(("networks", network_name, "hubs"))
+        if not isinstance(hubs, Mapping):
+            continue
+
+        active_addresses: dict[str, list[str]] = {}
+        for hub_id, hub_payload in list(hubs.items()):
+            hub_id = str(hub_id)
+            path = ("networks", network_name, "hubs", hub_id)
+            if not isinstance(hub_payload, Mapping):
+                builder.record_warning("hub_not_mapping", path, "Hub private-state entry must be a mapping.")
+                continue
+
+            hub_admin_keys = hub_payload.get("hub_admin_keys")
+            if not isinstance(hub_admin_keys, Mapping) or not hub_admin_keys:
+                builder.record_warning(
+                    "hub_admin_keys_missing",
+                    path + ("hub_admin_keys",),
+                    "Hub has no hub_admin_keys inventory.",
+                )
+                continue
+
+            active_key_ids: list[str] = []
+            for key_id, key_payload in hub_admin_keys.items():
+                key_path = path + ("hub_admin_keys", str(key_id))
+                if not isinstance(key_payload, Mapping):
+                    builder.record_warning(
+                        "hub_admin_key_not_mapping",
+                        key_path,
+                        "Hub admin key entry must be a mapping.",
+                    )
+                    continue
+                if key_payload.get("state") == "active":
+                    active_key_ids.append(str(key_id))
+                    address = key_payload.get("address")
+                    if ADDRESS_RE.match(str(address or "")):
+                        active_addresses.setdefault(str(address).lower(), []).append(f"{network_name}.{hub_id}.{key_id}")
+
+            if len(active_key_ids) != 1:
+                builder.record_warning(
+                    "hub_admin_active_key_count",
+                    path + ("hub_admin_keys",),
+                    "Each Hub should have exactly one active hub_admin key.",
+                    active_count=len(active_key_ids),
+                    active_key_ids=active_key_ids,
+                )
+
+        for active_address, references in sorted(active_addresses.items()):
+            if len(references) > 1:
+                builder.record_warning(
+                    "hub_admin_duplicate_active_signer",
+                    ("networks", network_name, "hubs"),
+                    "The same active hub_admin signer is assigned to more than one Hub.",
+                    address=active_address,
+                    references=references,
+                )
+
+
+
 def populate_default_wallets(builder: StateBuilder) -> None:
     for role, payload in ANVIL_DEFAULTS.items():
         for field, value in payload.items():
@@ -755,8 +829,7 @@ def populate_test_network(builder: StateBuilder, root: Path) -> None:
             builder.set_value(network + ("rpc",), f"http://127.0.0.1:{rpc_port}", source)
 
     add_default_network_wallets(builder, "test", source="repo:anvil-default-wallets")
-    builder.set_existing_or_null_network_slot(network + ("wallets", "hub_admin", "address"))
-    builder.set_existing_or_null_network_slot(network + ("wallets", "hub_admin", "private_key"))
+    seed_hub_admin_keys_from_legacy_wallet(builder, "test", default_hubs=())
 
 
 def populate_dev_network(builder: StateBuilder, root: Path) -> None:
@@ -774,8 +847,19 @@ def populate_dev_network(builder: StateBuilder, root: Path) -> None:
 
         hub_admin = deployment.get("hub_admin")
         if isinstance(hub_admin, dict):
-            builder.set_if_known(network + ("wallets", "hub_admin", "address"), hub_admin.get("address"), source)
-            populate_wallet_secret_from_record(builder, root, network + ("wallets", "hub_admin"), hub_admin)
+            populate_hub_admin_key_from_record(
+                builder,
+                root,
+                network_name="dev",
+                hub_id=DEFAULT_DEV_HUB_ID,
+                key_id="address1",
+                record=hub_admin,
+                source=source,
+                overwrite=True,
+                state="active",
+                chain_authorized=True,
+                deployed_to_hub=True,
+            )
 
         smoke_client = deployment.get("smoke_client")
         if isinstance(smoke_client, dict):
@@ -802,11 +886,168 @@ def populate_remote_network(builder: StateBuilder, root: Path, network_name: str
     populate_network_config(builder, root, network_name)
     populate_remote_topology(builder, root, network_name)
     populate_remote_coolify_deployment(builder, root, network_name)
+    seed_hub_admin_keys_from_legacy_wallet(builder, network_name)
     populate_deployment_manifest(builder, root, network_name)
 
-    for role in ("deployer", "escrow_owner", "hub_admin", "captain", "o1", "o2", "o3"):
+    for role in ("deployer", "escrow_owner", "captain", "o1", "o2", "o3"):
         builder.set_existing_or_null_network_slot(network + ("wallets", role, "address"))
         builder.set_existing_or_null_network_slot(network + ("wallets", role, "private_key"))
+
+
+def seed_hub_admin_keys_from_legacy_wallet(
+    builder: StateBuilder,
+    network_name: str,
+    *,
+    default_hubs: tuple[str, ...] | None = None,
+) -> None:
+    """Move the legacy network hub_admin wallet into per-Hub key slots.
+
+    The sync output should no longer preserve networks.<network>.wallets.hub_admin.
+    During migration, any known legacy hub_admin address/private_key is copied into
+    every Hub that does not yet have hub_admin_keys.  Existing per-Hub keys win.
+    """
+
+    hub_ids = known_hub_ids(builder, network_name)
+    if default_hubs is not None:
+        for hub_id in default_hubs:
+            if hub_id not in hub_ids:
+                hub_ids.append(hub_id)
+    if network_name == "dev" and DEFAULT_DEV_HUB_ID not in hub_ids:
+        hub_ids.append(DEFAULT_DEV_HUB_ID)
+    if not hub_ids:
+        return
+
+    legacy_base = ("networks", network_name, "wallets", "hub_admin")
+    legacy_address = builder.get(legacy_base + ("address",))
+    legacy_private_key = builder.get(legacy_base + ("private_key",))
+    has_legacy_wallet = value_is_known(legacy_address) or value_is_known(legacy_private_key)
+    source = "existing-state:migrated-from-network-wallets.hub_admin"
+
+    for hub_id in hub_ids:
+        hub_admin_keys_path = ("networks", network_name, "hubs", hub_id, "hub_admin_keys")
+        existing_keys = builder.get(hub_admin_keys_path)
+        if isinstance(existing_keys, Mapping) and existing_keys:
+            continue
+
+        key_path = hub_admin_keys_path + ("address1",)
+        if has_legacy_wallet:
+            if value_is_known(legacy_address):
+                builder.set_value(key_path + ("address",), legacy_address, source, overwrite=False)
+            else:
+                builder.set_existing_or_null_network_slot(key_path + ("address",))
+            if value_is_known(legacy_private_key):
+                builder.set_value(key_path + ("private_key",), legacy_private_key, source, overwrite=False)
+            else:
+                builder.set_existing_or_null_network_slot(key_path + ("private_key",))
+            builder.set_value(key_path + ("state",), "active", source, overwrite=False)
+            builder.set_value(key_path + ("chain_authorized",), True, source, overwrite=False)
+            builder.set_value(key_path + ("deployed_to_hub",), True, source, overwrite=False)
+        else:
+            for field in HUB_ADMIN_KEY_FIELDS:
+                builder.set_existing_or_null_network_slot(key_path + (field,))
+
+
+def populate_hub_admin_key_from_record(
+    builder: StateBuilder,
+    root: Path,
+    *,
+    network_name: str,
+    hub_id: str | None,
+    key_id: str,
+    record: Mapping[str, Any],
+    source: str,
+    overwrite: bool,
+    state: str,
+    chain_authorized: bool,
+    deployed_to_hub: bool,
+) -> None:
+    if not hub_id:
+        return
+
+    base_path = ("networks", network_name, "hubs", str(hub_id), "hub_admin_keys", str(key_id))
+    address = record.get("address")
+    if not value_is_known(address):
+        inferred = address_for_known_private_key(record.get("private_key"))
+        if inferred is not None:
+            address = inferred
+    builder.set_if_known(base_path + ("address",), address, source, overwrite=overwrite)
+    populate_wallet_secret_from_record(builder, root, base_path, record, inline_source=source, overwrite=overwrite)
+    builder.set_value(base_path + ("state",), state, source, overwrite=overwrite)
+    builder.set_value(base_path + ("chain_authorized",), bool(chain_authorized), source, overwrite=overwrite)
+    builder.set_value(base_path + ("deployed_to_hub",), bool(deployed_to_hub), source, overwrite=overwrite)
+
+
+def known_hub_ids(builder: StateBuilder, network_name: str) -> list[str]:
+    network = ("networks", network_name)
+    hub_ids: list[str] = []
+    seen: set[str] = set()
+
+    def add_from_mapping(value: Any) -> None:
+        if not isinstance(value, Mapping):
+            return
+        for raw_id in value:
+            hub_id = str(raw_id)
+            if hub_id and hub_id not in seen:
+                seen.add(hub_id)
+                hub_ids.append(hub_id)
+
+    add_from_mapping(builder.get(network + ("hubs",)))
+    add_from_mapping(builder.get(network + ("hub", "instances")))
+    return hub_ids
+
+
+def first_known_hub_id(builder: StateBuilder, network_name: str) -> str | None:
+    hub_ids = known_hub_ids(builder, network_name)
+    if hub_ids:
+        return hub_ids[0]
+    if network_name == "dev":
+        return DEFAULT_DEV_HUB_ID
+    return None
+
+
+def hub_id_for_live_hub_url(builder: StateBuilder, network_name: str, hub_url: str) -> str | None:
+    clean_hub_url = str(hub_url or "").strip().rstrip("/")
+    if not clean_hub_url:
+        return None
+
+    instances = builder.get(("networks", network_name, "hub", "instances"))
+    if isinstance(instances, Mapping):
+        for hub_id, payload in instances.items():
+            if not isinstance(payload, Mapping):
+                continue
+            candidates = [payload.get("public_url"), payload.get("hub_url")]
+            for candidate in candidates:
+                if value_is_known(candidate) and str(candidate).strip().rstrip("/") == clean_hub_url:
+                    return str(hub_id)
+
+    hub_ids = known_hub_ids(builder, network_name)
+    if len(hub_ids) == 1:
+        return hub_ids[0]
+    if network_name == "dev":
+        return DEFAULT_DEV_HUB_ID
+    return None
+
+
+def active_hub_admin_key_id(builder: StateBuilder, network_name: str, hub_id: str) -> str:
+    keys_path = ("networks", network_name, "hubs", hub_id, "hub_admin_keys")
+    keys = builder.get(keys_path)
+    if isinstance(keys, Mapping):
+        for key_id, payload in keys.items():
+            if isinstance(payload, Mapping) and payload.get("state") == "active":
+                return str(key_id)
+        for key_id in keys:
+            return str(key_id)
+    return "address1"
+
+
+def set_live_hub_admin_address(builder: StateBuilder, network_name: str, hub_id: str, value: Any, source: str) -> None:
+    if not value_is_known(value):
+        return
+    key_id = active_hub_admin_key_id(builder, network_name, hub_id)
+    base_path = ("networks", network_name, "hubs", hub_id, "hub_admin_keys", key_id)
+    set_live_value(builder, base_path + ("address",), value, source)
+    builder.set_value(base_path + ("state",), "active", source, overwrite=False)
+    builder.set_value(base_path + ("deployed_to_hub",), True, source, overwrite=False)
 
 
 def populate_network_config(builder: StateBuilder, root: Path, network_name: str) -> None:
@@ -962,7 +1203,23 @@ def apply_deployment_payload(
     if isinstance(chain, dict):
         builder.set_if_known(network + ("chain_id",), parse_int_maybe(chain.get("chain_id")), source)
 
-    for role in ("hub_admin", "smoke_client", "deployer", "escrow_owner"):
+    hub_admin = deployment.get("hub_admin")
+    if isinstance(hub_admin, dict) and network_name == "dev":
+        populate_hub_admin_key_from_record(
+            builder,
+            root,
+            network_name=network_name,
+            hub_id=DEFAULT_DEV_HUB_ID if network_name == "dev" else first_known_hub_id(builder, network_name),
+            key_id="address1",
+            record=hub_admin,
+            source=source,
+            overwrite=True,
+            state="active",
+            chain_authorized=True,
+            deployed_to_hub=True,
+        )
+
+    for role in ("smoke_client", "deployer", "escrow_owner"):
         record = deployment.get(role)
         if isinstance(record, dict):
             populate_wallet_from_record(builder, root, network + ("wallets", role), record, source)
@@ -1128,10 +1385,11 @@ def populate_wallet_secret_from_record(
     record: Mapping[str, Any],
     *,
     inline_source: str = "existing-state",
+    overwrite: bool = True,
 ) -> None:
     inline_private_key = record.get("private_key")
     if PRIVATE_KEY_RE.match(str(inline_private_key or "")):
-        builder.set_value(base_path + ("private_key",), str(inline_private_key), inline_source)
+        builder.set_value(base_path + ("private_key",), str(inline_private_key), inline_source, overwrite=overwrite)
         inferred = address_for_known_private_key(inline_private_key)
         if inferred is not None:
             builder.set_value(base_path + ("address",), inferred, inline_source, overwrite=False)
@@ -1145,9 +1403,9 @@ def populate_wallet_secret_from_record(
     payload = read_json(wallet_path)
     if isinstance(payload, dict) and PRIVATE_KEY_RE.match(str(payload.get("private_key") or "")):
         source = f"file:{Path(wallet_path_value).as_posix()}"
-        builder.set_value(base_path + ("private_key",), str(payload["private_key"]), source)
+        builder.set_value(base_path + ("private_key",), str(payload["private_key"]), source, overwrite=overwrite)
         if ADDRESS_RE.match(str(payload.get("address") or "")):
-            builder.set_value(base_path + ("address",), str(payload["address"]), source)
+            builder.set_value(base_path + ("address",), str(payload["address"]), source, overwrite=overwrite)
     else:
         builder.set_existing_or_null_network_slot(base_path + ("private_key",))
 
@@ -1348,7 +1606,16 @@ def apply_live_hub_status(builder: StateBuilder, network_name: str, hub_url: str
     bridge = status.get("bridge_backend")
     if isinstance(bridge, Mapping):
         controller = bridge.get("bridge_controller_address")
-        set_live_value(builder, network_path + ("wallets", "hub_admin", "address"), controller, source)
+        hub_id = hub_id_for_live_hub_url(builder, network_name, hub_url)
+        if hub_id is not None:
+            set_live_hub_admin_address(builder, network_name, hub_id, controller, source)
+        else:
+            builder.record_warning(
+                "hub_admin_live_status_unmatched_hub",
+                network_path + ("hubs",),
+                "Live Hub status reported a bridge controller, but the URL could not be matched to a Hub id.",
+                hub_url=hub_url,
+            )
 
 
 def check_live_chain(builder: StateBuilder, network_name: str, *, timeout_s: float) -> None:
@@ -1587,6 +1854,13 @@ def sensitive_wallet_private_keys(state: Mapping[str, Any]) -> list[str]:
 
     keys: list[str] = []
     seen: set[str] = set()
+
+    def add_private_key(value: Any) -> None:
+        private_key = str(value or "").strip()
+        if PRIVATE_KEY_RE.match(private_key) and private_key not in seen:
+            seen.add(private_key)
+            keys.append(private_key)
+
     networks = state.get("networks")
     if not isinstance(networks, Mapping):
         return keys
@@ -1595,16 +1869,25 @@ def sensitive_wallet_private_keys(state: Mapping[str, Any]) -> list[str]:
         network = networks.get(network_name)
         if not isinstance(network, Mapping):
             continue
+
         wallets = network.get("wallets")
-        if not isinstance(wallets, Mapping):
-            continue
-        for wallet in wallets.values():
-            if not isinstance(wallet, Mapping):
-                continue
-            private_key = str(wallet.get("private_key") or "").strip()
-            if PRIVATE_KEY_RE.match(private_key) and private_key not in seen:
-                seen.add(private_key)
-                keys.append(private_key)
+        if isinstance(wallets, Mapping):
+            for wallet in wallets.values():
+                if isinstance(wallet, Mapping):
+                    add_private_key(wallet.get("private_key"))
+
+        hubs = network.get("hubs")
+        if isinstance(hubs, Mapping):
+            for hub in hubs.values():
+                if not isinstance(hub, Mapping):
+                    continue
+                hub_admin_keys = hub.get("hub_admin_keys")
+                if not isinstance(hub_admin_keys, Mapping):
+                    continue
+                for key_payload in hub_admin_keys.values():
+                    if isinstance(key_payload, Mapping):
+                        add_private_key(key_payload.get("private_key"))
+
     return keys
 
 
@@ -1881,7 +2164,12 @@ def preferred_order_for_path(path: tuple[str, ...]) -> list[str]:
         return PREFERRED_ORDER[path]
     if len(path) == 3 and path[:2] == ("coolify", "hosts"):
         return PREFERRED_ORDER.get(("coolify", "hosts", "*"), [])
-    wildcard = tuple("*" if index % 2 == 1 and path[index - 1] in {"networks", "wallets", "contracts"} else part for index, part in enumerate(path))
+    wildcard = tuple(
+        "*"
+        if index % 2 == 1 and path[index - 1] in {"networks", "wallets", "contracts", "hubs", "hub_admin_keys"}
+        else part
+        for index, part in enumerate(path)
+    )
     if wildcard in PREFERRED_ORDER:
         return PREFERRED_ORDER[wildcard]
     if len(path) >= 5 and path[0] == "networks" and path[2] in {"hub", "qbft"} and path[3] == "instances":

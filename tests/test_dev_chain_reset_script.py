@@ -81,8 +81,13 @@ def test_default_deployments_cover_governance_xlag_and_hub_escrow_contracts() ->
     assert specs[2].target == "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow"
     assert specs[0].constructor_args[0].startswith("[0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
     assert specs[1].constructor_args[-3:] == ["1000000000000000000", "1", "1"]
-    assert specs[2].constructor_args == ["0x1111111111111111111111111111111111111111"]
+    assert specs[2].constructor_args == [
+        "0x1111111111111111111111111111111111111111",
+        "[0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266,0x70997970C51812dc3A010C7d01b50e0d17dc79C8,0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC,0x90F79bf6EB2c4f870365E785982E1f101E93b906]",
+    ]
     assert specs[2].metadata["bridge_controller_address"] == "0x1111111111111111111111111111111111111111"
+    assert specs[2].metadata["authorized_bridge_controller_address"] == "0x1111111111111111111111111111111111111111"
+    assert len(specs[2].metadata["officer_addresses"]) == 4
 
 
 def test_soft_deploy_commands_create_isolated_network_and_anvil_pool(monkeypatch) -> None:
@@ -161,6 +166,8 @@ def test_dry_run_writes_soft_chroot_outputs(tmp_path: Path, monkeypatch) -> None
     assert escrow["payment_asset"] == "native"
     assert escrow["approval_required"] is False
     assert escrow["bridge_controller_address"] == manifest["hub_admin"]["address"]
+    assert escrow["authorized_bridge_controller_address"] == manifest["hub_admin"]["address"]
+    assert len(escrow["officer_addresses"]) == 4
     assert manifest["hub_admin"]["wallet_path"] == "deployments/dev/hub-admin-wallet-42424242.json"
     assert manifest["smoke_client"]["address"] == "0x000000000000000000000000000000000000c11e"
     assert manifest["smoke_client"]["wallet_path"] == "deployments/dev/smoke-client-wallet-42424242.json"

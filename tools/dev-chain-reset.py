@@ -445,12 +445,14 @@ def deployment_specs(args: argparse.Namespace, hub_admin_address: str | None = N
             DeploymentSpec(
                 key=HUB_CREDIT_BRIDGE_ESCROW_KEY,
                 target="src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow",
-                constructor_args=[bridge_controller_address],
+                constructor_args=[bridge_controller_address, office_constructor_arg],
                 metadata={
                     "chain_id": args.chain_id,
                     "payment_asset": "native",
                     "approval_required": False,
                     "bridge_controller_address": bridge_controller_address,
+                    "authorized_bridge_controller_address": bridge_controller_address,
+                    "officer_addresses": offices,
                 },
             )
         )
@@ -1924,7 +1926,14 @@ def public_contract_records(deployments: dict) -> dict:
             "address": value.get("address"),
             "transaction_hash": value.get("transaction_hash"),
         }
-        for optional_key in ("chain_id", "payment_asset", "approval_required", "bridge_controller_address"):
+        for optional_key in (
+            "chain_id",
+            "payment_asset",
+            "approval_required",
+            "bridge_controller_address",
+            "authorized_bridge_controller_address",
+            "officer_addresses",
+        ):
             if optional_key in value:
                 record[optional_key] = value.get(optional_key)
         records[str(key)] = record

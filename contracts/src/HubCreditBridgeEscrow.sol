@@ -8,6 +8,16 @@ pragma solidity ^0.8.24;
 /// releases reconciled unused escrow back to the user. This avoids one public
 /// chain transaction per AI request while still preventing over-withdrawal.
 contract HubCreditBridgeEscrow {
+    uint8 public constant OFFICER_COUNT = 4;
+    uint8 public constant MAX_SECONDS_REQUIRED = OFFICER_COUNT - 1;
+
+    bytes32 public constant ACTION_AUTHORIZE_BRIDGE_CONTROLLER =
+        keccak256("HubCreditBridgeEscrow.action.authorizeBridgeController");
+    bytes32 public constant ACTION_RETIRE_BRIDGE_CONTROLLER =
+        keccak256("HubCreditBridgeEscrow.action.retireBridgeController");
+    bytes32 public constant ACTION_SET_ACTION_SECONDS_REQUIRED =
+        keccak256("HubCreditBridgeEscrow.action.setActionSecondsRequired");
+
     struct AccountEscrow {
         uint256 depositedUnits;
         uint256 rectifiedSpentUnits;
@@ -27,6 +37,17 @@ contract HubCreditBridgeEscrow {
         address account;
         address payer;
         uint256 amountUnits;
+    }
+
+    struct OfficerProposal {
+        bytes32 action;
+        address account;
+        bytes32 value;
+        uint8 requestedSecondsRequired;
+        address proposer;
+        uint8 secondsRequired;
+        uint8 secondsReceived;
+        bool executed;
     }
 
     event CreditDeposited(
@@ -58,18 +79,44 @@ contract HubCreditBridgeEscrow {
         string memo
     );
     event BridgeControllerUpdated(address indexed oldController, address indexed newController);
+    event BridgeControllerAuthorized(address indexed controller, address indexed officer);
+    event BridgeControllerRetired(address indexed controller, address indexed officer);
     event Paused(bool paused);
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+    event OfficerProposalCreated(
+        uint256 indexed proposalId,
+        bytes32 indexed action,
+        address indexed account,
+        bytes32 value,
+        address proposer,
+        uint8 secondsRequired
+    );
+    event OfficerProposalSeconded(uint256 indexed proposalId, address indexed officer, uint8 secondsReceived);
+    event OfficerProposalExecuted(uint256 indexed proposalId, bytes32 indexed action);
+    event ActionSecondsRequiredUpdated(bytes32 indexed action, uint8 oldSecondsRequired, uint8 newSecondsRequired);
 
     address public owner;
+
+    /// @notice Legacy primary bridge controller pointer retained for existing read paths.
+    /// @dev Bridge authorization is now governed by authorizedBridgeControllers.
     address public bridgeController;
+
     bool public paused;
+    address[4] public officers;
+    uint256 public nextOfficerProposalId = 1;
+    uint256 public authorizedBridgeControllerCount;
+
+    mapping(address => bool) public authorizedBridgeControllers;
+    mapping(address => bool) public isOfficer;
+    mapping(bytes32 => uint8) public actionSecondsRequired;
 
     mapping(address => AccountEscrow) private _accounts;
     mapping(bytes32 => DepositRecord) private _deposits;
     mapping(address => uint256) private _completedDepositUnits;
     mapping(bytes32 => ActionRecord) private _rectifications;
     mapping(bytes32 => ActionRecord) private _withdrawals;
+    mapping(uint256 => OfficerProposal) private _officerProposals;
+    mapping(uint256 => mapping(address => bool)) public officerProposalApprovals;
 
     bool private _locked;
 
@@ -78,8 +125,13 @@ contract HubCreditBridgeEscrow {
         _;
     }
 
+    modifier onlyOfficer() {
+        require(isOfficer[msg.sender], "only officer");
+        _;
+    }
+
     modifier onlyBridge() {
-        require(msg.sender == bridgeController, "only bridge");
+        require(authorizedBridgeControllers[msg.sender], "only bridge");
         _;
     }
 
@@ -95,12 +147,16 @@ contract HubCreditBridgeEscrow {
         _locked = false;
     }
 
-    constructor(address bridgeController_) {
+    constructor(address bridgeController_, address[4] memory officers_) {
         require(bridgeController_ != address(0), "zero bridge");
         owner = msg.sender;
+        _installOfficers(officers_);
         bridgeController = bridgeController_;
+        authorizedBridgeControllers[bridgeController_] = true;
+        authorizedBridgeControllerCount = 1;
         emit OwnershipTransferred(address(0), msg.sender);
         emit BridgeControllerUpdated(address(0), bridgeController_);
+        emit BridgeControllerAuthorized(bridgeController_, msg.sender);
     }
 
     function getAccount(address account) external view returns (AccountEscrow memory) {
@@ -161,6 +217,45 @@ contract HubCreditBridgeEscrow {
         return _withdrawals[withdrawalId];
     }
 
+    function officerProposal(uint256 proposalId)
+        external
+        view
+        returns (
+            bytes32 action,
+            address account,
+            bytes32 value,
+            address proposer,
+            uint8 secondsRequired,
+            uint8 secondsReceived,
+            bool executed
+        )
+    {
+        OfficerProposal memory proposal = _officerProposals[proposalId];
+        return (
+            proposal.action,
+            proposal.account,
+            proposal.value,
+            proposal.proposer,
+            proposal.secondsRequired,
+            proposal.secondsReceived,
+            proposal.executed
+        );
+    }
+
+    function officerProposalApprovalCount(uint256 proposalId) external view returns (uint8) {
+        OfficerProposal memory proposal = _officerProposals[proposalId];
+        if (proposal.proposer == address(0)) {
+            return 0;
+        }
+        return uint8(1 + proposal.secondsReceived);
+    }
+
+    function isKnownOfficerAction(bytes32 action) public pure returns (bool) {
+        return action == ACTION_AUTHORIZE_BRIDGE_CONTROLLER
+            || action == ACTION_RETIRE_BRIDGE_CONTROLLER
+            || action == ACTION_SET_ACTION_SECONDS_REQUIRED;
+    }
+
     /// @notice Deposit native escrow for a user/account.
     /// @dev In the current dev-chain smoke, amountUnits is denominated in native
     /// base units. Hub accounting may display those units as Compute Credit atoms.
@@ -194,7 +289,7 @@ contract HubCreditBridgeEscrow {
     }
 
     /// @notice Mark a previously recorded funding deposit as completed by the bridge.
-    /// @dev This is the on-chain idempotency point for Hub wallet-funding credit.
+    /// @dev This Hub transaction entrypoint keeps the same ABI; only the signer allowlist changed.
     function completeDeposit(bytes32 depositId)
         external
         onlyBridge
@@ -297,11 +392,64 @@ contract HubCreditBridgeEscrow {
         return true;
     }
 
+    /// @notice Legacy owner-only hard switch retained for dev bootstrap and older scripts.
+    /// @dev The officer-governed rotation path should use proposeAuthorizeBridgeController/
+    /// proposeRetireBridgeController. This method preserves the old single-controller
+    /// behavior by retiring the current primary bridgeController and authorizing the new one.
     function setBridgeController(address newBridgeController) external onlyOwner {
         require(newBridgeController != address(0), "zero bridge");
         address oldBridgeController = bridgeController;
+        if (oldBridgeController != address(0) && authorizedBridgeControllers[oldBridgeController]) {
+            authorizedBridgeControllers[oldBridgeController] = false;
+            authorizedBridgeControllerCount -= 1;
+            emit BridgeControllerRetired(oldBridgeController, msg.sender);
+        }
         bridgeController = newBridgeController;
+        if (!authorizedBridgeControllers[newBridgeController]) {
+            authorizedBridgeControllers[newBridgeController] = true;
+            authorizedBridgeControllerCount += 1;
+            emit BridgeControllerAuthorized(newBridgeController, msg.sender);
+        }
         emit BridgeControllerUpdated(oldBridgeController, newBridgeController);
+    }
+
+    function proposeAuthorizeBridgeController(address controller) external onlyOfficer returns (uint256 proposalId) {
+        require(controller != address(0), "zero bridge");
+        proposalId = _createOfficerProposal(ACTION_AUTHORIZE_BRIDGE_CONTROLLER, controller, bytes32(0));
+        _executeOfficerProposalIfReady(proposalId);
+    }
+
+    function proposeRetireBridgeController(address controller) external onlyOfficer returns (uint256 proposalId) {
+        require(controller != address(0), "zero bridge");
+        proposalId = _createOfficerProposal(ACTION_RETIRE_BRIDGE_CONTROLLER, controller, bytes32(0));
+        _executeOfficerProposalIfReady(proposalId);
+    }
+
+    function proposeSetActionSecondsRequired(bytes32 action, uint8 secondsRequired)
+        external
+        onlyOfficer
+        returns (uint256 proposalId)
+    {
+        require(isKnownOfficerAction(action), "unknown action");
+        require(secondsRequired <= MAX_SECONDS_REQUIRED, "seconds too high");
+        proposalId = _createOfficerProposal(
+            ACTION_SET_ACTION_SECONDS_REQUIRED,
+            address(0),
+            action
+        );
+        _officerProposals[proposalId].requestedSecondsRequired = secondsRequired;
+        _executeOfficerProposalIfReady(proposalId);
+    }
+
+    function secondOfficerProposal(uint256 proposalId) external onlyOfficer returns (bool executed) {
+        OfficerProposal storage proposal = _officerProposals[proposalId];
+        require(proposal.proposer != address(0), "unknown proposal");
+        require(!proposal.executed, "proposal executed");
+        require(!officerProposalApprovals[proposalId][msg.sender], "already approved");
+        officerProposalApprovals[proposalId][msg.sender] = true;
+        proposal.secondsReceived += 1;
+        emit OfficerProposalSeconded(proposalId, msg.sender, proposal.secondsReceived);
+        return _executeOfficerProposalIfReady(proposalId);
     }
 
     function setPaused(bool nextPaused) external onlyOwner {
@@ -314,6 +462,90 @@ contract HubCreditBridgeEscrow {
         address oldOwner = owner;
         owner = newOwner;
         emit OwnershipTransferred(oldOwner, newOwner);
+    }
+
+    function _installOfficers(address[4] memory officers_) private {
+        for (uint256 index = 0; index < OFFICER_COUNT; index += 1) {
+            address officer = officers_[index];
+            require(officer != address(0), "zero officer");
+            require(!isOfficer[officer], "duplicate officer");
+            officers[index] = officer;
+            isOfficer[officer] = true;
+        }
+    }
+
+    function _createOfficerProposal(bytes32 action, address account, bytes32 value) private returns (uint256 proposalId) {
+        require(isKnownOfficerAction(action), "unknown action");
+        proposalId = nextOfficerProposalId;
+        nextOfficerProposalId += 1;
+
+        uint8 secondsRequired = actionSecondsRequired[action];
+        OfficerProposal storage proposal = _officerProposals[proposalId];
+        proposal.action = action;
+        proposal.account = account;
+        proposal.value = value;
+        proposal.proposer = msg.sender;
+        proposal.secondsRequired = secondsRequired;
+        officerProposalApprovals[proposalId][msg.sender] = true;
+
+        emit OfficerProposalCreated(proposalId, action, account, value, msg.sender, secondsRequired);
+    }
+
+    function _executeOfficerProposalIfReady(uint256 proposalId) private returns (bool executed) {
+        OfficerProposal storage proposal = _officerProposals[proposalId];
+        if (proposal.executed) {
+            return true;
+        }
+        if (proposal.secondsReceived < proposal.secondsRequired) {
+            return false;
+        }
+
+        proposal.executed = true;
+        if (proposal.action == ACTION_AUTHORIZE_BRIDGE_CONTROLLER) {
+            _authorizeBridgeController(proposal.account, proposal.proposer);
+        } else if (proposal.action == ACTION_RETIRE_BRIDGE_CONTROLLER) {
+            _retireBridgeController(proposal.account, proposal.proposer);
+        } else if (proposal.action == ACTION_SET_ACTION_SECONDS_REQUIRED) {
+            _setActionSecondsRequired(proposal.value, proposal.requestedSecondsRequired);
+        } else {
+            revert("unknown action");
+        }
+
+        emit OfficerProposalExecuted(proposalId, proposal.action);
+        return true;
+    }
+
+    function _authorizeBridgeController(address controller, address officer) private {
+        require(controller != address(0), "zero bridge");
+        if (!authorizedBridgeControllers[controller]) {
+            authorizedBridgeControllers[controller] = true;
+            authorizedBridgeControllerCount += 1;
+            emit BridgeControllerAuthorized(controller, officer);
+        }
+    }
+
+    function _retireBridgeController(address controller, address officer) private {
+        require(controller != address(0), "zero bridge");
+        if (!authorizedBridgeControllers[controller]) {
+            return;
+        }
+        require(authorizedBridgeControllerCount > 1, "last bridge");
+        authorizedBridgeControllers[controller] = false;
+        authorizedBridgeControllerCount -= 1;
+        if (bridgeController == controller) {
+            address oldBridgeController = bridgeController;
+            bridgeController = address(0);
+            emit BridgeControllerUpdated(oldBridgeController, address(0));
+        }
+        emit BridgeControllerRetired(controller, officer);
+    }
+
+    function _setActionSecondsRequired(bytes32 action, uint8 secondsRequired) private {
+        require(isKnownOfficerAction(action), "unknown action");
+        require(secondsRequired <= MAX_SECONDS_REQUIRED, "seconds too high");
+        uint8 oldSecondsRequired = actionSecondsRequired[action];
+        actionSecondsRequired[action] = secondsRequired;
+        emit ActionSecondsRequiredUpdated(action, oldSecondsRequired, secondsRequired);
     }
 
     receive() external payable {

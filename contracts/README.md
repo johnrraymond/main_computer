@@ -82,6 +82,31 @@ HubCreditBridgeEscrow.CreditDeposited
 
 Worker payout and reserve movement remain separate phases.
 
+### Hub admin signer authority
+
+`HubCreditBridgeEscrow` now keeps the Hub-facing transaction entrypoints on the escrow contract itself. Hubs still submit the same calldata to:
+
+```text
+completeDeposit(bytes32)
+rectifySpend(address,uint256,bytes32,string)
+releaseWithdrawal(address,address,uint256,bytes32,string)
+```
+
+The single `bridgeController` gate has been expanded into `authorizedBridgeControllers(address)`. This lets several per-Hub `hub_admin` signer addresses be authorized at once while keeping Hub topology out of the contract.
+
+The constructor receives the initial bridge controller and the four officer addresses. The initial bridge controller is authorized immediately. Officer actions are proposal based:
+
+```text
+proposeAuthorizeBridgeController(address)
+proposeRetireBridgeController(address)
+proposeSetActionSecondsRequired(bytes32,uint8)
+secondOfficerProposal(uint256)
+```
+
+Bootstrap defaults require zero seconds. In other words, one officer can perform initial setup work. Officers can later harden an action by setting `secondsRequired` to 1, 2, or 3, which means 2-of-4, 3-of-4, or 4-of-4 total officer approvals.
+
+The contract stores only authorized addresses. The mapping of one signer key to one Hub instance remains a private-state/deployment-tool invariant.
+
 ## Hub Compute Credit settlement Phase 0
 
 The hub/worker paid-work settlement schema is documented in:
@@ -107,4 +132,31 @@ The chain remains a coarse funding and aggregate-settlement surface. Per-request
 charges, exact worker earnings, quality reports, and request-to-worker mappings
 remain inside the hub backend until later phases explicitly expose aggregate
 settlement roots or payout claims.
+
+## Foundry container usage
+
+Run Foundry tools from the Foundry container, not from a host-installed `forge` or
+`cast`. This keeps Solidity builds, deployment behavior, and CI/dev-chain
+reproduction on the same toolchain.
+
+The canonical local deployment path is `tools/dev-chain-reset.py`. That script
+already runs `forge create` and `cast` inside the Foundry Docker image with the
+repository mounted at `/workspace` and the contract working directory set to
+`/workspace/contracts`.
+
+From the repository root, run contract tests with the same container pattern:
+
+```powershell
+docker run --rm -v "${PWD}:/workspace" -w /workspace/contracts --entrypoint forge ghcr.io/foundry-rs/foundry:latest test --match-path test/HubCreditBridgeEscrow.t.sol -vvv
+```
+
+For ad hoc `cast` checks, use the same containerized entrypoint:
+
+```powershell
+docker run --rm -v "${PWD}:/workspace" -w /workspace/contracts --entrypoint cast ghcr.io/foundry-rs/foundry:latest --version
+```
+
+Do not document or depend on `cd contracts; forge ...` host commands. If a local
+workflow needs Forge or Cast, either call the existing dev-chain reset wrapper or
+use the container invocation above.
 
