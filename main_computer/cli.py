@@ -16,7 +16,7 @@ from main_computer.log_rotator import run_from_args as run_log_rotator_from_args
 from main_computer.log_metric_distribution import add_arguments as add_log_metric_arguments
 from main_computer.log_metric_distribution import run_from_args as run_log_metric_distribution_from_args
 from main_computer.heartbeat import HeartbeatConfig, serve as serve_heartbeat
-from main_computer.hub import DEFAULT_HUB_PORT, DEFAULT_HUB_WORKER_PORT, register_worker_with_hub, serve_hub, serve_hub_worker
+from main_computer.hub import DEFAULT_HUB_PORT, DEFAULT_HUB_WORKER_PORT, register_worker_with_hub, serve_hub, serve_hub_worker, serve_hub_worker_pull
 from main_computer.hub_networks import (
     HubNetworkConfigError,
     env_chain_id_override,
@@ -204,9 +204,108 @@ def cmd_chat(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_captain(args: argparse.Namespace) -> int:
+_CAPTAIN_ENGAGE_COMPUTER_PHRASE = ("smoke", "john", "luc", "picard", "engage", "computer")
+
+
+def _split_captain_free_and_option_tokens(argv: list[str]) -> tuple[tuple[str, ...], list[str]]:
+    free_tokens: list[str] = []
+    option_tokens: list[str] = []
+    in_options = False
+    for token in argv:
+        text = str(token)
+        if not in_options and text.startswith("-"):
+            in_options = True
+        if in_options:
+            option_tokens.append(text)
+        else:
+            stripped = text.strip()
+            if stripped:
+                free_tokens.append(stripped.lower())
+    return tuple(free_tokens), option_tokens
+
+
+def _build_captain_engage_options_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="main-computer captain smoke john luc picard engage computer",
+        description="Register the local AI as a priced ring-3 worker-pull worker for captain smoke requests.",
+    )
+    parser.add_argument("--hub-url", default="", help="Hub base URL. Defaults to the captain smoke mainnet hub when available.")
+    parser.add_argument("--model", default="", help="Model id to advertise. Defaults to the configured local model.")
+    parser.add_argument("--public-endpoint", default="", help="Optional public worker endpoint to advertise. Worker-pull mode does not require inbound access.")
+    parser.add_argument("--ring", type=int, default=3, help="Worker ring to advertise. Defaults to 3.")
+    parser.add_argument("--poll-interval-s", type=float, default=2.0, help="Seconds between empty worker-pull polls.")
+    parser.add_argument("--heartbeat-interval-s", type=float, default=30.0, help="Seconds between worker availability heartbeats.")
+    parser.add_argument("--lease-seconds", type=float, default=None, help="Optional requested lease duration for worker-pull work.")
+    parser.add_argument("--max-requests", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "-noverbose",
+        "--noverbose",
+        dest="verbose",
+        action="store_false",
+        default=True,
+        help="Suppress worker-pull status output.",
+    )
+    return parser
+
+
+def _captain_smoke_hub_url(config: MainComputerConfig, explicit_hub_url: str = "") -> str:
+    if str(explicit_hub_url or "").strip():
+        return str(explicit_hub_url).strip().rstrip("/")
     try:
-        return run_captain(list(getattr(args, "captain_args", []) or []), config=_config_from_args(args), cwd=Path.cwd())
+        profile = load_hub_network_registry().get("mainnet")
+    except (HubNetworkConfigError, FileNotFoundError):
+        profile = None
+    if profile is not None and str(profile.hub_url or "").strip():
+        return str(profile.hub_url).strip().rstrip("/")
+    return str(config.hub_url).strip().rstrip("/")
+
+
+def _run_captain_engage_computer(args: argparse.Namespace, option_tokens: list[str]) -> int:
+    engage_options = _build_captain_engage_options_parser().parse_args(option_tokens)
+    worker_config = _config_from_args(args)
+    if worker_config.provider == "hub":
+        raise RuntimeError("captain smoke engage computer cannot use provider=hub because that would recurse back into the hub.")
+
+    hub_url = _captain_smoke_hub_url(worker_config, engage_options.hub_url or getattr(args, "hub_url", "") or "")
+    worker_config = replace(
+        worker_config,
+        hub_url=hub_url,
+        model=str(engage_options.model or worker_config.model).strip() or worker_config.model,
+    )
+    worker = MainComputer.build(worker_config)
+    if engage_options.verbose:
+        print("Engaging local Main Computer AI as a ring 3 worker-pull worker.")
+        print(f"Hub URL: {hub_url}")
+        print(f"Worker node: {worker_config.hub_worker_node_id}")
+        print(f"Model: {worker_config.model}")
+        print("Run the captain smoke make-it-so request in another window while this worker stays open.")
+    try:
+        serve_hub_worker_pull(
+            worker_config,
+            worker.provider.chat,
+            hub_url=hub_url,
+            public_endpoint=engage_options.public_endpoint or worker_config.hub_worker_endpoint,
+            assigned_ring=engage_options.ring,
+            poll_interval_s=engage_options.poll_interval_s,
+            heartbeat_interval_s=engage_options.heartbeat_interval_s,
+            lease_seconds=engage_options.lease_seconds,
+            verbose=engage_options.verbose,
+            max_requests=engage_options.max_requests,
+        )
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        return 2
+    return 0
+
+
+def cmd_captain(args: argparse.Namespace) -> int:
+    captain_args = list(getattr(args, "captain_args", []) or [])
+    free_tokens, option_tokens = _split_captain_free_and_option_tokens(captain_args)
+    if free_tokens == _CAPTAIN_ENGAGE_COMPUTER_PHRASE:
+        return _run_captain_engage_computer(args, option_tokens)
+
+    try:
+        return run_captain(captain_args, config=_config_from_args(args), cwd=Path.cwd())
     except CaptainCliError as exc:
         print(f"ERROR: {exc}")
         return 2

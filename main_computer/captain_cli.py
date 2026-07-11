@@ -28,6 +28,7 @@ from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_r
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _BYTES32_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+PRIVATE_STATE_RELATIVE_PATH = Path("runtime") / "state" / "main_computer.private.yaml"
 _TX_HASH_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 
 DEFAULT_STATE_FILE = Path("runtime/deployments/dev/latest.json")
@@ -132,7 +133,7 @@ def build_captain_options_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main-computer captain",
         description=(
-            "Connect as the Captain/officer backend wallet. Captain smoke defaults to "
+            "Connect as the Captain/officer backend wallet. Captain prompts default to "
             "mainnet bridge funding, a ring-3 hub request, and bridge refund cleanup."
         ),
     )
@@ -140,15 +141,16 @@ def build_captain_options_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wallet", default="", help="Wallet/officer selector or 0x address. Defaults to captain/O0.")
     parser.add_argument("--officer", default="", help="Officer selector, for example O1, first, second, or third.")
     parser.add_argument("--private-key", default="", help="Private key for a non-dev backend wallet. Never printed.")
+    parser.add_argument("--private-state", type=Path, default=None, help="Private YAML/JSON state. Defaults to runtime/state/main_computer.private.yaml when present.")
     parser.add_argument("--ring", default="3", help="Requested hub worker ring. Defaults to 3.")
     parser.add_argument("--ring0", dest="ring", action="store_const", const="0", help="Shortcut for --ring 0.")
     parser.add_argument("--ring1", dest="ring", action="store_const", const="1", help="Shortcut for --ring 1.")
     parser.add_argument("--ring2", dest="ring", action="store_const", const="2", help="Shortcut for --ring 2.")
     parser.add_argument("--ring3", dest="ring", action="store_const", const="3", help="Shortcut for --ring 3.")
     parser.add_argument("--model", default="", help="Hub model id. Defaults to MainComputerConfig/from env.")
-    parser.add_argument("--hub-url", default="", help="Hub base URL. Defaults to MAIN_COMPUTER_HUB_URL or local hub.")
+    parser.add_argument("--hub-url", default="", help="Hub base URL. Defaults to the selected network hub; captain defaults to mainnet.")
     parser.add_argument("--client-node-id", default="main-computer-captain-cli", help="Hub client node id.")
-    parser.add_argument("--network", default="", help="Deployment network key. Captain smoke defaults to mainnet; other runs use MAIN_COMPUTER_HUB_NETWORK/config.")
+    parser.add_argument("--network", default="", help="Deployment network key. Captain prompts default to mainnet unless explicitly overridden.")
     parser.add_argument("--state", type=Path, default=None, help="Deployment state JSON. Defaults to runtime/deployments/<network>/latest.json.")
     parser.add_argument("--rpc-url", default="", help="Override chain RPC URL for the smoke transaction.")
     parser.add_argument("--chain-id", type=int, default=0, help="Override expected chain id for display/payload.")
@@ -179,12 +181,11 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
     options = option_parser.parse_args(list(invocation.option_tokens))
     base_config = config or MainComputerConfig.from_env()
     repo_cwd = cwd or Path.cwd()
-    if invocation.smoke:
-        _apply_captain_smoke_defaults(options, base_config=base_config, cwd=repo_cwd)
+    _apply_captain_live_defaults(options, base_config=base_config, cwd=repo_cwd)
 
     prompt = (str(options.prompt).strip() or invocation.prompt).strip()
     if not prompt:
-        raise CaptainCliError("captain smoke needs a prompt/memo after 'smoke' or via --prompt.")
+        raise CaptainCliError("captain needs a prompt/memo after 'captain' or via --prompt.")
 
     selector = str(options.wallet or options.officer or invocation.selector or "captain").strip() or "captain"
     runtime = build_captain_runtime(
@@ -206,7 +207,7 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
         idempotency_key = str(smoke_id).strip()
 
     account_id = wallet_account_id(runtime.wallet.address)
-    use_bridge = bool(invocation.smoke and not options.no_hub and not options.no_bridge)
+    use_bridge = bool(not options.no_hub and not options.no_bridge)
     bridge_credit_wei = _bridge_credit_wei(options.bridge_credits) if use_bridge else 0
 
     result: dict[str, Any] = {
@@ -291,18 +292,37 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                 smoke_id=smoke_id,
                 timeout_s=options.timeout_s,
             )
-            bridge["completion"] = _post_hub_json(
-                runtime.config.hub_url,
-                "/api/hub/v1/credits/wallet-funding/complete",
-                {
-                    "deposit_id": bridge["deposit"]["deposit_id"],
-                    "wallet_address": runtime.wallet.address,
-                    "tx_hash": bridge["deposit"]["transaction_hash"],
-                    "contract_address": runtime.bridge_escrow_address,
-                    "chain_id": runtime.chain_id,
-                },
-                timeout_s=options.timeout_s,
-            )
+            completion_payload = {
+                "deposit_id": bridge["deposit"]["deposit_id"],
+                "wallet_address": runtime.wallet.address,
+                "tx_hash": bridge["deposit"]["transaction_hash"],
+                "contract_address": runtime.bridge_escrow_address,
+                "chain_id": runtime.chain_id,
+            }
+            try:
+                bridge["completion"] = _post_hub_json(
+                    runtime.config.hub_url,
+                    "/api/hub/v1/credits/wallet-funding/complete",
+                    completion_payload,
+                    timeout_s=options.timeout_s,
+                )
+            except CaptainCliError as exc:
+                if not _is_missing_bridge_completion_metadata_error(exc):
+                    raise
+                import_payload = build_bridge_wallet_funding_import_payload(runtime, bridge["deposit"])
+                bridge["completion_fallback"] = {
+                    "ok": True,
+                    "reason": "hub completion endpoint is missing bridge deployment metadata",
+                    "failed_endpoint": "/api/hub/v1/credits/wallet-funding/complete",
+                    "fallback_endpoint": "/api/hub/v1/credits/wallet-funding/import",
+                    "error": str(exc),
+                }
+                bridge["completion"] = _post_hub_json(
+                    runtime.config.hub_url,
+                    "/api/hub/v1/credits/wallet-funding/import",
+                    import_payload,
+                    timeout_s=options.timeout_s,
+                )
             result["hub"]["balance_after_bridge"] = _fetch_hub_credit_balance(
                 runtime.config.hub_url,
                 wallet_address=runtime.wallet.address,
@@ -423,22 +443,18 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
     _print_captain_result(result, json_output=bool(options.json))
     return 0
 
-def _apply_captain_smoke_defaults(options: argparse.Namespace, *, base_config: MainComputerConfig, cwd: Path) -> None:
-    """Make bare `captain smoke ...` exercise the live mainnet bridge path.
+def _apply_captain_network_defaults(options: argparse.Namespace, *, base_config: MainComputerConfig, cwd: Path) -> None:
+    """Select the mainnet hub/deployment by default for captain prompt requests.
 
-    Explicit CLI options always win.  The registry supplies the mainnet Hub URL
-    and deployment manifest when available; the config/environment remains the
-    fallback for custom operator setups.
+    Explicit captain options always win.  Until the operator selects another
+    network, a bare `main-computer captain <prompt>` should use the same mainnet
+    hub profile as the captain smoke command instead of falling back to the
+    local development hub URL from the process config.
     """
 
     if not str(getattr(options, "network", "") or "").strip():
         options.network = "mainnet"
     network = str(options.network or "mainnet").strip()
-
-    if not bool(getattr(options, "prepare_only", False)):
-        options.execute = True
-    if not float(getattr(options, "poll_seconds", 0.0) or 0.0):
-        options.poll_seconds = 90.0
 
     try:
         profile = load_hub_network_registry().get(network)
@@ -458,12 +474,29 @@ def _apply_captain_smoke_defaults(options: argparse.Namespace, *, base_config: M
         if not int(getattr(options, "chain_id", 0) or 0) and profile.chain_id:
             options.chain_id = int(profile.chain_id)
 
+
+def _apply_captain_live_defaults(options: argparse.Namespace, *, base_config: MainComputerConfig, cwd: Path) -> None:
+    """Make bare `captain ...` exercise the live mainnet bridge path by default."""
+
+    _apply_captain_network_defaults(options, base_config=base_config, cwd=cwd)
+
+    if not bool(getattr(options, "prepare_only", False)):
+        options.execute = True
+    if not float(getattr(options, "poll_seconds", 0.0) or 0.0):
+        options.poll_seconds = 90.0
+
     # The bridge escrow deposit/release is the chain-backed smoke for the
-    # mainnet bridge path.  Keep the legacy XLag smoke transaction available in
+    # mainnet bridge path. Keep the legacy XLag smoke transaction available in
     # --no-bridge mode, but do not add an unrelated second transaction by
-    # default for the bridged smoke.
+    # default for the bridged captain prompt.
     if not bool(getattr(options, "no_bridge", False)):
         options.no_chain = True
+
+
+def _apply_captain_smoke_defaults(options: argparse.Namespace, *, base_config: MainComputerConfig, cwd: Path) -> None:
+    """Backward-compatible smoke helper; smoke uses the same live defaults."""
+
+    _apply_captain_live_defaults(options, base_config=base_config, cwd=cwd)
 
 
 def _bridge_credit_wei(value: Any) -> int:
@@ -496,7 +529,13 @@ def build_captain_runtime(
     network = str(options.network or os.environ.get("MAIN_COMPUTER_HUB_NETWORK") or config.hub_network or DEFAULT_HUB_NETWORK or "dev").strip()
     deployment_path = Path(options.state) if options.state else _default_state_path(network, cwd)
     deployment = _load_json(deployment_path)
-    wallet = resolve_captain_wallet(selector, deployment=deployment, deployment_path=deployment_path, private_key_override=options.private_key)
+    wallet = resolve_captain_wallet(
+        selector,
+        deployment=deployment,
+        deployment_path=deployment_path,
+        private_key_override=options.private_key,
+        private_state_path=getattr(options, "private_state", None),
+    )
     rpc_url = str(options.rpc_url or _chain_value(deployment, "rpc_url") or _chain_value(deployment, "host_rpc_url") or config.chain_rpc_url or "").strip()
     chain_id = int(options.chain_id or _chain_value(deployment, "chain_id") or config.chain_id or 0)
     xlag_address = str(options.xlag_address or _contract_address(deployment, "xlag-bridge-reserve", "XLagBridgeReserve") or config.xlag_contract_address or "").strip()
@@ -534,6 +573,7 @@ def resolve_captain_wallet(
     deployment: dict[str, Any],
     deployment_path: Path,
     private_key_override: str = "",
+    private_state_path: Path | None = None,
 ) -> CaptainWallet:
     raw = str(selector or "captain").strip()
     normalized = _selector_key(raw)
@@ -563,6 +603,15 @@ def resolve_captain_wallet(
         private_key = _normalize_private_key(office_record.get("private_key") or office_record.get("privateKey"))
     if not private_key and office_record is not None:
         private_key = _private_key_from_wallet_path(deployment_path=deployment_path, record=office_record)
+    if not private_key:
+        private_key = _private_key_from_private_state(
+            deployment_path=deployment_path,
+            private_state_path=private_state_path,
+            deployment=deployment,
+            office_index=office_index,
+            selector=normalized,
+            address=address,
+        )
     if not private_key and office_index is not None:
         private_key = _default_dev_office_private_key(deployment=deployment, office_index=office_index, address=address)
 
@@ -661,6 +710,91 @@ def send_captain_smoke_transaction(
         "command": _redact_private_key(command),
     }
 
+
+
+
+def _receipt_block_number(receipt: dict[str, Any] | None) -> int:
+    if not isinstance(receipt, dict):
+        return 0
+    return _hex_int(receipt.get("blockNumber"))
+
+
+def _receipt_log_index_for_contract(receipt: dict[str, Any] | None, contract_address: str) -> int:
+    if not isinstance(receipt, dict):
+        return 0
+    logs = receipt.get("logs")
+    if not isinstance(logs, list):
+        return 0
+    normalized_contract = ""
+    try:
+        normalized_contract = normalize_address(contract_address)
+    except Exception:
+        normalized_contract = str(contract_address or "").strip().lower()
+    first_log_index = 0
+    for raw in logs:
+        if not isinstance(raw, dict):
+            continue
+        log_index = _hex_int(raw.get("logIndex"))
+        if not first_log_index:
+            first_log_index = log_index
+        try:
+            log_address = normalize_address(str(raw.get("address") or ""))
+        except Exception:
+            log_address = str(raw.get("address") or "").strip().lower()
+        if normalized_contract and log_address == normalized_contract:
+            return log_index
+    return first_log_index
+
+
+def build_bridge_wallet_funding_import_payload(runtime: CaptainRuntime, deposit: dict[str, Any]) -> dict[str, Any]:
+    """Build the manual wallet-funding import payload from the local deposit receipt.
+
+    The live hub completion route can fail when the hub lacks its private bridge
+    deployment/admin manifest.  The wallet-funding import route is the public
+    ledger primitive that accepts the normalized deposit receipt data the captain
+    CLI already has after broadcasting the deposit transaction.
+    """
+
+    receipt = deposit.get("receipt") if isinstance(deposit.get("receipt"), dict) else {}
+    amount_wei = str(deposit.get("amount_credit_wei") or deposit.get("amount_units") or "").strip()
+    tx_hash = str(deposit.get("transaction_hash") or deposit.get("tx_hash") or "").strip()
+    if not _TX_HASH_RE.fullmatch(tx_hash):
+        raise CaptainCliError("Bridge funding import cannot continue because the deposit transaction hash is missing or invalid.")
+    if not amount_wei:
+        raise CaptainCliError("Bridge funding import cannot continue because the deposit amount is missing.")
+    return {
+        "wallet_address": runtime.wallet.address,
+        "payer_address": runtime.wallet.address,
+        "chain_id": runtime.chain_id,
+        "contract_address": runtime.bridge_escrow_address,
+        "tx_hash": tx_hash,
+        "log_index": _receipt_log_index_for_contract(receipt, runtime.bridge_escrow_address),
+        "block_number": _receipt_block_number(receipt),
+        "payment_asset": "native",
+        "payment_amount_base_units": amount_wei,
+        "credits_granted_wei": amount_wei,
+        "memo": f"captain smoke bridge wallet funding import {deposit.get('deposit_id', '')}",
+        "metadata": {
+            "mode": "captain-smoke-bridge-import-fallback-v1",
+            "deposit_id": str(deposit.get("deposit_id") or ""),
+            "completion_fallback": True,
+        },
+    }
+
+
+def _is_missing_bridge_completion_metadata_error(exc: BaseException) -> bool:
+    text = str(exc or "").lower()
+    if "/wallet-funding/complete" not in text and "wallet-funding/complete" not in text:
+        return False
+    return (
+        "hub_credit_bridge_escrow" in text
+        and (
+            "current.json" in text
+            or "deployment" in text
+            or "manifest" in text
+            or "metadata" in text
+        )
+    )
 
 def send_captain_bridge_deposit(
     runtime: CaptainRuntime,
@@ -1128,6 +1262,182 @@ def _private_key_from_env(*, office_index: int | None, selector: str) -> str:
     return ""
 
 
+
+def _deployment_network_name(deployment_path: Path, deployment: dict[str, Any] | None = None) -> str:
+    chain = deployment.get("chain") if isinstance(deployment, dict) else {}
+    if isinstance(chain, dict):
+        network = str(chain.get("network_name") or chain.get("target_environment") or "").strip()
+        if network:
+            return network
+    resolved = Path(deployment_path)
+    if resolved.parent.name:
+        return resolved.parent.name
+    return ""
+
+
+def _private_state_candidate_paths(*, deployment_path: Path, private_state_path: Path | None) -> list[Path]:
+    repo_root = _repo_root_for_deployment_path(deployment_path)
+    candidates: list[Path] = []
+    env_path = str(os.environ.get("MAIN_COMPUTER_PRIVATE_STATE_PATH") or "").strip()
+    if env_path:
+        raw = Path(env_path)
+        candidates.append(raw if raw.is_absolute() else repo_root / raw)
+    if private_state_path is not None:
+        raw = Path(private_state_path)
+        candidates.append(raw if raw.is_absolute() else repo_root / raw)
+    candidates.append(repo_root / PRIVATE_STATE_RELATIVE_PATH)
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _strip_yaml_comment(value: str) -> str:
+    in_single = False
+    in_double = False
+    escaped = False
+    out: list[str] = []
+    for char in value:
+        if escaped:
+            out.append(char)
+            escaped = False
+            continue
+        if char == "\\" and in_double:
+            out.append(char)
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            out.append(char)
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            out.append(char)
+            continue
+        if char == "#" and not in_single and not in_double:
+            break
+        out.append(char)
+    return "".join(out).rstrip()
+
+
+def _parse_private_state_scalar(value: str) -> Any:
+    text = _strip_yaml_comment(value).strip()
+    if text in {"", "null", "Null", "NULL", "~"}:
+        return None
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    return text
+
+
+def _parse_simple_private_state_yaml(text: str) -> dict[str, Any]:
+    """Parse the private-state subset used for nested wallet key maps.
+
+    The runtime package keeps core dependencies minimal, so the captain command
+    does not require PyYAML just to read operator wallet keys.  This parser is
+    intentionally small: it handles indented mapping entries with scalar values,
+    which is enough for networks.<network>.wallets.<role>.{address,private_key}.
+    """
+
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        raw = line.rstrip()
+        if raw.lstrip().startswith("- "):
+            continue
+        stripped = raw.strip()
+        if ":" not in stripped:
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        key, value = stripped.split(":", 1)
+        key = key.strip().strip('"').strip("'")
+        if not key:
+            continue
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        if not stack:
+            stack = [(-1, root)]
+        parent = stack[-1][1]
+        value = value.strip()
+        if not value or value.startswith("#"):
+            child: dict[str, Any] = {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _parse_private_state_scalar(value)
+    return root
+
+
+def _load_private_state(path: Path) -> dict[str, Any]:
+    text = Path(path).read_text(encoding="utf-8")
+    stripped = text.lstrip()
+    if stripped.startswith("{"):
+        payload = json.loads(text)
+    else:
+        payload = _parse_simple_private_state_yaml(text)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _wallet_role_candidates(*, office_index: int | None, selector: str) -> list[str]:
+    aliases_by_office = {
+        0: ("captain", "o0", "office0", "officer0"),
+        1: ("o1", "first", "first_officer", "office1", "officer1"),
+        2: ("o2", "second", "second_officer", "office2", "officer2"),
+        3: ("o3", "third", "third_officer", "office3", "officer3"),
+    }
+    candidates: list[str] = []
+    if selector:
+        candidates.append(selector)
+    if office_index in aliases_by_office:
+        candidates.extend(aliases_by_office[int(office_index)])
+    unique: list[str] = []
+    for item in candidates:
+        key = _selector_key(item)
+        if key and key not in unique:
+            unique.append(key)
+    return unique
+
+
+def _private_key_from_private_state(
+    *,
+    deployment_path: Path,
+    private_state_path: Path | None,
+    deployment: dict[str, Any],
+    office_index: int | None,
+    selector: str,
+    address: str,
+) -> str:
+    network = _deployment_network_name(deployment_path, deployment)
+    if not network:
+        return ""
+
+    for path in _private_state_candidate_paths(deployment_path=deployment_path, private_state_path=private_state_path):
+        if not path.exists():
+            continue
+        state = _load_private_state(path)
+        networks = state.get("networks") if isinstance(state.get("networks"), dict) else {}
+        network_state = networks.get(network) if isinstance(networks.get(network), dict) else {}
+        wallets = network_state.get("wallets") if isinstance(network_state.get("wallets"), dict) else {}
+        for role in _wallet_role_candidates(office_index=office_index, selector=selector):
+            entry = wallets.get(role)
+            if not isinstance(entry, dict):
+                continue
+            entry_address = str(entry.get("address") or "").strip()
+            if entry_address and _ADDRESS_RE.fullmatch(entry_address) and normalize_address(entry_address) != normalize_address(address):
+                continue
+            private_key = _normalize_private_key(entry.get("private_key") or entry.get("privateKey") or "")
+            if private_key:
+                return private_key
+    return ""
+
+
 def _private_key_from_wallet_path(*, deployment_path: Path, record: dict[str, Any]) -> str:
     path_text = str(record.get("wallet_path") or "").strip()
     if not path_text:
@@ -1396,6 +1706,15 @@ def _hub_request_state(payload: Any) -> str:
     return str(request.get("state", "") if isinstance(request, dict) else "").strip().lower()
 
 
+def _is_hub_request_result_not_found_error(exc: BaseException) -> bool:
+    text = str(exc or "").lower()
+    if "with http 404" not in text and "not found" not in text:
+        return False
+    if "/api/hub/v1/requests/" not in text:
+        return False
+    return "/result" in text or "/pickup" in text
+
+
 def _pickup_hub_request_result(
     hub_url: str,
     request_id: str,
@@ -1405,21 +1724,79 @@ def _pickup_hub_request_result(
     timeout_s: float,
 ) -> dict[str, Any]:
     query = urlencode({"account_id": account_id, "client_node_id": client_node_id})
-    return _get_hub_json(hub_url, f"/api/hub/v1/requests/{request_id}/result?{query}", timeout_s=timeout_s)
+    result_path = f"/api/hub/v1/requests/{request_id}/result?{query}"
+    try:
+        return _get_hub_json(hub_url, result_path, timeout_s=timeout_s)
+    except CaptainCliError as result_exc:
+        if not _is_hub_request_result_not_found_error(result_exc):
+            raise
+        pickup_path = f"/api/hub/v1/requests/{request_id}/pickup?{query}"
+        try:
+            payload = _get_hub_json(hub_url, pickup_path, timeout_s=timeout_s)
+        except CaptainCliError as pickup_exc:
+            if not _is_hub_request_result_not_found_error(pickup_exc):
+                raise
+            status_payload = _get_hub_json(hub_url, f"/api/hub/v1/requests/{request_id}", timeout_s=timeout_s)
+            if isinstance(status_payload, dict):
+                status_payload.setdefault("result_pickup_fallback", True)
+                status_payload.setdefault(
+                    "result_pickup_warning",
+                    "Hub did not expose /result or /pickup; using request status payload instead.",
+                )
+            return status_payload
+        if isinstance(payload, dict):
+            payload.setdefault("result_pickup_fallback", True)
+            payload.setdefault("result_pickup_endpoint", "pickup")
+        return payload
 
 
 def _extract_ai_response_text(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
-    candidates: list[Any] = [payload]
-    for key in ("response", "result", "message", "choice"):
-        value = payload.get(key)
-        if isinstance(value, dict):
-            candidates.append(value)
+
+    seen: set[int] = set()
+    candidates: list[dict[str, Any]] = []
+
+    def add_candidate(value: Any, *, depth: int = 0) -> None:
+        if not isinstance(value, dict):
+            return
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
+        candidates.append(value)
+        if depth >= 5:
+            return
+        for key in (
+            "request",
+            "result",
+            "response",
+            "output",
+            "message",
+            "choice",
+            "worker_result",
+            "result_payload",
+            "payload",
+            "data",
+        ):
+            child = value.get(key)
+            if isinstance(child, dict):
+                add_candidate(child, depth=depth + 1)
+            elif isinstance(child, list):
+                for item in child:
+                    add_candidate(item, depth=depth + 1)
+
+    add_candidate(payload)
     for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        for key in ("response_summary", "content", "text", "output_text", "answer"):
+        for key in (
+            "response_summary",
+            "content",
+            "text",
+            "output_text",
+            "answer",
+            "completion",
+            "message_text",
+        ):
             value = item.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
@@ -1432,6 +1809,13 @@ def _extract_ai_response_text(payload: Any) -> str:
                     return message["content"].strip()
                 if isinstance(first.get("text"), str):
                     return first["text"].strip()
+        messages = item.get("messages")
+        if isinstance(messages, list) and messages:
+            for message in reversed(messages):
+                if isinstance(message, dict) and str(message.get("role", "")).lower() in {"assistant", "model", "worker"}:
+                    content = message.get("content")
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
     return ""
 
 

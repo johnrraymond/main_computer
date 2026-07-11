@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
@@ -17,6 +18,7 @@ from main_computer.hub_credit_models import normalize_address, positive_int
 
 COMPUTE_CREDIT_BASE_UNITS = 10**18
 HUB_CREDIT_BRIDGE_COMPLETION_MODE = "hub-credit-bridge-completion-v1"
+_DEFAULT_RPC_USER_AGENT = "main-computer-chain-rpc/1.0 (+https://greatlibrary.io)"
 
 _DEPOSIT_RECORD_SELECTOR = "546fcf39"
 _COMPLETED_DEPOSIT_UNITS_SELECTOR = "861064f2"
@@ -146,6 +148,27 @@ def _split_words(result_hex: str, *, min_words: int) -> list[str]:
     return [data[index : index + 64] for index in range(0, len(data), 64)]
 
 
+def _chain_rpc_http_headers() -> dict[str, str]:
+    user_agent = (
+        str(os.environ.get("MAIN_COMPUTER_CHAIN_RPC_USER_AGENT") or "").strip()
+        or str(os.environ.get("MAIN_COMPUTER_HUB_USER_AGENT") or "").strip()
+        or _DEFAULT_RPC_USER_AGENT
+    )
+    return {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": user_agent,
+        "X-Main-Computer-Client": "chain-rpc",
+    }
+
+
+def _read_http_error_body(exc: HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
 class JsonRpcClient:
     def __init__(self, rpc_url: str, *, timeout_s: float = 10.0) -> None:
         self.rpc_url = str(rpc_url or "").strip()
@@ -163,15 +186,24 @@ class JsonRpcClient:
         request = Request(
             self.rpc_url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=_chain_rpc_http_headers(),
             method="POST",
         )
-        with urlopen(request, timeout=self.timeout_s) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=self.timeout_s) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = _read_http_error_body(exc).strip()
+            detail = f": {body}" if body else ""
+            raise RuntimeError(f"Chain RPC request {method} failed with HTTP {exc.code}{detail}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Chain RPC request {method} failed: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Chain RPC request {method} returned invalid JSON: {exc}") from exc
         if not isinstance(data, dict):
-            raise RuntimeError("RPC returned a non-object response.")
+            raise RuntimeError(f"Chain RPC request {method} returned a non-object response.")
         if data.get("error"):
-            raise RuntimeError(data["error"])
+            raise RuntimeError(f"Chain RPC request {method} failed: {data['error']}")
         return data.get("result")
 
     def eth_call(self, *, to: str, data: str) -> str:

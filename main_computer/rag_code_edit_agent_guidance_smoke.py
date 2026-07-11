@@ -1406,6 +1406,7 @@ class CodeEditAgentAdapter(Protocol):
     def metadata(self) -> dict[str, Any]:
         ...
 
+
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
         ...
 
@@ -4756,6 +4757,9 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         scripted_ai_smoke: bool = False,
         run_id: str = "",
         ai_trace_path: str = "",
+        full_byzantine_pipeline: bool = False,
+        byzantine_worker_count: int = 3,
+        byzantine_reviewer_count: int = 3,
     ) -> None:
         super().__init__(scenario)
         self.requested_ai_provider = ai_provider
@@ -4771,9 +4775,15 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
             scripted_ai_smoke=self.scripted_ai_smoke,
         )
         self.resolved_ai_model = resolve_ai_model(self.resolved_ai_provider, ai_model)
+        self.full_byzantine_pipeline = bool(full_byzantine_pipeline)
+        self.byzantine_worker_count = max(3, int(byzantine_worker_count or 3)) if self.full_byzantine_pipeline else max(1, int(byzantine_worker_count or 3))
+        self.byzantine_reviewer_count = max(3, int(byzantine_reviewer_count or 3)) if self.full_byzantine_pipeline else max(1, int(byzantine_reviewer_count or 3))
         self.last_plan_ai_metadata: dict[str, Any] = {}
+        self.last_plan_byzantine: dict[str, Any] = {}
         self.last_editor_ai_metadata: dict[str, Any] = {}
         self.last_editor_ai_payload: dict[str, Any] = {}
+        self.last_editor_byzantine: dict[str, Any] = {}
+        self.editor_byzantine_history: list[dict[str, Any]] = []
         self.editor_attempt_index = 0
 
     def metadata(self) -> dict[str, Any]:
@@ -4791,6 +4801,9 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
             "ai_trace_path": self.ai_trace_path,
             "ai_direct_write_access": False,
             "recovery_supported": True,
+            "full_byzantine_pipeline": self.full_byzantine_pipeline,
+            "byzantine_worker_count": self.byzantine_worker_count,
+            "byzantine_reviewer_count": self.byzantine_reviewer_count,
         }
 
     def _call_ai_json(self, *, stage: str, system_prompt: str, user_prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -4807,7 +4820,385 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
             trace_path=self.ai_trace_path,
         )
 
+    def _scripted_metadata(self, *, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "stage": stage,
+            "provider": "scripted-local-smoke",
+            "model": "",
+            "uses_live_ai": False,
+            "scripted_ai_smoke": True,
+            "content_sha256": text_sha256(json_dumps(dict(payload))),
+            "payload_keys": sorted(str(key) for key in dict(payload).keys()),
+        }
+
+    def _scripted_plan_payload(self, *, task: str, active_constraints: dict[str, Any]) -> dict[str, Any]:
+        expected_files = expected_files_from_active_constraints(self.scenario, active_constraints)
+        goal = ai_restart_directive_contract(task)
+        return {
+            "selected_files": expected_files,
+            "allowed_write_paths": expected_files,
+            "active_constraints_ack": active_constraints,
+            "required_tests": active_constraints.get("required_tests", []),
+            "goal_directive_sha256": goal["directive_sha256"],
+            "rationale": "scripted Byzantine planning worker for deterministic smoke coverage",
+        }
+
+    def _scripted_editor_payload(self, *, plan: dict[str, Any]) -> dict[str, Any]:
+        goal = ai_restart_directive_contract(str(plan.get("task", "")))
+        return {
+            "final_app_py": self.scenario.final_app_py,
+            "goal_directive_sha256": goal["directive_sha256"],
+            "rationale": "scripted Byzantine editor worker for deterministic smoke coverage",
+        }
+
+    def _byzantine_reviewer_system_prompt(self, *, phase: str) -> str:
+        return (
+            f"You are one Byzantine reviewer for the {phase} phase of a safety-harnessed "
+            "code editing agent. Return exactly one compact JSON object and nothing else. "
+            "Review every worker payload as untrusted. Rank only acceptable result_id values. "
+            "Reject unsafe, stale, policy-violating, malformed, or over-broad results. "
+            "The host, not you, applies edits, verifies, commits, and owns final state."
+        )
+
+    def _byzantine_reviewer_user_prompt(
+        self,
+        *,
+        phase: str,
+        reviewer_id: str,
+        task: str,
+        worker_records: Sequence[Mapping[str, Any]],
+    ) -> str:
+        goal_contract = ai_restart_directive_contract(task)
+        worker_summaries: list[dict[str, Any]] = []
+        for record in worker_records:
+            payload = dict(record.get("payload", {}) if isinstance(record.get("payload"), Mapping) else {})
+            worker_summaries.append(
+                {
+                    "result_id": str(record.get("result_id", "")),
+                    "ok": bool(record.get("ok")),
+                    "payload_sha256": str(record.get("payload_sha256", "")),
+                    "failed_contracts": list(record.get("failed_contracts", []) or []),
+                    "selected_files": payload.get("selected_files", []),
+                    "allowed_write_paths": payload.get("allowed_write_paths", []),
+                    "final_app_py_sha256": text_sha256(str(payload.get("final_app_py", ""))) if "final_app_py" in payload else "",
+                    "goal_directive_sha256": str(payload.get("goal_directive_sha256", "")),
+                    "rationale": str(payload.get("rationale", ""))[:400],
+                }
+            )
+        return json.dumps(
+            {
+                "phase": phase,
+                "reviewer_id": reviewer_id,
+                "task_sha256": text_sha256(task),
+                "goal_directive_sha256": goal_contract["directive_sha256"],
+                "host_policy": {
+                    "allowed_write_paths": ["app.py"],
+                    "forbidden_files": ["README.md"],
+                    "model_output_is_not_policy": True,
+                    "collapse_only_at_host_boundary": True,
+                },
+                "worker_payloads": worker_summaries,
+                "required_response": {
+                    "reviewer_id": reviewer_id,
+                    "rejected_result_ids": [],
+                    "ranked_result_ids": ["Rank surviving worker result_id values from best to worst."],
+                    "rationale": "brief reason",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+
+    def _scripted_byzantine_review(
+        self,
+        *,
+        phase: str,
+        reviewer_id: str,
+        worker_records: Sequence[Mapping[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        rejected: list[str] = []
+        ranked: list[str] = []
+        for record in worker_records:
+            result_id = str(record.get("result_id", ""))
+            failed = list(record.get("failed_contracts", []) or [])
+            payload = dict(record.get("payload", {}) if isinstance(record.get("payload"), Mapping) else {})
+            selected_files = [str(path) for path in payload.get("selected_files", []) or []]
+            allowed_write_paths = [str(path) for path in payload.get("allowed_write_paths", []) or []]
+            unsafe = bool(failed) or "README.md" in selected_files or "README.md" in allowed_write_paths
+            if unsafe:
+                rejected.append(result_id)
+            else:
+                ranked.append(result_id)
+        ranked.sort()
+        payload = {
+            "reviewer_id": reviewer_id,
+            "rejected_result_ids": rejected,
+            "ranked_result_ids": ranked,
+            "rationale": f"scripted Byzantine {phase} reviewer for deterministic smoke coverage",
+        }
+        return payload, self._scripted_metadata(stage=f"byz_{phase}_reviewer_{reviewer_id.rsplit('-', 1)[-1]}", payload=payload)
+
+    def _byzantine_phase_selection(
+        self,
+        *,
+        phase: str,
+        task: str,
+        worker_records: Sequence[Mapping[str, Any]],
+        review_records: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        selection = select_real_agent_byzantine_worker(
+            worker_records=worker_records,
+            review_records=review_records,
+            expected_endstate="",
+            real_prompt=f"{phase}:{task}",
+        )
+        contracts = {
+            f"byz_{phase}_worker_count_met": len(worker_records) == self.byzantine_worker_count,
+            f"byz_{phase}_reviewer_count_met": len(review_records) == self.byzantine_reviewer_count,
+            f"byz_{phase}_worker_result_ids_unique": len({str(record.get("result_id", "")) for record in worker_records}) == len(worker_records),
+            f"byz_{phase}_worker_payloads_hash_bound": all(bool(record.get("payload_sha256")) for record in worker_records),
+            f"byz_{phase}_reviews_valid": all(bool(review.get("ok")) for review in review_records),
+            f"byz_{phase}_selected_from_survivor_pool": str(selection.get("selected_result_id", "")) in set(selection.get("survivor_result_ids", []) or []),
+            f"byz_{phase}_host_selection_deterministic": bool(selection.get("selection_seed_sha256")),
+            f"byz_{phase}_collapses_only_at_host_boundary": True,
+        }
+        return {
+            "format": f"main_computer_byzantine_{phase}_phase_v1",
+            "phase": phase,
+            "worker_count": self.byzantine_worker_count,
+            "reviewer_count": self.byzantine_reviewer_count,
+            "workers": list(worker_records),
+            "reviews": list(review_records),
+            "selection": selection,
+            "selected_result_id": str(selection.get("selected_result_id", "")),
+            "contracts": contracts,
+            "failed_contracts": sorted(name for name, ok in contracts.items() if not ok),
+            "ok": all(contracts.values()),
+        }
+
+    def _byzantine_plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        active_constraints = active_constraints_from_guidance_state(guidance_state)
+        goal_contract = ai_restart_directive_contract(task)
+        worker_records: list[dict[str, Any]] = []
+        for index in range(1, self.byzantine_worker_count + 1):
+            result_id = f"planning-worker-{index:03d}"
+            stage = f"byz_planning_worker_{index:03d}"
+            if self.scripted_ai_smoke:
+                payload = {**self._scripted_plan_payload(task=task, active_constraints=active_constraints), "result_id": result_id}
+                metadata = self._scripted_metadata(stage=stage, payload=payload)
+            else:
+                payload, metadata = self._call_ai_json(
+                    stage=stage,
+                    system_prompt=ai_plan_system_prompt()
+                    + " You are one untrusted Byzantine planning worker. Your result_id is "
+                    + result_id
+                    + ".",
+                    user_prompt=ai_plan_user_prompt(
+                        task=task,
+                        scenario=self.scenario,
+                        active_constraints=active_constraints,
+                    )
+                    + "\nReturn result_id exactly as: "
+                    + result_id,
+                )
+                payload = {**dict(payload), "result_id": str(payload.get("result_id", "") or result_id)}
+            failed: list[str] = []
+            plan: dict[str, Any] = {}
+            try:
+                plan = validate_ai_plan_payload(
+                    payload=payload,
+                    task=task,
+                    scenario=self.scenario,
+                    active_constraints=active_constraints,
+                )
+            except Exception as exc:
+                failed = [f"plan_payload_invalid:{type(exc).__name__}:{exc}"]
+            worker_records.append(
+                {
+                    "result_id": result_id,
+                    "payload": dict(payload),
+                    "payload_sha256": text_sha256(json_dumps(dict(payload))),
+                    "metadata": dict(metadata),
+                    "plan": plan,
+                    "ok": not failed,
+                    "failed_contracts": failed,
+                }
+            )
+        worker_ids = [str(record.get("result_id", "")) for record in worker_records]
+        review_records: list[dict[str, Any]] = []
+        for index in range(1, self.byzantine_reviewer_count + 1):
+            reviewer_id = f"planning-reviewer-{index:03d}"
+            if self.scripted_ai_smoke:
+                payload, metadata = self._scripted_byzantine_review(
+                    phase="planning",
+                    reviewer_id=reviewer_id,
+                    worker_records=worker_records,
+                )
+            else:
+                payload, metadata = self._call_ai_json(
+                    stage=f"byz_planning_reviewer_{index:03d}",
+                    system_prompt=self._byzantine_reviewer_system_prompt(phase="planning"),
+                    user_prompt=self._byzantine_reviewer_user_prompt(
+                        phase="planning",
+                        reviewer_id=reviewer_id,
+                        task=task,
+                        worker_records=worker_records,
+                    ),
+                )
+            review_prompt = f"planning:{task}"
+            review = validate_real_agent_byzantine_review(
+                payload=payload,
+                reviewer_id=reviewer_id,
+                worker_ids=worker_ids,
+                real_prompt=review_prompt,
+                goal_contract={"directive_sha256": text_sha256(review_prompt)},
+            )
+            review["metadata"] = dict(metadata)
+            review_records.append(review)
+        report = self._byzantine_phase_selection(
+            phase="planning",
+            task=task,
+            worker_records=worker_records,
+            review_records=review_records,
+        )
+        selected_record = dict(report.get("selection", {}).get("selected_record", {}) if isinstance(report.get("selection"), Mapping) else {})
+        selected_plan = dict(selected_record.get("plan", {}) if isinstance(selected_record.get("plan"), Mapping) else {})
+        if not selected_plan:
+            raise SmokeFailure(f"Byzantine planning phase did not select a valid plan: {report.get('failed_contracts')!r}")
+        selected_metadata = dict(selected_record.get("metadata", {}) if isinstance(selected_record.get("metadata"), Mapping) else {})
+        selected_plan.update(
+            {
+                "planner": "byzantine_host_selected_ai_plan",
+                "uses_ai": True,
+                "uses_live_ai": not self.scripted_ai_smoke,
+                "scripted_ai_smoke": self.scripted_ai_smoke,
+                "ai_plan_metadata": selected_metadata,
+                "byzantine_planning": report,
+                "edit_strategy": "byzantine_planning_then_byzantine_editor_with_host_apply",
+            }
+        )
+        self.last_plan_ai_metadata = {
+            "stage": "byz_planning_boundary",
+            "provider": selected_metadata.get("provider", ""),
+            "model": selected_metadata.get("model", ""),
+            "uses_live_ai": bool(selected_metadata.get("uses_live_ai")),
+            "scripted_ai_smoke": bool(selected_metadata.get("scripted_ai_smoke")),
+            "selected_result_id": report.get("selected_result_id", ""),
+            "byzantine": True,
+        }
+        self.last_plan_byzantine = report
+        return selected_plan
+
+    def _byzantine_editor_source(
+        self,
+        *,
+        plan: dict[str, Any],
+        rejection_feedback: dict[str, Any] | None,
+        retry: bool,
+    ) -> str:
+        phase = "editor_retry" if retry else "editor"
+        goal_contract = ai_restart_directive_contract(str(plan.get("task", "")))
+        worker_records: list[dict[str, Any]] = []
+        for index in range(1, self.byzantine_worker_count + 1):
+            result_id = f"{phase}-worker-{index:03d}"
+            stage = f"byz_{phase}_worker_{index:03d}"
+            if self.scripted_ai_smoke:
+                payload = {**self._scripted_editor_payload(plan=plan), "result_id": result_id}
+                metadata = self._scripted_metadata(stage=stage, payload=payload)
+            else:
+                payload, metadata = self._call_ai_json(
+                    stage=stage,
+                    system_prompt=ai_editor_system_prompt()
+                    + f" You are one untrusted Byzantine {phase} worker. Your result_id is {result_id}.",
+                    user_prompt=ai_editor_user_prompt(plan=plan, rejection_feedback=rejection_feedback)
+                    + "\nReturn result_id exactly as: "
+                    + result_id,
+                )
+                payload = {**dict(payload), "result_id": str(payload.get("result_id", "") or result_id)}
+            failed: list[str] = []
+            final_app_py = ""
+            try:
+                validate_ai_goal_directive_ack(payload, task=str(plan.get("task", "")), stage=stage)
+                final_app_py = validate_ai_final_app_py(payload.get("final_app_py"))
+            except Exception as exc:
+                failed = [f"editor_payload_invalid:{type(exc).__name__}:{exc}"]
+            worker_records.append(
+                {
+                    "result_id": result_id,
+                    "payload": dict(payload),
+                    "payload_sha256": text_sha256(json_dumps(dict(payload))),
+                    "metadata": dict(metadata),
+                    "final_app_py_sha256": text_sha256(final_app_py) if final_app_py else "",
+                    "ok": not failed,
+                    "failed_contracts": failed,
+                }
+            )
+        worker_ids = [str(record.get("result_id", "")) for record in worker_records]
+        review_records: list[dict[str, Any]] = []
+        for index in range(1, self.byzantine_reviewer_count + 1):
+            reviewer_id = f"{phase}-reviewer-{index:03d}"
+            if self.scripted_ai_smoke:
+                payload, metadata = self._scripted_byzantine_review(
+                    phase=phase,
+                    reviewer_id=reviewer_id,
+                    worker_records=worker_records,
+                )
+            else:
+                payload, metadata = self._call_ai_json(
+                    stage=f"byz_{phase}_reviewer_{index:03d}",
+                    system_prompt=self._byzantine_reviewer_system_prompt(phase=phase),
+                    user_prompt=self._byzantine_reviewer_user_prompt(
+                        phase=phase,
+                        reviewer_id=reviewer_id,
+                        task=str(plan.get("task", "")),
+                        worker_records=worker_records,
+                    ),
+                )
+            review_prompt = f"{phase}:{plan.get('task', '')}"
+            review = validate_real_agent_byzantine_review(
+                payload=payload,
+                reviewer_id=reviewer_id,
+                worker_ids=worker_ids,
+                real_prompt=review_prompt,
+                goal_contract={"directive_sha256": text_sha256(review_prompt)},
+            )
+            review["metadata"] = dict(metadata)
+            review_records.append(review)
+        report = self._byzantine_phase_selection(
+            phase=phase,
+            task=str(plan.get("task", "")),
+            worker_records=worker_records,
+            review_records=review_records,
+        )
+        selected_record = dict(report.get("selection", {}).get("selected_record", {}) if isinstance(report.get("selection"), Mapping) else {})
+        selected_payload = dict(selected_record.get("payload", {}) if isinstance(selected_record.get("payload"), Mapping) else {})
+        selected_metadata = dict(selected_record.get("metadata", {}) if isinstance(selected_record.get("metadata"), Mapping) else {})
+        if not bool(selected_record.get("ok")):
+            raise SmokeFailure(f"Byzantine {phase} phase did not select a valid editor payload: {report.get('failed_contracts')!r}")
+        self.last_editor_byzantine = report
+        self.editor_byzantine_history.append(report)
+        self.editor_attempt_index += 1
+        metadata = {**selected_metadata, "attempt": self.editor_attempt_index, "byzantine": True, "byzantine_phase": phase}
+        source = self._editor_source_from_ai_payload(
+            plan=plan,
+            payload=selected_payload,
+            metadata=metadata,
+            attempt=self.editor_attempt_index,
+        )
+        self.last_editor_ai_payload["byzantine_editor"] = report
+        self.last_editor_ai_metadata = {
+            **self.last_editor_ai_metadata,
+            "stage": f"byz_{phase}_boundary",
+            "byzantine": True,
+            "selected_result_id": report.get("selected_result_id", ""),
+        }
+        return source
+
+
     def plan(self, task: str, guidance_state: dict[str, Any]) -> dict[str, Any]:
+        if self.full_byzantine_pipeline:
+            return self._byzantine_plan(task, guidance_state)
         active_constraints = active_constraints_from_guidance_state(guidance_state)
         if self.scripted_ai_smoke:
             plan = super().plan(task, guidance_state)
@@ -4910,6 +5301,8 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         )
 
     def generate_editor(self, plan: dict[str, Any]) -> str:
+        if self.full_byzantine_pipeline:
+            return self._byzantine_editor_source(plan=plan, rejection_feedback=None, retry=False)
         if self.scripted_ai_smoke:
             self.last_editor_ai_metadata = {
                 "provider": "scripted",
@@ -4952,6 +5345,8 @@ class AiGeneratedEditorCodeEditAgent(GeneratedEditorCodeEditAgent):
         )
 
     def generate_editor_retry(self, plan: dict[str, Any], rejection_feedback: dict[str, Any]) -> str:
+        if self.full_byzantine_pipeline:
+            return self._byzantine_editor_source(plan=plan, rejection_feedback=rejection_feedback, retry=True)
         if self.scripted_ai_smoke:
             self.last_editor_ai_metadata = {
                 "provider": "scripted",
@@ -5688,6 +6083,9 @@ def build_agent_adapter(args: argparse.Namespace) -> CodeEditAgentAdapter:
                 getattr(args, "ai_trace_path", "")
                 or (str(Path(getattr(args, "run_dir", "")) / "ai_calls.jsonl") if getattr(args, "run_dir", "") else "")
             ),
+            full_byzantine_pipeline=bool(getattr(args, "full_byzantine_pipeline", False)),
+            byzantine_worker_count=int(getattr(args, "real_agent_worker_count", 3) or 3),
+            byzantine_reviewer_count=int(getattr(args, "real_agent_reviewer_count", 3) or 3),
         )
     raise SmokeFailure(f"unsupported agent mode for this smoke stage: {args.agent!r}")
 
@@ -6452,6 +6850,9 @@ def run_agent(args: argparse.Namespace) -> int:
                         inject_bad_ai_result=str(getattr(args, "inject_bad_ai_result", "") or ""),
                         agent_adapter=agent_adapter,
                     )
+                    if isinstance(edit_result.get("generated_editor"), dict):
+                        edit_result["generated_editor"]["byzantine_editor"] = dict(getattr(agent_adapter, "last_editor_byzantine", {}) or {})
+                        edit_result["generated_editor"]["byzantine_editor_history"] = list(getattr(agent_adapter, "editor_byzantine_history", []) or [])
                 else:
                     edit_result, generated_editor_boundaries = run_generated_editor_sandbox_apply(
                         run_dir=run_dir,
@@ -6732,19 +7133,72 @@ def run_agent(args: argparse.Namespace) -> int:
         if isinstance(agent_adapter, AiGeneratedEditorCodeEditAgent) and not agent_adapter.scripted_ai_smoke:
             finished_stages = set(ai_call_summary["finished_live_stages"])
             retry_expected = scenario.name == AI_RESTART_RECOVERY_SCENARIO or bool(getattr(args, "inject_bad_ai_result", ""))
-            required_live_stages = {"planning", "editor_generation"}
-            minimum_live_call_count = 2
-            if retry_expected:
-                required_live_stages.add("editor_generation_retry")
-                minimum_live_call_count = MIN_LIVE_AI_RESTART_RECOVERY_CALLS
-            ai_contracts = {
-                "live_ai_touched_planning_and_editor": finished_stages >= {"planning", "editor_generation"},
-                "live_ai_call_count_at_least_expected": ai_call_summary["finished_live_call_count"] >= minimum_live_call_count,
-            }
-            if retry_expected:
-                ai_contracts["live_ai_touched_planning_editor_and_retry"] = (
-                    finished_stages >= required_live_stages
-                )
+            if bool(getattr(agent_adapter, "full_byzantine_pipeline", False)):
+                worker_count = max(3, int(getattr(agent_adapter, "byzantine_worker_count", 3) or 3))
+                reviewer_count = max(3, int(getattr(agent_adapter, "byzantine_reviewer_count", 3) or 3))
+                byz_planning_worker_stages = {
+                    stage for stage in finished_stages if str(stage).startswith("byz_planning_worker_")
+                }
+                byz_planning_reviewer_stages = {
+                    stage for stage in finished_stages if str(stage).startswith("byz_planning_reviewer_")
+                }
+                byz_editor_worker_stages = {
+                    stage for stage in finished_stages if str(stage).startswith("byz_editor_worker_")
+                }
+                byz_editor_reviewer_stages = {
+                    stage for stage in finished_stages if str(stage).startswith("byz_editor_reviewer_")
+                }
+                byz_retry_worker_stages = {
+                    stage for stage in finished_stages if str(stage).startswith("byz_editor_retry_worker_")
+                }
+                byz_retry_reviewer_stages = {
+                    stage for stage in finished_stages if str(stage).startswith("byz_editor_retry_reviewer_")
+                }
+                bare_single_ai_stages = {"planning", "editor_generation", "editor_generation_retry"} & finished_stages
+                minimum_live_call_count = (worker_count + reviewer_count) * 2
+                if retry_expected:
+                    minimum_live_call_count += worker_count + reviewer_count
+                byz_planning_report = getattr(agent_adapter, "last_plan_byzantine", {}) or {}
+                byz_editor_history = getattr(agent_adapter, "editor_byzantine_history", []) or []
+                byz_editor_reports = [report for report in byz_editor_history if isinstance(report, Mapping)]
+                retry_reports = [
+                    report for report in byz_editor_reports if str(report.get("phase", "")) == "editor_retry"
+                ]
+                ai_contracts = {
+                    "live_ai_full_byzantine_pipeline_enabled": True,
+                    "live_ai_no_single_planning_or_editor_generation_stage": not bare_single_ai_stages,
+                    "live_ai_touched_byzantine_planning_workers": len(byz_planning_worker_stages) >= worker_count,
+                    "live_ai_touched_byzantine_planning_reviewers": len(byz_planning_reviewer_stages) >= reviewer_count,
+                    "live_ai_touched_byzantine_editor_workers": len(byz_editor_worker_stages) >= worker_count,
+                    "live_ai_touched_byzantine_editor_reviewers": len(byz_editor_reviewer_stages) >= reviewer_count,
+                    "live_ai_byzantine_planning_boundary_ok": bool(byz_planning_report.get("ok")),
+                    "live_ai_byzantine_editor_boundary_ok": bool(byz_editor_reports)
+                    and all(bool(report.get("ok")) for report in byz_editor_reports),
+                    "live_ai_call_count_at_least_expected": ai_call_summary["finished_live_call_count"] >= minimum_live_call_count,
+                }
+                if retry_expected:
+                    ai_contracts.update(
+                        {
+                            "live_ai_touched_byzantine_retry_editor_workers": len(byz_retry_worker_stages) >= worker_count,
+                            "live_ai_touched_byzantine_retry_editor_reviewers": len(byz_retry_reviewer_stages) >= reviewer_count,
+                            "live_ai_byzantine_retry_editor_boundary_ok": bool(retry_reports)
+                            and all(bool(report.get("ok")) for report in retry_reports),
+                        }
+                    )
+            else:
+                required_live_stages = {"planning", "editor_generation"}
+                minimum_live_call_count = 2
+                if retry_expected:
+                    required_live_stages.add("editor_generation_retry")
+                    minimum_live_call_count = MIN_LIVE_AI_RESTART_RECOVERY_CALLS
+                ai_contracts = {
+                    "live_ai_touched_planning_and_editor": finished_stages >= {"planning", "editor_generation"},
+                    "live_ai_call_count_at_least_expected": ai_call_summary["finished_live_call_count"] >= minimum_live_call_count,
+                }
+                if retry_expected:
+                    ai_contracts["live_ai_touched_planning_editor_and_retry"] = (
+                        finished_stages >= required_live_stages
+                    )
 
         runtime_contracts = {
             # Default supervisor runs inside the Docker executor with network disabled
@@ -14712,6 +15166,7 @@ def run_real_agent_prompt_delegate(
         ai_timeout_seconds=float(getattr(args, "ai_timeout_seconds", DEFAULT_AI_TIMEOUT_SECONDS)),
         ai_trace_path=str(ai_trace_path),
         scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
+        full_byzantine_pipeline=bool(getattr(args, "real_agent_full_path", False)),
         restart=False,
         run_id=f"{run_id}-agent",
         run_dir=str(agent_run_dir),
@@ -14788,6 +15243,9 @@ def run_real_agent_prompt_delegate(
             and not failed_contracts
             else "diagnostic_failure"
         )
+    edit_plan = report.get("edit_plan", {}) if isinstance(report.get("edit_plan"), dict) else {}
+    edit_result = report.get("edit_result", {}) if isinstance(report.get("edit_result"), dict) else {}
+    generated_editor = edit_result.get("generated_editor", {}) if isinstance(edit_result.get("generated_editor"), dict) else {}
     return {
         "format": "main_computer_real_agent_prompt_delegate_v1",
         "delegated": True,
@@ -14803,6 +15261,10 @@ def run_real_agent_prompt_delegate(
         "verification_ok": verification.get("ok"),
         "commit_created": bool(commit.get("created")),
         "failed_contracts": failed_contracts,
+        "ai_call_summary": report.get("ai_call_summary", {}) if isinstance(report.get("ai_call_summary"), dict) else {},
+        "byzantine_planning": edit_plan.get("byzantine_planning", {}) if isinstance(edit_plan.get("byzantine_planning"), dict) else {},
+        "byzantine_editor": generated_editor.get("byzantine_editor", {}) if isinstance(generated_editor.get("byzantine_editor"), dict) else {},
+        "byzantine_editor_history": generated_editor.get("byzantine_editor_history", []) if isinstance(generated_editor.get("byzantine_editor_history"), list) else [],
         "ok": observed_terminal == terminal_endstate,
     }
 
@@ -14831,6 +15293,11 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
     ai_trace_path = Path(str(getattr(args, "ai_trace_path", "") or run_dir / "ai_calls.jsonl")).resolve()
     expected_changed_files = csv_path_list(str(getattr(args, "real_agent_expected_changed_files", "") or ""))
     expected_unchanged_files = csv_path_list(str(getattr(args, "real_agent_expected_unchanged_files", "") or "README.md"))
+    real_agent_full_path = bool(getattr(args, "real_agent_full_path", False))
+    real_agent_no_oracle_hints = bool(getattr(args, "real_agent_no_oracle_hints", False)) or real_agent_full_path
+    use_byzantine = bool(getattr(args, "real_agent_byzantine", False)) or real_agent_full_path
+    selector_expected_endstate = "" if real_agent_no_oracle_hints else expected_endstate
+    selector_expected_changed_files: list[str] = [] if real_agent_no_oracle_hints else list(expected_changed_files)
 
     run_dir.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -14847,20 +15314,23 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         ai_provider=str(getattr(args, "ai_provider", DEFAULT_AI_PROVIDER) or DEFAULT_AI_PROVIDER),
         ai_model=str(getattr(args, "ai_model", "") or ""),
         scripted_ai_smoke=bool(getattr(args, "scripted_ai_smoke", False)),
-        real_agent_byzantine=bool(getattr(args, "real_agent_byzantine", False)),
+        real_agent_byzantine=use_byzantine,
+        real_agent_no_oracle_hints=real_agent_no_oracle_hints,
+        real_agent_full_path=real_agent_full_path,
+        selector_expected_endstate=selector_expected_endstate,
         real_agent_worker_count=max(1, int(getattr(args, "real_agent_worker_count", 3) or 3)),
         real_agent_reviewer_count=max(1, int(getattr(args, "real_agent_reviewer_count", 3) or 3)),
     )
     goal_contract = ai_restart_directive_contract(real_prompt)
     byzantine: dict[str, Any] = {"enabled": False}
-    if bool(getattr(args, "real_agent_byzantine", False)):
+    if use_byzantine:
         byzantine = real_agent_prompt_byzantine_decision_payload(
             args=args,
             run_id=run_id,
             trace_path=ai_trace_path,
             real_prompt=real_prompt,
-            expected_endstate=expected_endstate,
-            expected_changed_files=expected_changed_files,
+            expected_endstate=selector_expected_endstate,
+            expected_changed_files=selector_expected_changed_files,
             goal_contract=goal_contract,
         )
         decision_payload = dict(byzantine.get("selected_payload", {}) if isinstance(byzantine.get("selected_payload"), Mapping) else {})
@@ -14872,17 +15342,21 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
             run_id=run_id,
             trace_path=ai_trace_path,
             real_prompt=real_prompt,
-            expected_endstate=expected_endstate,
+            expected_endstate=selector_expected_endstate,
             goal_contract=goal_contract,
         )
         decision = validate_real_agent_prompt_decision(
             payload=decision_payload,
             real_prompt=real_prompt,
-            expected_endstate=expected_endstate,
-            expected_changed_files=expected_changed_files,
+            expected_endstate=selector_expected_endstate,
+            expected_changed_files=selector_expected_changed_files,
             goal_contract=goal_contract,
         )
-    terminal_endstate = expected_endstate or str(decision.get("observed_endstate", ""))
+    decision_endstate = str(decision.get("observed_endstate", "") or "").strip()
+    if real_agent_no_oracle_hints:
+        terminal_endstate = decision_endstate or expected_endstate
+    else:
+        terminal_endstate = expected_endstate or decision_endstate
     delegate: dict[str, Any] = {
         "delegated": False,
         "ok": True,
@@ -14916,11 +15390,20 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         ),
         "real_agent_delegate_ok": bool(delegate.get("ok", True)),
     }
+    if real_agent_no_oracle_hints:
+        final_contracts.update(
+            {
+                "real_agent_expected_endstate_not_shown_to_model": selector_expected_endstate == "",
+                "real_agent_expected_changed_files_not_used_for_selection": selector_expected_changed_files == [],
+                "real_agent_terminal_endstate_came_from_selected_decision": bool(decision_endstate)
+                and terminal_endstate == decision_endstate,
+            }
+        )
     if terminal_endstate not in REAL_AGENT_MUTATING_ENDSTATES:
         final_contracts["real_agent_non_mutating_endpoint_changed_no_files"] = changed_files == []
     ai_summary = summarize_ai_trace(read_jsonl(ai_trace_path))
     if not bool(getattr(args, "scripted_ai_smoke", False)):
-        if bool(getattr(args, "real_agent_byzantine", False)):
+        if use_byzantine:
             expected_byzantine_calls = max(1, int(getattr(args, "real_agent_worker_count", 3) or 3)) + max(1, int(getattr(args, "real_agent_reviewer_count", 3) or 3))
             final_contracts["real_agent_byzantine_used_live_worker_reviewer_calls"] = (
                 ai_summary.get("finished_live_call_count", 0) >= expected_byzantine_calls
@@ -14933,6 +15416,81 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
             final_contracts["real_agent_mutating_endpoint_used_live_ai_more_than_decision"] = (
                 ai_summary.get("finished_live_call_count", 0) >= 3
             )
+    if real_agent_full_path:
+        expected_byzantine_calls = max(1, int(getattr(args, "real_agent_worker_count", 3) or 3)) + max(1, int(getattr(args, "real_agent_reviewer_count", 3) or 3))
+        finished_stages = set(str(stage) for stage in ai_summary.get("finished_live_stages", []) or [])
+        byz_planning = delegate.get("byzantine_planning", {}) if isinstance(delegate.get("byzantine_planning"), dict) else {}
+        byz_editor_history = delegate.get("byzantine_editor_history", []) if isinstance(delegate.get("byzantine_editor_history"), list) else []
+        byz_editor_reports = [
+            dict(item)
+            for item in byz_editor_history
+            if isinstance(item, Mapping)
+        ]
+        live_transport = not bool(getattr(args, "scripted_ai_smoke", False)) and str(getattr(args, "ai_provider", "") or "").strip().lower() != "scripted"
+        planning_worker_stages = [stage for stage in finished_stages if stage.startswith("byz_planning_worker_")]
+        planning_reviewer_stages = [stage for stage in finished_stages if stage.startswith("byz_planning_reviewer_")]
+        editor_worker_stages = [
+            stage for stage in finished_stages
+            if stage.startswith("byz_editor_worker_") or stage.startswith("byz_editor_retry_worker_")
+        ]
+        editor_reviewer_stages = [
+            stage for stage in finished_stages
+            if stage.startswith("byz_editor_reviewer_") or stage.startswith("byz_editor_retry_reviewer_")
+        ]
+        final_contracts.update(
+            {
+                "real_agent_full_path_requires_byzantine": use_byzantine,
+                "real_agent_full_path_uses_no_oracle_hints": real_agent_no_oracle_hints,
+                "real_agent_full_path_selected_mutating_endpoint": terminal_endstate in REAL_AGENT_MUTATING_ENDSTATES,
+                "real_agent_full_path_not_decision_only": not bool(getattr(args, "real_agent_decision_only", False)),
+                "real_agent_full_path_delegated": bool(delegate.get("delegated")),
+                "real_agent_full_path_delegate_ok": bool(delegate.get("ok")),
+                "real_agent_full_path_no_single_planning_call": "planning" not in finished_stages,
+                "real_agent_full_path_no_single_editor_generation_call": "editor_generation" not in finished_stages
+                and "editor_generation_retry" not in finished_stages,
+                "real_agent_full_path_planning_boundary_ok": bool(byz_planning.get("ok")),
+                "real_agent_full_path_planning_worker_count_met": int(byz_planning.get("worker_count", 0) or 0)
+                >= max(3, int(getattr(args, "real_agent_worker_count", 3) or 3)),
+                "real_agent_full_path_planning_reviewer_count_met": int(byz_planning.get("reviewer_count", 0) or 0)
+                >= max(3, int(getattr(args, "real_agent_reviewer_count", 3) or 3)),
+                "real_agent_full_path_editor_boundary_ok": bool(byz_editor_reports)
+                and all(bool(report.get("ok")) for report in byz_editor_reports),
+                "real_agent_full_path_editor_worker_count_met": bool(byz_editor_reports)
+                and all(int(report.get("worker_count", 0) or 0) >= max(3, int(getattr(args, "real_agent_worker_count", 3) or 3)) for report in byz_editor_reports),
+                "real_agent_full_path_editor_reviewer_count_met": bool(byz_editor_reports)
+                and all(int(report.get("reviewer_count", 0) or 0) >= max(3, int(getattr(args, "real_agent_reviewer_count", 3) or 3)) for report in byz_editor_reports),
+                "real_agent_full_path_collapses_each_ai_phase_at_boundary": bool(byz_planning.get("selection"))
+                and bool(byz_editor_reports)
+                and all(bool(report.get("selection")) for report in byz_editor_reports),
+                "real_agent_full_path_host_applied_expected_file": sorted(changed_files) == sorted(expected_changed_files)
+                if expected_changed_files
+                else bool(changed_files),
+                "real_agent_full_path_verification_passed": delegate.get("verification_ok") is True,
+                "real_agent_full_path_commit_created": bool(delegate.get("commit_created")),
+            }
+        )
+        if live_transport:
+            final_contracts.update(
+                {
+                    "real_agent_full_path_uses_live_ai_transport": True,
+                    "real_agent_full_path_live_planning_workers_finished": len(planning_worker_stages)
+                    >= max(3, int(getattr(args, "real_agent_worker_count", 3) or 3)),
+                    "real_agent_full_path_live_planning_reviewers_finished": len(planning_reviewer_stages)
+                    >= max(3, int(getattr(args, "real_agent_reviewer_count", 3) or 3)),
+                    "real_agent_full_path_live_editor_workers_finished": len(editor_worker_stages)
+                    >= max(3, int(getattr(args, "real_agent_worker_count", 3) or 3)),
+                    "real_agent_full_path_live_editor_reviewers_finished": len(editor_reviewer_stages)
+                    >= max(3, int(getattr(args, "real_agent_reviewer_count", 3) or 3)),
+                    "real_agent_full_path_used_byzantine_all_ai_phase_live_calls": ai_summary.get("finished_live_call_count", 0)
+                    >= expected_byzantine_calls * 3,
+                }
+            )
+        else:
+            final_contracts["real_agent_full_path_scripted_deterministic_pipeline"] = bool(
+                getattr(args, "scripted_ai_smoke", False)
+            )
+            final_contracts["real_agent_full_path_scripted_has_byzantine_phase_reports"] = bool(byz_planning.get("ok")) and bool(byz_editor_reports)
+
 
     failed_contracts = sorted(name for name, ok in final_contracts.items() if not ok)
     report = {
@@ -14947,6 +15505,10 @@ def run_real_agent_prompt_smoke(args: argparse.Namespace) -> int:
         "prompt_sha256": text_sha256(real_prompt),
         "goal_directive": goal_contract,
         "expected_endstate": expected_endstate,
+        "selector_expected_endstate": selector_expected_endstate,
+        "real_agent_no_oracle_hints": real_agent_no_oracle_hints,
+        "real_agent_full_path": real_agent_full_path,
+        "real_agent_byzantine": use_byzantine,
         "observed_decision_endstate": decision.get("observed_endstate"),
         "final_endstate": final_endstate,
         "expected_changed_files": expected_changed_files,
@@ -16663,6 +17225,24 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "For --real-agent-prompt, replace the single open-ended decision call with "
             "Byzantine worker/reviewer fanout, majority rejection, and deterministic host selection."
+        ),
+    )
+    parser.add_argument(
+        "--real-agent-no-oracle-hints",
+        action="store_true",
+        help=(
+            "For --real-agent-prompt, keep expected endstate/file assertions host-side only. "
+            "Do not show expected endpoints to workers/reviewers and do not use them for "
+            "Byzantine selection or delegation routing."
+        ),
+    )
+    parser.add_argument(
+        "--real-agent-full-path",
+        action="store_true",
+        help=(
+            "For --real-agent-prompt, require the honest full live path: Byzantine worker/reviewer "
+            "selection, a selected mutating endpoint, delegated generated-editor execution, host apply, "
+            "verification, and commit evidence. Implies no oracle hints and Byzantine mode for contract checks."
         ),
     )
     parser.add_argument(

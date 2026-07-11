@@ -26,8 +26,10 @@ from __future__ import annotations
 import argparse
 import copy
 import html
+import hashlib
 import itertools
 import json
+import math
 import re
 import tempfile
 from collections import defaultdict
@@ -46,6 +48,13 @@ except ImportError:  # pragma: no cover - exercised only when Pillow is missing 
 
 DEFAULT_HIERARCHIES = "all"
 DEFAULT_VIEWPORTS = "desktop=1440x900"
+DEFAULT_RESPONSIVE_MODE = "recursive"
+DEFAULT_RESPONSIVE_VIEWPORTS = (
+    "wide=1600x1000,desktop=1440x900,medium=1200x820,"
+    "constrained=1024x768,narrow=840x720,compact=680x720,small=560x720"
+)
+DEFAULT_RESPONSIVE_HYSTERESIS_PX = 48
+RESPONSIVE_POLICY_VERSION = "capacity-admissible-monotonic-v1"
 DEFAULT_CHROME = "mcel-realistic"
 DEFAULT_CANDIDATES = "all"
 DEFAULT_OUTPUT_DIR = "runtime/reports/flog"
@@ -56,6 +65,7 @@ ROLLUP_TILE_GAP = 8
 ROLLUP_CANVAS_MARGIN = 14
 ROLLUP_ROW_LABEL_WIDTH = 210
 ROLLUP_FILE_NAME = "layout-snapshot-final-rollup.png"
+PHASE_SHARE_FLOOR_TOLERANCE = 0.0005
 
 SEMANTIC_RELATION_KEYS = (
     "controls",
@@ -117,6 +127,7 @@ class ViewportProfile:
     name: str
     width: int
     height: int
+    responsive_probe: bool = False
 
 
 def slugify(value: str) -> str:
@@ -178,6 +189,56 @@ def parse_viewports(value: str) -> list[ViewportProfile]:
     if not profiles:
         raise ValueError("At least one viewport is required.")
     return profiles
+
+
+def merge_viewport_profiles(
+    base_profiles: list[ViewportProfile],
+    responsive_profiles: list[ViewportProfile],
+) -> list[ViewportProfile]:
+    """Merge profiles while preserving base names and marking generated resize probes."""
+
+    merged: list[ViewportProfile] = []
+    seen_dimensions: set[tuple[int, int]] = set()
+    seen_names: set[str] = set()
+    for profile in base_profiles:
+        key = (profile.width, profile.height)
+        if key in seen_dimensions or profile.name in seen_names:
+            continue
+        merged.append(profile)
+        seen_dimensions.add(key)
+        seen_names.add(profile.name)
+    for profile in responsive_profiles:
+        key = (profile.width, profile.height)
+        if key in seen_dimensions or profile.name in seen_names:
+            continue
+        merged.append(
+            ViewportProfile(
+                name=profile.name,
+                width=profile.width,
+                height=profile.height,
+                responsive_probe=True,
+            )
+        )
+        seen_dimensions.add(key)
+        seen_names.add(profile.name)
+    return sorted(merged, key=lambda item: (-item.width, -item.height, item.name))
+
+
+def responsive_viewports_for_hierarchy(
+    hierarchy: dict[str, Any],
+    *,
+    base_profiles: list[ViewportProfile],
+    responsive_profiles: list[ViewportProfile],
+    responsive_mode: str,
+) -> list[ViewportProfile]:
+    """Return the browser probes required for one hierarchy."""
+
+    mode = str(responsive_mode or "off").lower()
+    if mode == "off":
+        return list(base_profiles)
+    if mode == "recursive" and not hierarchy.get("layoutUnitTree"):
+        return list(base_profiles)
+    return merge_viewport_profiles(base_profiles, responsive_profiles)
 
 
 def parse_candidates(value: str) -> list[str]:
@@ -1101,8 +1162,19 @@ def _score_presentation_set_contract(
 
 
 def _record_area_share(record: dict[str, Any] | None, root_rect: dict[str, float] | None) -> float:
+    """Return exclusive painted share when Stage B geometry is available."""
+
+    if not record or not root_rect or root_rect.get("area", 0) <= 0:
+        return 0.0
+    for key in ("effectiveVisibleShare", "effectiveOwnedShare"):
+        value = record.get(key)
+        if value is not None:
+            try:
+                return max(0.0, min(1.0, float(value)))
+            except (TypeError, ValueError):
+                pass
     rect = _record_rect(record)
-    if not rect or not root_rect or root_rect.get("area", 0) <= 0:
+    if not rect:
         return 0.0
     return max(0.0, min(1.0, rect["area"] / max(1.0, root_rect["area"])))
 
@@ -1384,9 +1456,13 @@ def candidate_phase_policy(candidate: str | dict[str, Any]) -> dict[str, Any]:
         or identity.startswith("compose--")
         or render_family in PHASE_AWARE_CANDIDATES
     )
-    if support_policy in {"bounded-bottom-drawer", "inline-phase-stage"}:
-        placement = "bottom-drawer" if support_policy == "bounded-bottom-drawer" else "inline-stage"
-    elif support_policy in {"bounded-side-drawer", "one-active-plus-triggers"}:
+    if support_policy == "bounded-bottom-drawer":
+        placement = "bottom-drawer"
+    elif support_policy == "inline-phase-stage":
+        placement = "inline-stage"
+    elif support_policy == "one-active-plus-triggers":
+        placement = "neutral-phase-stage"
+    elif support_policy == "bounded-side-drawer":
         placement = "side-drawer"
     elif render_family == "workflow-with-proof-drawer":
         placement = "proof-drawer"
@@ -1598,7 +1674,7 @@ def layout_unit_ownership_spec(
     policy: str,
     realization: str = "active",
 ) -> dict[str, Any]:
-    """Declare intended painted-space ownership for shadow geometry diagnostics."""
+    """Declare intended painted-space ownership for exclusive geometry enforcement."""
 
     normalized_policy = str(policy or "source-order")
     normalized_realization = str(realization or "active")
@@ -2166,31 +2242,150 @@ def _visible_share_for_record(record: dict[str, Any] | None, root_rect: dict[str
     return _record_area_share(record, root_rect)
 
 
-def _phase_score_from_parts(parts: list[tuple[float, float]]) -> int:
+def phase_share_floor_check(
+    actual: float,
+    floor: float,
+    *,
+    tolerance: float = PHASE_SHARE_FLOOR_TOLERANCE,
+) -> dict[str, Any]:
+    """Return the authoritative absolute phase-floor decision.
+
+    A tiny tolerance absorbs browser subpixel noise.  Headroom is clamped to
+    zero when the share is within that tolerance so a passing candidate never
+    reports negative worst-phase headroom.
+    """
+
+    actual_value = max(0.0, float(actual or 0.0))
+    floor_value = max(0.0, float(floor or 0.0))
+    tolerance_value = max(0.0, float(tolerance or 0.0))
+    raw_headroom = actual_value - floor_value
+    met = raw_headroom >= -tolerance_value
+    return {
+        "met": bool(met),
+        "actual": actual_value,
+        "floor": floor_value,
+        "tolerance": tolerance_value,
+        "rawHeadroom": raw_headroom,
+        "headroom": max(0.0, raw_headroom) if met else raw_headroom,
+        "shortfall": max(0.0, floor_value - actual_value),
+    }
+
+
+def phase_share_floor_failure_reason(
+    phase: str,
+    slot: str,
+    gate: dict[str, Any],
+) -> str:
+    return (
+        f"{phase} phase gives {slot} {float(gate.get('actual', 0.0)):.2%} "
+        f"against phase floor {float(gate.get('floor', 0.0)):.2%} "
+        f"(shortfall {float(gate.get('shortfall', 0.0)):.2%}; "
+        f"tolerance {float(gate.get('tolerance', 0.0)):.2%})"
+    )
+
+
+def apply_phase_floor_gate_to_measurement(
+    realized_hierarchy: dict[str, Any],
+    measurement: dict[str, Any],
+) -> dict[str, Any]:
+    """Canonicalize one Chromium state's absolute floor gate in Python.
+
+    Chromium applies the same contract while rendering overlays.  This pass
+    makes the Python helper authoritative before contract, phase, and ranking
+    aggregation, preventing browser and aggregate status from drifting.
+    """
+
+    facts = measurement.setdefault("geometryFacts", {})
+    actual = float(
+        facts.get(
+            "effectiveFocusShare",
+            facts.get("focusShare", 0.0),
+        )
+        or 0.0
+    )
+    floor = float(
+        realized_hierarchy.get(
+            "minFocusShare",
+            facts.get("minFocusShare", 0.0),
+        )
+        or 0.0
+    )
+    phase = str(
+        measurement.get("phase")
+        or realized_hierarchy.get("phase")
+        or "default"
+    )
+    slot = str(
+        realized_hierarchy.get("focusSlot")
+        or measurement.get("focusSlot")
+        or "focus"
+    )
+    gate = phase_share_floor_check(actual, floor)
+    reason = phase_share_floor_failure_reason(phase, slot, gate)
+
+    facts["phaseFloorTolerance"] = gate["tolerance"]
+    facts["focusFloorMet"] = gate["met"]
+    facts["focusFloorShortfall"] = gate["shortfall"]
+    facts["focusRawHeadroom"] = gate["rawHeadroom"]
+    facts["focusHeadroom"] = gate["headroom"]
+
+    classification = measurement.setdefault("classification", {})
+    classification["phaseFloorGate"] = copy.deepcopy(gate)
+    warnings = classification.setdefault("warnings", [])
+    failure_reasons = classification.setdefault("failureReasons", [])
+    if not gate["met"]:
+        if reason not in warnings:
+            warnings.append(reason)
+        if reason not in failure_reasons:
+            failure_reasons.append(reason)
+        classification["status"] = "fail"
+    return measurement
+
+
+def _phase_score_value(parts: list[tuple[float, float]]) -> float:
+    """Return the unrounded weighted score for margin-aware ranking."""
+
     total = 0.0
     weight = 0.0
     for score, score_weight in parts:
-        total += max(0.0, min(100.0, score)) * score_weight
+        total += max(0.0, min(100.0, float(score))) * score_weight
         weight += score_weight
-    return round(total / weight) if weight else 0
+    return total / weight if weight else 0.0
+
+
+def _phase_score_from_parts(parts: list[tuple[float, float]]) -> int:
+    return round(_phase_score_value(parts))
+
+
+def _score_share_floor_value(
+    actual: float,
+    floor: float,
+    *,
+    full_at: float | None = None,
+) -> float:
+    if floor <= 0:
+        return 100.0
+    if actual >= (full_at or floor):
+        return 100.0
+    return max(0.0, min(1.0, actual / floor)) * 100.0
 
 
 def _score_share_floor(actual: float, floor: float, *, full_at: float | None = None) -> int:
-    if floor <= 0:
-        return 100
-    if actual >= (full_at or floor):
-        return 100
-    return round(max(0.0, min(1.0, actual / floor)) * 100)
+    return round(_score_share_floor_value(actual, floor, full_at=full_at))
 
 
-def _score_inactive_tax(tax: float, budget: float) -> int:
+def _score_inactive_tax_value(tax: float, budget: float) -> float:
     if tax <= budget:
-        return 100
+        return 100.0
     # A static layout with a phase selector permanently consuming space should
     # fall quickly once it exceeds the budget, but not become impossible if the
     # excess is small.
     excess = tax - budget
-    return round(max(0.0, 100.0 - (excess / max(0.01, budget * 2.4)) * 100.0))
+    return max(0.0, 100.0 - (excess / max(0.01, budget * 2.4)) * 100.0)
+
+
+def _score_inactive_tax(tax: float, budget: float) -> int:
+    return round(_score_inactive_tax_value(tax, budget))
 
 def _phase_measurement_map(
     hierarchy: dict[str, Any],
@@ -2272,6 +2467,7 @@ def semantic_phase_realization_fit(
     evaluated: list[dict[str, Any]] = []
     hard_failures: list[str] = []
     weighted_total = 0.0
+    weighted_raw_total = 0.0
     weight_total = 0.0
 
     for scenario in scenarios:
@@ -2298,10 +2494,18 @@ def semantic_phase_realization_fit(
                 {
                     "phase": phase,
                     "score": 0,
+                    "rawScore": 0.0,
+                    "weight": phase_weight,
                     "dominantSlot": dominant_slot,
                     "dominantShare": 0.0,
                     "minDominantShare": min_dominant,
                     "targetDominantShare": target_dominant,
+                    "dominantFloorMet": False,
+                    "dominantFloorTolerance": PHASE_SHARE_FLOOR_TOLERANCE,
+                    "dominantFloorShortfall": min_dominant,
+                    "dominantRawHeadroom": -min_dominant,
+                    "dominantHeadroom": -min_dominant,
+                    "dominantTargetDelta": -target_dominant,
                     "requiredSlots": required_slots,
                     "activeSupportSlots": active_support_slots,
                     "collapsedSlots": collapsed_slots,
@@ -2325,15 +2529,22 @@ def semantic_phase_realization_fit(
         dominant_state = _record_realization(
             dominant_record, nodes_by_slot.get(dominant_slot, {}), root_rect
         )
-        dominant_score = _score_share_floor(
+        dominant_score_raw = _score_share_floor_value(
             dominant_share, min_dominant, full_at=target_dominant
         )
+        dominant_score = round(dominant_score_raw)
         if dominant_state == "compact-trigger":
+            dominant_score_raw = 0.0
             dominant_score = 0
+        dominant_floor_gate = phase_share_floor_check(dominant_share, min_dominant)
+        dominant_raw_headroom = float(dominant_floor_gate["rawHeadroom"])
+        dominant_headroom = float(dominant_floor_gate["headroom"])
+        dominant_target_delta = dominant_share - target_dominant
 
         missing_required: list[str] = []
         weak_required: list[str] = []
         required_parts: list[tuple[float, float]] = []
+        required_parts_raw: list[tuple[float, float]] = []
         for slot in required_slots:
             record = records.get(slot)
             node = nodes_by_slot.get(slot, {})
@@ -2344,15 +2555,19 @@ def semantic_phase_realization_fit(
             if not record or realization == "compact-trigger":
                 missing_required.append(slot)
                 required_parts.append((0, 1.0))
+                required_parts_raw.append((0.0, 1.0))
             else:
-                slot_score = _score_share_floor(
+                slot_score_raw = _score_share_floor_value(
                     share, floor, full_at=max(floor, floor * 1.45)
                 )
+                slot_score = round(slot_score_raw)
                 required_parts.append((slot_score, 1.0))
+                required_parts_raw.append((slot_score_raw, 1.0))
                 if slot_score < 72:
                     weak_required.append(slot)
 
         active_support_parts: list[tuple[float, float]] = []
+        active_support_parts_raw: list[tuple[float, float]] = []
         weak_active_support: list[str] = []
         active_support_shares: dict[str, float] = {}
         for slot in active_support_slots:
@@ -2370,10 +2585,15 @@ def semantic_phase_realization_fit(
             else:
                 floor, full_at = 0.08, 0.14
             realization = _record_realization(record, node, root_rect)
-            support_score = _score_share_floor(share, floor, full_at=full_at)
+            support_score_raw = _score_share_floor_value(
+                share, floor, full_at=full_at
+            )
+            support_score = round(support_score_raw)
             if realization not in {"full-active", "persistent", "inactive-panel"}:
+                support_score_raw = 0.0
                 support_score = 0
             active_support_parts.append((support_score, 0.85))
+            active_support_parts_raw.append((support_score_raw, 0.85))
             if support_score < 72:
                 weak_active_support.append(slot)
 
@@ -2382,9 +2602,13 @@ def semantic_phase_realization_fit(
         inactive_tax = sum(
             _visible_share_for_record(records.get(slot), root_rect) for slot in inactive_slots
         )
-        inactive_tax_score = _score_inactive_tax(inactive_tax, max_inactive_tax)
+        inactive_tax_score_raw = _score_inactive_tax_value(
+            inactive_tax, max_inactive_tax
+        )
+        inactive_tax_score = round(inactive_tax_score_raw)
 
         trigger_scores: list[tuple[float, float]] = []
+        trigger_scores_raw: list[tuple[float, float]] = []
         missing_triggers: list[str] = []
         panel_like_triggers: list[str] = []
         candidate_policy = measurement.get("candidatePolicy") or {}
@@ -2416,48 +2640,78 @@ def semantic_phase_realization_fit(
                 if not record:
                     missing_triggers.append(slot)
                     trigger_scores.append((0, 0.35))
+                    trigger_scores_raw.append((0.0, 0.35))
                 elif realization != "compact-trigger":
                     panel_like_triggers.append(slot)
                     trigger_scores.append((40, 0.35))
+                    trigger_scores_raw.append((40.0, 0.35))
                 elif share >= 0.0025 and share <= max(
                     0.035, max_inactive_tax * 0.75
                 ):
                     trigger_scores.append((100, 0.35))
+                    trigger_scores_raw.append((100.0, 0.35))
                 elif share > max(0.035, max_inactive_tax * 0.75):
                     panel_like_triggers.append(slot)
                     trigger_scores.append((58, 0.35))
+                    trigger_scores_raw.append((58.0, 0.35))
                 else:
                     trigger_scores.append((64, 0.35))
+                    trigger_scores_raw.append((64.0, 0.35))
 
-
-        required_score = _phase_score_from_parts(required_parts) if required_parts else 100
-        active_support_score = (
-            _phase_score_from_parts(active_support_parts) if active_support_parts else 100
+        required_score_raw = (
+            _phase_score_value(required_parts_raw) if required_parts_raw else 100.0
         )
-        trigger_score = _phase_score_from_parts(trigger_scores) if trigger_scores else 100
+        required_score = round(required_score_raw)
+        active_support_score_raw = (
+            _phase_score_value(active_support_parts_raw)
+            if active_support_parts_raw
+            else 100.0
+        )
+        active_support_score = round(active_support_score_raw)
+        trigger_score_raw = (
+            _phase_score_value(trigger_scores_raw) if trigger_scores_raw else 100.0
+        )
+        trigger_score = round(trigger_score_raw)
         classification = measurement.get("classification") or {}
         geometry_score = int(
             classification.get("geometryScore", classification.get("score", 100)) or 0
         )
-        phase_score = _phase_score_from_parts(
+        phase_score_raw = _phase_score_value(
             [
-                (dominant_score, 1.45),
-                (required_score, 1.05),
-                (inactive_tax_score, 1.20),
-                (active_support_score, 0.90),
-                (trigger_score, 0.45),
-                (geometry_score, 1.00),
+                (dominant_score_raw, 1.45),
+                (required_score_raw, 1.05),
+                (inactive_tax_score_raw, 1.20),
+                (active_support_score_raw, 0.90),
+                (trigger_score_raw, 0.45),
+                (float(geometry_score), 1.00),
             ]
         )
+        phase_score = round(phase_score_raw)
 
         facts = measurement.get("geometryFacts") or {}
         clipped_count = int(facts.get("clippedCriticalControlCount", 0) or 0)
         hidden_count = int(facts.get("hiddenCriticalControlCount", 0) or 0)
+        blocked_count = int(facts.get("blockedCriticalControlCount", 0) or 0)
+        partition_overlap = float(
+            facts.get(
+                "undeclaredPartitionOverlapShare",
+                facts.get("undeclaredPartitionOverlapShareShadow", 0),
+            )
+            or 0
+        )
+        overlay_budget_count = len(
+            ((facts.get("paintedOwnership") or facts.get("paintedOwnershipShadow") or {}).get(
+                "overlayBudgetExceeded", []
+            ))
+        )
         phase_hard_failures: list[str] = []
-        if dominant_score < 72:
+        if not dominant_floor_gate["met"]:
             phase_hard_failures.append(
-                f"{phase} phase gives {dominant_slot} {dominant_share:.0%} "
-                f"against phase floor {min_dominant:.0%}"
+                phase_share_floor_failure_reason(
+                    phase,
+                    dominant_slot,
+                    dominant_floor_gate,
+                )
             )
         if missing_required:
             phase_hard_failures.append(
@@ -2488,42 +2742,66 @@ def semantic_phase_realization_fit(
             phase_hard_failures.append(
                 f"{phase} phase has {clipped_count + hidden_count} clipped or hidden active critical control(s)"
             )
+        if blocked_count:
+            phase_hard_failures.append(
+                f"{phase} phase has {blocked_count} foreign-intercepted active critical control(s)"
+            )
+        if partition_overlap > 0.002:
+            phase_hard_failures.append(
+                f"{phase} phase has {partition_overlap:.1%} undeclared partition overlap"
+            )
+        if overlay_budget_count:
+            phase_hard_failures.append(
+                f"{phase} phase exceeds {overlay_budget_count} declared overlay budget(s)"
+            )
 
         if phase_hard_failures:
-            phase_score = min(phase_score, 68)
+            phase_score_raw = min(phase_score_raw, 68.0)
+            phase_score = min(round(phase_score_raw), 68)
         hard_failures.extend(phase_hard_failures)
         risks = list(phase_hard_failures)
         if risks:
             reason = risks[0]
         elif active_support_slots:
             reason = (
-                f"{phase} phase keeps {dominant_slot} at {dominant_share:.0%}, opens "
+                f"{phase} phase keeps {dominant_slot} at {dominant_share:.0%} "
+                f"({dominant_headroom:+.1%} floor headroom), opens "
                 f"{', '.join(active_support_slots)}, and limits inactive support tax to "
                 f"{inactive_tax:.0%}"
             )
         elif inactive_slots:
             reason = (
-                f"{phase} phase keeps {dominant_slot} at {dominant_share:.0%} and replaces "
+                f"{phase} phase keeps {dominant_slot} at {dominant_share:.0%} "
+                f"({dominant_headroom:+.1%} floor headroom) and replaces "
                 f"{len(inactive_slots)} inactive support surface(s) with compact trigger(s)"
             )
         else:
             reason = (
                 f"{phase} phase keeps {dominant_slot} at {dominant_share:.0%} "
-                "with required context visible"
+                f"({dominant_headroom:+.1%} floor headroom) with required context visible"
             )
 
         weighted_total += phase_score * phase_weight
+        weighted_raw_total += phase_score_raw * phase_weight
         weight_total += phase_weight
         evaluated.append(
             {
                 "phase": phase,
                 "score": int(phase_score),
+                "rawScore": float(phase_score_raw),
+                "weight": phase_weight,
                 "geometryScore": geometry_score,
                 "dominantSlot": dominant_slot,
                 "dominantShare": dominant_share,
                 "dominantRealization": dominant_state,
                 "minDominantShare": min_dominant,
                 "targetDominantShare": target_dominant,
+                "dominantFloorMet": bool(dominant_floor_gate["met"]),
+                "dominantFloorTolerance": float(dominant_floor_gate["tolerance"]),
+                "dominantFloorShortfall": float(dominant_floor_gate["shortfall"]),
+                "dominantRawHeadroom": dominant_raw_headroom,
+                "dominantHeadroom": dominant_headroom,
+                "dominantTargetDelta": dominant_target_delta,
                 "requiredSlots": required_slots,
                 "activeSupportSlots": active_support_slots,
                 "activeSupportShares": active_support_shares,
@@ -2539,6 +2817,9 @@ def semantic_phase_realization_fit(
                 "weakActiveSupportSlots": weak_active_support,
                 "clippedCriticalControlCount": clipped_count,
                 "hiddenCriticalControlCount": hidden_count,
+                "blockedCriticalControlCount": blocked_count,
+                "undeclaredPartitionOverlapShare": partition_overlap,
+                "overlayBudgetExceededCount": overlay_budget_count,
                 "hardFailure": bool(phase_hard_failures),
                 "hardFailureReasons": phase_hard_failures,
                 "reason": reason,
@@ -2547,7 +2828,12 @@ def semantic_phase_realization_fit(
             }
         )
 
+    mean_score_raw = weighted_raw_total / weight_total if weight_total else 0.0
     mean_score = round(weighted_total / weight_total) if weight_total else 0
+    worst_score_raw = min(
+        (float(item.get("rawScore", item["score"])) for item in evaluated),
+        default=0.0,
+    )
     worst_score = min((item["score"] for item in evaluated), default=0)
     selected_phase = next(
         (
@@ -2557,18 +2843,52 @@ def semantic_phase_realization_fit(
         ),
         evaluated[0]["phase"] if evaluated else "",
     )
-    selected_default_score = next(
-        (item["score"] for item in evaluated if item["phase"] == selected_phase),
-        0,
+    selected_default = next(
+        (item for item in evaluated if item["phase"] == selected_phase),
+        {},
     )
-    policy_score = (
-        round(
-            (0.50 * worst_score)
-            + (0.30 * selected_default_score)
-            + (0.20 * mean_score)
-        )
+    selected_default_score = int(selected_default.get("score", 0) or 0)
+    selected_default_score_raw = float(
+        selected_default.get("rawScore", selected_default_score) or 0.0
+    )
+    policy_score_raw = (
+        (0.50 * worst_score_raw)
+        + (0.30 * selected_default_score_raw)
+        + (0.20 * mean_score_raw)
         if evaluated
-        else 0
+        else 0.0
+    )
+    policy_score = round(policy_score_raw)
+    phase_raw_scores = [
+        float(item.get("rawScore", item.get("score", 0)) or 0.0)
+        for item in evaluated
+    ]
+    score_variance = (
+        sum((score - mean_score_raw) ** 2 for score in phase_raw_scores)
+        / len(phase_raw_scores)
+        if phase_raw_scores
+        else 0.0
+    )
+    dominant_headrooms = [
+        float(item.get("dominantHeadroom", 0.0) or 0.0)
+        for item in evaluated
+    ]
+    raw_dominant_headrooms = [
+        float(item.get("dominantRawHeadroom", item.get("dominantHeadroom", 0.0)) or 0.0)
+        for item in evaluated
+    ]
+    floor_failure_count = sum(
+        1 for item in evaluated if not bool(item.get("dominantFloorMet", False))
+    )
+    worst_dominant_headroom = min(dominant_headrooms, default=-1.0)
+    worst_raw_dominant_headroom = min(raw_dominant_headrooms, default=-1.0)
+    mean_dominant_headroom = (
+        sum(dominant_headrooms) / len(dominant_headrooms)
+        if dominant_headrooms
+        else -1.0
+    )
+    selected_default_headroom = float(
+        selected_default.get("dominantHeadroom", -1.0) or 0.0
     )
     unique_hard_failures = list(dict.fromkeys(hard_failures))
 
@@ -2584,10 +2904,22 @@ def semantic_phase_realization_fit(
     return {
         "score": int(policy_score),
         "rawScore": int(mean_score),
+        "policyScoreRaw": float(policy_score_raw),
         "meanScore": int(mean_score),
+        "meanScoreRaw": float(mean_score_raw),
         "worstScore": int(worst_score),
+        "worstScoreRaw": float(worst_score_raw),
         "selectedDefaultPhase": selected_phase,
         "selectedDefaultScore": int(selected_default_score),
+        "selectedDefaultScoreRaw": float(selected_default_score_raw),
+        "scoreVariance": float(score_variance),
+        "scoreStdDev": float(math.sqrt(score_variance)),
+        "phaseFloorTolerance": PHASE_SHARE_FLOOR_TOLERANCE,
+        "phaseFloorFailureCount": int(floor_failure_count),
+        "worstDominantHeadroom": float(worst_dominant_headroom),
+        "worstRawDominantHeadroom": float(worst_raw_dominant_headroom),
+        "meanDominantHeadroom": float(mean_dominant_headroom),
+        "selectedDefaultHeadroom": float(selected_default_headroom),
         "state": state,
         "phaseCount": len(evaluated),
         "phases": evaluated,
@@ -2602,7 +2934,8 @@ def semantic_phase_realization_fit(
         "note": (
             "Phase fit uses independently rendered browser states. Candidate policy score is "
             "0.50 × worst phase + 0.30 × selected-project/default phase + 0.20 × mean phase; "
-            "hard phase failures remain absolute."
+            "hard phase failures remain absolute. Effective dominant share is compared "
+            "directly with the declared phase floor using the shared subpixel tolerance."
         ),
     }
 
@@ -2897,13 +3230,13 @@ def _feedback_unit_policy_score(
             overlap = _overlap_length(unit_rect["top"], unit_rect["bottom"], focus_rect["top"], focus_rect["bottom"])
             overlaps_focus = overlap > 2
     score = round(
-        (64 if aligned else 28)
-        + _target_closeness_score(unit_share, 0.05, 0.05) * 0.24
-        + (8 if overlaps_focus else 3)
+        (66 if aligned else 28)
+        + _target_closeness_score(unit_share, 0.05, 0.05) * 0.30
+        + 4
     )
     return (
         min(100, score),
-        f"footer overlay keeps feedback aligned in {unit_share:.0%} of root and overlaps workflow={overlaps_focus}",
+        f"footer overlay keeps feedback aligned in {unit_share:.0%} of exclusively owned root area; declared overlap={overlaps_focus}",
         not aligned,
     )
 
@@ -2943,33 +3276,60 @@ def _phase_support_policy_score(
     rect = _record_rect(unit_record)
     if not rect:
         return 0, "active support unit has no measurable rectangle", True
+
     share = _record_area_share(unit_record, root_rect)
     width_ratio = rect["width"] / max(1.0, root_rect["width"])
     height_ratio = rect["height"] / max(1.0, root_rect["height"])
+    top_ratio = (
+        rect["top"] - root_rect["top"]
+    ) / max(1.0, root_rect["height"])
+    bottom_gap_ratio = (
+        root_rect["bottom"] - rect["bottom"]
+    ) / max(1.0, root_rect["height"])
 
-    if policy in {"bounded-side-drawer", "one-active-plus-triggers"}:
-        target = 0.22 if policy == "one-active-plus-triggers" else 0.26
-        orientation = width_ratio <= 0.36 and height_ratio >= 0.45
+    active_slot = next(iter(expected), "")
+    active_role = str((records.get(active_slot) or {}).get("role") or "support")
+    if policy == "bounded-side-drawer":
+        target = 0.15 if active_role == "evidence" else 0.10
+        floor = 0.12 if active_role == "evidence" else 0.075
+        orientation = width_ratio <= 0.30 and height_ratio >= 0.45
         score = round(
             (58 if orientation else 24)
-            + _target_closeness_score(share, target, 0.16) * 0.38
+            + _target_closeness_score(share, target, 0.10) * 0.38
         )
         return (
             min(100, score),
-            f"{policy} gives active support {share:.0%} of root as a side surface",
-            not orientation or share < 0.12,
+            f"{policy} gives active support {share:.0%} of root as an exclusive side partition",
+            not orientation or share < floor,
         )
 
-    target = 0.20 if policy == "bounded-bottom-drawer" else 0.24
-    orientation = width_ratio >= 0.72 and height_ratio <= 0.38
+    target = 0.17 if active_role == "evidence" else 0.13
+    floor = 0.12 if active_role == "evidence" else 0.08
+    horizontal = width_ratio >= 0.72 and height_ratio <= 0.34
+
+    if policy == "bounded-bottom-drawer":
+        placement_ok = bottom_gap_ratio <= 0.12
+        placement_text = "bottom-most drawer row"
+    elif policy == "inline-phase-stage":
+        placement_ok = top_ratio <= 0.34
+        placement_text = "pre-workflow inline stage"
+    else:
+        # one-active-plus-triggers uses a neutral stage between the dominant work
+        # and the persistent feedback band; it must not alias the side drawer.
+        placement_ok = 0.45 <= top_ratio <= 0.86 and bottom_gap_ratio >= 0.03
+        placement_text = "neutral phase stage"
+
+    orientation_score = 50 if horizontal else 20
+    placement_score = 12 if placement_ok else 0
     score = round(
-        (58 if orientation else 24)
-        + _target_closeness_score(share, target, 0.15) * 0.38
+        orientation_score
+        + placement_score
+        + _target_closeness_score(share, target, 0.12) * 0.38
     )
     return (
         min(100, score),
-        f"{policy} gives active support {share:.0%} of root as a horizontal stage",
-        not orientation or share < 0.12,
+        f"{policy} gives active support {share:.0%} of root as an exclusive {placement_text}",
+        not horizontal or not placement_ok or share < floor,
     )
 
 
@@ -3001,10 +3361,26 @@ def semantic_layout_unit_state_fit(
     examples = measurement.get("examples") or {}
     clipped = list(examples.get("clippedCriticalControls") or [])
     hidden = list(examples.get("hiddenCriticalControls") or [])
+    blocked = list(examples.get("blockedCriticalControls") or [])
     critical_by_unit: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for issue in [*clipped, *hidden]:
-        if issue.get("unitId"):
-            critical_by_unit[str(issue["unitId"])].append(issue)
+    for issue in [*clipped, *hidden, *blocked]:
+        unit_id = str(issue.get("unitId") or "")
+        if not unit_id:
+            control_owner = str(issue.get("controlOwner") or "")
+            owner_record = records.get(control_owner)
+            unit_id = str((owner_record or {}).get("unitId") or "")
+        if unit_id:
+            critical_by_unit[unit_id].append(issue)
+    ownership = (
+        (measurement.get("geometryFacts") or {}).get("paintedOwnership")
+        or (measurement.get("geometryFacts") or {}).get("paintedOwnershipShadow")
+        or {}
+    )
+    partition_overlap_by_unit = {
+        str(item.get("unitId") or ""): float(item.get("shareOfRoot", 0) or 0)
+        for item in ownership.get("partitionOverlapByUnit", [])
+        if item.get("unitId")
+    }
 
     results: list[dict[str, Any]] = []
     hard_failures: list[str] = []
@@ -3047,11 +3423,19 @@ def semantic_layout_unit_state_fit(
         critical_issues = critical_by_unit.get(unit_id, [])
         if critical_issues:
             local_hard.append(
-                f"{unit_id} has {len(critical_issues)} clipped or hidden active critical control(s)"
+                f"{unit_id} has {len(critical_issues)} clipped, hidden, or foreign-intercepted active critical control(s)"
             )
             parts.append((0, 0.25))
         else:
             parts.append((100, 0.25))
+        partition_overlap_share = partition_overlap_by_unit.get(unit_id, 0.0)
+        if partition_overlap_share > 0.002:
+            local_hard.append(
+                f"{unit_id} paints over {partition_overlap_share:.1%} of foreign partition space"
+            )
+            parts.append((0, 0.20))
+        else:
+            parts.append((100, 0.20))
 
         policy_score = 100
         policy_reason = ""
@@ -3100,7 +3484,7 @@ def semantic_layout_unit_state_fit(
         }:
             normalized_policy = {
                 "side-active-support": "bounded-side-drawer",
-                "narrow-side-active-support": "one-active-plus-triggers",
+                "narrow-side-active-support": "bounded-side-drawer",
                 "proof-drawer-or-side-support": "bounded-bottom-drawer",
             }.get(policy, policy)
             policy_score, policy_reason, policy_hard = _phase_support_policy_score(
@@ -3134,7 +3518,8 @@ def semantic_layout_unit_state_fit(
         if policy_hard:
             local_hard.append(f"{unit_id} violates local policy {policy}: {policy_reason}")
 
-        score = _phase_score_from_parts(parts)
+        score_raw = _phase_score_value(parts)
+        score = round(score_raw)
         hard_failures.extend(local_hard)
         results.append(
             {
@@ -3143,18 +3528,25 @@ def semantic_layout_unit_state_fit(
                 "policy": policy,
                 "path": unit.get("path", []),
                 "score": score,
+                "rawScore": float(score_raw),
                 "hardFailureCount": len(local_hard),
                 "hardFailureReasons": local_hard,
                 "activeSlots": active_slots,
                 "triggerSlots": trigger_slots,
+                "criticalIssueCount": len(critical_issues),
+                "partitionOverlapShare": partition_overlap_share,
                 "reasons": reasons,
             }
         )
 
     scores = [item["score"] for item in results]
+    raw_scores = [float(item.get("rawScore", item["score"])) for item in results]
     worst = min(scores) if scores else 100
+    worst_raw = min(raw_scores) if raw_scores else 100.0
+    mean_raw = sum(raw_scores) / len(raw_scores) if raw_scores else 100.0
     mean = round(sum(scores) / len(scores)) if scores else 100
-    score = round((worst * 0.55) + (mean * 0.45))
+    score_raw = (worst_raw * 0.55) + (mean_raw * 0.45)
+    score = round(score_raw)
     if hard_failures:
         state = "unitRisk"
     elif score >= 88:
@@ -3181,9 +3573,12 @@ def semantic_layout_unit_state_fit(
     return {
         "evaluated": True,
         "score": score,
+        "rawScore": float(score_raw),
         "state": state,
         "worstScore": worst,
+        "worstScoreRaw": float(worst_raw),
         "meanScore": mean,
+        "meanScoreRaw": float(mean_raw),
         "worstUnitId": (worst_unit or {}).get("unitId", ""),
         "hardFailureCount": len(hard_failures),
         "hardFailureReasons": list(dict.fromkeys(hard_failures)),
@@ -3236,7 +3631,13 @@ def aggregate_layout_unit_fit(
             }
         )
     scores = [int(item.get("score", 0) or 0) for item in phase_fits]
+    raw_scores = [
+        float(item.get("rawScore", item.get("score", 0)) or 0.0)
+        for item in phase_fits
+    ]
     worst = min(scores) if scores else 0
+    worst_raw = min(raw_scores) if raw_scores else 0.0
+    mean_raw = sum(raw_scores) / len(raw_scores) if raw_scores else 0.0
     mean = round(sum(scores) / len(scores)) if scores else 0
     selected_phase = str(
         canonical_phase_scenario(hierarchy).get("phase") or "default"
@@ -3246,7 +3647,15 @@ def aggregate_layout_unit_fit(
         phase_fits[0] if phase_fits else {"score": 0},
     )
     selected_score = int(selected.get("score", 0) or 0)
-    score = round((worst * 0.50) + (selected_score * 0.30) + (mean * 0.20))
+    selected_score_raw = float(
+        selected.get("rawScore", selected_score) or 0.0
+    )
+    score_raw = (
+        (worst_raw * 0.50)
+        + (selected_score_raw * 0.30)
+        + (mean_raw * 0.20)
+    )
+    score = round(score_raw)
     hard_failures = list(
         dict.fromkeys(
             reason
@@ -3256,16 +3665,26 @@ def aggregate_layout_unit_fit(
     )
 
     branch_scores: dict[str, list[int]] = defaultdict(list)
+    branch_raw_scores: dict[str, list[float]] = defaultdict(list)
     branch_hard: dict[str, int] = defaultdict(int)
     for fit in phase_fits:
         for unit in fit.get("units") or []:
-            branch_scores[unit["unitId"]].append(int(unit.get("score", 0) or 0))
-            branch_hard[unit["unitId"]] += int(unit.get("hardFailureCount", 0) or 0)
+            unit_id = unit["unitId"]
+            branch_scores[unit_id].append(int(unit.get("score", 0) or 0))
+            branch_raw_scores[unit_id].append(
+                float(unit.get("rawScore", unit.get("score", 0)) or 0.0)
+            )
+            branch_hard[unit_id] += int(unit.get("hardFailureCount", 0) or 0)
     parallel = [
         {
             "unitId": unit_id,
             "worstScore": min(values),
+            "worstScoreRaw": min(branch_raw_scores[unit_id]),
             "meanScore": round(sum(values) / len(values)),
+            "meanScoreRaw": (
+                sum(branch_raw_scores[unit_id])
+                / len(branch_raw_scores[unit_id])
+            ),
             "hardFailureCount": branch_hard[unit_id],
         }
         for unit_id, values in sorted(branch_scores.items())
@@ -3296,10 +3715,14 @@ def aggregate_layout_unit_fit(
     return {
         "evaluated": True,
         "score": score,
+        "rawScore": float(score_raw),
         "state": state,
         "worstScore": worst,
+        "worstScoreRaw": float(worst_raw),
         "meanScore": mean,
+        "meanScoreRaw": float(mean_raw),
         "selectedDefaultScore": selected_score,
+        "selectedDefaultScoreRaw": float(selected_score_raw),
         "selectedDefaultPhase": selected_phase,
         "hardFailureCount": len(hard_failures),
         "hardFailureReasons": hard_failures,
@@ -3509,20 +3932,21 @@ def apply_semantic_contract_fit(
     classification = measurement.setdefault("classification", {})
     geometry_score = int(classification.get("geometryScore", classification.get("score", 0)) or 0)
     if unit_fit.get("evaluated"):
-        selection_score = round(
+        selection_score_raw = (
             (geometry_score * 0.34)
-            + (fit["score"] * 0.16)
-            + (affordance_fit["score"] * 0.13)
-            + (phase_fit["score"] * 0.20)
-            + (unit_fit["score"] * 0.17)
+            + (float(fit.get("rawScore", fit["score"])) * 0.16)
+            + (float(affordance_fit.get("rawScore", affordance_fit["score"])) * 0.13)
+            + (float(phase_fit.get("policyScoreRaw", phase_fit["score"])) * 0.20)
+            + (float(unit_fit.get("rawScore", unit_fit["score"])) * 0.17)
         )
     else:
-        selection_score = round(
+        selection_score_raw = (
             (geometry_score * 0.45)
-            + (fit["score"] * 0.22)
-            + (affordance_fit["score"] * 0.18)
-            + (phase_fit["score"] * 0.15)
+            + (float(fit.get("rawScore", fit["score"])) * 0.22)
+            + (float(affordance_fit.get("rawScore", affordance_fit["score"])) * 0.18)
+            + (float(phase_fit.get("policyScoreRaw", phase_fit["score"])) * 0.15)
         )
+    selection_score = round(selection_score_raw)
 
     original_status = str(classification.get("status") or "fail")
     warnings = list(classification.get("warnings") or [])
@@ -3564,12 +3988,19 @@ def apply_semantic_contract_fit(
     classification["phaseFitRawScore"] = phase_fit.get("rawScore", phase_fit["score"])
     classification["phaseFitState"] = phase_fit["state"]
     classification["phaseFitRiskCount"] = len(phase_fit.get("riskReasons", []) or [])
+    classification["phaseFloorTolerance"] = phase_fit.get(
+        "phaseFloorTolerance", PHASE_SHARE_FLOOR_TOLERANCE
+    )
+    classification["phaseFloorFailureCount"] = int(
+        phase_fit.get("phaseFloorFailureCount", 0) or 0
+    )
     classification["phaseHardFailureCount"] = phase_hard_failure_count
     classification["layoutUnitFitScore"] = unit_fit["score"]
     classification["layoutUnitFitState"] = unit_fit["state"]
     classification["layoutUnitWorstScore"] = unit_fit.get("worstScore", 100)
     classification["layoutUnitHardFailureCount"] = unit_hard_failure_count
     classification["selectionScore"] = selection_score
+    classification["selectionScoreRaw"] = float(selection_score_raw)
     classification["score"] = selection_score
     classification["status"] = status
 
@@ -3756,6 +4187,7 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
         phase_scenarios: list[dict[str, Any]] | None = None,
         layout_unit_tree: dict[str, Any] | None = None,
         unit_compositions: dict[str, Any] | None = None,
+        responsive_contract: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         nodes = enrich_nodes_with_semantic_primitives(nodes, focus_slot)
         slots = {entry["slot"] for entry in nodes}
@@ -3790,6 +4222,7 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
             "phaseScenarios": phase_scenarios or [],
             "layoutUnitTree": copy.deepcopy(layout_unit_tree),
             "unitCompositions": copy.deepcopy(unit_compositions or {}),
+            "responsiveContract": copy.deepcopy(responsive_contract or {}),
         }
         # Fail at fixture construction time rather than during browser rendering.
         layout_unit_specs(result)
@@ -4118,6 +4551,47 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
             dangerous_families={
                 "dashboard-grid": "repository action planning should not become unrelated peer cards",
                 "source-order-stacked": "repository workflow loses selected-project context when every Git surface is merely stacked",
+            },
+            responsive_contract={
+                "mode": "capacity-bands",
+                "policyVersion": RESPONSIVE_POLICY_VERSION,
+                "bands": [
+                    {
+                        "id": "wide",
+                        "minWidth": 1320,
+                        "maxRemediationLevel": 0,
+                        "reason": "Two large active regions can remain simultaneously partitioned.",
+                    },
+                    {
+                        "id": "medium",
+                        "minWidth": 1040,
+                        "maxRemediationLevel": 1,
+                        "reason": "Compact rails or a bottom partition become acceptable.",
+                    },
+                    {
+                        "id": "narrow",
+                        "minWidth": 760,
+                        "maxRemediationLevel": 2,
+                        "reason": "Inline stages or tightly budgeted overlays become acceptable.",
+                    },
+                    {
+                        "id": "compact",
+                        "minWidth": 0,
+                        "maxRemediationLevel": 3,
+                        "reason": "Sequential active-stage replacement is allowed when co-presence is infeasible.",
+                    },
+                ],
+                "minimumRobustHeadroom": 0.01,
+                "switchPenalty": 1.75,
+                "unnecessaryRemediationPenalty": 12.0,
+                "hysteresisPx": DEFAULT_RESPONSIVE_HYSTERESIS_PX,
+                "semanticInvariants": [
+                    "project identity remains available",
+                    "active workflow phase remains unambiguous",
+                    "critical actions remain reachable",
+                    "status remains attributable to the selected project",
+                    "active evidence or recovery support remains reachable",
+                ],
             },
             phase_scenarios=[
                 {
@@ -4905,6 +5379,7 @@ def render_realized_trial_html(
         ),
         "data-flog-desired-focus-share": str(realized_hierarchy["desiredFocusShare"]),
         "data-flog-min-focus-share": str(realized_hierarchy["minFocusShare"]),
+        "data-flog-phase-floor-tolerance": str(PHASE_SHARE_FLOOR_TOLERANCE),
         "data-flog-max-focus-share": str(realized_hierarchy["maxFocusShare"]),
         "data-flog-min-useful-focus-occupancy": str(
             realized_hierarchy.get("minUsefulFocusOccupancy", 0.30)
@@ -5874,6 +6349,239 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   flex: 0 0 24%;
 }
 
+
+/* Stage B: exclusive painted ownership.  Partition policies reserve grid
+   tracks; only policies explicitly declared as overlays may paint over another
+   semantic unit. */
+.flog-node[data-flog-role="command"] {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.flog-node[data-flog-role="command"] > .node-header {
+  flex: 0 0 min(132px, 28%);
+  min-width: 0;
+}
+.flog-node[data-flog-role="command"] > .node-header span {
+  display: none;
+}
+.flog-node[data-flog-role="command"] > .node-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+}
+.flog-node[data-flog-role="command"] > .node-body > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.flog-node[data-flog-role="command"] button,
+.flog-node[data-flog-role="command"] input,
+.flog-node[data-flog-role="command"] select,
+.flog-node[data-flog-role="command"] textarea {
+  min-width: 0;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit.unit-policy-side-command-rail[data-flog-unit-id="command-workflow"]
+  > .flog-node[data-flog-role="command"] {
+  flex-direction: column;
+  align-items: stretch;
+  overflow: auto;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit.unit-policy-side-command-rail[data-flog-unit-id="command-workflow"]
+  > .flog-node[data-flog-role="command"] > .node-header {
+  flex: 0 0 auto;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit.unit-policy-side-command-rail[data-flog-unit-id="command-workflow"]
+  > .flog-node[data-flog-role="command"] > .node-body {
+  grid-auto-flow: row;
+  grid-auto-rows: minmax(30px, auto);
+  grid-auto-columns: auto;
+  overflow: visible;
+}
+
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main"
+    "feedback";
+  gap: var(--gap);
+  position: relative;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="command-workflow"] {
+  grid-area: main;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="persistent-feedback"] {
+  grid-area: feedback;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="project-identity"][data-flog-unit-realization="active"]:not(.unit-policy-selector-overlay) {
+  grid-area: identity;
+  position: static !important;
+  inset: auto !important;
+  width: auto !important;
+  min-width: 0;
+  min-height: 0;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"] {
+  grid-area: support;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"]:not([data-flog-ownership-mode="overlay"]) {
+  position: static !important;
+  inset: auto !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+/* Project selection is an exclusive identity/status split. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit[data-flog-unit-id="project-identity"][data-flog-unit-realization="active"]:not(.unit-policy-selector-overlay)
+  ) {
+  grid-template-columns: minmax(270px, 30fr) minmax(0, 70fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "identity feedback";
+}
+/* The full selector and compact rail are separate identity policies, not aliases. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-phase-selector-unit[data-flog-unit-id="project-identity"][data-flog-unit-realization="active"]
+  ) {
+  grid-template-columns: minmax(300px, 32fr) minmax(0, 68fr);
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-compact-project-rail[data-flog-unit-id="project-identity"][data-flog-unit-realization="active"]
+  ) {
+  grid-template-columns: minmax(210px, 21fr) minmax(0, 79fr);
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit.unit-policy-compact-project-rail[data-flog-unit-id="project-identity"][data-flog-unit-realization="active"]
+  > .flog-node .node-body {
+  grid-auto-flow: row;
+  grid-auto-rows: minmax(30px, auto);
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit[data-flog-unit-id="project-identity"][data-flog-unit-realization="active"]:not(.unit-policy-selector-overlay)
+  )
+  > .flog-layout-unit[data-flog-unit-id="persistent-feedback"] {
+  grid-area: feedback !important;
+  position: static !important;
+  inset: auto !important;
+  width: auto !important;
+  height: auto !important;
+  margin: 0;
+  align-self: stretch;
+}
+
+/* Side support receives only the width required by the active support role.
+   Server planning remains compact; evidence receives enough proof space. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit[data-flog-unit-id="phase-support"][data-flog-unit-active-support-slots~="server"]
+  ) {
+  grid-template-columns: minmax(0, 88fr) minmax(150px, 12fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main support"
+    "feedback support";
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit[data-flog-unit-id="phase-support"][data-flog-unit-active-support-slots~="evidence"]
+  ) {
+  grid-template-columns: minmax(0, 81fr) minmax(220px, 19fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main support"
+    "feedback support";
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit[data-flog-unit-id="phase-support"][data-flog-unit-active-support-slots~="advanced"]
+  ) {
+  grid-template-columns: minmax(0, 86fr) minmax(170px, 14fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main support"
+    "feedback support";
+}
+
+/* Generated support policies must reserve genuinely different partition tracks.
+   Fingerprints intentionally ignore policy names, so aliases cannot survive merely
+   by carrying different metadata over the same rectangles. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-one-active-plus-triggers[data-flog-unit-has-active-support="true"]
+  ) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(110px, 14%) auto;
+  grid-template-areas:
+    "main"
+    "support"
+    "feedback";
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-bounded-bottom-drawer[data-flog-unit-has-active-support="true"]
+  ) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto minmax(150px, 20%);
+  grid-template-areas:
+    "main"
+    "feedback"
+    "support";
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-inline-phase-stage[data-flog-unit-has-active-support="true"]
+  ) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(120px, 16%) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "support"
+    "main"
+    "feedback";
+}
+
+/* A declared feedback overlay shares only the main grid cell. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit.unit-policy-workflow-footer-overlay[data-flog-unit-id="persistent-feedback"] {
+  grid-area: main;
+  position: relative;
+  inset: auto;
+  align-self: end;
+  z-index: 6;
+  margin: 0 10px 10px;
+  width: auto;
+  height: 44px;
+  min-height: 44px;
+}
+
 @media (max-width: 720px) {
   .flog-stage { padding: 10px; }
   .flog-root { width: calc(100vw - 20px); height: calc(100vh - 20px); min-height: 0; }
@@ -6423,8 +7131,8 @@ MEASURE_AND_OVERLAY_JS = r"""
       (item) => item.undeclaredPartitionOverlap
     );
     return {
-      mode: "shadow-only",
-      enforced: false,
+      mode: "exclusive-enforced",
+      enforced: true,
       algorithm: "rect-edge-cells+elementsFromPoint",
       rootArea: bounds.area,
       cellCount,
@@ -6760,7 +7468,6 @@ MEASURE_AND_OVERLAY_JS = r"""
   const unitElements = unitElementRecords.map((item) => item.el);
   const unitRecords = unitElementRecords.map((item) => item.record);
   const focusRecord = focus ? recordFor(focus) : null;
-  const visibleRequired = requiredNodes.map(recordFor).filter((item) => item.rect.area > 4 && intersect(item.rect, rootClipped).area > 4);
   const paintedOwnershipShadow = paintedOwnershipShadowFor(
     nodeElements,
     nodeRecords,
@@ -6769,17 +7476,166 @@ MEASURE_AND_OVERLAY_JS = r"""
     rootClipped,
     root.getAttribute("data-flog-focus-slot") || ""
   );
+  const ownershipBySlot = new Map(
+    (paintedOwnershipShadow.nodes || []).map((item) => [item.slot, item])
+  );
+  const ownershipByUnit = new Map(
+    (paintedOwnershipShadow.units || []).map((item) => [item.unitId, item])
+  );
+  for (const record of nodeRecords) {
+    const ownership = ownershipBySlot.get(record.slot);
+    if (!ownership) continue;
+    record.rawVisibleArea = ownership.rawVisibleArea;
+    record.rawVisibleShare = ownership.rawVisibleShare;
+    record.effectiveVisibleArea = ownership.effectiveVisibleArea;
+    record.effectiveVisibleShare = ownership.effectiveVisibleShare;
+    record.occludedArea = ownership.occludedArea;
+    record.occludedShare = ownership.occludedShare;
+    record.occludedBy = ownership.occludedBy;
+  }
+  for (const record of unitRecords) {
+    const ownership = ownershipByUnit.get(record.unitId);
+    if (!ownership) continue;
+    record.rawVisibleArea = ownership.rawVisibleArea;
+    record.rawVisibleShare = ownership.rawVisibleShare;
+    record.effectiveOwnedArea = ownership.effectiveOwnedArea;
+    record.effectiveOwnedShare = ownership.effectiveOwnedShare;
+  }
+  if (focusRecord) {
+    const ownership = ownershipBySlot.get(focusRecord.slot);
+    if (ownership) Object.assign(focusRecord, ownership);
+  }
 
-  const nodeArea = unionArea(nodeRecords.map((item) => item.rect), rootClipped);
-  const nodeCoverageRatio = rootClipped.area > 0 ? nodeArea / rootClipped.area : 0;
-  const unclaimedAreaRatio = rootClipped.area > 0 ? Math.max(0, 1 - nodeCoverageRatio) : 1;
+  let visibleRequired = requiredNodes
+    .map(recordFor)
+    .filter((item) => {
+      const ownership = ownershipBySlot.get(item.slot);
+      const area = ownership?.effectiveVisibleArea ?? intersect(item.rect, rootClipped).area;
+      return item.rect.area > 4 && area > 4;
+    });
+  const nodeArea = paintedOwnershipShadow.exclusiveOwnedArea;
+  const nodeCoverageRatio =
+    rootClipped.area > 0 ? nodeArea / rootClipped.area : 0;
+  const rootUnclaimedAreaRatio =
+    rootClipped.area > 0 ? Math.max(0, 1 - nodeCoverageRatio) : 1;
+
+  const focusUnitId = focusRecord?.unitId || "";
+  const focusUnitRecord = focusUnitId
+    ? unitRecords.find((item) => item.unitId === focusUnitId) || null
+    : null;
+  const focusUnitOwnership = focusUnitId
+    ? ownershipByUnit.get(focusUnitId) || null
+    : null;
+  const activeSemanticRecords = nodeRecords.filter(
+    (item) =>
+      item.realization !== "compact-trigger" &&
+      item.realization !== "absent" &&
+      (item.effectiveVisibleArea || 0) > 4
+  );
+  let activePresentationMode = "semantic-envelope";
+  let activePresentationUnitId = "";
+  let activePresentationBounds = intersect(
+    unionBounds(activeSemanticRecords.map((item) => item.rect)),
+    rootClipped
+  );
+  let activePresentationOwnedArea = Math.min(
+    activePresentationBounds.area,
+    activeSemanticRecords.reduce(
+      (total, item) => total + Math.max(0, item.effectiveVisibleArea || 0),
+      0
+    )
+  );
+  if (
+    focusUnitRecord &&
+    focusUnitOwnership &&
+    focusUnitRecord.rect.area > 4
+  ) {
+    activePresentationMode = "focus-layout-unit";
+    activePresentationUnitId = focusUnitId;
+    activePresentationBounds = intersect(focusUnitRecord.rect, rootClipped);
+    activePresentationOwnedArea = Math.min(
+      activePresentationBounds.area,
+      Math.max(0, focusUnitOwnership.effectiveOwnedArea || 0)
+    );
+  }
+  if (activePresentationBounds.area <= 4) {
+    activePresentationMode = "root-fallback";
+    activePresentationUnitId = "";
+    activePresentationBounds = rootClipped;
+    activePresentationOwnedArea = Math.min(rootClipped.area, nodeArea);
+  }
+  const activePresentationOccupancy =
+    activePresentationBounds.area > 0
+      ? Math.max(
+          0,
+          Math.min(1, activePresentationOwnedArea / activePresentationBounds.area)
+        )
+      : 0;
+  const activePresentationUnclaimedRatio =
+    Math.max(0, 1 - activePresentationOccupancy);
+  const intentionalInactiveRootRatio =
+    rootClipped.area > 0
+      ? Math.max(
+          0,
+          1 - Math.min(1, activePresentationBounds.area / rootClipped.area)
+        )
+      : 0;
+  const accidentalUnclaimedRootRatio =
+    rootClipped.area > 0
+      ? Math.max(
+          0,
+          (activePresentationBounds.area - activePresentationOwnedArea) /
+            rootClipped.area
+        )
+      : 1;
+  // Stage C makes phase-relative active density authoritative while preserving
+  // root-wide unclaimed space as a separate diagnostic.
+  const unclaimedAreaRatio = activePresentationUnclaimedRatio;
   const focusClipped = focusRecord ? intersect(focusRecord.rect, rootClipped) : {left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, area: 0};
-  const focusVisibleArea = focusClipped.area;
-  const focusShare = rootClipped.area > 0 ? focusVisibleArea / rootClipped.area : 0;
+  const rawFocusVisibleArea = focusClipped.area;
+  const rawFocusShare =
+    rootClipped.area > 0 ? rawFocusVisibleArea / rootClipped.area : 0;
+  const effectiveFocusVisibleArea =
+    paintedOwnershipShadow.effectiveFocusShare * rootClipped.area;
+  const focusVisibleArea = effectiveFocusVisibleArea;
+  const focusShare = paintedOwnershipShadow.effectiveFocusShare;
   const desiredFocusShare = Number(root.getAttribute("data-flog-desired-focus-share") || "0.45");
   const minFocusShare = Number(root.getAttribute("data-flog-min-focus-share") || "0.3");
+  const phaseFloorTolerance = Number(
+    root.getAttribute("data-flog-phase-floor-tolerance") || "0.0005"
+  );
   const maxFocusShare = Number(root.getAttribute("data-flog-max-focus-share") || "0.75");
   const focusDeviation = Math.abs(focusShare - desiredFocusShare);
+  const phaseName = phase || root.getAttribute("data-flog-phase") || "default";
+  const focusSlotName = root.getAttribute("data-flog-focus-slot") || "focus";
+  function shareFloorGate(actual, floor) {
+    const rawHeadroom = actual - floor;
+    const met = rawHeadroom >= -phaseFloorTolerance;
+    return {
+      met,
+      actual,
+      floor,
+      tolerance: phaseFloorTolerance,
+      rawHeadroom,
+      headroom: met ? Math.max(0, rawHeadroom) : rawHeadroom,
+      shortfall: Math.max(0, floor - actual),
+    };
+  }
+  function sharePercent(value) {
+    return `${(value * 100).toFixed(2)}%`;
+  }
+  function shareFloorFailureReason(phaseValue, slotValue, gate) {
+    return `${phaseValue} phase gives ${slotValue} ${sharePercent(gate.actual)} ` +
+      `against phase floor ${sharePercent(gate.floor)} ` +
+      `(shortfall ${sharePercent(gate.shortfall)}; tolerance ${sharePercent(gate.tolerance)})`;
+  }
+  const focusFloorGate = shareFloorGate(focusShare, minFocusShare);
+  const focusMeetsMinimum = focusFloorGate.met;
+  const focusFloorFailureReason = shareFloorFailureReason(
+    phaseName,
+    focusSlotName,
+    focusFloorGate
+  );
 
   const focusContentRecords = focus
     ? Array.from(focus.querySelectorAll("[data-flog-item='true']"))
@@ -6787,8 +7643,22 @@ MEASURE_AND_OVERLAY_JS = r"""
         .map(recordFor)
         .filter((item) => item.rect.area > 4 && intersect(item.rect, focusClipped).area > 4)
     : [];
-  const focusContentArea = unionArea(focusContentRecords.map((item) => item.rect), focusClipped);
-  const usefulFocusOccupancy = focusClipped.area > 0 ? Math.min(1, focusContentArea / focusClipped.area) : 0;
+  const rawFocusContentArea = unionArea(
+    focusContentRecords.map((item) => item.rect),
+    focusClipped
+  );
+  const focusOccludedArea = Math.max(
+    0,
+    rawFocusVisibleArea - effectiveFocusVisibleArea
+  );
+  const focusContentArea = Math.max(
+    0,
+    rawFocusContentArea - focusOccludedArea
+  );
+  const usefulFocusOccupancy =
+    effectiveFocusVisibleArea > 0
+      ? Math.min(1, focusContentArea / effectiveFocusVisibleArea)
+      : 0;
   const minUsefulFocusOccupancy = Number(root.getAttribute("data-flog-min-useful-focus-occupancy") || "0.30");
   const targetUsefulFocusOccupancy = Number(root.getAttribute("data-flog-target-useful-focus-occupancy") || "0.56");
   const usefulFocusOccupancyDeviation = Math.abs(usefulFocusOccupancy - targetUsefulFocusOccupancy);
@@ -6817,6 +7687,9 @@ MEASURE_AND_OVERLAY_JS = r"""
   function visibleShareForSlot(slot) {
     const record = nodeBySlot.get(slot);
     if (!record || rootClipped.area <= 0) return 0;
+    if (Number.isFinite(record.effectiveVisibleShare)) {
+      return Math.max(0, Math.min(1, record.effectiveVisibleShare));
+    }
     return intersect(record.rect, rootClipped).area / rootClipped.area;
   }
 
@@ -6985,6 +7858,14 @@ MEASURE_AND_OVERLAY_JS = r"""
     criticalControlInterceptionShadow.filter(
       (item) => item.partiallyForeignIntercepted
     );
+  const blockedCriticalControls = criticalControlInterceptionShadow.filter(
+    (item) =>
+      item.fullyForeignIntercepted ||
+      (
+        item.foreignInterceptedPointCount > 0 &&
+        item.actionableShare < 0.60
+      )
+  );
   const controlInterceptionOutcomeTotalsShadow =
     criticalControlInterceptionShadow.reduce(
       (totals, item) => {
@@ -7009,6 +7890,15 @@ MEASURE_AND_OVERLAY_JS = r"""
         unownedPointerTarget: 0,
       }
     );
+  const partitionOverlapTolerance = 0.002;
+  const undeclaredPartitionOverlapShare = Math.max(
+    paintedOwnershipShadow.undeclaredPartitionOverlapShare || 0,
+    paintedOwnershipShadow.partitionOverlapCellShare || 0
+  );
+  const partitionOwnershipViolation =
+    undeclaredPartitionOverlapShare > partitionOverlapTolerance;
+  const overlayBudgetViolations =
+    paintedOwnershipShadow.overlayBudgetExceeded || [];
 
   const scrollOwners = [];
   for (const el of [root, ...nodes, ...Array.from(root.querySelectorAll(".node-body"))]) {
@@ -7035,18 +7925,21 @@ MEASURE_AND_OVERLAY_JS = r"""
 
   const warnings = [];
   if (rootClipped.area <= 1) warnings.push("root is not visible");
-  if (unclaimedAreaRatio > 0.34) warnings.push(`high measured unclaimed layout area (${unclaimedAreaRatio.toFixed(2)})`);
-  if (focusShare < minFocusShare) warnings.push(`focus slot is starved (${focusShare.toFixed(2)} < ${minFocusShare.toFixed(2)})`);
+  if (unclaimedAreaRatio > 0.34) warnings.push(`high active-presentation unclaimed area (${unclaimedAreaRatio.toFixed(2)})`);
+  if (!focusMeetsMinimum) warnings.push(focusFloorFailureReason);
   if (focusShare > maxFocusShare) warnings.push(`focus slot dominates beyond target (${focusShare.toFixed(2)} > ${maxFocusShare.toFixed(2)})`);
   if (usefulFocusOccupancy < minUsefulFocusOccupancy) warnings.push(`focus interior is too sparse (${usefulFocusOccupancy.toFixed(2)} < ${minUsefulFocusOccupancy.toFixed(2)})`);
   if (focusContentRecords.length < 4) warnings.push(`focus slot has too few useful interior elements (${focusContentRecords.length})`);
   if (clippedCriticalControls.length) warnings.push(`${clippedCriticalControls.length} critical control(s) extend outside viewport/root`);
   if (hiddenCriticalControls.length) warnings.push(`${hiddenCriticalControls.length} critical control(s) are hidden or zero-sized`);
-  if (visibleRequired.length < requiredNodes.length) warnings.push("some required primary/focus nodes are not visible");
+  if (blockedCriticalControls.length) warnings.push(`${blockedCriticalControls.length} active critical control(s) are foreign-intercepted`);
+  if (partitionOwnershipViolation) warnings.push(`partition ownership overlap exceeds tolerance (${undeclaredPartitionOverlapShare.toFixed(3)} > ${partitionOverlapTolerance.toFixed(3)})`);
+  if (overlayBudgetViolations.length) warnings.push(`${overlayBudgetViolations.length} declared overlay budget(s) were exceeded`);
+  if (visibleRequired.length < requiredNodes.length) warnings.push("some required primary/focus nodes are not effectively visible");
   if (missingRequiredCompanions.length) warnings.push(`required companion slot(s) not visible enough: ${missingRequiredCompanions.map((item) => item.slot).join(", ")}`);
   if (hiddenForbiddenSlots.length) warnings.push(`forbidden default-hidden slot(s) are missing from the default view: ${hiddenForbiddenSlots.map((item) => item.slot).join(", ")}`);
   if (distantNearbyCompanions.length) warnings.push(`nearby companion slot(s) are too far from focus: ${distantNearbyCompanions.map((item) => item.slot).join(", ")}`);
-  const sourceOrderStarvesHighFocus = candidateFamily === "source-order-stacked" && minFocusShare >= 0.40 && focusShare < minFocusShare;
+  const sourceOrderStarvesHighFocus = candidateFamily === "source-order-stacked" && minFocusShare >= 0.40 && !focusMeetsMinimum;
   if (dangerousFamilyMatch) warnings.push(`candidate is marked dangerous for this role contract: ${candidate}`);
   if (sourceOrderStarvesHighFocus) warnings.push("source-order-stacked preserves visibility but starves a high-focus hierarchy");
   if (legacyFamilyCandidate && !preferredFamilyMatch && preferredFamilies.length) warnings.push(`candidate is outside preferred families for this hierarchy`);
@@ -7059,10 +7952,10 @@ MEASURE_AND_OVERLAY_JS = r"""
   function pct(value) {
     return `${(value * 100).toFixed(0)}%`;
   }
-  if (focusShare >= minFocusShare && focusShare <= maxFocusShare) {
+  if (focusMeetsMinimum && focusShare <= maxFocusShare) {
     positiveReasons.push(`focus ${root.getAttribute("data-flog-focus-slot") || "slot"} got ${pct(focusShare)} of the root against target ${pct(desiredFocusShare)}`);
-  } else if (focusShare < minFocusShare) {
-    failureReasons.push(`focus share ${pct(focusShare)} is below required minimum ${pct(minFocusShare)}`);
+  } else if (!focusMeetsMinimum) {
+    failureReasons.push(focusFloorFailureReason);
   } else {
     failureReasons.push(`focus share ${pct(focusShare)} exceeds maximum ${pct(maxFocusShare)}, suggesting companion context may be starved`);
   }
@@ -7084,20 +7977,46 @@ MEASURE_AND_OVERLAY_JS = r"""
     failureReasons.push(`nearby companion fit is ${pct(nearbyCompanionRatio)}; ${distantNearbyCompanions.map((item) => item.slot).join(", ")} need docking or integration review`);
   }
   if (unclaimedAreaRatio <= 0.24) {
-    positiveReasons.push(`unclaimed area is controlled at ${pct(unclaimedAreaRatio)}`);
+    positiveReasons.push(`active-presentation unclaimed area is controlled at ${pct(unclaimedAreaRatio)}`);
   } else {
-    failureReasons.push(`unclaimed area is high at ${pct(unclaimedAreaRatio)}`);
+    failureReasons.push(`active-presentation unclaimed area is high at ${pct(unclaimedAreaRatio)}`);
   }
-  if (clippedCriticalControls.length === 0 && hiddenCriticalControls.length === 0) {
-    positiveReasons.push("no critical controls were clipped or hidden");
+  if (
+    clippedCriticalControls.length === 0 &&
+    hiddenCriticalControls.length === 0 &&
+    blockedCriticalControls.length === 0
+  ) {
+    positiveReasons.push("no active critical controls were clipped, hidden, or foreign-intercepted");
   } else {
-    failureReasons.push(`${clippedCriticalControls.length + hiddenCriticalControls.length} critical control(s) were clipped or hidden`);
+    failureReasons.push(
+      `${clippedCriticalControls.length + hiddenCriticalControls.length} critical control(s) were clipped or hidden; ` +
+      `${blockedCriticalControls.length} were foreign-intercepted`
+    );
+  }
+  if (!partitionOwnershipViolation) {
+    positiveReasons.push(
+      `partition overlap stayed within ${(partitionOverlapTolerance * 100).toFixed(1)}% tolerance`
+    );
+  } else {
+    failureReasons.push(
+      `undeclared partition overlap is ${(undeclaredPartitionOverlapShare * 100).toFixed(1)}% of the root`
+    );
+  }
+  if (!overlayBudgetViolations.length) {
+    positiveReasons.push("declared overlays stayed inside their occlusion budgets");
+  } else {
+    failureReasons.push(
+      `${overlayBudgetViolations.length} declared overlay budget(s) were exceeded`
+    );
   }
   const hardGeometryGatePassed =
-    focusShare >= minFocusShare &&
+    focusMeetsMinimum &&
     companionVisibilityRatio === 1 &&
     clippedCriticalControls.length === 0 &&
     hiddenCriticalControls.length === 0 &&
+    blockedCriticalControls.length === 0 &&
+    !partitionOwnershipViolation &&
+    overlayBudgetViolations.length === 0 &&
     !dangerousFamilyMatch;
   if (preferredFamilyMatch && hardGeometryGatePassed) {
     reviewNotes.push(`candidate belongs to a preferred family; no score bonus is applied`);
@@ -7120,18 +8039,36 @@ MEASURE_AND_OVERLAY_JS = r"""
   if (nearbyCompanionResults.some((item) => item.integration && item.integration.score >= 0.55)) {
     reviewNotes.push("Nearby was satisfied by semantic docking/integration, not just center-point distance.");
   }
-  reviewNotes.push("Painted ownership and control interception are reported in shadow mode only; ranking still uses raw geometry.");
+  reviewNotes.push("Stage B enforces exclusive painted ownership, overlay budgets, partition isolation, and foreign critical-control interception.");
+  reviewNotes.push(
+    `Stage E applies one absolute effective-share floor gate with a ${(phaseFloorTolerance * 100).toFixed(2)}% subpixel tolerance in browser and aggregate scoring.`
+  );
+  reviewNotes.push(
+    `Stage C scores density inside the ${activePresentationMode}` +
+    `${activePresentationUnitId ? ` (${activePresentationUnitId})` : ""}; ` +
+    `${pct(intentionalInactiveRootRatio)} of root space remains intentionally outside that active envelope.`
+  );
   reviewNotes.push("Human review still must compare the PNG proof against the intended app meaning.");
 
   let score = 100;
   score -= Math.round(unclaimedAreaRatio * 54);
   score -= Math.round(focusDeviation * 72);
-  if (focusShare < minFocusShare) score -= 16;
+  if (!focusMeetsMinimum) score -= 16;
   if (focusShare > maxFocusShare) score -= 8;
   score -= Math.round(Math.max(0, minUsefulFocusOccupancy - usefulFocusOccupancy) * 72);
   score -= Math.min(14, Math.max(0, 4 - focusContentRecords.length) * 4);
   score -= clippedCriticalControls.length * 8;
   score -= hiddenCriticalControls.length * 10;
+  score -= blockedCriticalControls.length * 12;
+  if (partitionOwnershipViolation) {
+    score -= Math.min(
+      28,
+      12 + Math.round(
+        (undeclaredPartitionOverlapShare - partitionOverlapTolerance) * 120
+      )
+    );
+  }
+  score -= overlayBudgetViolations.length * 16;
   score -= Math.max(0, visibleRequired.length < requiredNodes.length ? 18 : 0);
   score -= missingRequiredCompanions.length * 14;
   score -= hiddenForbiddenSlots.length * 16;
@@ -7145,7 +8082,13 @@ MEASURE_AND_OVERLAY_JS = r"""
   if (doc.body.scrollWidth > viewport.width + 2) score -= 16;
   if (doc.body.scrollHeight > viewport.height + 2 && candidateFamily !== "source-order-stacked") score -= 8;
   score = Math.max(0, Math.min(100, Math.round(score)));
-  const status = score >= 82 && warnings.length <= 1 ? "pass" : score >= 64 ? "watch" : "fail";
+  const status = !hardGeometryGatePassed
+    ? "fail"
+    : score >= 82 && warnings.length <= 1
+      ? "pass"
+      : score >= 64
+        ? "watch"
+        : "fail";
 
   doc.querySelectorAll("[data-flog-snapshot-overlay]").forEach((node) => node.remove());
   const overlay = doc.createElement("div");
@@ -7212,7 +8155,7 @@ MEASURE_AND_OVERLAY_JS = r"""
       addBox(
         item,
         "#ff9f43",
-        `SHADOW overlay ${item.slot} → ${item.overlayTarget || "declared target"}`,
+        `ENFORCED overlay ${item.slot} → ${item.overlayTarget || "declared target"}`,
         "repeating-linear-gradient(135deg, rgba(255,159,67,.16) 0 6px, rgba(255,159,67,.03) 6px 12px)"
       );
     });
@@ -7231,7 +8174,7 @@ MEASURE_AND_OVERLAY_JS = r"""
     addBox(
       item,
       "#ff3df2",
-      `SHADOW ${label} ${item.selector}`,
+      `ENFORCED ${label} ${item.selector}`,
       "rgba(255,61,242,0.10)"
     );
   });
@@ -7251,9 +8194,9 @@ MEASURE_AND_OVERLAY_JS = r"""
   legend.innerHTML = [
     `<strong>FLOG trial proof</strong>`,
     `hierarchy=${hierarchyId} layout=${candidate} phase=${phase || root.getAttribute("data-flog-phase") || "default"} viewport=${viewportProfile} chrome=${chrome}`,
-    `score=${score} status=${status} wasted/unclaimed=${unclaimedAreaRatio.toFixed(3)} focus(raw)=${focusShare.toFixed(3)} focus(effective-shadow)=${paintedOwnershipShadow.effectiveFocusShare.toFixed(3)} target=${desiredFocusShare.toFixed(2)} focus-occupancy=${usefulFocusOccupancy.toFixed(3)} companion-proximity=${companionProximityScore.toFixed(3)}`,
-    `painted-ownership=shadow-only exclusive=${paintedOwnershipShadow.exclusiveOwnedShare.toFixed(3)} double-claimed=${paintedOwnershipShadow.doubleClaimedShare.toFixed(3)} overlay=${paintedOwnershipShadow.declaredOverlayShare.toFixed(3)} undeclared-partition-overlap=${paintedOwnershipShadow.undeclaredPartitionOverlapShare.toFixed(3)} foreign-intercepted-controls=${partiallyInterceptedCriticalControlsShadow.length}`,
-    `<span style="color:#43a7ff">blue=root</span> <span style="color:#00c2c7">cyan=layout unit</span> <span style="color:#38d66b">green=semantic node</span> <span style="color:#b46cff">purple=focus target</span> <span style="color:#ffbf3f">orange=scroll</span> <span style="color:#ff9f43">hatched=declared overlay (shadow)</span> <span style="color:#ff3df2">magenta=foreign interception (shadow)</span> <span style="color:#ff4d4d">red=clipped/hidden</span>`,
+    `score=${score} status=${status} active-unclaimed=${unclaimedAreaRatio.toFixed(3)} root-unclaimed=${rootUnclaimedAreaRatio.toFixed(3)} intentional-inactive-root=${intentionalInactiveRootRatio.toFixed(3)} focus(raw)=${rawFocusShare.toFixed(3)} focus(effective)=${focusShare.toFixed(3)} floor=${minFocusShare.toFixed(3)} floor-met=${focusFloorGate.met} target=${desiredFocusShare.toFixed(2)} focus-occupancy=${usefulFocusOccupancy.toFixed(3)} companion-proximity=${companionProximityScore.toFixed(3)}`,
+    `painted-ownership=exclusive-enforced exclusive=${paintedOwnershipShadow.exclusiveOwnedShare.toFixed(3)} double-claimed=${paintedOwnershipShadow.doubleClaimedShare.toFixed(3)} overlay=${paintedOwnershipShadow.declaredOverlayShare.toFixed(3)} undeclared-partition-overlap=${undeclaredPartitionOverlapShare.toFixed(3)} blocked-controls=${blockedCriticalControls.length}`,
+    `<span style="color:#43a7ff">blue=root</span> <span style="color:#00c2c7">cyan=layout unit</span> <span style="color:#38d66b">green=semantic node</span> <span style="color:#b46cff">purple=focus target</span> <span style="color:#ffbf3f">orange=scroll</span> <span style="color:#ff9f43">hatched=declared overlay (enforced)</span> <span style="color:#ff3df2">magenta=foreign interception (enforced)</span> <span style="color:#ff4d4d">red=clipped/hidden</span>`,
   ].join("<br>");
   overlay.appendChild(legend);
 
@@ -7278,32 +8221,65 @@ MEASURE_AND_OVERLAY_JS = r"""
       nodeCount: nodeRecords.length,
       layoutUnitCount: unitRecords.length,
       nodeCoverageRatio,
+      rootUnclaimedAreaRatio,
       unclaimedAreaRatio,
+      activePresentationMode,
+      activePresentationUnitId,
+      activePresentationEnvelope: activePresentationBounds,
+      activePresentationOwnedArea,
+      activePresentationOccupancy,
+      activePresentationUnclaimedRatio,
+      intentionalInactiveRootRatio,
+      accidentalUnclaimedRootRatio,
+      rawFocusShare,
       focusShare,
-      paintedOwnershipMode: "shadow-only",
-      paintedOwnershipEnforced: false,
+      effectiveFocusShare: focusShare,
+      focusOccludedShare: paintedOwnershipShadow.focusOccludedShare,
+      paintedOwnershipMode: "exclusive-enforced",
+      paintedOwnershipEnforced: true,
+      paintedOwnership: paintedOwnershipShadow,
       paintedOwnershipShadow,
-      effectiveFocusShareShadow: paintedOwnershipShadow.effectiveFocusShare,
+      effectiveFocusShareShadow: focusShare,
       focusOccludedShareShadow: paintedOwnershipShadow.focusOccludedShare,
+      exclusiveOwnedShare: paintedOwnershipShadow.exclusiveOwnedShare,
       exclusiveOwnedShareShadow: paintedOwnershipShadow.exclusiveOwnedShare,
+      doubleClaimedShare: paintedOwnershipShadow.doubleClaimedShare,
       doubleClaimedShareShadow: paintedOwnershipShadow.doubleClaimedShare,
+      declaredOverlayShare: paintedOwnershipShadow.declaredOverlayShare,
       declaredOverlayShareShadow: paintedOwnershipShadow.declaredOverlayShare,
+      undeclaredPartitionOverlapShare,
       undeclaredPartitionOverlapShareShadow:
-        paintedOwnershipShadow.undeclaredPartitionOverlapShare,
+        undeclaredPartitionOverlapShare,
+      partitionOverlapCellShare:
+        paintedOwnershipShadow.partitionOverlapCellShare,
       partitionOverlapCellShareShadow:
         paintedOwnershipShadow.partitionOverlapCellShare,
+      blockedCriticalControlCount: blockedCriticalControls.length,
+      interceptedCriticalControlCount:
+        fullyInterceptedCriticalControlsShadow.length,
       interceptedCriticalControlCountShadow:
         fullyInterceptedCriticalControlsShadow.length,
+      partiallyInterceptedCriticalControlCount:
+        partiallyInterceptedCriticalControlsShadow.length,
       partiallyInterceptedCriticalControlCountShadow:
+        partiallyInterceptedCriticalControlsShadow.length,
+      foreignInterceptedCriticalControlCount:
         partiallyInterceptedCriticalControlsShadow.length,
       foreignInterceptedCriticalControlCountShadow:
         partiallyInterceptedCriticalControlsShadow.length,
+      controlInterceptionOutcomeTotals: controlInterceptionOutcomeTotalsShadow,
       controlInterceptionOutcomeTotalsShadow,
       desiredFocusShare,
       minFocusShare,
+      phaseFloorTolerance,
+      focusFloorMet: focusFloorGate.met,
+      focusFloorShortfall: focusFloorGate.shortfall,
+      focusRawHeadroom: focusFloorGate.rawHeadroom,
+      focusHeadroom: focusFloorGate.headroom,
       maxFocusShare,
       focusDeviation,
       focusContentCount: focusContentRecords.length,
+      rawFocusContentArea,
       focusContentArea,
       usefulFocusOccupancy,
       minUsefulFocusOccupancy,
@@ -7339,31 +8315,50 @@ MEASURE_AND_OVERLAY_JS = r"""
       focusContent: focusContentRecords.slice(0, 30),
       clippedCriticalControls: clippedCriticalControls.slice(0, 20),
       hiddenCriticalControls: hiddenCriticalControls.slice(0, 20),
+      criticalControlInterception:
+        criticalControlInterceptionShadow.slice(0, 40),
       criticalControlInterceptionShadow:
         criticalControlInterceptionShadow.slice(0, 40),
+      blockedCriticalControls:
+        blockedCriticalControls.slice(0, 20),
+      fullyInterceptedCriticalControls:
+        fullyInterceptedCriticalControlsShadow.slice(0, 20),
       fullyInterceptedCriticalControlsShadow:
         fullyInterceptedCriticalControlsShadow.slice(0, 20),
+      partiallyInterceptedCriticalControls:
+        partiallyInterceptedCriticalControlsShadow.slice(0, 20),
       partiallyInterceptedCriticalControlsShadow:
         partiallyInterceptedCriticalControlsShadow.slice(0, 20),
       paintedOwnershipOverlapMatrix:
         paintedOwnershipShadow.overlapMatrix.slice(0, 80),
+      undeclaredPartitionOverlapMatrix:
+        paintedOwnershipShadow.undeclaredPartitionOverlapMatrix.slice(0, 40),
       undeclaredPartitionOverlapMatrixShadow:
         paintedOwnershipShadow.undeclaredPartitionOverlapMatrix.slice(0, 40),
+      controlInterceptionOutcomeTotals: controlInterceptionOutcomeTotalsShadow,
       controlInterceptionOutcomeTotalsShadow,
       scrollOwners: scrollOwners.slice(0, 20),
     },
-    classification: {score, status, warnings, positiveReasons, failureReasons, reviewNotes},
+    classification: {
+      score,
+      status,
+      warnings,
+      positiveReasons,
+      failureReasons,
+      reviewNotes,
+      phaseFloorGate: focusFloorGate,
+    },
     humanLoop: {
       required: true,
       proved: [
         "Chromium rendered the candidate layout.",
         "The PNG shows the root, semantic nodes, focus target, scroll owners, and clipped/hidden controls.",
-        "The report measured approximate node coverage and unclaimed area inside the root.",
+        "The report measured active-presentation density separately from root-wide inactive space.",
         "The report measured how much of the root was given to the declared focus slot.",
-        "Shadow diagnostics sampled exclusive painted ownership, inter-unit occlusion, declared overlay budgets, and critical-control interception without changing ranking.",
+        "Exclusive painted ownership, inter-unit partition isolation, declared overlay budgets, and critical-control interception were enforced during ranking.",
       ],
       inferred: [
-        "Whether the unclaimed area is desirable calm spacing or waste.",
+        "Whether space outside the active presentation envelope is desirable calm spacing for the real app.",
         "Whether the declared focus slot is the correct thing to maximize for the real app.",
         "Whether required companions are truly required, nearby, or safely deferable.",
         "Whether this candidate should become a default for this hierarchy/chrome.",
@@ -7401,6 +8396,263 @@ def capture_png(page: Any, path: Path, *, full_page: bool) -> str:
     return path.name
 
 
+
+RENDERED_POLICY_FINGERPRINT_VERSION = "cross-phase-painted-geometry-v1"
+RENDERED_POLICY_FINGERPRINT_BINS = 500
+
+
+def _fingerprint_root_rect(phase_measurement: dict[str, Any]) -> dict[str, float] | None:
+    root = ((phase_measurement.get("geometryFacts") or {}).get("root") or {})
+    rect = root.get("clipped") or root.get("documentRect") or root.get("raw")
+    if not isinstance(rect, dict):
+        return None
+    if float(rect.get("width", 0) or 0) <= 0 or float(rect.get("height", 0) or 0) <= 0:
+        return None
+    return rect
+
+
+def _quantized_relative_rect(
+    record: dict[str, Any],
+    root_rect: dict[str, float] | None,
+    *,
+    bins: int = RENDERED_POLICY_FINGERPRINT_BINS,
+) -> tuple[int, int, int, int] | None:
+    rect = record.get("rect") or record.get("documentRect")
+    if not isinstance(rect, dict) or not root_rect:
+        return None
+    root_width = max(1.0, float(root_rect.get("width", 0) or 0))
+    root_height = max(1.0, float(root_rect.get("height", 0) or 0))
+    return (
+        round(
+            (
+                float(rect.get("left", rect.get("x", 0)) or 0)
+                - float(root_rect.get("left", root_rect.get("x", 0)) or 0)
+            )
+            / root_width
+            * bins
+        ),
+        round(
+            (
+                float(rect.get("top", rect.get("y", 0)) or 0)
+                - float(root_rect.get("top", root_rect.get("y", 0)) or 0)
+            )
+            / root_height
+            * bins
+        ),
+        round(float(rect.get("width", 0) or 0) / root_width * bins),
+        round(float(rect.get("height", 0) or 0) / root_height * bins),
+    )
+
+
+def rendered_policy_fingerprint_payload(
+    item: dict[str, Any],
+    *,
+    bins: int = RENDERED_POLICY_FINGERPRINT_BINS,
+) -> dict[str, Any] | None:
+    """Describe cross-phase rendered geometry without including policy names.
+
+    Policy metadata is intentionally excluded.  Two differently named local
+    policies therefore collide when they produce the same slot/unit ownership
+    and quantized browser rectangles across every realized phase.
+    """
+
+    phase_measurements = list(item.get("phaseMeasurements") or [item])
+    payload_phases: list[dict[str, Any]] = []
+    geometry_seen = False
+
+    for phase_measurement in sorted(
+        phase_measurements,
+        key=lambda value: str(value.get("phase") or ""),
+    ):
+        root_rect = _fingerprint_root_rect(phase_measurement)
+        examples = phase_measurement.get("examples") or {}
+        node_rows: list[tuple[Any, ...]] = []
+        for record in examples.get("nodes") or []:
+            relative_rect = _quantized_relative_rect(record, root_rect, bins=bins)
+            if relative_rect is not None:
+                geometry_seen = True
+            node_rows.append(
+                (
+                    str(record.get("slot") or ""),
+                    str(record.get("realization") or ""),
+                    str(record.get("ownershipMode") or ""),
+                    str(record.get("unitId") or ""),
+                    str(record.get("unitRole") or ""),
+                    relative_rect,
+                    round(float(record.get("effectiveVisibleShare", 0) or 0) * bins),
+                )
+            )
+
+        unit_rows: list[tuple[Any, ...]] = []
+        for record in examples.get("units") or []:
+            relative_rect = _quantized_relative_rect(record, root_rect, bins=bins)
+            if relative_rect is not None:
+                geometry_seen = True
+            unit_rows.append(
+                (
+                    str(record.get("unitId") or ""),
+                    str(record.get("role") or ""),
+                    str(record.get("realization") or ""),
+                    str(record.get("ownershipMode") or ""),
+                    tuple(sorted(str(value) for value in (record.get("activeSlots") or []))),
+                    tuple(
+                        sorted(
+                            str(value)
+                            for value in (record.get("activeSupportSlots") or [])
+                        )
+                    ),
+                    tuple(
+                        sorted(str(value) for value in (record.get("triggerSlots") or []))
+                    ),
+                    relative_rect,
+                )
+            )
+
+        payload_phases.append(
+            {
+                "phase": str(phase_measurement.get("phase") or ""),
+                "focusSlot": str(phase_measurement.get("focusSlot") or ""),
+                "realizationStates": sorted(
+                    (
+                        str(slot),
+                        str(state),
+                    )
+                    for slot, state in (
+                        phase_measurement.get("realizationStates") or {}
+                    ).items()
+                ),
+                "nodes": sorted(node_rows, key=repr),
+                "units": sorted(unit_rows, key=repr),
+            }
+        )
+
+    if not geometry_seen:
+        return None
+    return {
+        "version": RENDERED_POLICY_FINGERPRINT_VERSION,
+        "bins": int(bins),
+        "phases": payload_phases,
+    }
+
+
+def measurement_rendered_policy_fingerprint(
+    item: dict[str, Any],
+    *,
+    bins: int = RENDERED_POLICY_FINGERPRINT_BINS,
+) -> str:
+    payload = rendered_policy_fingerprint_payload(item, bins=bins)
+    if payload is None:
+        return ""
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _policy_alias_differences(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    policies_by_unit: dict[str, set[str]] = defaultdict(set)
+    for item in items:
+        unit_policies = (item.get("unitComposition") or {}).get("unitPolicies") or {}
+        for unit_id, policy in unit_policies.items():
+            policies_by_unit[str(unit_id)].add(str(policy))
+    return [
+        {
+            "unitId": unit_id,
+            "policies": sorted(policies),
+            "reason": (
+                "declared local policies produced the same cross-phase painted "
+                "geometry fingerprint"
+            ),
+        }
+        for unit_id, policies in sorted(policies_by_unit.items())
+        if len(policies) > 1
+    ]
+
+
+def annotate_rendered_policy_equivalence(
+    measurements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Mark rendered-equivalent recursive candidates and choose representatives."""
+
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for item in measurements:
+        fingerprint = measurement_rendered_policy_fingerprint(item)
+        item["renderedPolicyFingerprint"] = fingerprint
+        item["renderedPolicyFingerprintVersion"] = (
+            RENDERED_POLICY_FINGERPRINT_VERSION if fingerprint else ""
+        )
+        item["renderedEquivalenceExcludedFromRanking"] = False
+        item["renderedEquivalentAliases"] = []
+        item["renderedEquivalenceGroupSize"] = 1
+        item["policyRealizationAliasDiagnostics"] = []
+        if (
+            fingerprint
+            and str(item.get("candidateMode") or "") == "recursive-composition"
+        ):
+            grouped[
+                (
+                    str(item.get("hierarchyId") or ""),
+                    str(item.get("viewportProfile") or ""),
+                    fingerprint,
+                )
+            ].append(item)
+
+    summaries: list[dict[str, Any]] = []
+    for (hierarchy_id, viewport_profile, fingerprint), group in sorted(
+        grouped.items(),
+        key=lambda entry: entry[0],
+    ):
+        representative = min(group, key=measurement_ranking_sort_key)
+        representative_id = str(representative.get("candidate") or "")
+        all_candidates = sorted(str(item.get("candidate") or "") for item in group)
+        diagnostics = _policy_alias_differences(group)
+        for item in group:
+            item_id = str(item.get("candidate") or "")
+            item["renderedEquivalenceRepresentative"] = representative_id
+            item["renderedEquivalenceGroupSize"] = len(group)
+            item["renderedEquivalentAliases"] = [
+                candidate_id
+                for candidate_id in all_candidates
+                if candidate_id != item_id
+            ]
+            item["renderedEquivalenceExcludedFromRanking"] = (
+                item is not representative
+            )
+            item["policyRealizationAliasDiagnostics"] = copy.deepcopy(diagnostics)
+
+        if len(group) > 1:
+            summaries.append(
+                {
+                    "hierarchyId": hierarchy_id,
+                    "viewportProfile": viewport_profile,
+                    "fingerprint": fingerprint,
+                    "representative": representative_id,
+                    "equivalentCandidates": all_candidates,
+                    "equivalentAliases": [
+                        candidate_id
+                        for candidate_id in all_candidates
+                        if candidate_id != representative_id
+                    ],
+                    "groupSize": len(group),
+                    "policyAliasDiagnostics": diagnostics,
+                }
+            )
+    return summaries
+
+
+def rendered_policy_representatives(
+    measurements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    annotate_rendered_policy_equivalence(measurements)
+    return [
+        item
+        for item in measurements
+        if not bool(item.get("renderedEquivalenceExcludedFromRanking"))
+    ]
+
+
 def measurement_score(item: dict[str, Any]) -> int:
     classification = item.get("classification") or {}
     return int(classification.get("selectionScore", classification.get("score", 0)) or 0)
@@ -7408,6 +8660,757 @@ def measurement_score(item: dict[str, Any]) -> int:
 
 def measurement_status(item: dict[str, Any]) -> str:
     return str((item.get("classification") or {}).get("status") or "fail")
+
+
+def measurement_overlay_policy_count(item: dict[str, Any]) -> int:
+    """Count composed local policies that intentionally consume overlay space."""
+
+    composition = item.get("unitComposition") or {}
+    policies = (composition.get("unitPolicies") or {}).values()
+    return sum(
+        1
+        for policy in policies
+        if layout_unit_ownership_spec(str(policy)).get("mode") == "overlay"
+    )
+
+
+def measurement_margin_evidence(item: dict[str, Any]) -> dict[str, float | int]:
+    """Return unrounded Stage C evidence used after the integer score ties."""
+
+    classification = item.get("classification") or {}
+    phase_fit = item.get("phaseFit") or {}
+    unit_fit = item.get("layoutUnitFit") or {}
+    composition = item.get("unitComposition") or {}
+    phase_rows = list(phase_fit.get("phases") or [])
+    phase_measurements = list(item.get("phaseMeasurements") or [])
+
+    declared_headroom = phase_fit.get("worstDominantHeadroom")
+    if declared_headroom is None:
+        headrooms = [
+            float(row.get("dominantShare", 0) or 0)
+            - float(row.get("minDominantShare", 0) or 0)
+            for row in phase_rows
+        ]
+        worst_headroom = min(headrooms, default=-1.0)
+    else:
+        worst_headroom = float(declared_headroom)
+
+    declared_variance = phase_fit.get("scoreVariance")
+    if declared_variance is None:
+        phase_scores = [
+            float(row.get("rawScore", row.get("score", 0)) or 0)
+            for row in phase_rows
+        ]
+        if phase_scores:
+            mean_phase_score = sum(phase_scores) / len(phase_scores)
+            phase_variance = sum(
+                (score - mean_phase_score) ** 2 for score in phase_scores
+            ) / len(phase_scores)
+        else:
+            phase_variance = 0.0
+    else:
+        phase_variance = float(declared_variance)
+
+    occupancies = [
+        float((phase_item.get("geometryFacts") or {}).get("usefulFocusOccupancy", 0) or 0)
+        for phase_item in phase_measurements
+    ]
+    if not occupancies:
+        occupancies = [
+            float((item.get("geometryFacts") or {}).get("usefulFocusOccupancy", 0) or 0)
+        ]
+
+    return {
+        "selectionScoreRaw": float(
+            classification.get(
+                "selectionScoreRaw",
+                classification.get("selectionScore", classification.get("score", 0)),
+            )
+            or 0.0
+        ),
+        "worstPhaseHeadroom": float(worst_headroom),
+        "worstUnitScore": float(
+            unit_fit.get("worstScoreRaw", unit_fit.get("worstScore", 100)) or 0.0
+        ),
+        "overlayPolicyCount": measurement_overlay_policy_count(item),
+        "phaseScoreVariance": float(phase_variance),
+        "effectiveFocusOccupancy": (
+            sum(occupancies) / len(occupancies) if occupancies else 0.0
+        ),
+        "compositionPreflightScore": int(
+            composition.get("preflightScore", -1)
+            if composition.get("preflightScore") is not None
+            else -1
+        ),
+    }
+
+
+def measurement_ranking_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Sort best first while preserving every hard gate and status boundary."""
+
+    evidence = measurement_margin_evidence(item)
+    return (
+        -measurement_score(item),
+        measurement_quality_rank(measurement_status(item)),
+        -float(evidence["worstPhaseHeadroom"]),
+        -float(evidence["worstUnitScore"]),
+        int(evidence["overlayPolicyCount"]),
+        float(evidence["phaseScoreVariance"]),
+        -float(evidence["effectiveFocusOccupancy"]),
+        -int(evidence["compositionPreflightScore"]),
+        str(item.get("candidate") or ""),
+    )
+
+
+
+RESPONSIVE_REMEDIATION_POLICY_LEVELS: dict[str, int] = {
+    # Level 0 keeps large active regions simultaneously visible in exclusive partitions.
+    "dominant-workflow-stack": 0,
+    "phase-selector-unit": 0,
+    "command-over-dominant": 0,
+    "command-inline-header": 0,
+    "shared-horizontal-band": 0,
+    "bounded-side-drawer": 0,
+    # Level 1 compacts or reflows a persistent region without replacing the active task.
+    "compact-project-rail": 1,
+    "side-command-rail": 1,
+    "stacked-feedback": 1,
+    "bounded-bottom-drawer": 1,
+    # Level 2 uses inline staging or a bounded overlay because two large surfaces are tight.
+    "selector-overlay": 2,
+    "workflow-footer-overlay": 2,
+    "inline-phase-stage": 2,
+    # Level 3 replaces inactive or competing surfaces with sequential triggers/stages.
+    "one-active-plus-triggers": 3,
+}
+
+LEGACY_RESPONSIVE_REMEDIATION_LEVELS: dict[str, int] = {
+    "split-pane": 0,
+    "sectioned-sidebar": 0,
+    "inspector": 0,
+    "dashboard-grid": 0,
+    "top-band-dominant-surface": 0,
+    "source-order-stacked": 1,
+    "focus-priority": 1,
+    "bounded-drawer": 1,
+    "selected-context-workflow": 1,
+    "progressive-workflow": 2,
+    "workflow-with-proof-drawer": 2,
+    "top-band-focus-overlay": 2,
+}
+
+RESPONSIVE_REMEDIATION_LABELS = {
+    0: "simultaneous-partition",
+    1: "compact-or-reflow",
+    2: "inline-or-bounded-overlay",
+    3: "sequential-stage-replacement",
+}
+
+
+def responsive_contract_for_hierarchy(hierarchy: dict[str, Any]) -> dict[str, Any]:
+    """Return a validated capacity contract for responsive policy selection."""
+
+    declared = copy.deepcopy(hierarchy.get("responsiveContract") or {})
+    contract = {
+        "mode": "capacity-bands",
+        "policyVersion": RESPONSIVE_POLICY_VERSION,
+        "bands": [
+            {"id": "wide", "minWidth": 1320, "maxRemediationLevel": 0},
+            {"id": "medium", "minWidth": 1040, "maxRemediationLevel": 1},
+            {"id": "narrow", "minWidth": 760, "maxRemediationLevel": 2},
+            {"id": "compact", "minWidth": 0, "maxRemediationLevel": 3},
+        ],
+        "minimumRobustHeadroom": 0.01,
+        "switchPenalty": 1.75,
+        "unnecessaryRemediationPenalty": 12.0,
+        "hysteresisPx": DEFAULT_RESPONSIVE_HYSTERESIS_PX,
+        "semanticInvariants": [
+            "active focus remains usable",
+            "required active-phase companions remain attributable",
+            "critical actions remain reachable",
+            "no undeclared overlap or interception is introduced",
+        ],
+    }
+    contract.update({key: value for key, value in declared.items() if key != "bands"})
+    if declared.get("bands"):
+        contract["bands"] = copy.deepcopy(declared["bands"])
+
+    bands: list[dict[str, Any]] = []
+    for raw in contract.get("bands") or []:
+        band = {
+            "id": slugify(str(raw.get("id") or "band")),
+            "minWidth": max(0, int(raw.get("minWidth", 0) or 0)),
+            "maxRemediationLevel": max(
+                0, min(3, int(raw.get("maxRemediationLevel", 0) or 0))
+            ),
+            "reason": str(raw.get("reason") or ""),
+        }
+        bands.append(band)
+    if not bands:
+        raise ValueError(
+            f"Responsive contract for {hierarchy.get('id', '<unknown>')} has no bands."
+        )
+    bands.sort(key=lambda item: (-item["minWidth"], item["id"]))
+    if bands[-1]["minWidth"] != 0:
+        raise ValueError(
+            f"Responsive contract for {hierarchy.get('id', '<unknown>')} "
+            "must include a zero-width fallback band."
+        )
+    previous_level = -1
+    for band in bands:
+        level = int(band["maxRemediationLevel"])
+        if level < previous_level:
+            raise ValueError(
+                f"Responsive remediation must be monotonic as width shrinks: {bands!r}"
+            )
+        previous_level = level
+    contract["bands"] = bands
+    contract["minimumRobustHeadroom"] = max(
+        0.0, float(contract.get("minimumRobustHeadroom", 0.01) or 0.0)
+    )
+    contract["switchPenalty"] = max(
+        0.0, float(contract.get("switchPenalty", 1.75) or 0.0)
+    )
+    contract["unnecessaryRemediationPenalty"] = max(
+        0.0,
+        float(contract.get("unnecessaryRemediationPenalty", 12.0) or 0.0),
+    )
+    contract["hysteresisPx"] = max(
+        0, int(contract.get("hysteresisPx", DEFAULT_RESPONSIVE_HYSTERESIS_PX) or 0)
+    )
+    return contract
+
+
+def responsive_capacity_band(
+    contract: dict[str, Any],
+    width: int,
+) -> dict[str, Any]:
+    for band in contract.get("bands") or []:
+        if int(width) >= int(band.get("minWidth", 0) or 0):
+            return copy.deepcopy(band)
+    return copy.deepcopy((contract.get("bands") or [])[-1])
+
+
+def measurement_remediation_evidence(item: dict[str, Any]) -> dict[str, Any]:
+    """Describe how restrictive one realization is before viewport admissibility."""
+
+    composition = item.get("unitComposition") or {}
+    policies = {
+        str(unit_id): str(policy)
+        for unit_id, policy in (composition.get("unitPolicies") or {}).items()
+    }
+    details: list[dict[str, Any]] = []
+    if policies:
+        for unit_id, policy in sorted(policies.items()):
+            level = int(RESPONSIVE_REMEDIATION_POLICY_LEVELS.get(policy, 1))
+            details.append(
+                {
+                    "unitId": unit_id,
+                    "policy": policy,
+                    "level": level,
+                    "label": RESPONSIVE_REMEDIATION_LABELS[level],
+                }
+            )
+        level = max((entry["level"] for entry in details), default=0)
+    else:
+        candidate = str(item.get("candidate") or "")
+        level = int(LEGACY_RESPONSIVE_REMEDIATION_LEVELS.get(candidate, 1))
+        details.append(
+            {
+                "unitId": "legacy-application",
+                "policy": candidate,
+                "level": level,
+                "label": RESPONSIVE_REMEDIATION_LABELS[level],
+            }
+        )
+    return {
+        "level": level,
+        "label": RESPONSIVE_REMEDIATION_LABELS[level],
+        "policies": details,
+    }
+
+
+def _responsive_option_quality(item: dict[str, Any]) -> float:
+    evidence = measurement_margin_evidence(item)
+    status_penalty = {"pass": 0.0, "watch": 2.5, "fail": 80.0}.get(
+        measurement_status(item), 80.0
+    )
+    headroom = float(evidence["worstPhaseHeadroom"])
+    headroom_bonus = max(-0.20, min(0.20, headroom)) * 24.0
+    unit_bonus = (float(evidence["worstUnitScore"]) - 90.0) * 0.05
+    return (
+        float(evidence["selectionScoreRaw"])
+        + headroom_bonus
+        + unit_bonus
+        - status_penalty
+    )
+
+
+def _responsive_profile_options(
+    *,
+    hierarchy: dict[str, Any],
+    measurements: list[dict[str, Any]],
+    profile: ViewportProfile,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    """Create capacity-aware options for one measured viewport."""
+
+    band = responsive_capacity_band(contract, profile.width)
+    representatives = [
+        item
+        for item in measurements
+        if str(item.get("hierarchyId") or "") == str(hierarchy.get("id") or "")
+        and str(item.get("viewportProfile") or "") == profile.name
+        and not bool(item.get("renderedEquivalenceExcludedFromRanking"))
+    ]
+    passing = [
+        item
+        for item in representatives
+        if measurement_status(item) in ACCEPTABLE_LAYOUT_STATUSES
+    ]
+    option_rows: list[dict[str, Any]] = []
+    for item in representatives:
+        remediation = measurement_remediation_evidence(item)
+        evidence = measurement_margin_evidence(item)
+        option_rows.append(
+            {
+                "measurement": item,
+                "candidate": str(item.get("candidate") or ""),
+                "status": measurement_status(item),
+                "score": measurement_score(item),
+                "rawScore": float(evidence["selectionScoreRaw"]),
+                "headroom": float(evidence["worstPhaseHeadroom"]),
+                "worstUnitScore": float(evidence["worstUnitScore"]),
+                "remediationLevel": int(remediation["level"]),
+                "remediationLabel": str(remediation["label"]),
+                "remediationPolicies": copy.deepcopy(remediation["policies"]),
+                "capacityAdmissible": int(remediation["level"])
+                <= int(band["maxRemediationLevel"]),
+                "quality": _responsive_option_quality(item),
+            }
+        )
+
+    passing_rows = [
+        row
+        for row in option_rows
+        if row["status"] in ACCEPTABLE_LAYOUT_STATUSES
+    ]
+    capacity_rows = [row for row in passing_rows if row["capacityAdmissible"]]
+    forced_beyond_band = False
+    transition_gap = False
+    if capacity_rows:
+        usable = capacity_rows
+    elif passing_rows:
+        # The viewport has no passing realization inside its declared remediation
+        # ceiling. Keep the least-restrictive passing level so the report exposes
+        # that the capacity contract itself needs another realization.
+        forced_beyond_band = True
+        lowest_level = min(row["remediationLevel"] for row in passing_rows)
+        usable = [
+            row for row in passing_rows if row["remediationLevel"] == lowest_level
+        ]
+    else:
+        transition_gap = True
+        usable = sorted(option_rows, key=lambda row: measurement_ranking_sort_key(row["measurement"]))[:1]
+
+    robust_headroom = float(contract["minimumRobustHeadroom"])
+    robust_levels = [
+        row["remediationLevel"]
+        for row in usable
+        if row["headroom"] >= robust_headroom
+        and row["status"] in ACCEPTABLE_LAYOUT_STATUSES
+    ]
+    passing_levels = [
+        row["remediationLevel"]
+        for row in usable
+        if row["status"] in ACCEPTABLE_LAYOUT_STATUSES
+    ]
+    baseline_level = min(
+        robust_levels or passing_levels or [row["remediationLevel"] for row in usable] or [3]
+    )
+    for row in usable:
+        row["unnecessaryRemediationLevels"] = max(
+            0, int(row["remediationLevel"]) - int(baseline_level)
+        )
+        row["forcedBeyondBand"] = forced_beyond_band
+        row["transitionGap"] = transition_gap
+        item = row["measurement"]
+        item["responsiveCapacityBand"] = band["id"]
+        item["responsiveMaxRemediationLevel"] = int(band["maxRemediationLevel"])
+        item["responsiveRemediation"] = {
+            "level": row["remediationLevel"],
+            "label": row["remediationLabel"],
+            "policies": copy.deepcopy(row["remediationPolicies"]),
+        }
+        item["responsiveCapacityAdmissible"] = bool(row["capacityAdmissible"])
+        item["responsiveUnnecessaryRemediationLevels"] = int(
+            row["unnecessaryRemediationLevels"]
+        )
+
+    return {
+        "profile": profile,
+        "band": band,
+        "options": usable,
+        "allOptions": option_rows,
+        "forcedBeyondBand": forced_beyond_band,
+        "transitionGap": transition_gap,
+        "baselineLevel": baseline_level,
+    }
+
+
+def responsive_transition_rules(
+    selections: list[dict[str, Any]],
+    *,
+    hysteresis_px: int,
+) -> list[dict[str, Any]]:
+    """Build stable entry/exit thresholds between sampled selections."""
+
+    rules: list[dict[str, Any]] = []
+    for previous, current in zip(selections, selections[1:]):
+        if previous["candidate"] == current["candidate"]:
+            continue
+        upper_width = int(previous["width"])
+        lower_width = int(current["width"])
+        gap = max(2, upper_width - lower_width)
+        hysteresis = min(max(0, int(hysteresis_px)), max(0, gap - 2))
+        midpoint = (upper_width + lower_width) / 2.0
+        down_below = int(math.floor(midpoint - (hysteresis / 2.0)))
+        up_above = int(math.ceil(midpoint + (hysteresis / 2.0)))
+        down_below = max(lower_width, min(upper_width - 1, down_below))
+        up_above = max(down_below + 1, min(upper_width, up_above))
+        rules.append(
+            {
+                "fromCandidate": previous["candidate"],
+                "toCandidate": current["candidate"],
+                "fromRemediationLevel": previous["remediationLevel"],
+                "toRemediationLevel": current["remediationLevel"],
+                "upperProbeWidth": upper_width,
+                "lowerProbeWidth": lower_width,
+                "switchDownBelow": down_below,
+                "switchUpAbove": up_above,
+                "hysteresisPx": up_above - down_below,
+                "reason": (
+                    f"{previous['band']} capacity gives way to {current['band']} "
+                    f"capacity; remediation {previous['remediationLevel']}→"
+                    f"{current['remediationLevel']}"
+                ),
+            }
+        )
+    return rules
+
+
+def simulate_responsive_resize(
+    selections: list[dict[str, Any]],
+    transitions: list[dict[str, Any]],
+    *,
+    direction: str,
+) -> dict[str, Any]:
+    """Exercise the derived hysteresis state machine one pixel at a time."""
+
+    if not selections:
+        return {
+            "direction": direction,
+            "stable": False,
+            "switches": [],
+            "finalCandidate": "",
+        }
+    widest = int(selections[0]["width"])
+    narrowest = int(selections[-1]["width"])
+    switches: list[dict[str, Any]] = []
+    if direction == "down":
+        current = str(selections[0]["candidate"])
+        widths = range(widest, narrowest - 1, -1)
+        ordered_rules = list(transitions)
+        next_index = 0
+        for width in widths:
+            while next_index < len(ordered_rules):
+                rule = ordered_rules[next_index]
+                if current != rule["fromCandidate"]:
+                    next_index += 1
+                    continue
+                if width <= int(rule["switchDownBelow"]):
+                    current = str(rule["toCandidate"])
+                    switches.append({"width": width, "candidate": current})
+                    next_index += 1
+                    continue
+                break
+        expected = str(selections[-1]["candidate"])
+    elif direction == "up":
+        current = str(selections[-1]["candidate"])
+        widths = range(narrowest, widest + 1)
+        ordered_rules = list(reversed(transitions))
+        next_index = 0
+        for width in widths:
+            while next_index < len(ordered_rules):
+                rule = ordered_rules[next_index]
+                if current != rule["toCandidate"]:
+                    next_index += 1
+                    continue
+                if width >= int(rule["switchUpAbove"]):
+                    current = str(rule["fromCandidate"])
+                    switches.append({"width": width, "candidate": current})
+                    next_index += 1
+                    continue
+                break
+        expected = str(selections[0]["candidate"])
+    else:
+        raise ValueError("direction must be 'down' or 'up'")
+
+    candidate_sequence = [
+        str(selections[0 if direction == "down" else -1]["candidate"]),
+        *[str(item["candidate"]) for item in switches],
+    ]
+    oscillates = any(
+        candidate in candidate_sequence[:index]
+        for index, candidate in enumerate(candidate_sequence[1:], start=1)
+        if candidate != candidate_sequence[index - 1]
+    )
+    return {
+        "direction": direction,
+        "stable": current == expected and not oscillates,
+        "switches": switches,
+        "finalCandidate": current,
+        "expectedFinalCandidate": expected,
+        "oscillationDetected": oscillates,
+    }
+
+
+def responsive_policy_for_hierarchy(
+    *,
+    hierarchy: dict[str, Any],
+    measurements: list[dict[str, Any]],
+    profiles: list[ViewportProfile],
+    hysteresis_px: int | None = None,
+) -> dict[str, Any]:
+    """Select a monotonic, capacity-admissible composition across resize probes."""
+
+    contract = responsive_contract_for_hierarchy(hierarchy)
+    if hysteresis_px is not None:
+        contract["hysteresisPx"] = max(0, int(hysteresis_px))
+    available_profiles = [
+        profile
+        for profile in sorted(profiles, key=lambda item: (-item.width, -item.height))
+        if any(
+            str(item.get("hierarchyId") or "") == str(hierarchy.get("id") or "")
+            and str(item.get("viewportProfile") or "") == profile.name
+            for item in measurements
+        )
+    ]
+    profile_rows = [
+        _responsive_profile_options(
+            hierarchy=hierarchy,
+            measurements=measurements,
+            profile=profile,
+            contract=contract,
+        )
+        for profile in available_profiles
+    ]
+    if not profile_rows:
+        return {
+            "hierarchyId": hierarchy.get("id", ""),
+            "state": "notMeasured",
+            "policyVersion": RESPONSIVE_POLICY_VERSION,
+            "selections": [],
+            "transitions": [],
+        }
+
+    # Dynamic programming favors stable candidates, rejects unnecessary remediation
+    # at larger widths, and keeps remediation monotonic as width shrinks.
+    paths: dict[str, tuple[float, list[dict[str, Any]], int]] = {}
+    for index, profile_row in enumerate(profile_rows):
+        next_paths: dict[str, tuple[float, list[dict[str, Any]], int]] = {}
+        for option in profile_row["options"]:
+            local_cost = 100.0 - float(option["quality"])
+            local_cost += (
+                float(contract["unnecessaryRemediationPenalty"])
+                * int(option["unnecessaryRemediationLevels"])
+            )
+            if option["forcedBeyondBand"]:
+                local_cost += 24.0
+            if option["transitionGap"]:
+                local_cost += 120.0
+            if index == 0:
+                next_paths[option["candidate"]] = (
+                    local_cost,
+                    [option],
+                    0,
+                )
+                continue
+            for previous_cost, previous_path, previous_violations in paths.values():
+                previous = previous_path[-1]
+                monotonic_violation = (
+                    int(option["remediationLevel"])
+                    < int(previous["remediationLevel"])
+                )
+                transition_cost = (
+                    0.0
+                    if option["candidate"] == previous["candidate"]
+                    else float(contract["switchPenalty"])
+                )
+                if monotonic_violation:
+                    transition_cost += 80.0
+                candidate_cost = previous_cost + local_cost + transition_cost
+                candidate_violations = previous_violations + int(monotonic_violation)
+                existing = next_paths.get(option["candidate"])
+                proposal = (
+                    candidate_cost,
+                    [*previous_path, option],
+                    candidate_violations,
+                )
+                if existing is None or (
+                    proposal[0],
+                    proposal[2],
+                    option["candidate"],
+                ) < (
+                    existing[0],
+                    existing[2],
+                    existing[1][-1]["candidate"],
+                ):
+                    next_paths[option["candidate"]] = proposal
+        paths = next_paths
+
+    if not paths:
+        return {
+            "hierarchyId": hierarchy.get("id", ""),
+            "state": "fail",
+            "policyVersion": RESPONSIVE_POLICY_VERSION,
+            "reason": "No responsive candidate path was available.",
+            "selections": [],
+            "transitions": [],
+        }
+
+    _, selected_options, monotonic_violations = min(
+        paths.values(),
+        key=lambda entry: (
+            entry[2],
+            entry[0],
+            entry[1][-1]["candidate"],
+        ),
+    )
+    selections: list[dict[str, Any]] = []
+    for profile_row, option in zip(profile_rows, selected_options):
+        profile = profile_row["profile"]
+        item = option["measurement"]
+        item["responsivePolicySelected"] = True
+        selections.append(
+            {
+                "viewportProfile": profile.name,
+                "width": profile.width,
+                "height": profile.height,
+                "band": profile_row["band"]["id"],
+                "maxRemediationLevel": int(
+                    profile_row["band"]["maxRemediationLevel"]
+                ),
+                "candidate": option["candidate"],
+                "status": option["status"],
+                "score": option["score"],
+                "rawScore": option["rawScore"],
+                "worstPhaseHeadroom": option["headroom"],
+                "worstUnitScore": option["worstUnitScore"],
+                "remediationLevel": option["remediationLevel"],
+                "remediationLabel": option["remediationLabel"],
+                "capacityAdmissible": option["capacityAdmissible"],
+                "forcedBeyondBand": option["forcedBeyondBand"],
+                "unnecessaryRemediationLevels": option[
+                    "unnecessaryRemediationLevels"
+                ],
+                "transitionGap": option["transitionGap"],
+                "phaseFloorFailureCount": int(
+                    (item.get("phaseFit") or {}).get("phaseFloorFailureCount", 0)
+                    or 0
+                ),
+                "snapshots": copy.deepcopy(item.get("phaseSnapshots") or {}),
+            }
+        )
+
+    transitions = responsive_transition_rules(
+        selections,
+        hysteresis_px=int(contract["hysteresisPx"]),
+    )
+    down = simulate_responsive_resize(
+        selections, transitions, direction="down"
+    )
+    up = simulate_responsive_resize(selections, transitions, direction="up")
+    gaps = [item for item in selections if item["transitionGap"]]
+    forced = [item for item in selections if item["forcedBeyondBand"]]
+    unnecessary = [
+        item for item in selections if item["unnecessaryRemediationLevels"] > 0
+    ]
+    floor_failures = sum(item["phaseFloorFailureCount"] for item in selections)
+    all_acceptable = all(
+        item["status"] in ACCEPTABLE_LAYOUT_STATUSES for item in selections
+    )
+    headrooms = [float(item["worstPhaseHeadroom"]) for item in selections]
+    width_gaps = [
+        selections[index]["width"] - selections[index + 1]["width"]
+        for index in range(len(selections) - 1)
+    ]
+    state = "pass"
+    if (
+        gaps
+        or floor_failures
+        or monotonic_violations
+        or not all_acceptable
+        or not down["stable"]
+        or not up["stable"]
+    ):
+        state = "fail"
+    elif forced or unnecessary or min(headrooms, default=0.0) < float(
+        contract["minimumRobustHeadroom"]
+    ):
+        state = "watch"
+
+    return {
+        "hierarchyId": hierarchy.get("id", ""),
+        "state": state,
+        "policyVersion": RESPONSIVE_POLICY_VERSION,
+        "contract": contract,
+        "semanticContractStable": bool(
+            all_acceptable and not floor_failures and not gaps
+        ),
+        "selections": selections,
+        "transitions": transitions,
+        "resizeSimulation": {"down": down, "up": up},
+        "transitionGapCount": len(gaps),
+        "forcedBeyondBandCount": len(forced),
+        "unnecessaryRemediationCount": len(unnecessary),
+        "monotonicViolationCount": int(monotonic_violations),
+        "switchCount": len(transitions),
+        "worstViewportPhaseHeadroom": min(headrooms, default=-1.0),
+        "meanViewportPhaseHeadroom": (
+            sum(headrooms) / len(headrooms) if headrooms else -1.0
+        ),
+        "maxProbeGapPx": max(width_gaps, default=0),
+        "probeCount": len(selections),
+        "wideToNarrowStable": bool(down["stable"]),
+        "narrowToWideStable": bool(up["stable"]),
+    }
+
+
+def build_responsive_policies(
+    *,
+    hierarchies: list[dict[str, Any]],
+    measurements: list[dict[str, Any]],
+    profiles_by_hierarchy: dict[str, list[ViewportProfile]],
+    responsive_mode: str,
+    hysteresis_px: int,
+) -> list[dict[str, Any]]:
+    mode = str(responsive_mode or "off").lower()
+    if mode == "off":
+        return []
+    policies: list[dict[str, Any]] = []
+    for hierarchy in hierarchies:
+        if mode == "recursive" and not hierarchy.get("layoutUnitTree"):
+            continue
+        profiles = profiles_by_hierarchy.get(str(hierarchy.get("id") or ""), [])
+        policy = responsive_policy_for_hierarchy(
+            hierarchy=hierarchy,
+            measurements=measurements,
+            profiles=profiles,
+            hysteresis_px=hysteresis_px,
+        )
+        policies.append(policy)
+    return policies
 
 
 def measurement_selection_row(
@@ -7420,13 +9423,44 @@ def measurement_selection_row(
     facts = item.get("geometryFacts") or {}
     phase_fit = item.get("phaseFit") or {}
     unit_fit = item.get("layoutUnitFit") or {}
-    painted_shadow = facts.get("paintedOwnershipShadow") or {}
+    painted = facts.get("paintedOwnership") or facts.get("paintedOwnershipShadow") or {}
     highest_classification = highest_scoring.get("classification") or {}
+    margin_evidence = measurement_margin_evidence(item)
     row = {
         "hierarchyId": item["hierarchyId"],
         "viewportProfile": item["viewportProfile"],
         "candidate": item["candidate"],
         "candidateMode": item.get("candidateMode", "legacy-family"),
+        "responsivePolicySelected": bool(item.get("responsivePolicySelected")),
+        "responsiveCapacityBand": item.get("responsiveCapacityBand", ""),
+        "responsiveMaxRemediationLevel": item.get(
+            "responsiveMaxRemediationLevel"
+        ),
+        "responsiveRemediation": copy.deepcopy(
+            item.get("responsiveRemediation") or {}
+        ),
+        "responsiveCapacityAdmissible": item.get(
+            "responsiveCapacityAdmissible"
+        ),
+        "responsiveUnnecessaryRemediationLevels": int(
+            item.get("responsiveUnnecessaryRemediationLevels", 0) or 0
+        ),
+        "renderedPolicyFingerprint": item.get("renderedPolicyFingerprint", ""),
+        "renderedPolicyFingerprintVersion": item.get(
+            "renderedPolicyFingerprintVersion", ""
+        ),
+        "renderedEquivalenceRepresentative": item.get(
+            "renderedEquivalenceRepresentative", item.get("candidate", "")
+        ),
+        "renderedEquivalenceGroupSize": int(
+            item.get("renderedEquivalenceGroupSize", 1) or 1
+        ),
+        "renderedEquivalentAliases": list(
+            item.get("renderedEquivalentAliases") or []
+        ),
+        "policyRealizationAliasDiagnostics": copy.deepcopy(
+            item.get("policyRealizationAliasDiagnostics") or []
+        ),
         "renderFamily": item.get("renderFamily", item.get("candidate", "")),
         "compositionLabel": (item.get("unitComposition") or {}).get(
             "compositionLabel", ""
@@ -7439,39 +9473,105 @@ def measurement_selection_row(
         "selectionState": selection_state,
         "noPassingCandidate": selection_state == "noPassingCandidate",
         "unclaimedAreaRatio": facts.get("unclaimedAreaRatio", 0),
+        "rootUnclaimedAreaRatio": facts.get(
+            "rootUnclaimedAreaRatio", facts.get("unclaimedAreaRatio", 0)
+        ),
+        "activePresentationMode": facts.get(
+            "activePresentationMode", "root-fallback"
+        ),
+        "activePresentationUnitId": facts.get("activePresentationUnitId", ""),
+        "activePresentationOccupancy": facts.get(
+            "activePresentationOccupancy",
+            max(0.0, 1.0 - float(facts.get("unclaimedAreaRatio", 0) or 0)),
+        ),
+        "activePresentationUnclaimedRatio": facts.get(
+            "activePresentationUnclaimedRatio",
+            facts.get("unclaimedAreaRatio", 0),
+        ),
+        "intentionalInactiveRootRatio": facts.get(
+            "intentionalInactiveRootRatio", 0
+        ),
+        "accidentalUnclaimedRootRatio": facts.get(
+            "accidentalUnclaimedRootRatio",
+            facts.get("unclaimedAreaRatio", 0),
+        ),
         "focusShare": facts.get("focusShare", 0),
         "paintedOwnershipMode": facts.get("paintedOwnershipMode", "unavailable"),
         "paintedOwnershipEnforced": bool(
             facts.get("paintedOwnershipEnforced", False)
         ),
-        "effectiveFocusShareShadow": painted_shadow.get(
-            "effectiveFocusShare", facts.get("focusShare", 0)
+        "rawFocusShare": facts.get(
+            "rawFocusShare", painted.get("rawFocusShare", facts.get("focusShare", 0))
         ),
-        "focusOccludedShareShadow": painted_shadow.get(
-            "focusOccludedShare", 0
+        "effectiveFocusShare": facts.get(
+            "effectiveFocusShare",
+            painted.get("effectiveFocusShare", facts.get("focusShare", 0)),
         ),
-        "exclusiveOwnedShareShadow": painted_shadow.get(
-            "exclusiveOwnedShare", 0
+        "focusOccludedShare": facts.get(
+            "focusOccludedShare", painted.get("focusOccludedShare", 0)
         ),
-        "doubleClaimedShareShadow": painted_shadow.get(
-            "doubleClaimedShare", 0
+        "exclusiveOwnedShare": facts.get(
+            "exclusiveOwnedShare", painted.get("exclusiveOwnedShare", 0)
         ),
-        "declaredOverlayShareShadow": painted_shadow.get(
-            "declaredOverlayShare", 0
+        "doubleClaimedShare": facts.get(
+            "doubleClaimedShare", painted.get("doubleClaimedShare", 0)
         ),
-        "undeclaredPartitionOverlapShareShadow": painted_shadow.get(
-            "undeclaredPartitionOverlapShare", 0
+        "declaredOverlayShare": facts.get(
+            "declaredOverlayShare", painted.get("declaredOverlayShare", 0)
         ),
-        "partitionOverlapCellShareShadow": painted_shadow.get(
-            "partitionOverlapCellShare", 0
+        "undeclaredPartitionOverlapShare": facts.get(
+            "undeclaredPartitionOverlapShare",
+            painted.get("undeclaredPartitionOverlapShare", 0),
         ),
-        "partitionOverlapByUnitShadow": painted_shadow.get(
-            "partitionOverlapByUnit", []
+        "partitionOverlapCellShare": facts.get(
+            "partitionOverlapCellShare",
+            painted.get("partitionOverlapCellShare", 0),
         ),
-        "undeclaredPartitionOverlapMatrixShadow": painted_shadow.get(
+        "blockedCriticalControlCount": facts.get(
+            "blockedCriticalControlCount", 0
+        ),
+        "foreignInterceptedCriticalControlCount": facts.get(
+            "foreignInterceptedCriticalControlCount",
+            facts.get("foreignInterceptedCriticalControlCountShadow", 0),
+        ),
+        "controlInterceptionOutcomeTotals": facts.get(
+            "controlInterceptionOutcomeTotals",
+            facts.get("controlInterceptionOutcomeTotalsShadow", {}),
+        ),
+        "paintedOwnershipOverlapMatrix": painted.get("overlapMatrix", []),
+        "partitionOverlapByUnit": painted.get("partitionOverlapByUnit", []),
+        "undeclaredPartitionOverlapMatrix": painted.get(
             "undeclaredPartitionOverlapMatrix", []
         ),
-        "overlayBudgetExceededShadow": painted_shadow.get(
+        "overlayBudgetExceeded": painted.get("overlayBudgetExceeded", []),
+        "effectiveFocusShareShadow": painted.get(
+            "effectiveFocusShare", facts.get("focusShare", 0)
+        ),
+        "focusOccludedShareShadow": painted.get(
+            "focusOccludedShare", 0
+        ),
+        "exclusiveOwnedShareShadow": painted.get(
+            "exclusiveOwnedShare", 0
+        ),
+        "doubleClaimedShareShadow": painted.get(
+            "doubleClaimedShare", 0
+        ),
+        "declaredOverlayShareShadow": painted.get(
+            "declaredOverlayShare", 0
+        ),
+        "undeclaredPartitionOverlapShareShadow": painted.get(
+            "undeclaredPartitionOverlapShare", 0
+        ),
+        "partitionOverlapCellShareShadow": painted.get(
+            "partitionOverlapCellShare", 0
+        ),
+        "partitionOverlapByUnitShadow": painted.get(
+            "partitionOverlapByUnit", []
+        ),
+        "undeclaredPartitionOverlapMatrixShadow": painted.get(
+            "undeclaredPartitionOverlapMatrix", []
+        ),
+        "overlayBudgetExceededShadow": painted.get(
             "overlayBudgetExceeded", []
         ),
         "interceptedCriticalControlCountShadow": facts.get(
@@ -7487,7 +9587,7 @@ def measurement_selection_row(
         "controlInterceptionOutcomeTotalsShadow": facts.get(
             "controlInterceptionOutcomeTotalsShadow", {}
         ),
-        "paintedOwnershipOverlapMatrixShadow": painted_shadow.get(
+        "paintedOwnershipOverlapMatrixShadow": painted.get(
             "overlapMatrix", []
         ),
         "desiredFocusShare": facts.get("desiredFocusShare", 0),
@@ -7495,6 +9595,11 @@ def measurement_selection_row(
         "companionProximityScore": facts.get("companionProximityScore", 1),
         "geometryScore": classification.get("geometryScore", classification.get("score", 0)),
         "selectionScore": classification.get("selectionScore", classification.get("score", 0)),
+        "selectionScoreRaw": classification.get(
+            "selectionScoreRaw",
+            classification.get("selectionScore", classification.get("score", 0)),
+        ),
+        "selectionMarginEvidence": margin_evidence,
         "contractFitScore": classification.get("contractFitScore", 0),
         "contractFitState": classification.get("contractFitState", "notEvaluated"),
         "affordanceFitScore": classification.get("affordanceFitScore", 0),
@@ -7502,13 +9607,44 @@ def measurement_selection_row(
         "phaseFitScore": classification.get("phaseFitScore", 0),
         "phaseFitState": classification.get("phaseFitState", "notEvaluated"),
         "phaseWorstScore": phase_fit.get("worstScore", 0),
+        "phaseWorstScoreRaw": phase_fit.get(
+            "worstScoreRaw", phase_fit.get("worstScore", 0)
+        ),
         "phaseMeanScore": phase_fit.get("meanScore", 0),
+        "phaseMeanScoreRaw": phase_fit.get(
+            "meanScoreRaw", phase_fit.get("meanScore", 0)
+        ),
         "phaseSelectedDefaultScore": phase_fit.get("selectedDefaultScore", 0),
+        "phaseSelectedDefaultScoreRaw": phase_fit.get(
+            "selectedDefaultScoreRaw", phase_fit.get("selectedDefaultScore", 0)
+        ),
+        "phaseWorstDominantHeadroom": phase_fit.get(
+            "worstDominantHeadroom", -1.0
+        ),
+        "phaseMeanDominantHeadroom": phase_fit.get(
+            "meanDominantHeadroom", -1.0
+        ),
+        "phaseSelectedDefaultHeadroom": phase_fit.get(
+            "selectedDefaultHeadroom", -1.0
+        ),
+        "phaseWorstRawDominantHeadroom": phase_fit.get(
+            "worstRawDominantHeadroom",
+            phase_fit.get("worstDominantHeadroom", -1.0),
+        ),
+        "phaseFloorTolerance": phase_fit.get(
+            "phaseFloorTolerance", PHASE_SHARE_FLOOR_TOLERANCE
+        ),
+        "phaseFloorFailureCount": phase_fit.get("phaseFloorFailureCount", 0),
+        "phaseScoreVariance": phase_fit.get("scoreVariance", 0.0),
+        "phaseScoreStdDev": phase_fit.get("scoreStdDev", 0.0),
         "phaseSelectedDefaultPhase": phase_fit.get("selectedDefaultPhase", ""),
         "phaseHardFailureCount": phase_fit.get("hardFailureCount", 0),
         "layoutUnitFitScore": classification.get("layoutUnitFitScore", 100),
         "layoutUnitFitState": classification.get("layoutUnitFitState", "notDeclared"),
         "layoutUnitWorstScore": unit_fit.get("worstScore", 100),
+        "layoutUnitWorstScoreRaw": unit_fit.get(
+            "worstScoreRaw", unit_fit.get("worstScore", 100)
+        ),
         "layoutUnitHardFailureCount": unit_fit.get("hardFailureCount", 0),
         "layoutUnitParallelBranches": unit_fit.get("parallelBranches", []),
         "unitComposition": item.get("unitComposition", {}),
@@ -7547,7 +9683,19 @@ def measurement_selection_row(
     return row
 
 
-def best_by_hierarchy_viewport_rows(measurements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def best_by_hierarchy_viewport_rows(
+    measurements: list[dict[str, Any]],
+    responsive_policies: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    annotate_rendered_policy_equivalence(measurements)
+    responsive_selected = {
+        (
+            str(policy.get("hierarchyId") or ""),
+            str(selection.get("viewportProfile") or ""),
+        ): str(selection.get("candidate") or "")
+        for policy in (responsive_policies or [])
+        for selection in (policy.get("selections") or [])
+    }
     grouped: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
     for measurement in measurements:
@@ -7555,21 +9703,48 @@ def best_by_hierarchy_viewport_rows(measurements: list[dict[str, Any]]) -> list[
         if key not in grouped:
             grouped[key] = []
             order.append(key)
-        grouped[key].append(measurement)
+        if not bool(measurement.get("renderedEquivalenceExcludedFromRanking")):
+            grouped[key].append(measurement)
 
     rows: list[dict[str, Any]] = []
     for key in order:
         ranked = sorted(
             grouped[key],
-            key=lambda item: (
-                measurement_score(item),
-                1 if measurement_status(item) == "pass" else 0,
-                1 if measurement_status(item) == "watch" else 0,
-            ),
-            reverse=True,
+            key=measurement_ranking_sort_key,
         )
         highest_scoring = ranked[0]
-        acceptable = [item for item in ranked if measurement_status(item) in ACCEPTABLE_LAYOUT_STATUSES]
+        hierarchy_id, viewport_profile = key.split("::", 1)
+        responsive_candidate = responsive_selected.get(
+            (hierarchy_id, viewport_profile)
+        )
+        responsive_item = next(
+            (
+                item
+                for item in ranked
+                if str(item.get("candidate") or "") == responsive_candidate
+            ),
+            None,
+        )
+        if responsive_item is not None:
+            selection_state = (
+                "responsivePolicySelection"
+                if measurement_status(responsive_item) in ACCEPTABLE_LAYOUT_STATUSES
+                else "responsiveTransitionGap"
+            )
+            rows.append(
+                measurement_selection_row(
+                    responsive_item,
+                    selection_state=selection_state,
+                    highest_scoring=highest_scoring,
+                )
+            )
+            continue
+
+        acceptable = [
+            item
+            for item in ranked
+            if measurement_status(item) in ACCEPTABLE_LAYOUT_STATUSES
+        ]
         if acceptable:
             rows.append(
                 measurement_selection_row(
@@ -7598,6 +9773,9 @@ def run_synthetic_trials(
     output_dir: Path,
     screenshot_mode: str,
     keep_html: bool,
+    responsive_mode: str = DEFAULT_RESPONSIVE_MODE,
+    responsive_viewports: list[ViewportProfile] | None = None,
+    responsive_hysteresis_px: int = DEFAULT_RESPONSIVE_HYSTERESIS_PX,
 ) -> dict[str, Any]:
     try:
         from playwright.sync_api import sync_playwright
@@ -7608,6 +9786,31 @@ def run_synthetic_trials(
     measurements: list[dict[str, Any]] = []
     snapshot_files: list[str] = []
     generated_at = datetime.now(timezone.utc).isoformat()
+    responsive_mode = str(responsive_mode or "off").lower()
+    if responsive_mode not in {"off", "recursive", "all"}:
+        raise ValueError(
+            "responsive_mode must be one of: off, recursive, all"
+        )
+    responsive_viewports = list(responsive_viewports or [])
+    profiles_by_hierarchy = {
+        str(hierarchy.get("id") or ""): responsive_viewports_for_hierarchy(
+            hierarchy,
+            base_profiles=viewports,
+            responsive_profiles=responsive_viewports,
+            responsive_mode=responsive_mode,
+        )
+        for hierarchy in hierarchies
+    }
+    all_viewports: list[ViewportProfile] = []
+    seen_viewports: set[tuple[str, int, int]] = set()
+    for profiles in profiles_by_hierarchy.values():
+        for profile in profiles:
+            key = (profile.name, profile.width, profile.height)
+            if key in seen_viewports:
+                continue
+            seen_viewports.add(key)
+            all_viewports.append(profile)
+    all_viewports.sort(key=lambda item: (-item.width, -item.height, item.name))
 
     with tempfile.TemporaryDirectory(prefix="flog-layout-trials-") as temp_name:
         temp_dir = Path(temp_name)
@@ -7618,7 +9821,7 @@ def run_synthetic_trials(
                 raise SystemExit(playwright_missing_message(exc)) from exc
 
             try:
-                for viewport in viewports:
+                for viewport in all_viewports:
                     context = browser.new_context(
                         viewport={"width": viewport.width, "height": viewport.height},
                         device_scale_factor=1,
@@ -7626,6 +9829,16 @@ def run_synthetic_trials(
                     page = context.new_page()
                     page.on("console", lambda msg: None)
                     for hierarchy in hierarchies:
+                        allowed_profiles = profiles_by_hierarchy.get(
+                            str(hierarchy.get("id") or ""), []
+                        )
+                        if not any(
+                            profile.name == viewport.name
+                            and profile.width == viewport.width
+                            and profile.height == viewport.height
+                            for profile in allowed_profiles
+                        ):
+                            continue
                         scenarios = phase_trial_scenarios(hierarchy)
                         multi_phase = len(scenarios) > 1
                         canonical_phase = str(
@@ -7672,8 +9885,16 @@ def run_synthetic_trials(
                                         "candidateMode": candidate_mode(candidate),
                                         "chrome": chrome,
                                         "viewportProfile": viewport.name,
+                                        "viewportWidth": viewport.width,
+                                        "viewportHeight": viewport.height,
+                                        "responsiveProbe": viewport.responsive_probe,
                                         "phase": phase,
                                     },
+                                )
+                                measurement["viewportWidth"] = viewport.width
+                                measurement["viewportHeight"] = viewport.height
+                                measurement["responsiveProbe"] = bool(
+                                    viewport.responsive_probe
                                 )
                                 measurement["hierarchyTitle"] = hierarchy["title"]
                                 measurement["hierarchyDescription"] = hierarchy[
@@ -7741,6 +9962,10 @@ def run_synthetic_trials(
                                         f"{hierarchy['id']} / {candidate} / "
                                         f"{viewport.name} / {phase}."
                                     )
+                                apply_phase_floor_gate_to_measurement(
+                                    realized,
+                                    measurement,
+                                )
                                 apply_realized_state_fit(realized, measurement)
                                 phase_measurements.append(measurement)
 
@@ -7779,15 +10004,37 @@ def run_synthetic_trials(
             finally:
                 browser.close()
 
-    best_by_hierarchy = best_by_hierarchy_viewport_rows(measurements)
+    rendered_equivalence_groups = annotate_rendered_policy_equivalence(measurements)
+    responsive_policies = build_responsive_policies(
+        hierarchies=hierarchies,
+        measurements=measurements,
+        profiles_by_hierarchy=profiles_by_hierarchy,
+        responsive_mode=responsive_mode,
+        hysteresis_px=responsive_hysteresis_px,
+    )
+    best_by_hierarchy = best_by_hierarchy_viewport_rows(
+        measurements,
+        responsive_policies=responsive_policies,
+    )
 
     return {
         "kind": "mcel.flog.synthetic.layout.trial.report",
         "generatedAt": generated_at,
         "smokeLevel": "synthetic-hierarchy-layout-trials",
         "geometryEngine": "playwright-chromium",
-        "paintedOwnershipMode": "shadow-only",
-        "paintedOwnershipEnforced": False,
+        "paintedOwnershipMode": "exclusive-enforced",
+        "paintedOwnershipEnforced": True,
+        "phaseFloorGateMode": "unified-effective-share-absolute",
+        "phaseFloorTolerance": PHASE_SHARE_FLOOR_TOLERANCE,
+        "densityScoringMode": "phase-relative-active-presentation",
+        "candidateRankingMode": "rendered-equivalence-deduplicated-margin-ranking",
+        "responsiveMode": responsive_mode,
+        "responsivePolicyVersion": RESPONSIVE_POLICY_VERSION,
+        "responsiveHysteresisPx": int(responsive_hysteresis_px),
+        "responsivePolicies": responsive_policies,
+        "renderedPolicyFingerprintVersion": RENDERED_POLICY_FINGERPRINT_VERSION,
+        "renderedPolicyFingerprintBins": RENDERED_POLICY_FINGERPRINT_BINS,
+        "renderedPolicyEquivalenceGroups": rendered_equivalence_groups,
         "hierarchySource": "generated-mcel-like-html",
         "chrome": chrome,
         "candidates": candidates,
@@ -7827,6 +10074,14 @@ def run_synthetic_trials(
                 "layoutUnitTree": copy.deepcopy(item.get("layoutUnitTree")),
                 "layoutUnits": layout_unit_specs(item),
                 "layoutUnitDataflow": layout_unit_dataflow_audit(item),
+                "responsiveContract": (
+                    responsive_contract_for_hierarchy(item)
+                    if (
+                        responsive_mode == "all"
+                        or (responsive_mode == "recursive" and item.get("layoutUnitTree"))
+                    )
+                    else {}
+                ),
                 "localPolicyCatalog": (
                     layout_unit_policy_catalog(item)
                     if item.get("layoutUnitTree")
@@ -7843,8 +10098,25 @@ def run_synthetic_trials(
             for item in hierarchies
         ],
         "viewports": [
+            {
+                "name": vp.name,
+                "width": vp.width,
+                "height": vp.height,
+                "responsiveProbe": bool(vp.responsive_probe),
+            }
+            for vp in all_viewports
+        ],
+        "baseViewports": [
             {"name": vp.name, "width": vp.width, "height": vp.height}
             for vp in viewports
+        ],
+        "responsiveViewports": [
+            {
+                "name": vp.name,
+                "width": vp.width,
+                "height": vp.height,
+            }
+            for vp in responsive_viewports
         ],
         "screenshotMode": screenshot_mode,
         "snapshotDirectory": ".",
@@ -7870,12 +10142,18 @@ def measurement_quality_rank(status: str) -> int:
     return {"pass": 0, "watch": 1, "fail": 2}.get((status or "fail").lower(), 3)
 
 
-def rollup_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
-    classification = item.get("classification") or {}
+def rollup_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    evidence = measurement_margin_evidence(item)
     return (
-        measurement_quality_rank(classification.get("status", "fail")),
-        -int(classification.get("score", 0)),
-        item.get("candidate", ""),
+        measurement_quality_rank(measurement_status(item)),
+        -measurement_score(item),
+        -float(evidence["worstPhaseHeadroom"]),
+        -float(evidence["worstUnitScore"]),
+        int(evidence["overlayPolicyCount"]),
+        float(evidence["phaseScoreVariance"]),
+        -float(evidence["effectiveFocusOccupancy"]),
+        -int(evidence["compositionPreflightScore"]),
+        str(item.get("candidate") or ""),
     )
 
 
@@ -7949,6 +10227,8 @@ def generate_rollup_pngs(
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     order: list[tuple[str, str]] = []
     for measurement in report.get("measurements", []):
+        if bool(measurement.get("renderedEquivalenceExcludedFromRanking")):
+            continue
         key = (measurement["hierarchyId"], measurement["viewportProfile"])
         if key not in groups:
             order.append(key)
@@ -8090,21 +10370,266 @@ def generate_rollup_pngs(
     ]
 
 
-def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
+
+REPORT_DETAIL_COMPACT = "compact"
+REPORT_DETAIL_FULL = "full"
+COMPACT_MEASUREMENT_VERSION = "responsive-trial-summary-v1"
+
+
+def compact_phase_summary(item: dict[str, Any]) -> list[dict[str, Any]]:
+    phase_fit = item.get("phaseFit") or {}
+    phases = phase_fit.get("phases") or []
+    if phases:
+        return [
+            {
+                "phase": str(phase.get("phase") or "default"),
+                "score": phase.get("score", 0),
+                "rawScore": phase.get("rawScore", phase.get("score", 0)),
+                "dominantShare": phase.get("dominantShare", 0),
+                "minDominantShare": phase.get("minDominantShare", 0),
+                "dominantFloorMet": bool(phase.get("dominantFloorMet", False)),
+                "dominantHeadroom": phase.get("dominantHeadroom", 0),
+                "dominantRawHeadroom": phase.get(
+                    "dominantRawHeadroom", phase.get("dominantHeadroom", 0)
+                ),
+                "hardFailureCount": int(phase.get("hardFailureCount", 0) or 0),
+            }
+            for phase in phases
+        ]
+
+    summaries: list[dict[str, Any]] = []
+    for phase in item.get("phaseMeasurements") or []:
+        facts = phase.get("geometryFacts") or {}
+        classification = phase.get("classification") or {}
+        floor = classification.get("phaseFloorGate") or {}
+        summaries.append(
+            {
+                "phase": str(phase.get("phase") or "default"),
+                "score": classification.get("score", 0),
+                "rawScore": classification.get(
+                    "selectionScoreRaw", classification.get("score", 0)
+                ),
+                "dominantShare": facts.get(
+                    "effectiveFocusShare", facts.get("focusShare", 0)
+                ),
+                "minDominantShare": floor.get(
+                    "minimumShare",
+                    facts.get("minimumFocusShare", facts.get("minFocusShare", 0)),
+                ),
+                "dominantFloorMet": bool(
+                    floor.get("met", classification.get("status") != "fail")
+                ),
+                "dominantHeadroom": floor.get("rankedHeadroom", 0),
+                "dominantRawHeadroom": floor.get(
+                    "rawHeadroom", floor.get("rankedHeadroom", 0)
+                ),
+                "hardFailureCount": int(
+                    classification.get("phaseFloorFailureCount", 0) or 0
+                ),
+            }
+        )
+    return summaries
+
+
+def compact_measurement_summary(item: dict[str, Any]) -> dict[str, Any]:
+    classification = item.get("classification") or {}
+    facts = item.get("geometryFacts") or {}
+    phase_fit = item.get("phaseFit") or {}
+    unit_fit = item.get("layoutUnitFit") or {}
+    composition = item.get("unitComposition") or {}
+    painted = facts.get("paintedOwnership") or facts.get("paintedOwnershipShadow") or {}
+    margin = measurement_margin_evidence(item)
+    return {
+        "hierarchyId": str(item.get("hierarchyId") or ""),
+        "viewportProfile": str(item.get("viewportProfile") or ""),
+        "viewportWidth": int(item.get("viewportWidth", 0) or 0),
+        "viewportHeight": int(item.get("viewportHeight", 0) or 0),
+        "responsiveProbe": bool(item.get("responsiveProbe", False)),
+        "candidate": str(item.get("candidate") or ""),
+        "candidateMode": str(item.get("candidateMode") or "legacy-family"),
+        "renderFamily": str(item.get("renderFamily") or item.get("candidate") or ""),
+        "canonicalPhase": str(item.get("canonicalPhase") or item.get("phase") or ""),
+        "status": str(classification.get("status") or "fail"),
+        "score": classification.get("score", 0),
+        "selectionScoreRaw": classification.get(
+            "selectionScoreRaw",
+            classification.get("selectionScore", classification.get("score", 0)),
+        ),
+        "geometryScore": classification.get(
+            "geometryScore", classification.get("score", 0)
+        ),
+        "contractFitScore": classification.get("contractFitScore", 0),
+        "affordanceFitScore": classification.get("affordanceFitScore", 0),
+        "phaseFitScore": classification.get("phaseFitScore", 0),
+        "layoutUnitFitScore": classification.get("layoutUnitFitScore", 100),
+        "phaseFloorFailureCount": int(
+            phase_fit.get(
+                "phaseFloorFailureCount",
+                classification.get("phaseFloorFailureCount", 0),
+            )
+            or 0
+        ),
+        "phaseHardFailureCount": int(phase_fit.get("hardFailureCount", 0) or 0),
+        "layoutUnitHardFailureCount": int(unit_fit.get("hardFailureCount", 0) or 0),
+        "worstPhaseHeadroom": margin.get("worstPhaseHeadroom", -1),
+        "worstUnitScore": margin.get("worstUnitScore", 100),
+        "phaseScoreVariance": margin.get("phaseScoreVariance", 0),
+        "effectiveFocusOccupancy": margin.get("effectiveFocusOccupancy", 0),
+        "overlayPolicyCount": margin.get("overlayPolicyCount", 0),
+        "focusShare": facts.get("focusShare", 0),
+        "effectiveFocusShare": facts.get(
+            "effectiveFocusShare",
+            painted.get("effectiveFocusShare", facts.get("focusShare", 0)),
+        ),
+        "desiredFocusShare": facts.get("desiredFocusShare", 0),
+        "activePresentationUnclaimedRatio": facts.get(
+            "activePresentationUnclaimedRatio",
+            facts.get("unclaimedAreaRatio", 0),
+        ),
+        "intentionalInactiveRootRatio": facts.get("intentionalInactiveRootRatio", 0),
+        "blockedCriticalControlCount": int(
+            facts.get("blockedCriticalControlCount", 0) or 0
+        ),
+        "undeclaredPartitionOverlapShare": facts.get(
+            "undeclaredPartitionOverlapShare",
+            painted.get("undeclaredPartitionOverlapShare", 0),
+        ),
+        "overlayBudgetExceededCount": len(
+            painted.get("overlayBudgetExceeded") or []
+        ),
+        "responsivePolicySelected": bool(item.get("responsivePolicySelected", False)),
+        "responsiveCapacityBand": str(item.get("responsiveCapacityBand") or ""),
+        "responsiveCapacityAdmissible": item.get("responsiveCapacityAdmissible"),
+        "responsiveRemediation": copy.deepcopy(item.get("responsiveRemediation") or {}),
+        "unitPolicies": copy.deepcopy(composition.get("unitPolicies") or {}),
+        "compositionPreflightScore": composition.get("preflightScore"),
+        "renderedPolicyFingerprint": str(
+            item.get("renderedPolicyFingerprint") or ""
+        ),
+        "renderedEquivalenceRepresentative": str(
+            item.get("renderedEquivalenceRepresentative")
+            or item.get("candidate")
+            or ""
+        ),
+        "phases": compact_phase_summary(item),
+        "failureReasons": list(classification.get("failureReasons") or [])[:8],
+        "warnings": list(classification.get("warnings") or [])[:4],
+        "snapshots": copy.deepcopy(item.get("snapshots") or {}),
+        "phaseSnapshots": copy.deepcopy(item.get("phaseSnapshots") or {}),
+    }
+
+
+def compact_report_payload(report: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        key: copy.deepcopy(value)
+        for key, value in report.items()
+        if key != "measurements"
+    }
+    measurements = report.get("measurements") or []
+    payload["reportDetail"] = REPORT_DETAIL_COMPACT
+    payload["measurementRecordMode"] = COMPACT_MEASUREMENT_VERSION
+    payload["fullDiagnosticMeasurementsIncluded"] = False
+    payload["fullDiagnosticMeasurementCount"] = len(measurements)
+    payload["measurements"] = [
+        compact_measurement_summary(item) for item in measurements
+    ]
+    return payload
+
+
+def report_payload_for_detail(
+    report: dict[str, Any],
+    report_detail: str,
+) -> dict[str, Any]:
+    detail = str(report_detail or REPORT_DETAIL_COMPACT).lower()
+    if detail == REPORT_DETAIL_FULL:
+        payload = copy.deepcopy(report)
+        payload["reportDetail"] = REPORT_DETAIL_FULL
+        payload["measurementRecordMode"] = "full-browser-diagnostics"
+        payload["fullDiagnosticMeasurementsIncluded"] = True
+        return payload
+    if detail != REPORT_DETAIL_COMPACT:
+        raise ValueError("report_detail must be one of: compact, full")
+    return compact_report_payload(report)
+
+
+def append_compact_measurement_index(
+    lines: list[str],
+    measurements: list[dict[str, Any]],
+) -> None:
+    lines.append("## Compact trial measurement index")
+    lines.append("")
+    lines.append(
+        "The default report keeps one concise record per trial. "
+        "Use `--report-detail full` only for a targeted diagnostic run."
+    )
+    lines.append("")
+    for item in measurements:
+        summary = compact_measurement_summary(item)
+        lines.append(
+            f"- `{summary['hierarchyId']}` / `{summary['viewportProfile']}` / "
+            f"`{summary['candidate']}`: status=`{summary['status']}` "
+            f"score=`{summary['score']}` "
+            f"headroom=`{float(summary['worstPhaseHeadroom']):+.4f}` "
+            f"blocked=`{summary['blockedCriticalControlCount']}` "
+            f"partitionOverlap=`{float(summary['undeclaredPartitionOverlapShare']):.4f}`"
+        )
+        if summary["failureReasons"]:
+            lines.append(
+                f"  - First failure: {summary['failureReasons'][0]}"
+            )
+    lines.append("")
+
+
+def write_reports(
+    report: dict[str, Any],
+    output_dir: Path,
+    *,
+    report_detail: str = REPORT_DETAIL_FULL,
+) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "layout-snapshot-report.json"
     md_path = output_dir / "layout-snapshot-report.md"
-    json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    payload = report_payload_for_detail(report, report_detail)
+    json_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
     lines: list[str] = []
     lines.append("# FLOG Synthetic Layout Trial Report")
     lines.append("")
     lines.append(f"- Generated: `{report['generatedAt']}`")
+    lines.append(f"- Report detail: `{str(report_detail or REPORT_DETAIL_COMPACT).lower()}`")
     lines.append(f"- Smoke level: `{report['smokeLevel']}`")
     lines.append(f"- Geometry engine: `{report['geometryEngine']}`")
     lines.append(
         f"- Painted ownership: `{report.get('paintedOwnershipMode', 'unavailable')}` "
         f"(enforced=`{bool(report.get('paintedOwnershipEnforced', False))}`)"
+    )
+    lines.append(
+        f"- Phase-floor gate: `{report.get('phaseFloorGateMode', 'legacy-ratio')}` "
+        f"tolerance=`{float(report.get('phaseFloorTolerance', PHASE_SHARE_FLOOR_TOLERANCE)):.4f}`"
+    )
+    lines.append(
+        f"- Density scoring: `{report.get('densityScoringMode', 'root-wide')}`"
+    )
+    lines.append(
+        f"- Candidate ranking: `{report.get('candidateRankingMode', 'integer-score-only')}`"
+    )
+    lines.append(
+        f"- Responsive resize policy: "
+        f"`{report.get('responsivePolicyVersion', 'off')}` "
+        f"mode=`{report.get('responsiveMode', 'off')}` "
+        f"hysteresis=`{int(report.get('responsiveHysteresisPx', 0) or 0)}px`"
+    )
+    lines.append(
+        f"- Rendered-policy fingerprint: "
+        f"`{report.get('renderedPolicyFingerprintVersion', 'unavailable')}` "
+        f"bins=`{report.get('renderedPolicyFingerprintBins', 0)}`"
+    )
+    lines.append(
+        f"- Rendered-equivalence groups removed from ranking: "
+        f"`{len(report.get('renderedPolicyEquivalenceGroups') or [])}`"
     )
     lines.append(f"- Hierarchy source: `{report['hierarchySource']}`")
     lines.append(f"- Chrome/theme input: `{report['chrome']}`")
@@ -8134,8 +10659,12 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
     lines.append("")
     lines.append("This smoke generates MCEL-like hierarchies, applies multiple candidate layouts, measures the rendered geometry in Chromium, and writes one PNG proof per trial.")
     lines.append("It proves rectangles, focus share, unclaimed node area, clipping, hidden controls, and scroll pressure for the synthetic cases.")
-    lines.append("It also reports shadow-only exclusive painted ownership, inter-unit occlusion, undeclared partition overlap, overlay-budget use, and foreign-owner critical-control interception from Chromium hit testing.")
-    lines.append("Shadow ownership does **not** affect ranking, pass/fail, phase minimums, contract scoring, or promotion in this stage; all enforced scores still use the existing raw geometry.")
+    lines.append("Stage B enforces exclusive painted ownership, effective focus/companion shares, partition isolation, overlay budgets, and foreign-owner critical-control interception from Chromium hit testing.")
+    lines.append("Stage C scores density inside the active focus layout unit (or a semantic presentation envelope when no recursive unit exists), reports intentional inactive root space separately, and resolves integer-score ties with phase margin evidence.")
+    lines.append("Stage D fingerprints cross-phase painted geometry without policy names, removes rendered-equivalent recursive aliases before ranking, and reports which declared local policies collapsed to the same browser realization.")
+    lines.append("Stage E applies one absolute effective-share phase-floor gate in browser classification and aggregate phase scoring, with a shared subpixel tolerance; any real floor miss remains a hard failure.")
+    lines.append("Stage F ranks a responsive policy across capacity bands, permits stronger remediation only when the viewport contract allows it, requires remediation to be monotonic as space shrinks, and derives separate shrink/grow thresholds to prevent resize oscillation.")
+    lines.append("Raw rectangles remain in the report for diagnosis, but ranking, pass/fail, phase minimums, contract visibility, and recursive unit scoring use effective painted geometry.")
     lines.append("It does **not** prove that the live app hierarchy is good enough yet; the synthetic hierarchies are training/evidence fixtures for the FLOG method.")
     lines.append("")
 
@@ -8178,7 +10707,74 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                 f"edges=`{len(dataflow.get('edges') or [])}` "
                 f"parallelRoots=`{', '.join(dataflow.get('parallelRoots') or [])}`"
             )
+        responsive_contract = item.get("responsiveContract") or {}
+        if responsive_contract:
+            band_text = "; ".join(
+                f"{band.get('id')}≥{band.get('minWidth')}px:"
+                f"level≤{band.get('maxRemediationLevel')}"
+                for band in responsive_contract.get("bands") or []
+            )
+            lines.append(f"- Responsive capacity bands: `{band_text}`")
         lines.append("")
+
+    if report.get("responsivePolicies"):
+        lines.append("## Responsive resize policies")
+        lines.append("")
+        lines.append(
+            "Selections are optimized as one wide-to-compact policy rather than "
+            "as unrelated per-viewport winners. Higher remediation levels are "
+            "inadmissible until the active capacity band permits them."
+        )
+        lines.append("")
+        for policy in report.get("responsivePolicies") or []:
+            lines.append(
+                f"### `{policy.get('hierarchyId', '')}` — "
+                f"state=`{policy.get('state', 'unknown')}`"
+            )
+            lines.append("")
+            lines.append(
+                f"- Semantic contract stable: "
+                f"`{bool(policy.get('semanticContractStable', False))}`"
+            )
+            lines.append(
+                f"- Resize stability: wide→narrow=`{bool(policy.get('wideToNarrowStable', False))}` "
+                f"narrow→wide=`{bool(policy.get('narrowToWideStable', False))}`"
+            )
+            lines.append(
+                f"- Worst viewport/phase headroom: "
+                f"`{float(policy.get('worstViewportPhaseHeadroom', -1) or 0):+.4f}`"
+            )
+            lines.append(
+                f"- Switches: `{policy.get('switchCount', 0)}` "
+                f"gaps=`{policy.get('transitionGapCount', 0)}` "
+                f"forcedBeyondBand=`{policy.get('forcedBeyondBandCount', 0)}` "
+                f"unnecessaryRemediation=`{policy.get('unnecessaryRemediationCount', 0)}` "
+                f"monotonicViolations=`{policy.get('monotonicViolationCount', 0)}`"
+            )
+            lines.append(
+                f"- Probe coverage: count=`{policy.get('probeCount', 0)}` "
+                f"maxGap=`{policy.get('maxProbeGapPx', 0)}px`"
+            )
+            for selection in policy.get("selections") or []:
+                lines.append(
+                    f"  - `{selection.get('viewportProfile')}` "
+                    f"{selection.get('width')}×{selection.get('height')} "
+                    f"band=`{selection.get('band')}` "
+                    f"candidate=`{selection.get('candidate')}` "
+                    f"remediation=`{selection.get('remediationLevel')}:"
+                    f"{selection.get('remediationLabel')}` "
+                    f"headroom=`{float(selection.get('worstPhaseHeadroom', 0) or 0):+.4f}` "
+                    f"status=`{selection.get('status')}`"
+                )
+            for transition in policy.get("transitions") or []:
+                lines.append(
+                    f"  - Transition `{transition.get('fromCandidate')}` → "
+                    f"`{transition.get('toCandidate')}`: shrink below "
+                    f"`{transition.get('switchDownBelow')}px`, grow above "
+                    f"`{transition.get('switchUpAbove')}px` "
+                    f"(hysteresis `{transition.get('hysteresisPx')}px`)"
+                )
+            lines.append("")
 
     if report.get("semanticContracts"):
         lines.append("## Generic semantic contract audit")
@@ -8220,28 +10816,83 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                 lines.append(f"  - Affordance expectations: `{', '.join(affordances)}`")
         lines.append("")
 
+    equivalence_groups = report.get("renderedPolicyEquivalenceGroups") or []
+    if equivalence_groups:
+        lines.append("## Rendered-policy equivalence groups")
+        lines.append("")
+        lines.append(
+            "Only the representative of each cross-phase painted-geometry fingerprint "
+            "participates in ranking. PNG trials and raw measurements remain available "
+            "for every declared candidate."
+        )
+        lines.append("")
+        for group in equivalence_groups:
+            lines.append(
+                f"- `{group.get('hierarchyId')}` / `{group.get('viewportProfile')}`: "
+                f"representative=`{group.get('representative')}` "
+                f"groupSize=`{group.get('groupSize', 0)}` "
+                f"fingerprint=`{str(group.get('fingerprint') or '')[:16]}…`"
+            )
+            aliases = group.get("equivalentAliases") or []
+            if aliases:
+                lines.append(
+                    f"  - Equivalent aliases excluded from ranking: "
+                    f"`{', '.join(aliases)}`"
+                )
+            for diagnostic in group.get("policyAliasDiagnostics") or []:
+                lines.append(
+                    f"  - Policy realization alias in `{diagnostic.get('unitId')}`: "
+                    f"`{', '.join(diagnostic.get('policies') or [])}`"
+                )
+        lines.append("")
+
     lines.append("## Best candidate by hierarchy and viewport")
     lines.append("")
-    lines.append("`selectionState=bestPassingCandidate` means the row is the best `pass`/`watch` trial. `selectionState=noPassingCandidate` means every trial failed and the row is only the highest-scoring failure.")
+    lines.append(
+        "`selectionState=bestPassingCandidate` means the row is the best fixed-viewport "
+        "`pass`/`watch` trial. `selectionState=responsivePolicySelection` means the row "
+        "was chosen as part of the stable cross-viewport policy. "
+        "`selectionState=noPassingCandidate` or `responsiveTransitionGap` means no "
+        "acceptable realization covered that viewport."
+    )
+    lines.append("Rendered-equivalent recursive candidates are deduplicated first. Equal integer scores among distinct realizations are then resolved by worst phase headroom, worst recursive-unit score, fewer overlay policies, lower phase-score variance, higher effective focus occupancy, then higher composition preflight score.")
     lines.append("")
     for item in report["bestByHierarchyViewport"]:
         selection_state = item.get("selectionState", "bestPassingCandidate")
         no_passing = bool(item.get("noPassingCandidate"))
-        lines.append(f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['candidate']}` score=`{item['score']}` status=`{item['status']}` selectionState=`{selection_state}` unclaimed=`{item['unclaimedAreaRatio']:.4f}` focus=`{item['focusShare']:.4f}` target=`{item['desiredFocusShare']:.2f}` occupancy=`{item.get('usefulFocusOccupancy', 0):.4f}` proximity=`{item.get('companionProximityScore', 1):.4f}` contractFit=`{item.get('contractFitScore', 0)}` affordanceFit=`{item.get('affordanceFitScore', 0)}` phaseFit=`{item.get('phaseFitScore', 0)}` unitFit=`{item.get('layoutUnitFitScore', 100)}` contractState=`{item.get('contractFitState', 'notEvaluated')}` affordanceState=`{item.get('affordanceFitState', 'notEvaluated')}` phaseState=`{item.get('phaseFitState', 'notEvaluated')}` unitState=`{item.get('layoutUnitFitState', 'notDeclared')}`")
-        if item.get("paintedOwnershipMode") == "shadow-only":
+        lines.append(f"- `{item['hierarchyId']}` / `{item['viewportProfile']}`: `{item['candidate']}` score=`{item['score']}` rawScore=`{item.get('selectionScoreRaw', item['score']):.4f}` status=`{item['status']}` selectionState=`{selection_state}` activeUnclaimed=`{item['unclaimedAreaRatio']:.4f}` rootUnclaimed=`{item.get('rootUnclaimedAreaRatio', item['unclaimedAreaRatio']):.4f}` intentionalInactiveRoot=`{item.get('intentionalInactiveRootRatio', 0):.4f}` focus=`{item['focusShare']:.4f}` target=`{item['desiredFocusShare']:.2f}` occupancy=`{item.get('usefulFocusOccupancy', 0):.4f}` proximity=`{item.get('companionProximityScore', 1):.4f}` contractFit=`{item.get('contractFitScore', 0)}` affordanceFit=`{item.get('affordanceFitScore', 0)}` phaseFit=`{item.get('phaseFitScore', 0)}` unitFit=`{item.get('layoutUnitFitScore', 100)}` contractState=`{item.get('contractFitState', 'notEvaluated')}` affordanceState=`{item.get('affordanceFitState', 'notEvaluated')}` phaseState=`{item.get('phaseFitState', 'notEvaluated')}` unitState=`{item.get('layoutUnitFitState', 'notDeclared')}`")
+        margin = item.get("selectionMarginEvidence") or {}
+        lines.append(
+            "  - Margin-aware tie-break: "
+            f"worstPhaseHeadroom=`{float(margin.get('worstPhaseHeadroom', -1)):+.4f}` "
+            f"rawWorstPhaseHeadroom=`{float(item.get('phaseWorstRawDominantHeadroom', margin.get('worstPhaseHeadroom', -1))):+.4f}` "
+            f"floorFailures=`{int(item.get('phaseFloorFailureCount', 0))}` "
+            f"floorTolerance=`{float(item.get('phaseFloorTolerance', PHASE_SHARE_FLOOR_TOLERANCE)):.4f}` "
+            f"worstUnit=`{float(margin.get('worstUnitScore', 0)):.4f}` "
+            f"overlays=`{int(margin.get('overlayPolicyCount', 0))}` "
+            f"phaseVariance=`{float(margin.get('phaseScoreVariance', 0)):.4f}` "
+            f"effectiveFocusOccupancy=`{float(margin.get('effectiveFocusOccupancy', 0)):.4f}` "
+            f"preflight=`{int(margin.get('compositionPreflightScore', -1))}`"
+        )
+        if item.get("renderedEquivalentAliases"):
             lines.append(
-                "  - Painted ownership shadow (not enforced): "
-                f"rawFocus=`{item.get('focusShare', 0):.4f}` "
-                f"effectiveFocus=`{item.get('effectiveFocusShareShadow', 0):.4f}` "
-                f"focusOccluded=`{item.get('focusOccludedShareShadow', 0):.4f}` "
-                f"exclusiveOwned=`{item.get('exclusiveOwnedShareShadow', 0):.4f}` "
-                f"doubleClaimed=`{item.get('doubleClaimedShareShadow', 0):.4f}` "
-                f"declaredOverlay=`{item.get('declaredOverlayShareShadow', 0):.4f}` "
-                f"undeclaredPartitionOverlap=`{item.get('undeclaredPartitionOverlapShareShadow', 0):.4f}` "
-                f"fullyForeignInterceptedControls=`{item.get('interceptedCriticalControlCountShadow', 0)}` "
-                f"foreignInterceptedControls=`{item.get('foreignInterceptedCriticalControlCountShadow', 0)}`"
+                "  - Rendered-equivalent aliases excluded from ranking: "
+                f"`{', '.join(item.get('renderedEquivalentAliases') or [])}`"
             )
-            for overlap in item.get("paintedOwnershipOverlapMatrixShadow", [])[:4]:
+        if item.get("paintedOwnershipEnforced"):
+            lines.append(
+                "  - Painted ownership (enforced): "
+                f"rawFocus=`{item.get('rawFocusShare', item.get('focusShare', 0)):.4f}` "
+                f"effectiveFocus=`{item.get('effectiveFocusShare', item.get('focusShare', 0)):.4f}` "
+                f"focusOccluded=`{item.get('focusOccludedShare', 0):.4f}` "
+                f"exclusiveOwned=`{item.get('exclusiveOwnedShare', 0):.4f}` "
+                f"doubleClaimed=`{item.get('doubleClaimedShare', 0):.4f}` "
+                f"declaredOverlay=`{item.get('declaredOverlayShare', 0):.4f}` "
+                f"undeclaredPartitionOverlap=`{item.get('undeclaredPartitionOverlapShare', 0):.4f}` "
+                f"blockedControls=`{item.get('blockedCriticalControlCount', 0)}` "
+                f"foreignInterceptedControls=`{item.get('foreignInterceptedCriticalControlCount', 0)}`"
+            )
+            for overlap in item.get("paintedOwnershipOverlapMatrix", [])[:4]:
                 lines.append(
                     "    - "
                     f"`{overlap.get('occludedSlot')}` occluded by "
@@ -8249,17 +10900,15 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                     f"rootShare=`{overlap.get('shareOfRoot', 0):.4f}` "
                     f"nodeShare=`{overlap.get('shareOfOccludedNode', 0):.4f}`"
                 )
-            for partition_overlap in item.get(
-                "partitionOverlapByUnitShadow", []
-            )[:4]:
+            for partition_overlap in item.get("partitionOverlapByUnit", [])[:4]:
                 lines.append(
-                    "    - Undeclared partition overlap (shadow): "
+                    "    - Undeclared partition overlap (enforced): "
                     f"`{partition_overlap.get('unitId')}` "
                     f"rootShare=`{partition_overlap.get('shareOfRoot', 0):.4f}`"
                 )
-            for budget in item.get("overlayBudgetExceededShadow", [])[:4]:
+            for budget in item.get("overlayBudgetExceeded", [])[:4]:
                 lines.append(
-                    "    - Overlay budget exceeded (shadow): "
+                    "    - Overlay budget exceeded (enforced): "
                     f"`{budget.get('unitId')}` "
                     f"share=`{budget.get('occlusionShare', 0):.4f}` "
                     f"max=`{budget.get('maxOcclusionShare', 0):.4f}`"
@@ -8362,6 +11011,11 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                     )
         lines.append("")
 
+    if str(report_detail or REPORT_DETAIL_COMPACT).lower() == REPORT_DETAIL_COMPACT:
+        append_compact_measurement_index(lines, report.get("measurements") or [])
+        md_path.write_text("\n".join(lines), encoding="utf-8")
+        return json_path, md_path
+
     lines.append("## All trial measurements")
     lines.append("")
     for item in report["measurements"]:
@@ -8371,6 +11025,9 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
         lines.append("")
         lines.append(f"- Status: `{classification.get('status')}`")
         lines.append(f"- Score: `{classification.get('score')}`")
+        lines.append(
+            f"- Unrounded selection score: `{float(classification.get('selectionScoreRaw', classification.get('score', 0)) or 0):.4f}`"
+        )
         lines.append(f"- Geometry score: `{classification.get('geometryScore', classification.get('score'))}`")
         lines.append(f"- Contract fit score: `{classification.get('contractFitScore', 0)}` state=`{classification.get('contractFitState', 'notEvaluated')}`")
         lines.append(f"- Affordance fit score: `{classification.get('affordanceFitScore', 0)}` state=`{classification.get('affordanceFitState', 'notEvaluated')}`")
@@ -8383,43 +11040,62 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
             )
             lines.append(f"- Parallel unit branches: `{branch_text}`")
         lines.append(f"- Focus slot: `{item.get('focusSlot')}`")
-        lines.append(f"- Unclaimed layout area ratio: `{facts.get('unclaimedAreaRatio', 0):.4f}`")
+        lines.append(
+            f"- Active-presentation unclaimed ratio: `{facts.get('activePresentationUnclaimedRatio', facts.get('unclaimedAreaRatio', 0)):.4f}`"
+        )
+        lines.append(
+            f"- Root-wide unclaimed ratio (diagnostic): `{facts.get('rootUnclaimedAreaRatio', facts.get('unclaimedAreaRatio', 0)):.4f}`"
+        )
+        lines.append(
+            f"- Intentional inactive root ratio: `{facts.get('intentionalInactiveRootRatio', 0):.4f}`"
+        )
+        lines.append(
+            f"- Accidental unclaimed root ratio: `{facts.get('accidentalUnclaimedRootRatio', facts.get('unclaimedAreaRatio', 0)):.4f}`"
+        )
+        lines.append(
+            f"- Active presentation: mode=`{facts.get('activePresentationMode', 'root-fallback')}` "
+            f"unit=`{facts.get('activePresentationUnitId', '')}` "
+            f"occupancy=`{facts.get('activePresentationOccupancy', 0):.4f}`"
+        )
         lines.append(f"- Node coverage ratio: `{facts.get('nodeCoverageRatio', 0):.4f}`")
         lines.append(f"- Focus share: `{facts.get('focusShare', 0):.4f}`")
-        painted_shadow = facts.get("paintedOwnershipShadow") or {}
-        if facts.get("paintedOwnershipMode") == "shadow-only":
-            lines.append("- Painted ownership shadow diagnostics (not enforced):")
+        painted = facts.get("paintedOwnership") or facts.get("paintedOwnershipShadow") or {}
+        if facts.get("paintedOwnershipEnforced"):
+            lines.append("- Painted ownership diagnostics (enforced):")
             lines.append(
-                f"  - Raw focus share: `{painted_shadow.get('rawFocusShare', facts.get('focusShare', 0)):.4f}`"
+                f"  - Raw focus share: `{facts.get('rawFocusShare', painted.get('rawFocusShare', facts.get('focusShare', 0))):.4f}`"
             )
             lines.append(
-                f"  - Effective focus share: `{painted_shadow.get('effectiveFocusShare', 0):.4f}`"
+                f"  - Effective focus share: `{facts.get('effectiveFocusShare', painted.get('effectiveFocusShare', facts.get('focusShare', 0))):.4f}`"
             )
             lines.append(
-                f"  - Focus occluded share: `{painted_shadow.get('focusOccludedShare', 0):.4f}`"
+                f"  - Focus occluded share: `{facts.get('focusOccludedShare', painted.get('focusOccludedShare', 0)):.4f}`"
             )
             lines.append(
-                f"  - Exclusive owned share: `{painted_shadow.get('exclusiveOwnedShare', 0):.4f}`"
+                f"  - Exclusive owned share: `{facts.get('exclusiveOwnedShare', painted.get('exclusiveOwnedShare', 0)):.4f}`"
             )
             lines.append(
-                f"  - Double-claimed share: `{painted_shadow.get('doubleClaimedShare', 0):.4f}`"
+                f"  - Double-claimed share: `{facts.get('doubleClaimedShare', painted.get('doubleClaimedShare', 0)):.4f}`"
             )
             lines.append(
-                f"  - Declared overlay share: `{painted_shadow.get('declaredOverlayShare', 0):.4f}`"
+                f"  - Declared overlay share: `{facts.get('declaredOverlayShare', painted.get('declaredOverlayShare', 0)):.4f}`"
             )
             lines.append(
-                f"  - Undeclared partition overlap share: `{painted_shadow.get('undeclaredPartitionOverlapShare', 0):.4f}`"
+                f"  - Undeclared partition overlap share: `{facts.get('undeclaredPartitionOverlapShare', painted.get('undeclaredPartitionOverlapShare', 0)):.4f}`"
             )
             lines.append(
-                f"  - Partition-overlap cell share: `{painted_shadow.get('partitionOverlapCellShare', 0):.4f}`"
+                f"  - Partition-overlap cell share: `{facts.get('partitionOverlapCellShare', painted.get('partitionOverlapCellShare', 0)):.4f}`"
             )
             lines.append(
-                f"  - Fully foreign-intercepted critical controls: `{facts.get('interceptedCriticalControlCountShadow', 0)}`"
+                f"  - Blocked critical controls: `{facts.get('blockedCriticalControlCount', 0)}`"
             )
             lines.append(
-                f"  - Critical controls with any foreign interception: `{facts.get('foreignInterceptedCriticalControlCountShadow', facts.get('partiallyInterceptedCriticalControlCountShadow', 0))}`"
+                f"  - Fully foreign-intercepted critical controls: `{facts.get('interceptedCriticalControlCount', 0)}`"
             )
-            outcome_totals = facts.get("controlInterceptionOutcomeTotalsShadow") or {}
+            lines.append(
+                f"  - Critical controls with any foreign interception: `{facts.get('foreignInterceptedCriticalControlCount', 0)}`"
+            )
+            outcome_totals = facts.get("controlInterceptionOutcomeTotals") or {}
             lines.append(
                 "  - Control hit-test outcomes: "
                 f"selfOwned=`{outcome_totals.get('selfOwned', 0)}` "
@@ -8428,7 +11104,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                 f"pointerEventsNonePassThrough=`{outcome_totals.get('pointerEventsNonePassThrough', 0)}` "
                 f"unownedPointerTarget=`{outcome_totals.get('unownedPointerTarget', 0)}`"
             )
-            for overlap in painted_shadow.get("overlapMatrix", [])[:8]:
+            for overlap in painted.get("overlapMatrix", [])[:8]:
                 lines.append(
                     "  - Overlap: "
                     f"`{overlap.get('occludedSlot')}` occluded by "
@@ -8436,7 +11112,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                     f"rootShare=`{overlap.get('shareOfRoot', 0):.4f}` "
                     f"nodeShare=`{overlap.get('shareOfOccludedNode', 0):.4f}`"
                 )
-            for partition_overlap in painted_shadow.get(
+            for partition_overlap in painted.get(
                 "partitionOverlapByUnit", []
             )[:4]:
                 lines.append(
@@ -8444,7 +11120,7 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
                     f"`{partition_overlap.get('unitId')}` "
                     f"rootShare=`{partition_overlap.get('shareOfRoot', 0):.4f}`"
                 )
-            for budget in painted_shadow.get("overlayBudgetExceeded", [])[:4]:
+            for budget in painted.get("overlayBudgetExceeded", [])[:4]:
                 lines.append(
                     "  - Overlay budget exceeded: "
                     f"`{budget.get('unitId')}` "
@@ -8475,28 +11151,31 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
             lines.append("- PNG snapshots:")
             for key, rel in snaps.items():
                 lines.append(f"  - `{key}`: `{rel}`")
-        phase_shadow_rows = [
+        phase_ownership_rows = [
             phase_item
             for phase_item in (item.get("phaseMeasurements") or [])
-            if ((phase_item.get("geometryFacts") or {}).get("paintedOwnershipMode"))
-            == "shadow-only"
+            if bool((phase_item.get("geometryFacts") or {}).get("paintedOwnershipEnforced"))
         ]
-        if phase_shadow_rows:
-            lines.append("- Painted ownership shadow by browser phase (not enforced):")
-            for phase_item in phase_shadow_rows:
+        if phase_ownership_rows:
+            lines.append("- Painted ownership by browser phase (enforced):")
+            for phase_item in phase_ownership_rows:
                 phase_facts = phase_item.get("geometryFacts") or {}
-                phase_shadow = phase_facts.get("paintedOwnershipShadow") or {}
+                phase_painted = (
+                    phase_facts.get("paintedOwnership")
+                    or phase_facts.get("paintedOwnershipShadow")
+                    or {}
+                )
                 lines.append(
                     f"  - `{phase_item.get('phase', 'default')}`: "
-                    f"rawFocus=`{phase_shadow.get('rawFocusShare', phase_facts.get('focusShare', 0)):.4f}` "
-                    f"effectiveFocus=`{phase_shadow.get('effectiveFocusShare', 0):.4f}` "
-                    f"focusOccluded=`{phase_shadow.get('focusOccludedShare', 0):.4f}` "
-                    f"exclusiveOwned=`{phase_shadow.get('exclusiveOwnedShare', 0):.4f}` "
-                    f"doubleClaimed=`{phase_shadow.get('doubleClaimedShare', 0):.4f}` "
-                    f"undeclaredPartitionOverlap=`{phase_shadow.get('undeclaredPartitionOverlapShare', 0):.4f}` "
-                    f"foreignInterceptedControls=`{phase_facts.get('foreignInterceptedCriticalControlCountShadow', phase_facts.get('partiallyInterceptedCriticalControlCountShadow', 0))}`"
+                    f"rawFocus=`{phase_facts.get('rawFocusShare', phase_painted.get('rawFocusShare', phase_facts.get('focusShare', 0))):.4f}` "
+                    f"effectiveFocus=`{phase_facts.get('effectiveFocusShare', phase_facts.get('focusShare', 0)):.4f}` "
+                    f"focusOccluded=`{phase_facts.get('focusOccludedShare', phase_painted.get('focusOccludedShare', 0)):.4f}` "
+                    f"exclusiveOwned=`{phase_facts.get('exclusiveOwnedShare', phase_painted.get('exclusiveOwnedShare', 0)):.4f}` "
+                    f"doubleClaimed=`{phase_facts.get('doubleClaimedShare', phase_painted.get('doubleClaimedShare', 0)):.4f}` "
+                    f"undeclaredPartitionOverlap=`{phase_facts.get('undeclaredPartitionOverlapShare', phase_painted.get('undeclaredPartitionOverlapShare', 0)):.4f}` "
+                    f"blockedControls=`{phase_facts.get('blockedCriticalControlCount', 0)}`"
                 )
-                for overlap in phase_shadow.get("overlapMatrix", [])[:4]:
+                for overlap in phase_painted.get("overlapMatrix", [])[:4]:
                     lines.append(
                         "    - "
                         f"`{overlap.get('occludedSlot')}` occluded by "
@@ -8521,7 +11200,34 @@ def write_reports(report: dict[str, Any], output_dir: Path) -> tuple[Path, Path]
         phase_fit = item.get("phaseFit") or {}
         if phase_fit:
             lines.append("- Generic phase-aware realization:")
-            lines.append(f"  - Score: `{phase_fit.get('score', 0)}` raw=`{phase_fit.get('rawScore', phase_fit.get('score', 0))}` state=`{phase_fit.get('state', 'unknown')}`")
+            lines.append(
+                f"  - Score: `{phase_fit.get('score', 0)}` "
+                f"policyRaw=`{float(phase_fit.get('policyScoreRaw', phase_fit.get('score', 0)) or 0):.4f}` "
+                f"meanRaw=`{float(phase_fit.get('meanScoreRaw', phase_fit.get('meanScore', 0)) or 0):.4f}` "
+                f"worstRaw=`{float(phase_fit.get('worstScoreRaw', phase_fit.get('worstScore', 0)) or 0):.4f}` "
+                f"variance=`{float(phase_fit.get('scoreVariance', 0) or 0):.4f}` "
+                f"state=`{phase_fit.get('state', 'unknown')}`"
+            )
+            lines.append(
+                f"  - Dominant-share margins: "
+                f"worst=`{float(phase_fit.get('worstDominantHeadroom', -1) or 0):+.4f}` "
+                f"rawWorst=`{float(phase_fit.get('worstRawDominantHeadroom', phase_fit.get('worstDominantHeadroom', -1)) or 0):+.4f}` "
+                f"mean=`{float(phase_fit.get('meanDominantHeadroom', -1) or 0):+.4f}` "
+                f"selectedDefault=`{float(phase_fit.get('selectedDefaultHeadroom', -1) or 0):+.4f}` "
+                f"floorFailures=`{int(phase_fit.get('phaseFloorFailureCount', 0) or 0)}` "
+                f"tolerance=`{float(phase_fit.get('phaseFloorTolerance', PHASE_SHARE_FLOOR_TOLERANCE)):.4f}`"
+            )
+            for phase_row in phase_fit.get("phases", []):
+                lines.append(
+                    f"  - Phase `{phase_row.get('phase', 'default')}`: "
+                    f"score=`{phase_row.get('score', 0)}` "
+                    f"raw=`{float(phase_row.get('rawScore', phase_row.get('score', 0)) or 0):.4f}` "
+                    f"dominant=`{float(phase_row.get('dominantShare', 0) or 0):.4f}` "
+                    f"floor=`{float(phase_row.get('minDominantShare', 0) or 0):.4f}` "
+                    f"floorMet=`{bool(phase_row.get('dominantFloorMet', False))}` "
+                    f"rawHeadroom=`{float(phase_row.get('dominantRawHeadroom', phase_row.get('dominantHeadroom', 0)) or 0):+.4f}` "
+                    f"headroom=`{float(phase_row.get('dominantHeadroom', 0) or 0):+.4f}`"
+                )
             for reason in phase_fit.get("positiveReasons", [])[:4]:
                 lines.append(f"  - Preserved: {reason}")
             for reason in phase_fit.get("riskReasons", [])[:4]:
@@ -8580,7 +11286,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", default=".", help="Repository root. Default: current directory.")
     parser.add_argument("--hierarchies", default=DEFAULT_HIERARCHIES, help="Comma-separated synthetic hierarchy IDs or 'all'.")
     parser.add_argument("--candidates", default=DEFAULT_CANDIDATES, help="Comma-separated layout candidates or 'all'.")
-    parser.add_argument("--viewports", default=DEFAULT_VIEWPORTS, help="Comma-separated profiles like desktop=1440x900,narrow=390x844.")
+    parser.add_argument("--viewports", default=DEFAULT_VIEWPORTS, help="Comma-separated base profiles like desktop=1440x900.")
+    parser.add_argument(
+        "--responsive-mode",
+        choices=["off", "recursive", "all"],
+        default=DEFAULT_RESPONSIVE_MODE,
+        help=(
+            "Run capacity-band resize probes for recursive hierarchies by default; "
+            "use 'all' for every hierarchy or 'off' for fixed-viewport trials only."
+        ),
+    )
+    parser.add_argument(
+        "--responsive-viewports",
+        default=DEFAULT_RESPONSIVE_VIEWPORTS,
+        help=(
+            "Comma-separated resize probes. These are merged with --viewports "
+            "for responsive hierarchies."
+        ),
+    )
+    parser.add_argument(
+        "--responsive-hysteresis-px",
+        type=int,
+        default=DEFAULT_RESPONSIVE_HYSTERESIS_PX,
+        help="Minimum separation between shrink and grow transition thresholds.",
+    )
     parser.add_argument("--chrome", default=DEFAULT_CHROME, help="Chrome/theme label to record as layout input.")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Output report directory. PNGs are written directly here.")
     parser.add_argument(
@@ -8588,6 +11317,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["viewport", "full-page", "both"],
         default="viewport",
         help="Which PNG snapshots to write per trial. Default: viewport.",
+    )
+    parser.add_argument(
+        "--report-detail",
+        choices=[REPORT_DETAIL_COMPACT, REPORT_DETAIL_FULL],
+        default=REPORT_DETAIL_COMPACT,
+        help=(
+            "Write a compact trial index by default. Use 'full' only for a "
+            "targeted diagnostic run because full browser records can be very large."
+        ),
     )
     parser.add_argument("--keep-html", action="store_true", help="Write each generated synthetic trial HTML into the output directory.")
     return parser
@@ -8603,6 +11341,11 @@ def main(argv: list[str] | None = None) -> int:
     hierarchies = parse_hierarchies(args.hierarchies, available)
     candidates = parse_candidates(args.candidates)
     viewports = parse_viewports(args.viewports)
+    responsive_viewports = (
+        parse_viewports(args.responsive_viewports)
+        if args.responsive_mode != "off"
+        else []
+    )
 
     report = run_synthetic_trials(
         hierarchies=hierarchies,
@@ -8612,10 +11355,17 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         screenshot_mode=args.screenshot_mode,
         keep_html=args.keep_html,
+        responsive_mode=args.responsive_mode,
+        responsive_viewports=responsive_viewports,
+        responsive_hysteresis_px=args.responsive_hysteresis_px,
     )
     report['rollups'] = generate_rollup_pngs(report, output_dir)
     report['rollupFiles'] = [item['file'] for item in report['rollups']]
-    json_path, md_path = write_reports(report, output_dir)
+    json_path, md_path = write_reports(
+        report,
+        output_dir,
+        report_detail=args.report_detail,
+    )
     print(f"Wrote {json_path}")
     print(f"Wrote {md_path}")
     png_count = 0

@@ -2441,16 +2441,19 @@ def test_recursive_html_emits_shadow_ownership_contracts():
     assert 'data-flog-ownership-mode="trigger"' in evidence_trigger
 
 
-def test_measurement_javascript_collects_shadow_geometry_without_enforcement():
+def test_measurement_javascript_enforces_exclusive_painted_geometry():
     module = load_module()
     javascript = module.MEASURE_AND_OVERLAY_JS
 
     assert "paintedOwnershipShadowFor" in javascript
     assert "doc.elementsFromPoint" in javascript
-    assert 'mode: "shadow-only"' in javascript
+    assert 'mode: "exclusive-enforced"' in javascript
+    assert "enforced: true" in javascript
     assert "controlInterceptionShadowFor" in javascript
-    assert "overlayBudgetExceeded" in javascript
-    assert "effectiveFocusShareShadow" in javascript
+    assert "blockedCriticalControls" in javascript
+    assert "partitionOwnershipViolation" in javascript
+    assert "overlayBudgetViolations" in javascript
+    assert "effectiveVisibleShare" in javascript
     assert "undeclaredPartitionOverlapShare" in javascript
     assert "partitionOverlapCellShare" in javascript
     assert "foreignInterceptedPointCount" in javascript
@@ -2465,10 +2468,13 @@ def test_measurement_javascript_collects_shadow_geometry_without_enforcement():
         javascript.index("  const hardGeometryGatePassed") :
         javascript.index("  if (preferredFamilyMatch", javascript.index("  const hardGeometryGatePassed"))
     ]
-    assert "paintedOwnershipShadow" not in scoring_block
-    assert "effectiveFocusShare" not in scoring_block
-    assert "paintedOwnershipShadow" not in hard_gate_block
-    assert "effectiveFocusShare" not in hard_gate_block
+    assert "blockedCriticalControls.length * 12" in scoring_block
+    assert "partitionOwnershipViolation" in scoring_block
+    assert "overlayBudgetViolations.length * 16" in scoring_block
+    assert "blockedCriticalControls.length === 0" in hard_gate_block
+    assert "!partitionOwnershipViolation" in hard_gate_block
+    assert "overlayBudgetViolations.length === 0" in hard_gate_block
+
 
 
 def test_shadow_hit_testing_distinguishes_self_owned_from_foreign_interception():
@@ -2606,27 +2612,121 @@ def test_selection_row_surfaces_shadow_diagnostics_without_changing_rank():
     ] == "server"
 
 
-def test_markdown_report_marks_painted_ownership_as_shadow_only(tmp_path):
+def test_stage_b_css_partitions_recursive_support_and_contains_commands():
+    module = load_module()
+    css = module.TRIAL_CSS
+
+    assert 'grid-template-areas:\n    "main support"\n    "feedback support"' in css
+    assert 'grid-template-areas: "identity feedback"' in css
+    assert (
+        '.flog-layout-unit[data-flog-unit-id="phase-support"]'
+        '[data-flog-unit-has-active-support="true"]:not('
+        '[data-flog-ownership-mode="overlay"])'
+    ) in css
+    assert "position: static !important;" in css
+    assert 'grid-auto-columns: minmax(0, 1fr);' in css
+    assert '.flog-node[data-flog-role="command"] > .node-body' in css
+
+
+def test_record_area_share_prefers_effective_painted_geometry():
+    module = load_module()
+    root = {"area": 1000}
+    record = {
+        "rect": {"area": 800},
+        "effectiveVisibleShare": 0.37,
+    }
+    unit_record = {
+        "rect": {"area": 900},
+        "effectiveOwnedShare": 0.22,
+    }
+
+    assert module._record_area_share(record, root) == 0.37
+    assert module._record_area_share(unit_record, root) == 0.22
+
+
+def test_phase_fit_hard_fails_blocked_controls_and_partition_overlap():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "operator-control-surface"
+    )
+    root = {
+        "left": 0,
+        "top": 0,
+        "right": 1000,
+        "bottom": 600,
+        "width": 1000,
+        "height": 600,
+        "area": 600000,
+    }
+    records = []
+    for index, node in enumerate(hierarchy["nodes"]):
+        share = 0.50 if node["slot"] == hierarchy["focusSlot"] else 0.08
+        records.append(
+            {
+                "slot": node["slot"],
+                "role": node.get("role", "support"),
+                "realization": "full-active",
+                "effectiveVisibleShare": share,
+                "rect": {
+                    "left": 0,
+                    "top": index * 50,
+                    "right": 1000,
+                    "bottom": index * 50 + max(24, share * 600),
+                    "width": 1000,
+                    "height": max(24, share * 600),
+                    "area": share * root["area"],
+                },
+            }
+        )
+    measurement = {
+        "geometryFacts": {
+            "root": {"clipped": root},
+            "blockedCriticalControlCount": 1,
+            "undeclaredPartitionOverlapShare": 0.05,
+            "paintedOwnershipEnforced": True,
+            "paintedOwnership": {"overlayBudgetExceeded": []},
+        },
+        "examples": {"nodes": records},
+        "classification": {
+            "score": 90,
+            "geometryScore": 90,
+            "status": "pass",
+        },
+    }
+
+    fit = module.semantic_phase_realization_fit(hierarchy, measurement)
+
+    assert fit["hardFailureCount"] >= 2
+    assert any("foreign-intercepted" in reason for reason in fit["riskReasons"])
+    assert any("undeclared partition overlap" in reason for reason in fit["riskReasons"])
+
+
+def test_markdown_report_marks_painted_ownership_as_enforced(tmp_path):
     module = load_module()
     measurement = {
         "hierarchyId": "git-tools-workflow-workbench",
         "viewportProfile": "desktop",
-        "candidate": "compose--shadow",
+        "candidate": "compose--enforced",
         "focusSlot": "workflow",
         "classification": {
-            "score": 92,
-            "status": "pass",
+            "score": 68,
+            "status": "fail",
             "positiveReasons": [],
-            "failureReasons": [],
+            "failureReasons": ["undeclared partition overlap"],
             "reviewNotes": [],
-            "warnings": [],
+            "warnings": ["partition ownership overlap exceeds tolerance"],
         },
         "geometryFacts": {
-            "focusShare": 0.71,
+            "rawFocusShare": 0.71,
+            "focusShare": 0.49,
+            "effectiveFocusShare": 0.49,
+            "focusOccludedShare": 0.22,
             "desiredFocusShare": 0.68,
-            "paintedOwnershipMode": "shadow-only",
-            "paintedOwnershipEnforced": False,
-            "paintedOwnershipShadow": {
+            "paintedOwnershipMode": "exclusive-enforced",
+            "paintedOwnershipEnforced": True,
+            "paintedOwnership": {
                 "rawFocusShare": 0.71,
                 "effectiveFocusShare": 0.49,
                 "focusOccludedShare": 0.22,
@@ -2653,10 +2753,11 @@ def test_markdown_report_marks_painted_ownership_as_shadow_only(tmp_path):
                 ],
                 "overlayBudgetExceeded": [],
             },
-            "interceptedCriticalControlCountShadow": 1,
-            "partiallyInterceptedCriticalControlCountShadow": 2,
-            "foreignInterceptedCriticalControlCountShadow": 2,
-            "controlInterceptionOutcomeTotalsShadow": {
+            "blockedCriticalControlCount": 1,
+            "interceptedCriticalControlCount": 1,
+            "partiallyInterceptedCriticalControlCount": 2,
+            "foreignInterceptedCriticalControlCount": 2,
+            "controlInterceptionOutcomeTotals": {
                 "actionable": 20,
                 "selfOwned": 22,
                 "foreignIntercepted": 3,
@@ -2677,11 +2778,11 @@ def test_markdown_report_marks_painted_ownership_as_shadow_only(tmp_path):
         "generatedAt": "2026-07-10T00:00:00+00:00",
         "smokeLevel": "synthetic-hierarchy-layout-trials",
         "geometryEngine": "playwright-chromium",
-        "paintedOwnershipMode": "shadow-only",
-        "paintedOwnershipEnforced": False,
+        "paintedOwnershipMode": "exclusive-enforced",
+        "paintedOwnershipEnforced": True,
         "hierarchySource": "generated-mcel-like-html",
         "chrome": "mcel-realistic",
-        "candidates": ["compose--shadow"],
+        "candidates": ["compose--enforced"],
         "candidateCatalogByHierarchy": {},
         "viewports": [{"name": "desktop", "width": 1440, "height": 900}],
         "snapshotDirectory": ".",
@@ -2696,12 +2797,1349 @@ def test_markdown_report_marks_painted_ownership_as_shadow_only(tmp_path):
     _, markdown_path = module.write_reports(report, tmp_path)
     markdown = markdown_path.read_text(encoding="utf-8")
 
-    assert "Painted ownership: `shadow-only` (enforced=`False`)" in markdown
-    assert "Shadow ownership does **not** affect ranking" in markdown
-    assert "Painted ownership shadow diagnostics (not enforced)" in markdown
+    assert "Painted ownership: `exclusive-enforced` (enforced=`True`)" in markdown
+    assert "Stage B enforces exclusive painted ownership" in markdown
+    assert "Painted ownership diagnostics (enforced)" in markdown
     assert "Effective focus share: `0.4900`" in markdown
     assert "Undeclared partition overlap share: `0.0900`" in markdown
+    assert "Blocked critical controls: `1`" in markdown
     assert "Critical controls with any foreign interception: `2`" in markdown
     assert "selfOwned=`22` foreignIntercepted=`3`" in markdown
     assert "Undeclared partition overlap: `phase-support` rootShare=`0.0800`" in markdown
     assert "`workflow` occluded by `server`" in markdown
+
+def test_stage_c_uses_phase_relative_active_presentation_density():
+    module = load_module()
+    javascript = module.MEASURE_AND_OVERLAY_JS
+
+    assert 'const rootUnclaimedAreaRatio' in javascript
+    assert 'const activePresentationUnclaimedRatio' in javascript
+    assert 'const unclaimedAreaRatio = activePresentationUnclaimedRatio;' in javascript
+    assert 'activePresentationMode = "focus-layout-unit"' in javascript
+    assert 'intentionalInactiveRootRatio' in javascript
+    assert 'score -= Math.round(unclaimedAreaRatio * 54);' in javascript
+    assert 'score -= Math.round(rootUnclaimedAreaRatio * 54);' not in javascript
+
+
+def test_phase_fit_reports_unrounded_scores_and_dominant_headroom():
+    module = load_module()
+    root = {
+        "left": 0,
+        "top": 0,
+        "right": 1000,
+        "bottom": 600,
+        "width": 1000,
+        "height": 600,
+        "area": 600000,
+    }
+    hierarchy = {
+        "id": "margin-test",
+        "focusSlot": "workflow",
+        "desiredFocusShare": 0.64,
+        "minFocusShare": 0.50,
+        "maxFocusShare": 0.90,
+        "roleContract": {"deferableSlots": []},
+        "nodes": [
+            {"slot": "workflow", "role": "focus"},
+            {"slot": "status", "role": "status", "minVisibleShare": 0.02},
+        ],
+        "phaseScenarios": [
+            {
+                "phase": "default",
+                "dominantSlot": "workflow",
+                "requiredSlots": ["status"],
+                "activeSupportSlots": [],
+                "collapsedSlots": [],
+                "minDominantShare": 0.50,
+                "targetDominantShare": 0.64,
+                "maxInactiveTax": 0.12,
+                "weight": 1.0,
+            }
+        ],
+    }
+    measurement = {
+        "phase": "default",
+        "geometryFacts": {
+            "root": {"clipped": root},
+            "clippedCriticalControlCount": 0,
+            "hiddenCriticalControlCount": 0,
+            "blockedCriticalControlCount": 0,
+            "undeclaredPartitionOverlapShare": 0,
+            "paintedOwnership": {"overlayBudgetExceeded": []},
+        },
+        "examples": {
+            "nodes": [
+                {
+                    "slot": "workflow",
+                    "realization": "full-active",
+                    "effectiveVisibleShare": 0.5375,
+                    "rect": {**root, "area": 322500},
+                },
+                {
+                    "slot": "status",
+                    "realization": "persistent",
+                    "effectiveVisibleShare": 0.03,
+                    "rect": {
+                        "left": 0,
+                        "top": 570,
+                        "right": 1000,
+                        "bottom": 588,
+                        "width": 1000,
+                        "height": 18,
+                        "area": 18000,
+                    },
+                },
+            ]
+        },
+        "classification": {
+            "score": 91,
+            "geometryScore": 91,
+            "status": "pass",
+        },
+        "snapshots": {"viewport": "margin-test.png"},
+    }
+
+    fit = module.semantic_phase_realization_fit(hierarchy, [measurement])
+
+    assert fit["score"] == round(fit["policyScoreRaw"])
+    assert round(fit["worstDominantHeadroom"], 4) == 0.0375
+    assert round(fit["selectedDefaultHeadroom"], 4) == 0.0375
+    assert fit["scoreVariance"] == 0
+    assert round(fit["phases"][0]["dominantHeadroom"], 4) == 0.0375
+    assert isinstance(fit["phases"][0]["rawScore"], float)
+
+
+def test_margin_aware_candidate_ranking_breaks_integer_score_ties_in_declared_order():
+    module = load_module()
+
+    def measurement(
+        candidate,
+        *,
+        headroom,
+        unit_score=96.0,
+        overlay=False,
+        variance=2.0,
+        occupancy=0.50,
+        preflight=90,
+    ):
+        policy = "workflow-footer-overlay" if overlay else "shared-horizontal-band"
+        return {
+            "hierarchyId": "git-tools-workflow-workbench",
+            "viewportProfile": "desktop",
+            "candidate": candidate,
+            "classification": {
+                "score": 92,
+                "selectionScore": 92,
+                "selectionScoreRaw": 92.25,
+                "status": "pass",
+                "positiveReasons": [],
+                "failureReasons": [],
+                "reviewNotes": [],
+            },
+            "phaseFit": {
+                "worstDominantHeadroom": headroom,
+                "scoreVariance": variance,
+                "phases": [],
+            },
+            "layoutUnitFit": {
+                "worstScore": round(unit_score),
+                "worstScoreRaw": unit_score,
+            },
+            "unitComposition": {
+                "preflightScore": preflight,
+                "unitPolicies": {
+                    "persistent-feedback": policy,
+                    "phase-support": "bounded-side-drawer",
+                },
+            },
+            "geometryFacts": {
+                "unclaimedAreaRatio": 0.10,
+                "focusShare": 0.60,
+                "desiredFocusShare": 0.60,
+                "usefulFocusOccupancy": occupancy,
+                "companionProximityScore": 1.0,
+            },
+            "phaseMeasurements": [
+                {"geometryFacts": {"usefulFocusOccupancy": occupancy}}
+            ],
+            "snapshots": {"viewport": f"{candidate}.png"},
+        }
+
+    candidates = [
+        measurement("lower-headroom", headroom=0.01, unit_score=100),
+        measurement(
+            "higher-headroom-overlay",
+            headroom=0.02,
+            unit_score=96,
+            overlay=True,
+            variance=0.5,
+            occupancy=0.9,
+            preflight=100,
+        ),
+        measurement(
+            "higher-headroom-partition",
+            headroom=0.02,
+            unit_score=96,
+            overlay=False,
+            variance=0.5,
+            occupancy=0.9,
+            preflight=100,
+        ),
+    ]
+
+    rows = module.best_by_hierarchy_viewport_rows(candidates)
+
+    assert rows[0]["candidate"] == "higher-headroom-partition"
+    evidence = rows[0]["selectionMarginEvidence"]
+    assert evidence["worstPhaseHeadroom"] == 0.02
+    assert evidence["overlayPolicyCount"] == 0
+    assert evidence["worstUnitScore"] == 96
+
+
+def test_margin_aware_sort_uses_variance_occupancy_and_preflight_after_hard_margins():
+    module = load_module()
+
+    def item(candidate, *, variance, occupancy, preflight):
+        return {
+            "candidate": candidate,
+            "classification": {"score": 92, "status": "pass"},
+            "phaseFit": {
+                "worstDominantHeadroom": 0.02,
+                "scoreVariance": variance,
+            },
+            "layoutUnitFit": {"worstScoreRaw": 96.0},
+            "unitComposition": {
+                "preflightScore": preflight,
+                "unitPolicies": {
+                    "persistent-feedback": "shared-horizontal-band"
+                },
+            },
+            "geometryFacts": {"usefulFocusOccupancy": occupancy},
+            "phaseMeasurements": [
+                {"geometryFacts": {"usefulFocusOccupancy": occupancy}}
+            ],
+        }
+
+    ordered = sorted(
+        [
+            item("high-variance", variance=2.0, occupancy=0.99, preflight=100),
+            item("low-occupancy", variance=1.0, occupancy=0.50, preflight=100),
+            item("low-preflight", variance=1.0, occupancy=0.75, preflight=80),
+            item("winner", variance=1.0, occupancy=0.75, preflight=95),
+        ],
+        key=module.measurement_ranking_sort_key,
+    )
+
+    assert [entry["candidate"] for entry in ordered] == [
+        "winner",
+        "low-preflight",
+        "low-occupancy",
+        "high-variance",
+    ]
+
+
+def test_stage_c_report_exposes_density_and_margin_evidence(tmp_path):
+    module = load_module()
+    measurement = {
+        "hierarchyId": "margin-report",
+        "viewportProfile": "desktop",
+        "candidate": "compose--margin",
+        "focusSlot": "workflow",
+        "classification": {
+            "score": 92,
+            "selectionScoreRaw": 92.375,
+            "status": "pass",
+            "positiveReasons": [],
+            "failureReasons": [],
+            "reviewNotes": [],
+            "warnings": [],
+        },
+        "geometryFacts": {
+            "unclaimedAreaRatio": 0.04,
+            "activePresentationUnclaimedRatio": 0.04,
+            "rootUnclaimedAreaRatio": 0.64,
+            "intentionalInactiveRootRatio": 0.60,
+            "accidentalUnclaimedRootRatio": 0.04,
+            "activePresentationMode": "focus-layout-unit",
+            "activePresentationUnitId": "project-identity",
+            "activePresentationOccupancy": 0.96,
+            "focusShare": 0.28,
+            "desiredFocusShare": 0.20,
+            "usefulFocusOccupancy": 0.55,
+        },
+        "phaseFit": {
+            "score": 93,
+            "policyScoreRaw": 92.875,
+            "meanScoreRaw": 94.0,
+            "worstScoreRaw": 91.5,
+            "scoreVariance": 1.25,
+            "worstDominantHeadroom": 0.01,
+            "meanDominantHeadroom": 0.05,
+            "selectedDefaultHeadroom": 0.08,
+            "state": "strongPhaseFit",
+            "phases": [
+                {
+                    "phase": "planning",
+                    "score": 92,
+                    "rawScore": 91.5,
+                    "dominantShare": 0.57,
+                    "minDominantShare": 0.56,
+                    "dominantHeadroom": 0.01,
+                }
+            ],
+            "positiveReasons": [],
+            "riskReasons": [],
+        },
+        "layoutUnitFit": {
+            "worstScore": 96,
+            "worstScoreRaw": 95.75,
+            "parallelBranches": [],
+        },
+        "unitComposition": {
+            "preflightScore": 98,
+            "unitPolicies": {
+                "persistent-feedback": "shared-horizontal-band"
+            },
+        },
+        "phaseMeasurements": [],
+        "snapshots": {},
+        "humanLoop": {"proved": [], "inferred": [], "unknowns": []},
+    }
+    row = module.measurement_selection_row(
+        measurement,
+        selection_state="bestPassingCandidate",
+        highest_scoring=measurement,
+    )
+    report = {
+        "generatedAt": "2026-07-10T00:00:00+00:00",
+        "smokeLevel": "synthetic-hierarchy-layout-trials",
+        "geometryEngine": "playwright-chromium",
+        "paintedOwnershipMode": "exclusive-enforced",
+        "paintedOwnershipEnforced": True,
+        "densityScoringMode": "phase-relative-active-presentation",
+        "candidateRankingMode": "margin-aware-composition-tiebreak",
+        "hierarchySource": "generated-mcel-like-html",
+        "chrome": "mcel-realistic",
+        "candidates": ["compose--margin"],
+        "candidateCatalogByHierarchy": {},
+        "viewports": [{"name": "desktop", "width": 1440, "height": 900}],
+        "snapshotDirectory": ".",
+        "snapshotFiles": [],
+        "hierarchies": [],
+        "semanticContracts": [],
+        "bestByHierarchyViewport": [row],
+        "rollups": [],
+        "measurements": [measurement],
+    }
+
+    _, markdown_path = module.write_reports(report, tmp_path)
+    markdown = markdown_path.read_text(encoding="utf-8")
+
+    assert "Density scoring: `phase-relative-active-presentation`" in markdown
+    assert "Candidate ranking: `margin-aware-composition-tiebreak`" in markdown
+    assert "Active-presentation unclaimed ratio: `0.0400`" in markdown
+    assert "Root-wide unclaimed ratio (diagnostic): `0.6400`" in markdown
+    assert "Intentional inactive root ratio: `0.6000`" in markdown
+    assert "Margin-aware tie-break:" in markdown
+    assert "headroom=`+0.0100`" in markdown
+
+
+
+
+def test_stage_d_support_policies_declare_distinct_realization_placements():
+    module = load_module()
+
+    def candidate(policy):
+        return {
+            "id": f"compose--{policy}",
+            "mode": "recursive-composition",
+            "renderFamily": "recursive-composition",
+            "composition": {
+                "rootPolicy": "dominant-workflow-stack",
+                "unitPolicies": {"phase-support": policy},
+            },
+        }
+
+    assert module.candidate_phase_policy(
+        candidate("one-active-plus-triggers")
+    )["activeSupportPlacement"] == "neutral-phase-stage"
+    assert module.candidate_phase_policy(
+        candidate("bounded-side-drawer")
+    )["activeSupportPlacement"] == "side-drawer"
+    assert module.candidate_phase_policy(
+        candidate("bounded-bottom-drawer")
+    )["activeSupportPlacement"] == "bottom-drawer"
+    assert module.candidate_phase_policy(
+        candidate("inline-phase-stage")
+    )["activeSupportPlacement"] == "inline-stage"
+
+
+def test_stage_d_css_reserves_distinct_tracks_for_declared_local_policies():
+    module = load_module()
+    css = module.TRIAL_CSS
+
+    assert "unit-policy-one-active-plus-triggers" in css
+    assert '"main"\n    "support"\n    "feedback"' in css
+    assert "unit-policy-bounded-bottom-drawer" in css
+    assert '"main"\n    "feedback"\n    "support"' in css
+    assert "unit-policy-inline-phase-stage" in css
+    assert '"support"\n    "main"\n    "feedback"' in css
+    assert "unit-policy-phase-selector-unit" in css
+    assert "unit-policy-compact-project-rail" in css
+    assert "minmax(300px, 32fr)" in css
+    assert "minmax(210px, 21fr)" in css
+
+
+def _stage_d_rendered_measurement(
+    candidate,
+    *,
+    support_left=760.0,
+    support_top=120.0,
+    support_width=240.0,
+    support_height=760.0,
+    preflight=90,
+):
+    root = {
+        "left": 0.0,
+        "top": 0.0,
+        "right": 1000.0,
+        "bottom": 1000.0,
+        "width": 1000.0,
+        "height": 1000.0,
+        "area": 1000000.0,
+    }
+    workflow = {
+        "left": 0.0,
+        "top": 120.0,
+        "right": support_left,
+        "bottom": 880.0,
+        "width": support_left,
+        "height": 760.0,
+        "area": support_left * 760.0,
+    }
+    support = {
+        "left": support_left,
+        "top": support_top,
+        "right": support_left + support_width,
+        "bottom": support_top + support_height,
+        "width": support_width,
+        "height": support_height,
+        "area": support_width * support_height,
+    }
+    phase = {
+        "phase": "planning",
+        "focusSlot": "workflow",
+        "realizationStates": {
+            "workflow": "full-active",
+            "server": "full-active",
+            "evidence": "compact-trigger",
+        },
+        "geometryFacts": {"root": {"clipped": root}},
+        "examples": {
+            "nodes": [
+                {
+                    "slot": "workflow",
+                    "realization": "full-active",
+                    "ownershipMode": "partition",
+                    "unitId": "command-workflow",
+                    "unitRole": "command-workflow",
+                    "rect": workflow,
+                    "effectiveVisibleShare": workflow["area"] / root["area"],
+                },
+                {
+                    "slot": "server",
+                    "realization": "full-active",
+                    "ownershipMode": "partition",
+                    "unitId": "phase-support",
+                    "unitRole": "phase-support",
+                    "rect": support,
+                    "effectiveVisibleShare": support["area"] / root["area"],
+                },
+            ],
+            "units": [
+                {
+                    "unitId": "command-workflow",
+                    "role": "command-workflow",
+                    "realization": "active",
+                    "ownershipMode": "partition",
+                    "activeSlots": ["workflow"],
+                    "activeSupportSlots": [],
+                    "triggerSlots": [],
+                    "rect": workflow,
+                },
+                {
+                    "unitId": "phase-support",
+                    "role": "phase-support",
+                    "realization": "active",
+                    "ownershipMode": "partition",
+                    "activeSlots": ["server"],
+                    "activeSupportSlots": ["server"],
+                    "triggerSlots": ["evidence"],
+                    "rect": support,
+                },
+            ],
+        },
+    }
+    return {
+        "hierarchyId": "git-tools-workflow-workbench",
+        "viewportProfile": "desktop",
+        "candidate": candidate,
+        "candidateMode": "recursive-composition",
+        "classification": {
+            "score": 96,
+            "selectionScore": 96,
+            "selectionScoreRaw": 95.8,
+            "status": "pass",
+            "positiveReasons": [],
+            "failureReasons": [],
+            "reviewNotes": [],
+        },
+        "phaseFit": {
+            "worstDominantHeadroom": 0.02,
+            "scoreVariance": 0.5,
+            "phases": [],
+        },
+        "layoutUnitFit": {"worstScoreRaw": 96.0},
+        "unitComposition": {
+            "preflightScore": preflight,
+            "unitPolicies": {
+                "phase-support": candidate.rsplit("--", 1)[-1],
+            },
+        },
+        "geometryFacts": {
+            "root": {"clipped": root},
+            "focusShare": workflow["area"] / root["area"],
+            "desiredFocusShare": 0.56,
+            "usefulFocusOccupancy": 0.6,
+            "unclaimedAreaRatio": 0.0,
+        },
+        "phaseMeasurements": [phase],
+        "snapshots": {"viewport": f"{candidate}.png"},
+    }
+
+
+def test_stage_d_fingerprint_ignores_policy_names_and_tolerates_subpixel_jitter():
+    module = load_module()
+    first = _stage_d_rendered_measurement(
+        "compose--support-side",
+        support_left=760.0,
+    )
+    alias = _stage_d_rendered_measurement(
+        "compose--support-triggers",
+        support_left=760.2,
+    )
+    distinct = _stage_d_rendered_measurement(
+        "compose--support-bottom",
+        support_left=0.0,
+        support_top=780.0,
+        support_width=1000.0,
+        support_height=200.0,
+    )
+
+    first_fingerprint = module.measurement_rendered_policy_fingerprint(first)
+    alias_fingerprint = module.measurement_rendered_policy_fingerprint(alias)
+    distinct_fingerprint = module.measurement_rendered_policy_fingerprint(distinct)
+
+    assert first_fingerprint
+    assert first_fingerprint == alias_fingerprint
+    assert distinct_fingerprint != first_fingerprint
+
+
+def test_stage_d_deduplicates_equivalent_compositions_before_ranking():
+    module = load_module()
+    representative = _stage_d_rendered_measurement(
+        "compose--support-side",
+        preflight=98,
+    )
+    alias = _stage_d_rendered_measurement(
+        "compose--support-triggers",
+        preflight=92,
+    )
+    distinct = _stage_d_rendered_measurement(
+        "compose--support-bottom",
+        support_left=0.0,
+        support_top=780.0,
+        support_width=1000.0,
+        support_height=200.0,
+        preflight=95,
+    )
+
+    measurements = [alias, distinct, representative]
+    groups = module.annotate_rendered_policy_equivalence(measurements)
+    rows = module.best_by_hierarchy_viewport_rows(measurements)
+
+    assert len(groups) == 1
+    assert groups[0]["representative"] == "compose--support-side"
+    assert groups[0]["equivalentAliases"] == ["compose--support-triggers"]
+    assert alias["renderedEquivalenceExcludedFromRanking"] is True
+    assert representative["renderedEquivalenceExcludedFromRanking"] is False
+    assert rows[0]["candidate"] == "compose--support-side"
+    assert rows[0]["renderedEquivalentAliases"] == [
+        "compose--support-triggers"
+    ]
+
+
+def test_stage_d_report_surfaces_rendered_equivalence_diagnostics(tmp_path):
+    module = load_module()
+    representative = _stage_d_rendered_measurement(
+        "compose--support-side",
+        preflight=98,
+    )
+    alias = _stage_d_rendered_measurement(
+        "compose--support-triggers",
+        preflight=92,
+    )
+    measurements = [representative, alias]
+    groups = module.annotate_rendered_policy_equivalence(measurements)
+    rows = module.best_by_hierarchy_viewport_rows(measurements)
+
+    report = {
+        "generatedAt": "2026-07-10T00:00:00+00:00",
+        "smokeLevel": "synthetic-hierarchy-layout-trials",
+        "geometryEngine": "playwright-chromium",
+        "paintedOwnershipMode": "exclusive-enforced",
+        "paintedOwnershipEnforced": True,
+        "densityScoringMode": "phase-relative-active-presentation",
+        "candidateRankingMode": "rendered-equivalence-deduplicated-margin-ranking",
+        "renderedPolicyFingerprintVersion": module.RENDERED_POLICY_FINGERPRINT_VERSION,
+        "renderedPolicyFingerprintBins": module.RENDERED_POLICY_FINGERPRINT_BINS,
+        "renderedPolicyEquivalenceGroups": groups,
+        "hierarchySource": "generated-mcel-like-html",
+        "chrome": "mcel-realistic",
+        "candidates": [],
+        "candidateCatalogByHierarchy": {},
+        "viewports": [{"name": "desktop", "width": 1440, "height": 900}],
+        "snapshotDirectory": ".",
+        "snapshotFiles": [],
+        "hierarchies": [],
+        "semanticContracts": [],
+        "bestByHierarchyViewport": rows,
+        "rollups": [],
+        "measurements": measurements,
+    }
+
+    _, markdown_path = module.write_reports(report, tmp_path)
+    markdown = markdown_path.read_text(encoding="utf-8")
+
+    assert "Rendered-policy fingerprint:" in markdown
+    assert "## Rendered-policy equivalence groups" in markdown
+    assert "compose--support-triggers" in markdown
+    assert "Policy realization alias in `phase-support`" in markdown
+
+
+def _stage_e_phase_fixture(module, dominant_share: float):
+    root = {
+        "left": 0,
+        "top": 0,
+        "right": 1000,
+        "bottom": 1000,
+        "width": 1000,
+        "height": 1000,
+        "area": 1_000_000,
+    }
+    hierarchy = {
+        "id": "stage-e-floor",
+        "focusSlot": "workflow",
+        "desiredFocusShare": 0.64,
+        "minFocusShare": 0.56,
+        "maxFocusShare": 0.90,
+        "roleContract": {"deferableSlots": []},
+        "nodes": [
+            {"slot": "workflow", "role": "focus"},
+            {"slot": "status", "role": "status", "minVisibleShare": 0.02},
+        ],
+        "phaseScenarios": [
+            {
+                "phase": "planning",
+                "dominantSlot": "workflow",
+                "requiredSlots": ["status"],
+                "activeSupportSlots": [],
+                "collapsedSlots": [],
+                "minDominantShare": 0.56,
+                "targetDominantShare": 0.64,
+                "maxInactiveTax": 0.12,
+                "weight": 1.0,
+            }
+        ],
+    }
+    measurement = {
+        "phase": "planning",
+        "geometryFacts": {
+            "root": {"clipped": root},
+            "clippedCriticalControlCount": 0,
+            "hiddenCriticalControlCount": 0,
+            "blockedCriticalControlCount": 0,
+            "undeclaredPartitionOverlapShare": 0,
+            "paintedOwnership": {"overlayBudgetExceeded": []},
+        },
+        "examples": {
+            "nodes": [
+                {
+                    "slot": "workflow",
+                    "realization": "full-active",
+                    "effectiveVisibleShare": dominant_share,
+                    "rect": {
+                        **root,
+                        "height": dominant_share * 1000,
+                        "bottom": dominant_share * 1000,
+                        "area": dominant_share * 1_000_000,
+                    },
+                },
+                {
+                    "slot": "status",
+                    "realization": "persistent",
+                    "effectiveVisibleShare": 0.03,
+                    "rect": {
+                        "left": 0,
+                        "top": 970,
+                        "right": 1000,
+                        "bottom": 1000,
+                        "width": 1000,
+                        "height": 30,
+                        "area": 30_000,
+                    },
+                },
+            ]
+        },
+        "classification": {
+            "score": 95,
+            "geometryScore": 95,
+            "status": "pass",
+            "warnings": [],
+            "positiveReasons": [],
+            "failureReasons": [],
+            "reviewNotes": [],
+        },
+        "snapshots": {"viewport": "stage-e.png"},
+    }
+    return hierarchy, measurement
+
+
+def test_stage_e_absolute_floor_helper_handles_below_exact_and_tolerance():
+    module = load_module()
+    tolerance = module.PHASE_SHARE_FLOOR_TOLERANCE
+
+    below = module.phase_share_floor_check(0.56 - tolerance - 0.0001, 0.56)
+    within_tolerance = module.phase_share_floor_check(0.56 - tolerance / 2, 0.56)
+    exact = module.phase_share_floor_check(0.56, 0.56)
+    above = module.phase_share_floor_check(0.561, 0.56)
+
+    assert below["met"] is False
+    assert below["headroom"] < 0
+    assert within_tolerance["met"] is True
+    assert within_tolerance["rawHeadroom"] < 0
+    assert within_tolerance["headroom"] == 0
+    assert exact["met"] is True
+    assert exact["headroom"] == 0
+    assert above["met"] is True
+    assert round(above["headroom"], 4) == 0.001
+
+
+def test_stage_e_phase_aggregation_hard_fails_any_real_floor_shortfall():
+    module = load_module()
+    hierarchy, measurement = _stage_e_phase_fixture(module, 0.5142)
+
+    fit = module.semantic_phase_realization_fit(hierarchy, [measurement])
+    phase = fit["phases"][0]
+    expected = module.phase_share_floor_failure_reason(
+        "planning",
+        "workflow",
+        module.phase_share_floor_check(0.5142, 0.56),
+    )
+
+    assert phase["dominantFloorMet"] is False
+    assert round(phase["dominantRawHeadroom"], 4) == -0.0458
+    assert round(phase["dominantHeadroom"], 4) == -0.0458
+    assert phase["hardFailure"] is True
+    assert phase["score"] <= 68
+    assert expected in phase["hardFailureReasons"]
+    assert expected in fit["hardFailureReasons"]
+    assert fit["phaseFloorFailureCount"] == 1
+
+
+def test_stage_e_tolerance_pass_never_reports_negative_ranked_headroom():
+    module = load_module()
+    share = 0.56 - (module.PHASE_SHARE_FLOOR_TOLERANCE / 2)
+    hierarchy, measurement = _stage_e_phase_fixture(module, share)
+
+    fit = module.semantic_phase_realization_fit(hierarchy, [measurement])
+    phase = fit["phases"][0]
+
+    assert phase["dominantFloorMet"] is True
+    assert phase["dominantRawHeadroom"] < 0
+    assert phase["dominantHeadroom"] == 0
+    assert phase["hardFailure"] is False
+    assert fit["hardFailureCount"] == 0
+    assert fit["phaseFloorFailureCount"] == 0
+    assert fit["worstDominantHeadroom"] == 0
+
+
+def test_stage_e_browser_and_aggregate_share_one_floor_contract():
+    module = load_module()
+    javascript = module.MEASURE_AND_OVERLAY_JS
+
+    assert 'data-flog-phase-floor-tolerance' in javascript
+    assert 'function shareFloorGate(actual, floor)' in javascript
+    assert 'const focusMeetsMinimum = focusFloorGate.met;' in javascript
+    assert 'if (!focusMeetsMinimum) warnings.push(focusFloorFailureReason);' in javascript
+    assert 'focusMeetsMinimum &&' in javascript
+    assert 'if (!focusMeetsMinimum) score -= 16;' in javascript
+    assert 'focusShare >= minFocusShare &&' not in javascript
+    assert 'if (focusShare < minFocusShare)' not in javascript
+
+
+def test_stage_e_aggregate_status_excludes_floor_miss_from_passing_selection():
+    module = load_module()
+    hierarchy, phase_measurement = _stage_e_phase_fixture(module, 0.5142)
+    aggregate = {
+        **phase_measurement,
+        "phaseMeasurements": [phase_measurement],
+        "contractFit": {
+            "score": 95,
+            "rawScore": 95,
+            "state": "strongContractFit",
+            "hardRiskCount": 0,
+            "softRiskCount": 0,
+            "positiveReasons": [],
+            "riskReasons": [],
+            "presentationSetReasons": [],
+            "hardRiskReasons": [],
+            "contractLimits": [],
+        },
+        "affordanceFit": {
+            "score": 95,
+            "rawScore": 95,
+            "state": "strongAffordanceFit",
+            "hardMissCount": 0,
+            "missedAffordanceCount": 0,
+            "positiveReasons": [],
+            "riskReasons": [],
+            "hardRiskReasons": [],
+            "limits": [],
+        },
+        "layoutUnitFit": {
+            "score": 100,
+            "rawScore": 100,
+            "state": "notDeclared",
+            "evaluated": False,
+            "hardFailureCount": 0,
+            "hardFailureReasons": [],
+            "positiveReasons": [],
+            "riskReasons": [],
+        },
+    }
+
+    module.apply_semantic_contract_fit(hierarchy, aggregate)
+
+    assert aggregate["classification"]["status"] == "fail"
+    assert aggregate["classification"]["phaseFloorFailureCount"] == 1
+    assert aggregate["phaseFit"]["worstDominantHeadroom"] < 0
+    assert any(
+        "planning phase gives workflow 51.42% against phase floor 56.00%"
+        in reason
+        for reason in aggregate["classification"]["failureReasons"]
+    )
+
+
+def test_stage_e_report_surfaces_unified_floor_gate(tmp_path):
+    module = load_module()
+    report = {
+        "generatedAt": "2026-07-10T00:00:00+00:00",
+        "smokeLevel": "synthetic-hierarchy-layout-trials",
+        "geometryEngine": "playwright-chromium",
+        "paintedOwnershipMode": "exclusive-enforced",
+        "paintedOwnershipEnforced": True,
+        "phaseFloorGateMode": "unified-effective-share-absolute",
+        "phaseFloorTolerance": module.PHASE_SHARE_FLOOR_TOLERANCE,
+        "densityScoringMode": "phase-relative-active-presentation",
+        "candidateRankingMode": "rendered-equivalence-deduplicated-margin-ranking",
+        "renderedPolicyFingerprintVersion": module.RENDERED_POLICY_FINGERPRINT_VERSION,
+        "renderedPolicyFingerprintBins": module.RENDERED_POLICY_FINGERPRINT_BINS,
+        "renderedPolicyEquivalenceGroups": [],
+        "hierarchySource": "generated-mcel-like-html",
+        "chrome": "mcel-realistic",
+        "candidates": [],
+        "candidateCatalogByHierarchy": {},
+        "viewports": [{"name": "desktop", "width": 1440, "height": 900}],
+        "snapshotDirectory": ".",
+        "snapshotFiles": [],
+        "hierarchies": [],
+        "semanticContracts": [],
+        "bestByHierarchyViewport": [],
+        "rollups": [],
+        "measurements": [],
+    }
+
+    _, markdown_path = module.write_reports(report, tmp_path)
+    markdown = markdown_path.read_text(encoding="utf-8")
+
+    assert "Phase-floor gate: `unified-effective-share-absolute`" in markdown
+    assert "Stage E applies one absolute effective-share phase-floor gate" in markdown
+
+
+def test_stage_e_python_gate_canonicalizes_browser_state_before_aggregation():
+    module = load_module()
+    hierarchy, measurement = _stage_e_phase_fixture(module, 0.5142)
+    realized = {
+        "phase": "planning",
+        "focusSlot": "workflow",
+        "minFocusShare": 0.56,
+    }
+    measurement["geometryFacts"]["focusShare"] = 0.5142
+    measurement["geometryFacts"]["effectiveFocusShare"] = 0.5142
+    measurement["classification"]["status"] = "pass"
+
+    module.apply_phase_floor_gate_to_measurement(realized, measurement)
+
+    assert measurement["classification"]["status"] == "fail"
+    assert measurement["classification"]["phaseFloorGate"]["met"] is False
+    assert measurement["geometryFacts"]["focusFloorMet"] is False
+    assert any(
+        "planning phase gives workflow 51.42% against phase floor 56.00%"
+        in reason
+        for reason in measurement["classification"]["failureReasons"]
+    )
+
+
+def _responsive_measurement(
+    *,
+    hierarchy_id: str,
+    viewport: str,
+    candidate: str,
+    support_policy: str,
+    status: str = "pass",
+    score: float = 95.0,
+    headroom: float = 0.04,
+) -> dict:
+    return {
+        "hierarchyId": hierarchy_id,
+        "viewportProfile": viewport,
+        "candidate": candidate,
+        "candidateMode": "recursive-composition",
+        "renderedEquivalenceExcludedFromRanking": False,
+        "classification": {
+            "status": status,
+            "score": round(score),
+            "selectionScore": round(score),
+            "selectionScoreRaw": score,
+        },
+        "phaseFit": {
+            "worstDominantHeadroom": headroom,
+            "phaseFloorFailureCount": 0 if status != "fail" else 1,
+            "scoreVariance": 0.0,
+            "phases": [
+                {
+                    "phase": "default",
+                    "dominantShare": 0.60 + headroom,
+                    "minDominantShare": 0.60,
+                    "rawScore": score,
+                }
+            ],
+        },
+        "layoutUnitFit": {
+            "worstScore": 96,
+            "worstScoreRaw": 96.0,
+        },
+        "geometryFacts": {"usefulFocusOccupancy": 0.6},
+        "unitComposition": {
+            "enabled": True,
+            "preflightScore": 96,
+            "unitPolicies": {
+                "git-tools-application": "dominant-workflow-stack",
+                "project-identity": "phase-selector-unit",
+                "command-workflow": "command-inline-header",
+                "persistent-feedback": "shared-horizontal-band",
+                "phase-support": support_policy,
+            },
+        },
+        "phaseMeasurements": [],
+    }
+
+
+def test_responsive_viewports_merge_without_duplicate_desktop():
+    module = load_module()
+
+    base = module.parse_viewports("desktop=1440x900")
+    probes = module.parse_viewports(
+        "wide=1600x1000,desktop=1440x900,narrow=840x720"
+    )
+    merged = module.merge_viewport_profiles(base, probes)
+
+    assert [(item.name, item.width) for item in merged] == [
+        ("wide", 1600),
+        ("desktop", 1440),
+        ("narrow", 840),
+    ]
+    assert merged[0].responsive_probe is True
+    assert merged[1].responsive_probe is False
+    assert merged[2].responsive_probe is True
+
+
+def test_responsive_contract_allows_stronger_remediation_only_as_width_shrinks():
+    module = load_module()
+    hierarchy = {
+        "id": "responsive-fixture",
+        "responsiveContract": {
+            "bands": [
+                {"id": "wide", "minWidth": 1200, "maxRemediationLevel": 0},
+                {"id": "medium", "minWidth": 800, "maxRemediationLevel": 1},
+                {"id": "compact", "minWidth": 0, "maxRemediationLevel": 3},
+            ]
+        },
+    }
+
+    contract = module.responsive_contract_for_hierarchy(hierarchy)
+
+    assert module.responsive_capacity_band(contract, 1400)["maxRemediationLevel"] == 0
+    assert module.responsive_capacity_band(contract, 900)["maxRemediationLevel"] == 1
+    assert module.responsive_capacity_band(contract, 600)["maxRemediationLevel"] == 3
+
+
+def test_responsive_policy_switches_from_side_partition_to_sequential_stage():
+    module = load_module()
+    hierarchy = {
+        "id": "responsive-fixture",
+        "layoutUnitTree": {"id": "root"},
+        "responsiveContract": {
+            "bands": [
+                {"id": "wide", "minWidth": 1000, "maxRemediationLevel": 0},
+                {"id": "compact", "minWidth": 0, "maxRemediationLevel": 3},
+            ],
+            "minimumRobustHeadroom": 0.01,
+            "hysteresisPx": 40,
+        },
+    }
+    profiles = [
+        module.ViewportProfile("wide", 1400, 900, True),
+        module.ViewportProfile("compact", 700, 720, True),
+    ]
+    measurements = [
+        _responsive_measurement(
+            hierarchy_id="responsive-fixture",
+            viewport="wide",
+            candidate="support-side",
+            support_policy="bounded-side-drawer",
+            score=96,
+            headroom=0.05,
+        ),
+        _responsive_measurement(
+            hierarchy_id="responsive-fixture",
+            viewport="wide",
+            candidate="support-triggers",
+            support_policy="one-active-plus-triggers",
+            score=99,
+            headroom=0.08,
+        ),
+        _responsive_measurement(
+            hierarchy_id="responsive-fixture",
+            viewport="compact",
+            candidate="support-side",
+            support_policy="bounded-side-drawer",
+            status="fail",
+            score=70,
+            headroom=-0.08,
+        ),
+        _responsive_measurement(
+            hierarchy_id="responsive-fixture",
+            viewport="compact",
+            candidate="support-triggers",
+            support_policy="one-active-plus-triggers",
+            score=94,
+            headroom=0.03,
+        ),
+    ]
+
+    policy = module.responsive_policy_for_hierarchy(
+        hierarchy=hierarchy,
+        measurements=measurements,
+        profiles=profiles,
+    )
+
+    assert [item["candidate"] for item in policy["selections"]] == [
+        "support-side",
+        "support-triggers",
+    ]
+    assert [item["remediationLevel"] for item in policy["selections"]] == [0, 3]
+    assert policy["state"] == "pass"
+    assert policy["semanticContractStable"] is True
+    assert policy["wideToNarrowStable"] is True
+    assert policy["narrowToWideStable"] is True
+    assert len(policy["transitions"]) == 1
+    transition = policy["transitions"][0]
+    assert transition["switchDownBelow"] < transition["switchUpAbove"]
+
+
+def test_responsive_policy_rejects_unnecessary_wide_remediation():
+    module = load_module()
+    hierarchy = {
+        "id": "responsive-fixture",
+        "layoutUnitTree": {"id": "root"},
+        "responsiveContract": {
+            "bands": [
+                {"id": "wide", "minWidth": 0, "maxRemediationLevel": 1},
+            ],
+            "minimumRobustHeadroom": 0.01,
+            "unnecessaryRemediationPenalty": 20,
+        },
+    }
+    profiles = [module.ViewportProfile("wide", 1400, 900, True)]
+    measurements = [
+        _responsive_measurement(
+            hierarchy_id="responsive-fixture",
+            viewport="wide",
+            candidate="side",
+            support_policy="bounded-side-drawer",
+            score=94,
+            headroom=0.04,
+        ),
+        _responsive_measurement(
+            hierarchy_id="responsive-fixture",
+            viewport="wide",
+            candidate="bottom",
+            support_policy="bounded-bottom-drawer",
+            score=99,
+            headroom=0.05,
+        ),
+    ]
+
+    policy = module.responsive_policy_for_hierarchy(
+        hierarchy=hierarchy,
+        measurements=measurements,
+        profiles=profiles,
+    )
+
+    assert policy["selections"][0]["candidate"] == "side"
+    assert policy["selections"][0]["remediationLevel"] == 0
+    assert policy["unnecessaryRemediationCount"] == 0
+
+
+def test_responsive_policy_reports_transition_gap_when_no_candidate_passes():
+    module = load_module()
+    hierarchy = {
+        "id": "responsive-fixture",
+        "layoutUnitTree": {"id": "root"},
+        "responsiveContract": {
+            "bands": [{"id": "compact", "minWidth": 0, "maxRemediationLevel": 3}]
+        },
+    }
+    profiles = [module.ViewportProfile("compact", 600, 720, True)]
+    measurements = [
+        _responsive_measurement(
+            hierarchy_id="responsive-fixture",
+            viewport="compact",
+            candidate="broken",
+            support_policy="one-active-plus-triggers",
+            status="fail",
+            score=60,
+            headroom=-0.2,
+        )
+    ]
+
+    policy = module.responsive_policy_for_hierarchy(
+        hierarchy=hierarchy,
+        measurements=measurements,
+        profiles=profiles,
+    )
+
+    assert policy["state"] == "fail"
+    assert policy["transitionGapCount"] == 1
+    assert policy["semanticContractStable"] is False
+
+
+def test_resize_hysteresis_simulation_uses_different_entry_and_exit_thresholds():
+    module = load_module()
+    selections = [
+        {
+            "candidate": "wide-layout",
+            "width": 1400,
+            "remediationLevel": 0,
+            "band": "wide",
+        },
+        {
+            "candidate": "compact-layout",
+            "width": 800,
+            "remediationLevel": 2,
+            "band": "narrow",
+        },
+    ]
+
+    transitions = module.responsive_transition_rules(
+        selections,
+        hysteresis_px=60,
+    )
+    down = module.simulate_responsive_resize(
+        selections, transitions, direction="down"
+    )
+    up = module.simulate_responsive_resize(
+        selections, transitions, direction="up"
+    )
+
+    assert transitions[0]["switchDownBelow"] < transitions[0]["switchUpAbove"]
+    assert down["stable"] is True
+    assert up["stable"] is True
+    assert down["switches"][0]["width"] == transitions[0]["switchDownBelow"]
+    assert up["switches"][0]["width"] == transitions[0]["switchUpAbove"]
+
+
+def test_cli_defaults_to_recursive_responsive_trials():
+    module = load_module()
+
+    args = module.build_arg_parser().parse_args([])
+
+    assert args.responsive_mode == "recursive"
+    assert args.responsive_hysteresis_px == module.DEFAULT_RESPONSIVE_HYSTERESIS_PX
+    assert "wide=1600x1000" in args.responsive_viewports
+
+
+def test_best_rows_use_cross_viewport_policy_selection_instead_of_local_score():
+    module = load_module()
+    side = _responsive_measurement(
+        hierarchy_id="responsive-fixture",
+        viewport="wide",
+        candidate="side",
+        support_policy="bounded-side-drawer",
+        score=92,
+        headroom=0.05,
+    )
+    bottom = _responsive_measurement(
+        hierarchy_id="responsive-fixture",
+        viewport="wide",
+        candidate="bottom",
+        support_policy="bounded-bottom-drawer",
+        score=99,
+        headroom=0.06,
+    )
+    side["responsivePolicySelected"] = True
+    policies = [
+        {
+            "hierarchyId": "responsive-fixture",
+            "selections": [
+                {
+                    "viewportProfile": "wide",
+                    "candidate": "side",
+                }
+            ],
+        }
+    ]
+
+    rows = module.best_by_hierarchy_viewport_rows(
+        [side, bottom],
+        responsive_policies=policies,
+    )
+
+    assert rows[0]["candidate"] == "side"
+    assert rows[0]["selectionState"] == "responsivePolicySelection"
+    assert rows[0]["highestScoringCandidate"]["candidate"] == "bottom"
+
+
+def _stage_f1_minimal_report(module, measurements):
+    return {
+        "generatedAt": "2026-07-10T00:00:00+00:00",
+        "smokeLevel": "synthetic-hierarchy-layout-trials",
+        "geometryEngine": "playwright-chromium",
+        "paintedOwnershipMode": "exclusive-enforced",
+        "paintedOwnershipEnforced": True,
+        "phaseFloorGateMode": "unified-effective-share-absolute",
+        "phaseFloorTolerance": module.PHASE_SHARE_FLOOR_TOLERANCE,
+        "densityScoringMode": "phase-relative-active-presentation",
+        "candidateRankingMode": "rendered-equivalence-deduplicated-margin-ranking",
+        "responsiveMode": "recursive",
+        "responsivePolicyVersion": module.RESPONSIVE_POLICY_VERSION,
+        "responsiveHysteresisPx": 40,
+        "responsivePolicies": [],
+        "renderedPolicyFingerprintVersion": module.RENDERED_POLICY_FINGERPRINT_VERSION,
+        "renderedPolicyFingerprintBins": module.RENDERED_POLICY_FINGERPRINT_BINS,
+        "renderedPolicyEquivalenceGroups": [],
+        "hierarchySource": "generated-mcel-like-html",
+        "chrome": "mcel-realistic",
+        "candidates": [],
+        "candidateCatalogByHierarchy": {},
+        "viewports": [{"name": "desktop", "width": 1440, "height": 900}],
+        "snapshotDirectory": ".",
+        "snapshotFiles": [],
+        "hierarchies": [],
+        "semanticContracts": [],
+        "bestByHierarchyViewport": [],
+        "rollups": [],
+        "measurements": measurements,
+    }
+
+
+def test_stage_f1_compact_report_strips_nested_browser_diagnostics(tmp_path):
+    module = load_module()
+    measurement = _responsive_measurement(
+        hierarchy_id="responsive-fixture",
+        viewport="desktop",
+        candidate="support-side",
+        support_policy="bounded-side-drawer",
+    )
+    measurement["viewportWidth"] = 1440
+    measurement["viewportHeight"] = 900
+    measurement["phaseMeasurements"] = [
+        {
+            "phase": "default",
+            "examples": {"nodes": [{"payload": "x" * 20000}]},
+            "geometryFacts": {"focusShare": 0.64},
+            "classification": {"score": 95, "status": "pass"},
+        }
+    ]
+    report = _stage_f1_minimal_report(module, [measurement])
+
+    json_path, markdown_path = module.write_reports(
+        report,
+        tmp_path,
+        report_detail=module.REPORT_DETAIL_COMPACT,
+    )
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    markdown = markdown_path.read_text(encoding="utf-8")
+
+    assert payload["reportDetail"] == "compact"
+    assert payload["measurementRecordMode"] == module.COMPACT_MEASUREMENT_VERSION
+    assert payload["fullDiagnosticMeasurementsIncluded"] is False
+    assert payload["fullDiagnosticMeasurementCount"] == 1
+    assert "phaseMeasurements" not in payload["measurements"][0]
+    assert "examples" not in payload["measurements"][0]
+    assert payload["measurements"][0]["phases"][0]["phase"] == "default"
+    assert "## Compact trial measurement index" in markdown
+    assert "## All trial measurements" not in markdown
+
+
+def test_stage_f1_full_report_remains_opt_in(tmp_path):
+    module = load_module()
+    measurement = _responsive_measurement(
+        hierarchy_id="responsive-fixture",
+        viewport="desktop",
+        candidate="support-side",
+        support_policy="bounded-side-drawer",
+    )
+    measurement["phaseMeasurements"] = [
+        {
+            "phase": "default",
+            "examples": {"nodes": [{"payload": "diagnostic"}]},
+            "geometryFacts": {"focusShare": 0.64},
+            "classification": {"score": 95, "status": "pass"},
+        }
+    ]
+    report = _stage_f1_minimal_report(module, [measurement])
+
+    json_path, markdown_path = module.write_reports(
+        report,
+        tmp_path,
+        report_detail=module.REPORT_DETAIL_FULL,
+    )
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    markdown = markdown_path.read_text(encoding="utf-8")
+
+    assert payload["reportDetail"] == "full"
+    assert payload["fullDiagnosticMeasurementsIncluded"] is True
+    assert payload["measurements"][0]["phaseMeasurements"][0]["examples"]
+    assert "## All trial measurements" in markdown
+
+
+def test_stage_f1_cli_defaults_to_compact_report_detail():
+    module = load_module()
+    parser = module.build_arg_parser()
+
+    args = parser.parse_args([])
+
+    assert args.report_detail == module.REPORT_DETAIL_COMPACT

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 import sys
 
 import pytest
@@ -13,6 +15,7 @@ from main_computer.hub_credit_bridge_completion import (
     DepositRecord,
     HubCreditBridgeCompletionService,
     HubCreditBridgeContractClient,
+    JsonRpcClient,
 )
 from main_computer.hub_credit_ledger import HubCreditLedger
 
@@ -237,3 +240,51 @@ def test_contract_client_checksums_transaction_addresses_before_signing(monkeypa
     ]
     assert rpc.nonce_addresses == [checksum_admin]
     assert signed_txs[0]["to"] == checksum_contract
+
+
+def test_json_rpc_client_sends_explicit_api_client_headers(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return b'{"jsonrpc":"2.0","id":1,"result":"0x1"}'
+
+    def fake_urlopen(request, timeout):
+        captured["headers"] = dict(request.header_items())
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.delenv("MAIN_COMPUTER_CHAIN_RPC_USER_AGENT", raising=False)
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_USER_AGENT", raising=False)
+    monkeypatch.setattr("main_computer.hub_credit_bridge_completion.urlopen", fake_urlopen)
+
+    assert JsonRpcClient("https://rpc.example.invalid", timeout_s=3).chain_id() == 1
+
+    headers = captured["headers"]
+    assert headers["Accept"] == "application/json"
+    assert headers["Content-type"] == "application/json"
+    assert headers["X-main-computer-client"] == "chain-rpc"
+    assert headers["User-agent"].startswith("main-computer-chain-rpc/")
+    assert "Python-urllib" not in headers["User-agent"]
+
+
+def test_json_rpc_client_wraps_http_forbidden_with_method_and_body(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            403,
+            "Forbidden",
+            hdrs=None,
+            fp=BytesIO(b'{"error":"blocked"}'),
+        )
+
+    monkeypatch.setattr("main_computer.hub_credit_bridge_completion.urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="Chain RPC request eth_getTransactionReceipt failed with HTTP 403"):
+        JsonRpcClient("https://rpc.example.invalid", timeout_s=3).transaction_receipt("0x" + "ab" * 32)
