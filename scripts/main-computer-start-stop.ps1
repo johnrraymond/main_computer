@@ -170,6 +170,7 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
       $safe = "1"
       $port = "38865"
       $heartbeat = "38866"
+      $mainLogPort = "38867"
     }
     "debug" {
       $label = "Debug"
@@ -177,6 +178,7 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
       $safe = "0"
       $port = "28865"
       $heartbeat = "28866"
+      $mainLogPort = "28867"
     }
     default {
       $normalized = "unleashed"
@@ -185,6 +187,7 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
       $safe = "0"
       $port = "8765"
       $heartbeat = "8766"
+      $mainLogPort = "8767"
     }
   }
 
@@ -197,6 +200,9 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     MAIN_COMPUTER_SAFE_MODE = $safe
     MAIN_COMPUTER_CONTROL_PORT = $port
     MAIN_COMPUTER_HEARTBEAT_PORT = $heartbeat
+    MAIN_COMPUTER_MAIN_LOG_HOST = "127.0.0.1"
+    MAIN_COMPUTER_MAIN_LOG_PORT = $mainLogPort
+    MAIN_COMPUTER_MAIN_LOG_URL = "http://127.0.0.1:$mainLogPort"
     MAIN_COMPUTER_PATH_MODE = "local"
     MAIN_COMPUTER_HOST_OS = "windows"
     MAIN_COMPUTER_GITEA_SCOPE = "shared-machine"
@@ -2092,6 +2098,7 @@ function New-StartSession(
     dev_hub = $DevHubStart
     managed_pid_files = @(
       (Join-Path $RootPath ".main_computer_service_supervisor.pid"),
+      (Join-Path $RootPath ".main_computer_main_log_service.pid"),
       (Get-DevHubPidPath $RootPath),
       (Join-Path $controlRoot ".main_computer_viewport.pid"),
       (Join-Path $controlRoot ".main_computer_heartbeat.pid"),
@@ -2100,6 +2107,7 @@ function New-StartSession(
     )
     managed_state_files = @(
       (Join-Path $RootPath "runtime\service_supervisor\state.json"),
+      (Join-Path $RootPath "runtime\main_log\state.json"),
       (Join-Path $RootPath "runtime\executor_service\state.json"),
       (Join-Path $RootPath "runtime\applications_service\state.json"),
       (Join-Path $RootPath "runtime\blockchain_service\state.json")
@@ -2110,6 +2118,15 @@ function New-StartSession(
         module = "main_computer.app_control bootstrap"
         pid_file = Join-Path $RootPath ".main_computer_service_supervisor.pid"
         state_file = Join-Path $RootPath "runtime\service_supervisor\state.json"
+      },
+      [ordered]@{
+        name = "main-log"
+        module = "main_computer.main_log_service serve"
+        pid_file = Join-Path $RootPath ".main_computer_main_log_service.pid"
+        state_file = Join-Path $RootPath "runtime\main_log\state.json"
+        health_url = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767"
+        follow_url = ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767") + "/v1/log/follow")
+        surprise_url = ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767") + "/v1/log/surprise")
       },
       [ordered]@{
         name = "viewport"
@@ -2420,6 +2437,9 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   Write-Host ("Control root:     " + $controlRoot)
   Write-Host ("Supervisor state: " + (Join-Path $serviceRuntime "state.json"))
   Write-Host ("Supervisor PID:   " + (Join-Path $RootPath ".main_computer_service_supervisor.pid"))
+  Write-Host ("Main Log state:   " + (Join-Path $RootPath "runtime\main_log\state.json"))
+  Write-Host ("Main Log PID:     " + (Join-Path $RootPath ".main_computer_main_log_service.pid"))
+  Write-Host ("Main Log API:     " + (Get-LaunchEnvironmentValue $launchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767"))
   Write-Host ("App PID:          " + (Join-Path $controlRoot ".main_computer_viewport.pid"))
   Write-Host ("Heartbeat PID:    " + (Join-Path $controlRoot ".main_computer_heartbeat.pid"))
   Write-Host ("Executor state:   " + (Join-Path $RootPath "runtime\executor_service\state.json"))
@@ -2599,6 +2619,9 @@ function Get-PidFileCandidateMetadata([string]$PidFile) {
     ".main_computer_service_supervisor.pid" {
       return [pscustomobject]@{ role = "supervisor"; order = 90 }
     }
+    ".main_computer_main_log_service.pid" {
+      return [pscustomobject]@{ role = "main-log"; order = 80 }
+    }
     ".main_computer_executor_service.pid" {
       return [pscustomobject]@{ role = "executor"; order = 20 }
     }
@@ -2692,7 +2715,8 @@ function Add-PidsFromSupervisorState([hashtable]$Candidates, [object]$State) {
     $name = [string]$property.Name
     $child = $property.Value
     try {
-      Add-PidCandidate $Candidates $child.pid $name ("runtime/service_supervisor/state.json children." + $name + ".pid") 20
+      $order = $(if ($name -eq "main-log") { 80 } else { 20 })
+      Add-PidCandidate $Candidates $child.pid $name ("runtime/service_supervisor/state.json children." + $name + ".pid") $order
     } catch {}
   }
 }
@@ -2708,6 +2732,7 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
   foreach ($value in @(
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HEARTBEAT_PORT" "8766"),
+      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_PORT" "8767"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" ""),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_PORT" "8871")
     )) {
@@ -2753,6 +2778,7 @@ function Test-MainComputerServiceCommandLine([string]$CommandLine, [string]$Root
   $serviceMarkers = @(
     "main_computer.app_control",
     "main_computer.service_supervisor",
+    "main_computer.main_log_service",
     "main_computer.executor_service",
     "main_computer.applications_service",
     "main_computer.blockchain_service",
@@ -3032,6 +3058,7 @@ function Remove-ManagedRuntimeFiles([string]$RootPath, [object]$Session, [string
 
   foreach ($relative in @(
       ".main_computer_service_supervisor.pid",
+      ".main_computer_main_log_service.pid",
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
       ".main_computer_executor_service.pid",
@@ -3299,6 +3326,7 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
 
   foreach ($relative in @(
       ".main_computer_service_supervisor.pid",
+      ".main_computer_main_log_service.pid",
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
       ".main_computer_executor_service.pid",

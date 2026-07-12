@@ -39,11 +39,15 @@ HUB_SERVICE_TOOL_PATH = Path(__file__).resolve().with_name("coolify_hub_service.
 
 DEFAULT_PRIVATE_STATE_PATH = REPO_ROOT / "runtime" / "state" / "all_father.private.yaml"
 DEFAULT_DOCKERFILE = "docker/allfather/Dockerfile"
-DEFAULT_IMAGE = "main-computer-allfather-head"
+DEFAULT_IMAGE = "python:3.12-slim"
+DEFAULT_SERVICE_PREFIX = "allfather-head"
 DEFAULT_CONTROL_ENVIRONMENT = "allfather-control"
 DEFAULT_COOLIFY_PROJECT_NAME = "My first project"
 DEFAULT_GUARD_CONTAINER_PORT = 41414
 DEFAULT_GUARD_HOST_BASE = 41400
+DEFAULT_PROBE_CONTAINER_PORT = 41415
+DEFAULT_PROBE_INTERVAL_S = 15.0
+DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
 PRIVATE_PLACEHOLDER_RE = re.compile(r"^\s*(?:<[^>]+>|TODO|TBD|CHANGEME|REPLACE_ME)\s*$", re.IGNORECASE)
 
@@ -293,7 +297,7 @@ def build_head_plan(
         raw_heads.append(
             {
                 "head_id": safe_id(f"allfather-head-{host.name}", field="head_id"),
-                "service_name": safe_id(f"{image}-{host.name}", field="service_name"),
+                "service_name": safe_id(f"{DEFAULT_SERVICE_PREFIX}-{host.name}", field="service_name"),
                 "coolify_server": host.name,
                 "slot": host.slot,
                 "guard_container_port": guard_container_port,
@@ -430,6 +434,95 @@ def head_manifest(plan: HeadPlan, head: HeadNode) -> dict[str, Any]:
     }
 
 
+
+def head_server_command_script() -> str:
+    return r"""
+import base64
+import json
+import os
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(os.environ.get("MC_ALLFATHER_GUARD_PORT", "41414"))
+MANIFEST_B64 = os.environ.get("MC_ALLFATHER_MANIFEST_B64", "")
+try:
+    MANIFEST = json.loads(base64.b64decode(MANIFEST_B64).decode("utf-8")) if MANIFEST_B64 else {}
+except Exception as exc:
+    MANIFEST = {"ok": False, "manifest_error": f"{type(exc).__name__}: {exc}"}
+
+STARTED_AT = time.time()
+
+
+def payload_for_path(path: str) -> tuple[int, dict]:
+    base = {
+        "ok": True,
+        "service": "main-computer-allfather-head",
+        "head_only": True,
+        "network_key": "control-plane",
+        "cell_id": os.environ.get("MC_ALLFATHER_CELL_ID", ""),
+        "guard_port": PORT,
+        "uptime_s": round(time.time() - STARTED_AT, 3),
+    }
+    if path == "/healthz":
+        return 200, {"ok": True, "status": "healthy", "head_only": True}
+    if path == "/identity":
+        identity = dict(MANIFEST.get("identity") or {})
+        return 200, {**base, **identity, "manifest": MANIFEST}
+    if path == "/topology":
+        return 200, {
+            **base,
+            "topology": MANIFEST.get("topology") or {},
+            "peers": MANIFEST.get("peer_hosts") or [],
+            "desired_counts": MANIFEST.get("set_desired_counts") or {},
+        }
+    if path == "/status":
+        return 200, {
+            **base,
+            "status": "head-ready",
+            "desired_counts": MANIFEST.get("desired_counts") or {},
+            "active_counts": MANIFEST.get("active_counts") or {},
+            "guardrails": MANIFEST.get("guardrails") or {},
+        }
+    if path == "/processes":
+        return 200, {**base, "processes": MANIFEST.get("processes") or []}
+    return 404, {**base, "ok": False, "error": "not-found", "path": path}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload, sort_keys=True).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        status, payload = payload_for_path(self.path.split("?", 1)[0])
+        self._send(status, payload)
+
+    def do_POST(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path in {"/up", "/down", "/drain", "/wake"}:
+            self._send(202, {
+                "ok": True,
+                "accepted": True,
+                "head_only": True,
+                "operation": path.strip("/"),
+                "note": "control-plane head accepted the request but no workload is managed by this bootstrap container",
+            })
+            return
+        self._send(404, {"ok": False, "error": "not-found", "path": path})
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        print("%s - %s" % (self.address_string(), fmt % args), flush=True)
+
+
+print(f"all-father control head listening on 0.0.0.0:{PORT}", flush=True)
+HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+""".strip()
+
+
 def yaml_quote(value: Any) -> str:
     return json.dumps(str(value))
 
@@ -441,6 +534,11 @@ def render_head_compose(
     dockerfile: str = DEFAULT_DOCKERFILE,
     image: str = DEFAULT_IMAGE,
 ) -> str:
+    # The control head must be bootstrappable through Coolify raw compose with no
+    # repository build context and no private image registry.  It therefore uses
+    # a public Python image and an inline stdlib HTTP guard server.  The
+    # Dockerfile argument is accepted for CLI compatibility but intentionally not
+    # rendered in this control-plane compose.
     manifest = head_manifest(plan, head)
     port_spec = (
         f"{head.guard_publish_host}:{head.guard_host_port}:{head.guard_container_port}/tcp"
@@ -448,44 +546,405 @@ def render_head_compose(
         else f"{head.guard_host_port}:{head.guard_container_port}/tcp"
     )
     parent = str(Path(head.state_root).parent).replace("\\", "/")
+    command_script = head_server_command_script()
     lines = [
         f"name: {head.service_name}",
         "",
         "services:",
         f"  {head.service_name}:",
-        "    build:",
-        "      context: .",
-        f"      dockerfile: {yaml_quote(dockerfile)}",
-        f"    image: {yaml_quote(f'{image}:latest')}",
+        f"    image: {yaml_quote(image)}",
         "    restart: unless-stopped",
-        "    environment:",
-        f"      MC_ALLFATHER_CONTROL_PLANE: {yaml_quote('1')}",
-        f"      MC_ALLFATHER_HEAD_ONLY: {yaml_quote('1')}",
-        f"      MC_ALLFATHER_NETWORK: {yaml_quote('control-plane')}",
-        f"      MC_ALLFATHER_SET_ID: {yaml_quote('allfather-control')}",
-        f"      MC_ALLFATHER_CELL_ID: {yaml_quote(head.head_id)}",
-        f"      MC_ALLFATHER_GUARD_PORT: {yaml_quote(head.guard_container_port)}",
-        f"      MC_ALLFATHER_GUARD_HOST_PORT: {yaml_quote(head.guard_host_port)}",
-        f"      MC_ALLFATHER_STATE_ROOT: {yaml_quote(head.state_root)}",
-        f"      MC_ALLFATHER_DESIRED_COUNTS: {yaml_quote(json.dumps(manifest['desired_counts'], sort_keys=True))}",
-        f"      MC_ALLFATHER_PEER_GUARDS: {yaml_quote(','.join(peer['guard_url'] for peer in head.peers))}",
-        f"      MC_ALLFATHER_GUARDRAILS: {yaml_quote(json.dumps(plan.guardrails, sort_keys=True))}",
-        f"      MC_ALLFATHER_MANIFEST_B64: {yaml_quote(manifest_b64(manifest))}",
-        "    ports:",
-        f"      - {yaml_quote(port_spec)}",
-        "    volumes:",
-        f"      - {yaml_quote(f'{parent}:{parent}')}",
-        "    healthcheck:",
-        "      test:",
-        "        - CMD-SHELL",
-        f"        - {yaml_quote(f'python /opt/main-computer/allfather/healthcheck.py http://127.0.0.1:{head.guard_container_port}/healthz')}",
-        "      interval: 10s",
-        "      timeout: 5s",
-        "      start_period: 10s",
-        "      retries: 6",
-        "",
+        "    command:",
+        "      - python",
+        "      - -u",
+        "      - -c",
+        "      - |",
     ]
+    lines.extend(f"        {line}" for line in command_script.splitlines())
+    lines.extend(
+        [
+            "    environment:",
+            f"      MC_ALLFATHER_CONTROL_PLANE: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_HEAD_ONLY: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_NETWORK: {yaml_quote('control-plane')}",
+            f"      MC_ALLFATHER_SET_ID: {yaml_quote('allfather-control')}",
+            f"      MC_ALLFATHER_CELL_ID: {yaml_quote(head.head_id)}",
+            f"      MC_ALLFATHER_GUARD_PORT: {yaml_quote(head.guard_container_port)}",
+            f"      MC_ALLFATHER_GUARD_HOST_PORT: {yaml_quote(head.guard_host_port)}",
+            f"      MC_ALLFATHER_STATE_ROOT: {yaml_quote(head.state_root)}",
+            f"      MC_ALLFATHER_DESIRED_COUNTS: {yaml_quote(json.dumps(manifest['desired_counts'], sort_keys=True))}",
+            f"      MC_ALLFATHER_PEER_GUARDS: {yaml_quote(','.join(peer['guard_url'] for peer in head.peers))}",
+            f"      MC_ALLFATHER_GUARDRAILS: {yaml_quote(json.dumps(plan.guardrails, sort_keys=True))}",
+            f"      MC_ALLFATHER_MANIFEST_B64: {yaml_quote(manifest_b64(manifest))}",
+            "    ports:",
+            f"      - {yaml_quote(port_spec)}",
+            "    volumes:",
+            f"      - {yaml_quote(f'{parent}:{parent}')}",
+            "    healthcheck:",
+            "      test:",
+            "        - CMD-SHELL",
+            f"        - {yaml_quote(f'python -c \"import urllib.request; urllib.request.urlopen(\\\"http://127.0.0.1:{head.guard_container_port}/healthz\\\", timeout=3).read()\"')}",
+            "      interval: 10s",
+            "      timeout: 5s",
+            "      start_period: 10s",
+            "      retries: 6",
+            "",
+        ]
+    )
     return "\n".join(lines)
+
+
+def probe_service_name(head: HeadNode) -> str:
+    return safe_id(f"{DEFAULT_PROBE_SERVICE_PREFIX}-{head.coolify_server}", field="probe_service_name")
+
+
+def probe_targets_for_plan(plan: HeadPlan) -> list[str]:
+    return [head.guard_url for head in plan.heads]
+
+
+def probe_targets_b64(plan: HeadPlan) -> str:
+    return base64.b64encode(json.dumps(probe_targets_for_plan(plan), sort_keys=True).encode("utf-8")).decode("ascii")
+
+
+def probe_server_command_script() -> str:
+    return r"""
+import base64
+import json
+import os
+import threading
+import time
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+PORT = int(os.environ.get("MC_ALLFATHER_PROBE_PORT", "41415"))
+INTERVAL_S = float(os.environ.get("MC_ALLFATHER_PROBE_INTERVAL_S", "15"))
+TIMEOUT_S = float(os.environ.get("MC_ALLFATHER_PROBE_TIMEOUT_S", "4"))
+STATE_DIR = Path(os.environ.get("MC_ALLFATHER_PROBE_STATE_DIR", "/state"))
+TARGETS_B64 = os.environ.get("MC_ALLFATHER_PROBE_TARGETS_B64", "")
+CELL_ID = os.environ.get("MC_ALLFATHER_CELL_ID", "")
+COOLIFY_SERVER = os.environ.get("MC_ALLFATHER_COOLIFY_SERVER", "")
+STARTED_AT = time.time()
+
+try:
+    TARGETS = json.loads(base64.b64decode(TARGETS_B64).decode("utf-8")) if TARGETS_B64 else []
+except Exception as exc:
+    TARGETS = []
+    TARGETS_ERROR = f"{type(exc).__name__}: {exc}"
+else:
+    TARGETS_ERROR = ""
+
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+LATEST = {
+    "ok": False,
+    "service": "main-computer-allfather-control-probe",
+    "cell_id": CELL_ID,
+    "coolify_server": COOLIFY_SERVER,
+    "targets": [],
+    "targets_error": TARGETS_ERROR,
+    "started_at": STARTED_AT,
+    "updated_at": None,
+}
+
+
+def fetch_json(url: str) -> dict:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+            raw = response.read()
+    except Exception as exc:
+        return {"ok": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "url": url,
+            "error": f"invalid-json: {exc}",
+            "body_preview": raw[:240].decode("utf-8", "replace"),
+        }
+    if isinstance(payload, dict):
+        payload.setdefault("ok", True)
+        payload.setdefault("url", url)
+        return payload
+    return {"ok": False, "url": url, "error": "json payload was not an object"}
+
+
+def run_probe_once() -> dict:
+    results = []
+    for base in TARGETS:
+        clean = str(base or "").rstrip("/")
+        if not clean:
+            continue
+        identity = fetch_json(f"{clean}/identity")
+        topology = fetch_json(f"{clean}/topology")
+        status = fetch_json(f"{clean}/status")
+        healthz = fetch_json(f"{clean}/healthz")
+        results.append(
+            {
+                "guard_url": clean,
+                "ok": bool(identity.get("ok") or topology.get("ok") or status.get("ok") or healthz.get("ok")),
+                "identity": identity,
+                "topology": topology,
+                "status": status,
+                "healthz": healthz,
+            }
+        )
+    return {
+        "ok": any(item.get("ok") for item in results),
+        "service": "main-computer-allfather-control-probe",
+        "cell_id": CELL_ID,
+        "coolify_server": COOLIFY_SERVER,
+        "transport": "coolify-patch-probe",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "targets_error": TARGETS_ERROR,
+        "target_count": len(TARGETS),
+        "targets": results,
+        "updated_at": time.time(),
+        "uptime_s": round(time.time() - STARTED_AT, 3),
+    }
+
+
+def write_latest(result: dict) -> None:
+    global LATEST
+    LATEST = result
+    tmp = STATE_DIR / "latest-result.json.tmp"
+    final = STATE_DIR / "latest-result.json"
+    tmp.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(final)
+    print("ALLFATHER_PROBE_RESULT " + json.dumps(result, sort_keys=True), flush=True)
+
+
+def probe_loop() -> None:
+    while True:
+        try:
+            write_latest(run_probe_once())
+        except Exception as exc:
+            write_latest(
+                {
+                    "ok": False,
+                    "service": "main-computer-allfather-control-probe",
+                    "cell_id": CELL_ID,
+                    "coolify_server": COOLIFY_SERVER,
+                    "transport": "coolify-patch-probe",
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "updated_at": time.time(),
+                }
+            )
+        time.sleep(max(1.0, INTERVAL_S))
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload, sort_keys=True).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path == "/healthz":
+            self._send(200, {
+                "ok": True,
+                "service": "main-computer-allfather-control-probe",
+                "status": "running",
+                "last_probe_ok": bool(LATEST.get("ok")),
+                "target_count": len(TARGETS),
+            })
+            return
+        if path == "/result":
+            self._send(200, dict(LATEST))
+            return
+        self._send(404, {"ok": False, "error": "not-found", "path": path})
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        print("%s - %s" % (self.address_string(), fmt % args), flush=True)
+
+
+threading.Thread(target=probe_loop, daemon=True).start()
+print(f"all-father control probe listening on 0.0.0.0:{PORT}", flush=True)
+ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+""".strip()
+
+
+def render_probe_compose(
+    plan: HeadPlan,
+    head: HeadNode,
+    *,
+    image: str = DEFAULT_IMAGE,
+    probe_container_port: int = DEFAULT_PROBE_CONTAINER_PORT,
+    probe_interval_s: float = DEFAULT_PROBE_INTERVAL_S,
+) -> str:
+    """Render the private Coolify-managed probe service.
+
+    The probe intentionally has no host ports, FQDNs, or Traefik labels. It is a
+    long-running diagnostic service that Coolify manages on the remote host; it
+    queries the private guard URLs from that remote context and writes JSON to
+    its logs and /state/latest-result.json.
+    """
+
+    service_name = probe_service_name(head)
+    command_script = probe_server_command_script()
+    state_dir = f"{head.state_root.rstrip('/')}/probe"
+    lines = [
+        f"name: {service_name}",
+        "",
+        "services:",
+        f"  {service_name}:",
+        f"    image: {yaml_quote(image)}",
+        "    restart: unless-stopped",
+        "    command:",
+        "      - python",
+        "      - -u",
+        "      - -c",
+        "      - |",
+    ]
+    lines.extend(f"        {line}" for line in command_script.splitlines())
+    lines.extend(
+        [
+            "    environment:",
+            f"      MC_ALLFATHER_PROBE: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_CELL_ID: {yaml_quote(head.head_id)}",
+            f"      MC_ALLFATHER_COOLIFY_SERVER: {yaml_quote(head.coolify_server)}",
+            f"      MC_ALLFATHER_PROBE_PORT: {yaml_quote(probe_container_port)}",
+            f"      MC_ALLFATHER_PROBE_INTERVAL_S: {yaml_quote(probe_interval_s)}",
+            f"      MC_ALLFATHER_PROBE_TIMEOUT_S: {yaml_quote(4)}",
+            f"      MC_ALLFATHER_PROBE_TARGETS_B64: {yaml_quote(probe_targets_b64(plan))}",
+            f"      MC_ALLFATHER_PROBE_STATE_DIR: {yaml_quote('/state')}",
+            "    expose:",
+            f"      - {yaml_quote(probe_container_port)}",
+            "    volumes:",
+            f"      - {yaml_quote(f'{state_dir}:/state')}",
+            "    healthcheck:",
+            "      test:",
+            "        - CMD-SHELL",
+            f"        - {yaml_quote(f'python -c \"import urllib.request; urllib.request.urlopen(\\\"http://127.0.0.1:{probe_container_port}/healthz\\\", timeout=3).read()\"')}",
+            "      interval: 10s",
+            "      timeout: 5s",
+            "      start_period: 10s",
+            "      retries: 6",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def probe_service_payload(
+    plan: HeadPlan,
+    head: HeadNode,
+    args: argparse.Namespace,
+    *,
+    context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    service_name = probe_service_name(head)
+    compose = render_probe_compose(
+        plan,
+        head,
+        image=getattr(args, "probe_image", getattr(args, "image", DEFAULT_IMAGE)),
+        probe_container_port=getattr(args, "probe_container_port", DEFAULT_PROBE_CONTAINER_PORT),
+        probe_interval_s=getattr(args, "probe_interval_s", DEFAULT_PROBE_INTERVAL_S),
+    )
+    payload = {
+        "server_uuid": (context or {}).get("server_uuid") or "",
+        "project_uuid": (context or {}).get("project_uuid") or "",
+        "environment_name": (context or {}).get("environment_name") or getattr(args, "coolify_environment_name", "") or DEFAULT_CONTROL_ENVIRONMENT,
+        "environment_uuid": (context or {}).get("environment_uuid") or "",
+        "name": service_name,
+        "description": (
+            f"Main Computer all-father private control probe for Coolify host {head.coolify_server}. "
+            "This service is intentionally left running for diagnostics and has no public route."
+        ),
+        "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        "instant_deploy": False,
+    }
+    destination_uuid = destination_uuid_for_host(head, args)
+    if destination_uuid:
+        payload["destination_uuid"] = destination_uuid
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def sync_probe_service(
+    client: Any,
+    plan: HeadPlan,
+    head: HeadNode,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+) -> tuple[str, str, dict[str, Any]]:
+    service_name = probe_service_name(head)
+    service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
+    compose = render_probe_compose(
+        plan,
+        head,
+        image=getattr(args, "probe_image", getattr(args, "image", DEFAULT_IMAGE)),
+        probe_container_port=getattr(args, "probe_container_port", DEFAULT_PROBE_CONTAINER_PORT),
+        probe_interval_s=getattr(args, "probe_interval_s", DEFAULT_PROBE_INTERVAL_S),
+    )
+    if service_uuid:
+        fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
+        return service_uuid, "updated", existing
+    service_uuid = fdb_tool().create_service(client, probe_service_payload(plan, head, args, context=context), tried)
+    return service_uuid, "created", existing
+
+
+def fetch_probe_logs(client: Any, service_uuid: str, tried: list[dict[str, Any]]) -> dict[str, Any]:
+    if not service_uuid:
+        return {"ok": False, "source": "missing-service-uuid", "body": None}
+    paths = [
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/logs",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/logs?tail=300",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/application/logs",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/docker/logs",
+    ]
+    for path in paths:
+        response = client.request("GET", path)
+        tried.append({"operation": "get-allfather-probe-logs", "path": path, "response": hub_service_tool().response_to_dict(response)})
+        if response.ok:
+            return {"ok": True, "source": path, "body": response.body}
+        if response.status not in {400, 404, 405, 422}:
+            return {"ok": False, "source": path, "error": f"HTTP {response.status}", "body": response.body}
+    return {"ok": False, "source": "coolify-api", "error": "no known Coolify logs endpoint returned probe logs", "body": None}
+
+
+def _strings_from_nested(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for nested in value.values():
+            yield from _strings_from_nested(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _strings_from_nested(nested)
+
+
+def probe_results_from_logs_body(body: Any) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for text in _strings_from_nested(body):
+        for line in text.splitlines():
+            if "ALLFATHER_PROBE_RESULT " not in line:
+                continue
+            raw = line.split("ALLFATHER_PROBE_RESULT ", 1)[1].strip()
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                results.append(parsed)
+    return results
+
+
+def latest_probe_result(logs: Mapping[str, Any]) -> dict[str, Any]:
+    results = probe_results_from_logs_body(logs.get("body") if isinstance(logs, Mapping) else None)
+    if not results:
+        return {"ok": False, "source": "coolify-probe-logs", "error": "no ALLFATHER_PROBE_RESULT entry found"}
+    return {"ok": True, "source": "coolify-probe-logs", "result": results[-1], "result_count": len(results)}
 
 
 def context_args_for_host(args: argparse.Namespace, host: HeadNode) -> argparse.Namespace:
@@ -659,37 +1118,441 @@ def fetch_json(url: str, *, timeout_s: float) -> dict[str, Any]:
     return payload
 
 
+def _nested_values(value: Any) -> Iterable[Any]:
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            yield nested
+            yield from _nested_values(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield nested
+            yield from _nested_values(nested)
+
+
+def _coerce_operator_url(raw: Any) -> str:
+    text = str(raw or "").strip().strip(",")
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text.rstrip("/")
+    if re.match(r"^[A-Za-z0-9_.-]+(?::\d+)?(?:/.*)?$", text):
+        return f"https://{text}".rstrip("/")
+    return ""
+
+
+def operator_urls_from_service_record(record: Mapping[str, Any]) -> list[str]:
+    """Extract public/operator HTTP routes from a Coolify service record.
+
+    VPN guard URLs are intentionally not synthesized here.  The local operator
+    process cannot assume it can route to 10.x addresses; those addresses are
+    for head-to-head traffic inside the remote control network.
+    """
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    useful_keys = {
+        "url",
+        "urls",
+        "fqdn",
+        "fqdns",
+        "domain",
+        "domains",
+        "public_url",
+        "public_urls",
+        "operator_url",
+        "operator_urls",
+        "service_url",
+        "service_urls",
+    }
+
+    def add(candidate: Any) -> None:
+        if isinstance(candidate, str):
+            # Coolify fields are sometimes comma/newline separated.
+            pieces = re.split(r"[\s,]+", candidate)
+            for piece in pieces:
+                url = _coerce_operator_url(piece)
+                if url and url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+        elif isinstance(candidate, list):
+            for item in candidate:
+                add(item)
+        elif isinstance(candidate, Mapping):
+            for item in candidate.values():
+                add(item)
+
+    for key, value in record.items():
+        if str(key) in useful_keys or str(key).lower() in useful_keys:
+            add(value)
+
+    for nested in _nested_values(record):
+        if isinstance(nested, Mapping):
+            for key, value in nested.items():
+                if str(key).lower() in useful_keys:
+                    add(value)
+
+    return urls
+
+
+def response_body_mapping(response: Any) -> dict[str, Any]:
+    body = getattr(response, "body", None)
+    if isinstance(body, Mapping):
+        return dict(body)
+    if isinstance(body, list):
+        return {"items": body}
+    if isinstance(body, str):
+        try:
+            parsed = json.loads(body)
+        except Exception:
+            return {"raw": body}
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+        if isinstance(parsed, list):
+            return {"items": parsed}
+    return {}
+
+
+def service_record_from_existing(existing: Mapping[str, Any]) -> dict[str, Any]:
+    matches = existing.get("matches") if isinstance(existing, Mapping) else None
+    if isinstance(matches, list) and matches:
+        first = matches[0]
+        if isinstance(first, Mapping):
+            return dict(first)
+    return {}
+
+
+def fetch_service_detail(client: Any, service_uuid: str, tried: list[dict[str, Any]]) -> dict[str, Any]:
+    if not service_uuid:
+        return {"ok": False, "source": "missing-service-uuid"}
+    paths = [
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/show",
+    ]
+    for path in paths:
+        response = client.request("GET", path)
+        tried.append({"operation": "get-allfather-head-service", "path": path, "response": hub_service_tool().response_to_dict(response)})
+        if response.ok:
+            body = response_body_mapping(response)
+            return {"ok": True, "source": path, "body": body}
+        if response.status == 404:
+            continue
+    return {"ok": False, "source": "coolify-api", "error": "service detail endpoint did not return a usable record"}
+
+
+def discover_head_via_coolify(plan: HeadPlan, head: HeadNode, args: argparse.Namespace) -> dict[str, Any]:
+    tried: list[dict[str, Any]] = []
+    token_source = ""
+    service_uuid = ""
+    existing: dict[str, Any] = {}
+    detail: dict[str, Any] = {}
+    operator_urls: list[str] = []
+
+    try:
+        client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+        version = client.request("GET", "/api/v1/version")
+        tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
+        if not version.ok:
+            return {
+                "ok": False,
+                "method": "coolify-api",
+                "token_source": token_source,
+                "service_uuid": "",
+                "operator_urls": [],
+                "tried": tried,
+                "error": f"Coolify API version check failed with HTTP {version.status}",
+            }
+        service_uuid, existing = hub_service_tool().find_service(client, service_name=head.service_name, explicit_uuid=explicit_service_uuid_for_host(head, args), tried=tried)
+        service_record = service_record_from_existing(existing)
+        if service_uuid:
+            detail = fetch_service_detail(client, service_uuid, tried)
+            body = detail.get("body") if isinstance(detail, Mapping) else {}
+            if isinstance(body, Mapping):
+                service_record = {**service_record, **dict(body)}
+        operator_urls = operator_urls_from_service_record(service_record)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "method": "coolify-api",
+            "token_source": token_source,
+            "service_uuid": service_uuid,
+            "operator_urls": operator_urls,
+            "tried": tried,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    coolify_ok = bool(service_uuid)
+    return {
+        "ok": coolify_ok,
+        "method": "coolify-api",
+        "token_source": token_source,
+        "service_uuid": service_uuid,
+        "existing": existing,
+        "service_detail": detail,
+        "operator_urls": operator_urls,
+        "tried": tried,
+    }
+
+
+def fetch_head_payloads(operator_urls: Sequence[str], *, timeout_s: float) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    for operator_url in operator_urls:
+        base = str(operator_url or "").rstrip("/")
+        identity = fetch_json(f"{base}/identity", timeout_s=timeout_s)
+        topology = fetch_json(f"{base}/topology", timeout_s=timeout_s)
+        status = fetch_json(f"{base}/status", timeout_s=timeout_s)
+        attempts.append({"operator_url": base, "identity": identity, "topology": topology, "status": status})
+        if identity.get("ok") or topology.get("ok") or status.get("ok"):
+            return identity, topology, status, {"ok": True, "operator_url": base, "attempts": attempts}
+    return (
+        {"ok": False, "error": "no operator URL returned identity", "attempts": attempts},
+        {"ok": False, "error": "no operator URL returned topology", "attempts": attempts},
+        {"ok": False, "error": "no operator URL returned status", "attempts": attempts},
+        {"ok": False, "operator_url": "", "attempts": attempts},
+    )
+
+
+def direct_vpn_disabled_payload(head: HeadNode) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "guard_url": head.guard_url,
+        "scope": "remote-vpn-peer-only",
+        "reason": (
+            "Direct local HTTP discovery is disabled because this guard URL is for the remote VPN/control network. "
+            "Use Coolify/operator discovery from the local machine, or rerun with --allow-direct-vpn from a host that can route to it."
+        ),
+    }
+
+
+def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse.Namespace) -> dict[str, Any]:
+    """Create/update the long-running Coolify-managed probe and read any visible result.
+
+    This is the normal operator discovery path. It does not use SSH, does not
+    expose the guard through Traefik, and does not curl VPN addresses from the
+    local machine. The probe runs inside the remote Coolify host/network and is
+    intentionally left running for diagnosis until a future finalization action
+    removes or disables it.
+    """
+
+    tried: list[dict[str, Any]] = []
+    token_source = ""
+    head_service_uuid = ""
+    probe_service_uuid = ""
+    head_existing: dict[str, Any] = {}
+    probe_existing: dict[str, Any] = {}
+    head_detail: dict[str, Any] = {}
+    probe_detail: dict[str, Any] = {}
+    probe_logs: dict[str, Any] = {}
+    probe_result: dict[str, Any] = {"ok": False, "error": "probe was not queried"}
+
+    if getattr(args, "dry_run", False):
+        return {
+            "ok": True,
+            "dry_run": True,
+            "method": "coolify-patch-probe",
+            "token_source": "",
+            "head_service_name": head.service_name,
+            "probe_service_name": probe_service_name(head),
+            "peer_guard_url": head.guard_url,
+            "probe_targets": probe_targets_for_plan(plan),
+            "probe_compose": render_probe_compose(
+                plan,
+                head,
+                image=getattr(args, "probe_image", getattr(args, "image", DEFAULT_IMAGE)),
+                probe_container_port=getattr(args, "probe_container_port", DEFAULT_PROBE_CONTAINER_PORT),
+                probe_interval_s=getattr(args, "probe_interval_s", DEFAULT_PROBE_INTERVAL_S),
+            ) if getattr(args, "include_probe_compose", False) else None,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "probe_left_running": True,
+        }
+
+    try:
+        client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+        version = client.request("GET", "/api/v1/version")
+        tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
+        if not version.ok:
+            return {
+                "ok": False,
+                "method": "coolify-patch-probe",
+                "token_source": token_source,
+                "tried": tried,
+                "error": f"Coolify API version check failed with HTTP {version.status}",
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
+
+        context = resolve_context(client, args, head, tried)
+
+        head_service_uuid, head_existing = hub_service_tool().find_service(
+            client,
+            service_name=head.service_name,
+            explicit_uuid=explicit_service_uuid_for_host(head, args),
+            tried=tried,
+        )
+        if head_service_uuid:
+            head_detail = fetch_service_detail(client, head_service_uuid, tried)
+
+        if getattr(args, "no_sync_probe", False):
+            probe_result = {"ok": False, "error": "probe sync disabled by --no-sync-probe"}
+        else:
+            probe_service_uuid, action, probe_existing = sync_probe_service(client, plan, head, args, context, tried)
+            if not getattr(args, "no_deploy_probe", False):
+                deploy_result = hub_service_tool().trigger_deploy_service(
+                    client,
+                    service_uuid=probe_service_uuid,
+                    force=getattr(args, "force_deploy_probe", False),
+                    tried=tried,
+                )
+            else:
+                deploy_result = None
+            probe_detail = fetch_service_detail(client, probe_service_uuid, tried)
+            probe_logs = fetch_probe_logs(client, probe_service_uuid, tried)
+            probe_result = latest_probe_result(probe_logs)
+            return {
+                "ok": True,
+                "method": "coolify-patch-probe",
+                "token_source": token_source,
+                "head_service_name": head.service_name,
+                "head_service_uuid": head_service_uuid,
+                "head_existing": head_existing,
+                "head_detail": head_detail,
+                "probe_service_name": probe_service_name(head),
+                "probe_service_uuid": probe_service_uuid,
+                "probe_action": action,
+                "probe_existing": probe_existing,
+                "probe_deployed": deploy_result is not None,
+                "probe_deploy_result": deploy_result,
+                "probe_detail": probe_detail,
+                "probe_logs": probe_logs,
+                "probe_result": probe_result,
+                "probe_targets": probe_targets_for_plan(plan),
+                "probe_left_running": True,
+                "finalization_action": "future: stop/remove probes after control discovery is proven stable",
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+                "tried": tried,
+            }
+
+        return {
+            "ok": bool(head_service_uuid),
+            "method": "coolify-patch-probe",
+            "token_source": token_source,
+            "head_service_name": head.service_name,
+            "head_service_uuid": head_service_uuid,
+            "head_existing": head_existing,
+            "head_detail": head_detail,
+            "probe_service_name": probe_service_name(head),
+            "probe_service_uuid": probe_service_uuid,
+            "probe_result": probe_result,
+            "probe_targets": probe_targets_for_plan(plan),
+            "probe_left_running": False,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "tried": tried,
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "method": "coolify-patch-probe",
+            "token_source": token_source,
+            "head_service_name": head.service_name,
+            "head_service_uuid": head_service_uuid,
+            "probe_service_name": probe_service_name(head),
+            "probe_service_uuid": probe_service_uuid,
+            "probe_result": probe_result,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "tried": tried,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def networks_from_probe_result(probe_result: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    networks: dict[str, list[dict[str, Any]]] = {}
+    result = probe_result.get("result") if isinstance(probe_result, Mapping) else None
+    if not isinstance(result, Mapping):
+        return networks
+    for target in result.get("targets") or []:
+        if not isinstance(target, Mapping):
+            continue
+        for key in ("identity", "topology", "status"):
+            payload = target.get(key)
+            if not isinstance(payload, Mapping):
+                continue
+            network_key = str(payload.get("network_key") or "").strip()
+            if network_key and network_key not in {"control-plane", "allfather-control"}:
+                networks.setdefault(network_key, []).append(dict(record))
+    return networks
+
+
 def discover_from_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     heads: list[dict[str, Any]] = []
     networks: dict[str, list[dict[str, Any]]] = {}
+    probe_synced_count = 0
+    probe_result_count = 0
+    coolify_head_count = 0
+    errors: list[str] = []
+
     for head in plan.heads:
-        base = head.guard_url.rstrip("/")
-        identity = fetch_json(f"{base}/identity", timeout_s=args.timeout_s)
-        topology = fetch_json(f"{base}/topology", timeout_s=args.timeout_s)
-        status = fetch_json(f"{base}/status", timeout_s=args.timeout_s)
+        probe = sync_and_query_probe_for_head(plan, head, args)
+        if probe.get("ok"):
+            probe_synced_count += 1
+        if probe.get("head_service_uuid"):
+            coolify_head_count += 1
+        probe_result = probe.get("probe_result") if isinstance(probe.get("probe_result"), Mapping) else {}
+        if isinstance(probe_result, Mapping) and probe_result.get("ok"):
+            probe_result_count += 1
+
         record = {
             "head_id": head.head_id,
             "server": head.coolify_server,
-            "guard_url": head.guard_url,
-            "identity": identity,
-            "topology": topology,
-            "status": status,
+            "peer_guard_url": head.guard_url,
+            "peer_guard_url_scope": "remote-vpn-peer-only",
+            "operator_transport": "coolify-patch-probe",
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "probe": probe,
         }
         heads.append(record)
 
-        for payload in (identity, topology, status):
-            network_key = str(payload.get("network_key") or "").strip()
-            if network_key and network_key not in {"control-plane", "allfather-control"}:
-                networks.setdefault(network_key, []).append(record)
+        if not probe.get("ok"):
+            errors.append(f"{head.head_id}: {probe.get('error') or 'Coolify probe sync/query failed'}")
+
+        for network_key, items in networks_from_probe_result(probe_result if isinstance(probe_result, Mapping) else {}, record).items():
+            networks.setdefault(network_key, []).extend(items)
+
+    ok = probe_synced_count == len(plan.heads) if plan.heads else False
     return {
-        "ok": True,
+        "ok": ok,
         "operation": "discover",
-        "topology_source": "live-guard-http",
+        "operator_transport": "coolify-patch-probe",
+        "topology_source": "coolify-api-plus-private-probe-logs",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "probe_services_left_running": True,
+        "finalization_action": "not run; probes remain active for diagnosis",
+        "summary": {
+            "planned_heads": len(plan.heads),
+            "coolify_seen_heads": coolify_head_count,
+            "probe_services_synced": probe_synced_count,
+            "probe_results_observed": probe_result_count,
+            "topology_ready": probe_result_count > 0,
+            "vpn_guard_urls_are_local_operator_urls": False,
+        },
+        "reason": "" if ok else "one or more Coolify-managed discovery probes could not be synced",
+        "errors": errors,
         "heads": heads,
         "networks": networks,
         "guardrails": plan.guardrails,
     }
-
 
 def write_heads(plan: HeadPlan, out_dir: Path, *, dockerfile: str = DEFAULT_DOCKERFILE, image: str = DEFAULT_IMAGE) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -779,7 +1642,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     discover_parser = subparsers.add_parser("discover", help="Query live all-father heads and merge the visible topology.")
     add_remote_args(discover_parser)
     add_common_head_args(discover_parser)
-    discover_parser.add_argument("--timeout-s", type=float, default=5.0)
+    discover_parser.add_argument("--timeout-s", type=float, default=5.0, help="Reserved for direct/debug transports; normal discovery uses Coolify probes.")
+    discover_parser.add_argument("--dry-run", action="store_true", help="Render the probe payloads without changing Coolify.")
+    discover_parser.add_argument("--include-probe-compose", action="store_true", help="Include rendered probe compose in dry-run output.")
+    discover_parser.add_argument("--probe-image", default=DEFAULT_IMAGE)
+    discover_parser.add_argument("--probe-container-port", type=int, default=DEFAULT_PROBE_CONTAINER_PORT)
+    discover_parser.add_argument("--probe-interval-s", type=float, default=DEFAULT_PROBE_INTERVAL_S)
+    discover_parser.add_argument("--no-sync-probe", action="store_true", help="Do not create/update the long-running Coolify probe service.")
+    discover_parser.add_argument("--no-deploy-probe", action="store_true", help="Create/update the probe service but do not trigger deployment.")
+    discover_parser.add_argument("--force-deploy-probe", action="store_true", help="Force deployment of the probe service after sync.")
+    discover_parser.add_argument(
+        "--allow-direct-vpn",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
     for subparser in (plan_parser, write_parser, boot_parser, discover_parser):
         subparser.add_argument("--json", action="store_true", help="Print JSON output. Human output is used only for write-heads.")

@@ -95,6 +95,8 @@ class MachineActivityDockTests(unittest.TestCase):
     def test_applications_page_contains_machine_activity_dock(self) -> None:
         self.assertIn('id="machine-activity-dock"', APPLICATIONS_INDEX_HTML)
         self.assertIn('id="machine-activity-heartbeat"', APPLICATIONS_INDEX_HTML)
+        heartbeat_rule = APPLICATIONS_INDEX_HTML.split(".machine-activity-heartbeat {", 1)[1].split("}", 1)[0]
+        self.assertIn("pointer-events: none;", heartbeat_rule)
         self.assertIn('id="machine-activity-events"', APPLICATIONS_INDEX_HTML)
         self.assertIn('id="machine-activity-meta"', APPLICATIONS_INDEX_HTML)
         self.assertIn('data-activity-filter="faults"', APPLICATIONS_INDEX_HTML)

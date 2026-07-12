@@ -25,6 +25,7 @@ def test_mode_scoped_port_kill_list_uses_launch_context_only() -> None:
     assert "Only inspect ports assigned to the launch context" in function
     assert 'MAIN_COMPUTER_CONTROL_PORT" "8765"' in function
     assert 'MAIN_COMPUTER_HEARTBEAT_PORT" "8766"' in function
+    assert 'MAIN_COMPUTER_MAIN_LOG_PORT" "8767"' in function
     assert 'MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" ""' in function
 
     # These ports still exist as mode defaults elsewhere, but this function must
@@ -50,3 +51,19 @@ def test_current_service_scan_requires_this_tree_before_force_kill() -> None:
     # Port-listener cleanup remains allowed, but only for the scoped mode ports
     # returned by Get-MainComputerManagedPorts.
     assert '"current-main-computer-port-listener"' in function
+
+
+def test_start_stop_manages_main_log_service_as_first_class_child() -> None:
+    helper = read_helper()
+
+    assert 'MAIN_COMPUTER_MAIN_LOG_HOST = "127.0.0.1"' in helper
+    assert 'MAIN_COMPUTER_MAIN_LOG_PORT = $mainLogPort' in helper
+    assert 'MAIN_COMPUTER_MAIN_LOG_URL = "http://127.0.0.1:$mainLogPort"' in helper
+    assert '".main_computer_main_log_service.pid"' in helper
+    assert '"runtime\\main_log\\state.json"' in helper
+    assert 'name = "main-log"' in helper
+    assert 'module = "main_computer.main_log_service serve"' in helper
+    assert 'health_url = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767"' in helper
+    assert '"main_computer.main_log_service"' in helper
+    assert 'Write-Host ("Main Log state:   " + (Join-Path $RootPath "runtime\\main_log\\state.json"))' in helper
+    assert 'Write-Host ("Main Log PID:     " + (Join-Path $RootPath ".main_computer_main_log_service.pid"))' in helper

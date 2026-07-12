@@ -97,7 +97,7 @@
         <button type="button" role="tab" data-code-editor-center-tab="inspector" aria-selected="false">Inspector</button>
       </div>
 
-      <section class="code-studio-editor-group" aria-label="Code editor workbench" data-code-studio-workbench-region="editor-workbench" data-mc-component-id="code-editor.studio.editor-group" data-mc-component-kind="workspace" data-mc-component-label="Editor Group" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.editor" data-mc-layout-prefer="center" data-mc-layout-allowed="center split-center" data-mc-layout-strength="required" data-mc-layout-policy="editor-center" data-mc-layout-min-inline="520" data-mc-layout-min-block="320" data-mc-layout-max-share="1" data-mc-layout-user-mutable="" data-mc-authority="primary-work" data-mc-persistence="always-visible">
+      <section class="code-studio-editor-group" aria-label="Code editor workbench" data-code-studio-workbench-region="editor-workbench" data-mc-component-id="code-editor.studio.editor-group" data-mc-component-kind="workspace" data-mc-component-label="Editor Group" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.editor" data-mc-layout-prefer="center" data-mc-layout-allowed="center split-center" data-mc-layout-strength="required" data-mc-layout-policy="editor-center" data-mc-layout-min-inline="520" data-mc-layout-min-block="320" data-mc-layout-max-share="1" data-mc-layout-user-mutable="" data-mc-layout-fill="owned-center-slot" data-mc-layout-overflow="contain" data-mc-authority="primary-work" data-mc-persistence="always-visible">
         <div class="code-studio-tabs" role="tablist" aria-label="Editor tabs">
           <button type="button" class="active" data-code-studio-tab="source">source.html</button>
           <button type="button" data-code-studio-tab="runtime">runtime preview</button>
@@ -161,7 +161,7 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
           </div>
         </section>
 
-        <section class="code-studio-editor-pane" data-code-studio-pane="runtime" aria-label="Generated runtime preview" data-mc-component-id="code-editor.studio.runtime-pane" data-mc-component-kind="preview" data-mc-component-label="Runtime Preview" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+        <section class="code-studio-editor-pane" data-code-studio-pane="runtime" aria-label="Generated runtime preview" data-mc-component-id="code-editor.studio.runtime-pane" data-mc-component-kind="preview" data-mc-component-label="Runtime Preview" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout="stack" data-mc-layout-tracks="content remaining" data-mc-layout-fill="parent" data-mc-layout-overflow="contain">
           <div class="code-studio-pane-toolbar">
             <strong>Generated runtime</strong>
             <span>Monaco mounts as runtime-only editor chrome; fallback textarea and commitDraft gate stay source-safe.</span>
@@ -174,7 +174,7 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
               18N Code Studio boundary is waiting for runtime draft preflight.
             </output>
           </div>
-          <div class="code-studio-runtime-preview" id="code-studio-runtime-preview" data-mc-component-id="code-editor.studio.runtime-preview" data-mc-component-kind="output" data-mc-component-label="Generated Runtime Preview" data-mc-component-owner="code-editor.studio.runtime-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio"></div>
+          <div class="code-studio-runtime-preview" id="code-studio-runtime-preview" data-mc-component-id="code-editor.studio.runtime-preview" data-mc-component-kind="output" data-mc-component-label="Generated Runtime Preview" data-mc-component-owner="code-editor.studio.runtime-pane" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-fill="remaining" data-mc-layout-overflow="contain" data-mc-layout-containment="owned-remaining-track"></div>
         </section>
 
         <section class="code-studio-editor-pane" data-code-studio-pane="serialized" aria-label="Serialized clean source" data-mc-component-id="code-editor.studio.serialized-pane" data-mc-component-kind="output" data-mc-component-label="Serialized Clean Source" data-mc-component-owner="code-editor.studio.editor-group" data-mc-feature-id="code-editor.feature.mcel-code-studio">

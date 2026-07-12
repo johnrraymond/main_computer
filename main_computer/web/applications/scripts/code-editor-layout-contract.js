@@ -16,11 +16,109 @@
         return value;
       }
 
+      const GENERATED_LAYOUT_CONTRACT = deepFreeze({
+        version: "mcel-owned-track-containment.v1",
+        description: "Generated descendants of an owned remaining track must fit, shrink, and scroll inside that track.",
+        rules: [
+          {
+            id: "runtime-window",
+            selector: ".code-studio-runtime-window",
+            attributes: {
+              "data-mcel-layout-node": "runtime-window",
+              "data-mcel-layout": "stack",
+              "data-mcel-layout-tracks": "content remaining",
+              "data-mcel-layout-fill": "parent",
+              "data-mcel-layout-overflow": "contain",
+              "data-mcel-layout-containment": "owned-remaining-track",
+            },
+          },
+          {
+            id: "runtime-header",
+            selector: ".code-studio-runtime-header",
+            attributes: {
+              "data-mcel-layout-node": "runtime-header",
+              "data-mcel-layout-track": "content",
+              "data-mcel-layout-overflow": "contain-inline",
+            },
+          },
+          {
+            id: "runtime-layout",
+            selector: ".code-studio-runtime-layout",
+            attributes: {
+              "data-mcel-layout-node": "runtime-layout",
+              "data-mcel-layout": "split",
+              "data-mcel-layout-fill": "remaining",
+              "data-mcel-layout-overflow": "contain",
+            },
+          },
+          {
+            id: "runtime-files",
+            selector: ".code-studio-runtime-files",
+            attributes: {
+              "data-mcel-layout-node": "runtime-files",
+              "data-mcel-layout-fill": "parent",
+              "data-mcel-layout-overflow": "scroll",
+            },
+          },
+          {
+            id: "runtime-editor",
+            selector: ".code-studio-runtime-editor",
+            attributes: {
+              "data-mcel-layout-node": "runtime-editor",
+              "data-mcel-layout": "stack",
+              "data-mcel-layout-tracks": "content remaining content",
+              "data-mcel-layout-fill": "parent",
+              "data-mcel-layout-overflow": "contain",
+            },
+          },
+          {
+            id: "runtime-monaco",
+            selector: ".code-studio-monaco-host",
+            attributes: {
+              "data-mcel-layout-node": "runtime-monaco",
+              "data-mcel-layout-fill": "remaining",
+              "data-mcel-layout-overflow": "contain",
+            },
+          },
+          {
+            id: "runtime-fallback",
+            selector: ".code-studio-runtime-fallback",
+            attributes: {
+              "data-mcel-layout-node": "runtime-fallback",
+              "data-mcel-layout": "stack",
+              "data-mcel-layout-tracks": "content remaining",
+              "data-mcel-layout-fill": "remaining",
+              "data-mcel-layout-overflow": "contain",
+            },
+          },
+          {
+            id: "runtime-draft",
+            selector: "#code-studio-runtime-draft",
+            attributes: {
+              "data-mcel-layout-node": "runtime-draft",
+              "data-mcel-layout-fill": "parent",
+              "data-mcel-layout-overflow": "scroll",
+              "data-mcel-layout-containment": "paint-contained",
+            },
+          },
+          {
+            id: "runtime-badges",
+            selector: ".code-studio-runtime-badges",
+            attributes: {
+              "data-mcel-layout-node": "runtime-badges",
+              "data-mcel-layout-track": "content",
+              "data-mcel-layout-overflow": "scroll-inline",
+            },
+          },
+        ],
+      });
+
       const APPLICATION_CONTRACT = deepFreeze({
         id: "code-editor",
         version: 1,
         root: "code-editor.workbench",
         description: "IDE-grade dock workbench with a required center editor and semantic user layout operations.",
+        generatedLayoutContract: GENERATED_LAYOUT_CONTRACT,
         units: {
           "code-editor.workbench": {
             role: "application",
@@ -47,6 +145,20 @@
             role: "primary-work",
             selector: ".code-studio-editor-group",
             required: true,
+            layout: {
+              fill: "owned-center-slot",
+              overflow: "contain",
+            },
+          },
+          "code-editor.runtime-preview": {
+            role: "owned-primary-surface",
+            selector: "#code-studio-runtime-preview",
+            required: false,
+            layout: {
+              fill: "remaining",
+              overflow: "contain",
+              containment: "owned-remaining-track",
+            },
           },
           "code-editor.inspector": {
             role: "assistant-and-inspection",
@@ -77,6 +189,7 @@
           "editor-remains-center",
           "editor-never-collapses",
           "active-critical-controls-remain-actionable",
+          "owned-remaining-track-descendants-contain-their-paint",
           "no-undeclared-overlap",
           "status-remains-persistent",
           "user-preferences-use-semantic-hints",
@@ -226,6 +339,10 @@
           strength: dataset.mcLayoutStrength || fallback.strength,
           policy: dataset.mcLayoutPolicy || "",
           inactive: dataset.mcLayoutInactive || "",
+          fill: dataset.mcLayoutFill || fallback.fill || "",
+          overflow: dataset.mcLayoutOverflow || fallback.overflow || "",
+          containment: dataset.mcLayoutContainment || fallback.containment || "",
+          tracks: tokenList(dataset.mcLayoutTracks || fallback.tracks || ""),
           minInline: numberOr(dataset.mcLayoutMinInline, fallback.minInline),
           minBlock: numberOr(dataset.mcLayoutMinBlock, fallback.minBlock),
           maxShare: clamp(numberOr(dataset.mcLayoutMaxShare, fallback.maxShare), 0.05, 1),
@@ -242,16 +359,19 @@
         const mismatches = [];
 
         for (const [unitId, definition] of Object.entries(APPLICATION_CONTRACT.units)) {
-          const fallback = SAFE_DEFAULTS[unitId] || {
-            prefer: "",
-            allowed: [],
-            fallback: [],
-            strength: "preferred",
-            minInline: 0,
-            minBlock: 0,
-            maxShare: 1,
-            preferredShare: 0.2,
-            mutable: [],
+          const fallback = {
+            ...(SAFE_DEFAULTS[unitId] || {
+              prefer: "",
+              allowed: [],
+              fallback: [],
+              strength: "preferred",
+              minInline: 0,
+              minBlock: 0,
+              maxShare: 1,
+              preferredShare: 0.2,
+              mutable: [],
+            }),
+            ...(definition.layout || {}),
           };
           const element = elementForUnit(root, unitId);
           if (!element && definition.required) missing.push(unitId);
@@ -584,6 +704,40 @@
         } else {
           root.dataset[name] = String(value);
         }
+      }
+
+      function applyGeneratedLayoutContract(root) {
+        if (!root || typeof root.querySelectorAll !== "function") {
+          return {
+            version: GENERATED_LAYOUT_CONTRACT.version,
+            complete: false,
+            applied: [],
+            missing: GENERATED_LAYOUT_CONTRACT.rules.map((rule) => rule.id),
+          };
+        }
+
+        const applied = [];
+        const missing = [];
+        for (const rule of GENERATED_LAYOUT_CONTRACT.rules) {
+          const matches = [];
+          if (typeof root.matches === "function" && root.matches(rule.selector)) matches.push(root);
+          root.querySelectorAll(rule.selector).forEach((node) => matches.push(node));
+          if (!matches.length) {
+            missing.push(rule.id);
+            continue;
+          }
+          matches.forEach((node) => {
+            Object.entries(rule.attributes).forEach(([name, value]) => node.setAttribute(name, value));
+          });
+          applied.push(rule.id);
+        }
+
+        return {
+          version: GENERATED_LAYOUT_CONTRACT.version,
+          complete: missing.length === 0,
+          applied,
+          missing,
+        };
       }
 
       function applyResolvedLayout(root, resolved) {
@@ -1083,6 +1237,7 @@
         CONTRACT_VERSION,
         STORAGE_KEY,
         APPLICATION_CONTRACT,
+        GENERATED_LAYOUT_CONTRACT,
         SAFE_DEFAULTS,
         DEFAULT_PREFERENCES,
         extractAuthoredContract,
@@ -1090,6 +1245,7 @@
         resolveLayout,
         validateOperation,
         applyOperationToPreferences,
+        applyGeneratedLayoutContract,
         applyResolvedLayout,
         mount,
       });

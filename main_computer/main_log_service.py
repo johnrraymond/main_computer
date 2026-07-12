@@ -59,6 +59,71 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[s
     handler.wfile.write(body)
 
 
+def _coerce_nonnegative_int(value: object, *, fallback: int = 0, maximum: int = 10_000) -> int:
+    try:
+        number = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return fallback
+    if number < 0:
+        return fallback
+    return min(number, maximum)
+
+
+def _coerce_float(value: object, *, fallback: float = 0.0, minimum: float = 0.0, maximum: float = 3600.0) -> float:
+    try:
+        number = float(str(value or "").strip())
+    except (TypeError, ValueError):
+        return fallback
+    if not (minimum <= number <= maximum):
+        return fallback
+    return number
+
+
+def _event_surprise(event: dict[str, Any]) -> float:
+    try:
+        return float(event.get("_main_log_surprise_bits") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _event_seq(event: dict[str, Any]) -> int:
+    try:
+        return int(event.get("ingest_seq") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _follow_event_payload(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "event": "log",
+        "seq": _event_seq(event),
+        "surprise_bits": _event_surprise(event),
+        "signature_hash": event.get("_main_log_signature_hash"),
+        "signature_id": event.get("_main_log_signature_id"),
+        "signature_preview": event.get("_main_log_signature_preview"),
+        "line_entropy_bits_per_bit": event.get("_main_log_line_entropy_bits_per_bit"),
+        "record": event,
+    }
+
+
+def _write_sse_event(handler: BaseHTTPRequestHandler, *, event_name: str, payload: dict[str, Any], event_id: int | None = None) -> None:
+    if event_id is not None:
+        handler.wfile.write(f"id: {event_id}\n".encode("utf-8"))
+    handler.wfile.write(f"event: {event_name}\n".encode("utf-8"))
+    body = json.dumps(payload, sort_keys=True, default=str)
+    for line in body.splitlines() or [""]:
+        handler.wfile.write(f"data: {line}\n".encode("utf-8"))
+    handler.wfile.write(b"\n")
+    handler.wfile.flush()
+
+
+def _write_ndjson_event(handler: BaseHTTPRequestHandler, *, event_name: str, payload: dict[str, Any]) -> None:
+    envelope = {"event": event_name, **payload}
+    handler.wfile.write(json.dumps(envelope, sort_keys=True, default=str).encode("utf-8") + b"\n")
+    handler.wfile.flush()
+
+
 class MainLogStore:
     def __init__(self, *, root: Path | str, recent_limit: int = DEFAULT_RECENT_LIMIT) -> None:
         self.root = Path(root).resolve()
@@ -74,6 +139,7 @@ class MainLogStore:
         self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._recent: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
         self._seq = 0
         self._stop_event = threading.Event()
         self._writer = threading.Thread(target=self._writer_loop, name="main-log-writer", daemon=True)
@@ -96,6 +162,7 @@ class MainLogStore:
             "raw_mirror": self.raw_mirror,
             "state_path": str(self.state_path),
             "surprise_path": str(self.surprise_path),
+            "follow_path": "/v1/log/follow",
             "pid_file": str(self.pid_path),
             "updated_at": _now_iso(),
         }
@@ -123,6 +190,7 @@ class MainLogStore:
             "raw_mirror": self.raw_mirror,
             "state_path": str(self.state_path),
             "surprise_path": str(self.surprise_path),
+            "follow_path": "/v1/log/follow",
             "pid_file": str(self.pid_path),
             "message": message,
             "updated_at": _now_iso(),
@@ -180,12 +248,17 @@ class MainLogStore:
                         if self.surprise_compressor.should_flush():
                             self.surprise_compressor.write_snapshot(self.surprise_path, limit=self.recent_limit)
                             self.surprise_compressor.mark_flushed()
-                        with self._lock:
+                        with self._condition:
                             item["_main_log_surprise_bits"] = surprise_record["surprise_bits"]
                             item["_main_log_signature_hash"] = surprise_record["signature_hash"]
+                            item["_main_log_signature_id"] = surprise_record["signature_id"]
+                            item["_main_log_signature_preview"] = surprise_record["signature_preview"]
+                            item["_main_log_probability_estimate"] = surprise_record["probability_estimate"]
+                            item["_main_log_line_entropy_bits_per_bit"] = surprise_record["line_entropy_bits_per_bit"]
                             self._recent.append(item)
                             if len(self._recent) > self.recent_limit:
                                 del self._recent[: len(self._recent) - self.recent_limit]
+                            self._condition.notify_all()
                     finally:
                         self._queue.task_done()
         finally:
@@ -197,6 +270,34 @@ class MainLogStore:
             items = list(self._recent)
         return items[-max(1, int(limit)):]
 
+    def recent_after(self, *, since_seq: int = 0, replay: int = 0, min_surprise: float = 0.0) -> list[dict[str, Any]]:
+        with self._lock:
+            items = [
+                dict(item)
+                for item in self._recent
+                if _event_seq(item) > int(since_seq) and _event_surprise(item) >= float(min_surprise)
+            ]
+        if replay > 0:
+            return items[-int(replay):]
+        return items
+
+    def wait_for_recent_after(self, *, since_seq: int, timeout: float, min_surprise: float = 0.0) -> list[dict[str, Any]]:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._condition:
+            while not self._stop_event.is_set():
+                items = [
+                    dict(item)
+                    for item in self._recent
+                    if _event_seq(item) > int(since_seq) and _event_surprise(item) >= float(min_surprise)
+                ]
+                if items:
+                    return items
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return []
+                self._condition.wait(timeout=remaining)
+        return []
+
     def surprise_snapshot(self, *, limit: int = DEFAULT_RECENT_LIMIT) -> dict[str, Any]:
         return self.surprise_compressor.snapshot(limit=max(1, int(limit)))
 
@@ -204,6 +305,8 @@ class MainLogStore:
         if self._stop_event.is_set():
             return
         self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
         self._write_state(state="stopping", ok=False, host=host, port=port)
         self._queue.put(None)
         self._writer.join(timeout=5.0)
@@ -250,6 +353,7 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
                     "raw_log_path": str(self.server.store.raw_log_path),
                     "raw_mirror": self.server.store.raw_mirror,
                     "surprise_path": str(self.server.store.surprise_path),
+                    "follow_path": "/v1/log/follow",
                     "at": _now_iso(),
                 },
             )
@@ -268,7 +372,91 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
                 limit = _coerce_port(query["limit"][0], fallback=DEFAULT_RECENT_LIMIT)
             _json_response(self, 200, self.server.store.surprise_snapshot(limit=limit))
             return
+        if parsed.path == "/v1/log/follow":
+            self._handle_follow(parsed.query or "")
+            return
         _json_response(self, 404, {"ok": False, "state": "not-found", "path": parsed.path})
+
+    def _handle_follow(self, query_string: str) -> None:
+        query = parse_qs(query_string or "")
+        since_seq = _coerce_nonnegative_int(query.get("since", ["0"])[0], fallback=0)
+        replay = _coerce_nonnegative_int(query.get("replay", ["20"])[0], fallback=20, maximum=self.server.store.recent_limit)
+        max_events = _coerce_nonnegative_int(query.get("limit", ["0"])[0], fallback=0)
+        min_surprise = _coerce_float(query.get("min_surprise", ["0"])[0], fallback=0.0, minimum=0.0, maximum=10_000.0)
+        heartbeat = _coerce_float(query.get("heartbeat", ["15"])[0], fallback=15.0, minimum=0.1, maximum=300.0)
+        output_format = str(query.get("format", ["sse"])[0] or "sse").strip().lower()
+        if output_format not in {"sse", "ndjson"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-format", "formats": ["sse", "ndjson"]})
+            return
+
+        if output_format == "ndjson":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close" if max_events else "keep-alive")
+            self.end_headers()
+
+            def write_event(name: str, payload: dict[str, Any], event_id: int | None = None) -> None:
+                del event_id
+                _write_ndjson_event(self, event_name=name, payload=payload)
+        else:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close" if max_events else "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            def write_event(name: str, payload: dict[str, Any], event_id: int | None = None) -> None:
+                _write_sse_event(self, event_name=name, payload=payload, event_id=event_id)
+
+        sent = 0
+        last_seq = since_seq
+        try:
+            hello = {
+                "ok": True,
+                "event": "hello",
+                "service": SERVICE_NAME,
+                "mode": "follow",
+                "format": output_format,
+                "since_seq": since_seq,
+                "replay": replay,
+                "min_surprise": min_surprise,
+                "heartbeat_seconds": heartbeat,
+                "warning": "Follow records are live log events with model-relative surprise fields, not proof of semantic meaning.",
+            }
+            write_event("hello", hello)
+
+            for event in self.server.store.recent_after(since_seq=since_seq, replay=replay, min_surprise=min_surprise):
+                payload = _follow_event_payload(event)
+                last_seq = max(last_seq, int(payload["seq"]))
+                write_event("log", payload, event_id=last_seq)
+                sent += 1
+                if max_events and sent >= max_events:
+                    write_event("done", {"ok": True, "event": "done", "sent": sent, "last_seq": last_seq})
+                    self.close_connection = True
+                    return
+
+            while not self.server.store._stop_event.is_set():
+                events = self.server.store.wait_for_recent_after(
+                    since_seq=last_seq,
+                    timeout=heartbeat,
+                    min_surprise=min_surprise,
+                )
+                if not events:
+                    write_event("heartbeat", {"ok": True, "event": "heartbeat", "last_seq": last_seq, "at": _now_iso()})
+                    continue
+                for event in events:
+                    payload = _follow_event_payload(event)
+                    last_seq = max(last_seq, int(payload["seq"]))
+                    write_event("log", payload, event_id=last_seq)
+                    sent += 1
+                    if max_events and sent >= max_events:
+                        write_event("done", {"ok": True, "event": "done", "sent": sent, "last_seq": last_seq})
+                        self.close_connection = True
+                        return
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            return
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib hook
         parsed = urlparse(self.path)

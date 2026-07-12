@@ -1444,6 +1444,102 @@ class McelCodeStudioAppTests(unittest.TestCase):
 
         self.assertEqual(style.count("{"), style.count("}"))
 
+    def test_code_editor_runtime_generated_layout_is_contract_contained(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        studio = SCRIPT_PATH.read_text(encoding="utf-8")
+        contract = LAYOUT_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        expected_markup = [
+            'data-mc-layout-fill="owned-center-slot"',
+            'data-mc-layout-tracks="content remaining"',
+            'data-mc-layout-fill="remaining"',
+            'data-mc-layout-overflow="contain"',
+            'data-mc-layout-containment="owned-remaining-track"',
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, app)
+
+        expected_contract = [
+            'const GENERATED_LAYOUT_CONTRACT = deepFreeze({',
+            '"mcel-owned-track-containment.v1"',
+            '"owned-remaining-track-descendants-contain-their-paint"',
+            '"data-mcel-layout-node": "runtime-draft"',
+            '"data-mcel-layout-containment": "paint-contained"',
+            "function applyGeneratedLayoutContract",
+            "applyGeneratedLayoutContract,",
+        ]
+        for text in expected_contract:
+            with self.subTest(contract=text):
+                self.assertIn(text, contract)
+
+        self.assertIn("applyGeneratedLayoutContract?.(runtimePreview)", studio)
+        self.assertIn("runtimePreview.dataset.mcelGeneratedLayoutContract", studio)
+
+        expected_style = [
+            "MCEL Code Editor owned remaining-track containment V1",
+            '[data-mcel-layout-node="runtime-window"]',
+            "grid-template-rows: auto minmax(0, 1fr);",
+            '[data-mcel-layout-node="runtime-draft"]',
+            "min-block-size: 0 !important;",
+            "max-block-size: 100%;",
+            "resize: none !important;",
+            '[data-mcel-layout-capacity="compact"]',
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        self.assertEqual(style.count("{"), style.count("}"))
+
+    def test_code_editor_generated_layout_contract_applies_without_raw_geometry(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(LAYOUT_CONTRACT_PATH))
+        probe = f"""
+global.window = {{}};
+require({script_literal});
+const api = window.MainComputerCodeEditorLayout;
+
+function makeNode(selector) {{
+  const attributes = {{}};
+  return {{
+    selector,
+    attributes,
+    setAttribute(name, value) {{ attributes[name] = String(value); }},
+  }};
+}}
+
+const nodes = api.GENERATED_LAYOUT_CONTRACT.rules.map((rule) => makeNode(rule.selector));
+const root = {{
+  matches() {{ return false; }},
+  querySelectorAll(selector) {{ return nodes.filter((node) => node.selector === selector); }},
+}};
+const result = api.applyGeneratedLayoutContract(root);
+const draft = nodes.find((node) => node.selector === "#code-studio-runtime-draft");
+console.log(JSON.stringify({{
+  result,
+  draft: draft.attributes,
+  rawKeys: Object.keys(draft.attributes).filter((key) => /(?:left|top|width|height|x|y)$/i.test(key)),
+}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertTrue(payload["result"]["complete"])
+        self.assertEqual(payload["result"]["missing"], [])
+        self.assertEqual(payload["draft"]["data-mcel-layout-fill"], "parent")
+        self.assertEqual(payload["draft"]["data-mcel-layout-overflow"], "scroll")
+        self.assertEqual(payload["draft"]["data-mcel-layout-containment"], "paint-contained")
+        self.assertEqual(payload["rawKeys"], [])
+
     def test_code_editor_layout_resolver_remediates_without_forgetting_preference(self) -> None:
         node = shutil.which("node")
         if not node:

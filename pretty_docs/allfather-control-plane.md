@@ -23,25 +23,58 @@ Then apply:
 python tools/allfather_control.py bootstrap-heads
 ```
 
-The head container exposes the private/operator guard API in the 41400 range and
-carries only the peer head list. It does not start Hub, FDB, QBFT, hub_admin, or
-contracts.
+The head container exposes the remote peer guard API in the 41400 range and
+carries only the peer head list. Those `10.x` guard URLs are for head-to-head
+traffic inside the remote VPN/control network. They are not assumed to be
+reachable from the local operator machine. The head does not start Hub, FDB,
+QBFT, hub_admin, or contracts.
 
 The normal bootstrap command does not ask the operator to choose a Coolify
 project name. When Coolify requires a project lookup, the control plane uses the
 default Coolify project name `My first project`.
 
+## Bootstrap image
+
+The control-plane head is intentionally self-contained. It uses the public
+`python:3.12-slim` image and an inline stdlib HTTP guard server in the generated
+Compose. Coolify does not need a repository build context and does not pull a
+private `main-computer-allfather-head:latest` image for the first bootstrap.
+
 ## Discovery before topology
 
-After the heads answer, query the live control surface:
+After the heads are deployed, query the live control surface through Coolify:
 
 ```powershell
 python tools/allfather_control.py discover
 ```
 
-Discovery calls each head guard and merges `/identity`, `/topology`, and
-`/status`. Mainnet/testnet topology must come from live guard responses and
-explicit add/remove operations, not from the private seed file.
+Discovery does not use SSH, does not curl the remote `10.x` VPN guard URLs from
+the local operator machine, and does not create public guard DNS or Traefik
+routes. Instead it uses the Coolify API/key path to create or update one
+long-running private probe service per Coolify host:
+
+```text
+local operator -> Coolify API -> Coolify-managed probe service -> private guard URLs
+```
+
+The probe service has no FQDN and no host port. It runs inside the remote
+Coolify-managed Docker context, curls the private guard URLs from there, and
+writes `ALLFATHER_PROBE_RESULT ...` JSON lines to its container logs plus
+`/state/latest-result.json` for remote diagnosis. The probe intentionally stays
+running after discovery so we can inspect it in Coolify when something acts up.
+A future finalization action can stop or remove probes after the control path is
+stable.
+
+Preview the probe payloads without changing Coolify:
+
+```powershell
+python tools/allfather_control.py discover --dry-run
+```
+
+Mainnet/testnet topology must come from live guard responses and explicit
+add/remove operations, not from the private seed file. `discover` reports whether
+the Coolify-managed probes were synced and whether any probe result was observed;
+it does not treat the private seed file as topology.
 
 ## Guardrail
 

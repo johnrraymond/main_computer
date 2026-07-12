@@ -1409,6 +1409,7 @@ def _service_line(label: str, payload: dict[str, Any]) -> str:
 def render_service_supervisor_summary(root: Path | str) -> str:
     root_path = Path(root).resolve()
     supervisor = load_service_supervisor_state(root_path)
+    main_log = _load_state_file(root_path / "runtime" / "main_log" / "state.json", label="main-log")
     executor = _load_state_file(root_path / "runtime" / "executor_service" / "state.json", label="executor")
     applications = _load_state_file(root_path / "runtime" / "applications_service" / "state.json", label="applications")
     blockchain = _load_state_file(root_path / "runtime" / "blockchain_service" / "state.json", label="blockchain")
@@ -1440,6 +1441,12 @@ def render_service_supervisor_summary(root: Path | str) -> str:
                 lines.append(f"    stderr={stderr}")
     else:
         lines.append("  children: not reported yet")
+
+    lines.append(_service_line("Main Log service", main_log))
+    if main_log.get("url"):
+        lines.append(f"  main log api: {main_log.get('url')}")
+    if main_log.get("follow_path"):
+        lines.append(f"  follow={str(main_log.get('url') or '').rstrip('/')}{main_log.get('follow_path')}")
 
     lines.append(_service_line("Executor service", executor))
     lines.append(
@@ -1473,6 +1480,8 @@ def render_service_supervisor_summary(root: Path | str) -> str:
         [
             "Useful files:",
             f"  supervisor={root_path / 'runtime' / 'service_supervisor' / 'state.json'}",
+            f"  main_log={root_path / 'runtime' / 'main_log' / 'state.json'}",
+            f"  main_log_pid={root_path / '.main_computer_main_log_service.pid'}",
             f"  app_pid={root_path / '.main_computer_viewport.pid'}",
             f"  heartbeat_pid={root_path / '.main_computer_heartbeat.pid'}",
             f"  executor={root_path / 'runtime' / 'executor_service' / 'state.json'}",

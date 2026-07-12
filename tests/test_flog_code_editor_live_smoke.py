@@ -41,18 +41,27 @@ def good_measurement():
         },
         "fillRatios": {
             "editorGroupBlock": 0.99,
+            "editorGroupInline": 0.99,
             "activePaneBlock": 0.99,
             "primarySurfaceBlock": 0.96,
         },
         "dimensions": {
+            "centerSlotBlock": 626,
+            "centerSlotInline": 780,
             "editorGroupBlock": 620,
             "primarySurfaceExpectedBlock": 520,
             "unusedPrimaryWorkBlock": 12,
+        },
+        "ownershipSlot": {
+            "source": "inferred-live-dock-ownership",
         },
         "controls": {
             "foreignIntercepted": 0,
             "clipped": 0,
             "withoutActionableSample": 0,
+            "outsidePrimarySurface": 0,
+            "outsideCenterSlot": 0,
+            "foreignOwners": [],
         },
         "proofDock": {
             "expanded": False,
@@ -202,6 +211,33 @@ def test_reclamation_fails_when_editor_does_not_grow(flog):
     assert result["reclaimRatio"] == pytest.approx(0.2)
 
 
+
+def test_reclamation_compares_each_center_slot_after_responsive_remediation(flog):
+    collapsed = {
+        "dimensions": {"centerSlotBlock": 362, "editorGroupBlock": 362},
+        "fillRatios": {"editorGroupBlock": 1.0},
+        "layout": {
+            "inspectorPlacement": "bottom",
+            "explorerPlacement": "left",
+            "centerTab": "editor",
+        },
+        "proofDock": {"blockSize": 34},
+    }
+    expanded = {
+        "dimensions": {"centerSlotBlock": 372, "editorGroupBlock": 372},
+        "fillRatios": {"editorGroupBlock": 1.0},
+        "layout": {
+            "inspectorPlacement": "tab",
+            "explorerPlacement": "left",
+            "centerTab": "editor",
+        },
+        "proofDock": {"blockSize": 216},
+    }
+    result = flog.classify_reclamation(collapsed, expanded)
+    assert result["status"] == "pass"
+    assert result["comparable"] is False
+    assert result["mode"] == "responsive-ownership-remediation"
+
 def test_static_contract_recognizes_live_code_editor(flog):
     result = flog.inspect_static_contract(REPO_ROOT)
     assert result["state"] == "complete"
@@ -215,6 +251,10 @@ def test_static_contract_recognizes_live_code_editor(flog):
         "explicit",
         "inferred-from-required-center-primary-work",
     }
+    assert result["ownershipSlotLaw"]["source"] in {
+        "explicit-center-slot",
+        "inferred-from-live-dock-owners",
+    }
 
 
 def test_compact_measurement_excludes_full_dom_rect_dump(flog):
@@ -224,6 +264,7 @@ def test_compact_measurement_excludes_full_dom_rect_dump(flog):
         "activePane": "runtime",
         "fillRatios": {"primarySurfaceBlock": 0.5},
         "dimensions": {"unusedPrimaryWorkBlock": 200},
+        "ownershipSlot": {"source": "inferred-live-dock-ownership"},
         "proofDock": {},
         "layout": {},
         "controls": {},
@@ -236,6 +277,7 @@ def test_compact_measurement_excludes_full_dom_rect_dump(flog):
     }
     compact = flog.compact_measurement(item)
     assert compact["png"] == "proof.png"
+    assert compact["ownershipSlot"]["source"] == "inferred-live-dock-ownership"
     assert "rects" not in compact
     assert "hugeDomDump" not in compact
 
@@ -245,7 +287,11 @@ def test_report_summary_fails_on_reclamation_gap(flog):
         {
             "viewportProfile": "desktop",
             "state": "runtime-collapsed-proof",
-            "fillRatios": {"primarySurfaceBlock": 0.96},
+            "fillRatios": {
+                "editorGroupBlock": 1.0,
+                "editorGroupInline": 1.0,
+                "primarySurfaceBlock": 0.96,
+            },
             "dimensions": {"editorGroupBlock": 540},
             "proofDock": {"blockSize": 36},
             "classification": {"status": "pass"},
@@ -253,7 +299,11 @@ def test_report_summary_fails_on_reclamation_gap(flog):
         {
             "viewportProfile": "desktop",
             "state": "runtime-expanded-proof",
-            "fillRatios": {"primarySurfaceBlock": 0.96},
+            "fillRatios": {
+                "editorGroupBlock": 1.0,
+                "editorGroupInline": 1.0,
+                "primarySurfaceBlock": 0.96,
+            },
             "dimensions": {"editorGroupBlock": 500},
             "proofDock": {"blockSize": 236},
             "classification": {"status": "pass"},
@@ -282,7 +332,10 @@ def test_markdown_reports_fill_ratios(flog):
             "byViewport": {
                 "desktop": {
                     "statusCounts": {"pass": 0, "watch": 0, "fail": 1},
+                    "worstCenterBlockFill": 0.98,
+                    "worstCenterInlineFill": 0.99,
                     "worstSurfaceFill": 0.54,
+                    "foreignOwnerCount": 0,
                     "reclamation": {"status": "not-measured"},
                 }
             },
@@ -293,10 +346,19 @@ def test_markdown_reports_fill_ratios(flog):
                 "state": "runtime-collapsed-proof",
                 "fillRatios": {
                     "editorGroupBlock": 0.98,
+                    "editorGroupInline": 0.99,
                     "activePaneBlock": 0.97,
                     "primarySurfaceBlock": 0.54,
                 },
-                "dimensions": {"unusedPrimaryWorkBlock": 220},
+                "dimensions": {
+                    "centerSlotInline": 780,
+                    "centerSlotBlock": 620,
+                    "unusedPrimaryWorkBlock": 220,
+                },
+                "ownershipSlot": {
+                    "source": "inferred-live-dock-ownership",
+                },
+                "controls": {"foreignOwners": []},
                 "classification": {
                     "status": "fail",
                     "score": 60,
@@ -309,9 +371,126 @@ def test_markdown_reports_fill_ratios(flog):
         "pngFiles": ["proof.png"],
     }
     markdown = flog.render_markdown(report)
+    assert "Editor center block fill: `98.0%`" in markdown
     assert "Primary surface fill: `54.0%`" in markdown
     assert "primary work surface fills only 54.0%" in markdown
 
+
+
+def test_missing_center_slot_is_hard_failure(flog):
+    measurement = good_measurement()
+    measurement["ownershipSlot"] = {}
+    measurement["dimensions"]["centerSlotBlock"] = 0
+    result = flog.classify_measurement(measurement)
+    assert result["status"] == "fail"
+    assert any(
+        "center ownership slot could not be resolved" in reason
+        for reason in result["failures"]
+    )
+
+
+def test_foreign_owner_identity_is_reported(flog):
+    measurement = good_measurement()
+    measurement["controls"]["foreignIntercepted"] = 1
+    measurement["controls"]["foreignOwners"] = [
+        {
+            "layoutUserId": "code-editor.inspector",
+            "placement": "bottom",
+            "controls": ["code-studio-runtime-draft"],
+        }
+    ]
+    result = flog.classify_measurement(measurement)
+    assert result["status"] == "fail"
+    joined = " ".join(result["failures"])
+    assert "code-editor.inspector" in joined
+    assert "code-studio-runtime-draft" in joined
+
+
+def test_control_escape_is_hard_failure(flog):
+    measurement = good_measurement()
+    measurement["controls"]["outsidePrimarySurface"] = 1
+    measurement["controls"]["outsideCenterSlot"] = 1
+    result = flog.classify_measurement(measurement)
+    assert result["status"] == "fail"
+    assert any("escape their primary-surface bounds" in reason for reason in result["failures"])
+    assert any("escape the owned center slot" in reason for reason in result["failures"])
+
+
+def test_measurement_uses_center_ownership_not_whole_body(flog):
+    script = flog.MEASURE_JS
+    assert "inferred-live-dock-ownership" in script
+    assert 'inspectorPlacement === "bottom"' in script
+    assert 'inspectorPlacement === "tab"' in script
+    assert "ratio(editorCenterIntersection.height, centerSlotRect.height)" in script
+    assert "ratio(editorRect.height, bodyRect.height)" not in script
+    assert "foreignOwners" in script
+    assert "elementsFromPoint" in script
+
+
+def test_markdown_reports_foreign_owner(flog):
+    report = {
+        "generatedAt": "2026-07-12T00:00:00+00:00",
+        "kind": flog.REPORT_KIND,
+        "version": flog.REPORT_VERSION,
+        "staticContract": {
+            "state": "complete",
+            "fillLaw": {"source": "inferred-from-required-center-primary-work"},
+            "ownershipSlotLaw": {"source": "inferred-from-live-dock-owners"},
+        },
+        "summary": {
+            "status": "fail",
+            "trialCount": 1,
+            "byViewport": {
+                "compact": {
+                    "statusCounts": {"pass": 0, "watch": 0, "fail": 1},
+                    "worstCenterBlockFill": 1.0,
+                    "worstCenterInlineFill": 1.0,
+                    "worstSurfaceFill": 1.0,
+                    "foreignOwnerCount": 1,
+                    "reclamation": {"status": "not-measured"},
+                }
+            },
+        },
+        "measurements": [
+            {
+                "viewportProfile": "compact",
+                "state": "runtime-expanded-proof",
+                "fillRatios": {
+                    "editorGroupBlock": 1.0,
+                    "editorGroupInline": 1.0,
+                    "activePaneBlock": 1.0,
+                    "primarySurfaceBlock": 1.0,
+                },
+                "dimensions": {
+                    "centerSlotInline": 500,
+                    "centerSlotBlock": 400,
+                    "unusedPrimaryWorkBlock": 0,
+                },
+                "ownershipSlot": {"source": "inferred-live-dock-ownership"},
+                "controls": {
+                    "foreignOwners": [
+                        {
+                            "layoutUserId": "code-editor.inspector",
+                            "placement": "bottom",
+                            "sampleCount": 2,
+                            "controls": ["code-studio-runtime-draft"],
+                        }
+                    ]
+                },
+                "classification": {
+                    "status": "fail",
+                    "score": 95,
+                    "failures": ["foreign interception"],
+                    "warnings": [],
+                },
+                "png": "proof.png",
+            }
+        ],
+        "pngFiles": ["proof.png"],
+    }
+    markdown = flog.render_markdown(report)
+    assert "code-editor.inspector" in markdown
+    assert "code-studio-runtime-draft" in markdown
 
 def test_static_only_main_writes_reports(flog, tmp_path):
     output = tmp_path / "report"

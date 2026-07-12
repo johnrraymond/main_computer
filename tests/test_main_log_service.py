@@ -24,6 +24,7 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
             health = json.loads(response.read().decode("utf-8"))
         assert health["ok"] is True
         assert "surprise_path" in health
+        assert health["follow_path"] == "/v1/log/follow"
 
         for index in range(12):
             result = emit_main_log_event(
@@ -54,6 +55,14 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
         surprise_request = Request(f"http://127.0.0.1:{port}/v1/log/surprise?limit=5", method="GET")
         with urlopen(surprise_request, timeout=5) as response:
             surprise = json.loads(response.read().decode("utf-8"))
+
+        follow_request = Request(f"http://127.0.0.1:{port}/v1/log/follow?format=ndjson&replay=2&limit=2", method="GET")
+        with urlopen(follow_request, timeout=5) as response:
+            follow_lines = [
+                json.loads(line)
+                for line in response.read().decode("utf-8").splitlines()
+                if line.strip()
+            ]
     finally:
         server.shutdown()
         server.server_close()
@@ -77,6 +86,15 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
     assert surprise["top_surprise_events"]
     assert "database timeout" in surprise["top_surprise_events"][0]["signature_preview"]
 
+    follow_log_lines = [line for line in follow_lines if line.get("event") == "log"]
+    assert follow_lines[0]["event"] == "hello"
+    assert len(follow_log_lines) == 2
+    assert follow_log_lines[-1]["record"]["message"].startswith("2026-07-11T20:42:59Z ERROR")
+    assert follow_log_lines[-1]["signature_preview"]
+    assert follow_log_lines[-1]["surprise_bits"] > 0
+
     recent = store.recent(limit=1)[0]
     assert "_main_log_surprise_bits" in recent
     assert "_main_log_signature_hash" in recent
+    assert "_main_log_signature_id" in recent
+    assert "_main_log_signature_preview" in recent

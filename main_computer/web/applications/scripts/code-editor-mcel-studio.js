@@ -6771,6 +6771,11 @@
             </div>
           </section>
         `;
+        const generatedLayoutContract = window.MainComputerCodeEditorLayout
+          ?.applyGeneratedLayoutContract?.(runtimePreview);
+        runtimePreview.dataset.mcelGeneratedLayoutContract =
+          generatedLayoutContract?.complete ? generatedLayoutContract.version : "incomplete";
+
         runtimePreview.querySelectorAll("[data-code-studio-runtime-file]").forEach((button) => {
           button.addEventListener("click", () => {
             const nextPath = button.dataset.codeStudioRuntimeFile || "";
