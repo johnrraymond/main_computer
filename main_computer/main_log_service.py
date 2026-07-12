@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 from main_computer.main_log_codec import LexLogWriter, canonical_json_line
 from main_computer.log_surprise_compressor import LogSurpriseCompressor
 from main_computer.main_log_pack import MainLogPackOptions, build_main_log_pack_zip_bytes
+from main_computer.log_profile_mds import ProfileMapOptions, build_log_profile_map, render_profile_map_svg
 from main_computer.main_log_client import (
     DEFAULT_MAIN_LOG_HOST,
     DEFAULT_MAIN_LOG_PORT,
@@ -68,6 +69,16 @@ def _zip_response(handler: BaseHTTPRequestHandler, status: int, body: bytes, *, 
     handler.send_header("Cache-Control", "no-cache")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _svg_response(handler: BaseHTTPRequestHandler, status: int, body: str) -> None:
+    encoded = body.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+    handler.send_header("Content-Length", str(len(encoded)))
+    handler.send_header("Cache-Control", "no-cache")
+    handler.end_headers()
+    handler.wfile.write(encoded)
 
 
 def _coerce_nonnegative_int(value: object, *, fallback: int = 0, maximum: int = 10_000) -> int:
@@ -175,6 +186,7 @@ class MainLogStore:
             "surprise_path": str(self.surprise_path),
             "follow_path": "/v1/log/follow",
             "compress_path": "/v1/log/compress",
+            "profile_map_path": "/v1/log/profile-map",
             "pid_file": str(self.pid_path),
             "updated_at": _now_iso(),
         }
@@ -204,6 +216,7 @@ class MainLogStore:
             "surprise_path": str(self.surprise_path),
             "follow_path": "/v1/log/follow",
             "compress_path": "/v1/log/compress",
+            "profile_map_path": "/v1/log/profile-map",
             "pid_file": str(self.pid_path),
             "message": message,
             "updated_at": _now_iso(),
@@ -368,6 +381,7 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
                     "surprise_path": str(self.server.store.surprise_path),
                     "follow_path": "/v1/log/follow",
                     "compress_path": "/v1/log/compress",
+            "profile_map_path": "/v1/log/profile-map",
                     "at": _now_iso(),
                 },
             )
@@ -389,10 +403,51 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/log/compress":
             self._handle_compress(parsed.query or "")
             return
+        if parsed.path == "/v1/log/profile-map":
+            self._handle_profile_map(parsed.query or "")
+            return
         if parsed.path == "/v1/log/follow":
             self._handle_follow(parsed.query or "")
             return
         _json_response(self, 404, {"ok": False, "state": "not-found", "path": parsed.path})
+
+    def _handle_profile_map(self, query_string: str) -> None:
+        query = parse_qs(query_string or "")
+        window = str(query.get("window", ["information"])[0] or "information").strip().lower()
+        if window not in {"information", "events", "time"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-window", "windows": ["information", "events", "time"]})
+            return
+        normalize = str(query.get("normalize", ["log1p"])[0] or "log1p").strip().lower()
+        if normalize not in {"raw", "log1p", "l1", "binary"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-normalize", "normalizations": ["raw", "log1p", "l1", "binary"]})
+            return
+        output_format = str(query.get("format", ["json"])[0] or "json").strip().lower()
+        if output_format not in {"json", "svg"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-format", "formats": ["json", "svg"]})
+            return
+        options = ProfileMapOptions(
+            window=window,
+            target_surprise_bits=_coerce_float(query.get("target_surprise_bits", ["512"])[0], fallback=512.0, minimum=0.001, maximum=1_000_000.0),
+            stride_surprise_bits=_coerce_float(query.get("stride_surprise_bits", ["512"])[0], fallback=512.0, minimum=0.001, maximum=1_000_000.0),
+            event_window=_coerce_nonnegative_int(query.get("event_window", ["500"])[0], fallback=500, maximum=100_000),
+            event_stride=_coerce_nonnegative_int(query.get("event_stride", ["500"])[0], fallback=500, maximum=100_000),
+            seconds_window=_coerce_float(query.get("seconds_window", ["60"])[0], fallback=60.0, minimum=0.001, maximum=86400.0),
+            seconds_stride=_coerce_float(query.get("seconds_stride", ["60"])[0], fallback=60.0, minimum=0.001, maximum=86400.0),
+            max_coverage_points=_coerce_nonnegative_int(query.get("max_coverage_points", ["10000"])[0], fallback=10_000, maximum=100_000),
+            max_profiles=_coerce_nonnegative_int(query.get("max_profiles", ["200"])[0], fallback=200, maximum=2_000),
+            normalize=normalize,
+            alpha=_coerce_float(query.get("alpha", ["0.5"])[0], fallback=0.5, minimum=0.000001, maximum=100.0),
+            include_distance_matrix=str(query.get("include_distance_matrix", ["0"])[0] or "").strip().lower() in {"1", "true", "yes", "on"},
+        )
+        try:
+            profile_map = build_log_profile_map(root=self.server.store.root, input_path=self.server.store.log_path, options=options)
+        except Exception as exc:
+            _json_response(self, 500, {"ok": False, "state": "profile-map-failed", "error": str(exc)})
+            return
+        if output_format == "svg":
+            _svg_response(self, 200, render_profile_map_svg(profile_map))
+            return
+        _json_response(self, 200, profile_map)
 
     def _handle_compress(self, query_string: str) -> None:
         query = parse_qs(query_string or "")

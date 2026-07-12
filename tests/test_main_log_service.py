@@ -28,6 +28,7 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
         assert "surprise_path" in health
         assert health["follow_path"] == "/v1/log/follow"
         assert health["compress_path"] == "/v1/log/compress"
+        assert health["profile_map_path"] == "/v1/log/profile-map"
 
         for index in range(12):
             result = emit_main_log_event(
@@ -71,6 +72,21 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
         with urlopen(compress_request, timeout=5) as response:
             assert response.headers.get_content_type() == "application/zip"
             compressed_zip = response.read()
+
+        profile_request = Request(
+            f"http://127.0.0.1:{port}/v1/log/profile-map?window=events&event_window=5&event_stride=5&max_profiles=10",
+            method="GET",
+        )
+        with urlopen(profile_request, timeout=5) as response:
+            profile_map = json.loads(response.read().decode("utf-8"))
+
+        profile_svg_request = Request(
+            f"http://127.0.0.1:{port}/v1/log/profile-map?window=events&event_window=5&event_stride=5&format=svg",
+            method="GET",
+        )
+        with urlopen(profile_svg_request, timeout=5) as response:
+            assert response.headers.get_content_type() == "image/svg+xml"
+            profile_svg = response.read().decode("utf-8")
     finally:
         server.shutdown()
         server.server_close()
@@ -108,6 +124,12 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
     assert pack["summary"]["total_events"] == 13
     assert pack["summary"]["unique_signatures"] == 2
     assert pack["summary"]["run_count"] == 2
+
+    assert profile_map["ok"] is True
+    assert profile_map["schema"] == "mclog-profile-map-v1"
+    assert profile_map["summary"]["profile_count"] >= 1
+    assert profile_map["embedding"]["points"]
+    assert "Main log behavior profile map" in profile_svg
 
     recent = store.recent(limit=1)[0]
     assert "_main_log_surprise_bits" in recent

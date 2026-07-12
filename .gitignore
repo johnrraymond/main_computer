@@ -96,6 +96,7 @@ harness_output*/
 revision_control/
 energy_credits/
 rag_smoke_logpack_runs/
+.smoke-runs/
 ollama_prompt_space*/
 
 # Generated docs / reports

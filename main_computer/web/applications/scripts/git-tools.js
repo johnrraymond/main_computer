@@ -95,6 +95,7 @@
     renderGitPageWizard();
     loadGitProjects().catch(() => null);
     refreshGitTools();
+    global.MainComputerGitToolsLayout?.mount?.({document: global.document})?.resolve?.();
   }
 
   global.bindGitToolsControl = bindGitToolsControl;

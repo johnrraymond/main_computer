@@ -142,6 +142,11 @@ LOCAL_ENV_PATTERNS = [
     r"(^|/)id_rsa$",
     r"(^|/)id_ed25519$",
 ]
+COLLAPSED_GENERATED_IGNORE_DIRS = {
+    ".smoke-runs",
+}
+
+
 GENERATED_DIR_FAMILY_TOKENS = {
     "artifact",
     "artifacts",
@@ -1504,12 +1509,23 @@ def write_gitignore_file(
     return read_gitignore_file(root)
 
 
+def collapse_generated_ignore_rule(rule: str) -> str:
+    """Collapse known generated run trees to one stable root ignore rule."""
+
+    normalized = str(rule or "").replace("\\", "/").strip()
+    for directory in sorted(COLLAPSED_GENERATED_IGNORE_DIRS):
+        if normalized == directory or normalized.startswith(directory + "/"):
+            return directory + "/"
+    return normalized
+
+
 def normalize_ignore_candidate(raw: str) -> str:
     normalized = str(raw).replace("\\", "/").strip()
     if not normalized or normalized.startswith("/") or ".." in normalized.split("/"):
         return ""
     if normalized.endswith("/"):
         normalized = normalized.rstrip("/") + "/"
+    normalized = collapse_generated_ignore_rule(normalized)
     return normalized
 
 

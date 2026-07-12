@@ -3,7 +3,7 @@
 
 The all-father deploy path needs Coolify connection/project/server bindings, but
 it should not depend on the larger ``runtime/state/main_computer.private.yaml``
-file.  This tool copies only the Coolify section into
+file.  This tool copies Coolify host access plus mainnet/testnet wallet bootstrap slots into
 ``runtime/state/all_father.private.yaml`` so guarded all-father commands can use a
 smaller, purpose-built private state source.
 """
@@ -23,7 +23,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_PATH = REPO_ROOT / "runtime" / "state" / "main_computer.private.yaml"
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "runtime" / "state" / "all_father.private.yaml"
 ALLFATHER_PRIVATE_KIND = "main_computer.all_father.private_state.v1"
-COPIED_SECTIONS = ("coolify",)
+COPIED_SECTIONS = ("coolify", "wallets", "networks")
+PRIVATE_NETWORK_KEYS = ("testnet", "mainnet")
+WALLET_KEYS_TO_COPY = ("deployer", "captain", "o1", "o2", "o3", "hub_admin", "smoke_client", "escrow_owner")
+WALLET_FIELDS_TO_COPY = ("address", "private_key", "wallet_path")
+DEFAULT_FDB_COORDINATOR_POLICY = "first-node-then-expand"
 
 
 class AllfatherPrivateStateError(ValueError):
@@ -73,6 +77,86 @@ def dump_yaml_mapping(state: Mapping[str, Any]) -> str:
     return yaml.safe_dump(dict(state), sort_keys=False, allow_unicode=True)
 
 
+def _copy_wallet_record(record: Any) -> dict[str, Any]:
+    """Copy only wallet fields needed by all-father bootstrap actions."""
+
+    copied: dict[str, Any] = {}
+    if isinstance(record, Mapping):
+        for field in WALLET_FIELDS_TO_COPY:
+            value = record.get(field)
+            if value is not None and value != "":
+                copied[field] = copy.deepcopy(value)
+    return copied
+
+
+def _copy_network_wallets(source_state: Mapping[str, Any]) -> dict[str, Any]:
+    """Return mainnet/testnet wallet secrets needed for all-father node bootstrap.
+
+    This is intentionally not topology.  It carries only private wallet material
+    and stable wallet slots that later add-node actions need for hub_admin and
+    first-node contract bootstrap.
+    """
+
+    networks = source_state.get("networks")
+    copied_networks: dict[str, Any] = {}
+    if not isinstance(networks, Mapping):
+        return copied_networks
+
+    for network_key in PRIVATE_NETWORK_KEYS:
+        source_network = networks.get(network_key)
+        if not isinstance(source_network, Mapping):
+            copied_networks[network_key] = {
+                "wallets": {"hub_admin": {"address": None, "private_key": None}, "deployer": {"address": None, "private_key": None}},
+                "foundationdb": _copy_network_fdb(None, network_key),
+            }
+            continue
+        source_wallets = source_network.get("wallets")
+        copied_wallets: dict[str, Any] = {}
+        if isinstance(source_wallets, Mapping):
+            for wallet_key in WALLET_KEYS_TO_COPY:
+                record = _copy_wallet_record(source_wallets.get(wallet_key))
+                if record:
+                    copied_wallets[wallet_key] = record
+        copied_wallets.setdefault("hub_admin", {"address": None, "private_key": None})
+        copied_wallets.setdefault("deployer", {"address": None, "private_key": None})
+        copied_networks[network_key] = {"wallets": copied_wallets, "foundationdb": _copy_network_fdb(source_network, network_key)}
+    return copied_networks
+
+
+
+
+def _copy_network_fdb(source_network: Mapping[str, Any] | None, network_key: str) -> dict[str, Any]:
+    source_fdb = source_network.get("foundationdb") if isinstance(source_network, Mapping) else {}
+    copied: dict[str, Any] = {}
+    if isinstance(source_fdb, Mapping):
+        for key in ("cluster_description", "cluster_id", "coordinator_policy", "reconfigure_after_join"):
+            value = source_fdb.get(key)
+            if value is not None and value != "":
+                copied[key] = copy.deepcopy(value)
+    copied.setdefault("cluster_description", f"main-computer-{network_key}-allfather")
+    copied.setdefault("cluster_id", None)
+    copied.setdefault("coordinator_policy", DEFAULT_FDB_COORDINATOR_POLICY)
+    copied.setdefault("reconfigure_after_join", True)
+    return copied
+
+def _copy_wallet_defaults(source_state: Mapping[str, Any]) -> dict[str, Any]:
+    wallets = source_state.get("wallets")
+    if not isinstance(wallets, Mapping):
+        return {}
+    defaults = wallets.get("defaults")
+    default_records = defaults if isinstance(defaults, Mapping) else {}
+    copied: dict[str, Any] = {}
+    for wallet_key in WALLET_KEYS_TO_COPY:
+        record = _copy_wallet_record(default_records.get(wallet_key))
+        if not record:
+            # Some older private-state files store wallet slots directly under
+            # top-level ``wallets`` rather than under ``wallets.defaults``.
+            record = _copy_wallet_record(wallets.get(wallet_key))
+        if record:
+            copied[wallet_key] = record
+    return {"defaults": copied} if copied else {}
+
+
 def build_allfather_private_state(source_state: Mapping[str, Any], *, source_path: str = "") -> dict[str, Any]:
     coolify = source_state.get("coolify")
     if not isinstance(coolify, Mapping):
@@ -84,15 +168,38 @@ def build_allfather_private_state(source_state: Mapping[str, Any], *, source_pat
         "generated_from": {
             "path": source_path,
             "copied_sections": list(COPIED_SECTIONS),
+            "note": "Coolify host access plus private mainnet/testnet wallet slots only; not topology.",
         },
         "coolify": copy.deepcopy(dict(coolify)),
     }
+    wallet_defaults = _copy_wallet_defaults(source_state)
+    if wallet_defaults:
+        migrated["wallets"] = wallet_defaults
+    migrated["networks"] = _copy_network_wallets(source_state)
     return migrated
 
 
 def migration_summary(source_state: Mapping[str, Any], migrated: Mapping[str, Any], *, source: Path, out: Path) -> dict[str, Any]:
     coolify = migrated.get("coolify") if isinstance(migrated, Mapping) else {}
     hosts = coolify.get("hosts") if isinstance(coolify, Mapping) else {}
+    networks = migrated.get("networks") if isinstance(migrated, Mapping) else {}
+    wallet_summary: dict[str, Any] = {}
+    if isinstance(networks, Mapping):
+        for network_key, network in networks.items():
+            wallets = network.get("wallets") if isinstance(network, Mapping) else {}
+            fdb = network.get("foundationdb") if isinstance(network, Mapping) else {}
+            wallet_summary[str(network_key)] = {
+                "wallet_slots": sorted(str(key) for key in wallets.keys()) if isinstance(wallets, Mapping) else [],
+                "hub_admin_slot_present": isinstance(wallets, Mapping) and "hub_admin" in wallets,
+                "deployer_slot_present": isinstance(wallets, Mapping) and "deployer" in wallets,
+                "private_key_count": sum(
+                    1
+                    for value in (wallets.values() if isinstance(wallets, Mapping) else [])
+                    if isinstance(value, Mapping) and bool(str(value.get("private_key") or "").strip())
+                ),
+                "fdb_cluster_description": str(fdb.get("cluster_description") or "") if isinstance(fdb, Mapping) else "",
+                "fdb_cluster_id_present": isinstance(fdb, Mapping) and bool(str(fdb.get("cluster_id") or "").strip()),
+            }
     omitted = sorted(str(key) for key in source_state.keys() if key not in set(COPIED_SECTIONS) | {"schema_version"})
 
     return {
@@ -102,6 +209,7 @@ def migration_summary(source_state: Mapping[str, Any], migrated: Mapping[str, An
         "copied_sections": list(COPIED_SECTIONS),
         "omitted_sections": omitted,
         "coolify_host_count": len(hosts) if isinstance(hosts, Mapping) else 0,
+        "network_wallet_summary": wallet_summary,
     }
 
 
@@ -146,7 +254,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     migrate = subparsers.add_parser(
         "migrate-coolify",
-        help="Copy only the Coolify section from main_computer.private.yaml into all_father.private.yaml.",
+        help="Copy Coolify access plus mainnet/testnet wallet bootstrap slots into all_father.private.yaml.",
     )
     migrate.add_argument("--source", type=Path, default=DEFAULT_SOURCE_PATH, help="Existing main private state YAML.")
     migrate.add_argument("--out", type=Path, default=DEFAULT_OUTPUT_PATH, help="All-father private state YAML to create.")

@@ -21,7 +21,10 @@ import argparse
 import base64
 import importlib.util
 import json
+import hashlib
 import re
+import secrets
+from datetime import datetime, timezone
 import sys
 import urllib.parse
 import urllib.request
@@ -48,8 +51,26 @@ DEFAULT_GUARD_HOST_BASE = 41400
 DEFAULT_PROBE_CONTAINER_PORT = 41415
 DEFAULT_PROBE_INTERVAL_S = 15.0
 DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
+PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
+DEFAULT_SUPER_IMAGE = "python:3.12-slim"
+DEFAULT_SUPER_ENVIRONMENT = "allfather-supernodes"
+DEFAULT_SUPER_STATE_ROOT_PREFIX = "/data/main-computer/allfather/supernodes"
+DEFAULT_SUPER_GUARD_CONTAINER_PORT = 41414
+DEFAULT_SUPER_HUB_CONTAINER_PORT = 8785
+DEFAULT_SUPER_RPC_CONTAINER_PORT = 8545
+DEFAULT_SUPER_FDB_CONTAINER_PORT = 4550
+DEFAULT_SUPER_P2P_CONTAINER_PORT = 30303
+DEFAULT_TESTNET_SUPER_GUARD_BASE = 41500
+DEFAULT_MAINNET_SUPER_GUARD_BASE = 41600
+DEFAULT_TESTNET_FDB_BASE = 44550
+DEFAULT_MAINNET_FDB_BASE = 44650
+DEFAULT_TESTNET_P2P_BASE = 45300
+DEFAULT_MAINNET_P2P_BASE = 46300
+SUPPORTED_NODE_NETWORKS = ("testnet", "mainnet")
 PRIVATE_PLACEHOLDER_RE = re.compile(r"^\s*(?:<[^>]+>|TODO|TBD|CHANGEME|REPLACE_ME)\s*$", re.IGNORECASE)
+PRIVATE_STATE_GENERATOR = "tools/allfather_control.py:add-node"
+FDB_CLUSTER_ID_RE = re.compile(r"^[A-Za-z0-9_:-]{4,64}$")
 
 
 class AllfatherControlError(ValueError):
@@ -195,6 +216,49 @@ def load_yaml_mapping(path: Path) -> dict[str, Any]:
         raise AllfatherControlError(f"All-father private state must contain a YAML mapping: {display_path(path)}")
     return loaded
 
+
+
+
+def dump_yaml_mapping(state: Mapping[str, Any]) -> str:
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - PyYAML is present in the project test env.
+        raise AllfatherControlError("PyYAML is required to write all-father private state YAML.") from exc
+
+    return yaml.safe_dump(dict(state), sort_keys=False, allow_unicode=True)
+
+
+def write_yaml_mapping(path: Path, state: Mapping[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(dump_yaml_mapping(state), encoding="utf-8")
+    except OSError as exc:
+        raise AllfatherControlError(f"Could not write all-father private state file {display_path(path)}: {exc}") from exc
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def generated_private_key() -> str:
+    # Ethereum private keys are 32-byte secp256k1 scalars.  We do not invent an
+    # address here because that requires chain-specific crypto dependencies; the
+    # runtime deployer can derive the address from the key when needed.
+    while True:
+        key = "0x" + secrets.token_hex(32)
+        if int(key[2:], 16) != 0:
+            return key
+
+
+def generated_cluster_id() -> str:
+    return secrets.token_hex(8)
+
+
+def nonempty_private_value(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw or PRIVATE_PLACEHOLDER_RE.match(raw):
+        return ""
+    return raw
 
 def _host_field(payload: Mapping[str, Any], names: Iterable[str]) -> str:
     for name in names:
@@ -609,6 +673,7 @@ def probe_targets_b64(plan: HeadPlan) -> str:
 def probe_server_command_script() -> str:
     return r"""
 import base64
+import hashlib
 import json
 import os
 import threading
@@ -624,6 +689,13 @@ STATE_DIR = Path(os.environ.get("MC_ALLFATHER_PROBE_STATE_DIR", "/state"))
 TARGETS_B64 = os.environ.get("MC_ALLFATHER_PROBE_TARGETS_B64", "")
 CELL_ID = os.environ.get("MC_ALLFATHER_CELL_ID", "")
 COOLIFY_SERVER = os.environ.get("MC_ALLFATHER_COOLIFY_SERVER", "")
+CALLBACK_API_URL = os.environ.get("MC_ALLFATHER_PROBE_CALLBACK_API_URL", "").strip().rstrip("/")
+CALLBACK_TOKEN = os.environ.get("MC_ALLFATHER_PROBE_CALLBACK_TOKEN", "").strip()
+CALLBACK_SERVICE_UUID = os.environ.get("MC_ALLFATHER_PROBE_CALLBACK_SERVICE_UUID", "").strip()
+CALLBACK_INTERVAL_S = float(os.environ.get("MC_ALLFATHER_PROBE_CALLBACK_INTERVAL_S", "15"))
+CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
+LAST_CALLBACK_DIGEST = ""
+LAST_CALLBACK_AT = 0.0
 STARTED_AT = time.time()
 
 try:
@@ -707,6 +779,88 @@ def run_probe_once() -> dict:
     }
 
 
+def callback_payload(result: dict) -> dict:
+    # Compact the probe result before publishing it back into Coolify metadata.
+
+    compact_targets = []
+    for target in result.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        identity = target.get("identity") if isinstance(target.get("identity"), dict) else {}
+        topology = target.get("topology") if isinstance(target.get("topology"), dict) else {}
+        status = target.get("status") if isinstance(target.get("status"), dict) else {}
+        healthz = target.get("healthz") if isinstance(target.get("healthz"), dict) else {}
+        compact_targets.append(
+            {
+                "guard_url": target.get("guard_url"),
+                "ok": bool(target.get("ok")),
+                "identity_ok": bool(identity.get("ok")),
+                "topology_ok": bool(topology.get("ok")),
+                "status_ok": bool(status.get("ok")),
+                "healthz_ok": bool(healthz.get("ok")),
+                "identity_network_key": identity.get("network_key", ""),
+                "topology_network_key": topology.get("network_key", ""),
+                "status_network_key": status.get("network_key", ""),
+                "error": identity.get("error") or topology.get("error") or status.get("error") or healthz.get("error") or "",
+            }
+        )
+    return {
+        "ok": bool(result.get("ok")),
+        "service": result.get("service"),
+        "cell_id": result.get("cell_id"),
+        "coolify_server": result.get("coolify_server"),
+        "transport": result.get("transport"),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "target_count": result.get("target_count"),
+        "targets_error": result.get("targets_error"),
+        "targets": compact_targets,
+        "updated_at": result.get("updated_at"),
+        "uptime_s": result.get("uptime_s"),
+    }
+
+
+def publish_to_coolify_metadata(result: dict) -> None:
+    # Use the Coolify API as the operator return path. The probe remains private.
+
+    global LAST_CALLBACK_DIGEST, LAST_CALLBACK_AT
+    if not (CALLBACK_API_URL and CALLBACK_TOKEN and CALLBACK_SERVICE_UUID):
+        return
+
+    now = time.time()
+    compact = callback_payload(result)
+    encoded = base64.b64encode(json.dumps(compact, sort_keys=True).encode("utf-8")).decode("ascii")
+    digest = hashlib.sha256(encoded.encode("ascii")).hexdigest()
+    if digest == LAST_CALLBACK_DIGEST and (now - LAST_CALLBACK_AT) < max(5.0, CALLBACK_INTERVAL_S):
+        return
+
+    description = (
+        "Main Computer all-father private control probe. "
+        "This service is intentionally left running for diagnostics and has no public route.\n\n"
+        + CALLBACK_MARKER
+        + encoded
+    )
+    payload = json.dumps({"description": description}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{CALLBACK_API_URL}/api/v1/services/{CALLBACK_SERVICE_UUID}",
+        data=payload,
+        method="PATCH",
+        headers={
+            "Accept": "application/json,text/plain,*/*",
+            "Authorization": f"Bearer {CALLBACK_TOKEN}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+            response.read()
+        LAST_CALLBACK_DIGEST = digest
+        LAST_CALLBACK_AT = now
+    except Exception as exc:
+        print("ALLFATHER_PROBE_CALLBACK_ERROR " + repr(exc), flush=True)
+
+
 def write_latest(result: dict) -> None:
     global LATEST
     LATEST = result
@@ -715,6 +869,7 @@ def write_latest(result: dict) -> None:
     tmp.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(final)
     print("ALLFATHER_PROBE_RESULT " + json.dumps(result, sort_keys=True), flush=True)
+    publish_to_coolify_metadata(result)
 
 
 def probe_loop() -> None:
@@ -781,6 +936,9 @@ def render_probe_compose(
     image: str = DEFAULT_IMAGE,
     probe_container_port: int = DEFAULT_PROBE_CONTAINER_PORT,
     probe_interval_s: float = DEFAULT_PROBE_INTERVAL_S,
+    callback_api_url: str = "",
+    callback_token: str = "",
+    callback_service_uuid: str = "",
 ) -> str:
     """Render the private Coolify-managed probe service.
 
@@ -818,6 +976,10 @@ def render_probe_compose(
             f"      MC_ALLFATHER_PROBE_TIMEOUT_S: {yaml_quote(4)}",
             f"      MC_ALLFATHER_PROBE_TARGETS_B64: {yaml_quote(probe_targets_b64(plan))}",
             f"      MC_ALLFATHER_PROBE_STATE_DIR: {yaml_quote('/state')}",
+            f"      MC_ALLFATHER_PROBE_CALLBACK_API_URL: {yaml_quote(callback_api_url)}",
+            f"      MC_ALLFATHER_PROBE_CALLBACK_TOKEN: {yaml_quote(callback_token)}",
+            f"      MC_ALLFATHER_PROBE_CALLBACK_SERVICE_UUID: {yaml_quote(callback_service_uuid)}",
+            f"      MC_ALLFATHER_PROBE_CALLBACK_INTERVAL_S: {yaml_quote(probe_interval_s)}",
             "    expose:",
             f"      - {yaml_quote(probe_container_port)}",
             "    volumes:",
@@ -834,6 +996,28 @@ def render_probe_compose(
         ]
     )
     return "\n".join(lines)
+
+
+def render_probe_compose_for_client(
+    plan: HeadPlan,
+    head: HeadNode,
+    args: argparse.Namespace,
+    client: Any,
+    *,
+    callback_service_uuid: str = "",
+) -> str:
+    """Render probe compose with the Coolify metadata callback wired in."""
+
+    return render_probe_compose(
+        plan,
+        head,
+        image=getattr(args, "probe_image", getattr(args, "image", DEFAULT_IMAGE)),
+        probe_container_port=getattr(args, "probe_container_port", DEFAULT_PROBE_CONTAINER_PORT),
+        probe_interval_s=getattr(args, "probe_interval_s", DEFAULT_PROBE_INTERVAL_S),
+        callback_api_url=str(getattr(client, "base_url", "") or ""),
+        callback_token=str(getattr(client, "token", "") or ""),
+        callback_service_uuid=callback_service_uuid,
+    )
 
 
 def probe_service_payload(
@@ -880,17 +1064,17 @@ def sync_probe_service(
 ) -> tuple[str, str, dict[str, Any]]:
     service_name = probe_service_name(head)
     service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
-    compose = render_probe_compose(
-        plan,
-        head,
-        image=getattr(args, "probe_image", getattr(args, "image", DEFAULT_IMAGE)),
-        probe_container_port=getattr(args, "probe_container_port", DEFAULT_PROBE_CONTAINER_PORT),
-        probe_interval_s=getattr(args, "probe_interval_s", DEFAULT_PROBE_INTERVAL_S),
-    )
     if service_uuid:
+        compose = render_probe_compose_for_client(plan, head, args, client, callback_service_uuid=service_uuid)
         fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
         return service_uuid, "updated", existing
+
     service_uuid = fdb_tool().create_service(client, probe_service_payload(plan, head, args, context=context), tried)
+    # A newly-created probe cannot know its own Coolify service UUID until after
+    # creation. Patch the compose once more so the long-running private probe can
+    # publish results back into its own service metadata.
+    compose = render_probe_compose_for_client(plan, head, args, client, callback_service_uuid=service_uuid)
+    fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
     return service_uuid, "created", existing
 
 
@@ -990,6 +1174,30 @@ def latest_probe_result(logs: Mapping[str, Any]) -> dict[str, Any]:
     if not results:
         return {"ok": False, "source": "coolify-probe-logs", "error": "no ALLFATHER_PROBE_RESULT entry found"}
     return {"ok": True, "source": "coolify-probe-logs", "result": results[-1], "result_count": len(results)}
+
+
+def probe_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the probe result callback from the Coolify service description.
+
+    Logs are not available through every Coolify install/API version. The probe
+    therefore also writes a compact base64 JSON result into its own service
+    description using PROBE_CALLBACK_MARKER.
+    """
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "service detail body was not an object"}
+    description = str(body.get("description") or "")
+    if PROBE_CALLBACK_MARKER not in description:
+        return {"ok": False, "source": "coolify-service-description", "error": "no ALLFATHER_PROBE_RESULT_B64 entry found"}
+    encoded = description.split(PROBE_CALLBACK_MARKER, 1)[1].strip().split()[0]
+    try:
+        result = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "source": "coolify-service-description", "error": f"invalid metadata callback: {type(exc).__name__}: {exc}"}
+    if not isinstance(result, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
+    return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
 
 
 def context_args_for_host(args: argparse.Namespace, host: HeadNode) -> argparse.Namespace:
@@ -1455,8 +1663,12 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
             probe_detail = fetch_service_detail(client, probe_service_uuid, tried)
             probe_applications = application_records_from_service_detail(probe_detail)
             probe_application_uuid = probe_applications[0]["uuid"] if probe_applications else ""
-            probe_logs = fetch_probe_logs(client, probe_service_uuid, tried, application_uuid=probe_application_uuid)
-            probe_result = latest_probe_result(probe_logs)
+            probe_result = probe_result_from_service_metadata(probe_detail)
+            if not probe_result.get("ok"):
+                probe_logs = fetch_probe_logs(client, probe_service_uuid, tried, application_uuid=probe_application_uuid)
+                probe_result = latest_probe_result(probe_logs)
+            else:
+                probe_logs = {"ok": True, "source": "coolify-service-description", "body": None}
             return {
                 "ok": True,
                 "method": "coolify-patch-probe",
@@ -1906,6 +2118,906 @@ def compact_discover_for_operator(payload: Mapping[str, Any]) -> dict[str, Any]:
         "direct_vpn_used": False,
     }
 
+
+
+def clean_node_network_key(value: object) -> str:
+    network = str(value or "").strip().lower()
+    if network not in SUPPORTED_NODE_NETWORKS:
+        raise AllfatherControlError(f"add-node network must be one of {', '.join(SUPPORTED_NODE_NETWORKS)}; got {value!r}.")
+    return network
+
+
+def host_letter_for_head(head: HeadNode) -> str:
+    slot = str(head.slot or "").strip().lower()
+    if re.fullmatch(r"[a-z]+", slot):
+        return slot
+    # Fall back to the final alphabetic suffix if a migrated host name was used.
+    match = re.search(r"([a-z])$", str(head.coolify_server or "").lower())
+    return match.group(1) if match else "x"
+
+
+def super_prefix(network_key: str, head: HeadNode) -> str:
+    return f"{clean_node_network_key(network_key)}{host_letter_for_head(head)}"
+
+
+def super_service_name(network_key: str, head: HeadNode, ordinal: int) -> str:
+    if ordinal < 1:
+        raise AllfatherControlError("super-node ordinal must be >= 1")
+    return f"{super_prefix(network_key, head)}-super{ordinal}"
+
+
+def super_component_names(network_key: str, head: HeadNode, ordinal: int) -> dict[str, str]:
+    prefix = super_prefix(network_key, head)
+    return {
+        "super": f"{prefix}-super{ordinal}",
+        "hub": f"{prefix}-hub{ordinal}",
+        "fdb": f"{prefix}-fdb{ordinal}",
+        "validator_rpc": f"{prefix}-validator-rpc{ordinal}",
+        "guard": f"{prefix}-guard{ordinal}",
+        "rpc_route": f"{prefix}-rpc{ordinal}",
+    }
+
+
+def _network_base(network_key: str, testnet_base: int, mainnet_base: int) -> int:
+    return mainnet_base if clean_node_network_key(network_key) == "mainnet" else testnet_base
+
+
+def super_host_port(network_key: str, head: HeadNode, ordinal: int, *, testnet_base: int, mainnet_base: int) -> int:
+    # Ports are host-local and deterministic. Host A gets base+0.., host B gets
+    # base+100.., etc. The operator never supplies the ordinal; it is derived
+    # from Coolify inventory.
+    letter = host_letter_for_head(head)
+    host_offset = max(0, ord(letter[0]) - ord("a")) * 100 if letter else 0
+    return _network_base(network_key, testnet_base, mainnet_base) + host_offset + max(0, ordinal - 1)
+
+
+def private_state_for_args(args: argparse.Namespace) -> dict[str, Any]:
+    return load_yaml_mapping(repo_relative_path(args.private_state))
+
+
+def _merge_wallet_record(base: Mapping[str, Any] | None, override: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Merge wallet records while ignoring empty placeholder overrides."""
+
+    merged: dict[str, Any] = {}
+    for source in (base, override):
+        if not isinstance(source, Mapping):
+            continue
+        for key, value in source.items():
+            if value is None or value == "":
+                continue
+            if isinstance(value, str) and PRIVATE_PLACEHOLDER_RE.match(value):
+                continue
+            merged[str(key)] = value
+    return merged
+
+
+def _wallet_mapping_from_state_path(state: Mapping[str, Any], *path: str) -> dict[str, Any]:
+    value: Any = state
+    for segment in path:
+        if not isinstance(value, Mapping):
+            return {}
+        value = value.get(segment)
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def network_wallets_from_private_state(state: Mapping[str, Any], network_key: str) -> dict[str, Any]:
+    """Return wallet material for a network with global defaults as fallback.
+
+    ``all_father.private.yaml`` is not topology, but it can carry bootstrap
+    wallet material.  Older private-state files often put deployer/admin keys
+    under ``wallets.defaults`` instead of ``networks.<network>.wallets``.  The
+    add-node path should use those defaults instead of forcing the operator to
+    duplicate keys by hand.
+    """
+
+    network_key = clean_node_network_key(network_key)
+    default_wallets = _wallet_mapping_from_state_path(state, "wallets", "defaults")
+    network_wallets = _wallet_mapping_from_state_path(state, "networks", network_key, "wallets")
+
+    wallet_names = sorted(set(default_wallets.keys()) | set(network_wallets.keys()))
+    merged: dict[str, Any] = {}
+    for wallet_name in wallet_names:
+        record = _merge_wallet_record(
+            default_wallets.get(wallet_name) if isinstance(default_wallets.get(wallet_name), Mapping) else None,
+            network_wallets.get(wallet_name) if isinstance(network_wallets.get(wallet_name), Mapping) else None,
+        )
+        if record:
+            merged[wallet_name] = record
+    return merged
+
+
+def wallet_record(wallets: Mapping[str, Any], name: str) -> dict[str, Any]:
+    value = wallets.get(name)
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def wallet_private_key(wallets: Mapping[str, Any], name: str) -> str:
+    record = wallet_record(wallets, name)
+    return str(record.get("private_key") or "").strip()
+
+
+def wallet_address(wallets: Mapping[str, Any], name: str) -> str:
+    record = wallet_record(wallets, name)
+    return str(record.get("address") or "").strip()
+
+
+
+
+def ensure_mapping_child(parent: dict[str, Any], key: str) -> dict[str, Any]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        value = {}
+        parent[key] = value
+    return value
+
+
+def ensure_network_private_state(state: dict[str, Any], network_key: str) -> dict[str, Any]:
+    networks = ensure_mapping_child(state, "networks")
+    network = ensure_mapping_child(networks, clean_node_network_key(network_key))
+    ensure_mapping_child(network, "wallets")
+    ensure_mapping_child(network, "foundationdb")
+    return network
+
+
+def materialize_wallet_key(
+    wallets: dict[str, Any],
+    wallet_name: str,
+    *,
+    reason: str,
+    generated: list[dict[str, Any]],
+) -> None:
+    record = wallets.get(wallet_name)
+    if not isinstance(record, dict):
+        record = {}
+        wallets[wallet_name] = record
+    if nonempty_private_value(record.get("private_key")):
+        return
+    record["private_key"] = generated_private_key()
+    record.setdefault("address", None)
+    metadata = ensure_mapping_child(record, "metadata")
+    metadata.update(
+        {
+            "generated_by": PRIVATE_STATE_GENERATOR,
+            "generated_at": utc_now_iso(),
+            "reason": reason,
+            "address_derivation": "runtime-derive-from-private-key",
+        }
+    )
+    generated.append({"kind": "wallet_private_key", "wallet": wallet_name, "reason": reason})
+
+
+def materialize_fdb_identity(
+    network: dict[str, Any],
+    network_key: str,
+    *,
+    generated: list[dict[str, Any]],
+) -> dict[str, Any]:
+    fdb = ensure_mapping_child(network, "foundationdb")
+    if not nonempty_private_value(fdb.get("cluster_description")):
+        fdb["cluster_description"] = f"main-computer-{clean_node_network_key(network_key)}-allfather"
+        generated.append({"kind": "fdb_cluster_description", "network": clean_node_network_key(network_key)})
+    if not nonempty_private_value(fdb.get("cluster_id")):
+        fdb["cluster_id"] = generated_cluster_id()
+        generated.append({"kind": "fdb_cluster_id", "network": clean_node_network_key(network_key)})
+    fdb.setdefault("coordinator_policy", "first-node-then-expand")
+    fdb.setdefault("reconfigure_after_join", True)
+    return fdb
+
+
+def materialize_private_state_for_add_node(
+    state: Mapping[str, Any],
+    path: Path,
+    network_key: str,
+    *,
+    ordinal: int,
+    no_contracts: bool,
+    dry_run: bool,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Ensure add-node has local bootstrap secrets without treating state as topology.
+
+    Missing ``hub_admin`` and first-node ``deployer`` keys are generated into
+    ``all_father.private.yaml``.  The file remains a seed/control file: it stores
+    secrets and FDB cluster identity, not the list of running super-nodes.
+    """
+
+    network_key = clean_node_network_key(network_key)
+    mutable_state = json.loads(json.dumps(dict(state)))
+    network = ensure_network_private_state(mutable_state, network_key)
+    wallets = ensure_mapping_child(network, "wallets")
+    generated: list[dict[str, Any]] = []
+
+    materialize_wallet_key(
+        wallets,
+        "hub_admin",
+        reason=f"{network_key} all-father hub_admin bootstrap",
+        generated=generated,
+    )
+    if ordinal == 1 and not no_contracts:
+        materialize_wallet_key(
+            wallets,
+            "deployer",
+            reason=f"{network_key} first-node contract bootstrap",
+            generated=generated,
+        )
+
+    fdb = materialize_fdb_identity(network, network_key, generated=generated)
+
+    if generated and not dry_run:
+        write_yaml_mapping(path, mutable_state)
+
+    wallets_for_network = network_wallets_from_private_state(mutable_state, network_key)
+    return mutable_state, wallets_for_network, {
+        "path": display_path(path),
+        "written": bool(generated and not dry_run),
+        "dry_run": bool(dry_run),
+        "generated": generated,
+        "wallets_generated": [item["wallet"] for item in generated if item.get("kind") == "wallet_private_key"],
+        "fdb_identity_generated": any(str(item.get("kind", "")).startswith("fdb_") for item in generated),
+        "fdb_cluster_description": str(fdb.get("cluster_description") or ""),
+        "fdb_cluster_id_present": bool(nonempty_private_value(fdb.get("cluster_id"))),
+        "note": "Private keys and FDB cluster identity are seed material, not topology.",
+    }
+
+
+def fdb_identity_from_private_state(state: Mapping[str, Any], network_key: str) -> dict[str, Any]:
+    network_key = clean_node_network_key(network_key)
+    network = _wallet_mapping_from_state_path(state, "networks", network_key)
+    fdb = network.get("foundationdb") if isinstance(network, Mapping) else {}
+    if not isinstance(fdb, Mapping):
+        fdb = {}
+    description = nonempty_private_value(fdb.get("cluster_description")) or f"main-computer-{network_key}-allfather"
+    cluster_id = nonempty_private_value(fdb.get("cluster_id")) or "missing-cluster-id"
+    return {
+        "cluster_description": description,
+        "cluster_id": cluster_id,
+        "coordinator_policy": str(fdb.get("coordinator_policy") or "first-node-then-expand"),
+        "reconfigure_after_join": bool(fdb.get("reconfigure_after_join", True)),
+    }
+
+def require_wallet_material_for_add_node(network_key: str, ordinal: int, wallets: Mapping[str, Any], *, no_contracts: bool) -> dict[str, Any]:
+    """Return wallet bootstrap intent for add-node.
+
+    ``add-node`` materializes missing bootstrap keys before this function runs, so
+    missing keys are not an operator blocker.  Contract work is still deferred
+    until at least one validator-RPC is live.
+    """
+
+    hub_admin_key = wallet_private_key(wallets, "hub_admin")
+    hub_admin_address = wallet_address(wallets, "hub_admin")
+    contracts_requested = ordinal == 1 and not no_contracts
+    deployer_key = wallet_private_key(wallets, "deployer")
+    return {
+        "hub_admin_address": hub_admin_address,
+        "hub_admin_private_key": hub_admin_key,
+        "hub_admin_private_key_present": bool(hub_admin_key),
+        "hub_admin_create_requested": False,
+        "hub_admin_key_source": "private-state-or-generated",
+        "deployer_address": wallet_address(wallets, "deployer"),
+        "deployer_private_key": deployer_key,
+        "deployer_private_key_present": bool(deployer_key),
+        "contracts_requested": contracts_requested,
+        "contracts_deferred_until_hub_admin_ready": False,
+        "contracts_deferred_until_deployer_ready": contracts_requested and not bool(deployer_key),
+    }
+
+
+def choose_head_for_host(plan: HeadPlan, host: str) -> HeadNode:
+    wanted = str(host or "").strip().lower()
+    if not wanted:
+        raise AllfatherControlError("--host is required for add-node.")
+    matches = [
+        head
+        for head in plan.heads
+        if wanted in {str(head.coolify_server).lower(), str(head.slot).lower(), str(head.head_id).lower()}
+    ]
+    if not matches:
+        known = ", ".join(head.coolify_server for head in plan.heads)
+        raise AllfatherControlError(f"Unknown all-father Coolify host {host!r}; known hosts: {known}")
+    if len(matches) > 1:
+        raise AllfatherControlError(f"Host selector {host!r} matched more than one all-father head.")
+    return matches[0]
+
+
+def service_items_for_client(client: Any, tried: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    response, services = hub_service_tool().list_services(client)
+    tried.append({"operation": "list-services", "response": hub_service_tool().response_to_dict(response), "count": len(services)})
+    if not response.ok:
+        raise AllfatherControlError(f"Could not list Coolify services with HTTP {response.status}: {response.body}")
+    return services
+
+
+def service_name_from_item(item: Mapping[str, Any]) -> str:
+    for key in ("name", "human_name"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    applications = item.get("applications")
+    if isinstance(applications, list):
+        for app in applications:
+            if isinstance(app, Mapping):
+                value = str(app.get("name") or "").strip()
+                if value:
+                    return value
+    return ""
+
+
+def existing_super_ordinals(services: Iterable[Mapping[str, Any]], network_key: str, head: HeadNode) -> list[int]:
+    prefix = re.escape(super_prefix(network_key, head))
+    pattern = re.compile(rf"^{prefix}-super([1-9][0-9]*)$")
+    ordinals: list[int] = []
+    for item in services:
+        name = service_name_from_item(item)
+        match = pattern.match(name)
+        if match:
+            ordinals.append(int(match.group(1)))
+    return sorted(set(ordinals))
+
+
+def super_inventory_entry(network_key: str, head: HeadNode, ordinal: int, *, source: str = "coolify-inventory") -> dict[str, Any]:
+    components = super_component_names(network_key, head, ordinal)
+    return {
+        "source": source,
+        "network_key": clean_node_network_key(network_key),
+        "coolify_server": head.coolify_server,
+        "host_slot": head.slot,
+        "host_prefix": super_prefix(network_key, head),
+        "ordinal": ordinal,
+        "service_name": components["super"],
+        "components": components,
+        "vpn_ip": head.guard_publish_host,
+        "fdb_endpoint": f"{head.guard_publish_host}:{super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_FDB_BASE, mainnet_base=DEFAULT_MAINNET_FDB_BASE)}",
+        "fdb_host_port": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_FDB_BASE, mainnet_base=DEFAULT_MAINNET_FDB_BASE),
+    }
+
+
+def existing_super_inventory_from_services(
+    services: Iterable[Mapping[str, Any]],
+    network_key: str,
+    head: HeadNode,
+) -> list[dict[str, Any]]:
+    return [
+        super_inventory_entry(network_key, head, ordinal)
+        for ordinal in existing_super_ordinals(services, network_key, head)
+    ]
+
+
+def fdb_cluster_file(description: str, cluster_id: str, coordinators: Sequence[str]) -> str:
+    clean = [str(item).strip() for item in coordinators if str(item).strip()]
+    return f"{description}:{cluster_id}@{','.join(clean)}"
+
+
+def fdb_plan_for_super_node(
+    network_key: str,
+    head: HeadNode,
+    ordinal: int,
+    *,
+    existing_nodes: Sequence[Mapping[str, Any]],
+    private_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the FDB cluster intent for adding one super-node.
+
+    The first node initializes the cluster identity.  Later nodes join the
+    existing cluster file first, then request a coordinator reconfiguration after
+    the new fdbserver is healthy.  This prevents a second node from accidentally
+    booting an isolated FDB cluster.
+    """
+
+    identity = fdb_identity_from_private_state(private_state, network_key)
+    new_node = super_inventory_entry(network_key, head, ordinal, source="new-node")
+    existing_endpoints = [
+        str(node.get("fdb_endpoint") or "").strip()
+        for node in existing_nodes
+        if str(node.get("fdb_endpoint") or "").strip()
+    ]
+    current_coordinators = existing_endpoints or [new_node["fdb_endpoint"]]
+    target_coordinators = sorted(set(current_coordinators + [new_node["fdb_endpoint"]]))
+
+    first_node = not existing_endpoints
+    action = "initialize-new-cluster" if first_node else "join-existing-cluster"
+    join_cluster_file = fdb_cluster_file(identity["cluster_description"], identity["cluster_id"], current_coordinators)
+    target_cluster_file = fdb_cluster_file(identity["cluster_description"], identity["cluster_id"], target_coordinators)
+    return {
+        "action": action,
+        "first_node": first_node,
+        "cluster_description": identity["cluster_description"],
+        "cluster_id_present": identity["cluster_id"] != "missing-cluster-id",
+        "cluster_file": join_cluster_file,
+        "join_cluster_file": join_cluster_file,
+        "target_cluster_file_after_reconfigure": target_cluster_file,
+        "existing_nodes": list(existing_nodes),
+        "new_node": new_node,
+        "current_coordinators": current_coordinators,
+        "target_coordinators": target_coordinators,
+        "coordinator_reconfigure_required": not first_node and target_cluster_file != join_cluster_file,
+        "reconfigure_after_join": bool(identity.get("reconfigure_after_join", True)),
+        "guardrail": "Do not initialize an isolated FDB cluster when existing network nodes are present.",
+    }
+
+
+def next_super_ordinal_from_inventory(services: Iterable[Mapping[str, Any]], network_key: str, head: HeadNode) -> int:
+    ordinals = existing_super_ordinals(services, network_key, head)
+    return (max(ordinals) + 1) if ordinals else 1
+
+
+def super_manifest(
+    network_key: str,
+    head: HeadNode,
+    ordinal: int,
+    *,
+    wallets: Mapping[str, Any],
+    private_state: Mapping[str, Any],
+    existing_nodes: Sequence[Mapping[str, Any]],
+    no_contracts: bool,
+    publish_routes: bool,
+) -> dict[str, Any]:
+    names = super_component_names(network_key, head, ordinal)
+    wallet_material = require_wallet_material_for_add_node(network_key, ordinal, wallets, no_contracts=no_contracts)
+    contracts_requested = bool(wallet_material["contracts_requested"])
+    fdb_plan = fdb_plan_for_super_node(
+        network_key,
+        head,
+        ordinal,
+        existing_nodes=existing_nodes,
+        private_state=private_state,
+    )
+    return {
+        "kind": "main_computer.allfather_super_node.v1",
+        "network_key": clean_node_network_key(network_key),
+        "cell_id": names["super"],
+        "coolify_server": head.coolify_server,
+        "host_slot": head.slot,
+        "host_prefix": super_prefix(network_key, head),
+        "ordinal": ordinal,
+        "state_root": f"{DEFAULT_SUPER_STATE_ROOT_PREFIX}/{clean_node_network_key(network_key)}/{head.coolify_server}/{names['super']}",
+        "components": names,
+        "desired_counts": {
+            "super_nodes": 1,
+            "hub": 1,
+            "foundationdb": 1,
+            "qbft_validator_rpc": 1,
+            "guard": 1,
+            "hub_admin": 1,
+            "contracts": 1 if contracts_requested else 0,
+        },
+        "bootstrap": {
+            "hub_admin_requested": True,
+            "hub_admin_private_key_present": bool(wallet_material["hub_admin_private_key_present"]),
+            "hub_admin_create_requested": bool(wallet_material["hub_admin_create_requested"]),
+            "hub_admin_key_source": wallet_material["hub_admin_key_source"],
+            "hub_admin_deferred_until_live_validator_rpc": True,
+            "contracts_requested": contracts_requested,
+            "contracts_deferred_until_live_validator_rpc": True,
+            "contracts_deferred_until_hub_admin_ready": bool(wallet_material["contracts_deferred_until_hub_admin_ready"]),
+            "no_contracts": bool(no_contracts),
+            "hub_public_cutover_deferred": True,
+        },
+        "public_routes": {
+            "enabled": bool(publish_routes),
+            "hub": f"https://{names['hub']}.greatlibrary.io",
+            "rpc": f"https://{names['rpc_route']}.greatlibrary.io",
+            "only_hub_and_rpc_are_public": True,
+        },
+        "ports": {
+            "guard_container": DEFAULT_SUPER_GUARD_CONTAINER_PORT,
+            "guard_host": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_SUPER_GUARD_BASE, mainnet_base=DEFAULT_MAINNET_SUPER_GUARD_BASE),
+            "hub_container": DEFAULT_SUPER_HUB_CONTAINER_PORT,
+            "rpc_container": DEFAULT_SUPER_RPC_CONTAINER_PORT,
+            "fdb_container": DEFAULT_SUPER_FDB_CONTAINER_PORT,
+            "fdb_host": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_FDB_BASE, mainnet_base=DEFAULT_MAINNET_FDB_BASE),
+            "p2p_container": DEFAULT_SUPER_P2P_CONTAINER_PORT,
+            "p2p_host": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_P2P_BASE, mainnet_base=DEFAULT_MAINNET_P2P_BASE),
+        },
+        "foundationdb": fdb_plan,
+        "wallets": {
+            "hub_admin": {
+                "address": wallet_material["hub_admin_address"],
+                "private_key_present": bool(wallet_material["hub_admin_private_key"]),
+                "create_requested": bool(wallet_material["hub_admin_create_requested"]),
+                "key_source": wallet_material["hub_admin_key_source"],
+            },
+            "deployer": {
+                "address": wallet_material["deployer_address"],
+                "private_key_present": bool(wallet_material["deployer_private_key"]),
+            },
+        },
+        "guardrails": {
+            "private_state_is_topology": False,
+            "hub_admin_requires_live_qbft_validator_rpc": True,
+            "contracts_require_live_qbft_validator_rpc": True,
+            "bootstrap_heads_deploys_workloads": False,
+            "public_guard_routes": False,
+            "ssh_used": False,
+        },
+    }
+
+
+def super_server_command_script() -> str:
+    return r"""
+import base64
+import json
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+manifest = json.loads(base64.b64decode(os.environ["MC_ALLFATHER_SUPER_MANIFEST_B64"]).decode("utf-8"))
+port = int(os.environ.get("MC_ALLFATHER_GUARD_PORT", "41414"))
+
+def payload(status: str = "running"):
+    return {
+        "ok": True,
+        "service": "main-computer-allfather-super-node",
+        "status": status,
+        "network_key": manifest.get("network_key"),
+        "cell_id": manifest.get("cell_id"),
+        "coolify_server": manifest.get("coolify_server"),
+        "ordinal": manifest.get("ordinal"),
+        "components": manifest.get("components"),
+        "desired_counts": manifest.get("desired_counts"),
+        "bootstrap": manifest.get("bootstrap"),
+        "public_routes": manifest.get("public_routes"),
+        "guardrails": manifest.get("guardrails"),
+    }
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, status_code, body):
+        raw = json.dumps(body, sort_keys=True).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path == "/healthz":
+            self._send(200, {"ok": True, "cell_id": manifest.get("cell_id")})
+        elif path == "/identity":
+            self._send(200, payload())
+        elif path == "/topology":
+            self._send(200, {"ok": True, "network_key": manifest.get("network_key"), "cell_id": manifest.get("cell_id"), "topology": {"source": "self-manifest", "super_node": manifest}})
+        elif path in {"/status", "/processes"}:
+            self._send(200, payload())
+        else:
+            self._send(404, {"ok": False, "error": "not-found", "path": path})
+
+    def log_message(self, fmt, *args):
+        print("%s - %s" % (self.address_string(), fmt % args), flush=True)
+
+print(f"all-father super-node guard listening on 0.0.0.0:{port}", flush=True)
+ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+""".strip()
+
+
+def render_super_node_compose(
+    manifest: Mapping[str, Any],
+    *,
+    image: str = DEFAULT_SUPER_IMAGE,
+    hub_admin_private_key: str = "",
+    deployer_private_key: str = "",
+    publish_routes: bool = False,
+) -> str:
+    ports = manifest.get("ports") if isinstance(manifest.get("ports"), Mapping) else {}
+    components = manifest.get("components") if isinstance(manifest.get("components"), Mapping) else {}
+    service_name = str(manifest.get("cell_id") or components.get("super") or "")
+    command_script = super_server_command_script()
+    manifest_b64_value = base64.b64encode(json.dumps(dict(manifest), sort_keys=True).encode("utf-8")).decode("ascii")
+    fdb_plan = manifest.get("foundationdb") if isinstance(manifest.get("foundationdb"), Mapping) else {}
+    fdb_plan_b64_value = base64.b64encode(json.dumps(dict(fdb_plan), sort_keys=True).encode("utf-8")).decode("ascii")
+    state_root = str(manifest.get("state_root") or f"{DEFAULT_SUPER_STATE_ROOT_PREFIX}/{service_name}").rstrip("/")
+    guard_host = ports.get("guard_host")
+    fdb_host = ports.get("fdb_host")
+    p2p_host = ports.get("p2p_host")
+    lines = [
+        f"name: {service_name}",
+        "",
+        "services:",
+        f"  {service_name}:",
+        f"    image: {yaml_quote(image)}",
+        "    restart: unless-stopped",
+        "    entrypoint: []",
+        "    command:",
+        "      - python",
+        "      - -u",
+        "      - -c",
+        "      - |",
+    ]
+    lines.extend(f"        {line}" for line in command_script.splitlines())
+    lines.extend(
+        [
+            "    environment:",
+            f"      MC_ALLFATHER_SUPER_NODE: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_NETWORK: {yaml_quote(str(manifest.get('network_key') or ''))}",
+            f"      MC_ALLFATHER_CELL_ID: {yaml_quote(service_name)}",
+            f"      MC_ALLFATHER_GUARD_PORT: {yaml_quote(str(ports.get('guard_container') or DEFAULT_SUPER_GUARD_CONTAINER_PORT))}",
+            f"      MC_ALLFATHER_SUPER_MANIFEST_B64: {yaml_quote(manifest_b64_value)}",
+            f"      MC_ALLFATHER_FDB_PLAN_B64: {yaml_quote(fdb_plan_b64_value)}",
+            f"      MC_ALLFATHER_FDB_BOOTSTRAP_ACTION: {yaml_quote(str(fdb_plan.get('action') or ''))}",
+            f"      MC_ALLFATHER_FDB_CLUSTER_FILE: {yaml_quote(str(fdb_plan.get('cluster_file') or ''))}",
+            f"      MC_ALLFATHER_FDB_TARGET_CLUSTER_FILE: {yaml_quote(str(fdb_plan.get('target_cluster_file_after_reconfigure') or ''))}",
+            f"      MC_ALLFATHER_FDB_RECONFIGURE_AFTER_JOIN: {yaml_quote('1' if fdb_plan.get('coordinator_reconfigure_required') else '0')}",
+            f"      MC_ALLFATHER_HUB_ADMIN_PRIVATE_KEY: {yaml_quote(hub_admin_private_key)}",
+            f"      MC_ALLFATHER_DEPLOYER_PRIVATE_KEY: {yaml_quote(deployer_private_key)}",
+            f"      MC_ALLFATHER_BOOTSTRAP_HUB_ADMIN: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_HUB_ADMIN_CREATE_IF_MISSING: {yaml_quote('1' if manifest.get('bootstrap', {}).get('hub_admin_create_requested') else '0')}",
+            f"      MC_ALLFATHER_HUB_ADMIN_DEFER_UNTIL_QBFT: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_BOOTSTRAP_CONTRACTS: {yaml_quote('1' if manifest.get('bootstrap', {}).get('contracts_requested') else '0')}",
+            f"      MC_ALLFATHER_CONTRACTS_DEFER_UNTIL_QBFT: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_CONTRACTS_DEFER_UNTIL_HUB_ADMIN: {yaml_quote('1' if manifest.get('bootstrap', {}).get('contracts_deferred_until_hub_admin_ready') else '0')}",
+            "    expose:",
+            f"      - {yaml_quote(str(ports.get('guard_container') or DEFAULT_SUPER_GUARD_CONTAINER_PORT))}",
+            f"      - {yaml_quote(str(ports.get('hub_container') or DEFAULT_SUPER_HUB_CONTAINER_PORT))}",
+            f"      - {yaml_quote(str(ports.get('rpc_container') or DEFAULT_SUPER_RPC_CONTAINER_PORT))}",
+            "    ports:",
+            f"      - {yaml_quote(f'{guard_host}:{ports.get('guard_container')}/tcp')}",
+            f"      - {yaml_quote(f'{fdb_host}:{ports.get('fdb_container')}/tcp')}",
+            f"      - {yaml_quote(f'{p2p_host}:{ports.get('p2p_container')}/tcp')}",
+            "    volumes:",
+            f"      - {yaml_quote(f'{state_root}:{state_root}')}",
+            "    healthcheck:",
+            "      test:",
+            "        - CMD-SHELL",
+            f"        - {yaml_quote(f'python -c \"import urllib.request; urllib.request.urlopen(\\\"http://127.0.0.1:{ports.get('guard_container') or DEFAULT_SUPER_GUARD_CONTAINER_PORT}/healthz\\\", timeout=3).read()\"')}",
+            "      interval: 10s",
+            "      timeout: 5s",
+            "      start_period: 10s",
+            "      retries: 6",
+        ]
+    )
+    if publish_routes:
+        hub = components.get("hub")
+        rpc = components.get("rpc_route")
+        labels = [
+            "traefik.enable=true",
+            f"traefik.http.routers.{hub}.rule=Host(`{hub}.greatlibrary.io`)",
+            f"traefik.http.routers.{hub}.entryPoints=https",
+            f"traefik.http.routers.{hub}.tls=true",
+            f"traefik.http.services.{hub}-svc.loadbalancer.server.port={ports.get('hub_container')}",
+            f"traefik.http.routers.{rpc}.rule=Host(`{rpc}.greatlibrary.io`)",
+            f"traefik.http.routers.{rpc}.entryPoints=https",
+            f"traefik.http.routers.{rpc}.tls=true",
+            f"traefik.http.services.{rpc}-svc.loadbalancer.server.port={ports.get('rpc_container')}",
+        ]
+        lines.append("    labels:")
+        lines.extend(f"      - {yaml_quote(label)}" for label in labels)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def redact_super_compose(compose: str) -> str:
+    redacted = []
+    for line in compose.splitlines():
+        if "MC_ALLFATHER_HUB_ADMIN_PRIVATE_KEY:" in line:
+            redacted.append(re.sub(r": .*$", ": <redacted>", line))
+        elif "MC_ALLFATHER_DEPLOYER_PRIVATE_KEY:" in line:
+            redacted.append(re.sub(r": .*$", ": <redacted>", line))
+        else:
+            redacted.append(line)
+    return "\n".join(redacted)
+
+
+def super_context_args_for_head(args: argparse.Namespace, head: HeadNode) -> argparse.Namespace:
+    context_args = fdb_tool().context_args_for_server(args, head.coolify_server)
+    if not str(context_args.coolify_project_uuid or "").strip() and not str(context_args.coolify_project_name or "").strip():
+        context_args.coolify_project_name = DEFAULT_COOLIFY_PROJECT_NAME
+    if not str(context_args.coolify_environment_name or "").strip():
+        context_args.coolify_environment_name = DEFAULT_SUPER_ENVIRONMENT
+    return context_args
+
+
+def resolve_super_context(client: Any, args: argparse.Namespace, head: HeadNode, tried: list[dict[str, Any]]) -> dict[str, Any]:
+    profile = fdb_tool()._ProfileForContext("allfather-super")
+    return hub_service_tool().resolve_coolify_context(client, profile, super_context_args_for_head(args, head), tried)
+
+
+def super_service_payload(
+    manifest: Mapping[str, Any],
+    args: argparse.Namespace,
+    *,
+    context: Mapping[str, Any],
+    hub_admin_private_key: str,
+    deployer_private_key: str,
+) -> dict[str, Any]:
+    service_name = str(manifest.get("cell_id") or "")
+    compose = render_super_node_compose(
+        manifest,
+        image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+        hub_admin_private_key=hub_admin_private_key,
+        deployer_private_key=deployer_private_key,
+        publish_routes=bool(getattr(args, "publish_routes", False)),
+    )
+    payload = {
+        "server_uuid": (context or {}).get("server_uuid") or "",
+        "project_uuid": (context or {}).get("project_uuid") or "",
+        "environment_name": (context or {}).get("environment_name") or getattr(args, "coolify_environment_name", "") or DEFAULT_SUPER_ENVIRONMENT,
+        "environment_uuid": (context or {}).get("environment_uuid") or "",
+        "name": service_name,
+        "description": (
+            f"Main Computer all-father super-node {service_name}. "
+            "Contains hub, fdb, validator-rpc, guard, and bootstrap intent. Guard is private; Hub/RPC routes require cutover."
+        ),
+        "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        "instant_deploy": False,
+    }
+    destination_uuid = destination_uuid_for_host(HeadNode(
+        head_id=str(manifest.get("cell_id") or ""),
+        service_name=service_name,
+        coolify_server=str(manifest.get("coolify_server") or ""),
+        slot=str(manifest.get("host_slot") or ""),
+        guard_container_port=DEFAULT_SUPER_GUARD_CONTAINER_PORT,
+        guard_host_port=0,
+        guard_publish_host="",
+        guard_url="",
+        state_root=str(manifest.get("state_root") or ""),
+        peers=(),
+    ), args)
+    if destination_uuid:
+        payload["destination_uuid"] = destination_uuid
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def sync_super_node_service(
+    client: Any,
+    manifest: Mapping[str, Any],
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+    *,
+    hub_admin_private_key: str,
+    deployer_private_key: str,
+) -> tuple[str, str, dict[str, Any]]:
+    service_name = str(manifest.get("cell_id") or "")
+    service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
+    compose = render_super_node_compose(
+        manifest,
+        image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+        hub_admin_private_key=hub_admin_private_key,
+        deployer_private_key=deployer_private_key,
+        publish_routes=bool(getattr(args, "publish_routes", False)),
+    )
+    if service_uuid:
+        fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
+        return service_uuid, "updated", existing
+    payload = super_service_payload(
+        manifest,
+        args,
+        context=context,
+        hub_admin_private_key=hub_admin_private_key,
+        deployer_private_key=deployer_private_key,
+    )
+    service_uuid = fdb_tool().create_service(client, payload, tried)
+    return service_uuid, "created", existing
+
+
+def redact_add_node_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    redacted = dict(payload)
+    if "compose" in redacted:
+        redacted["compose"] = redact_super_compose(str(redacted["compose"]))
+    if "coolify_payload" in redacted and isinstance(redacted["coolify_payload"], Mapping):
+        redacted["coolify_payload"] = redact_payload(redacted["coolify_payload"])
+    return redacted
+
+
+def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
+    network_key = clean_node_network_key(args.network)
+    if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
+        raise AllfatherControlError("Refusing to add a mainnet node without --allow-mainnet.")
+    head = choose_head_for_host(plan, args.host)
+    private_state_path = repo_relative_path(args.private_state)
+    state = load_yaml_mapping(private_state_path)
+
+    tried: list[dict[str, Any]] = []
+    if getattr(args, "dry_run", False) and getattr(args, "existing_count", None) is not None:
+        existing_count = max(0, int(args.existing_count))
+        ordinal = existing_count + 1
+        services = [{"name": super_service_name(network_key, head, item)} for item in range(1, existing_count + 1)]
+        existing_nodes = [super_inventory_entry(network_key, head, item, source="dry-run-existing-count") for item in range(1, existing_count + 1)]
+        token_source = "dry-run:no-api"
+        context: dict[str, Any] = {}
+        service_uuid = ""
+        service_action = "planned"
+        deployed = False
+    else:
+        client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+        version = client.request("GET", "/api/v1/version")
+        tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
+        if not version.ok:
+            raise AllfatherControlError(f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}")
+        services = service_items_for_client(client, tried)
+        existing_nodes = existing_super_inventory_from_services(services, network_key, head)
+        ordinal = next_super_ordinal_from_inventory(services, network_key, head)
+        context = resolve_super_context(client, args, head, tried)
+        service_uuid = ""
+        service_action = "planned"
+        deployed = False
+
+    state, wallets, private_state_updates = materialize_private_state_for_add_node(
+        state,
+        private_state_path,
+        network_key,
+        ordinal=ordinal,
+        no_contracts=bool(getattr(args, "no_contracts", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+
+    manifest = super_manifest(
+        network_key,
+        head,
+        ordinal,
+        wallets=wallets,
+        private_state=state,
+        existing_nodes=existing_nodes,
+        no_contracts=bool(getattr(args, "no_contracts", False)),
+        publish_routes=bool(getattr(args, "publish_routes", False)),
+    )
+    hub_admin_key = wallet_private_key(wallets, "hub_admin")
+    deployer_key = wallet_private_key(wallets, "deployer") if manifest["bootstrap"]["contracts_requested"] else ""
+    compose = render_super_node_compose(
+        manifest,
+        image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+        hub_admin_private_key=hub_admin_key,
+        deployer_private_key=deployer_key,
+        publish_routes=bool(getattr(args, "publish_routes", False)),
+    )
+
+    if not getattr(args, "dry_run", False):
+        service_uuid, service_action, _existing = sync_super_node_service(
+            client,
+            manifest,
+            args,
+            context,
+            tried,
+            hub_admin_private_key=hub_admin_key,
+            deployer_private_key=deployer_key,
+        )
+        if not getattr(args, "no_deploy", False):
+            hub_service_tool().trigger_deploy_service(
+                client,
+                service_uuid=service_uuid,
+                force=getattr(args, "force_deploy", False),
+                tried=tried,
+            )
+            deployed = True
+
+    result = {
+        "ok": True,
+        "operation": "add-node",
+        "network": network_key,
+        "host": head.coolify_server,
+        "host_slot": head.slot,
+        "ordinal": ordinal,
+        "service_name": manifest["cell_id"],
+        "component_names": manifest["components"],
+        "contracts_requested": bool(manifest["bootstrap"]["contracts_requested"]),
+        "hub_admin_requested": True,
+        "hub_admin_create_requested": bool(manifest["bootstrap"].get("hub_admin_create_requested")),
+        "hub_admin_private_key_required_for_node_add": False,
+        "private_state_updates": private_state_updates,
+        "fdb": {
+            "action": manifest["foundationdb"]["action"],
+            "cluster_file_present": bool(manifest["foundationdb"].get("cluster_file")),
+            "coordinator_reconfigure_required": bool(manifest["foundationdb"].get("coordinator_reconfigure_required")),
+            "existing_node_count": len(manifest["foundationdb"].get("existing_nodes") or []),
+            "target_coordinator_count": len(manifest["foundationdb"].get("target_coordinators") or []),
+        },
+        "hub_public_cutover_deferred": True,
+        "public_guard_routes": False,
+        "public_routes_enabled": bool(getattr(args, "publish_routes", False)),
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "private_state_is_topology": False,
+        "service_uuid": service_uuid,
+        "service_action": service_action,
+        "deployed": deployed,
+        "token_source": token_source,
+        "manifest": manifest,
+        "compose": compose if getattr(args, "include_compose", False) else "<hidden; pass --include-compose>",
+        "tried": tried if getattr(args, "verbose", False) else summarize_coolify_attempts(tried),
+    }
+    # Never print private keys. Even --verbose keeps secret-bearing compose lines redacted.
+    return redact_add_node_payload(result)
+
+
+
 def write_heads(plan: HeadPlan, out_dir: Path, *, dockerfile: str = DEFAULT_DOCKERFILE, image: str = DEFAULT_IMAGE) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
@@ -2009,7 +3121,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
 
-    for subparser in (plan_parser, write_parser, boot_parser, discover_parser):
+    add_node_parser = subparsers.add_parser("add-node", help="Add one all-father super-node to mainnet or testnet on one Coolify host.")
+    add_remote_args(add_node_parser)
+    add_common_head_args(add_node_parser)
+    add_node_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network to grow: testnet or mainnet.")
+    add_node_parser.add_argument("--host", required=True, help="Coolify host name or all-father host slot, for example coolify-a or A.")
+    add_node_parser.add_argument("--allow-mainnet", action="store_true", help="Required before adding a mainnet super-node.")
+    add_node_parser.add_argument("--dry-run", action="store_true", help="Plan and render the next super-node without creating/updating Coolify.")
+    add_node_parser.add_argument("--existing-count", type=int, default=None, help=argparse.SUPPRESS)
+    add_node_parser.add_argument("--no-contracts", action="store_true", help="Do not request first-node contract bootstrap.")
+    add_node_parser.add_argument("--publish-routes", action="store_true", help="Publish Hub/RPC Traefik routes immediately. Default defers public cutover.")
+    add_node_parser.add_argument("--include-compose", action="store_true", help="Include rendered compose with private keys redacted.")
+    add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Image used for the initial super-node bootstrap container.")
+    add_node_parser.add_argument("--no-deploy", action="store_true", help="Create/update service but do not trigger deploy.")
+    add_node_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after service sync.")
+
+    for subparser in (plan_parser, write_parser, boot_parser, discover_parser, add_node_parser):
         subparser.add_argument("--json", action="store_true", help="Print detailed compact JSON. Default discover output is an operator summary.")
         subparser.add_argument("--verbose", action="store_true", help="Include raw Coolify diagnostics and large API records in JSON output.")
 
@@ -2053,6 +3180,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print_json(payload)
             else:
                 print_json(compact_discover_for_operator(payload))
+            return 0
+        if args.command == "add-node":
+            print_json(add_node(plan, args))
             return 0
         raise AllfatherControlError(f"Unsupported command: {args.command}")
     except Exception as exc:

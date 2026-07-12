@@ -95,6 +95,16 @@ class GitDirtyPlannerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 git_dirty.write_gitignore_file(root, ["bad\nline"])
 
+    def test_smoke_runs_ignore_candidates_collapse_to_one_directory_rule(self) -> None:
+        smoke_trace = ".smoke-runs/live-ai-restart-ring3-003/ai_calls.jsonl"
+        smoke_report = ".smoke-runs/live-ai-restart-ring3-003/report.json"
+        labels = set(git_dirty.classify_path(smoke_trace))
+
+        self.assertEqual(git_dirty.ignore_review_path(smoke_trace, labels), ".smoke-runs/")
+        self.assertEqual(git_dirty.normalized_ignore_rules([smoke_trace, smoke_report]), [".smoke-runs/"])
+        self.assertEqual(git_dirty.suggest_gitignore_rules([smoke_trace, smoke_report]), [".smoke-runs/"])
+        self.assertEqual(git_dirty.suggest_questionable_gitignore_rules([smoke_trace, smoke_report]), [".smoke-runs/"])
+
     def test_action_catalog_uses_readable_action_names(self) -> None:
         actions = {item["id"]: item for item in git_dirty.ACTION_CATALOG}
         removed_action = "_".join(("keep", "changes", "unstaged"))
