@@ -1,6 +1,6 @@
-<div class="code-editor-app mc-app" id="code-editor-app" style="display: none;" aria-label="MCEL Code Studio" data-mc-widget-id="code-editor.root" data-mc-widget-kind="container" data-mc-widget-class="box" data-mc-widget-label="Code Editor" data-mc-component-id="code-editor.root" data-mc-component-kind="app" data-mc-component-label="Code Editor" data-mc-component-owner="applications.workspace" data-mc-feature-id="code-editor" data-mc-source="main_computer/web/applications/apps/code-editor.html; main_computer/web/applications/styles/code-editor.css">
-  <div class="code-studio-shell mc-shell" data-mc-component-id="code-editor.studio.shell" data-mc-component-kind="workspace" data-mc-component-label="MCEL Code Studio Shell" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-use-case="source-safe-code-editor">
-    <div class="code-studio-titlebar" data-mc-component-id="code-editor.studio.titlebar" data-mc-component-kind="toolbar" data-mc-component-label="Code Studio Title Bar" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+<div class="code-editor-app mc-app" id="code-editor-app" style="display: none;" aria-label="MCEL Code Studio" data-mc-widget-id="code-editor.root" data-mc-widget-kind="container" data-mc-widget-class="box" data-mc-widget-label="Code Editor" data-mc-component-id="code-editor.root" data-mc-component-kind="app" data-mc-component-label="Code Editor" data-mc-component-owner="applications.workspace" data-mc-feature-id="code-editor" data-mc-source="main_computer/web/applications/apps/code-editor.html; main_computer/web/applications/styles/code-editor.css; main_computer/web/applications/scripts/code-editor-layout-contract.js">
+  <div class="code-studio-shell mc-shell" data-mc-component-id="code-editor.studio.shell" data-mc-component-kind="workspace" data-mc-component-label="MCEL Code Studio Shell" data-mc-component-owner="code-editor.root" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-use-case="source-safe-code-editor" data-mc-layout-root="code-editor.workbench" data-mc-layout-user-id="code-editor.workbench" data-mc-layout="dock-workbench" data-mc-layout-zones="top left-fixed left center right bottom tab stage trigger bottom-fixed" data-mc-layout-policy="editor-centered-workbench" data-mc-layout-strength="required" data-mc-layout-contract="mcel-code-editor-layout.v1">
+    <div class="code-studio-titlebar" data-mc-component-id="code-editor.studio.titlebar" data-mc-component-kind="toolbar" data-mc-component-label="Code Studio Title Bar" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.titlebar" data-mc-layout-prefer="top" data-mc-layout-allowed="top" data-mc-layout-strength="required" data-mc-controls="code-editor.studio.editor-group code-editor.studio.inspector code-editor.studio.bottom-panel">
       <div class="code-studio-window-controls" aria-hidden="true">
         <span></span><span></span><span></span>
       </div>
@@ -15,14 +15,40 @@
       <div class="code-studio-title-actions" aria-label="Editor actions">
         <button type="button" id="code-studio-validate" data-mc-component-id="code-editor.studio.validate" data-mc-component-kind="action" data-mc-component-label="Validate Code Studio Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Validate</button>
         <button type="button" id="code-studio-serialize" data-mc-component-id="code-editor.studio.serialize" data-mc-component-kind="action" data-mc-component-label="Serialize Clean Source" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Serialize</button>
-        <button type="button" id="code-editor-gridstack-toggle" data-mc-component-id="code-editor.studio.gridstack-toggle" data-mc-component-kind="action" data-mc-component-label="Toggle Code Editor GridStack" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Unlock layout</button>
+        <button type="button" id="code-editor-gridstack-toggle" aria-expanded="false" aria-controls="code-editor-layout-menu" data-mc-component-id="code-editor.studio.gridstack-toggle" data-mc-component-kind="action" data-mc-component-label="Open Semantic Layout Controls" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Layout</button>
         <button type="button" id="code-editor-gridstack-reset" data-mc-component-id="code-editor.studio.gridstack-reset" data-mc-component-kind="action" data-mc-component-label="Reset Code Editor GridStack" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Reset layout</button>
-        <span class="code-editor-gridstack-status" id="code-editor-gridstack-status" data-mc-component-id="code-editor.studio.gridstack-status" data-mc-component-kind="status" data-mc-component-label="GridStack Status" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Layout locked</span>
+        <span class="code-editor-gridstack-status" id="code-editor-gridstack-status" data-mc-component-id="code-editor.studio.gridstack-status" data-mc-component-kind="status" data-mc-component-label="MCEL Layout Status" data-mc-component-owner="code-editor.studio.titlebar" data-mc-feature-id="code-editor.feature.mcel-code-studio">Authored layout</span>
+        <div class="code-editor-layout-menu" id="code-editor-layout-menu" hidden role="dialog" aria-label="Code editor layout controls">
+          <div class="code-editor-layout-menu-heading">
+            <strong>Workbench layout</strong>
+            <button type="button" id="code-editor-layout-menu-close" aria-label="Close layout controls">×</button>
+          </div>
+          <div class="code-editor-layout-menu-group">
+            <span>Inspector</span>
+            <button type="button" data-code-editor-layout-user-id="code-editor.inspector" data-code-editor-layout-placement="right" aria-pressed="false">Right</button>
+            <button type="button" data-code-editor-layout-user-id="code-editor.inspector" data-code-editor-layout-placement="bottom" aria-pressed="false">Bottom</button>
+            <button type="button" data-code-editor-layout-user-id="code-editor.inspector" data-code-editor-layout-placement="tab" aria-pressed="false">Tab</button>
+            <button type="button" data-code-editor-layout-user-id="code-editor.inspector" data-code-editor-layout-placement="trigger" aria-pressed="false">Hide</button>
+          </div>
+          <div class="code-editor-layout-menu-group">
+            <span>Explorer</span>
+            <button type="button" data-code-editor-layout-user-id="code-editor.explorer" data-code-editor-layout-collapse="toggle">Toggle</button>
+          </div>
+          <div class="code-editor-layout-menu-group">
+            <span>Proof dock</span>
+            <button type="button" data-code-editor-layout-user-id="code-editor.proof" data-code-editor-layout-placement="bottom" aria-pressed="false">Bottom</button>
+            <button type="button" data-code-editor-layout-user-id="code-editor.proof" data-code-editor-layout-placement="trigger" aria-pressed="false">Strip</button>
+          </div>
+          <div class="code-editor-layout-menu-footer">
+            <button type="button" id="code-editor-layout-undo">Undo</button>
+            <small data-code-editor-layout-diagnostics>Authored preferences fit this viewport.</small>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="code-studio-body" data-code-studio-workbench-region="main-grid" data-mc-component-id="code-editor.studio.body" data-mc-component-kind="layout" data-mc-component-label="VS Code Style Workbench" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
-      <nav class="code-studio-activitybar" aria-label="Activity bar" data-code-studio-workbench-region="mode-rail">
+    <div class="code-studio-body" data-code-studio-workbench-region="main-grid" data-mc-component-id="code-editor.studio.body" data-mc-component-kind="layout" data-mc-component-label="VS Code Style Workbench" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-unit="code-editor.workbench-grid" data-mc-layout="dock-grid" data-mc-layout-strength="required">
+      <nav class="code-studio-activitybar" aria-label="Activity bar" data-code-studio-workbench-region="mode-rail" data-mc-component-id="code-editor.activity" data-mc-component-kind="navigation" data-mc-component-label="Code Editor Activity Rail" data-mc-component-owner="code-editor.studio.body" data-mc-layout-user-id="code-editor.activity" data-mc-layout-prefer="left-fixed" data-mc-layout-allowed="left-fixed" data-mc-layout-strength="required" data-mc-layout-min-inline="44" data-mc-layout-max-share="0.08" data-mc-selects="code-editor.studio.editor-group" data-mc-navigates="code-editor.studio.editor-group">
         <button type="button" class="active" data-code-studio-panel="explorer" title="Explorer">▱</button>
         <button type="button" data-code-studio-panel="source" title="Source">⌘</button>
         <button type="button" data-code-studio-panel="runtime" title="Runtime">◫</button>
@@ -30,7 +56,7 @@
         <button type="button" data-code-studio-panel="assistant" title="Assistant">✦</button>
       </nav>
 
-      <aside class="code-studio-sidebar" aria-label="Explorer and file map" data-code-studio-workbench-region="workspace-sidebar" data-mc-component-id="code-editor.studio.sidebar" data-mc-component-kind="panel" data-mc-component-label="VS Code Style Explorer" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <aside class="code-studio-sidebar" aria-label="Explorer and file map" data-code-studio-workbench-region="workspace-sidebar" data-mc-component-id="code-editor.studio.sidebar" data-mc-component-kind="panel" data-mc-component-label="VS Code Style Explorer" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.explorer" data-mc-layout-prefer="left" data-mc-layout-allowed="left trigger" data-mc-layout-fallback="trigger" data-mc-layout-strength="strong" data-mc-layout-policy="workspace-sidebar" data-mc-layout-inactive="trigger" data-mc-layout-min-inline="220" data-mc-layout-min-block="260" data-mc-layout-max-share="0.28" data-mc-layout-preferred-share="0.18" data-mc-layout-user-mutable="share collapsed" data-mc-selects="code-editor.studio.editor-group" data-mc-navigates="code-editor.studio.editor-group" data-mc-scopes="code-editor.studio.editor-group">
         <div class="code-studio-sidebar-title">Explorer</div>
         <div class="code-studio-open-editors">
           <strong>Open Editors</strong>
@@ -66,7 +92,12 @@
         </div>
       </aside>
 
-      <section class="code-studio-editor-group" aria-label="Code editor workbench" data-code-studio-workbench-region="editor-workbench" data-mc-component-id="code-editor.studio.editor-group" data-mc-component-kind="workspace" data-mc-component-label="Editor Group" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <div class="code-editor-layout-center-tabs" id="code-editor-layout-center-tabs" hidden role="tablist" aria-label="Center workbench tabs" data-mc-layout-runtime-part="center-tabs">
+        <button type="button" role="tab" data-code-editor-center-tab="editor" aria-selected="true">Editor</button>
+        <button type="button" role="tab" data-code-editor-center-tab="inspector" aria-selected="false">Inspector</button>
+      </div>
+
+      <section class="code-studio-editor-group" aria-label="Code editor workbench" data-code-studio-workbench-region="editor-workbench" data-mc-component-id="code-editor.studio.editor-group" data-mc-component-kind="workspace" data-mc-component-label="Editor Group" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.editor" data-mc-layout-prefer="center" data-mc-layout-allowed="center split-center" data-mc-layout-strength="required" data-mc-layout-policy="editor-center" data-mc-layout-min-inline="520" data-mc-layout-min-block="320" data-mc-layout-max-share="1" data-mc-layout-user-mutable="" data-mc-authority="primary-work" data-mc-persistence="always-visible">
         <div class="code-studio-tabs" role="tablist" aria-label="Editor tabs">
           <button type="button" class="active" data-code-studio-tab="source">source.html</button>
           <button type="button" data-code-studio-tab="runtime">runtime preview</button>
@@ -206,7 +237,7 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
         </section>
       </section>
 
-      <aside class="code-studio-inspector" aria-label="Tabbed SCM and AI inspector" data-code-studio-workbench-region="scm-ai-inspector" data-mc-component-id="code-editor.studio.inspector" data-mc-component-kind="panel" data-mc-component-label="Tabbed SCM / AI Inspector" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+      <aside class="code-studio-inspector" aria-label="Tabbed SCM and AI inspector" data-code-studio-workbench-region="scm-ai-inspector" data-mc-component-id="code-editor.studio.inspector" data-mc-component-kind="panel" data-mc-component-label="Tabbed SCM / AI Inspector" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.inspector" data-mc-layout-prefer="right" data-mc-layout-allowed="right bottom tab trigger" data-mc-layout-fallback="bottom tab trigger" data-mc-layout-strength="preferred" data-mc-layout-policy="assistant-inspector-dock" data-mc-layout-inactive="trigger" data-mc-layout-min-inline="300" data-mc-layout-min-block="220" data-mc-layout-max-share="0.36" data-mc-layout-preferred-share="0.24" data-mc-layout-user-mutable="placement share collapsed tab-group" data-mc-reflects="code-editor.studio.editor-group" data-mc-consumes="editor.state scm.receipt">
         <section class="code-studio-scm-ai-inspector" id="code-studio-flagship-inspector" aria-label="SCM Receipt Inspector">
           <div class="code-studio-panel-heading code-studio-scm-ai-heading">
             <strong>SCM Receipt</strong>
@@ -330,7 +361,7 @@ test(&quot;bootStudio writes the editor body&quot;, () =&gt; {
       </aside>
     </div>
 
-    <section class="code-studio-bottom-panel code-studio-proof-dock" id="code-studio-bottom-panel" data-expanded="false" data-code-studio-workbench-region="proof-dock" aria-label="Terminal assistant and documentation viewport" data-mc-component-id="code-editor.studio.bottom-panel" data-mc-component-kind="panel" data-mc-component-label="Assistant and Documentation Panel" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+    <section class="code-studio-bottom-panel code-studio-proof-dock" id="code-studio-bottom-panel" data-expanded="false" data-code-studio-workbench-region="proof-dock" aria-label="Terminal assistant and documentation viewport" data-mc-component-id="code-editor.studio.bottom-panel" data-mc-component-kind="panel" data-mc-component-label="Assistant and Documentation Panel" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.proof" data-mc-layout-prefer="bottom" data-mc-layout-allowed="bottom trigger" data-mc-layout-fallback="trigger" data-mc-layout-strength="preferred" data-mc-layout-policy="proof-terminal-dock" data-mc-layout-inactive="trigger" data-mc-layout-min-inline="420" data-mc-layout-min-block="180" data-mc-layout-max-share="0.48" data-mc-layout-preferred-share="0.30" data-mc-layout-user-mutable="placement share collapsed" data-mc-proves="editor.operation" data-mc-consumes="editor.output scm.receipt">
       <div class="code-studio-bottom-tabs">
         <strong>Bottom Proof Dock</strong>
         <span class="code-studio-proof-dock-tabs">Diagnostics · Receipt Vector · 18N Commit Boundary · Evidence Detail · Replay · Draft Provenance · Serialization · Persistence · Logs</span>
@@ -438,7 +469,7 @@ console.log("Center pixel", vram.getPixel(160, 100));</textarea></label>
       </div>
     </section>
 
-    <footer class="code-studio-statusbar" data-mc-component-id="code-editor.studio.statusbar" data-mc-component-kind="status" data-mc-component-label="Code Studio Status Bar" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio">
+    <footer class="code-studio-statusbar" data-mc-component-id="code-editor.studio.statusbar" data-mc-component-kind="status" data-mc-component-label="Code Studio Status Bar" data-mc-component-owner="code-editor.studio.shell" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.status" data-mc-layout-prefer="bottom-fixed" data-mc-layout-allowed="bottom-fixed" data-mc-layout-strength="required" data-mc-layout-min-block="22" data-mc-layout-max-share="0.06" data-mc-confirms="editor.state layout.state" data-mc-persistence="always-visible">
       <span>main</span>
       <span>MCEL source-safe-code-editor</span>
       <span id="code-studio-runtime-state">runtime: clean</span>

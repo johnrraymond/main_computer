@@ -86,6 +86,10 @@ class GuardRuntime:
             if not name or not isinstance(command, list) or not all(isinstance(item, str) for item in command):
                 continue
             self.children[name] = ChildState(spec=spec, desired=bool(spec.get("desired", True)))
+        guard = self.manifest.get("guard")
+        if isinstance(guard, dict) and "initial_desired_up" in guard:
+            self.desired_up = bool(guard.get("initial_desired_up"))
+            self.drained = bool(guard.get("initial_drained", not self.desired_up))
 
     @property
     def guard(self) -> dict[str, Any]:
@@ -112,8 +116,10 @@ class GuardRuntime:
                 "kind": "main_computer.allfather_guard_status.v1",
                 "network_key": self.manifest.get("network_key"),
                 "set_id": self.manifest.get("set_id"),
+                "deployment_phase": self.manifest.get("deployment_phase"),
                 "cell_id": self.manifest.get("cell_id"),
                 "desired_counts": self.manifest.get("desired_counts") or {},
+                "active_counts": self.manifest.get("active_counts") or {},
                 "set_desired_counts": self.manifest.get("set_desired_counts") or {},
                 "topology": self.manifest.get("topology") or {},
                 "desired_up": self.desired_up,
@@ -133,12 +139,14 @@ class GuardRuntime:
             "capabilities": identity.get("capabilities", []),
             "network_key": self.manifest.get("network_key"),
             "set_id": self.manifest.get("set_id"),
+            "deployment_phase": self.manifest.get("deployment_phase"),
             "cell_id": self.manifest.get("cell_id"),
             "coolify_server": self.manifest.get("coolify_server"),
             "vpn_ip": self.manifest.get("vpn_ip"),
             "state_root": self.manifest.get("state_root"),
             "host_port_offset": self.manifest.get("host_port_offset", 0),
             "desired_counts": self.manifest.get("desired_counts") or {},
+            "active_counts": self.manifest.get("active_counts") or {},
             "set_desired_counts": self.manifest.get("set_desired_counts") or {},
             "topology": self.manifest.get("topology") or {},
             "ports": identity.get("ports", []),
@@ -152,8 +160,10 @@ class GuardRuntime:
         return {
             "network_key": self.manifest.get("network_key"),
             "set_id": self.manifest.get("set_id"),
+            "deployment_phase": self.manifest.get("deployment_phase"),
             "cell_id": self.manifest.get("cell_id"),
             "desired_counts": self.manifest.get("desired_counts") or {},
+            "active_counts": self.manifest.get("active_counts") or {},
             "set_desired_counts": self.manifest.get("set_desired_counts") or {},
             "topology": topology,
         }

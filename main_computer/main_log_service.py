@@ -12,9 +12,10 @@ import sys
 import threading
 import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from main_computer.main_log_codec import LexLogWriter, canonical_json_line
+from main_computer.log_surprise_compressor import LogSurpriseCompressor
 from main_computer.main_log_client import (
     DEFAULT_MAIN_LOG_HOST,
     DEFAULT_MAIN_LOG_PORT,
@@ -64,6 +65,8 @@ class MainLogStore:
         self.runtime_dir = self.root / "runtime" / "main_log"
         self.log_path = self.runtime_dir / "main.log.lex"
         self.raw_log_path = self.runtime_dir / "main.log.jsonl"
+        self.surprise_path = self.runtime_dir / "main.log.surprise.json"
+        self.surprise_compressor = LogSurpriseCompressor()
         self.raw_mirror = _truthy_env(ENV_MAIN_LOG_RAW_MIRROR)
         self.state_path = self.runtime_dir / "state.json"
         self.pid_path = self.root / MAIN_LOG_SERVICE_PID_FILENAME
@@ -92,6 +95,7 @@ class MainLogStore:
             "raw_log_path": str(self.raw_log_path),
             "raw_mirror": self.raw_mirror,
             "state_path": str(self.state_path),
+            "surprise_path": str(self.surprise_path),
             "pid_file": str(self.pid_path),
             "updated_at": _now_iso(),
         }
@@ -118,6 +122,7 @@ class MainLogStore:
             "raw_log_path": str(self.raw_log_path),
             "raw_mirror": self.raw_mirror,
             "state_path": str(self.state_path),
+            "surprise_path": str(self.surprise_path),
             "pid_file": str(self.pid_path),
             "message": message,
             "updated_at": _now_iso(),
@@ -171,7 +176,13 @@ class MainLogStore:
                         if raw_handle is not None:
                             raw_handle.write(canonical_json_line(item) + "\n")
                             raw_handle.flush()
+                        surprise_record = self.surprise_compressor.observe(item)
+                        if self.surprise_compressor.should_flush():
+                            self.surprise_compressor.write_snapshot(self.surprise_path, limit=self.recent_limit)
+                            self.surprise_compressor.mark_flushed()
                         with self._lock:
+                            item["_main_log_surprise_bits"] = surprise_record["surprise_bits"]
+                            item["_main_log_signature_hash"] = surprise_record["signature_hash"]
                             self._recent.append(item)
                             if len(self._recent) > self.recent_limit:
                                 del self._recent[: len(self._recent) - self.recent_limit]
@@ -185,6 +196,9 @@ class MainLogStore:
         with self._lock:
             items = list(self._recent)
         return items[-max(1, int(limit)):]
+
+    def surprise_snapshot(self, *, limit: int = DEFAULT_RECENT_LIMIT) -> dict[str, Any]:
+        return self.surprise_compressor.snapshot(limit=max(1, int(limit)))
 
     def stop(self, *, host: str, port: int) -> None:
         if self._stop_event.is_set():
@@ -235,17 +249,24 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
                     "log_format": "mclog-lex-v1",
                     "raw_log_path": str(self.server.store.raw_log_path),
                     "raw_mirror": self.server.store.raw_mirror,
+                    "surprise_path": str(self.server.store.surprise_path),
                     "at": _now_iso(),
                 },
             )
             return
         if parsed.path == "/v1/log/recent":
             limit = DEFAULT_RECENT_LIMIT
-            query = parsed.query or ""
-            for part in query.split("&"):
-                if part.startswith("limit="):
-                    limit = _coerce_port(part.split("=", 1)[1], fallback=DEFAULT_RECENT_LIMIT)
+            query = parse_qs(parsed.query or "")
+            if query.get("limit"):
+                limit = _coerce_port(query["limit"][0], fallback=DEFAULT_RECENT_LIMIT)
             _json_response(self, 200, {"ok": True, "events": self.server.store.recent(limit=limit)})
+            return
+        if parsed.path == "/v1/log/surprise":
+            limit = DEFAULT_RECENT_LIMIT
+            query = parse_qs(parsed.query or "")
+            if query.get("limit"):
+                limit = _coerce_port(query["limit"][0], fallback=DEFAULT_RECENT_LIMIT)
+            _json_response(self, 200, self.server.store.surprise_snapshot(limit=limit))
             return
         _json_response(self, 404, {"ok": False, "state": "not-found", "path": parsed.path})
 

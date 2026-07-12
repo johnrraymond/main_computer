@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import shutil
+import subprocess
 import unittest
 
 from main_computer.viewport import APPLICATIONS_INDEX_HTML
@@ -11,6 +14,7 @@ APP_PATH = ROOT / "main_computer" / "web" / "applications" / "apps" / "code-edit
 APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
 STYLE_PATH = ROOT / "main_computer" / "web" / "applications" / "styles" / "code-editor.css"
 SCRIPT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-mcel-studio.js"
+LAYOUT_CONTRACT_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-layout-contract.js"
 MONACO_ADAPTER_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "code-editor-monaco-adapter.js"
 PRETTY_DOC = ROOT / "pretty_docs" / "mcel-code-studio-example.md"
 
@@ -1350,6 +1354,188 @@ class McelCodeStudioAppTests(unittest.TestCase):
         self.assertNotIn('        showPane("contract");\n      }\n\n      function serializeCleanSource', script)
         self.assertNotIn('renderScmEvidencePanel(studioState.lastReport);\n        showPane("contract");', script)
 
+
+    def test_code_editor_declares_live_mcel_dock_contract(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        expected = [
+            'data-mc-layout-root="code-editor.workbench"',
+            'data-mc-layout="dock-workbench"',
+            'data-mc-layout-policy="editor-centered-workbench"',
+            'data-mc-layout-user-id="code-editor.activity"',
+            'data-mc-layout-user-id="code-editor.explorer"',
+            'data-mc-layout-user-id="code-editor.editor"',
+            'data-mc-layout-user-id="code-editor.inspector"',
+            'data-mc-layout-user-id="code-editor.proof"',
+            'data-mc-layout-user-id="code-editor.status"',
+            'data-mc-layout-allowed="right bottom tab trigger"',
+            'data-mc-layout-fallback="bottom tab trigger"',
+            'data-mc-layout-user-mutable="placement share collapsed tab-group"',
+            'id="code-editor-layout-menu"',
+            'id="code-editor-layout-center-tabs"',
+        ]
+        for text in expected:
+            with self.subTest(text=text):
+                self.assertIn(text, app)
+
+        self.assertIn('data-mc-layout-strength="required"', app)
+        self.assertIn('data-mc-authority="primary-work"', app)
+        self.assertIn('data-mc-proves="editor.operation"', app)
+        self.assertIn('data-mc-confirms="editor.state layout.state"', app)
+
+    def test_code_editor_layout_contract_loads_before_studio_runtime(self) -> None:
+        applications_html = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        include_order = [
+            "applications/scripts/mcel-core.js",
+            "applications/scripts/code-editor-layout-contract.js",
+            "applications/scripts/code-editor-scm-manifest.js",
+            "applications/scripts/code-editor-monaco-adapter.js",
+            "applications/scripts/code-editor-mcel-studio.js",
+        ]
+        positions = [applications_html.index(include) for include in include_order]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_code_editor_uses_semantic_layout_preferences_instead_of_grid_coordinates(self) -> None:
+        contract = LAYOUT_CONTRACT_PATH.read_text(encoding="utf-8")
+        studio = SCRIPT_PATH.read_text(encoding="utf-8")
+        expected = [
+            'const CONTRACT_VERSION = "mcel-code-editor-layout.v1"',
+            'const STORAGE_KEY = "main-computer-code-editor-layout-preferences-v1"',
+            '"editor-remains-center"',
+            '"user-preferences-use-semantic-hints"',
+            '"dock-workbench"',
+            '"code-editor.inspector"',
+            '"resize-share"',
+            '"tab-with"',
+            "rejectRawGeometry",
+            "resolveLayout",
+            "applyOperationToPreferences",
+            "MainComputerCodeEditorLayout",
+        ]
+        for text in expected:
+            with self.subTest(text=text):
+                self.assertIn(text, contract)
+
+        self.assertNotIn("grid.save(false)", studio)
+        self.assertNotIn("main-computer-code-editor-gridstack-layout-v1", studio)
+        self.assertIn("layoutApi.mount(root)", studio)
+        self.assertIn("window.applyCodeEditorLayoutOperation", studio)
+        self.assertIn("window.saveCodeEditorGridStackLayout = () => controller.persist()", studio)
+
+    def test_code_editor_live_dock_css_is_contract_driven(self) -> None:
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        expected = [
+            "MCEL Code Editor live dock-tree V1",
+            '#code-editor-app[data-mcel-layout-live="true"]',
+            "--mcel-code-editor-explorer-inline",
+            "--mcel-code-editor-inspector-inline",
+            "--mcel-code-editor-proof-block",
+            'data-mcel-inspector-placement="bottom"',
+            'data-mcel-inspector-placement="tab"',
+            'data-mcel-explorer-placement="trigger"',
+            'data-code-editor-layout-splitter="explorer"',
+            'data-code-editor-layout-splitter="inspector"',
+            'data-code-editor-layout-splitter="proof"',
+            'grid-template-areas:',
+            '"proof"',
+        ]
+        for text in expected:
+            with self.subTest(text=text):
+                self.assertIn(text, style)
+
+        self.assertEqual(style.count("{"), style.count("}"))
+
+    def test_code_editor_layout_resolver_remediates_without_forgetting_preference(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available")
+
+        script_literal = json.dumps(str(LAYOUT_CONTRACT_PATH))
+        probe = f"""
+global.window = {{}};
+require({script_literal});
+const api = window.MainComputerCodeEditorLayout;
+const authored = {{
+  complete: true,
+  missing: [],
+  mismatches: [],
+  units: JSON.parse(JSON.stringify(api.SAFE_DEFAULTS))
+}};
+const preferences = JSON.parse(JSON.stringify(api.DEFAULT_PREFERENCES));
+const wide = api.resolveLayout({{
+  viewport: {{width: 1600, height: 900}},
+  authored,
+  preferences,
+  proofExpanded: false
+}});
+const medium = api.resolveLayout({{
+  viewport: {{width: 1024, height: 720}},
+  authored,
+  preferences,
+  proofExpanded: false
+}});
+const compact = api.resolveLayout({{
+  viewport: {{width: 520, height: 600}},
+  authored,
+  preferences,
+  proofExpanded: false
+}});
+const raw = api.normalizePreferences({{
+  units: {{
+    "code-editor.inspector": {{
+      placement: "right",
+      preferredShare: 0.24,
+      left: 300,
+      width: 400
+    }}
+  }}
+}}, authored);
+const hidden = api.applyOperationToPreferences(
+  preferences,
+  {{kind: "dock", userId: "code-editor.inspector", placement: "trigger"}},
+  authored
+);
+const reopened = api.applyOperationToPreferences(
+  hidden.preferences,
+  {{kind: "collapse", userId: "code-editor.inspector", collapsed: false}},
+  authored
+);
+const restored = api.resolveLayout({{
+  viewport: {{width: 1600, height: 900}},
+  authored,
+  preferences: reopened.preferences,
+  proofExpanded: false
+}});
+console.log(JSON.stringify({{wide, medium, compact, raw, hidden, reopened, restored}}));
+"""
+        completed = subprocess.run(
+            [node, "-e", probe],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+
+        self.assertEqual(result["wide"]["actual"]["explorer"], "left")
+        self.assertEqual(result["wide"]["actual"]["inspector"], "right")
+        self.assertEqual(result["wide"]["actual"]["proof"], "bottom")
+
+        self.assertEqual(result["medium"]["preferred"]["inspector"], "right")
+        self.assertEqual(result["medium"]["actual"]["inspector"], "bottom")
+        self.assertTrue(result["medium"]["remediated"])
+
+        self.assertEqual(result["compact"]["preferred"]["inspector"], "right")
+        self.assertIn(result["compact"]["actual"]["inspector"], {"tab", "trigger"})
+        self.assertIn(result["compact"]["capacity"], {"narrow", "compact"})
+
+        violations = result["raw"]["rawGeometryViolations"]
+        self.assertIn("preferences.units.code-editor.inspector.left", violations)
+        self.assertIn("preferences.units.code-editor.inspector.width", violations)
+
+        hidden_inspector = result["hidden"]["preferences"]["units"]["code-editor.inspector"]
+        self.assertEqual(hidden_inspector["placement"], "right")
+        self.assertTrue(hidden_inspector["collapsed"])
+        self.assertFalse(result["reopened"]["preferences"]["units"]["code-editor.inspector"]["collapsed"])
+        self.assertEqual(result["restored"]["actual"]["inspector"], "right")
 
     def test_pretty_doc_explains_better_than_react_lane(self) -> None:
         doc = PRETTY_DOC.read_text(encoding="utf-8")

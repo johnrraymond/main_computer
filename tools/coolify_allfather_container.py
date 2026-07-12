@@ -55,7 +55,11 @@ DEFAULT_IMAGE_PREFIX = "main-computer-allfather"
 DEFAULT_INSTANCE_PORT_STRIDE = 100
 DEFAULT_MAINNET_PORT_OFFSET = 1000
 DEFAULT_GUARD_SET_STRIDE = 20
+DEFAULT_QBFT_RPC_HOST_BASE = 30010
+DEFAULT_QBFT_P2P_HOST_BASE = 30310
+VALID_DEPLOYMENT_PHASES = {"heads", "full"}
 DEFAULT_COOLIFY_ENVIRONMENT_SUFFIX = "allfather"
+DEFAULT_ALLFATHER_PRIVATE_STATE_PATH = REPO_ROOT / "runtime" / "state" / "all_father.private.yaml"
 
 
 class AllfatherCompileError(ValueError):
@@ -96,6 +100,14 @@ def yaml_quote(value: Any) -> str:
 
 def sh_quote(value: Any) -> str:
     return shlex.quote(str(value))
+
+
+def _display_repo_path(path: Path | str) -> str:
+    candidate = Path(path)
+    try:
+        return str(candidate.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(candidate)
 
 
 def safe_id(value: str, *, field: str = "id") -> str:
@@ -155,6 +167,15 @@ def guard_host_base_for_network(network_key: str) -> int:
     if network_key == "mainnet":
         return DEFAULT_MAINNET_GUARD_HOST_BASE
     return DEFAULT_GENERIC_GUARD_HOST_BASE
+
+
+def clean_deployment_phase(value: str | None) -> str:
+    phase = safe_id(value or "full", field="deployment_phase")
+    if phase not in VALID_DEPLOYMENT_PHASES:
+        raise AllfatherCompileError(
+            f"deployment_phase must be one of {sorted(VALID_DEPLOYMENT_PHASES)!r}; got {phase!r}."
+        )
+    return phase
 
 
 def clean_set_id(value: str | None, network_key: str) -> str:
@@ -242,6 +263,125 @@ def scoped_hub_namespace(cell: "AllfatherCell", hub: Any) -> str:
     return scope_namespace_for_set(hub.namespace, network_key=cell.network_key, set_id=cell.set_id)
 
 
+def public_url_scheme_and_domain(source: str) -> tuple[str, str]:
+    """Return the public URL scheme and parent DNS domain for a source URL."""
+
+    scheme = "https"
+    domain = "greatlibrary.io"
+    clean = str(source or "").strip()
+    match = re.match(r"^(https?)://[^/]+\.([^/:]+(?:\.[^/:]+)+)(?::\d+)?(?:/.*)?$", clean)
+    if match:
+        scheme = match.group(1)
+        domain = match.group(2)
+    return scheme, domain
+
+
+def public_url_host(url: str) -> str:
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/:/?#]+)", str(url or "").strip())
+    return match.group(1).lower() if match else ""
+
+
+def public_route_scheme_and_domain_for_cell(cell: "AllfatherCell") -> tuple[str, str]:
+    sources = [str(getattr(hub, "public_url", "") or "") for hub in cell.hubs]
+    sources.extend(str(url or "") for url in cell.public_entry_urls)
+    for source in sources:
+        scheme, domain = public_url_scheme_and_domain(source)
+        if domain != "greatlibrary.io" or source:
+            return scheme, domain
+    return "https", "greatlibrary.io"
+
+
+def host_local_hub_public_url(cell: "AllfatherCell", index: int, hub: Any) -> str:
+    """Return the host-local Hub DNS URL expected for all-father hubs.
+
+    Existing DNS uses names such as ``testneta-hub1.greatlibrary.io`` and
+    ``mainnetb-hub1.greatlibrary.io``.  The imported placement URL is retained
+    as ``source_public_url`` for traceability.
+    """
+
+    scheme, domain = public_url_scheme_and_domain(str(getattr(hub, "public_url", "") or ""))
+    return f"{scheme}://{host_local_hub_id(cell, index)}.{domain}"
+
+
+def host_local_prefix(network_key: str, coolify_server: str) -> str:
+    """Return the host-local service prefix used inside an all-father set.
+
+    ``coolify-a`` on ``mainnet`` becomes ``mainneta`` and ``coolify-b`` becomes
+    ``mainnetb``.  This keeps imported service names counted per physical host
+    instead of globally across the whole network.
+    """
+
+    clean_server = safe_id(coolify_server, field="coolify_server")
+    if clean_server.startswith("coolify-"):
+        host_suffix = clean_server.removeprefix("coolify-")
+    elif "-" in clean_server:
+        host_suffix = clean_server.rsplit("-", 1)[-1]
+    else:
+        host_suffix = clean_server
+    compact_suffix = re.sub(r"[^a-z0-9]+", "", host_suffix)
+    if not compact_suffix:
+        compact_suffix = clean_server.replace("-", "")
+    return safe_id(f"{network_key}{compact_suffix}", field="host_local_prefix")
+
+
+def host_local_service_id(cell: "AllfatherCell", group: str, index: int) -> str:
+    """Return a per-host counted service id such as ``mainneta-hub1``."""
+
+    group = safe_id(group, field="service_group")
+    if index < 0:
+        raise AllfatherCompileError("host-local service index must be non-negative.")
+    return f"{host_local_prefix(cell.network_key, cell.coolify_server)}-{group}{index + 1}"
+
+
+def host_local_hub_id(cell: "AllfatherCell", index: int) -> str:
+    return host_local_service_id(cell, "hub", index)
+
+
+def host_local_fdb_id(cell: "AllfatherCell", index: int) -> str:
+    return host_local_service_id(cell, "fdb", index)
+
+
+def host_local_qbft_id(cell: "AllfatherCell", index: int) -> str:
+    return host_local_service_id(cell, "validator-rpc", index)
+
+
+def host_local_rpc_route_id(cell: "AllfatherCell", index: int) -> str:
+    return host_local_service_id(cell, "rpc", index)
+
+
+def host_local_rpc_public_url(cell: "AllfatherCell", index: int, service: Any) -> str:
+    """Return the host-local public DNS URL for a validator-RPC HTTP route."""
+
+    scheme, domain = public_route_scheme_and_domain_for_cell(cell)
+    return f"{scheme}://{host_local_rpc_route_id(cell, index)}.{domain}"
+
+
+def qbft_source_id(service: Any) -> str:
+    return str(getattr(service, "id", ""))
+
+
+def qbft_rpc_source_host_port(cell: "AllfatherCell", index: int, service: Any) -> int:
+    source = getattr(service, "rpc_host_port", None)
+    if source is not None:
+        return int(source)
+    return DEFAULT_QBFT_RPC_HOST_BASE + (int(cell.cell_index) * 10) + int(index)
+
+
+def qbft_p2p_source_host_port(cell: "AllfatherCell", index: int, service: Any) -> int:
+    source = getattr(service, "p2p_host_port", None)
+    if source is not None:
+        return int(source)
+    return DEFAULT_QBFT_P2P_HOST_BASE + (int(cell.cell_index) * 10) + int(index)
+
+
+def qbft_rpc_host_port_for_cell(cell: "AllfatherCell", index: int, service: Any) -> int:
+    return int(qbft_rpc_source_host_port(cell, index, service)) + int(cell.host_port_offset)
+
+
+def qbft_p2p_host_port_for_cell(cell: "AllfatherCell", index: int, service: Any) -> int:
+    return int(qbft_p2p_source_host_port(cell, index, service)) + int(cell.host_port_offset)
+
+
 def hub_port_for_cell(cell: "AllfatherCell", index: int) -> int:
     return int(cell.hub_base_port) + int(index) + int(cell.host_port_offset)
 
@@ -272,6 +412,22 @@ def desired_counts_for_cells(cells: Sequence["AllfatherCell"]) -> dict[str, int]
         "qbft": sum(len(cell.qbft_services) for cell in cells),
         "processes": sum(len(cell.process_manifest()) for cell in cells),
     }
+
+
+def active_counts_for_cells(cells: Sequence["AllfatherCell"], deployment_phase: str = "full") -> dict[str, int]:
+    phase = clean_deployment_phase(deployment_phase)
+    if phase == "heads":
+        return {
+            "allfather_cells": len(cells),
+            "allfather_heads": len(cells),
+            "foundationdb": 0,
+            "hub": 0,
+            "qbft": 0,
+            "processes": 0,
+        }
+    counts = desired_counts_for_cells(cells)
+    counts["allfather_heads"] = len(cells)
+    return counts
 
 
 def peer_descriptor_for_cell(cell: "AllfatherCell") -> dict[str, Any]:
@@ -346,6 +502,7 @@ class AllfatherProcess:
 @dataclass(frozen=True)
 class AllfatherCell:
     cell_id: str
+    cell_index: int
     network_key: str
     set_id: str
     coolify_server: str
@@ -383,6 +540,19 @@ class AllfatherCell:
     def process_manifest(self) -> tuple[AllfatherProcess, ...]:
         return tuple(_processes_for_cell(self))
 
+    def phase_active_counts(self, deployment_phase: str = "full") -> dict[str, int]:
+        phase = clean_deployment_phase(deployment_phase)
+        counts = self.local_desired_counts()
+        if phase == "heads":
+            return {
+                "foundationdb": 0,
+                "hub": 0,
+                "qbft": 0,
+                "processes": 0,
+                "allfather_head": 1,
+            }
+        return {**counts, "allfather_head": 1}
+
     def local_desired_counts(self) -> dict[str, int]:
         return {
             "foundationdb": len(self.fdb_instances),
@@ -391,31 +561,41 @@ class AllfatherCell:
             "processes": len(self.process_manifest()),
         }
 
-    def to_manifest(self) -> dict[str, Any]:
+    def to_manifest(self, *, deployment_phase: str = "full") -> dict[str, Any]:
+        phase = clean_deployment_phase(deployment_phase)
         processes = [process.to_dict() for process in self.process_manifest()]
         ports = port_inventory_for_cell(self)
+        public_routes = public_http_routes_for_cell(self)
         local_counts = self.local_desired_counts()
+        active_counts = self.phase_active_counts(phase)
         set_counts = dict(self.set_desired_counts or {})
+        initial_desired_up = phase == "full"
         return {
             "kind": "main_computer.allfather_container.v1",
+            "deployment_phase": phase,
             "network_key": self.network_key,
             "set_id": self.set_id,
             "cell_id": self.cell_id,
+            "cell_index": self.cell_index,
             "coolify_server": self.coolify_server,
             "vpn_ip": self.vpn_ip,
             "state_root": self.state_root,
             "host_port_offset": self.host_port_offset,
             "desired_counts": local_counts,
+            "active_counts": active_counts,
             "set_desired_counts": set_counts,
             "identity": {
                 "service": "main-computer-allfather",
                 "role": "function",
                 "network_key": self.network_key,
                 "set_id": self.set_id,
+                "deployment_phase": phase,
                 "capabilities": list(self.capabilities),
                 "desired_counts": local_counts,
+                "active_counts": active_counts,
                 "set_desired_counts": set_counts,
                 "ports": ports,
+                "public_routes": public_routes,
             },
             "topology": {
                 "discovery_mode": "guard-peer-advertise-v1",
@@ -437,6 +617,15 @@ class AllfatherCell:
                 "restart_budget_per_tick": DEFAULT_GLOBAL_RESTART_BUDGET,
                 "restart_claim_backend": "local-manifest-v1",
                 "restart_claim_namespace": self.fdb_namespace,
+                "deployment_phase": phase,
+                "initial_desired_up": initial_desired_up,
+                "initial_drained": not initial_desired_up,
+                "startup_note": (
+                    "heads phase starts only the guard/head mesh with child processes held down; "
+                    "POST /up after peer guards are reachable to let the cell wake its declared nodes."
+                    if phase == "heads"
+                    else "full phase starts the guard and lets it converge declared node processes immediately."
+                ),
                 "restart_claim_note": (
                     "The v1 container guard serializes local restarts. "
                     "The namespace is carried forward for the FDB-backed peer lease layer."
@@ -448,7 +637,9 @@ class AllfatherCell:
                 "namespace": self.fdb_namespace,
                 "instances": [
                     {
-                        "id": instance.id,
+                        "id": host_local_fdb_id(self, index),
+                        "source_id": instance.id,
+                        "host_local_index": index + 1,
                         "source_port": instance.port,
                         "port": fdb_port_for_cell(self, instance),
                         "vpn_ip": instance.vpn_ip,
@@ -456,13 +647,16 @@ class AllfatherCell:
                         "zone_id": instance.zone_id,
                         "state_dir": fdb_tool().fdb_instance_state_dir(_fdb_placement_for_cell(self), instance),
                     }
-                    for instance in self.fdb_instances
+                    for index, instance in enumerate(self.fdb_instances)
                 ],
             },
             "hubs": [
                 {
-                    "hub_id": hub.hub_id,
-                    "public_url": hub.public_url,
+                    "hub_id": host_local_hub_id(self, index),
+                    "source_hub_id": hub.hub_id,
+                    "host_local_index": index + 1,
+                    "public_url": host_local_hub_public_url(self, index, hub),
+                    "source_public_url": hub.public_url,
                     "source_port_base": self.hub_base_port,
                     "port": hub_port_for_cell(self, index),
                     "runtime_dir": scoped_hub_runtime_dir(self, hub),
@@ -473,21 +667,25 @@ class AllfatherCell:
             ],
             "qbft": [
                 {
-                    "id": service.id,
-                    "role": service.role,
-                    "roles": list(service.roles),
+                    "id": host_local_qbft_id(self, index),
+                    "source_id": qbft_source_id(service),
+                    "host_local_index": index + 1,
+                    "role": "validator-rpc",
+                    "roles": ["validator", "rpc"],
                     "rpc_container_port": self.besu_rpc_base_port + index,
                     "p2p_container_port": self.besu_p2p_base_port + index,
-                    "rpc_source_host_port": service.rpc_host_port,
-                    "p2p_source_host_port": service.p2p_host_port,
-                    "rpc_host_port": shifted_port(service.rpc_host_port, self.host_port_offset),
-                    "p2p_host_port": shifted_port(service.p2p_host_port, self.host_port_offset),
-                    "data_path": f"{self.state_root}/qbft/{service.id}/data",
-                    "static_nodes_path": f"{self.state_root}/qbft/{service.id}/static-nodes.json",
+                    "rpc_source_host_port": qbft_rpc_source_host_port(self, index, service),
+                    "p2p_source_host_port": qbft_p2p_source_host_port(self, index, service),
+                    "rpc_host_port": qbft_rpc_host_port_for_cell(self, index, service),
+                    "p2p_host_port": qbft_p2p_host_port_for_cell(self, index, service),
+                    "data_path": f"{self.state_root}/qbft/{host_local_qbft_id(self, index)}/data",
+                    "static_nodes_path": f"{self.state_root}/qbft/{host_local_qbft_id(self, index)}/static-nodes.json",
+                    "rpc_note": "Every compiled all-father QBFT node is a validator-RPC node; there is no validator-only or RPC-only branch.",
                 }
                 for index, service in enumerate(self.qbft_services)
             ],
             "public_entry_urls": list(self.public_entry_urls),
+            "public_routes": public_routes,
             "port_inventory": ports,
             "processes": processes,
         }
@@ -497,6 +695,7 @@ class AllfatherCell:
 class AllfatherPlan:
     network_key: str
     set_id: str
+    deployment_phase: str
     placement_path: str
     qbft_seed: str
     cells: tuple[AllfatherCell, ...]
@@ -510,9 +709,11 @@ class AllfatherPlan:
             "kind": "main_computer.allfather_plan.v1",
             "network_key": self.network_key,
             "set_id": self.set_id,
+            "deployment_phase": self.deployment_phase,
             "placement_path": self.placement_path,
             "qbft_seed": self.qbft_seed,
             "desired_counts": set_counts,
+            "active_counts": active_counts_for_cells(self.cells, self.deployment_phase),
             "topology": {
                 "discovery_mode": "guard-peer-advertise-v1",
                 "guard_urls": [peer_descriptor_for_cell(cell)["guard_url"] for cell in self.cells],
@@ -526,6 +727,7 @@ class AllfatherPlan:
             "cells": [
                 {
                     "cell_id": cell.cell_id,
+                    "cell_index": cell.cell_index,
                     "network_key": cell.network_key,
                     "set_id": cell.set_id,
                     "coolify_server": cell.coolify_server,
@@ -541,13 +743,19 @@ class AllfatherPlan:
                         "capabilities": list(cell.capabilities),
                     },
                     "desired_counts": cell.local_desired_counts(),
+                    "active_counts": cell.phase_active_counts(self.deployment_phase),
                     "peer_hosts": list(cell.peer_hosts),
-                    "fdb_instances": [instance.id for instance in cell.fdb_instances],
-                    "hubs": [hub.hub_id for hub in cell.hubs],
-                    "qbft": [service.id for service in cell.qbft_services],
+                    "fdb_instances": [host_local_fdb_id(cell, index) for index, instance in enumerate(cell.fdb_instances)],
+                    "source_fdb_instances": [instance.id for instance in cell.fdb_instances],
+                    "hubs": [host_local_hub_id(cell, index) for index, hub in enumerate(cell.hubs)],
+                    "source_hubs": [hub.hub_id for hub in cell.hubs],
+                    "qbft": [host_local_qbft_id(cell, index) for index, service in enumerate(cell.qbft_services)],
+                    "source_qbft": [qbft_source_id(service) for service in cell.qbft_services],
                     "state_root": cell.state_root,
                     "ports": port_inventory_for_cell(cell),
+                    "public_routes": public_http_routes_for_cell(cell),
                     "process_count": len(cell.process_manifest()),
+                    "initial_desired_up": self.deployment_phase == "full",
                 }
                 for cell in self.cells
             ],
@@ -578,14 +786,15 @@ def _processes_for_cell(cell: AllfatherCell) -> list[AllfatherProcess]:
     # The adapter above is sufficient for state dir lookups; the scripts need
     # the full placement metadata, so they are rendered by this compiler instead
     # of reaching through a mutable global.
-    for instance in cell.fdb_instances:
+    for instance_index, instance in enumerate(cell.fdb_instances):
+        local_fdb_id = host_local_fdb_id(cell, instance_index)
         instance_port = fdb_port_for_cell(cell, instance)
-        instance_dir = f"{posix_dirname(cell.fdb_cluster_file_path)}/foundationdb/{instance.id}"
+        instance_dir = f"{posix_dirname(cell.fdb_cluster_file_path)}/foundationdb/{local_fdb_id}"
         data_dir = f"{instance_dir}/data"
         log_dir = f"{instance_dir}/logs"
         script = "\n".join(
             [
-                f"echo 'Starting all-father FDB instance {instance.id} on {instance.vpn_ip}:{instance_port}'",
+                f"echo 'Starting all-father FDB instance {local_fdb_id} imported from {instance.id} on {instance.vpn_ip}:{instance_port}'",
                 f"mkdir -p {sh_quote(posix_dirname(cell.fdb_cluster_file_path))} {sh_quote(data_dir)} {sh_quote(log_dir)}",
                 f"printf '%s\\n' {sh_quote(cell.fdb_cluster_contents)} > {sh_quote(cell.fdb_cluster_file_path)}",
                 "exec /usr/bin/fdbserver \\",
@@ -602,7 +811,7 @@ def _processes_for_cell(cell: AllfatherCell) -> list[AllfatherProcess]:
         )
         processes.append(
             AllfatherProcess(
-                name=f"fdb-{instance.id}",
+                name=f"fdb-{local_fdb_id}",
                 group="foundationdb",
                 command=_command_shell(script),
                 critical=True,
@@ -635,6 +844,7 @@ def _processes_for_cell(cell: AllfatherCell) -> list[AllfatherProcess]:
         )
 
     for index, hub in enumerate(cell.hubs):
+        local_hub_id = host_local_hub_id(cell, index)
         port = str(hub_port_for_cell(cell, index))
         command = (
             "python",
@@ -656,7 +866,7 @@ def _processes_for_cell(cell: AllfatherCell) -> list[AllfatherProcess]:
         )
         processes.append(
             AllfatherProcess(
-                name=f"hub-{hub.hub_id}",
+                name=f"hub-{local_hub_id}",
                 group="hub",
                 command=command,
                 critical=True,
@@ -665,12 +875,13 @@ def _processes_for_cell(cell: AllfatherCell) -> list[AllfatherProcess]:
         )
 
     for index, service in enumerate(cell.qbft_services):
+        local_qbft_id = host_local_qbft_id(cell, index)
         rpc_port = cell.besu_rpc_base_port + index
         p2p_port = cell.besu_p2p_base_port + index
-        data_path = f"{cell.state_root}/qbft/{service.id}/data"
-        static_nodes_path = f"{cell.state_root}/qbft/{service.id}/static-nodes.json"
+        data_path = f"{cell.state_root}/qbft/{local_qbft_id}/data"
+        static_nodes_path = f"{cell.state_root}/qbft/{local_qbft_id}/static-nodes.json"
         genesis_path = f"{cell.state_root}/qbft/genesis.json"
-        role_apis = "ETH,NET,QBFT,WEB3" if service.role == "validator" else "ETH,NET,WEB3"
+        role_apis = "ETH,NET,QBFT,WEB3"
         script = "\n".join(
             [
                 f"mkdir -p {sh_quote(data_path)} {sh_quote(str(Path(static_nodes_path).parent))}",
@@ -694,16 +905,79 @@ def _processes_for_cell(cell: AllfatherCell) -> list[AllfatherProcess]:
         )
         processes.append(
             AllfatherProcess(
-                name=f"qbft-{service.id}",
+                name=f"qbft-{local_qbft_id}",
                 group="qbft",
                 command=_command_shell(script),
                 critical=True,
                 restart_cooldown_s=DEFAULT_RESTART_COOLDOWN_SECONDS,
-                notes="Requires pre-seeded all-father QBFT genesis/static-nodes material.",
+                notes="Validator-RPC node; requires pre-seeded all-father QBFT genesis/static-nodes material.",
             )
         )
 
     return processes
+
+
+def synthetic_validator_rpc_service(*, cell: "AllfatherCell" | None = None, server_name: str, network_key: str, index: int) -> Any:
+    """Create a minimal imported-QBFT-compatible service for a host with no seed node.
+
+    The all-father model treats every super-container chain process as
+    validator-RPC.  A source QBFT seed may omit a host or may carry an RPC-only
+    node; this synthetic shape lets every Coolify host still receive one
+    validator-RPC process while preserving source ids when they exist.
+    """
+
+    planned_service = qbft_tool().PlannedService
+    host_alias = host_aliases(server_name, network_key)
+    primary_host = sorted(host_alias)[0]
+    service_id = safe_id(f"{network_key}-{primary_host}-validator-rpc{index + 1}", field="qbft_service_id")
+    return planned_service(
+        id=service_id,
+        role="validator-rpc",
+        roles=("validator", "rpc"),
+        host=server_name,
+        container_ip="",
+        rpc_host_port=None,
+        p2p_host_port=None,
+        rpc_bind_host="0.0.0.0",
+        p2p_bind_host="0.0.0.0",
+        data_path="",
+        static_nodes_path="",
+        rpc_url_on_host="",
+        p2p_advertise="",
+    )
+
+
+def normalize_qbft_services_for_allfather(
+    services: Sequence[Any],
+    *,
+    server_name: str,
+    network_key: str,
+) -> tuple[Any, ...]:
+    """Ensure the compiled cell has validator-RPC nodes only and at least one."""
+
+    planned_service = qbft_tool().PlannedService
+    normalized: list[Any] = []
+    for index, service in enumerate(services):
+        normalized.append(
+            planned_service(
+                id=safe_id(str(getattr(service, "id", f"validator-rpc-{index + 1}")), field="qbft_service_id"),
+                role="validator-rpc",
+                roles=("validator", "rpc"),
+                host=str(getattr(service, "host", server_name) or server_name),
+                container_ip=str(getattr(service, "container_ip", "") or ""),
+                rpc_host_port=getattr(service, "rpc_host_port", None),
+                p2p_host_port=getattr(service, "p2p_host_port", None),
+                rpc_bind_host=str(getattr(service, "rpc_bind_host", "") or "0.0.0.0"),
+                p2p_bind_host=str(getattr(service, "p2p_bind_host", "") or "0.0.0.0"),
+                data_path=str(getattr(service, "data_path", "") or ""),
+                static_nodes_path=str(getattr(service, "static_nodes_path", "") or ""),
+                rpc_url_on_host=str(getattr(service, "rpc_url_on_host", "") or ""),
+                p2p_advertise=str(getattr(service, "p2p_advertise", "") or ""),
+            )
+        )
+    if not normalized:
+        normalized.append(synthetic_validator_rpc_service(server_name=server_name, network_key=network_key, index=0))
+    return tuple(normalized)
 
 
 def build_allfather_plan(
@@ -717,9 +991,11 @@ def build_allfather_plan(
     guard_host_base: int | None = None,
     host_port_offset: int | None = None,
     state_root_prefix: str = DEFAULT_STATE_ROOT_PREFIX,
+    deployment_phase: str = "full",
 ) -> AllfatherPlan:
     network_key = clean_network_key(network_key)
     set_id = clean_set_id(set_id, network_key)
+    deployment_phase = clean_deployment_phase(deployment_phase)
     if network_key == "mainnet" and not allow_mainnet:
         raise AllfatherCompileError("mainnet compilation requires --allow-mainnet.")
 
@@ -769,20 +1045,26 @@ def build_allfather_plan(
         aliases = host_aliases(server.name, network_key)
         fdb_instances = tuple(instance for instance in fdb_placement.instances if instance.coolify_server == server.name)
         hubs = tuple(hub for hub in hub_placement.hubs if hub.coolify_server == server.name)
-        qbft_services = tuple(
+        matched_qbft_services = tuple(
             sorted(
                 (
                     service
                     for service in qbft_plan.services
                     if host_aliases(service.host, network_key) & aliases
                 ),
-                key=lambda service: (0 if service.role == "validator" else 1, service.id),
+                key=lambda service: (0 if str(getattr(service, "role", "")) == "validator" else 1, str(getattr(service, "id", ""))),
             )
+        )
+        qbft_services = normalize_qbft_services_for_allfather(
+            matched_qbft_services,
+            server_name=server.name,
+            network_key=network_key,
         )
         cell_id = safe_id(f"{set_id}-{server.name}", field="cell_id")
         cells.append(
             AllfatherCell(
                 cell_id=cell_id,
+                cell_index=index,
                 network_key=network_key,
                 set_id=set_id,
                 coolify_server=server.name,
@@ -823,6 +1105,7 @@ def build_allfather_plan(
     return AllfatherPlan(
         network_key=network_key,
         set_id=set_id,
+        deployment_phase=deployment_phase,
         placement_path=str(resolved_placement_path.relative_to(REPO_ROOT) if resolved_placement_path.is_relative_to(REPO_ROOT) else resolved_placement_path),
         qbft_seed=qbft_seed_name,
         cells=tuple(completed_cells),
@@ -833,6 +1116,87 @@ def build_allfather_plan(
 def manifest_b64(manifest: Mapping[str, Any]) -> str:
     payload = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
     return base64.b64encode(payload).decode("ascii")
+
+
+def public_http_routes_for_cell(cell: AllfatherCell) -> list[dict[str, Any]]:
+    """Return the public HTTP routes Traefik should expose for one super-container.
+
+    Hub and RPC are the two public traffic surfaces for an all-father super node.
+    Guard remains private/operator-facing, and FDB plus Besu P2P remain raw TCP/VPN.
+    """
+
+    routes: list[dict[str, Any]] = []
+    for index, hub in enumerate(cell.hubs):
+        route_name = host_local_hub_id(cell, index)
+        public_url = host_local_hub_public_url(cell, index, hub)
+        routes.append(
+            {
+                "name": route_name,
+                "group": "hub",
+                "kind": "hub-http",
+                "public_url": public_url,
+                "host": public_url_host(public_url),
+                "target_name": route_name,
+                "target_container_port": hub_port_for_cell(cell, index),
+                "traefik_router": safe_id(route_name, field="traefik_router"),
+                "traefik_service": safe_id(f"{route_name}-svc", field="traefik_service"),
+                "notes": "Primary public Hub route handled by Coolify/Traefik.",
+            }
+        )
+
+    for index, service in enumerate(cell.qbft_services):
+        route_name = host_local_rpc_route_id(cell, index)
+        public_url = host_local_rpc_public_url(cell, index, service)
+        routes.append(
+            {
+                "name": route_name,
+                "group": "qbft",
+                "kind": "besu-json-rpc",
+                "public_url": public_url,
+                "host": public_url_host(public_url),
+                "target_name": host_local_qbft_id(cell, index),
+                "target_container_port": cell.besu_rpc_base_port + index,
+                "traefik_router": safe_id(route_name, field="traefik_router"),
+                "traefik_service": safe_id(f"{route_name}-svc", field="traefik_service"),
+                "notes": "Primary public validator-RPC route handled by Coolify/Traefik.",
+            }
+        )
+    return routes
+
+
+def public_routes_b64(cell: AllfatherCell) -> str:
+    payload = json.dumps(public_http_routes_for_cell(cell), indent=2, sort_keys=True).encode("utf-8")
+    return base64.b64encode(payload).decode("ascii")
+
+
+def public_route_summary(cell: AllfatherCell) -> str:
+    return ",".join(
+        f"{route['name']}={route['public_url']}->{route['target_container_port']}/tcp"
+        for route in public_http_routes_for_cell(cell)
+    )
+
+
+def traefik_labels_for_cell(cell: AllfatherCell) -> list[str]:
+    routes = public_http_routes_for_cell(cell)
+    if not routes:
+        return []
+    labels = ["traefik.enable=true"]
+    for route in routes:
+        router = str(route["traefik_router"])
+        service = str(route["traefik_service"])
+        host = str(route["host"])
+        port = int(route["target_container_port"])
+        labels.extend(
+            [
+                f"traefik.http.routers.{router}.rule=Host(`{host}`)",
+                f"traefik.http.routers.{router}.entryPoints=https",
+                f"traefik.http.routers.{router}.tls=true",
+                f"traefik.http.routers.{router}.tls.certresolver=letsencrypt",
+                f"traefik.http.routers.{router}.service={service}",
+                f"traefik.http.services.{service}.loadbalancer.server.port={port}",
+            ]
+        )
+    return labels
 
 
 def port_inventory_for_cell(cell: AllfatherCell) -> list[dict[str, Any]]:
@@ -854,11 +1218,13 @@ def port_inventory_for_cell(cell: AllfatherCell) -> list[dict[str, Any]]:
         }
     ]
 
-    for instance in cell.fdb_instances:
+    for index, instance in enumerate(cell.fdb_instances):
         compiled_port = fdb_port_for_cell(cell, instance)
         ports.append(
             {
-                "name": instance.id,
+                "name": host_local_fdb_id(cell, index),
+                "source_name": instance.id,
+                "host_local_index": index + 1,
                 "group": "foundationdb",
                 "kind": "fdbserver",
                 "protocol": "tcp",
@@ -873,97 +1239,83 @@ def port_inventory_for_cell(cell: AllfatherCell) -> list[dict[str, Any]]:
             }
         )
 
+    hub_routes = {route["name"]: route for route in public_http_routes_for_cell(cell) if route["group"] == "hub"}
     for index, hub in enumerate(cell.hubs):
+        local_hub_id = host_local_hub_id(cell, index)
         port = hub_port_for_cell(cell, index)
+        route = hub_routes.get(local_hub_id, {})
         ports.append(
             {
-                "name": hub.hub_id,
+                "name": local_hub_id,
+                "source_name": hub.hub_id,
+                "host_local_index": index + 1,
                 "group": "hub",
                 "kind": "http",
                 "protocol": "tcp",
                 "bind_host": "0.0.0.0",
-                "publish_host": cell.vpn_ip,
+                "publish_host": "",
                 "source_host_port": cell.hub_base_port + index,
-                "host_port": port,
+                "host_port": None,
                 "container_port": port,
-                "published": True,
-                "visibility": "private-vpn",
-                "public_url": hub.public_url,
-                "notes": "Hub HTTP port derived from the Hub network bind port and shifted by this set's host_port_offset.",
+                "published": False,
+                "visibility": "public-http-via-traefik",
+                "routing": "traefik",
+                "public_url": host_local_hub_public_url(cell, index, hub),
+                "public_route": route,
+                "source_public_url": hub.public_url,
+                "notes": "Hub HTTP is a primary public route handled by Coolify/Traefik; it is not directly host-published by the all-father compose.",
             }
         )
 
     for index, service in enumerate(cell.qbft_services):
+        local_qbft_id = host_local_qbft_id(cell, index)
         rpc_container_port = cell.besu_rpc_base_port + index
         p2p_container_port = cell.besu_p2p_base_port + index
-        if service.rpc_host_port:
-            ports.append(
-                {
-                    "name": f"{service.id}-rpc",
-                    "group": "qbft",
-                    "kind": "besu-json-rpc",
-                    "protocol": "tcp",
-                    "bind_host": "0.0.0.0",
-                    "publish_host": service.rpc_bind_host or "127.0.0.1",
-                    "source_host_port": int(service.rpc_host_port),
-                    "host_port": shifted_port(service.rpc_host_port, cell.host_port_offset),
-                    "container_port": rpc_container_port,
-                    "published": True,
-                    "visibility": "operator-or-public-rpc",
-                    "notes": "Besu JSON-RPC host port imported from the QBFT network plan and shifted by this set's host_port_offset.",
-                }
-            )
-        else:
-            ports.append(
-                {
-                    "name": f"{service.id}-rpc",
-                    "group": "qbft",
-                    "kind": "besu-json-rpc",
-                    "protocol": "tcp",
-                    "bind_host": "0.0.0.0",
-                    "publish_host": "",
-                    "source_host_port": None,
-                    "host_port": None,
-                    "container_port": rpc_container_port,
-                    "published": False,
-                    "visibility": "container-local",
-                    "notes": "Besu JSON-RPC is internal for this service because the QBFT plan has no host RPC port.",
-                }
-            )
-        if service.p2p_host_port:
-            ports.append(
-                {
-                    "name": f"{service.id}-p2p",
-                    "group": "qbft",
-                    "kind": "besu-p2p",
-                    "protocol": "tcp",
-                    "bind_host": "0.0.0.0",
-                    "publish_host": service.p2p_bind_host or cell.vpn_ip,
-                    "source_host_port": int(service.p2p_host_port),
-                    "host_port": shifted_port(service.p2p_host_port, cell.host_port_offset),
-                    "container_port": p2p_container_port,
-                    "published": True,
-                    "visibility": "private-vpn-or-peer",
-                    "notes": "Besu P2P host port imported from the QBFT network plan and shifted by this set's host_port_offset.",
-                }
-            )
-        else:
-            ports.append(
-                {
-                    "name": f"{service.id}-p2p",
-                    "group": "qbft",
-                    "kind": "besu-p2p",
-                    "protocol": "tcp",
-                    "bind_host": "0.0.0.0",
-                    "publish_host": "",
-                    "source_host_port": None,
-                    "host_port": None,
-                    "container_port": p2p_container_port,
-                    "published": False,
-                    "visibility": "container-local",
-                    "notes": "Besu P2P is internal for this service because the QBFT plan has no host P2P port.",
-                }
-            )
+        rpc_route_id = host_local_rpc_route_id(cell, index)
+        rpc_route = next(
+            (route for route in public_http_routes_for_cell(cell) if route["group"] == "qbft" and route["name"] == rpc_route_id),
+            {},
+        )
+        ports.append(
+            {
+                "name": f"{local_qbft_id}-rpc",
+                "route_name": rpc_route_id,
+                "source_name": qbft_source_id(service),
+                "host_local_index": index + 1,
+                "group": "qbft",
+                "kind": "besu-json-rpc",
+                "protocol": "tcp",
+                "bind_host": "0.0.0.0",
+                "publish_host": "",
+                "source_host_port": qbft_rpc_source_host_port(cell, index, service),
+                "host_port": None,
+                "container_port": rpc_container_port,
+                "published": False,
+                "visibility": "public-http-via-traefik",
+                "routing": "traefik",
+                "public_url": host_local_rpc_public_url(cell, index, service),
+                "public_route": rpc_route,
+                "notes": "Every all-father QBFT node is a validator-RPC node; JSON-RPC is a primary public route handled by Coolify/Traefik.",
+            }
+        )
+        ports.append(
+            {
+                "name": f"{local_qbft_id}-p2p",
+                "source_name": qbft_source_id(service),
+                "host_local_index": index + 1,
+                "group": "qbft",
+                "kind": "besu-p2p",
+                "protocol": "tcp",
+                "bind_host": "0.0.0.0",
+                "publish_host": str(getattr(service, "p2p_bind_host", "") or cell.vpn_ip),
+                "source_host_port": qbft_p2p_source_host_port(cell, index, service),
+                "host_port": qbft_p2p_host_port_for_cell(cell, index, service),
+                "container_port": p2p_container_port,
+                "published": True,
+                "visibility": "private-vpn-or-peer",
+                "notes": "Every all-father QBFT node is compiled as validator-RPC; P2P is always published.",
+            }
+        )
 
     return ports
 
@@ -1016,8 +1368,15 @@ def rendered_container_ports(cell: AllfatherCell) -> list[tuple[str, int, int]]:
         ports.append((publish_host, int(host_port), int(container_port)))
     return ports
 
-def render_compose_for_cell(cell: AllfatherCell, *, dockerfile: str = DEFAULT_DOCKERFILE, image_prefix: str = DEFAULT_IMAGE_PREFIX) -> str:
-    manifest = cell.to_manifest()
+def render_compose_for_cell(
+    cell: AllfatherCell,
+    *,
+    dockerfile: str = DEFAULT_DOCKERFILE,
+    image_prefix: str = DEFAULT_IMAGE_PREFIX,
+    deployment_phase: str = "full",
+) -> str:
+    phase = clean_deployment_phase(deployment_phase)
+    manifest = cell.to_manifest(deployment_phase=phase)
     service_name = safe_id(f"{image_prefix}-{cell.set_id}-{cell.coolify_server}", field="service_name")
     image_name = safe_id(f"{image_prefix}-{cell.network_key}", field="image_name")
     cluster_dir = posix_dirname(cell.fdb_cluster_file_path)
@@ -1036,6 +1395,8 @@ def render_compose_for_cell(cell: AllfatherCell, *, dockerfile: str = DEFAULT_DO
         f"      MC_ALLFATHER_NETWORK: {yaml_quote(cell.network_key)}",
         f"      MC_ALLFATHER_SET_ID: {yaml_quote(cell.set_id)}",
         f"      MC_ALLFATHER_CELL_ID: {yaml_quote(cell.cell_id)}",
+        f"      MC_ALLFATHER_DEPLOYMENT_PHASE: {yaml_quote(phase)}",
+        f"      MC_ALLFATHER_INITIAL_DESIRED_UP: {yaml_quote(str(phase == 'full').lower())}",
         f"      MC_ALLFATHER_GUARD_PORT: {yaml_quote(cell.guard_container_port)}",
         f"      MC_ALLFATHER_GUARD_HOST_PORT: {yaml_quote(cell.guard_host_port)}",
         f"      MC_ALLFATHER_HOST_PORT_OFFSET: {yaml_quote(cell.host_port_offset)}",
@@ -1049,11 +1410,16 @@ def render_compose_for_cell(cell: AllfatherCell, *, dockerfile: str = DEFAULT_DO
         f"      MC_ALLFATHER_FDB_PORTS: {yaml_quote(port_group_summary(cell, 'foundationdb'))}",
         f"      MC_ALLFATHER_HUB_PORTS: {yaml_quote(port_group_summary(cell, 'hub'))}",
         f"      MC_ALLFATHER_QBFT_PORTS: {yaml_quote(port_group_summary(cell, 'qbft'))}",
+        f"      MC_ALLFATHER_PUBLIC_ROUTES: {yaml_quote(public_route_summary(cell))}",
+        f"      MC_ALLFATHER_PUBLIC_ROUTES_B64: {yaml_quote(public_routes_b64(cell))}",
         f"      MC_ALLFATHER_PORT_SUMMARY: {yaml_quote(port_inventory_summary(cell))}",
         f"      MC_ALLFATHER_PORT_INVENTORY_B64: {yaml_quote(port_inventory_b64(cell))}",
         f"      MC_ALLFATHER_MANIFEST_B64: {yaml_quote(manifest_b64(manifest))}",
-        "    ports:",
+        "    labels:",
     ]
+    for label in traefik_labels_for_cell(cell):
+        lines.append(f"      - {yaml_quote(label)}")
+    lines.append("    ports:")
     for publish_host, host_port, container_port in rendered_container_ports(cell):
         lines.append(f"      - {yaml_quote(f'{publish_host}:{host_port}:{container_port}/tcp')}")
     lines.extend(
@@ -1134,6 +1500,7 @@ def coolify_service_payload(
         cell,
         dockerfile=getattr(args, "dockerfile", DEFAULT_DOCKERFILE),
         image_prefix=getattr(args, "image_prefix", DEFAULT_IMAGE_PREFIX),
+        deployment_phase=plan.deployment_phase,
     )
     payload: dict[str, Any] = {
         "server_uuid": (context or {}).get("server_uuid") or "",
@@ -1143,7 +1510,7 @@ def coolify_service_payload(
         "name": allfather_service_name(cell, image_prefix=getattr(args, "image_prefix", DEFAULT_IMAGE_PREFIX)),
         "description": (
             f"Main Computer guarded all-father {plan.set_id} cell on {cell.coolify_server}; "
-            f"network profile {plan.network_key}; role=function"
+            f"network profile {plan.network_key}; phase={plan.deployment_phase}; role=function"
         ),
         "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
         "instant_deploy": False,
@@ -1175,13 +1542,17 @@ def coolify_cell_plan(plan: AllfatherPlan, cell: AllfatherCell, args: argparse.N
         "environment_name": allfather_environment_name(plan, args),
         "guard_url": peer_descriptor_for_cell(cell)["guard_url"],
         "desired_counts": cell.local_desired_counts(),
+        "active_counts": cell.phase_active_counts(plan.deployment_phase),
         "set_desired_counts": dict(cell.set_desired_counts or {}),
         "port_inventory": port_inventory_for_cell(cell),
+        "public_routes": public_http_routes_for_cell(cell),
         "service_payload": redact_coolify_payload(coolify_service_payload(plan, cell, args)),
+        "deployment_phase": plan.deployment_phase,
         "docker_compose": render_compose_for_cell(
             cell,
             dockerfile=getattr(args, "dockerfile", DEFAULT_DOCKERFILE),
             image_prefix=getattr(args, "image_prefix", DEFAULT_IMAGE_PREFIX),
+            deployment_phase=plan.deployment_phase,
         ),
     }
 
@@ -1195,12 +1566,16 @@ def coolify_plan_result(plan: AllfatherPlan, args: argparse.Namespace) -> dict[s
         "mode": "coolify",
         "network_key": plan.network_key,
         "set_id": plan.set_id,
+        "deployment_phase": plan.deployment_phase,
+        "active_counts": active_counts_for_cells(plan.cells, plan.deployment_phase),
         "environment_name": allfather_environment_name(plan, args),
+        "private_state_path": _display_repo_path(fdb_tool().private_state_path_for_args(args)),
         "placement_path": plan.placement_path,
         "qbft_seed": plan.qbft_seed,
         "operator_note": (
             "This is the unified remote Coolify plan for the guarded all-father cells. "
-            "Use the same network/set-id flags with the apply action to create/update services."
+            "Use --phase heads first to push the guard/head mesh to every Coolify host; "
+            "the same service names can later be updated with --phase full or woken via the guard API."
         ),
         "cells": [coolify_cell_plan(plan, cell, args) for cell in plan.cells],
     }
@@ -1302,6 +1677,7 @@ def sync_coolify_service_for_cell(
         cell,
         dockerfile=getattr(args, "dockerfile", DEFAULT_DOCKERFILE),
         image_prefix=getattr(args, "image_prefix", DEFAULT_IMAGE_PREFIX),
+        deployment_phase=plan.deployment_phase,
     )
     if service_uuid:
         update_coolify_service(client, service_uuid=service_uuid, service_name=service_name, compose=compose, tried=tried)
@@ -1370,11 +1746,11 @@ def write_plan(plan: AllfatherPlan, out_dir: Path, *, dockerfile: str = DEFAULT_
     written.append(plan_path)
     for cell in plan.cells:
         manifest_path = out_dir / f"{cell.cell_id}.manifest.json"
-        manifest_path.write_text(json.dumps(cell.to_manifest(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        manifest_path.write_text(json.dumps(cell.to_manifest(deployment_phase=plan.deployment_phase), indent=2, sort_keys=True) + "\n", encoding="utf-8")
         written.append(manifest_path)
 
         compose_path = out_dir / f"{cell.cell_id}.compose.yml"
-        compose_path.write_text(render_compose_for_cell(cell, dockerfile=dockerfile) + "\n", encoding="utf-8")
+        compose_path.write_text(render_compose_for_cell(cell, dockerfile=dockerfile, deployment_phase=plan.deployment_phase) + "\n", encoding="utf-8")
         written.append(compose_path)
 
     readme_path = out_dir / "README.md"
@@ -1394,18 +1770,24 @@ def render_output_readme(plan: AllfatherPlan) -> str:
         "host role.  The role of every cell is `function`; capabilities come from",
         "desired counts plus peer guard endpoints in the compiled manifest.",
         "",
+        "`--phase heads` deploys the guard/head mesh first with child processes",
+        "held down.  After the head guards can see each other, POST `/up` to the",
+        "guard endpoints or re-apply with `--phase full` to let the same cells",
+        "converge Hub, FDB, and validator-RPC nodes.",
+        "",
         f"Network behavior profile: `{plan.network_key}`",
         f"Running set id: `{plan.set_id}`",
+        f"Deployment phase: `{plan.deployment_phase}`",
         f"Set desired counts: `{json.dumps(plan.desired_counts(), sort_keys=True)}`",
+        f"Active phase counts: `{json.dumps(active_counts_for_cells(plan.cells, plan.deployment_phase), sort_keys=True)}`",
         "",
         "## Compiled port inventory",
         "",
         "Every generated manifest and compose file carries the same inventory in",
         "`port_inventory`, `identity.ports`, and `MC_ALLFATHER_*_PORTS` environment",
-        "variables.  Guard ports stay in the 41400 range.  FDB, Hub, and QBFT ports",
-        "are listed because those service structures are imported into the all-father",
-        "cell. Imported ports may be shifted by `host_port_offset` so one physical",
-        "host can run multiple sets such as one testnet and two mainnets.",
+        "variables.  Guard ports stay in the 41400 range.  FDB and Besu P2P stay",
+        "as private/raw TCP ports.  Hub HTTP and Besu JSON-RPC are the two public",
+        "traffic surfaces and are routed by Coolify/Traefik to internal ports.",
         "",
     ]
     for cell in plan.cells:
@@ -1426,13 +1808,25 @@ def render_output_readme(plan: AllfatherPlan) -> str:
         lines.append("")
     lines.extend(
         [
-            "The raw compose files do not define a custom Docker network.  FDB and Hub",
-            "ports stay bound to the configured private/VPN addresses from the existing",
-            "placement files.  Public routing can still be layered on by Coolify/Traefik",
-            "later, but the all-father compiler keeps the service-cell port map explicit.",
+            "## Public HTTP routes",
+            "",
+            "Hub and RPC routes are emitted in `public_routes`,",
+            "`MC_ALLFATHER_PUBLIC_ROUTES`, and Traefik labels.  The important route",
+            "shape is `<host-prefix>-hubN.greatlibrary.io` and",
+            "`<host-prefix>-rpcN.greatlibrary.io`, both targeting ports inside the",
+            "same all-father super-container.",
             "",
         ]
     )
+    for cell in plan.cells:
+        lines.append(f"### `{cell.cell_id}` public routes")
+        lines.append("")
+        for route in public_http_routes_for_cell(cell):
+            lines.append(
+                f"- `{route['name']}` `{route['kind']}`: `{route['public_url']}` -> "
+                f"container `{route['target_container_port']}/tcp`"
+            )
+        lines.append("")
     return "\n".join(lines)
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -1452,13 +1846,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         subparser.add_argument("--guard-host-base", type=int, default=0)
         subparser.add_argument("--host-port-offset", type=int, default=-1, help="Override imported service port offset; default is derived from network and set id.")
         subparser.add_argument("--state-root-prefix", default=DEFAULT_STATE_ROOT_PREFIX)
+        subparser.add_argument(
+            "--phase",
+            choices=sorted(VALID_DEPLOYMENT_PHASES),
+            default="full",
+            help="Deployment phase: heads deploys the all-father guard/head mesh with child nodes held down; full starts workload convergence.",
+        )
 
     def add_remote_coolify(subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument(
             "--private-state",
             type=Path,
-            default=None,
-            help="Private state YAML with coolify.hosts.<slot>.name/url/api_token. Defaults to runtime/state/main_computer.private.yaml when present.",
+            default=DEFAULT_ALLFATHER_PRIVATE_STATE_PATH,
+            help="All-father private state YAML with coolify.hosts.<slot>.name/url/api_token. Defaults to runtime/state/all_father.private.yaml.",
         )
         subparser.add_argument(
             "--set-coolify-url",
@@ -1535,6 +1935,7 @@ def _plan_from_args(args: argparse.Namespace) -> AllfatherPlan:
         guard_host_base=(int(args.guard_host_base) if int(args.guard_host_base or 0) else None),
         host_port_offset=(int(args.host_port_offset) if int(args.host_port_offset) >= 0 else None),
         state_root_prefix=args.state_root_prefix,
+        deployment_phase=getattr(args, "phase", "full"),
     )
 
 

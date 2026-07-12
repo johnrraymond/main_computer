@@ -3004,3 +3004,494 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
   z-index: auto !important;
 }
 
+
+
+/* MCEL Code Editor live dock-tree V1.
+   The authored data-mc-layout-* hints compile into semantic dock placements.
+   User preferences persist as placement/share/collapse hints; no GridStack coordinates
+   participate in the canonical layout.  These final rules intentionally supersede the
+   earlier fixed-grid browser twiddles while preserving their containment guarantees. */
+#code-editor-app[data-mcel-layout-live="true"] {
+  --mcel-code-editor-activity-inline: 44px;
+  --mcel-code-editor-explorer-inline: 260px;
+  --mcel-code-editor-inspector-inline: 360px;
+  --mcel-code-editor-inspector-bottom-block: 240px;
+  --mcel-code-editor-proof-block: 34px;
+  --mcel-code-editor-status-block: 22px;
+  --mcel-code-editor-title-block: 36px;
+  --mcel-code-editor-splitter-hit: 6px;
+  --mcel-code-editor-border: #2b2b2b;
+  --mcel-code-editor-chrome: #181818;
+  --mcel-code-editor-panel: #1f1f1f;
+  --mcel-code-editor-editor: #171717;
+  --mcel-code-editor-hover: #2a2d2e;
+  --mcel-code-editor-accent: #3aa3ff;
+  --mcel-code-editor-text: #cccccc;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-shell {
+  grid-template-areas:
+    "titlebar"
+    "workbench"
+    "proof"
+    "statusbar" !important;
+  grid-template-rows:
+    var(--mcel-code-editor-title-block)
+    minmax(0, 1fr)
+    var(--mcel-code-editor-proof-block)
+    var(--mcel-code-editor-status-block) !important;
+  gap: 0 !important;
+  background: var(--mcel-code-editor-editor) !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-titlebar {
+  grid-area: titlebar !important;
+  position: relative !important;
+  min-height: var(--mcel-code-editor-title-block) !important;
+  max-height: var(--mcel-code-editor-title-block) !important;
+  padding-inline: 8px !important;
+  gap: 8px !important;
+  background: var(--mcel-code-editor-chrome) !important;
+  border-bottom: 1px solid var(--mcel-code-editor-border) !important;
+  overflow: visible !important;
+  z-index: 200 !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-command-center {
+  min-width: 180px;
+  max-width: 620px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  background: #242424;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-title-actions {
+  position: relative;
+  align-items: center;
+  gap: 5px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-title-actions > button {
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-gridstack-status {
+  max-width: 220px;
+  overflow: hidden;
+  color: #9d9d9d;
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 500;
+  width: min(430px, calc(100vw - 24px));
+  padding: 10px;
+  border: 1px solid #3a3a3a;
+  border-radius: 7px;
+  background: #202020;
+  color: var(--mcel-code-editor-text);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.58);
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu[hidden] {
+  display: none !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-heading,
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-group,
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-heading {
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-heading button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-group {
+  flex-wrap: wrap;
+  padding: 7px 0;
+  border-top: 1px solid #303030;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-group > span {
+  width: 82px;
+  color: #a9a9a9;
+  font-size: 11px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu button {
+  padding: 4px 8px;
+  border: 1px solid #3b3b3b;
+  border-radius: 4px;
+  background: #292929;
+  color: #d7d7d7;
+  font-size: 11px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu button[aria-pressed="true"] {
+  border-color: var(--mcel-code-editor-accent);
+  background: #173957;
+  color: #ffffff;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu button[data-preferred="true"]:not([aria-pressed="true"]) {
+  border-style: dashed;
+  border-color: #7a7a7a;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-footer {
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-top: 8px;
+  border-top: 1px solid #303030;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-menu-footer small {
+  flex: 1;
+  color: #9a9a9a;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  grid-area: workbench !important;
+  position: relative !important;
+  display: grid !important;
+  grid-template-columns:
+    var(--mcel-code-editor-activity-inline)
+    var(--mcel-code-editor-explorer-inline)
+    minmax(0, 1fr)
+    var(--mcel-code-editor-inspector-inline) !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  background: var(--mcel-code-editor-editor) !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] [data-code-studio-workbench-region="mode-rail"] {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  z-index: 20;
+  background: #181818 !important;
+  border-right: 1px solid var(--mcel-code-editor-border) !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] [data-code-studio-workbench-region="workspace-sidebar"] {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  display: block !important;
+  position: relative !important;
+  width: auto !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  background: var(--mcel-code-editor-panel) !important;
+  border-right: 1px solid var(--mcel-code-editor-border) !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] [data-code-studio-workbench-region="editor-workbench"] {
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  background: var(--mcel-code-editor-editor) !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] [data-code-studio-workbench-region="scm-ai-inspector"] {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+  display: grid !important;
+  position: relative !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  background: var(--mcel-code-editor-panel) !important;
+  border-left: 1px solid var(--mcel-code-editor-border) !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-activitybar {
+  grid-auto-rows: 42px;
+  background: #181818 !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-activitybar button {
+  color: #a5a5a5;
+  font-size: 18px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-activitybar button.active,
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-activitybar button:hover {
+  border-left-color: var(--mcel-code-editor-accent);
+  background: var(--mcel-code-editor-hover);
+  color: #ffffff;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-tabs {
+  min-height: 32px;
+  background: #181818;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-tabs button {
+  min-width: 112px;
+  padding: 7px 11px;
+  background: #202020;
+  font-size: 11px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-tabs button.active {
+  background: var(--mcel-code-editor-editor);
+  box-shadow: inset 0 1px 0 var(--mcel-code-editor-accent);
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-center-tabs {
+  display: none !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="bottom"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  grid-template-rows:
+    minmax(0, 1fr)
+    var(--mcel-code-editor-inspector-bottom-block) !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="bottom"] [data-code-studio-workbench-region="mode-rail"],
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="bottom"] [data-code-studio-workbench-region="workspace-sidebar"] {
+  grid-row: 1 / 3 !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="bottom"] [data-code-studio-workbench-region="editor-workbench"] {
+  grid-column: 3 / 5 !important;
+  grid-row: 1 !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="bottom"] [data-code-studio-workbench-region="scm-ai-inspector"] {
+  grid-column: 3 / 5 !important;
+  grid-row: 2 !important;
+  border-top: 1px solid var(--mcel-code-editor-border) !important;
+  border-left: 0 !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"] .code-studio-body[data-code-studio-workbench-region="main-grid"] {
+  grid-template-rows: 28px minmax(0, 1fr) !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"] .code-editor-layout-center-tabs {
+  grid-column: 3 / 5 !important;
+  grid-row: 1 !important;
+  display: flex !important;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  border-bottom: 1px solid var(--mcel-code-editor-border);
+  background: #181818;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"] .code-editor-layout-center-tabs button {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-right: 1px solid var(--mcel-code-editor-border);
+  background: #202020;
+  color: #b8b8b8;
+  font-size: 11px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"][data-mcel-center-tab="editor"] [data-code-editor-center-tab="editor"],
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"][data-mcel-center-tab="inspector"] [data-code-editor-center-tab="inspector"] {
+  background: var(--mcel-code-editor-editor);
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 var(--mcel-code-editor-accent);
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"] [data-code-studio-workbench-region="mode-rail"],
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"] [data-code-studio-workbench-region="workspace-sidebar"] {
+  grid-row: 1 / 3 !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"] [data-code-studio-workbench-region="editor-workbench"],
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"] [data-code-studio-workbench-region="scm-ai-inspector"] {
+  grid-column: 3 / 5 !important;
+  grid-row: 2 !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"][data-mcel-center-tab="editor"] [data-code-studio-workbench-region="scm-ai-inspector"],
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"][data-mcel-center-tab="inspector"] [data-code-studio-workbench-region="editor-workbench"] {
+  display: none !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="trigger"] [data-code-studio-workbench-region="scm-ai-inspector"] {
+  display: none !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-explorer-placement="trigger"] [data-code-studio-workbench-region="workspace-sidebar"] {
+  display: none !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-explorer-placement="trigger"][data-mcel-explorer-overlay-open="true"] [data-code-studio-workbench-region="workspace-sidebar"] {
+  position: absolute !important;
+  inset: 0 auto 0 var(--mcel-code-editor-activity-inline) !important;
+  z-index: 120 !important;
+  display: block !important;
+  width: min(340px, calc(100% - var(--mcel-code-editor-activity-inline))) !important;
+  box-shadow: 18px 0 54px rgba(0, 0, 0, 0.55);
+}
+
+#code-editor-app[data-mcel-layout-live="true"] [data-code-studio-workbench-region="proof-dock"],
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"],
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-proof-dock[data-code-studio-workbench-region="proof-dock"] {
+  grid-area: proof !important;
+  position: relative !important;
+  inset: auto !important;
+  left: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  z-index: 50 !important;
+  display: grid !important;
+  grid-template-rows: 34px minmax(0, 1fr) !important;
+  width: auto !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin-inline-start: calc(var(--mcel-code-editor-activity-inline) + var(--mcel-code-editor-explorer-inline)) !important;
+  margin-inline-end: var(--mcel-code-editor-inspector-inline) !important;
+  overflow: hidden !important;
+  border-top: 1px solid var(--mcel-code-editor-border) !important;
+  background: var(--mcel-code-editor-panel) !important;
+  box-shadow: none !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-proof-placement="trigger"] [data-code-studio-workbench-region="proof-dock"],
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-proof-placement="tab"] [data-code-studio-workbench-region="proof-dock"] {
+  display: none !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-bottom-tabs {
+  min-height: 34px;
+  padding: 0 10px;
+  gap: 10px;
+  background: #181818;
+  border-bottom: 1px solid var(--mcel-code-editor-border);
+  font-size: 11px;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-proof-dock-tabs {
+  flex: 1;
+  overflow: hidden;
+  color: #8e8e8e;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-studio-statusbar {
+  grid-area: statusbar !important;
+  min-height: var(--mcel-code-editor-status-block) !important;
+  max-height: var(--mcel-code-editor-status-block) !important;
+  padding-inline: 8px;
+  background: #181818 !important;
+  border-top: 1px solid #252525;
+  color: #b7b7b7;
+  font-size: 10px;
+  overflow: hidden !important;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-splitter {
+  position: absolute;
+  z-index: 150;
+  background: transparent;
+  touch-action: none;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-splitter:focus,
+#code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-splitter:hover {
+  background: color-mix(in srgb, var(--mcel-code-editor-accent) 70%, transparent);
+  outline: none;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] [data-code-editor-layout-splitter="explorer"] {
+  top: 0;
+  bottom: 0;
+  left: calc(var(--mcel-code-editor-activity-inline) + var(--mcel-code-editor-explorer-inline) - 3px);
+  width: var(--mcel-code-editor-splitter-hit);
+  cursor: col-resize;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-explorer-placement="trigger"] [data-code-editor-layout-splitter="explorer"] {
+  display: none;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] [data-code-editor-layout-splitter="inspector"] {
+  top: 0;
+  right: calc(var(--mcel-code-editor-inspector-inline) - 3px);
+  bottom: 0;
+  width: var(--mcel-code-editor-splitter-hit);
+  cursor: col-resize;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="bottom"] [data-code-editor-layout-splitter="inspector"] {
+  top: calc(100% - var(--mcel-code-editor-inspector-bottom-block) - 3px);
+  right: 0;
+  bottom: auto;
+  left: calc(var(--mcel-code-editor-activity-inline) + var(--mcel-code-editor-explorer-inline));
+  width: auto;
+  height: var(--mcel-code-editor-splitter-hit);
+  cursor: row-resize;
+}
+
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="tab"] [data-code-editor-layout-splitter="inspector"],
+#code-editor-app[data-mcel-layout-live="true"][data-mcel-inspector-placement="trigger"] [data-code-editor-layout-splitter="inspector"] {
+  display: none;
+}
+
+#code-editor-app[data-mcel-layout-live="true"] [data-code-editor-layout-splitter="proof"] {
+  right: var(--mcel-code-editor-inspector-inline);
+  bottom: calc(var(--mcel-code-editor-status-block) + var(--mcel-code-editor-proof-block) - 3px);
+  left: calc(var(--mcel-code-editor-activity-inline) + var(--mcel-code-editor-explorer-inline));
+  height: var(--mcel-code-editor-splitter-hit);
+  cursor: row-resize;
+}
+
+#code-editor-app[data-mcel-layout-live="true"]:not([data-mcel-proof-placement="bottom"]) [data-code-editor-layout-splitter="proof"] {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  #code-editor-app[data-mcel-layout-live="true"] .code-studio-command-meta,
+  #code-editor-app[data-mcel-layout-live="true"] .code-studio-command-pill,
+  #code-editor-app[data-mcel-layout-live="true"] .code-editor-gridstack-status {
+    display: none;
+  }
+
+  #code-editor-app[data-mcel-layout-live="true"] .code-studio-title-actions > button:not(#code-editor-gridstack-toggle) {
+    display: none;
+  }
+
+  #code-editor-app[data-mcel-layout-live="true"] .code-studio-command-center {
+    min-width: 0;
+  }
+}

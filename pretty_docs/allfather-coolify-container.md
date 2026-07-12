@@ -45,6 +45,44 @@ Each compose file has one service.  The service builds from the committed
 `MC_ALLFATHER_MANIFEST_B64`.
 
 
+
+
+## Bring up the all-father network first
+
+The first remote deployment step is the guard/head mesh.  This pushes one
+all-father super-container service to every Coolify host with the full desired
+manifest and port inventory, but with child workloads held down.
+
+```bash
+python tools/coolify_allfather_container.py apply testnet \
+  --set-id testnet-1 \
+  --phase heads \
+  --coolify-project-name main-computer \
+  --coolify-server-name local-docker
+```
+
+The deployed heads answer on their guard ports immediately:
+
+```text
+coolify-a testnet-1 guard: http://10.116.0.3:41410
+coolify-b testnet-1 guard: http://10.124.0.3:41411
+```
+
+In `heads` phase, the manifest still tells each guard how many FoundationDB,
+Hub, and validator-RPC nodes it should eventually run, and who its peer guards
+are.  The guard starts with `initial_desired_up=false` and `initial_drained=true`
+so it can exchange `/identity` and `/topology` before waking the actual nodes.
+After the heads can see each other, operators can either POST `/up` to the guard
+endpoints or re-apply with `--phase full`.
+
+```bash
+python tools/coolify_allfather_container.py apply testnet \
+  --set-id testnet-1 \
+  --phase full \
+  --coolify-project-name main-computer \
+  --coolify-server-name local-docker
+```
+
 ## Multiple sets on the same two hosts
 
 `network_key` is the behavior profile. `set_id` is the running instance.  This
@@ -98,6 +136,78 @@ A peer can call another peer's `/identity` or `/topology` endpoint, compare what
 the peer claims with its own manifest, and adjust the top-level topology view
 without relying on static host roles.
 
+## Host-local imported service names
+
+Imported topology files may use global names such as `mainnet-hub1`,
+`mainnet-hub2`, and `mainnet-hub3`.  The all-father compiler now re-labels
+those imported services with host-local counted names inside the compiled cell:
+
+```text
+coolify-a on mainnet: mainneta-hub1, mainneta-hub2, ...
+coolify-b on mainnet: mainnetb-hub1, mainnetb-hub2, ...
+coolify-a on testnet: testneta-hub1, testneta-hub2, ...
+coolify-b on testnet: testnetb-hub1, testnetb-hub2, ...
+```
+
+FoundationDB processes use the same host-local counting style, for example
+`mainneta-fdb1` and `mainnetb-fdb1`.  The manifest still preserves the imported
+source names as `source_hub_id`, `source_id`, or `source_name`, so operators can
+trace a compiled host-local function back to the original Coolify/FDB/Hub
+placement structure.
+
+This makes add/remove operations easier: each physical host has its own `hub1`,
+`hub2`, `fdb1`, and `fdb2` sequence, while `network_key` and `set_id` provide the
+outer scope for multiple mainnet/testnet sets on the same hosts.
+
+The compiler also emits host-local public Hub URLs that match the current DNS
+shape:
+
+```text
+mainneta-hub1.greatlibrary.io
+mainneta-hub2.greatlibrary.io
+mainnetb-hub1.greatlibrary.io
+testneta-hub1.greatlibrary.io
+testneta-hub2.greatlibrary.io
+testnetb-hub1.greatlibrary.io
+```
+
+The imported placement URLs are retained as `source_public_url` for traceability.
+
+## Primary public Traefik routes
+
+The two public HTTP surfaces that matter for each super-container are:
+
+```text
+<host-prefix>-hubN.greatlibrary.io -> same super-container internal Hub port
+<host-prefix>-rpcN.greatlibrary.io -> same super-container internal validator-RPC port
+```
+
+Examples:
+
+```text
+mainneta-hub1.greatlibrary.io -> mainneta super node 1 Hub process
+mainneta-rpc1.greatlibrary.io -> mainneta super node 1 validator-RPC process
+mainnetb-hub1.greatlibrary.io -> mainnetb super node 1 Hub process
+mainnetb-rpc1.greatlibrary.io -> mainnetb super node 1 validator-RPC process
+```
+
+The compiler emits these routes in `public_routes`,
+`identity.public_routes`, `MC_ALLFATHER_PUBLIC_ROUTES`, and
+`MC_ALLFATHER_PUBLIC_ROUTES_B64`.  The generated compose also carries Traefik
+labels such as:
+
+```text
+traefik.http.routers.mainneta-hub1.rule=Host(`mainneta-hub1.greatlibrary.io`)
+traefik.http.services.mainneta-hub1-svc.loadbalancer.server.port=<hub-port>
+traefik.http.routers.mainneta-rpc1.rule=Host(`mainneta-rpc1.greatlibrary.io`)
+traefik.http.services.mainneta-rpc1-svc.loadbalancer.server.port=<rpc-port>
+```
+
+Hub and RPC ports remain visible in the port inventory, but they are no longer
+directly host-published by the all-father compose.  Traefik is responsible for
+public HTTP routing.  Guard remains private/operator-facing, while FoundationDB
+and Besu P2P remain raw TCP/VPN surfaces.
+
 ## Guard ports
 
 The guard listens inside the container on:
@@ -134,6 +244,8 @@ MC_ALLFATHER_GUARD_PORTS
 MC_ALLFATHER_FDB_PORTS
 MC_ALLFATHER_HUB_PORTS
 MC_ALLFATHER_QBFT_PORTS
+MC_ALLFATHER_PUBLIC_ROUTES
+MC_ALLFATHER_PUBLIC_ROUTES_B64
 MC_ALLFATHER_PORT_SUMMARY
 MC_ALLFATHER_PORT_INVENTORY_B64
 ```
@@ -159,17 +271,35 @@ The important defaults are:
 ```text
 guard: 41414 inside the container, 41410+ testnet/test host ports, 41420+ mainnet host ports
 FDB:   the committed FoundationDB placement ports, usually 4550/4551, shifted per set when needed
-Hub:   the Hub network bind port as the local base, incremented locally and shifted per set
-QBFT:  the existing Besu RPC/P2P host ports from the QBFT plan, shifted on the host side per set
+Hub:   the Hub network bind port as the internal HTTP target for Traefik
+QBFT:  validator-RPC Besu JSON-RPC as the internal HTTP target for Traefik; Besu P2P remains host-published for peers
 ```
+
+## Validator-RPC normalization
+
+The all-father compiler no longer preserves validator-only or RPC-only branches.
+Every compiled QBFT process is a validator-RPC node:
+
+```text
+role: validator-rpc
+roles:
+  - validator
+  - rpc
+```
+
+If the imported QBFT seed has no service for a Coolify host, the compiler creates
+a synthetic host-local validator-RPC entry so every deployed super-container has
+its own RPC endpoint.  Imported source service names are preserved as
+`source_id` or `source_name`.
 
 Example readable compose environment values for a testnet cell:
 
 ```text
 MC_ALLFATHER_GUARD_PORTS=allfather-guard=10.116.0.3:41410->41414/tcp
-MC_ALLFATHER_FDB_PORTS=testnet-fdb1=10.116.0.3:4550->4550/tcp,testnet-fdb2=10.116.0.3:4551->4551/tcp
-MC_ALLFATHER_HUB_PORTS=testnet-hub1=10.116.0.3:8785->8785/tcp,testnet-hub2=10.116.0.3:8786->8786/tcp
-MC_ALLFATHER_QBFT_PORTS=validator-1-rpc=127.0.0.1:30010->8545/tcp,validator-1-p2p=10.116.0.3:30303->30303/tcp
+MC_ALLFATHER_FDB_PORTS=testneta-fdb1=10.116.0.3:4550->4550/tcp,testneta-fdb2=10.116.0.3:4551->4551/tcp
+MC_ALLFATHER_HUB_PORTS=testneta-hub1=container:8785/tcp,testneta-hub2=container:8786/tcp
+MC_ALLFATHER_QBFT_PORTS=testneta-validator-rpc1-rpc=container:8545/tcp,testneta-validator-rpc1-p2p=0.0.0.0:30311->30303/tcp
+MC_ALLFATHER_PUBLIC_ROUTES=testneta-hub1=https://testneta-hub1.greatlibrary.io->8785/tcp,testneta-rpc1=https://testneta-rpc1.greatlibrary.io->8545/tcp
 ```
 
 ## Guard API
@@ -212,6 +342,51 @@ namespace that a later peer-lease layer can use so guards can claim restarts
 across cells without thundering herds.
 
 
+## All-father private state
+
+The all-father deployment path should not depend on the full
+`runtime/state/main_computer.private.yaml` file.  Initialize the smaller
+all-father private state by copying only the Coolify API/project/server bindings:
+
+```bash
+python tools/allfather_private_state.py migrate-coolify --dry-run
+python tools/allfather_private_state.py migrate-coolify --force
+```
+
+By default this reads:
+
+```text
+runtime/state/main_computer.private.yaml
+```
+
+and writes:
+
+```text
+runtime/state/all_father.private.yaml
+```
+
+The generated file has this shape:
+
+```yaml
+schema_version: 1
+kind: main_computer.all_father.private_state.v1
+generated_from:
+  path: runtime/state/main_computer.private.yaml
+  copied_sections:
+    - coolify
+coolify:
+  hosts:
+    A:
+      name: coolify-a
+      url: https://...
+      api_token: ...
+```
+
+Wallets, chain network private keys, and broader app runtime settings are not
+copied.  The all-father compiler defaults to this new file for remote Coolify
+commands, while `--private-state <path>` remains available for explicit
+overrides.
+
 ## Unified remote Coolify commands
 
 The same compiler can render local files or talk to remote Coolify.  The remote
@@ -231,23 +406,33 @@ python tools/coolify_allfather_container.py plan testnet \
   --coolify-server-name local-docker
 ```
 
-Remote dry-run using private state for Coolify URLs/tokens:
+Remote dry-run using the default all-father private state for Coolify URLs/tokens:
 
 ```bash
 python tools/coolify_allfather_container.py apply testnet \
   --set-id testnet-1 \
+  --phase heads \
   --dry-run \
-  --private-state runtime/state/main_computer.private.yaml \
   --coolify-project-name main-computer \
   --coolify-server-name local-docker
 ```
 
-Remote apply:
+Remote head apply:
 
 ```bash
 python tools/coolify_allfather_container.py apply testnet \
   --set-id testnet-1 \
-  --private-state runtime/state/main_computer.private.yaml \
+  --phase heads \
+  --coolify-project-name main-computer \
+  --coolify-server-name local-docker
+```
+
+Remote full apply, after the head guards are reachable:
+
+```bash
+python tools/coolify_allfather_container.py apply testnet \
+  --set-id testnet-1 \
+  --phase full \
   --coolify-project-name main-computer \
   --coolify-server-name local-docker
 ```
@@ -259,7 +444,6 @@ python tools/coolify_allfather_container.py apply mainnet \
   --set-id mainnet-1 \
   --allow-mainnet \
   --dry-run \
-  --private-state runtime/state/main_computer.private.yaml \
   --coolify-project-name main-computer \
   --coolify-server-name local-docker
 ```
@@ -278,5 +462,7 @@ multiple validators run in one all-father container, they share the same kernel,
 container lifecycle, and state root.  That can prove the deployment and
 maintenance path, but it is not equivalent to independent validator hosts.
 
-The first safe deployment step is to compile and inspect the raw compose files,
-then deploy one all-father service per Coolify server.
+The first safe deployment step is `apply --phase heads`, which deploys the
+guard/head mesh to every Coolify host.  Only after those guards answer should the
+actual Hub, FoundationDB, and validator-RPC nodes be woken or deployed in
+`--phase full`.

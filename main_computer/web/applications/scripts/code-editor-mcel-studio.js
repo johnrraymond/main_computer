@@ -7117,7 +7117,12 @@
             showPane("source");
           }
           if (panel === "assistant") {
-            setProofDockExpanded(true, "Bottom Proof Dock opened for assistant and proof detail output.");
+            const layoutController = window.MainComputerCodeEditorLayoutController;
+            if (layoutController?.activateCenterTab) {
+              layoutController.activateCenterTab("inspector");
+            } else {
+              setProofDockExpanded(true, "Bottom Proof Dock opened for assistant and proof detail output.");
+            }
           }
         });
       });
@@ -7279,81 +7284,34 @@
     (() => {
       const root = document.querySelector("#code-editor-app");
       if (!root) return;
-      const toggle = root.querySelector("#code-editor-gridstack-toggle");
-      const reset = root.querySelector("#code-editor-gridstack-reset");
+
+      const layoutApi = window.MainComputerCodeEditorLayout;
       const status = root.querySelector("#code-editor-gridstack-status");
-      const layoutKey = "main-computer-code-editor-gridstack-layout-v1";
-      const enabledKey = "main-computer-code-editor-gridstack-enabled-v1";
-      let grid = null;
+      const legacyLockedLabel = "Layout locked";
 
-      function setGridStatus(message) {
-        if (status) status.textContent = message;
+      if (!layoutApi?.mount) {
+        if (status) status.textContent = "MCEL layout contract unavailable";
+        return;
       }
 
-      function saveCodeEditorGridStackLayout() {
-        if (!grid) return;
-        try {
-          localStorage.setItem(layoutKey, JSON.stringify(grid.save(false)));
-        } catch {
-          setGridStatus("GridStack layout could not be saved.");
-        }
+      const controller = layoutApi.mount(root);
+      if (!controller) {
+        if (status) status.textContent = "MCEL layout contract could not mount";
+        return;
       }
 
-      function disableCodeEditorGridStackTest() {
-        try {
-          if (grid) grid.destroy(false);
-        } catch {}
-        grid = null;
-        root.dataset.gridstackEnabled = "false";
-        try { localStorage.setItem(enabledKey, "false"); } catch {}
-        setGridStatus("Layout locked");
-      }
-
-      function enableCodeEditorGridStackTest() {
-        if (!window.GridStack) {
-          setGridStatus("GridStack library unavailable");
-          return null;
-        }
-        const container = root.querySelector(".code-studio-body");
-        if (!container) {
-          setGridStatus("GridStack container unavailable");
-          return null;
-        }
-        try {
-          grid = GridStack.init({
-            cellHeight: 80,
-            float: true,
-            margin: 4,
-            resizable: {handles: "e, se, s, sw, w"},
-          }, container);
-          root.dataset.gridstackEnabled = "true";
-          localStorage.setItem(enabledKey, "true");
-          setGridStatus("Layout unlocked");
-          grid.on("change", saveCodeEditorGridStackLayout);
-          return grid;
-        } catch {
-          setGridStatus("GridStack could not attach to this shell.");
-          return null;
-        }
-      }
-
-      toggle?.addEventListener("click", () => {
-        if (grid) {
-          disableCodeEditorGridStackTest();
-        } else {
-          enableCodeEditorGridStackTest();
-        }
-      });
-      reset?.addEventListener("click", () => {
-        try { localStorage.removeItem(layoutKey); } catch {}
-        if (grid) {
-          disableCodeEditorGridStackTest();
-          enableCodeEditorGridStackTest();
-        }
-        setGridStatus("Layout reset");
-      });
-
-      window.enableCodeEditorGridStackTest = enableCodeEditorGridStackTest;
-      window.disableCodeEditorGridStackTest = disableCodeEditorGridStackTest;
-      window.saveCodeEditorGridStackLayout = saveCodeEditorGridStackLayout;
+      // Compatibility aliases keep older diagnostics and external test hooks callable while
+      // the canonical persistence model is now semantic MCEL layout preferences, not GridStack coordinates.
+      window.enableCodeEditorGridStackTest = () => {
+        controller.setMenuOpen(true);
+        return controller;
+      };
+      window.disableCodeEditorGridStackTest = () => {
+        controller.setMenuOpen(false);
+        if (status && !status.textContent) status.textContent = legacyLockedLabel;
+        return controller;
+      };
+      window.saveCodeEditorGridStackLayout = () => controller.persist();
+      window.resetCodeEditorLayout = () => controller.reset();
+      window.applyCodeEditorLayoutOperation = (operation) => controller.applyOperation(operation);
     })();
