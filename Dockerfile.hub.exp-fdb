@@ -45,4 +45,4 @@ CMD ["python", "/app/run-exp-fdb-hub.py"]
 # the container before the hub listener can be inspected. Re-enable a real
 # /api/hub/v1/health healthcheck after the startup accept-timeout issue is fixed.
 HEALTHCHECK --interval=2s --timeout=2s --start-period=0s --retries=30 \
-    CMD-SHELL "exit 0"
+    CMD /bin/sh -c "exit 0"
