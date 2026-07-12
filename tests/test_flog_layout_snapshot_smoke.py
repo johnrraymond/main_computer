@@ -4631,10 +4631,10 @@ def test_layout_hint_milestone2_adds_only_bounded_responsive_shadow_candidates()
         if isinstance(item, dict)
         and item.get("mode") == "layout-hint-user-responsive-shadow"
     ]
-    assert len(candidates) == len(module.LAYOUT_CANDIDATES) + 5 + 13
-    assert len(shadow) == 5 + 13
+    assert len(candidates) == len(module.LAYOUT_CANDIDATES) + 5 + 15
+    assert len(shadow) == 5 + 15
     assert len(responsive) == 5
-    assert len(user_browser) == 13
+    assert len(user_browser) == 15
     assert {
         item["responsivePlacement"] for item in responsive
     } == {"right", "bottom", "tab", "stage", "trigger"}
@@ -5987,12 +5987,12 @@ def test_layout_hint_milestone32_compiles_bounded_personalized_browser_candidate
         "tab-with-workflow",
     ]
     assert all(item["applied"]["state"] == "complete" for item in profiles)
-    assert len(candidates) == 13
+    assert len(candidates) == 15
     assert sum(
         1
         for item in candidates
         if item["userLayoutMutation"]["variant"] == "wide-restored"
-    ) == 1
+    ) == 3
     assert all(item["shadowOnly"] is True for item in candidates)
     assert all(item["responsiveEligible"] is False for item in candidates)
     assert all(
@@ -6002,7 +6002,7 @@ def test_layout_hint_milestone32_compiles_bounded_personalized_browser_candidate
     assert sum(
         len(module.phase_trial_scenarios(hierarchy))
         for _item in candidates
-    ) == 78
+    ) == 90
     assert all(
         item["layoutHintCompilation"]["liveApplicationFilesTouched"] is False
         for item in candidates
@@ -6064,6 +6064,22 @@ def test_layout_hint_milestone32_resolves_user_profiles_across_capacity_without_
         if item["id"] == "user-layout--tab-with-workflow--wide"
     )
     assert tab["userLayoutMutation"]["tabWithUnitId"] == "command-workflow"
+    assert tab["userLayoutMutation"]["userTabWorkbench"] is True
+    assert tab["composition"]["unitPolicies"]["phase-support"] == "user-tab-workbench"
+    assert tab["presentationContractKey"] == "user-tab-workbench"
+    assert tab["userLayoutMutation"]["summaryMinimumShares"]["source"] == (
+        "required-companion-floor-browser-calibrated"
+    )
+    narrow_tab = next(
+        item
+        for item in candidates
+        if item["id"] == "user-layout--tab-with-workflow--narrow"
+    )
+    assert narrow_tab["userLayoutMutation"]["userTabWorkbench"] is False
+    assert (
+        narrow_tab["composition"]["unitPolicies"]["phase-support"]
+        == "tabbed-phase-support"
+    )
 
 
 def test_layout_hint_milestone32_user_candidates_render_semantic_share_attributes_not_pixels():
@@ -6164,6 +6180,7 @@ def test_layout_hint_milestone32_browser_evidence_requires_matching_restored_fin
             "preferredShare": 0.28,
             "collapsedUnitIds": ["project-identity"],
             "tabWithUnitId": "",
+            "restorationFingerprintRequired": True,
             "remediations": [],
             "preferenceRetained": True,
             "restoresWhenFeasible": True,
@@ -6255,6 +6272,7 @@ def test_layout_hint_milestone32_browser_evidence_requires_matching_restored_fin
     assert evidence[0]["browserAggregateCount"] == 2
     assert evidence[0]["pngProofCount"] == 12
     assert evidence[0]["profiles"][0]["restorationFingerprintMatch"] is True
+    assert evidence[0]["profiles"][0]["restorationFingerprintStatus"] == "matched"
     assert evidence[0]["undoResetEvidence"]["restoredAuthoredDefault"] is True
     assert evidence[0]["migrationEvidence"]["state"] == "complete"
 
@@ -6278,6 +6296,420 @@ def test_layout_hint_milestone32_serializes_undo_reset_and_stable_id_migration_e
         == "repository.phase-support"
     )
     assert module.USER_LAYOUT_HINT_BROWSER_PROOF_VERSION == (
-        "mcel-user-layout-browser-proof-v1"
+        "mcel-user-layout-browser-proof-v4"
     )
     assert module.USER_LAYOUT_HINT_BROWSER_MODE == "shadow-browser-proof"
+
+
+def test_layout_hint_milestone35_user_tab_workbench_calibrates_realized_parent_geometry():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    candidate = next(
+        item
+        for item in module.compile_user_layout_hint_browser_candidates(hierarchy)
+        if item["id"] == "user-layout--tab-with-workflow--wide"
+    )
+    viewport = module.ViewportProfile("wide", 1600, 1000, True)
+
+    for phase in ("planning", "proof-review", "recovery"):
+        base = next(
+            item
+            for item in module.semantic_phase_scenarios(hierarchy)
+            if item["phase"] == phase
+        )
+        scenario = module.responsive_phase_scenario(
+            hierarchy,
+            base,
+            viewport,
+            candidate,
+        )
+        assert scenario["responsivePresentation"]["presentationBand"] == (
+            "user-tab-workbench"
+        )
+        assert scenario["responsivePresentation"]["mode"] == "user-tab-support"
+        assert scenario["summarySlots"] == ["command", "workflow"]
+        assert scenario["requiredSlots"] == ["project-context", "status"]
+        assert scenario["returnToSlot"] == "workflow"
+
+    planning = next(
+        item
+        for item in module.semantic_phase_scenarios(hierarchy)
+        if item["phase"] == "planning"
+    )
+    scenario = module.responsive_phase_scenario(
+        hierarchy,
+        planning,
+        viewport,
+        candidate,
+    )
+    realized = module.realize_phase(hierarchy, candidate, scenario)
+    by_slot = {item["slot"]: item for item in realized["nodes"]}
+    assert by_slot["command"]["realization"] == "compact-summary"
+    assert by_slot["workflow"]["realization"] == "compact-summary"
+    assert by_slot["project-context"]["realization"] != "compact-trigger"
+    assert by_slot["status"]["realization"] != "compact-trigger"
+
+    rendered = module.render_realized_trial_html(
+        realized,
+        candidate,
+        "mcel-realistic",
+    )
+    assert 'data-flog-user-tab-workbench="true"' in rendered
+    assert (
+        'data-flog-user-summary-floor-source="required-companion-floor-browser-calibrated"'
+        in rendered
+    )
+    assert (
+        'data-flog-user-summary-calibration-mode="realized-parent-two-pass"'
+        in rendered
+    )
+    summary_contract = candidate["userLayoutMutation"]["summaryMinimumShares"]
+    assert summary_contract["requestedRootShares"] == {
+        "workflow": 0.055,
+        "command": 0.026,
+    }
+    assert summary_contract["allocatedRootShares"] == {
+        "workflow": 0.059,
+        "command": 0.03,
+    }
+    assert summary_contract["parentEffectiveRootShare"] is None
+    assert summary_contract["resolvedLocalShares"] == {}
+    assert abs(summary_contract["requestedTrackRootShare"] - 0.107) < 1e-9
+    assert summary_contract["calibrationMode"] == "realized-parent-two-pass"
+    assert (
+        'data-flog-user-workflow-summary-allocated-root-share="0.059"'
+        in rendered
+    )
+    assert (
+        'data-flog-user-command-summary-allocated-root-share="0.03"'
+        in rendered
+    )
+    assert "--flog-user-tab-summary-track-min-block:10.7000vh;" in rendered
+    assert 'data-flog-summary-for="workflow"' in rendered
+    assert 'data-flog-return-to="workflow"' in rendered
+    assert 'id="flog-surface-workflow"' not in rendered
+    assert ".unit-policy-user-tab-workbench" in module.TRIAL_CSS
+    assert "initialParentRootShare" in module.USER_TAB_WORKBENCH_CALIBRATION_JS
+    assert "finalParentRootShare" in module.USER_TAB_WORKBENCH_CALIBRATION_JS
+    assert "data-flog-user-summary-calibrated" in (
+        module.USER_TAB_WORKBENCH_CALIBRATION_JS
+    )
+
+
+def test_layout_hint_milestone35_summary_delivery_uses_browser_calibration_and_measured_root_share():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    contract = module._user_tab_workbench_summary_contract(hierarchy)
+    mutation = {
+        "userTabWorkbench": True,
+        "summaryMinimumShares": contract,
+    }
+    root = {
+        "area": 100000.0,
+        "width": 1000.0,
+        "height": 100.0,
+        "left": 0.0,
+        "top": 0.0,
+        "right": 1000.0,
+        "bottom": 100.0,
+    }
+    calibration = {
+        "required": True,
+        "state": "complete",
+        "passed": True,
+        "calibrationMode": "realized-parent-two-pass",
+        "finalParentRootShare": 0.11,
+        "resolvedLocalShares": {
+            "command": 0.2727272727,
+            "workflow": 0.5363636364,
+            "safety": 0.1909090909,
+        },
+        "deliveredRootShares": {
+            "command": 0.031,
+            "workflow": 0.060,
+        },
+    }
+    item = {
+        "phaseMeasurements": [
+            {
+                "phase": "planning",
+                "realizationStates": {
+                    "command": "compact-summary",
+                    "workflow": "compact-summary",
+                },
+                "userLayoutCalibration": calibration,
+                "geometryFacts": {"root": {"clipped": root}},
+                "examples": {
+                    "nodes": [
+                        {
+                            "slot": "command",
+                            "effectiveVisibleShare": 0.031,
+                        },
+                        {
+                            "slot": "workflow",
+                            "effectiveVisibleShare": 0.060,
+                        },
+                    ]
+                },
+            }
+        ]
+    }
+
+    passed = module._user_layout_summary_delivery_diagnostics(item, mutation)
+    assert passed["passed"] is True
+    assert passed["coordinateSystem"] == (
+        "browser-measured-parent-to-local-two-pass"
+    )
+    assert passed["calibrationMode"] == "realized-parent-two-pass"
+    assert passed["calibrations"][0]["state"] == "complete"
+    workflow_row = next(
+        row for row in passed["rows"] if row["slot"] == "workflow"
+    )
+    assert workflow_row["requiredRootShare"] == 0.055
+    assert abs(workflow_row["resolvedLocalShare"] - 0.5363636364) < 1e-9
+    assert workflow_row["measuredParentRootShare"] == 0.11
+
+    item["phaseMeasurements"][0]["examples"]["nodes"][1][
+        "effectiveVisibleShare"
+    ] = 0.035
+    failed = module._user_layout_summary_delivery_diagnostics(item, mutation)
+    assert failed["passed"] is False
+    assert "planning workflow summary delivered 3.50% of root" in failed[
+        "failures"
+    ][0]
+
+    item["phaseMeasurements"][0]["userLayoutCalibration"] = {}
+    missing = module._user_layout_summary_delivery_diagnostics(item, mutation)
+    assert missing["passed"] is False
+    assert any(
+        "calibration did not complete" in failure
+        for failure in missing["failures"]
+    )
+
+
+def test_layout_hint_milestone35_browser_gate_fails_closed_on_calibrated_summary_under_delivery():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    contract = module._user_tab_workbench_summary_contract(hierarchy)
+    mutation = {
+        "profileId": "tab-with-workflow",
+        "variant": "preferred-or-remediated",
+        "preferredPlacement": "tab",
+        "effectivePlacement": "tab",
+        "userTabWorkbench": True,
+        "summaryMinimumShares": contract,
+        "restorationFingerprintRequired": True,
+        "remediations": [],
+        "preferenceRetained": True,
+        "restoresWhenFeasible": True,
+    }
+    root = {
+        "area": 100000.0,
+        "width": 1000.0,
+        "height": 100.0,
+        "left": 0.0,
+        "top": 0.0,
+        "right": 1000.0,
+        "bottom": 100.0,
+    }
+    phase = {
+        "phase": "planning",
+        "realizationStates": {
+            "command": "compact-summary",
+            "workflow": "compact-summary",
+        },
+        "classification": {
+            "hardFailureCount": 0,
+            "blockedCriticalControlCount": 0,
+        },
+        "userLayoutCalibration": {
+            "required": True,
+            "state": "complete",
+            "passed": True,
+            "calibrationMode": "realized-parent-two-pass",
+            "finalParentRootShare": 0.11,
+            "resolvedLocalShares": {
+                "command": 0.2727272727,
+                "workflow": 0.5363636364,
+                "safety": 0.1909090909,
+            },
+            "deliveredRootShares": {
+                "command": 0.031,
+                "workflow": 0.035,
+            },
+        },
+        "geometryFacts": {"root": {"clipped": root}},
+        "examples": {
+            "nodes": [
+                {"slot": "command", "effectiveVisibleShare": 0.031},
+                {"slot": "workflow", "effectiveVisibleShare": 0.035},
+            ]
+        },
+    }
+    item = {
+        "candidate": "user-layout--tab-with-workflow--wide",
+        "candidateSpec": {"userLayoutMutation": mutation},
+        "viewportProfile": "wide",
+        "viewportWidth": 1600,
+        "viewportHeight": 1000,
+        "classification": {
+            "status": "pass",
+            "score": 96,
+            "selectionScore": 96,
+            "selectionScoreRaw": 96.0,
+            "failureReasons": [],
+        },
+        "phaseFit": {
+            "hardFailureCount": 0,
+            "worstDominantHeadroom": 0.02,
+            "worstRawDominantHeadroom": 0.02,
+        },
+        "layoutUnitFit": {
+            "hardFailureCount": 0,
+            "worstScore": 97,
+            "worstScoreRaw": 97.0,
+        },
+        "phaseMeasurements": [phase],
+        "renderedPolicyFingerprint": "same",
+    }
+
+    summary = module._user_layout_browser_measurement_summary(item)
+    assert summary["status"] == "pass"
+    assert summary["summaryAllocationPassed"] is False
+    assert summary["browserGatePassed"] is False
+    assert summary["summaryAllocationDiagnostics"]["failures"]
+
+
+def test_layout_hint_milestone33_requires_restoration_for_every_claiming_profile():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    candidates = module.compile_user_layout_hint_browser_candidates(hierarchy)
+
+    for profile_id in (
+        "bottom-28-collapsed-identity",
+        "right-24",
+        "tab-with-workflow",
+    ):
+        rows = [
+            item
+            for item in candidates
+            if item["userLayoutMutation"]["profileId"] == profile_id
+        ]
+        assert len(rows) == 5
+        assert sum(
+            item["userLayoutMutation"]["variant"] == "wide-restored"
+            for item in rows
+        ) == 1
+        assert all(
+            item["userLayoutMutation"]["restorationFingerprintRequired"] is True
+            for item in rows
+        )
+
+
+def test_layout_hint_milestone33_reports_unclaimed_restoration_as_not_applicable():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    phase_rows = [
+        {
+            "phase": phase,
+            "classification": {
+                "hardFailureCount": 0,
+                "blockedCriticalControlCount": 0,
+            },
+        }
+        for phase in (
+            "project-selection",
+            "selected-project-default",
+            "planning",
+            "execution",
+            "proof-review",
+            "recovery",
+        )
+    ]
+    measurement = {
+        "hierarchyId": hierarchy["id"],
+        "candidate": "user-layout-not-applicable",
+        "candidateMode": "layout-hint-user-responsive-shadow",
+        "candidateSpec": {
+            "userLayoutMutation": {
+                "profileId": "not-applicable",
+                "variant": "preferred-or-remediated",
+                "preferredPlacement": "tab",
+                "effectivePlacement": "tab",
+                "restorationFingerprintRequired": False,
+                "remediations": [],
+                "preferenceRetained": True,
+                "restoresWhenFeasible": True,
+            }
+        },
+        "viewportProfile": "wide",
+        "viewportWidth": 1600,
+        "viewportHeight": 1000,
+        "classification": {
+            "status": "pass",
+            "score": 96,
+            "selectionScore": 96,
+            "selectionScoreRaw": 96.2,
+            "hardFailureCount": 0,
+            "blockedCriticalControlCount": 0,
+            "failureReasons": [],
+        },
+        "phaseFit": {
+            "hardFailureCount": 0,
+            "worstDominantHeadroom": 0.02,
+            "worstRawDominantHeadroom": 0.02,
+            "phases": [],
+        },
+        "layoutUnitFit": {
+            "hardFailureCount": 0,
+            "worstScore": 97,
+            "worstScoreRaw": 97.0,
+        },
+        "unitComposition": {},
+        "phaseMeasurements": phase_rows,
+        "phaseSnapshots": {
+            phase["phase"]: {"viewport": f"{phase['phase']}.png"}
+            for phase in phase_rows
+        },
+        "renderedPolicyFingerprint": "not-required",
+    }
+    evidence = module.analyze_user_layout_hint_browser_evidence(
+        hierarchies=[hierarchy],
+        measurements=[measurement],
+        responsive_policies=[
+            {
+                "hierarchyId": hierarchy["id"],
+                "state": "pass",
+                "wideToNarrowStable": True,
+                "narrowToWideStable": True,
+                "unverifiedTransitionCount": 0,
+                "insufficientHysteresisTransitionCount": 0,
+            }
+        ],
+    )
+    profile = evidence[0]["profiles"][0]
+    assert profile["state"] == "complete"
+    assert profile["restorationFingerprintRequired"] is False
+    assert profile["restorationFingerprintStatus"] == "not-applicable"
+    assert profile["restorationFingerprintMatch"] is None
+    assert evidence[0]["allRequiredRestorationsMatched"] is True

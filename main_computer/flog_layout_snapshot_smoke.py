@@ -109,8 +109,9 @@ LAYOUT_HINT_FALLBACK_PROFILES = {
 USER_LAYOUT_HINT_CONTRACT_VERSION = "mcel-user-layout-hints-v1"
 USER_LAYOUT_HINT_OPERATION_VERSION = "mcel-user-layout-operations-v1"
 USER_LAYOUT_HINT_MODE = "shadow-only"
-USER_LAYOUT_HINT_BROWSER_PROOF_VERSION = "mcel-user-layout-browser-proof-v1"
+USER_LAYOUT_HINT_BROWSER_PROOF_VERSION = "mcel-user-layout-browser-proof-v4"
 USER_LAYOUT_HINT_BROWSER_MODE = "shadow-browser-proof"
+USER_LAYOUT_HINT_USER_TAB_PRESENTATION = "user-tab-workbench"
 USER_LAYOUT_HINT_BROWSER_VIEWPORTS = (
     ("wide", 1600),
     ("medium", 1200),
@@ -1737,7 +1738,7 @@ def candidate_phase_policy(candidate: str | dict[str, Any]) -> dict[str, Any]:
         placement = "bottom-drawer"
     elif support_policy == "inline-phase-stage":
         placement = "inline-stage"
-    elif support_policy == "tabbed-phase-support":
+    elif support_policy in {"tabbed-phase-support", "user-tab-workbench"}:
         placement = "tab-group"
     elif support_policy == "sequential-phase-stage":
         placement = "sequential-stage"
@@ -3182,7 +3183,7 @@ def user_layout_hint_browser_profiles(
                     "share": 0.24,
                 },
             ],
-            "proveRestorationFingerprint": False,
+            "proveRestorationFingerprint": True,
         },
         {
             "profileId": "tab-with-workflow",
@@ -3198,7 +3199,7 @@ def user_layout_hint_browser_profiles(
                     "targetUserId": workflow_id,
                 }
             ],
-            "proveRestorationFingerprint": False,
+            "proveRestorationFingerprint": True,
         },
     ]
 
@@ -3223,9 +3224,62 @@ def user_layout_hint_browser_profiles(
     return profiles
 
 
+def _user_layout_required_context_floor(
+    hierarchy: dict[str, Any],
+    slot: str,
+) -> float:
+    """Return the same bounded companion floor used by phase scoring."""
+
+    node = _node_by_slot(hierarchy).get(slot, {})
+    declared = float(node.get("minVisibleShare", 0.012) or 0.012)
+    return max(0.010, min(declared, 0.055))
+
+
+def _user_tab_workbench_summary_contract(
+    hierarchy: dict[str, Any],
+) -> dict[str, Any]:
+    """Describe root-relative summary floors for browser calibration.
+
+    M3.5 deliberately does not guess the effective root share of the nested
+    ``command-workflow`` unit.  The HTML carries only semantic root-relative
+    requirements plus a conservative calibration scaffold.  Chromium then
+    measures the realized root, parent, and summary widths, resolves the local
+    track shares, applies them, and remeasures before any FLOG gate runs.
+    """
+
+    requested_root = {
+        "workflow": _user_layout_required_context_floor(hierarchy, "workflow"),
+        "command": _user_layout_required_context_floor(hierarchy, "command"),
+    }
+    root_margin = 0.004
+    allocated_root = {
+        slot: min(0.09, share + root_margin)
+        for slot, share in requested_root.items()
+    }
+    track_safety_root = 0.018
+    requested_track_root = min(
+        0.24,
+        sum(allocated_root.values()) + track_safety_root,
+    )
+    return {
+        "requestedRootShares": requested_root,
+        "allocatedRootShares": allocated_root,
+        "resolvedLocalShares": {},
+        "parentEffectiveRootShare": None,
+        "requestedTrackRootShare": requested_track_root,
+        "rootMarginShare": root_margin,
+        "trackSafetyRootShare": track_safety_root,
+        "calibrationMode": "realized-parent-two-pass",
+        "source": "required-companion-floor-browser-calibrated",
+    }
+
 def _user_layout_candidate_policy_for_placement(
     placement: str,
+    *,
+    user_authored_tab: bool = False,
 ) -> str:
+    if str(placement or "") == "tab" and user_authored_tab:
+        return USER_LAYOUT_HINT_USER_TAB_PRESENTATION
     return {
         "right": "bounded-side-drawer",
         "bottom": "bounded-bottom-drawer",
@@ -3240,10 +3294,10 @@ def compile_user_layout_hint_browser_candidates(
 ) -> list[dict[str, Any]]:
     """Compile accepted user profiles into bounded browser-rendered candidates.
 
-    M3.2 renders three semantic profiles across wide, medium, narrow, and compact
-    capacity.  One restored-wide duplicate is added for an exact painted-geometry
-    fingerprint comparison, yielding 13 candidate/viewport aggregates and 78 phase
-    PNGs for the six-phase Git fixture.
+    M3.5 renders three semantic profiles across wide, medium, narrow, and compact
+    capacity.  Every profile also receives a restored-wide duplicate for an exact
+    painted-geometry fingerprint comparison, yielding 15 candidate/viewport
+    aggregates and 90 phase PNGs for the six-phase Git fixture.
     """
 
     if not hierarchy.get("layoutHintSource"):
@@ -3303,11 +3357,22 @@ def compile_user_layout_hint_browser_candidates(
             support_placement = str(
                 effective_placements.get("phase-support") or "right"
             )
+            user_authored_tab = bool(
+                tab_with_user_id
+                and support_placement == "tab"
+                and viewport_name in {"wide", "medium"}
+            )
             support_policy = _user_layout_candidate_policy_for_placement(
-                support_placement
+                support_placement,
+                user_authored_tab=user_authored_tab,
             )
             if not support_policy:
                 continue
+            summary_contract = (
+                _user_tab_workbench_summary_contract(hierarchy)
+                if user_authored_tab
+                else {}
+            )
 
             composition = {
                 "rootPolicy": str(
@@ -3348,6 +3413,11 @@ def compile_user_layout_hint_browser_candidates(
                 ),
                 "tabWithUserId": tab_with_user_id,
                 "tabWithUnitId": user_to_unit.get(tab_with_user_id, ""),
+                "userTabWorkbench": user_authored_tab,
+                "summaryMinimumShares": copy.deepcopy(summary_contract),
+                "restorationFingerprintRequired": bool(
+                    profile.get("proveRestorationFingerprint")
+                ),
                 "capacityBand": str(resolved.get("capacityBand") or ""),
                 "remediations": copy.deepcopy(
                     resolved.get("remediations") or []
@@ -3387,13 +3457,18 @@ def compile_user_layout_hint_browser_candidates(
                 "shadowOnly": True,
                 "responsiveEligible": False,
                 "responsivePlacement": support_placement,
-                "presentationContractKey": {
-                    "right": "wide",
-                    "bottom": "medium",
-                    "tab": "narrow",
-                    "stage": "compact",
-                    "trigger": "compact",
-                }.get(support_placement, ""),
+                "presentationContractKey": (
+                    USER_LAYOUT_HINT_USER_TAB_PRESENTATION
+                    if user_authored_tab
+                    else {
+                        "right": "wide",
+                        "bottom": "medium",
+                        "tab": "narrow",
+                        "stage": "compact",
+                        "trigger": "compact",
+                    }.get(support_placement, "")
+                ),
+                "userTabWorkbench": user_authored_tab,
                 "viewportProfiles": [viewport_name],
                 "layoutHintCompilation": {
                     "version": USER_LAYOUT_HINT_BROWSER_PROOF_VERSION,
@@ -3427,6 +3502,147 @@ def compile_user_layout_hint_browser_candidates(
     return candidates
 
 
+def _user_layout_summary_delivery_diagnostics(
+    item: dict[str, Any],
+    mutation: dict[str, Any],
+) -> dict[str, Any]:
+    """Verify browser-calibrated root-relative summary delivery.
+
+    M3.5 fails closed unless every phase that realizes both compact summaries
+    reports a completed two-pass calibration.  The final gate still consumes
+    Chromium's effective painted root shares rather than trusting requested CSS.
+    """
+
+    if not bool(mutation.get("userTabWorkbench", False)):
+        return {
+            "required": False,
+            "passed": True,
+            "rows": [],
+            "calibrations": [],
+            "failures": [],
+        }
+
+    contract = dict(mutation.get("summaryMinimumShares") or {})
+    requested_root = dict(contract.get("requestedRootShares") or {})
+    allocated_root = dict(contract.get("allocatedRootShares") or {})
+    rows: list[dict[str, Any]] = []
+    calibrations: list[dict[str, Any]] = []
+    failures: list[str] = []
+    required_calibration_count = 0
+
+    for phase_measurement in item.get("phaseMeasurements") or []:
+        phase = str(phase_measurement.get("phase") or "")
+        realization_states = dict(
+            phase_measurement.get("realizationStates") or {}
+        )
+        records = {
+            str(record.get("slot") or ""): record
+            for record in (phase_measurement.get("examples") or {}).get(
+                "nodes", []
+            )
+            if record.get("slot")
+        }
+        root_rect = _root_rect_from_measurement(phase_measurement)
+        compact_slots = [
+            slot
+            for slot in requested_root
+            if realization_states.get(slot) == "compact-summary"
+        ]
+        calibration = copy.deepcopy(
+            phase_measurement.get("userLayoutCalibration") or {}
+        )
+        needs_calibration = bool(requested_root) and all(
+            realization_states.get(slot) == "compact-summary"
+            for slot in requested_root
+        )
+        if needs_calibration:
+            required_calibration_count += 1
+            calibration_row = {
+                "phase": phase,
+                **calibration,
+            }
+            calibrations.append(calibration_row)
+            if (
+                calibration.get("state") != "complete"
+                or not bool(calibration.get("passed", False))
+            ):
+                failures.append(
+                    f"{phase} user-tab summary calibration did not complete "
+                    f"(state={calibration.get('state', 'missing')})"
+                )
+
+        calibration_local = dict(
+            calibration.get("resolvedLocalShares") or {}
+        )
+        calibration_parent = float(
+            calibration.get("finalParentRootShare", 0) or 0
+        )
+        for slot, required_share in requested_root.items():
+            if realization_states.get(slot) != "compact-summary":
+                continue
+            record = records.get(slot)
+            measured_share = _record_area_share(record, root_rect)
+            gate = phase_share_floor_check(
+                measured_share,
+                float(required_share or 0),
+            )
+            allocated_share = float(
+                allocated_root.get(slot, required_share) or required_share
+            )
+            resolved_local_share = float(
+                calibration_local.get(slot, 0) or 0
+            )
+            row = {
+                "phase": phase,
+                "slot": slot,
+                "requiredRootShare": float(required_share or 0),
+                "allocatedRootShare": allocated_share,
+                "resolvedLocalShare": resolved_local_share,
+                "measuredParentRootShare": calibration_parent,
+                "measuredRootShare": measured_share,
+                "requiredRootShareMet": bool(gate["met"]),
+                "rawHeadroom": float(gate["rawHeadroom"]),
+                "shortfall": float(gate["shortfall"]),
+                "calibrationState": str(
+                    calibration.get("state") or "missing"
+                ),
+            }
+            rows.append(row)
+            if not gate["met"]:
+                failures.append(
+                    f"{phase} {slot} summary delivered "
+                    f"{measured_share:.2%} of root against requested "
+                    f"{float(required_share or 0):.2%} after browser-calibrating "
+                    f"{resolved_local_share:.2%} of its measured parent"
+                )
+
+    if not rows:
+        failures.append(
+            "user-tab workbench produced no browser-measured compact summaries"
+        )
+    if required_calibration_count == 0:
+        failures.append(
+            "user-tab workbench produced no phase requiring summary calibration"
+        )
+
+    return {
+        "required": True,
+        "passed": not failures,
+        "coordinateSystem": "browser-measured-parent-to-local-two-pass",
+        "calibrationMode": str(contract.get("calibrationMode") or ""),
+        "requestedRootShares": requested_root,
+        "allocatedRootShares": allocated_root,
+        "requestedTrackRootShare": float(
+            contract.get("requestedTrackRootShare", 0) or 0
+        ),
+        "trackSafetyRootShare": float(
+            contract.get("trackSafetyRootShare", 0) or 0
+        ),
+        "calibrations": calibrations,
+        "rows": rows,
+        "failures": failures,
+    }
+
 def _user_layout_browser_measurement_summary(
     item: dict[str, Any],
 ) -> dict[str, Any]:
@@ -3451,10 +3667,15 @@ def _user_layout_browser_measurement_summary(
         or [0]
     )
     outcome = layout_hint_measurement_outcome(item)
+    summary_delivery = _user_layout_summary_delivery_diagnostics(
+        item,
+        mutation,
+    )
     browser_gate_passed = (
         outcome.get("outcome") in {"accepted", "accepted-with-warning"}
         and hard_failure_count == 0
         and blocked == 0
+        and bool(summary_delivery.get("passed", False))
     )
     return {
         "candidate": str(item.get("candidate") or ""),
@@ -3468,6 +3689,17 @@ def _user_layout_browser_measurement_summary(
         "preferredShare": float(mutation.get("preferredShare", 0) or 0),
         "collapsedUnitIds": list(mutation.get("collapsedUnitIds") or []),
         "tabWithUnitId": str(mutation.get("tabWithUnitId") or ""),
+        "userTabWorkbench": bool(mutation.get("userTabWorkbench", False)),
+        "summaryMinimumShares": copy.deepcopy(
+            mutation.get("summaryMinimumShares") or {}
+        ),
+        "summaryAllocationDiagnostics": summary_delivery,
+        "summaryAllocationPassed": bool(
+            summary_delivery.get("passed", False)
+        ),
+        "restorationFingerprintRequired": bool(
+            mutation.get("restorationFingerprintRequired", False)
+        ),
         "remediations": copy.deepcopy(mutation.get("remediations") or []),
         "preferenceRetained": bool(mutation.get("preferenceRetained", False)),
         "restoresWhenFeasible": bool(
@@ -3568,14 +3800,26 @@ def analyze_user_layout_hint_browser_evidence(
                 ),
                 None,
             )
-            restoration_required = wide_restored is not None
-            restoration_match = (
-                bool(wide_reference)
-                and bool(wide_restored)
-                and bool(wide_reference.get("renderedPolicyFingerprint"))
+            restoration_required = any(
+                bool(row.get("restorationFingerprintRequired"))
+                for row in profile_rows
+            )
+            if not restoration_required:
+                restoration_status = "not-applicable"
+                restoration_match: bool | None = None
+            elif not wide_reference or not wide_restored:
+                restoration_status = "missing-required-proof"
+                restoration_match = False
+            elif (
+                bool(wide_reference.get("renderedPolicyFingerprint"))
                 and wide_reference.get("renderedPolicyFingerprint")
                 == wide_restored.get("renderedPolicyFingerprint")
-            )
+            ):
+                restoration_status = "matched"
+                restoration_match = True
+            else:
+                restoration_status = "mismatched"
+                restoration_match = False
             all_browser_valid = all(
                 bool(row.get("browserGatePassed")) for row in profile_rows
             )
@@ -3640,6 +3884,7 @@ def analyze_user_layout_hint_browser_evidence(
                     "hysteresisCoveragePassed": hysteresis_coverage_passed,
                     "preferenceRetainedAtEveryCapacity": retained,
                     "restorationFingerprintRequired": restoration_required,
+                    "restorationFingerprintStatus": restoration_status,
                     "restorationFingerprintMatch": restoration_match,
                     "restorationReferenceFingerprint": (
                         str(
@@ -3706,10 +3951,9 @@ def analyze_user_layout_hint_browser_evidence(
                 ),
                 "allRequiredRestorationsMatched": all(
                     (
-                        not bool(
-                            item.get("restorationFingerprintRequired")
-                        )
-                        or bool(item.get("restorationFingerprintMatch"))
+                        not bool(item.get("restorationFingerprintRequired"))
+                        or str(item.get("restorationFingerprintStatus") or "")
+                        == "matched"
                     )
                     for item in profile_reports
                 ),
@@ -6105,7 +6349,7 @@ def _phase_support_policy_score(
             not orientation or share < floor,
         )
 
-    if policy == "tabbed-phase-support":
+    if policy in {"tabbed-phase-support", "user-tab-workbench"}:
         stage_ok = width_ratio >= 0.72 and height_ratio >= 0.48
         floor = 0.38
         score = round(
@@ -6307,6 +6551,7 @@ def semantic_layout_unit_state_fit(
             "bounded-side-drawer",
             "inline-phase-stage",
             "tabbed-phase-support",
+            "user-tab-workbench",
             "sequential-phase-stage",
             "side-active-support",
             "narrow-side-active-support",
@@ -7579,6 +7824,88 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                             "reasonSuffix": "Recovery becomes the active tab while workflow context remains visible as a summary.",
                         },
                     },
+                    "user-tab-workbench": {
+                        "project-selection": {
+                            "presentationMode": "user-tab-identity-stage",
+                            "minDominantShare": 0.24,
+                            "targetDominantShare": 0.34,
+                        },
+                        "selected-project-default": {
+                            "presentationMode": "user-tab-workflow",
+                            "dominantSlot": "workflow",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command"],
+                            "activeSupportSlots": [],
+                            "collapsedSlots": [
+                                "project-selector",
+                                "server",
+                                "evidence",
+                                "advanced",
+                            ],
+                            "reachableSlots": ["server", "evidence", "advanced"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.48,
+                            "targetDominantShare": 0.58,
+                            "reasonSuffix": "The user-authored tab workbench keeps workflow active and preserves the current command as a semantic summary.",
+                        },
+                        "planning": {
+                            "presentationMode": "user-tab-support",
+                            "dominantSlot": "server",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command", "workflow"],
+                            "activeSupportSlots": ["server"],
+                            "collapsedSlots": ["project-selector", "evidence", "advanced"],
+                            "reachableSlots": ["workflow", "evidence", "advanced"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.46,
+                            "targetDominantShare": 0.60,
+                            "reasonSuffix": "The user-authored server tab preserves current command and workflow context at their required companion floors.",
+                        },
+                        "execution": {
+                            "presentationMode": "user-tab-workflow",
+                            "dominantSlot": "workflow",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command"],
+                            "activeSupportSlots": [],
+                            "collapsedSlots": [
+                                "project-selector",
+                                "server",
+                                "evidence",
+                                "advanced",
+                            ],
+                            "reachableSlots": ["evidence"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.46,
+                            "targetDominantShare": 0.58,
+                            "reasonSuffix": "The user-authored tab workbench keeps execution in workflow and makes evidence reachable.",
+                        },
+                        "proof-review": {
+                            "presentationMode": "user-tab-support",
+                            "dominantSlot": "evidence",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command", "workflow"],
+                            "activeSupportSlots": ["evidence"],
+                            "collapsedSlots": ["project-selector", "server", "advanced"],
+                            "reachableSlots": ["workflow", "advanced"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.48,
+                            "targetDominantShare": 0.62,
+                            "reasonSuffix": "The user-authored evidence tab preserves current operation and workflow state with an explicit return action.",
+                        },
+                        "recovery": {
+                            "presentationMode": "user-tab-support",
+                            "dominantSlot": "advanced",
+                            "requiredSlots": ["project-context", "status"],
+                            "summarySlots": ["command", "workflow"],
+                            "activeSupportSlots": ["advanced"],
+                            "collapsedSlots": ["project-selector", "server", "evidence"],
+                            "reachableSlots": ["workflow", "evidence"],
+                            "returnToSlot": "workflow",
+                            "minDominantShare": 0.48,
+                            "targetDominantShare": 0.62,
+                            "reasonSuffix": "The user-authored recovery tab preserves current operation and workflow state with an explicit return action.",
+                        },
+                    },
                     "compact": {
                         "project-selection": {
                             "presentationMode": "identity-stage",
@@ -8525,13 +8852,80 @@ def render_realized_trial_html(
         0.0,
         min(0.45, float(user_layout_mutation.get("preferredShare", 0) or 0)),
     )
-    user_layout_style = ""
+    user_tab_workbench = bool(
+        user_layout_mutation.get("userTabWorkbench", False)
+    )
+    summary_minimums = dict(
+        user_layout_mutation.get("summaryMinimumShares") or {}
+    )
+    user_layout_style_parts: list[str] = []
     if preferred_share > 0:
-        user_layout_style = (
-            f"--flog-user-support-fr:{preferred_share * 100:.4f}fr;"
-            f"--flog-user-main-fr:{(1.0 - preferred_share) * 100:.4f}fr;"
-            f"--flog-user-support-percent:{preferred_share * 100:.4f}%;"
+        user_layout_style_parts.extend(
+            [
+                f"--flog-user-support-fr:{preferred_share * 100:.4f}fr;",
+                f"--flog-user-main-fr:{(1.0 - preferred_share) * 100:.4f}fr;",
+                f"--flog-user-support-percent:{preferred_share * 100:.4f}%;",
+            ]
         )
+    if user_tab_workbench:
+        requested_root = dict(
+            summary_minimums.get("requestedRootShares") or {}
+        )
+        allocated_root = dict(
+            summary_minimums.get("allocatedRootShares") or {}
+        )
+        resolved_local = dict(
+            summary_minimums.get("resolvedLocalShares") or {}
+        )
+        requested_track_root = float(
+            summary_minimums.get("requestedTrackRootShare", 0.10) or 0.10
+        )
+        workflow_required_root = float(
+            requested_root.get("workflow", 0.055) or 0.055
+        )
+        command_required_root = float(
+            requested_root.get("command", 0.026) or 0.026
+        )
+        workflow_allocated_root = float(
+            allocated_root.get("workflow", workflow_required_root + 0.004)
+            or workflow_required_root
+        )
+        command_allocated_root = float(
+            allocated_root.get("command", command_required_root + 0.004)
+            or command_required_root
+        )
+        # These scaffold shares exist only so Chromium can realize and measure
+        # the nested parent.  USER_TAB_WORKBENCH_CALIBRATION_JS replaces them
+        # with values derived from the actual rendered geometry before scoring.
+        workflow_local = float(
+            resolved_local.get(
+                "workflow",
+                workflow_allocated_root / max(0.001, requested_track_root),
+            )
+            or 0
+        )
+        command_local = float(
+            resolved_local.get(
+                "command",
+                command_allocated_root / max(0.001, requested_track_root),
+            )
+            or 0
+        )
+        safety_local = max(0.0, 1.0 - workflow_local - command_local)
+        user_layout_style_parts.extend(
+            [
+                "--flog-user-summary-parent-root-share:0%;",
+                f"--flog-user-workflow-summary-required-root-share:{workflow_required_root * 100:.4f}%;",
+                f"--flog-user-command-summary-required-root-share:{command_required_root * 100:.4f}%;",
+                f"--flog-user-workflow-summary-allocated-root-block:{workflow_allocated_root * 100:.4f}vh;",
+                f"--flog-user-command-summary-allocated-root-block:{command_allocated_root * 100:.4f}vh;",
+                f"--flog-user-workflow-summary-local-share:{workflow_local * 100:.4f}%;",
+                f"--flog-user-command-summary-local-share:{command_local * 100:.4f}%;",
+                f"--flog-user-summary-safety-local-share:{safety_local * 100:.4f}%;",
+                f"--flog-user-tab-summary-track-min-block:{requested_track_root * 100:.4f}vh;",
+            ]
+        )
+    user_layout_style = "".join(user_layout_style_parts)
     root_attrs = {
         "id": realized_hierarchy["id"],
         "class": (
@@ -8614,6 +9008,49 @@ def render_realized_trial_html(
         ),
         "data-flog-user-tab-with-unit": str(
             user_layout_mutation.get("tabWithUnitId") or ""
+        ),
+        "data-flog-user-tab-workbench": (
+            "true" if user_tab_workbench else "false"
+        ),
+        "data-flog-user-summary-floor-source": str(
+            summary_minimums.get("source") or ""
+        ),
+        "data-flog-user-summary-calibration-mode": str(
+            summary_minimums.get("calibrationMode") or ""
+        ),
+        "data-flog-user-summary-parent-root-share": str(
+            summary_minimums.get("parentEffectiveRootShare") or ""
+        ),
+        "data-flog-user-summary-requested-track-root-share": str(
+            summary_minimums.get("requestedTrackRootShare") or ""
+        ),
+        "data-flog-user-summary-track-safety-root-share": str(
+            summary_minimums.get("trackSafetyRootShare") or ""
+        ),
+        "data-flog-user-workflow-summary-required-root-share": str(
+            (summary_minimums.get("requestedRootShares") or {}).get(
+                "workflow", ""
+            )
+        ),
+        "data-flog-user-command-summary-required-root-share": str(
+            (summary_minimums.get("requestedRootShares") or {}).get(
+                "command", ""
+            )
+        ),
+        "data-flog-user-workflow-summary-allocated-root-share": str(
+            (summary_minimums.get("allocatedRootShares") or {}).get(
+                "workflow", ""
+            )
+        ),
+        "data-flog-user-command-summary-allocated-root-share": str(
+            (summary_minimums.get("allocatedRootShares") or {}).get(
+                "command", ""
+            )
+        ),
+        "data-flog-user-workflow-summary-local-share": str(
+            (summary_minimums.get("resolvedLocalShares") or {}).get(
+                "workflow", ""
+            )
         ),
         "style": user_layout_style,
     }
@@ -9863,7 +10300,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
    compact semantic summary row for the displaced workflow. */
 .has-layout-units.policy-phase-aware
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
-    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+    > .flog-layout-unit:is(.unit-policy-tabbed-phase-support, .unit-policy-user-tab-workbench)[data-flog-unit-has-active-support="true"]
   ) {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(72px, 10%) minmax(0, 1fr) auto;
@@ -9873,7 +10310,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     "feedback";
 }
 .has-layout-units.policy-phase-aware
-  .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"] {
+  .flog-layout-unit:is(.unit-policy-tabbed-phase-support, .unit-policy-user-tab-workbench)[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"] {
   position: relative !important;
   display: block;
   /* M2.6 trims the decorative tab strip before reducing active support area. */
@@ -9881,7 +10318,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   border-top: 2px solid rgba(74, 116, 152, 0.55);
 }
 .has-layout-units.policy-phase-aware
-  .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"]::before {
+  .flog-layout-unit:is(.unit-policy-tabbed-phase-support, .unit-policy-user-tab-workbench)[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"]::before {
   content: "Active support tab";
   position: absolute;
   inset: 0 0 auto 0;
@@ -9901,7 +10338,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
    active stage.  Full command payloads have already been replaced by summaries. */
 .has-layout-units.policy-phase-aware
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
-    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+    > .flog-layout-unit:is(.unit-policy-tabbed-phase-support, .unit-policy-user-tab-workbench)[data-flog-unit-has-active-support="true"]
   )
   > .flog-layout-unit[data-flog-unit-id="command-workflow"] {
   gap: 3px;
@@ -9910,6 +10347,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
     > .flog-layout-unit:is(
       .unit-policy-tabbed-phase-support,
+      .unit-policy-user-tab-workbench,
       .unit-policy-sequential-phase-stage,
       .unit-policy-one-active-plus-triggers
     )[data-flog-unit-has-active-support="true"]
@@ -9922,6 +10360,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
     > .flog-layout-unit:is(
       .unit-policy-tabbed-phase-support,
+      .unit-policy-user-tab-workbench,
       .unit-policy-sequential-phase-stage,
       .unit-policy-one-active-plus-triggers
     )[data-flog-unit-has-active-support="true"]
@@ -9935,14 +10374,14 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
    only non-active feedback chrome.  The semantic feedback remains present. */
 .has-layout-units.policy-phase-aware
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
-    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+    > .flog-layout-unit:is(.unit-policy-tabbed-phase-support, .unit-policy-user-tab-workbench)[data-flog-unit-has-active-support="true"]
   )
   > .flog-layout-unit[data-flog-unit-id="persistent-feedback"] {
   min-height: 28px;
 }
 .has-layout-units.policy-phase-aware
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
-    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+    > .flog-layout-unit:is(.unit-policy-tabbed-phase-support, .unit-policy-user-tab-workbench)[data-flog-unit-has-active-support="true"]
   )
   > .flog-layout-unit[data-flog-unit-id="persistent-feedback"]
   > .flog-node {
@@ -9951,13 +10390,71 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 }
 .has-layout-units.policy-phase-aware
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
-    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+    > .flog-layout-unit:is(.unit-policy-tabbed-phase-support, .unit-policy-user-tab-workbench)[data-flog-unit-has-active-support="true"]
   )
   > .flog-layout-unit[data-flog-unit-id="command-workflow"]
   > .flog-node.flog-summary {
   min-height: 32px;
   max-height: 34px;
   padding-block: 3px;
+}
+
+/* User-authored tabbing is not the same as a narrow emergency tab.  Its
+   command/workflow context track is derived from the same required-companion
+   floors used by semantic phase scoring.  M3.5 keeps the root and local
+   coordinate systems explicit by measuring the realized parent first; each
+   summary receives the local percentage required to deliver its root share. */
+.has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-user-tab-workbench[data-flog-unit-has-active-support="true"]
+  ) {
+  grid-template-rows:
+    var(--flog-user-tab-summary-track-min-block, 10vh)
+    minmax(0, 1fr)
+    auto;
+}
+.has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-user-tab-workbench[data-flog-unit-has-active-support="true"]
+  )
+  > .flog-layout-unit[data-flog-unit-id="command-workflow"]:has(
+    > .flog-node.node-workflow.flog-summary
+  ) {
+  display: grid;
+  grid-template-rows:
+    minmax(
+      var(--flog-user-command-summary-allocated-root-block, 3vh),
+      var(--flog-user-command-summary-local-share, 18.75%)
+    )
+    minmax(
+      var(--flog-user-workflow-summary-allocated-root-block, 5.9vh),
+      var(--flog-user-workflow-summary-local-share, 36.875%)
+    );
+  align-content: start;
+  gap: var(--gap);
+}
+.has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
+  .flog-layout-unit.unit-policy-user-tab-workbench[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"] {
+  position: relative !important;
+  display: block;
+  padding-top: 20px;
+  border-top: 2px solid rgba(74, 116, 152, 0.55);
+}
+.has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
+  .flog-layout-unit.unit-policy-user-tab-workbench[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"]::before {
+  content: "User support tab";
+}
+.has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
+  .flog-layout-unit[data-flog-unit-id="command-workflow"]
+  > .flog-node.node-workflow.flog-summary {
+  min-height: var(--flog-user-workflow-summary-allocated-root-block, 5.9vh);
+  max-height: none;
+}
+.has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
+  .flog-layout-unit[data-flog-unit-id="command-workflow"]
+  > .flog-node.node-command.flog-summary {
+  min-height: var(--flog-user-command-summary-allocated-root-block, 3vh);
+  max-height: none;
 }
 
 /* A sequential stage gives the active phase surface the primary track and moves
@@ -10057,6 +10554,228 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     display: flex;
   }
   .flog-node[data-flog-focus="true"] { min-height: 360px; }
+}
+"""
+
+
+
+USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
+() => {
+  const root = document.querySelector(
+    '.flog-root[data-flog-user-tab-workbench="true"]'
+  );
+  if (!root) {
+    return {required: false, state: "not-applicable"};
+  }
+  const application = root.querySelector(
+    '.flog-layout-unit[data-flog-unit-id="git-tools-application"]'
+  );
+  const parent = application && application.querySelector(
+    ':scope > .flog-layout-unit[data-flog-unit-id="command-workflow"]'
+  );
+  const command = parent && parent.querySelector(
+    ':scope > .flog-node.node-command.flog-summary'
+  );
+  const workflow = parent && parent.querySelector(
+    ':scope > .flog-node.node-workflow.flog-summary'
+  );
+  if (!application || !parent || !command || !workflow) {
+    return {
+      required: false,
+      state: "not-applicable",
+      reason: "phase does not realize both command and workflow summaries"
+    };
+  }
+
+  const numberAttr = (name, fallback = 0) => {
+    const value = Number.parseFloat(root.getAttribute(name) || "");
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const rectFacts = element => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+      area: Math.max(0, rect.width) * Math.max(0, rect.height)
+    };
+  };
+  const rootRect0 = rectFacts(root);
+  const parentRect0 = rectFacts(parent);
+  const commandRect0 = rectFacts(command);
+  const workflowRect0 = rectFacts(workflow);
+  if (
+    rootRect0.area <= 0 ||
+    parentRect0.width <= 0 ||
+    commandRect0.width <= 0 ||
+    workflowRect0.width <= 0
+  ) {
+    return {
+      required: true,
+      state: "invalid-geometry",
+      reason: "calibration geometry has zero area or width"
+    };
+  }
+
+  const requestedRootShares = {
+    command: numberAttr(
+      "data-flog-user-command-summary-required-root-share",
+      0.026
+    ),
+    workflow: numberAttr(
+      "data-flog-user-workflow-summary-required-root-share",
+      0.055
+    )
+  };
+  const allocatedRootShares = {
+    command: numberAttr(
+      "data-flog-user-command-summary-allocated-root-share",
+      requestedRootShares.command
+    ),
+    workflow: numberAttr(
+      "data-flog-user-workflow-summary-allocated-root-share",
+      requestedRootShares.workflow
+    )
+  };
+  const trackSafetyRootShare = numberAttr(
+    "data-flog-user-summary-track-safety-root-share",
+    0.018
+  );
+  const gap = Number.parseFloat(getComputedStyle(parent).rowGap || "0") || 0;
+
+  // Pass one measures the realized widths and reserves enough parent block
+  // size to carry both root-relative summary allocations plus safety.
+  const commandTargetPx = (
+    allocatedRootShares.command * rootRect0.area / commandRect0.width
+  );
+  const workflowTargetPx = (
+    allocatedRootShares.workflow * rootRect0.area / workflowRect0.width
+  );
+  const safetyTargetPx = (
+    trackSafetyRootShare * rootRect0.area / parentRect0.width
+  );
+  const parentTargetPx = Math.max(
+    commandTargetPx + workflowTargetPx + gap + safetyTargetPx,
+    1
+  );
+  root.style.setProperty(
+    "--flog-user-tab-summary-track-min-block",
+    `${parentTargetPx}px`
+  );
+  void root.offsetHeight;
+
+  // Pass two converts the root-relative contract through the now-realized
+  // parent area, then applies exact child block minima based on current widths.
+  const rootRect1 = rectFacts(root);
+  const parentRect1 = rectFacts(parent);
+  const commandRect1 = rectFacts(command);
+  const workflowRect1 = rectFacts(workflow);
+  const parentRootShare1 = (
+    parentRect1.area / Math.max(1, rootRect1.area)
+  );
+  const resolvedLocalShares = {
+    command: Math.min(
+      1,
+      allocatedRootShares.command / Math.max(0.000001, parentRootShare1)
+    ),
+    workflow: Math.min(
+      1,
+      allocatedRootShares.workflow / Math.max(0.000001, parentRootShare1)
+    )
+  };
+  resolvedLocalShares.safety = Math.max(
+    0,
+    1 - resolvedLocalShares.command - resolvedLocalShares.workflow
+  );
+  const commandTargetPx2 = (
+    allocatedRootShares.command * rootRect1.area /
+    Math.max(1, commandRect1.width)
+  );
+  const workflowTargetPx2 = (
+    allocatedRootShares.workflow * rootRect1.area /
+    Math.max(1, workflowRect1.width)
+  );
+  const parentTargetPx2 = Math.max(
+    commandTargetPx2 + workflowTargetPx2 + gap + safetyTargetPx,
+    parentTargetPx
+  );
+
+  root.style.setProperty(
+    "--flog-user-summary-parent-root-share",
+    `${parentRootShare1 * 100}%`
+  );
+  root.style.setProperty(
+    "--flog-user-command-summary-local-share",
+    `${resolvedLocalShares.command * 100}%`
+  );
+  root.style.setProperty(
+    "--flog-user-workflow-summary-local-share",
+    `${resolvedLocalShares.workflow * 100}%`
+  );
+  root.style.setProperty(
+    "--flog-user-summary-safety-local-share",
+    `${resolvedLocalShares.safety * 100}%`
+  );
+  root.style.setProperty(
+    "--flog-user-command-summary-allocated-root-block",
+    `${commandTargetPx2}px`
+  );
+  root.style.setProperty(
+    "--flog-user-workflow-summary-allocated-root-block",
+    `${workflowTargetPx2}px`
+  );
+  root.style.setProperty(
+    "--flog-user-tab-summary-track-min-block",
+    `${parentTargetPx2}px`
+  );
+  root.setAttribute(
+    "data-flog-user-summary-parent-root-share",
+    String(parentRootShare1)
+  );
+  root.setAttribute(
+    "data-flog-user-workflow-summary-local-share",
+    String(resolvedLocalShares.workflow)
+  );
+  root.setAttribute("data-flog-user-summary-calibrated", "true");
+  void root.offsetHeight;
+
+  const rootRect2 = rectFacts(root);
+  const parentRect2 = rectFacts(parent);
+  const commandRect2 = rectFacts(command);
+  const workflowRect2 = rectFacts(workflow);
+  const finalParentRootShare = (
+    parentRect2.area / Math.max(1, rootRect2.area)
+  );
+  const deliveredRootShares = {
+    command: commandRect2.area / Math.max(1, rootRect2.area),
+    workflow: workflowRect2.area / Math.max(1, rootRect2.area)
+  };
+  const passed = (
+    deliveredRootShares.command + 0.0005 >= requestedRootShares.command &&
+    deliveredRootShares.workflow + 0.0005 >= requestedRootShares.workflow
+  );
+  return {
+    required: true,
+    state: passed ? "complete" : "under-delivered",
+    calibrationMode: "realized-parent-two-pass",
+    requestedRootShares,
+    allocatedRootShares,
+    trackSafetyRootShare,
+    gapPx: gap,
+    initialParentRootShare: parentRect0.area / rootRect0.area,
+    measuredParentRootShare: parentRootShare1,
+    finalParentRootShare,
+    parentWidthFraction: parentRect1.width / rootRect1.width,
+    resolvedLocalShares,
+    appliedPixelBlocks: {
+      command: commandTargetPx2,
+      workflow: workflowTargetPx2,
+      parent: parentTargetPx2
+    },
+    deliveredRootShares,
+    passed
+  };
 }
 """
 
@@ -12251,6 +12970,7 @@ RESPONSIVE_REMEDIATION_POLICY_LEVELS: dict[str, int] = {
     "workflow-footer-overlay": 2,
     "inline-phase-stage": 2,
     "tabbed-phase-support": 2,
+    "user-tab-workbench": 2,
     # Level 3 replaces inactive or competing surfaces with sequential triggers/stages.
     "sequential-phase-stage": 3,
     "one-active-plus-triggers": 3,
@@ -14392,7 +15112,21 @@ def run_synthetic_trials(
                                 page.goto(
                                     html_path.as_uri(), wait_until="domcontentloaded"
                                 )
-                                page.wait_for_timeout(100)
+                                page.wait_for_timeout(60)
+                                user_layout_calibration: dict[str, Any] = {}
+                                if (
+                                    isinstance(candidate, dict)
+                                    and bool(
+                                        (
+                                            candidate.get("userLayoutMutation")
+                                            or {}
+                                        ).get("userTabWorkbench", False)
+                                    )
+                                ):
+                                    user_layout_calibration = page.evaluate(
+                                        USER_TAB_WORKBENCH_CALIBRATION_JS
+                                    )
+                                    page.wait_for_timeout(40)
                                 measurement = page.evaluate(
                                     MEASURE_AND_OVERLAY_JS,
                                     {
@@ -14460,6 +15194,9 @@ def run_synthetic_trials(
                                     copy.deepcopy(candidate.get("userLayoutMutation") or {})
                                     if isinstance(candidate, dict)
                                     else {}
+                                )
+                                measurement["userLayoutCalibration"] = copy.deepcopy(
+                                    user_layout_calibration
                                 )
                                 measurement["unitComposition"] = copy.deepcopy(
                                     realized.get("unitComposition") or {}
@@ -15301,7 +16038,7 @@ def write_reports(
     lines.append("Milestone 2.5 resolves those verified envelopes as one ordered hysteretic state machine; transition probes remain evidence and cannot act as local policy winners.")
     lines.append("Milestone 2.6 hardens the narrow tab realization by trimming decorative tab and feedback chrome while preserving semantic surfaces, phase floors, clipping gates, and transition thresholds.")
     lines.append("Milestone 3.1 models live user layout intent as semantic dock-tree operations, validates those operations against authored capabilities and invariants, and proves responsive remediation/restoration without editing live application files.")
-    lines.append("Milestone 3.2 compiles accepted user preferences into bounded shadow candidates, measures their personalized geometry across responsive capacities, and requires restored wide layouts to reproduce the same painted-geometry fingerprint.")
+    lines.append("Milestone 3.2 compiles accepted user preferences into bounded shadow candidates and measures their personalized geometry across responsive capacities. Milestone 3.3 distinguishes user-authored tab workbenches from emergency responsive tabs and requires every claimed restoration to reproduce the same painted-geometry fingerprint. Milestone 3.4 exposed the parent-coordinate mismatch. Milestone 3.5 measures the realized parent in Chromium, resolves root-relative requirements into local shares, reapplies the tracks, and verifies the delivered browser geometry.")
     lines.append("Raw rectangles remain in the report for diagnosis, but ranking, pass/fail, phase minimums, contract visibility, and recursive unit scoring use effective painted geometry.")
     lines.append("It does **not** prove that the live app hierarchy is good enough yet; the synthetic hierarchies are training/evidence fixtures for the FLOG method.")
     lines.append("")
@@ -15547,7 +16284,7 @@ def write_reports(
         lines.append("## Shadow user-layout browser proofs")
         lines.append("")
         lines.append(
-            "Milestone 3.2 compiles accepted semantic preferences into actual "
+            "Milestone 3.5 compiles accepted semantic preferences into actual "
             "FLOG candidates. Chromium applies the same clipping, ownership, "
             "interception, phase-floor, and responsive-presentation gates used by "
             "the authored layouts. These proofs remain synthetic and do not edit "
@@ -15588,7 +16325,7 @@ def write_reports(
                     f"PNGs=`{profile.get('pngProofCount', 0)}` "
                     f"path=`{' → '.join(profile.get('placementSequence') or [])}` "
                     f"hysteresis=`{bool(profile.get('hysteresisCoveragePassed', False))}` "
-                    f"restorationMatch=`{bool(profile.get('restorationFingerprintMatch', False))}`"
+                    f"restoration=`{profile.get('restorationFingerprintStatus', 'not-applicable')}`"
                 )
                 for proof in profile.get("proofs") or []:
                     lines.append(
@@ -15600,8 +16337,27 @@ def write_reports(
                         f"status=`{proof.get('status', '')}` "
                         f"headroom=`{float(proof.get('worstPhaseHeadroom', -1) or 0):+.3%}` "
                         f"blocked=`{proof.get('blockedCriticalControlCount', 0)}` "
+                        f"summaryAllocation=`{'pass' if proof.get('summaryAllocationPassed', True) else 'fail'}` "
                         f"remediations=`{len(proof.get('remediations') or [])}`"
                     )
+                    diagnostics = proof.get("summaryAllocationDiagnostics") or {}
+                    for calibration in diagnostics.get("calibrations") or []:
+                        delivered = dict(
+                            calibration.get("deliveredRootShares") or {}
+                        )
+                        local = dict(
+                            calibration.get("resolvedLocalShares") or {}
+                        )
+                        lines.append(
+                            f"      - Summary calibration `{calibration.get('phase', '')}`: "
+                            f"parent="
+                            f"{float(calibration.get('initialParentRootShare', 0) or 0):.2%}"
+                            f"→{float(calibration.get('finalParentRootShare', 0) or 0):.2%}; "
+                            f"workflow local={float(local.get('workflow', 0) or 0):.2%} "
+                            f"delivered={float(delivered.get('workflow', 0) or 0):.2%}"
+                        )
+                    for failure in diagnostics.get("failures") or []:
+                        lines.append(f"      - Summary allocation: {failure}")
             undo_reset = evidence.get("undoResetEvidence") or {}
             lines.append(
                 f"- Undo/reset restored authored default: "
