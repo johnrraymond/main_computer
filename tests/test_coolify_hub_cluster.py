@@ -54,7 +54,7 @@ def _args(**overrides):
         "git_commit_sha": "",
         "base_directory": "/",
         "dockerfile_location": "",
-        "health_path": "/api/hub/status",
+        "health_path": "/api/hub/v1/health",
         "hub_chain_rpc_url": "",
         "bridge_backend": "",
         "dev_chain_deployment_path": "",
@@ -747,7 +747,7 @@ coolify:
             "domains": "https://mainnet-hub1.greatlibrary.io:8790",
             "start_command": "python /app/exp-fdb-hub.py --port 8790",
             "health_check_enabled": True,
-            "health_check_path": "/api/hub/status",
+            "health_check_path": "/api/hub/v1/health",
             "instant_deploy": False,
         }
 
@@ -774,7 +774,7 @@ coolify:
                     {"_status": 500, "message": "Server Error"},
                     {"uuid": "app-uuid", "domains": "https://mainnet-hub1.greatlibrary.io:8790"},
                     {"uuid": "app-uuid", "start_command": "python /app/exp-fdb-hub.py --port 8790"},
-                    {"uuid": "app-uuid", "health_check_path": "/api/hub/status"},
+                    {"uuid": "app-uuid", "health_check_path": "/api/hub/v1/health"},
                 ],
             }
         )
@@ -786,7 +786,7 @@ coolify:
             "ports_exposes": "8790",
             "start_command": "python /app/exp-fdb-hub.py --port 8790",
             "health_check_enabled": True,
-            "health_check_path": "/api/hub/status",
+            "health_check_path": "/api/hub/v1/health",
         }
 
         result = coolify_hub_cluster.update_hub_application(client, "app-uuid", payload, tried)
@@ -803,7 +803,7 @@ coolify:
         self.assertEqual(patches[2][2], {"domains": "https://mainnet-hub1.greatlibrary.io:8790", "ports_exposes": "8790"})
         self.assertEqual(patches[3][2], {"domains": "https://mainnet-hub1.greatlibrary.io:8790"})
         self.assertEqual(patches[4][2], {"start_command": "python /app/exp-fdb-hub.py --port 8790", "ports_exposes": "8790"})
-        self.assertEqual(patches[5][2], {"health_check_enabled": True, "health_check_path": "/api/hub/status"})
+        self.assertEqual(patches[5][2], {"health_check_enabled": True, "health_check_path": "/api/hub/v1/health"})
 
 
     def test_update_hub_application_keeps_domain_port_when_start_command_update_fails(self) -> None:
@@ -951,7 +951,7 @@ coolify:
             coolify_hub_cluster.urllib.request.urlopen = original_urlopen
 
         self.assertTrue(result["ok"])
-        self.assertEqual(captured, [hub.public_url.rstrip("/") + "/api/hub/status"])
+        self.assertEqual(captured, [hub.public_url.rstrip("/") + "/api/hub/v1/health"])
         self.assertEqual(tried[-1]["operation"], "wait-hub-ready")
 
     def test_wait_for_hub_ready_can_be_disabled_for_emergency_rollout(self) -> None:

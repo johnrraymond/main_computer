@@ -742,7 +742,7 @@ def update_hub_application(client: Any, application_uuid: str, payload: dict[str
 
 def hub_status_url(hub: HubPlacement, health_path: str) -> str:
     base = str(hub.public_url or "").strip().rstrip("/")
-    path = str(health_path or "/api/hub/status").strip() or "/api/hub/status"
+    path = str(health_path or hub_tool.DEFAULT_HEALTH_PATH).strip() or hub_tool.DEFAULT_HEALTH_PATH
     if not path.startswith("/"):
         path = "/" + path
     return base + path
@@ -762,7 +762,7 @@ def wait_for_hub_ready(
     if bool(getattr(args, "no_wait_hubs", False)):
         return {"ok": True, "skipped": True, "reason": "--no-wait-hubs", "hub_id": hub.hub_id}
 
-    status_url = hub_status_url(hub, getattr(args, "health_path", "/api/hub/status"))
+    status_url = hub_status_url(hub, getattr(args, "health_path", hub_tool.DEFAULT_HEALTH_PATH))
     deadline = time.monotonic() + timeout_s
     poll_s = float(getattr(args, "hub_wait_poll_s", 5.0))
     status_timeout_s = float(getattr(args, "hub_status_timeout_s", 5.0))
@@ -1701,10 +1701,10 @@ def render_server_hub_compose(placement: HubClusterPlacement, profile: Any, args
                 "    command:",
                 *render_hub_command_yaml(command),
                 "    healthcheck:",
-                f'      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:{profile.hub_bind_port}{args.health_path} >/dev/null || exit 1"]',
+                f'      test: ["CMD-SHELL", "curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:{profile.hub_bind_port}{args.health_path} >/dev/null || exit 1"]',
                 "      interval: 30s",
-                "      timeout: 5s",
-                "      start_period: 30s",
+                "      timeout: 10s",
+                "      start_period: 90s",
                 "      retries: 5",
                 "",
             ]

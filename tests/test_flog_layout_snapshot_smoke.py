@@ -4625,9 +4625,16 @@ def test_layout_hint_milestone2_adds_only_bounded_responsive_shadow_candidates()
     responsive = [
         item for item in candidates if module.candidate_responsive_eligible(item)
     ]
-    assert len(candidates) == len(module.LAYOUT_CANDIDATES) + 5
-    assert len(shadow) == 5
+    user_browser = [
+        item
+        for item in candidates
+        if isinstance(item, dict)
+        and item.get("mode") == "layout-hint-user-responsive-shadow"
+    ]
+    assert len(candidates) == len(module.LAYOUT_CANDIDATES) + 5 + 13
+    assert len(shadow) == 5 + 13
     assert len(responsive) == 5
+    assert len(user_browser) == 13
     assert {
         item["responsivePlacement"] for item in responsive
     } == {"right", "bottom", "tab", "stage", "trigger"}
@@ -4849,7 +4856,7 @@ def test_layout_hint_milestone21_authored_policy_does_not_use_legacy_rescue():
         profiles=[profile],
     )
 
-    assert policy["selectionMode"] == "authored-hint-chain"
+    assert policy["selectionMode"] == "authored-hint-hysteretic-state-machine"
     assert policy["state"] == "fail"
     assert policy["selections"][0]["candidate"] == "hint-responsive-bottom"
     assert policy["transitionGapCount"] == 1
@@ -5015,7 +5022,7 @@ def test_layout_hint_milestone2_css_contains_distinct_tab_and_stage_realizations
         "mcel-realistic",
     )
     assert "compact-summary" in html
-    assert module.RESPONSIVE_POLICY_VERSION == "capacity-derived-presentation-contract-v6"
+    assert module.RESPONSIVE_POLICY_VERSION == "capacity-derived-presentation-contract-v8"
 
 
 def test_layout_hint_milestone21_policy_covers_all_capacity_probes_with_verified_overlap():
@@ -5081,7 +5088,7 @@ def test_layout_hint_milestone21_policy_covers_all_capacity_probes_with_verified
     )
 
     assert policy["state"] == "watch"
-    assert policy["selectionMode"] == "authored-hint-chain"
+    assert policy["selectionMode"] == "authored-hint-hysteretic-state-machine"
     assert policy["semanticContractStable"] is True
     assert policy["coverageComplete"] is True
     assert policy["transitionGapCount"] == 0
@@ -5093,7 +5100,6 @@ def test_layout_hint_milestone21_policy_covers_all_capacity_probes_with_verified
         0,
         0,
         0,
-        0,
         1,
         1,
         1,
@@ -5103,6 +5109,13 @@ def test_layout_hint_milestone21_policy_covers_all_capacity_probes_with_verified
         2,
         3,
         3,
+        3,
+    ]
+    assert policy["statefulPath"]["candidateSequence"] == [
+        "hint-responsive-right",
+        "hint-responsive-bottom",
+        "hint-responsive-tab",
+        "hint-responsive-stage",
     ]
     assert all(
         item["capacityAdmissibilityState"] == "admissible"
@@ -5190,7 +5203,11 @@ def test_layout_hint_milestone2_boundary_probes_run_only_adjacent_authored_fallb
     by_placement = {
         item.get("responsivePlacement"): item
         for item in candidates
-        if isinstance(item, dict) and item.get("responsivePlacement")
+        if (
+            isinstance(item, dict)
+            and item.get("responsivePlacement")
+            and module.candidate_responsive_eligible(item)
+        )
     }
     probe = module.ViewportProfile(
         "boundary-right-bottom-below-1439",
@@ -5272,7 +5289,11 @@ def test_layout_hint_milestone24_transition_probes_render_only_adjacent_pairs():
     by_placement = {
         item.get("responsivePlacement"): item
         for item in candidates
-        if isinstance(item, dict) and item.get("responsivePlacement")
+        if (
+            isinstance(item, dict)
+            and item.get("responsivePlacement")
+            and module.candidate_responsive_eligible(item)
+        )
     }
     probes = [
         ("transition-proof-right-bottom-1420", {"right", "bottom"}),
@@ -5471,9 +5492,792 @@ def test_layout_hint_milestone24_css_expands_transition_envelopes_without_loweri
     assert module.PHASE_SHARE_FLOOR_TOLERANCE == 0.0005
     assert (
         module.RESPONSIVE_POLICY_VERSION
-        == "capacity-derived-presentation-contract-v6"
+        == "capacity-derived-presentation-contract-v8"
     )
     assert (
         module.RESPONSIVE_TRANSITION_PROOF_VERSION
         == "robust-transition-envelope-proof-v3"
     )
+
+
+def test_layout_hint_milestone25_state_machine_ignores_local_overlap_winners():
+    module = load_module()
+
+    def option(candidate, level, quality):
+        return {
+            "candidate": candidate,
+            "status": "pass",
+            "quality": quality,
+            "remediationLevel": level,
+            "remediationLabel": f"level-{level}",
+            "headroom": 0.02,
+            "rawHeadroom": 0.02,
+            "score": round(quality),
+            "rawScore": quality,
+            "worstUnitScore": 96.0,
+            "measurement": {
+                "candidate": candidate,
+                "phaseFit": {"phaseFloorFailureCount": 0},
+            },
+            "unnecessaryRemediationLevels": 0,
+            "capacityAdmissible": True,
+            "forcedBeyondBand": False,
+            "transitionGap": False,
+        }
+
+    profile_rows = [
+        {
+            "profile": module.ViewportProfile("wide", 1600, 1000, True),
+            "band": {"id": "wide", "maxRemediationLevel": 0},
+            "allOptions": [option("right", 0, 90)],
+            "options": [option("right", 0, 90)],
+        },
+        {
+            "profile": module.ViewportProfile(
+                "transition-proof-right-bottom-1420", 1420, 900, True
+            ),
+            "band": {"id": "wide", "maxRemediationLevel": 1},
+            "allOptions": [
+                option("right", 0, 90),
+                option("bottom", 1, 99),
+            ],
+            "options": [option("bottom", 1, 99)],
+        },
+        {
+            "profile": module.ViewportProfile("medium", 1200, 820, True),
+            "band": {"id": "medium", "maxRemediationLevel": 1},
+            "allOptions": [option("bottom", 1, 90)],
+            "options": [option("bottom", 1, 90)],
+        },
+        {
+            "profile": module.ViewportProfile(
+                "transition-proof-bottom-tab-990", 990, 760, True
+            ),
+            "band": {"id": "narrow", "maxRemediationLevel": 2},
+            "allOptions": [
+                option("bottom", 1, 88),
+                option("tab", 2, 99),
+            ],
+            "options": [option("tab", 2, 99)],
+        },
+        {
+            "profile": module.ViewportProfile("narrow", 840, 720, True),
+            "band": {"id": "narrow", "maxRemediationLevel": 2},
+            "allOptions": [option("tab", 2, 90)],
+            "options": [option("tab", 2, 90)],
+        },
+        {
+            "profile": module.ViewportProfile(
+                "transition-proof-tab-stage-720", 720, 720, True
+            ),
+            "band": {"id": "compact", "maxRemediationLevel": 3},
+            "allOptions": [
+                option("tab", 2, 88),
+                option("stage", 3, 99),
+            ],
+            "options": [option("stage", 3, 99)],
+        },
+        {
+            "profile": module.ViewportProfile("compact", 680, 720, True),
+            "band": {"id": "compact", "maxRemediationLevel": 3},
+            "allOptions": [option("stage", 3, 90)],
+            "options": [option("stage", 3, 90)],
+        },
+    ]
+    chain = [
+        {"candidate": "right", "remediationLevel": 0},
+        {"candidate": "bottom", "remediationLevel": 1},
+        {"candidate": "tab", "remediationLevel": 2},
+        {"candidate": "stage", "remediationLevel": 3},
+    ]
+    transitions = [
+        {
+            "fromCandidate": "right",
+            "toCandidate": "bottom",
+            "switchDownBelow": 1408,
+        },
+        {
+            "fromCandidate": "bottom",
+            "toCandidate": "tab",
+            "switchDownBelow": 965,
+        },
+        {
+            "fromCandidate": "tab",
+            "toCandidate": "stage",
+            "switchDownBelow": 696,
+        },
+    ]
+
+    selected, stateful = module.select_authored_hysteretic_path(
+        profile_rows,
+        candidate_chain=chain,
+        transitions=transitions,
+    )
+
+    assert [item["candidate"] for item in selected] == [
+        "right",
+        "bottom",
+        "tab",
+        "stage",
+    ]
+    assert stateful["candidateSequence"] == [
+        "right",
+        "bottom",
+        "tab",
+        "stage",
+    ]
+    assert stateful["monotonicViolationCount"] == 0
+    assert stateful["transitionEvidenceExcluded"] is True
+    assert stateful["policyProbeCount"] == 4
+    assert stateful["state"] == "complete"
+
+
+def test_layout_hint_milestone25_serializes_transition_probes_as_evidence_only():
+    module = load_module()
+    profile_rows = [
+        {
+            "profile": module.ViewportProfile(
+                "transition-proof-bottom-tab-990", 990, 760, True
+            ),
+            "band": {"id": "narrow", "maxRemediationLevel": 2},
+            "allOptions": [
+                {
+                    "candidate": "bottom",
+                    "status": "pass",
+                    "remediationLevel": 1,
+                    "headroom": 0.01,
+                    "rawHeadroom": 0.009,
+                },
+                {
+                    "candidate": "tab",
+                    "status": "pass",
+                    "remediationLevel": 2,
+                    "headroom": 0.02,
+                    "rawHeadroom": 0.019,
+                },
+            ],
+        },
+        {
+            "profile": module.ViewportProfile("narrow", 840, 720, True),
+            "band": {"id": "narrow", "maxRemediationLevel": 2},
+            "allOptions": [],
+        },
+    ]
+
+    evidence = module.responsive_transition_evidence_rows(profile_rows)
+
+    assert len(evidence) == 1
+    assert evidence[0]["viewportProfile"] == "transition-proof-bottom-tab-990"
+    assert [item["candidate"] for item in evidence[0]["options"]] == [
+        "bottom",
+        "tab",
+    ]
+    assert module.RESPONSIVE_STATE_MACHINE_VERSION == (
+        "ordered-hysteretic-state-machine-v1"
+    )
+
+
+def test_layout_hint_milestone26_hardens_narrow_tab_margin_by_trimming_only_chrome():
+    module = load_module()
+    tab_css = module.TRIAL_CSS.split(
+        "/* A tab realization keeps exactly one large support surface active",
+        1,
+    )[1].split(
+        "/* A sequential stage gives the active phase surface",
+        1,
+    )[0]
+
+    # Keep the two semantic summaries intact; reclaim space from decoration and
+    # persistent feedback chrome instead of weakening the 48% phase floors.
+    assert 'grid-template-rows: minmax(72px, 10%) minmax(0, 1fr) auto;' in tab_css
+    assert "padding-top: 20px;" in tab_css
+    assert "height: 18px;" in tab_css
+    assert "font-size: 10px;" in tab_css
+    assert "min-height: 28px;" in tab_css
+    assert "min-height: 26px;" in tab_css
+    assert "padding-block: 2px;" in tab_css
+    assert module.LAYOUT_HINT_MIN_ROBUST_HEADROOM == 0.01
+    assert module.PHASE_SHARE_FLOOR_TOLERANCE == 0.0005
+    assert (
+        module.RESPONSIVE_POLICY_VERSION
+        == "capacity-derived-presentation-contract-v8"
+    )
+
+
+def test_layout_hint_milestone31_normalizes_semantic_user_ids_and_rejects_pixels():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    layout_contract = module.normalize_layout_hint_contract(hierarchy)
+    units = {
+        item["id"]: item
+        for item in layout_contract["units"]
+    }
+
+    assert units["phase-support"]["userId"] == "repository.phase-support"
+    assert units["phase-support"]["userMutable"] == [
+        "placement",
+        "share",
+        "collapsed",
+        "tab-group",
+    ]
+    assert units["command-workflow"]["userMutable"] == []
+
+    profile = {
+        "version": module.USER_LAYOUT_HINT_CONTRACT_VERSION,
+        "operationVersion": module.USER_LAYOUT_HINT_OPERATION_VERSION,
+        "profileId": "raw-pixel-rejection",
+        "hierarchyId": hierarchy["id"],
+        "operations": [
+            {
+                "id": "bad-pixel-dock",
+                "kind": "dock",
+                "userId": "repository.phase-support",
+                "placement": "right",
+                "left": 842,
+                "width": 360,
+            }
+        ],
+    }
+    normalized = module.normalize_user_layout_hint_profile(hierarchy, profile)
+    applied = module.apply_user_layout_hint_profile(hierarchy, profile)
+
+    assert normalized["state"] == "complete"
+    assert normalized["operations"][0]["valid"] is False
+    assert any(
+        "raw coordinate fields" in reason
+        for reason in normalized["operations"][0]["issues"]
+    )
+    assert applied["state"] == "complete"
+    assert applied["operationTrace"][0]["outcome"] == "rejected"
+    assert applied["preferences"] == {}
+
+
+def test_layout_hint_milestone31_applies_dock_tab_share_and_collapse_operations():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    profile = {
+        "version": module.USER_LAYOUT_HINT_CONTRACT_VERSION,
+        "operationVersion": module.USER_LAYOUT_HINT_OPERATION_VERSION,
+        "profileId": "semantic-user-mutations",
+        "hierarchyId": hierarchy["id"],
+        "operations": [
+            {
+                "id": "dock-bottom",
+                "kind": "dock",
+                "userId": "repository.phase-support",
+                "placement": "bottom",
+                "relativeTo": "repository.command-workflow",
+            },
+            {
+                "id": "resize-support",
+                "kind": "resize-share",
+                "userId": "repository.phase-support",
+                "share": 0.28,
+            },
+            {
+                "id": "collapse-identity",
+                "kind": "collapse",
+                "userId": "repository.project-identity",
+                "collapsed": True,
+            },
+            {
+                "id": "tab-support",
+                "kind": "tab-with",
+                "userId": "repository.phase-support",
+                "targetUserId": "repository.command-workflow",
+            },
+        ],
+    }
+
+    applied = module.apply_user_layout_hint_profile(hierarchy, profile)
+
+    assert applied["state"] == "complete"
+    assert all(
+        item["outcome"] == "accepted"
+        for item in applied["operationTrace"]
+    )
+    assert applied["preferences"]["repository.phase-support"] == {
+        "preferredPlacement": "tab",
+        "relativeTo": "repository.command-workflow",
+        "preferredShare": 0.28,
+        "tabWith": "repository.command-workflow",
+    }
+    assert applied["preferences"]["repository.project-identity"] == {
+        "collapsed": True
+    }
+    assert applied["preferredDockTree"]["unitPlacements"]["phase-support"] == "tab"
+    assert applied["preferredDockTree"]["unitPlacements"]["project-identity"] == "trigger"
+    assert applied["liveApplicationFilesTouched"] is False
+
+
+def test_layout_hint_milestone31_responsive_fallback_retains_and_restores_preference():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    profile = {
+        "version": module.USER_LAYOUT_HINT_CONTRACT_VERSION,
+        "operationVersion": module.USER_LAYOUT_HINT_OPERATION_VERSION,
+        "profileId": "bottom-round-trip",
+        "hierarchyId": hierarchy["id"],
+        "operations": [
+            {
+                "id": "dock-bottom",
+                "kind": "dock",
+                "userId": "repository.phase-support",
+                "placement": "bottom",
+            }
+        ],
+    }
+    applied = module.apply_user_layout_hint_profile(hierarchy, profile)
+    round_trip = module.simulate_user_layout_hint_round_trip(
+        hierarchy,
+        applied,
+        viewports=[
+            ("wide", 1600),
+            ("medium", 1200),
+            ("narrow", 840),
+            ("compact", 680),
+            ("wide-restored", 1600),
+        ],
+    )
+
+    placements = [
+        probe["effectivePlacements"]["phase-support"]
+        for probe in round_trip["probes"]
+    ]
+    assert placements == ["bottom", "bottom", "tab", "stage", "bottom"]
+    assert round_trip["restoredAfterRoundTrip"] is True
+    assert round_trip["preferenceRetainedAtEveryProbe"] is True
+    assert round_trip["probes"][2]["remediations"][0]["preferenceRetained"] is True
+    assert round_trip["probes"][2]["remediations"][0]["restoresWhenFeasible"] is True
+
+
+def test_layout_hint_milestone31_enforces_invariants_and_supports_undo_reset():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    profile = {
+        "version": module.USER_LAYOUT_HINT_CONTRACT_VERSION,
+        "operationVersion": module.USER_LAYOUT_HINT_OPERATION_VERSION,
+        "profileId": "undo-reset-and-invariant",
+        "hierarchyId": hierarchy["id"],
+        "operations": [
+            {
+                "id": "dock-bottom",
+                "kind": "dock",
+                "userId": "repository.phase-support",
+                "placement": "bottom",
+            },
+            {
+                "id": "resize-support",
+                "kind": "resize-share",
+                "userId": "repository.phase-support",
+                "share": 0.28,
+            },
+            {
+                "id": "undo-resize",
+                "kind": "undo",
+            },
+            {
+                "id": "collapse-required-workflow",
+                "kind": "collapse",
+                "userId": "repository.command-workflow",
+                "collapsed": True,
+            },
+            {
+                "id": "reset-layout",
+                "kind": "reset",
+            },
+        ],
+    }
+
+    applied = module.apply_user_layout_hint_profile(hierarchy, profile)
+    outcomes = {
+        item["operationId"]: item["outcome"]
+        for item in applied["operationTrace"]
+    }
+
+    assert outcomes["dock-bottom"] == "accepted"
+    assert outcomes["resize-support"] == "accepted"
+    assert outcomes["undo-resize"] == "accepted"
+    assert outcomes["collapse-required-workflow"] == "rejected"
+    assert outcomes["reset-layout"] == "accepted"
+    assert applied["preferences"] == {}
+    assert (
+        applied["preferredDockTree"]["unitPlacements"]
+        == applied["authoredDockTree"]["unitPlacements"]
+    )
+
+
+def test_layout_hint_milestone31_migrates_stable_semantic_ids_and_reports_shadow_evidence():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    legacy_profile = {
+        "version": module.USER_LAYOUT_HINT_CONTRACT_VERSION,
+        "operationVersion": module.USER_LAYOUT_HINT_OPERATION_VERSION,
+        "profileId": "alias-migration",
+        "hierarchyId": hierarchy["id"],
+        "operations": [
+            {
+                "id": "dock-old-support-id",
+                "kind": "dock",
+                "userId": "repository.operation-support",
+                "placement": "bottom",
+                "relativeTo": "repository.workflow-shell",
+            }
+        ],
+    }
+    migrated = module.migrate_user_layout_hint_profile(
+        hierarchy,
+        legacy_profile,
+        aliases={
+            "repository.operation-support": "repository.phase-support",
+            "repository.workflow-shell": "repository.command-workflow",
+        },
+    )
+
+    assert migrated["state"] == "complete"
+    assert migrated["migration"]["state"] == "complete"
+    assert len(migrated["migration"]["changes"]) == 2
+    assert migrated["operations"][0]["userId"] == "repository.phase-support"
+    assert migrated["operations"][0]["relativeTo"] == "repository.command-workflow"
+
+    evidence = module.build_user_layout_hint_shadow_evidence([hierarchy])
+    assert len(evidence) == 1
+    assert evidence[0]["state"] == "complete"
+    assert evidence[0]["mode"] == "shadow-only"
+    assert evidence[0]["storageModel"] == "semantic-operations-only"
+    assert evidence[0]["rawPixelCoordinatesStored"] is False
+    assert evidence[0]["roundTrip"]["restoredAfterRoundTrip"] is True
+    assert evidence[0]["rejectedInvariantExample"]["rejected"] is True
+
+
+def test_layout_hint_milestone32_compiles_bounded_personalized_browser_candidates():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    profiles = module.user_layout_hint_browser_profiles(hierarchy)
+    candidates = module.compile_user_layout_hint_browser_candidates(hierarchy)
+
+    assert [item["profileId"] for item in profiles] == [
+        "bottom-28-collapsed-identity",
+        "right-24",
+        "tab-with-workflow",
+    ]
+    assert all(item["applied"]["state"] == "complete" for item in profiles)
+    assert len(candidates) == 13
+    assert sum(
+        1
+        for item in candidates
+        if item["userLayoutMutation"]["variant"] == "wide-restored"
+    ) == 1
+    assert all(item["shadowOnly"] is True for item in candidates)
+    assert all(item["responsiveEligible"] is False for item in candidates)
+    assert all(
+        item["mode"] == "layout-hint-user-responsive-shadow"
+        for item in candidates
+    )
+    assert sum(
+        len(module.phase_trial_scenarios(hierarchy))
+        for _item in candidates
+    ) == 78
+    assert all(
+        item["layoutHintCompilation"]["liveApplicationFilesTouched"] is False
+        for item in candidates
+    )
+
+
+def test_layout_hint_milestone32_resolves_user_profiles_across_capacity_without_losing_intent():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    candidates = module.compile_user_layout_hint_browser_candidates(hierarchy)
+
+    by_profile = {}
+    for candidate in candidates:
+        mutation = candidate["userLayoutMutation"]
+        if mutation["variant"] == "wide-restored":
+            continue
+        by_profile.setdefault(mutation["profileId"], []).append(
+            (
+                mutation["viewportProfile"],
+                mutation["effectivePlacement"],
+                mutation["preferenceRetained"],
+            )
+        )
+
+    assert by_profile["bottom-28-collapsed-identity"] == [
+        ("wide", "bottom", True),
+        ("medium", "bottom", True),
+        ("narrow", "tab", True),
+        ("compact", "stage", True),
+    ]
+    assert by_profile["right-24"] == [
+        ("wide", "right", True),
+        ("medium", "bottom", True),
+        ("narrow", "tab", True),
+        ("compact", "stage", True),
+    ]
+    assert by_profile["tab-with-workflow"] == [
+        ("wide", "tab", True),
+        ("medium", "tab", True),
+        ("narrow", "tab", True),
+        ("compact", "stage", True),
+    ]
+    bottom = next(
+        item
+        for item in candidates
+        if item["id"] == "user-layout--bottom-28-collapsed-identity--wide"
+    )
+    assert bottom["userLayoutMutation"]["preferredShare"] == 0.28
+    assert bottom["userLayoutMutation"]["collapsedUnitIds"] == [
+        "project-identity"
+    ]
+    tab = next(
+        item
+        for item in candidates
+        if item["id"] == "user-layout--tab-with-workflow--wide"
+    )
+    assert tab["userLayoutMutation"]["tabWithUnitId"] == "command-workflow"
+
+
+def test_layout_hint_milestone32_user_candidates_render_semantic_share_attributes_not_pixels():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    candidate = next(
+        item
+        for item in module.compile_user_layout_hint_browser_candidates(hierarchy)
+        if item["id"] == "user-layout--bottom-28-collapsed-identity--wide"
+    )
+    viewport = module.ViewportProfile("wide", 1600, 1000, True)
+    scenario = module.responsive_phase_scenario(
+        hierarchy,
+        next(
+            item
+            for item in module.semantic_phase_scenarios(hierarchy)
+            if item["phase"] == "planning"
+        ),
+        viewport,
+        candidate,
+    )
+    realized = module.realize_phase(hierarchy, candidate, scenario)
+    rendered = module.render_realized_trial_html(
+        realized,
+        candidate,
+        "mcel-realistic",
+    )
+
+    assert 'data-flog-user-layout-proof="true"' in rendered
+    assert (
+        'data-flog-user-layout-profile="bottom-28-collapsed-identity"'
+        in rendered
+    )
+    assert 'data-flog-user-support-placement="bottom"' in rendered
+    assert 'data-flog-user-collapsed-units="project-identity"' in rendered
+    assert "--flog-user-support-percent:28.0000%;" in rendered
+    assert "--flog-user-support-fr:28.0000fr;" in rendered
+    assert all(
+        key not in candidate["userLayoutMutation"]["sourceOperations"][0]
+        for key in ("left", "top", "width", "height")
+    )
+    assert (
+        'grid-template-rows:\n    minmax(0, 1fr)\n    auto\n'
+        '    minmax(112px, var(--flog-user-support-percent, 24%)) !important;'
+        in module.TRIAL_CSS
+    )
+
+
+def test_layout_hint_milestone32_personalized_candidates_never_enter_authored_ranking_or_transition_probes():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    candidates = module.compile_user_layout_hint_browser_candidates(hierarchy)
+    wide = module.ViewportProfile("wide", 1600, 1000, True)
+    boundary = module.ViewportProfile(
+        "transition-proof-right-bottom-1420",
+        1420,
+        760,
+        True,
+    )
+
+    assert any(
+        module.candidate_applies_to_viewport(item, wide)
+        for item in candidates
+    )
+    assert not any(
+        module.candidate_applies_to_viewport(item, boundary)
+        for item in candidates
+    )
+    assert all(module.candidate_shadow_only(item) for item in candidates)
+    assert not any(
+        module.candidate_responsive_eligible(item)
+        for item in candidates
+    )
+
+
+def test_layout_hint_milestone32_browser_evidence_requires_matching_restored_fingerprint():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    def measurement(candidate, variant, fingerprint):
+        mutation = {
+            "profileId": "bottom-28-collapsed-identity",
+            "variant": variant,
+            "preferredPlacement": "bottom",
+            "effectivePlacement": "bottom",
+            "preferredShare": 0.28,
+            "collapsedUnitIds": ["project-identity"],
+            "tabWithUnitId": "",
+            "remediations": [],
+            "preferenceRetained": True,
+            "restoresWhenFeasible": True,
+        }
+        phase_rows = [
+            {
+                "phase": phase,
+                "classification": {
+                    "hardFailureCount": 0,
+                    "blockedCriticalControlCount": 0,
+                },
+            }
+            for phase in (
+                "project-selection",
+                "selected-project-default",
+                "planning",
+                "execution",
+                "proof-review",
+                "recovery",
+            )
+        ]
+        return {
+            "hierarchyId": hierarchy["id"],
+            "candidate": candidate,
+            "candidateMode": "layout-hint-user-responsive-shadow",
+            "candidateSpec": {"userLayoutMutation": mutation},
+            "viewportProfile": "wide",
+            "viewportWidth": 1600,
+            "viewportHeight": 1000,
+            "classification": {
+                "status": "pass",
+                "score": 96,
+                "selectionScore": 96,
+                "selectionScoreRaw": 96.2,
+                "hardFailureCount": 0,
+                "blockedCriticalControlCount": 0,
+                "failureReasons": [],
+            },
+            "phaseFit": {
+                "hardFailureCount": 0,
+                "worstDominantHeadroom": 0.02,
+                "worstRawDominantHeadroom": 0.02,
+                "phases": [],
+            },
+            "layoutUnitFit": {
+                "hardFailureCount": 0,
+                "worstScore": 97,
+                "worstScoreRaw": 97.0,
+            },
+            "unitComposition": {},
+            "phaseMeasurements": phase_rows,
+            "phaseSnapshots": {
+                phase["phase"]: {"viewport": f"{phase['phase']}.png"}
+                for phase in phase_rows
+            },
+            "renderedPolicyFingerprint": fingerprint,
+        }
+
+    semantic = [
+        {
+            "hierarchyId": hierarchy["id"],
+            "undoResetEvidence": {"restoredAuthoredDefault": True},
+            "migrationEvidence": {"state": "complete", "changes": [{}, {}]},
+        }
+    ]
+    evidence = module.analyze_user_layout_hint_browser_evidence(
+        hierarchies=[hierarchy],
+        measurements=[
+            measurement("user-wide", "preferred-or-remediated", "same"),
+            measurement("user-wide-restored", "wide-restored", "same"),
+        ],
+        semantic_evidence=semantic,
+        responsive_policies=[
+            {
+                "hierarchyId": hierarchy["id"],
+                "state": "pass",
+                "wideToNarrowStable": True,
+                "narrowToWideStable": True,
+                "unverifiedTransitionCount": 0,
+                "insufficientHysteresisTransitionCount": 0,
+            }
+        ],
+    )
+
+    assert evidence[0]["state"] == "complete"
+    assert evidence[0]["allBrowserGatesPassed"] is True
+    assert evidence[0]["allRequiredRestorationsMatched"] is True
+    assert evidence[0]["allHysteresisCoveragePassed"] is True
+    assert evidence[0]["browserAggregateCount"] == 2
+    assert evidence[0]["pngProofCount"] == 12
+    assert evidence[0]["profiles"][0]["restorationFingerprintMatch"] is True
+    assert evidence[0]["undoResetEvidence"]["restoredAuthoredDefault"] is True
+    assert evidence[0]["migrationEvidence"]["state"] == "complete"
+
+
+def test_layout_hint_milestone32_serializes_undo_reset_and_stable_id_migration_evidence():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+
+    evidence = module.build_user_layout_hint_shadow_evidence([hierarchy])[0]
+
+    assert evidence["undoResetEvidence"]["restoredAuthoredDefault"] is True
+    assert evidence["undoResetEvidence"]["finalPreferences"] == {}
+    assert evidence["migrationEvidence"]["state"] == "complete"
+    assert len(evidence["migrationEvidence"]["changes"]) == 2
+    assert (
+        evidence["migrationEvidence"]["operations"][0]["userId"]
+        == "repository.phase-support"
+    )
+    assert module.USER_LAYOUT_HINT_BROWSER_PROOF_VERSION == (
+        "mcel-user-layout-browser-proof-v1"
+    )
+    assert module.USER_LAYOUT_HINT_BROWSER_MODE == "shadow-browser-proof"

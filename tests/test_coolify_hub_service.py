@@ -41,7 +41,7 @@ def _args(**overrides):
         "git_commit_sha": "",
         "base_directory": "/",
         "dockerfile_location": "",
-        "health_path": "/api/hub/status",
+        "health_path": "/api/hub/v1/health",
         "github_app_uuid": "",
         "deploy_key_uuid": "",
         "hub_runtime_dir": "",
@@ -149,7 +149,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         )
         self.assertLessEqual(len(payload["start_command"]), 255)
         self.assertTrue(payload["health_check_enabled"])
-        self.assertEqual(payload["health_check_path"], "/api/hub/status")
+        self.assertEqual(payload["health_check_path"], "/api/hub/v1/health")
 
     def test_wait_for_hub_uses_public_url_without_backend_port(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
@@ -194,7 +194,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(
             captured,
-            ["https://testnet-hub.greatlibrary.io/api/hub/status"],
+            ["https://testnet-hub.greatlibrary.io/api/hub/v1/health"],
         )
         self.assertEqual(
             coolify_hub_service.coolify_domain_with_backend_port(profile),
@@ -800,7 +800,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("EXPOSE 8790 8785", exp_fdb_dockerfile)
         self.assertNotIn("/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", exp_fdb_dockerfile)
         self.assertIn("${HUB_HEALTH_PORT:-${PORT:-8790}}", exp_fdb_dockerfile)
-        self.assertIn("/api/hub/status", exp_fdb_dockerfile)
+        self.assertIn("/api/hub/v1/health", exp_fdb_dockerfile)
 
 
     def test_json_rpc_uses_operator_headers_for_https_edges(self) -> None:
@@ -844,7 +844,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
     def test_hub_status_request_uses_operator_headers_for_https_edges(self) -> None:
         request = coolify_hub_service.hub_status_request(
-            "https://mainnet-hub.greatlibrary.io/api/hub/status",
+            "https://mainnet-hub.greatlibrary.io/api/hub/v1/health",
             user_agent="UnitTestHubAgent/1.0",
         )
 
@@ -887,7 +887,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(captured["timeout"], 2.5)
         request = captured["request"]
-        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io/api/hub/status")
+        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io/api/hub/v1/health")
         self.assertEqual(request.get_header("Accept"), "application/json")
         self.assertEqual(request.get_header("User-agent"), "UnitTestHubAgent/2.0")
 

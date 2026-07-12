@@ -44,7 +44,7 @@ DEFAULT_RETRY_SLEEP_S = 2.0
 DEFAULT_DOCKERFILE_LOCATION = "/Dockerfile.hub.exp-fdb"
 DEFAULT_EXP_FDB_DOCKERFILE_LOCATION = DEFAULT_DOCKERFILE_LOCATION
 DEFAULT_BASE_DIRECTORY = "/"
-DEFAULT_HEALTH_PATH = "/api/hub/status"
+DEFAULT_HEALTH_PATH = "/api/hub/v1/health"
 DEFAULT_JSON_RPC_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "MainComputerHubDeployer/1.0"
@@ -1565,11 +1565,11 @@ def render_remote_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argp
             "      - \"-lc\"",
             f"      - {yaml_quote(bootstrap_script)}",
             "    healthcheck:",
-            f'      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:{profile.hub_bind_port}{args.health_path} >/dev/null || exit 1"]',
+            f'      test: ["CMD-SHELL", "curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:{profile.hub_bind_port}{args.health_path} >/dev/null || exit 1"]',
             "      interval: 30s",
-            "      timeout: 5s",
-            "      start_period: 20s",
-            "      retries: 3",
+            "      timeout: 10s",
+            "      start_period: 90s",
+            "      retries: 5",
             "",
         ]
     )

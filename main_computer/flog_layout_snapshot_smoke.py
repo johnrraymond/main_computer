@@ -54,10 +54,12 @@ DEFAULT_RESPONSIVE_VIEWPORTS = (
     "constrained=1024x768,narrow=840x720,compact=680x720,small=560x720"
 )
 DEFAULT_RESPONSIVE_HYSTERESIS_PX = 48
-RESPONSIVE_POLICY_VERSION = "capacity-derived-presentation-contract-v6"
+RESPONSIVE_POLICY_VERSION = "capacity-derived-presentation-contract-v8"
+RESPONSIVE_STATE_MACHINE_VERSION = "ordered-hysteretic-state-machine-v1"
 RESPONSIVE_PRESENTATION_CONTRACT_VERSION = "mcel-responsive-presentations-v2"
 RESPONSIVE_COVERAGE_VERSION = "sampled-capacity-coverage-v2"
 RESPONSIVE_TRANSITION_PROOF_VERSION = "robust-transition-envelope-proof-v3"
+RESPONSIVE_TRANSITION_EVIDENCE_PREFIX = "transition-proof-"
 DEFAULT_CHROME = "mcel-realistic"
 DEFAULT_CANDIDATES = "all"
 DEFAULT_OUTPUT_DIR = "runtime/reports/flog"
@@ -102,6 +104,56 @@ LAYOUT_HINT_FALLBACK_PROFILES = {
     "tab": ["narrow"],
     "stage": ["compact", "small"],
     "trigger": ["compact", "small"],
+}
+
+USER_LAYOUT_HINT_CONTRACT_VERSION = "mcel-user-layout-hints-v1"
+USER_LAYOUT_HINT_OPERATION_VERSION = "mcel-user-layout-operations-v1"
+USER_LAYOUT_HINT_MODE = "shadow-only"
+USER_LAYOUT_HINT_BROWSER_PROOF_VERSION = "mcel-user-layout-browser-proof-v1"
+USER_LAYOUT_HINT_BROWSER_MODE = "shadow-browser-proof"
+USER_LAYOUT_HINT_BROWSER_VIEWPORTS = (
+    ("wide", 1600),
+    ("medium", 1200),
+    ("narrow", 840),
+    ("compact", 680),
+)
+USER_LAYOUT_HINT_OPERATION_KINDS = {
+    "dock",
+    "tab-with",
+    "resize-share",
+    "collapse",
+    "undo",
+    "reset",
+}
+USER_LAYOUT_HINT_MUTABILITIES = {
+    "placement",
+    "share",
+    "collapsed",
+    "tab-group",
+}
+USER_LAYOUT_HINT_FORBIDDEN_COORDINATE_KEYS = {
+    "x",
+    "y",
+    "left",
+    "top",
+    "right",
+    "bottom",
+    "width",
+    "height",
+    "pixel",
+    "pixels",
+    "px",
+}
+USER_LAYOUT_HINT_PLACEMENT_LEVELS = {
+    "top": 0,
+    "left": 0,
+    "center": 0,
+    "right": 0,
+    "bottom": 1,
+    "tab": 2,
+    "overlay": 2,
+    "stage": 3,
+    "trigger": 3,
 }
 
 SEMANTIC_RELATION_KEYS = (
@@ -1676,6 +1728,7 @@ def candidate_phase_policy(candidate: str | dict[str, Any]) -> dict[str, Any]:
             "recursive-composition",
             "layout-hint-shadow",
             "layout-hint-responsive-shadow",
+            "layout-hint-user-responsive-shadow",
         }
         or identity.startswith("compose--")
         or render_family in PHASE_AWARE_CANDIDATES
@@ -2088,6 +2141,21 @@ def normalize_layout_hint_contract(hierarchy: dict[str, Any]) -> dict[str, Any]:
             attrs.get("data-mc-layout-inactive") or "preserve"
         ).strip()
         internal = str(attrs.get("data-mc-layout-internal") or "").strip()
+        user_id = str(
+            attrs.get("data-mc-layout-user-id")
+            or f"{hierarchy.get('rootConcern', hierarchy.get('id', 'layout'))}.{unit_id}"
+        ).strip()
+        user_mutable = _layout_hint_tokens(
+            attrs.get("data-mc-layout-user-mutable")
+        )
+        unknown_user_mutabilities = sorted(
+            set(user_mutable) - USER_LAYOUT_HINT_MUTABILITIES
+        )
+        if unknown_user_mutabilities:
+            issues.append(
+                f"{unit_id} declares unknown user-layout mutability token(s): "
+                + ", ".join(unknown_user_mutabilities)
+            )
         min_inline = _layout_hint_float(
             attrs.get("data-mc-layout-min-inline"),
             default=0.0,
@@ -2157,11 +2225,23 @@ def normalize_layout_hint_contract(hierarchy: dict[str, Any]) -> dict[str, Any]:
                 "policy": policy,
                 "inactive": inactive,
                 "internal": internal,
+                "userId": user_id,
+                "userMutable": user_mutable,
                 "minInline": min_inline,
                 "minBlock": min_block,
                 "maxShare": max_share,
                 "attributes": attrs,
             }
+        )
+
+    user_ids = [str(unit.get("userId") or "") for unit in normalized_units]
+    duplicate_user_ids = sorted(
+        user_id for user_id in set(user_ids) if user_id and user_ids.count(user_id) > 1
+    )
+    if duplicate_user_ids:
+        issues.append(
+            "layout hints declare duplicate stable user id(s): "
+            + ", ".join(duplicate_user_ids)
         )
 
     missing_leaf_hints = sorted(
@@ -2339,6 +2419,1310 @@ def compile_layout_hint_default(
         "annotationRecommendations": annotation_recommendations,
         "liveApplicationFilesTouched": False,
     }
+
+
+
+def _user_layout_hint_unit_index(
+    hierarchy: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    contract = normalize_layout_hint_contract(hierarchy)
+    return {
+        str(unit.get("userId") or ""): unit
+        for unit in contract.get("units") or []
+        if str(unit.get("userId") or "")
+    }
+
+
+def _user_layout_hint_has_raw_coordinates(operation: dict[str, Any]) -> list[str]:
+    forbidden: list[str] = []
+    for raw_key in operation:
+        key = str(raw_key or "").strip().lower()
+        normalized = key.replace("_", "-")
+        tokens = [token for token in normalized.split("-") if token]
+        if key in USER_LAYOUT_HINT_FORBIDDEN_COORDINATE_KEYS:
+            forbidden.append(str(raw_key))
+            continue
+        if any(token in USER_LAYOUT_HINT_FORBIDDEN_COORDINATE_KEYS for token in tokens):
+            forbidden.append(str(raw_key))
+    return sorted(set(forbidden))
+
+
+def normalize_user_layout_hint_profile(
+    hierarchy: dict[str, Any],
+    profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Normalize persisted user intent without interpreting it as pixel geometry.
+
+    Milestone 3 is shadow-only.  The profile references stable semantic user ids
+    declared by the layout-hint fixture and records operations such as docking,
+    tabbing, share preference, collapse, undo, and reset.
+    """
+
+    source = copy.deepcopy(profile or {})
+    issues: list[str] = []
+    operation_issues: list[dict[str, Any]] = []
+    declared_version = str(
+        source.get("version") or USER_LAYOUT_HINT_CONTRACT_VERSION
+    )
+    operation_version = str(
+        source.get("operationVersion") or USER_LAYOUT_HINT_OPERATION_VERSION
+    )
+    hierarchy_id = str(source.get("hierarchyId") or hierarchy.get("id") or "")
+    if declared_version != USER_LAYOUT_HINT_CONTRACT_VERSION:
+        issues.append(
+            f"unsupported user-layout profile version {declared_version!r}; "
+            f"expected {USER_LAYOUT_HINT_CONTRACT_VERSION!r}"
+        )
+    if operation_version != USER_LAYOUT_HINT_OPERATION_VERSION:
+        issues.append(
+            f"unsupported user-layout operation version {operation_version!r}; "
+            f"expected {USER_LAYOUT_HINT_OPERATION_VERSION!r}"
+        )
+    if hierarchy_id != str(hierarchy.get("id") or ""):
+        issues.append(
+            f"user-layout profile targets hierarchy {hierarchy_id!r}, "
+            f"not {hierarchy.get('id')!r}"
+        )
+
+    layout_contract = normalize_layout_hint_contract(hierarchy)
+    if layout_contract.get("state") != "complete":
+        issues.append("user-layout profile requires a complete authored layout contract")
+    unit_index = _user_layout_hint_unit_index(hierarchy)
+    normalized_operations: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for index, raw in enumerate(source.get("operations") or []):
+        operation = copy.deepcopy(raw or {})
+        operation_id = str(operation.get("id") or f"operation-{index + 1}")
+        kind = str(operation.get("kind") or "").strip().lower()
+        reasons: list[str] = []
+        if operation_id in seen_ids:
+            reasons.append(f"duplicate operation id {operation_id!r}")
+        seen_ids.add(operation_id)
+        if kind not in USER_LAYOUT_HINT_OPERATION_KINDS:
+            reasons.append(f"unknown user-layout operation kind {kind!r}")
+
+        raw_coordinate_keys = _user_layout_hint_has_raw_coordinates(operation)
+        if raw_coordinate_keys:
+            reasons.append(
+                "raw coordinate fields are not part of the semantic hint language: "
+                + ", ".join(raw_coordinate_keys)
+            )
+
+        user_id = str(operation.get("userId") or "").strip()
+        target_user_id = str(operation.get("targetUserId") or "").strip()
+        unit = unit_index.get(user_id)
+        if kind not in {"undo", "reset"}:
+            if not user_id:
+                reasons.append("operation must reference a stable userId")
+            elif unit is None:
+                reasons.append(f"unknown stable userId {user_id!r}")
+
+        mutable = set((unit or {}).get("userMutable") or [])
+        normalized: dict[str, Any] = {
+            "id": operation_id,
+            "kind": kind,
+            "userId": user_id,
+            "targetUserId": target_user_id,
+            "valid": True,
+            "issues": reasons,
+        }
+        if kind == "dock":
+            placement = str(operation.get("placement") or "").strip()
+            normalized["placement"] = placement
+            normalized["relativeTo"] = str(operation.get("relativeTo") or "").strip()
+            if "placement" not in mutable:
+                reasons.append(f"{user_id!r} does not permit user placement changes")
+            if placement not in (unit or {}).get("allowed", []):
+                reasons.append(
+                    f"{user_id!r} does not allow placement {placement!r}"
+                )
+        elif kind == "tab-with":
+            normalized["placement"] = "tab"
+            normalized["targetUserId"] = target_user_id
+            if "placement" not in mutable and "tab-group" not in mutable:
+                reasons.append(f"{user_id!r} does not permit tab grouping")
+            if "tab" not in (unit or {}).get("allowed", []):
+                reasons.append(f"{user_id!r} does not allow tab placement")
+            if not target_user_id or target_user_id not in unit_index:
+                reasons.append(
+                    f"tab target {target_user_id!r} is not a stable layout user id"
+                )
+            if target_user_id and target_user_id == user_id:
+                reasons.append("a unit cannot be tabbed with itself")
+        elif kind == "resize-share":
+            share = _layout_hint_float(operation.get("share"), default=-1.0)
+            normalized["share"] = share
+            if "share" not in mutable:
+                reasons.append(f"{user_id!r} does not permit user share changes")
+            if not 0 < share <= float((unit or {}).get("maxShare", 0) or 0):
+                reasons.append(
+                    f"requested share {share!r} exceeds the declared interval "
+                    f"(0, {(unit or {}).get('maxShare', 0)}]"
+                )
+        elif kind == "collapse":
+            collapsed = bool(operation.get("collapsed", True))
+            normalized["collapsed"] = collapsed
+            if "collapsed" not in mutable:
+                reasons.append(f"{user_id!r} does not permit user collapse changes")
+            if collapsed and "trigger" not in (unit or {}).get("allowed", []):
+                reasons.append(
+                    f"{user_id!r} cannot collapse because no trigger realization is allowed"
+                )
+        elif kind in {"undo", "reset"}:
+            normalized["userId"] = ""
+            normalized["targetUserId"] = ""
+
+        normalized["issues"] = list(dict.fromkeys(reasons))
+        normalized["valid"] = not normalized["issues"]
+        if normalized["issues"]:
+            operation_issues.append(
+                {
+                    "operationId": operation_id,
+                    "kind": kind,
+                    "issues": list(normalized["issues"]),
+                }
+            )
+        normalized_operations.append(normalized)
+
+    return {
+        "version": declared_version,
+        "operationVersion": operation_version,
+        "mode": USER_LAYOUT_HINT_MODE,
+        "profileId": str(source.get("profileId") or "anonymous-layout-profile"),
+        "hierarchyId": hierarchy_id,
+        "state": "complete" if not issues else "invalid",
+        "issues": issues,
+        "operationIssues": operation_issues,
+        "operations": normalized_operations,
+        "sourceKind": str(
+            source.get("sourceKind") or "synthetic-semantic-user-layout-hints"
+        ),
+        "liveApplicationFilesTouched": False,
+    }
+
+
+def migrate_user_layout_hint_profile(
+    hierarchy: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    aliases: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Map retired stable ids to current ids without inventing geometry."""
+
+    migrated = copy.deepcopy(profile or {})
+    alias_map = {
+        str(key): str(value)
+        for key, value in (aliases or {}).items()
+        if str(key) and str(value)
+    }
+    changes: list[dict[str, str]] = []
+    for operation in migrated.get("operations") or []:
+        for field in ("userId", "targetUserId", "relativeTo"):
+            old = str(operation.get(field) or "")
+            if old and old in alias_map:
+                operation[field] = alias_map[old]
+                changes.append(
+                    {
+                        "operationId": str(operation.get("id") or ""),
+                        "field": field,
+                        "from": old,
+                        "to": alias_map[old],
+                    }
+                )
+    migrated["version"] = USER_LAYOUT_HINT_CONTRACT_VERSION
+    migrated["operationVersion"] = USER_LAYOUT_HINT_OPERATION_VERSION
+    normalized = normalize_user_layout_hint_profile(hierarchy, migrated)
+    normalized["migration"] = {
+        "state": "complete" if normalized.get("state") == "complete" else "invalid",
+        "changes": changes,
+        "aliasCount": len(alias_map),
+    }
+    return normalized
+
+
+def apply_user_layout_hint_profile(
+    hierarchy: dict[str, Any],
+    profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply semantic user operations to the authored dock tree in shadow mode."""
+
+    normalized = normalize_user_layout_hint_profile(hierarchy, profile)
+    compilation = compile_layout_hint_default(hierarchy)
+    if normalized.get("state") != "complete" or compilation.get("state") != "complete":
+        return {
+            "version": USER_LAYOUT_HINT_CONTRACT_VERSION,
+            "operationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+            "mode": USER_LAYOUT_HINT_MODE,
+            "hierarchyId": hierarchy.get("id", ""),
+            "profileId": normalized.get("profileId", ""),
+            "state": "invalid",
+            "issues": [
+                *(normalized.get("issues") or []),
+                *(compilation.get("issues") or []),
+            ],
+            "operationTrace": [],
+            "preferences": {},
+            "preferredDockTree": {},
+            "liveApplicationFilesTouched": False,
+        }
+
+    contract = normalize_layout_hint_contract(hierarchy)
+    units_by_user_id = {
+        str(unit.get("userId") or ""): unit
+        for unit in contract.get("units") or []
+    }
+    base_placements = dict(
+        (compilation.get("dockTree") or {}).get("unitPlacements") or {}
+    )
+    preferences: dict[str, dict[str, Any]] = {}
+    history: list[dict[str, dict[str, Any]]] = []
+    trace: list[dict[str, Any]] = []
+
+    for operation in normalized.get("operations") or []:
+        before = copy.deepcopy(preferences)
+        if not operation.get("valid"):
+            trace.append(
+                {
+                    "operationId": operation.get("id", ""),
+                    "kind": operation.get("kind", ""),
+                    "outcome": "rejected",
+                    "reasons": list(operation.get("issues") or []),
+                    "preferenceRetained": True,
+                }
+            )
+            continue
+
+        kind = str(operation.get("kind") or "")
+        user_id = str(operation.get("userId") or "")
+        reasons: list[str] = []
+        outcome = "accepted"
+        if kind == "undo":
+            if history:
+                preferences = history.pop()
+                reasons.append("restored the previous semantic preference state")
+            else:
+                outcome = "rejected"
+                reasons.append("there is no accepted user-layout operation to undo")
+        elif kind == "reset":
+            history.append(before)
+            preferences = {}
+            reasons.append("restored the authored layout-hint defaults")
+        else:
+            history.append(before)
+            current = copy.deepcopy(preferences.get(user_id) or {})
+            if kind == "dock":
+                current["preferredPlacement"] = str(operation.get("placement") or "")
+                current["relativeTo"] = str(operation.get("relativeTo") or "")
+                current.pop("tabWith", None)
+            elif kind == "tab-with":
+                current["preferredPlacement"] = "tab"
+                current["tabWith"] = str(operation.get("targetUserId") or "")
+            elif kind == "resize-share":
+                current["preferredShare"] = float(operation.get("share", 0) or 0)
+            elif kind == "collapse":
+                current["collapsed"] = bool(operation.get("collapsed", True))
+            preferences[user_id] = current
+            reasons.append("stored as a semantic user preference")
+
+        trace.append(
+            {
+                "operationId": operation.get("id", ""),
+                "kind": kind,
+                "userId": user_id,
+                "outcome": outcome,
+                "reasons": reasons,
+                "preferenceRetained": outcome == "accepted",
+                "preferenceState": copy.deepcopy(preferences),
+            }
+        )
+
+    preferred_placements = dict(base_placements)
+    for user_id, preference in preferences.items():
+        unit = units_by_user_id.get(user_id) or {}
+        unit_id = str(unit.get("id") or "")
+        if not unit_id:
+            continue
+        if bool(preference.get("collapsed")) and "trigger" in (unit.get("allowed") or []):
+            preferred_placements[unit_id] = "trigger"
+        elif preference.get("preferredPlacement"):
+            preferred_placements[unit_id] = str(preference["preferredPlacement"])
+
+    dock_tree = copy.deepcopy(compilation.get("dockTree") or {})
+    dock_tree["unitPlacements"] = preferred_placements
+    dock_tree["userPreferences"] = copy.deepcopy(preferences)
+    return {
+        "version": USER_LAYOUT_HINT_CONTRACT_VERSION,
+        "operationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+        "mode": USER_LAYOUT_HINT_MODE,
+        "hierarchyId": hierarchy.get("id", ""),
+        "profileId": normalized.get("profileId", ""),
+        "state": "complete",
+        "issues": [],
+        "operationIssues": copy.deepcopy(normalized.get("operationIssues") or []),
+        "operationTrace": trace,
+        "preferences": preferences,
+        "preferredDockTree": dock_tree,
+        "authoredDockTree": copy.deepcopy(compilation.get("dockTree") or {}),
+        "historyDepth": len(history),
+        "liveApplicationFilesTouched": False,
+    }
+
+
+def _user_layout_hint_capacity_requirement(
+    hierarchy: dict[str, Any],
+    width: int,
+) -> tuple[dict[str, Any], int]:
+    contract = responsive_contract_for_hierarchy(hierarchy)
+    band = responsive_capacity_band(contract, int(width))
+    return band, int(band.get("maxRemediationLevel", 0) or 0)
+
+
+def resolve_user_layout_hint_at_capacity(
+    hierarchy: dict[str, Any],
+    applied_profile: dict[str, Any],
+    *,
+    width: int,
+    viewport_profile: str = "",
+) -> dict[str, Any]:
+    """Resolve preferences against capacity while retaining unavailable intent."""
+
+    contract = normalize_layout_hint_contract(hierarchy)
+    units_by_user_id = {
+        str(unit.get("userId") or ""): unit
+        for unit in contract.get("units") or []
+    }
+    compilation = compile_layout_hint_default(hierarchy)
+    authored_placements = dict(
+        (compilation.get("dockTree") or {}).get("unitPlacements") or {}
+    )
+    preferences = copy.deepcopy(applied_profile.get("preferences") or {})
+    band, required_level = _user_layout_hint_capacity_requirement(hierarchy, width)
+    effective = dict(authored_placements)
+    remediations: list[dict[str, Any]] = []
+
+    for user_id, unit in units_by_user_id.items():
+        unit_id = str(unit.get("id") or "")
+        preference = preferences.get(user_id) or {}
+        authored = str(authored_placements.get(unit_id) or unit.get("prefer") or "")
+        requested = str(preference.get("preferredPlacement") or authored)
+        if bool(preference.get("collapsed")) and "trigger" in (unit.get("allowed") or []):
+            requested = "trigger"
+
+        # Capacity fallback is meaningful only for units that declare progressive
+        # responsive placements. Required center and persistent feedback units keep
+        # their authored structural position.
+        responsive_chain = [
+            placement
+            for placement in [requested, *list(unit.get("fallback") or [])]
+            if placement in {"right", "bottom", "tab", "stage", "trigger"}
+        ]
+        selected = requested
+        if responsive_chain and unit_id == "phase-support":
+            selected = next(
+                (
+                    placement
+                    for placement in responsive_chain
+                    if int(USER_LAYOUT_HINT_PLACEMENT_LEVELS.get(placement, 0))
+                    >= required_level
+                ),
+                "",
+            )
+            if not selected:
+                selected = str((unit.get("fallback") or ["trigger"])[-1])
+        effective[unit_id] = selected
+
+        if selected != requested:
+            remediations.append(
+                {
+                    "userId": user_id,
+                    "unitId": unit_id,
+                    "requestedPlacement": requested,
+                    "effectivePlacement": selected,
+                    "capacityBand": str(band.get("id") or ""),
+                    "reason": (
+                        f"{requested} requires more simultaneous capacity than "
+                        f"{band.get('id')} guarantees; used the least restrictive "
+                        "declared fallback that remains feasible"
+                    ),
+                    "preferenceRetained": True,
+                    "restoresWhenFeasible": True,
+                }
+            )
+
+    return {
+        "viewportProfile": viewport_profile,
+        "width": int(width),
+        "capacityBand": str(band.get("id") or ""),
+        "requiredRemediationLevel": required_level,
+        "preferredPlacements": {
+            str((units_by_user_id.get(user_id) or {}).get("id") or user_id): (
+                "trigger"
+                if bool(preference.get("collapsed"))
+                else str(
+                    preference.get("preferredPlacement")
+                    or authored_placements.get(
+                        str((units_by_user_id.get(user_id) or {}).get("id") or ""),
+                        "",
+                    )
+                )
+            )
+            for user_id, preference in preferences.items()
+        },
+        "effectivePlacements": effective,
+        "preferredShares": {
+            user_id: float(preference.get("preferredShare", 0) or 0)
+            for user_id, preference in preferences.items()
+            if preference.get("preferredShare")
+        },
+        "remediations": remediations,
+        "preferenceRetained": True,
+    }
+
+
+def simulate_user_layout_hint_round_trip(
+    hierarchy: dict[str, Any],
+    applied_profile: dict[str, Any],
+    *,
+    viewports: list[tuple[str, int]] | None = None,
+) -> dict[str, Any]:
+    probes = viewports or [
+        ("wide", 1600),
+        ("medium", 1200),
+        ("narrow", 840),
+        ("compact", 680),
+        ("wide-restored", 1600),
+    ]
+    states = [
+        resolve_user_layout_hint_at_capacity(
+            hierarchy,
+            applied_profile,
+            width=width,
+            viewport_profile=name,
+        )
+        for name, width in probes
+    ]
+    first = states[0].get("effectivePlacements") or {}
+    last = states[-1].get("effectivePlacements") or {}
+    return {
+        "state": "complete",
+        "probes": states,
+        "restoredAfterRoundTrip": first == last,
+        "preferenceRetainedAtEveryProbe": all(
+            bool(item.get("preferenceRetained")) for item in states
+        ),
+    }
+
+
+def build_user_layout_hint_shadow_evidence(
+    hierarchies: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for hierarchy in hierarchies:
+        if not hierarchy.get("layoutHintSource"):
+            continue
+        unit_index = _user_layout_hint_unit_index(hierarchy)
+        support_id = next(
+            (
+                user_id
+                for user_id, unit in unit_index.items()
+                if str(unit.get("id") or "") == "phase-support"
+            ),
+            "",
+        )
+        workflow_id = next(
+            (
+                user_id
+                for user_id, unit in unit_index.items()
+                if str(unit.get("id") or "") == "command-workflow"
+            ),
+            "",
+        )
+        identity_id = next(
+            (
+                user_id
+                for user_id, unit in unit_index.items()
+                if str(unit.get("id") or "") == "project-identity"
+            ),
+            "",
+        )
+        profile = {
+            "version": USER_LAYOUT_HINT_CONTRACT_VERSION,
+            "operationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+            "profileId": "shadow-user-preferences",
+            "hierarchyId": hierarchy.get("id", ""),
+            "operations": [
+                {
+                    "id": "dock-support-bottom",
+                    "kind": "dock",
+                    "userId": support_id,
+                    "placement": "bottom",
+                    "relativeTo": workflow_id,
+                },
+                {
+                    "id": "resize-support",
+                    "kind": "resize-share",
+                    "userId": support_id,
+                    "share": 0.28,
+                },
+                {
+                    "id": "collapse-project-identity",
+                    "kind": "collapse",
+                    "userId": identity_id,
+                    "collapsed": True,
+                },
+            ],
+        }
+        applied = apply_user_layout_hint_profile(hierarchy, profile)
+        round_trip = simulate_user_layout_hint_round_trip(hierarchy, applied)
+        rejected = apply_user_layout_hint_profile(
+            hierarchy,
+            {
+                "version": USER_LAYOUT_HINT_CONTRACT_VERSION,
+                "operationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+                "profileId": "rejected-invariant-example",
+                "hierarchyId": hierarchy.get("id", ""),
+                "operations": [
+                    {
+                        "id": "collapse-required-workflow",
+                        "kind": "collapse",
+                        "userId": workflow_id,
+                        "collapsed": True,
+                    }
+                ],
+            },
+        )
+        undo_reset = apply_user_layout_hint_profile(
+            hierarchy,
+            {
+                "version": USER_LAYOUT_HINT_CONTRACT_VERSION,
+                "operationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+                "profileId": "undo-reset-evidence",
+                "hierarchyId": hierarchy.get("id", ""),
+                "operations": [
+                    {
+                        "id": "dock-before-undo",
+                        "kind": "dock",
+                        "userId": support_id,
+                        "placement": "bottom",
+                    },
+                    {
+                        "id": "resize-before-undo",
+                        "kind": "resize-share",
+                        "userId": support_id,
+                        "share": 0.28,
+                    },
+                    {"id": "undo-resize", "kind": "undo"},
+                    {"id": "reset-authored-default", "kind": "reset"},
+                ],
+            },
+        )
+        migrated = migrate_user_layout_hint_profile(
+            hierarchy,
+            {
+                "version": USER_LAYOUT_HINT_CONTRACT_VERSION,
+                "operationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+                "profileId": "migration-evidence",
+                "hierarchyId": hierarchy.get("id", ""),
+                "operations": [
+                    {
+                        "id": "dock-retired-support-id",
+                        "kind": "dock",
+                        "userId": "repository.operation-support",
+                        "placement": "bottom",
+                        "relativeTo": "repository.workflow-shell",
+                    }
+                ],
+            },
+            aliases={
+                "repository.operation-support": support_id,
+                "repository.workflow-shell": workflow_id,
+            },
+        )
+        evidence.append(
+            {
+                "hierarchyId": hierarchy.get("id", ""),
+                "version": USER_LAYOUT_HINT_CONTRACT_VERSION,
+                "operationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+                "mode": USER_LAYOUT_HINT_MODE,
+                "state": (
+                    "complete"
+                    if applied.get("state") == "complete"
+                    and round_trip.get("restoredAfterRoundTrip")
+                    else "invalid"
+                ),
+                "liveApplicationFilesTouched": False,
+                "profile": copy.deepcopy(profile),
+                "operationTrace": copy.deepcopy(applied.get("operationTrace") or []),
+                "preferences": copy.deepcopy(applied.get("preferences") or {}),
+                "roundTrip": round_trip,
+                "rejectedInvariantExample": {
+                    "trace": copy.deepcopy(rejected.get("operationTrace") or []),
+                    "rejected": any(
+                        item.get("outcome") == "rejected"
+                        for item in rejected.get("operationTrace") or []
+                    ),
+                },
+                "undoResetEvidence": {
+                    "trace": copy.deepcopy(undo_reset.get("operationTrace") or []),
+                    "finalPreferences": copy.deepcopy(
+                        undo_reset.get("preferences") or {}
+                    ),
+                    "restoredAuthoredDefault": (
+                        (undo_reset.get("preferredDockTree") or {}).get(
+                            "unitPlacements"
+                        )
+                        == (undo_reset.get("authoredDockTree") or {}).get(
+                            "unitPlacements"
+                        )
+                    ),
+                },
+                "migrationEvidence": {
+                    "state": str(
+                        (migrated.get("migration") or {}).get("state") or ""
+                    ),
+                    "changes": copy.deepcopy(
+                        (migrated.get("migration") or {}).get("changes") or []
+                    ),
+                    "operations": copy.deepcopy(
+                        migrated.get("operations") or []
+                    ),
+                },
+                "storageModel": "semantic-operations-only",
+                "rawPixelCoordinatesStored": False,
+            }
+        )
+    return evidence
+
+
+
+def user_layout_hint_browser_profiles(
+    hierarchy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return the bounded M3.2 semantic profiles rendered in Chromium.
+
+    These profiles exercise placement, share, tab grouping, collapse, responsive
+    remediation, and restoration.  They remain synthetic shadow inputs and do not
+    inspect or mutate live application files.
+    """
+
+    unit_index = _user_layout_hint_unit_index(hierarchy)
+    support_id = next(
+        (
+            user_id
+            for user_id, unit in unit_index.items()
+            if str(unit.get("id") or "") == "phase-support"
+        ),
+        "",
+    )
+    workflow_id = next(
+        (
+            user_id
+            for user_id, unit in unit_index.items()
+            if str(unit.get("id") or "") == "command-workflow"
+        ),
+        "",
+    )
+    identity_id = next(
+        (
+            user_id
+            for user_id, unit in unit_index.items()
+            if str(unit.get("id") or "") == "project-identity"
+        ),
+        "",
+    )
+    if not support_id or not workflow_id or not identity_id:
+        return []
+
+    definitions = [
+        {
+            "profileId": "bottom-28-collapsed-identity",
+            "description": (
+                "Support prefers the bottom at 28% while project identity is "
+                "collapsed to its legal trigger realization."
+            ),
+            "operations": [
+                {
+                    "id": "dock-support-bottom",
+                    "kind": "dock",
+                    "userId": support_id,
+                    "placement": "bottom",
+                    "relativeTo": workflow_id,
+                },
+                {
+                    "id": "resize-support-28",
+                    "kind": "resize-share",
+                    "userId": support_id,
+                    "share": 0.28,
+                },
+                {
+                    "id": "collapse-project-identity",
+                    "kind": "collapse",
+                    "userId": identity_id,
+                    "collapsed": True,
+                },
+            ],
+            "proveRestorationFingerprint": True,
+        },
+        {
+            "profileId": "right-24",
+            "description": "Support prefers the right wall at a 24% share.",
+            "operations": [
+                {
+                    "id": "dock-support-right",
+                    "kind": "dock",
+                    "userId": support_id,
+                    "placement": "right",
+                    "relativeTo": workflow_id,
+                },
+                {
+                    "id": "resize-support-24",
+                    "kind": "resize-share",
+                    "userId": support_id,
+                    "share": 0.24,
+                },
+            ],
+            "proveRestorationFingerprint": False,
+        },
+        {
+            "profileId": "tab-with-workflow",
+            "description": (
+                "Support is tabbed with the command/workflow unit and falls back "
+                "to a sequential stage only when compact capacity requires it."
+            ),
+            "operations": [
+                {
+                    "id": "tab-support-with-workflow",
+                    "kind": "tab-with",
+                    "userId": support_id,
+                    "targetUserId": workflow_id,
+                }
+            ],
+            "proveRestorationFingerprint": False,
+        },
+    ]
+
+    profiles: list[dict[str, Any]] = []
+    for definition in definitions:
+        source = {
+            "version": USER_LAYOUT_HINT_CONTRACT_VERSION,
+            "operationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+            "profileId": definition["profileId"],
+            "hierarchyId": hierarchy.get("id", ""),
+            "operations": copy.deepcopy(definition["operations"]),
+            "sourceKind": "synthetic-browser-user-layout-proof",
+        }
+        applied = apply_user_layout_hint_profile(hierarchy, source)
+        profiles.append(
+            {
+                **copy.deepcopy(definition),
+                "source": source,
+                "applied": applied,
+            }
+        )
+    return profiles
+
+
+def _user_layout_candidate_policy_for_placement(
+    placement: str,
+) -> str:
+    return {
+        "right": "bounded-side-drawer",
+        "bottom": "bounded-bottom-drawer",
+        "tab": "tabbed-phase-support",
+        "stage": "sequential-phase-stage",
+        "trigger": "one-active-plus-triggers",
+    }.get(str(placement or ""), "")
+
+
+def compile_user_layout_hint_browser_candidates(
+    hierarchy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Compile accepted user profiles into bounded browser-rendered candidates.
+
+    M3.2 renders three semantic profiles across wide, medium, narrow, and compact
+    capacity.  One restored-wide duplicate is added for an exact painted-geometry
+    fingerprint comparison, yielding 13 candidate/viewport aggregates and 78 phase
+    PNGs for the six-phase Git fixture.
+    """
+
+    if not hierarchy.get("layoutHintSource"):
+        return []
+    compilation = compile_layout_hint_default(hierarchy)
+    base_candidate = compilation.get("candidate")
+    if compilation.get("state") != "complete" or not isinstance(base_candidate, dict):
+        return []
+
+    base_composition = copy.deepcopy(base_candidate.get("composition") or {})
+    base_policies = dict(base_composition.get("unitPolicies") or {})
+    if base_policies.get("command-workflow") == "command-over-dominant":
+        base_policies["command-workflow"] = "command-inline-header"
+
+    contract = normalize_layout_hint_contract(hierarchy)
+    user_to_unit = {
+        str(unit.get("userId") or ""): str(unit.get("id") or "")
+        for unit in contract.get("units") or []
+        if unit.get("userId")
+    }
+    support_user_id = next(
+        (
+            user_id
+            for user_id, unit_id in user_to_unit.items()
+            if unit_id == "phase-support"
+        ),
+        "",
+    )
+
+    candidates: list[dict[str, Any]] = []
+    for profile in user_layout_hint_browser_profiles(hierarchy):
+        applied = profile.get("applied") or {}
+        if applied.get("state") != "complete":
+            continue
+        preferences = copy.deepcopy(applied.get("preferences") or {})
+        support_preference = preferences.get(support_user_id) or {}
+        collapsed_user_ids = sorted(
+            user_id
+            for user_id, preference in preferences.items()
+            if bool(preference.get("collapsed"))
+        )
+        tab_with_user_id = str(support_preference.get("tabWith") or "")
+        preferred_share = float(
+            support_preference.get("preferredShare", 0) or 0
+        )
+
+        for viewport_name, width in USER_LAYOUT_HINT_BROWSER_VIEWPORTS:
+            resolved = resolve_user_layout_hint_at_capacity(
+                hierarchy,
+                applied,
+                width=width,
+                viewport_profile=viewport_name,
+            )
+            effective_placements = dict(
+                resolved.get("effectivePlacements") or {}
+            )
+            support_placement = str(
+                effective_placements.get("phase-support") or "right"
+            )
+            support_policy = _user_layout_candidate_policy_for_placement(
+                support_placement
+            )
+            if not support_policy:
+                continue
+
+            composition = {
+                "rootPolicy": str(
+                    base_composition.get("rootPolicy")
+                    or "dominant-workflow-stack"
+                ),
+                "unitPolicies": {
+                    **base_policies,
+                    "phase-support": support_policy,
+                },
+            }
+            dock_tree = copy.deepcopy(compilation.get("dockTree") or {})
+            unit_placements = dict(dock_tree.get("unitPlacements") or {})
+            unit_placements.update(effective_placements)
+            dock_tree["unitPlacements"] = unit_placements
+            dock_tree["userPreferences"] = copy.deepcopy(preferences)
+
+            mutation = {
+                "version": USER_LAYOUT_HINT_BROWSER_PROOF_VERSION,
+                "mode": USER_LAYOUT_HINT_BROWSER_MODE,
+                "profileId": str(profile.get("profileId") or ""),
+                "profileDescription": str(profile.get("description") or ""),
+                "viewportProfile": viewport_name,
+                "variant": "preferred-or-remediated",
+                "preferredPlacement": str(
+                    support_preference.get("preferredPlacement")
+                    or (compilation.get("dockTree") or {})
+                    .get("unitPlacements", {})
+                    .get("phase-support", "right")
+                ),
+                "effectivePlacement": support_placement,
+                "preferredShare": preferred_share,
+                "collapsedUserIds": collapsed_user_ids,
+                "collapsedUnitIds": sorted(
+                    user_to_unit.get(user_id, "")
+                    for user_id in collapsed_user_ids
+                    if user_to_unit.get(user_id)
+                ),
+                "tabWithUserId": tab_with_user_id,
+                "tabWithUnitId": user_to_unit.get(tab_with_user_id, ""),
+                "capacityBand": str(resolved.get("capacityBand") or ""),
+                "remediations": copy.deepcopy(
+                    resolved.get("remediations") or []
+                ),
+                "preferenceRetained": bool(
+                    resolved.get("preferenceRetained", False)
+                ),
+                "restoresWhenFeasible": all(
+                    bool(item.get("restoresWhenFeasible", False))
+                    for item in resolved.get("remediations") or []
+                )
+                if resolved.get("remediations")
+                else True,
+                "sourceOperations": copy.deepcopy(
+                    (profile.get("source") or {}).get("operations") or []
+                ),
+                "liveApplicationFilesTouched": False,
+            }
+            candidate = {
+                "id": (
+                    f"user-layout--{slugify(profile.get('profileId', 'profile'))}"
+                    f"--{slugify(viewport_name)}"
+                ),
+                "mode": "layout-hint-user-responsive-shadow",
+                "renderFamily": "recursive-composition",
+                "compositionLabel": (
+                    f"user layout {profile.get('profileId', '')} → "
+                    f"{support_placement} at {viewport_name}"
+                ),
+                "preflightScore": 100,
+                "compatibilityPenalty": 0,
+                "localPolicyPreflight": {
+                    unit_id: 100
+                    for unit_id in composition["unitPolicies"]
+                },
+                "composition": composition,
+                "shadowOnly": True,
+                "responsiveEligible": False,
+                "responsivePlacement": support_placement,
+                "presentationContractKey": {
+                    "right": "wide",
+                    "bottom": "medium",
+                    "tab": "narrow",
+                    "stage": "compact",
+                    "trigger": "compact",
+                }.get(support_placement, ""),
+                "viewportProfiles": [viewport_name],
+                "layoutHintCompilation": {
+                    "version": USER_LAYOUT_HINT_BROWSER_PROOF_VERSION,
+                    "capacity": support_placement,
+                    "dockTree": dock_tree,
+                    "state": "complete",
+                    "liveApplicationFilesTouched": False,
+                },
+                "userLayoutMutation": mutation,
+            }
+            candidates.append(candidate)
+
+            if (
+                viewport_name == "wide"
+                and bool(profile.get("proveRestorationFingerprint"))
+            ):
+                restored = copy.deepcopy(candidate)
+                restored["id"] = (
+                    f"user-layout--{slugify(profile.get('profileId', 'profile'))}"
+                    "--wide-restored"
+                )
+                restored["compositionLabel"] = (
+                    f"user layout {profile.get('profileId', '')} → "
+                    "wide restored after compact round trip"
+                )
+                restored["userLayoutMutation"]["variant"] = "wide-restored"
+                restored["userLayoutMutation"]["restorationReferenceCandidate"] = (
+                    candidate["id"]
+                )
+                candidates.append(restored)
+    return candidates
+
+
+def _user_layout_browser_measurement_summary(
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    mutation = copy.deepcopy(
+        (item.get("candidateSpec") or {}).get("userLayoutMutation") or {}
+    )
+    phase_measurements = item.get("phaseMeasurements") or []
+    hard_failure_count = sum(
+        int((phase.get("classification") or {}).get("hardFailureCount", 0) or 0)
+        for phase in phase_measurements
+    )
+    blocked = max(
+        [
+            int(
+                (phase.get("classification") or {}).get(
+                    "blockedCriticalControlCount", 0
+                )
+                or 0
+            )
+            for phase in phase_measurements
+        ]
+        or [0]
+    )
+    outcome = layout_hint_measurement_outcome(item)
+    browser_gate_passed = (
+        outcome.get("outcome") in {"accepted", "accepted-with-warning"}
+        and hard_failure_count == 0
+        and blocked == 0
+    )
+    return {
+        "candidate": str(item.get("candidate") or ""),
+        "viewportProfile": str(item.get("viewportProfile") or ""),
+        "width": int(item.get("viewportWidth", 0) or 0),
+        "height": int(item.get("viewportHeight", 0) or 0),
+        "profileId": str(mutation.get("profileId") or ""),
+        "variant": str(mutation.get("variant") or ""),
+        "preferredPlacement": str(mutation.get("preferredPlacement") or ""),
+        "effectivePlacement": str(mutation.get("effectivePlacement") or ""),
+        "preferredShare": float(mutation.get("preferredShare", 0) or 0),
+        "collapsedUnitIds": list(mutation.get("collapsedUnitIds") or []),
+        "tabWithUnitId": str(mutation.get("tabWithUnitId") or ""),
+        "remediations": copy.deepcopy(mutation.get("remediations") or []),
+        "preferenceRetained": bool(mutation.get("preferenceRetained", False)),
+        "restoresWhenFeasible": bool(
+            mutation.get("restoresWhenFeasible", False)
+        ),
+        "status": measurement_status(item),
+        "outcome": str(outcome.get("outcome") or ""),
+        "score": measurement_score(item),
+        "worstPhaseHeadroom": float(
+            measurement_margin_evidence(item).get("worstPhaseHeadroom", -1)
+        ),
+        "hardFailureCount": hard_failure_count,
+        "blockedCriticalControlCount": blocked,
+        "browserGatePassed": browser_gate_passed,
+        "renderedPolicyFingerprint": str(
+            item.get("renderedPolicyFingerprint") or ""
+        ),
+        "phaseSnapshots": copy.deepcopy(item.get("phaseSnapshots") or {}),
+    }
+
+
+def analyze_user_layout_hint_browser_evidence(
+    *,
+    hierarchies: list[dict[str, Any]],
+    measurements: list[dict[str, Any]],
+    semantic_evidence: list[dict[str, Any]] | None = None,
+    responsive_policies: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Aggregate M3.2 Chromium evidence for semantic user-mutated dock trees."""
+
+    semantic_by_hierarchy = {
+        str(item.get("hierarchyId") or ""): item
+        for item in (semantic_evidence or [])
+    }
+    responsive_by_hierarchy = {
+        str(item.get("hierarchyId") or ""): item
+        for item in (responsive_policies or [])
+    }
+    reports: list[dict[str, Any]] = []
+    for hierarchy in hierarchies:
+        hierarchy_id = str(hierarchy.get("id") or "")
+        rows = [
+            _user_layout_browser_measurement_summary(item)
+            for item in measurements
+            if str(item.get("hierarchyId") or "") == hierarchy_id
+            and str(item.get("candidateMode") or "")
+            == "layout-hint-user-responsive-shadow"
+        ]
+        if not rows:
+            continue
+
+        responsive_policy = responsive_by_hierarchy.get(hierarchy_id) or {}
+        base_hysteresis_verified = bool(
+            responsive_policy
+            and responsive_policy.get("state") == "pass"
+            and bool(responsive_policy.get("wideToNarrowStable", False))
+            and bool(responsive_policy.get("narrowToWideStable", False))
+            and int(
+                responsive_policy.get("unverifiedTransitionCount", 0) or 0
+            )
+            == 0
+            and int(
+                responsive_policy.get(
+                    "insufficientHysteresisTransitionCount", 0
+                )
+                or 0
+            )
+            == 0
+        )
+
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row.get("profileId") or "")].append(row)
+
+        profile_reports: list[dict[str, Any]] = []
+        for profile_id, profile_rows in sorted(grouped.items()):
+            profile_rows.sort(
+                key=lambda row: (
+                    -int(row.get("width", 0) or 0),
+                    str(row.get("variant") or ""),
+                    str(row.get("candidate") or ""),
+                )
+            )
+            wide_reference = next(
+                (
+                    row
+                    for row in profile_rows
+                    if row.get("viewportProfile") == "wide"
+                    and row.get("variant") != "wide-restored"
+                ),
+                None,
+            )
+            wide_restored = next(
+                (
+                    row
+                    for row in profile_rows
+                    if row.get("variant") == "wide-restored"
+                ),
+                None,
+            )
+            restoration_required = wide_restored is not None
+            restoration_match = (
+                bool(wide_reference)
+                and bool(wide_restored)
+                and bool(wide_reference.get("renderedPolicyFingerprint"))
+                and wide_reference.get("renderedPolicyFingerprint")
+                == wide_restored.get("renderedPolicyFingerprint")
+            )
+            all_browser_valid = all(
+                bool(row.get("browserGatePassed")) for row in profile_rows
+            )
+            retained = all(
+                bool(row.get("preferenceRetained")) for row in profile_rows
+            )
+            ordered_capacity_rows = [
+                row
+                for row in sorted(
+                    profile_rows,
+                    key=lambda row: -int(row.get("width", 0) or 0),
+                )
+                if row.get("variant") != "wide-restored"
+            ]
+            placement_sequence: list[str] = []
+            for row in ordered_capacity_rows:
+                placement = str(row.get("effectivePlacement") or "")
+                if placement and (
+                    not placement_sequence
+                    or placement_sequence[-1] != placement
+                ):
+                    placement_sequence.append(placement)
+            remediation_levels = [
+                int(USER_LAYOUT_HINT_PLACEMENT_LEVELS.get(placement, 0))
+                for placement in placement_sequence
+            ]
+            monotonic_capacity_path = remediation_levels == sorted(
+                remediation_levels
+            )
+            legal_transition_pairs = {
+                ("right", "bottom"),
+                ("bottom", "tab"),
+                ("tab", "stage"),
+            }
+            transition_pairs = list(
+                zip(placement_sequence, placement_sequence[1:])
+            )
+            transition_chain_covered = all(
+                pair in legal_transition_pairs for pair in transition_pairs
+            )
+            hysteresis_coverage_passed = (
+                base_hysteresis_verified
+                and monotonic_capacity_path
+                and transition_chain_covered
+            )
+            profile_reports.append(
+                {
+                    "profileId": profile_id,
+                    "state": (
+                        "complete"
+                        if all_browser_valid
+                        and retained
+                        and hysteresis_coverage_passed
+                        and (not restoration_required or restoration_match)
+                        else "invalid"
+                    ),
+                    "browserGatePassed": all_browser_valid,
+                    "placementSequence": placement_sequence,
+                    "monotonicCapacityPath": monotonic_capacity_path,
+                    "transitionChainCovered": transition_chain_covered,
+                    "baseHysteresisVerified": base_hysteresis_verified,
+                    "hysteresisCoveragePassed": hysteresis_coverage_passed,
+                    "preferenceRetainedAtEveryCapacity": retained,
+                    "restorationFingerprintRequired": restoration_required,
+                    "restorationFingerprintMatch": restoration_match,
+                    "restorationReferenceFingerprint": (
+                        str(
+                            (wide_reference or {}).get(
+                                "renderedPolicyFingerprint", ""
+                            )
+                        )
+                    ),
+                    "restorationObservedFingerprint": (
+                        str(
+                            (wide_restored or {}).get(
+                                "renderedPolicyFingerprint", ""
+                            )
+                        )
+                    ),
+                    "proofs": profile_rows,
+                    "browserAggregateCount": len(profile_rows),
+                    "pngProofCount": sum(
+                        len(row.get("phaseSnapshots") or {})
+                        for row in profile_rows
+                    ),
+                }
+            )
+
+        semantic = semantic_by_hierarchy.get(hierarchy_id) or {}
+        reports.append(
+            {
+                "hierarchyId": hierarchy_id,
+                "version": USER_LAYOUT_HINT_BROWSER_PROOF_VERSION,
+                "mode": USER_LAYOUT_HINT_BROWSER_MODE,
+                "state": (
+                    "complete"
+                    if profile_reports
+                    and all(
+                        item.get("state") == "complete"
+                        for item in profile_reports
+                    )
+                    else "invalid"
+                ),
+                "profiles": profile_reports,
+                "profileCount": len(profile_reports),
+                "browserAggregateCount": sum(
+                    int(item.get("browserAggregateCount", 0) or 0)
+                    for item in profile_reports
+                ),
+                "pngProofCount": sum(
+                    int(item.get("pngProofCount", 0) or 0)
+                    for item in profile_reports
+                ),
+                "allBrowserGatesPassed": all(
+                    bool(item.get("browserGatePassed"))
+                    for item in profile_reports
+                ),
+                "allPreferencesRetained": all(
+                    bool(item.get("preferenceRetainedAtEveryCapacity"))
+                    for item in profile_reports
+                ),
+                "allHysteresisCoveragePassed": all(
+                    bool(item.get("hysteresisCoveragePassed"))
+                    for item in profile_reports
+                ),
+                "baseResponsivePolicyState": str(
+                    responsive_policy.get("state") or ""
+                ),
+                "allRequiredRestorationsMatched": all(
+                    (
+                        not bool(
+                            item.get("restorationFingerprintRequired")
+                        )
+                        or bool(item.get("restorationFingerprintMatch"))
+                    )
+                    for item in profile_reports
+                ),
+                "undoResetEvidence": copy.deepcopy(
+                    semantic.get("undoResetEvidence") or {}
+                ),
+                "migrationEvidence": copy.deepcopy(
+                    semantic.get("migrationEvidence") or {}
+                ),
+                "liveApplicationFilesTouched": False,
+            }
+        )
+    return reports
 
 
 def layout_hint_shadow_candidate_spec(
@@ -3070,6 +4454,7 @@ def candidate_specs_for_hierarchy(
             if hinted:
                 generated.append(hinted)
             generated.extend(compile_layout_hint_responsive_candidates(hierarchy))
+            generated.extend(compile_user_layout_hint_browser_candidates(hierarchy))
             return generated
         # An explicit --candidates subset remains an exact legacy-family request.
         return list(legacy_candidates)
@@ -3129,6 +4514,7 @@ def candidate_unit_composition(
     hinted = isinstance(candidate, dict) and mode in {
         "layout-hint-shadow",
         "layout-hint-responsive-shadow",
+        "layout-hint-user-responsive-shadow",
     }
     return {
         "candidate": identity,
@@ -3139,8 +4525,15 @@ def candidate_unit_composition(
         "parallelBranches": [unit["id"] for unit in specs if unit.get("leaf")],
         "searchMode": (
             (
-                "deterministic-responsive-layout-hint-compilation"
-                if mode == "layout-hint-responsive-shadow"
+                (
+                    "deterministic-user-layout-hint-compilation"
+                    if mode == "layout-hint-user-responsive-shadow"
+                    else "deterministic-responsive-layout-hint-compilation"
+                )
+                if mode in {
+                    "layout-hint-responsive-shadow",
+                    "layout-hint-user-responsive-shadow",
+                }
                 else "deterministic-layout-hint-compilation"
             )
             if hinted
@@ -3152,8 +4545,15 @@ def candidate_unit_composition(
         ),
         "origin": (
             (
-                "authored-responsive-layout-hints-shadow"
-                if mode == "layout-hint-responsive-shadow"
+                (
+                    "user-responsive-layout-hints-shadow"
+                    if mode == "layout-hint-user-responsive-shadow"
+                    else "authored-responsive-layout-hints-shadow"
+                )
+                if mode in {
+                    "layout-hint-responsive-shadow",
+                    "layout-hint-user-responsive-shadow",
+                }
                 else "authored-layout-hints-shadow"
             )
             if hinted
@@ -6282,6 +7682,8 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                         "data-mc-layout-min-inline": "220",
                         "data-mc-layout-min-block": "120",
                         "data-mc-layout-max-share": "0.24",
+                        "data-mc-layout-user-id": "repository.project-identity",
+                        "data-mc-layout-user-mutable": "placement collapsed",
                     },
                     "command-workflow": {
                         "data-mc-layout-prefer": "center",
@@ -6293,6 +7695,8 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                         "data-mc-layout-min-inline": "520",
                         "data-mc-layout-min-block": "360",
                         "data-mc-layout-max-share": "0.78",
+                        "data-mc-layout-user-id": "repository.command-workflow",
+                        "data-mc-layout-user-mutable": "",
                     },
                     "persistent-feedback": {
                         "data-mc-layout-prefer": "bottom",
@@ -6304,6 +7708,8 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                         "data-mc-layout-min-inline": "420",
                         "data-mc-layout-min-block": "44",
                         "data-mc-layout-max-share": "0.10",
+                        "data-mc-layout-user-id": "repository.persistent-feedback",
+                        "data-mc-layout-user-mutable": "placement",
                     },
                     "phase-support": {
                         "data-mc-layout-prefer": "right",
@@ -6315,6 +7721,8 @@ def synthetic_hierarchies() -> list[dict[str, Any]]:
                         "data-mc-layout-min-inline": "300",
                         "data-mc-layout-min-block": "260",
                         "data-mc-layout-max-share": "0.32",
+                        "data-mc-layout-user-id": "repository.phase-support",
+                        "data-mc-layout-user-mutable": "placement share collapsed tab-group",
                     },
                 },
             },
@@ -7108,6 +8516,22 @@ def render_realized_trial_html(
     phase_names = [item["phase"] for item in semantic_phase_scenarios(realized_hierarchy)]
     policy = realized_hierarchy.get("candidatePolicy") or candidate_phase_policy(candidate)
     phase = str(realized_hierarchy.get("phase") or "default")
+    user_layout_mutation = (
+        copy.deepcopy(candidate.get("userLayoutMutation") or {})
+        if isinstance(candidate, dict)
+        else {}
+    )
+    preferred_share = max(
+        0.0,
+        min(0.45, float(user_layout_mutation.get("preferredShare", 0) or 0)),
+    )
+    user_layout_style = ""
+    if preferred_share > 0:
+        user_layout_style = (
+            f"--flog-user-support-fr:{preferred_share * 100:.4f}fr;"
+            f"--flog-user-main-fr:{(1.0 - preferred_share) * 100:.4f}fr;"
+            f"--flog-user-support-percent:{preferred_share * 100:.4f}%;"
+        )
     root_attrs = {
         "id": realized_hierarchy["id"],
         "class": (
@@ -7170,6 +8594,28 @@ def render_realized_trial_html(
             (contract.get("dangerousFamilies") or {}).keys()
         ),
         "data-flog-interaction-phases": " ".join(phase_names),
+        "data-flog-user-layout-proof": (
+            "true" if user_layout_mutation else "false"
+        ),
+        "data-flog-user-layout-profile": str(
+            user_layout_mutation.get("profileId") or ""
+        ),
+        "data-flog-user-layout-variant": str(
+            user_layout_mutation.get("variant") or ""
+        ),
+        "data-flog-user-support-placement": str(
+            user_layout_mutation.get("effectivePlacement") or ""
+        ),
+        "data-flog-user-preferred-share": (
+            f"{preferred_share:.6f}" if preferred_share > 0 else ""
+        ),
+        "data-flog-user-collapsed-units": " ".join(
+            user_layout_mutation.get("collapsedUnitIds") or []
+        ),
+        "data-flog-user-tab-with-unit": str(
+            user_layout_mutation.get("tabWithUnitId") or ""
+        ),
+        "style": user_layout_style,
     }
     root_attr_text = " ".join(
         f'{name}="{html.escape(str(value), quote=True)}"'
@@ -8334,6 +9780,40 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     "feedback";
 }
 
+
+/* Milestone 3.2 user-layout browser proofs.  Semantic share preferences become
+   bounded partition tracks; they never become absolute pixel coordinates. */
+.flog-root[data-flog-user-layout-proof="true"][data-flog-user-support-placement="right"]:has(
+  > .flog-layout-unit[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"]
+) {
+  grid-template-columns:
+    minmax(0, var(--flog-user-main-fr, 76fr))
+    minmax(180px, var(--flog-user-support-fr, 24fr)) !important;
+  grid-template-rows: minmax(0, 1fr) auto !important;
+  grid-template-areas:
+    "main support"
+    "feedback support" !important;
+}
+.flog-root[data-flog-user-layout-proof="true"][data-flog-user-support-placement="bottom"]:has(
+  > .flog-layout-unit[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"]
+) {
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows:
+    minmax(0, 1fr)
+    auto
+    minmax(112px, var(--flog-user-support-percent, 24%)) !important;
+  grid-template-areas:
+    "main"
+    "feedback"
+    "support" !important;
+}
+/* Collapse remains phase-relative: the trigger is used only when project
+   identity is not the active semantic surface. */
+.flog-root[data-flog-user-layout-proof="true"][data-flog-user-collapsed-units~="project-identity"]
+  .flog-trigger[data-flog-slot="project-selector"] {
+  outline: 1px solid rgba(74, 116, 152, 0.45);
+}
+
 /* Milestone 2 responsive presentation primitives.  A compact summary is a
    semantic return/context surface, not a clipped copy of the full panel. */
 .flog-node.flog-summary {
@@ -8396,7 +9876,8 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-id="phase-support"][data-flog-unit-has-active-support="true"] {
   position: relative !important;
   display: block;
-  padding-top: 28px;
+  /* M2.6 trims the decorative tab strip before reducing active support area. */
+  padding-top: 20px;
   border-top: 2px solid rgba(74, 116, 152, 0.55);
 }
 .has-layout-units.policy-phase-aware
@@ -8404,12 +9885,16 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   content: "Active support tab";
   position: absolute;
   inset: 0 0 auto 0;
-  height: 26px;
-  padding: 5px 9px;
+  height: 18px;
+  padding: 2px 8px;
   background: rgba(219, 232, 245, 0.96);
   border-bottom: 1px solid rgba(74, 116, 152, 0.35);
-  font-size: 11px;
+  font-size: 10px;
+  line-height: 13px;
   font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Tab and stage modes compact non-active chrome before taking space from the
@@ -8445,6 +9930,24 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   > .flog-node {
   padding: 4px 6px;
   min-height: 30px;
+}
+/* M2.6 gives the narrow active tab a robust phase-floor margin by trimming
+   only non-active feedback chrome.  The semantic feedback remains present. */
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+  )
+  > .flog-layout-unit[data-flog-unit-id="persistent-feedback"] {
+  min-height: 28px;
+}
+.has-layout-units.policy-phase-aware
+  .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
+    > .flog-layout-unit.unit-policy-tabbed-phase-support[data-flog-unit-has-active-support="true"]
+  )
+  > .flog-layout-unit[data-flog-unit-id="persistent-feedback"]
+  > .flog-node {
+  min-height: 26px;
+  padding-block: 2px;
 }
 .has-layout-units.policy-phase-aware
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
@@ -11251,6 +12754,351 @@ def _widest_transition_overlap_run(
     return max(runs, key=run_key)
 
 
+
+def is_responsive_transition_evidence_profile(
+    profile: ViewportProfile | str,
+) -> bool:
+    """Return whether a viewport exists only to prove a shared transition envelope."""
+
+    name = profile.name if isinstance(profile, ViewportProfile) else str(profile)
+    return name.startswith(RESPONSIVE_TRANSITION_EVIDENCE_PREFIX)
+
+
+def authored_responsive_candidate_chain(
+    profile_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Choose one authored realization per remediation level.
+
+    Transition-proof probes are evidence about adjacent realizations.  They must
+    not become independent local policy decisions.  This helper derives the
+    ordered authored state graph once, using all measured evidence to select the
+    strongest realization at each remediation level.
+    """
+
+    by_candidate: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
+    for profile_row in profile_rows:
+        for option in profile_row.get("allOptions") or []:
+            candidate = str(option.get("candidate") or "")
+            if not candidate:
+                continue
+            by_candidate[candidate].append((profile_row, option))
+
+    candidate_rows: list[dict[str, Any]] = []
+    robust_headroom = LAYOUT_HINT_MIN_ROBUST_HEADROOM
+    for candidate, samples in by_candidate.items():
+        levels = [
+            int(option.get("remediationLevel", 0) or 0)
+            for _, option in samples
+        ]
+        if not levels:
+            continue
+        level = min(levels)
+        acceptable = [
+            (profile_row, option)
+            for profile_row, option in samples
+            if str(option.get("status") or "") in ACCEPTABLE_LAYOUT_STATUSES
+        ]
+        robust = [
+            (profile_row, option)
+            for profile_row, option in acceptable
+            if float(option.get("headroom", -1.0) or 0.0)
+            + PHASE_SHARE_FLOOR_TOLERANCE
+            >= robust_headroom
+        ]
+        positive = [
+            (profile_row, option)
+            for profile_row, option in acceptable
+            if float(
+                option.get(
+                    "rawHeadroom",
+                    option.get("headroom", -1.0),
+                )
+                or 0.0
+            )
+            > 0.0
+        ]
+        measured_widths = [
+            int(profile_row["profile"].width)
+            for profile_row, _ in samples
+        ]
+        passing_widths = [
+            int(profile_row["profile"].width)
+            for profile_row, _ in acceptable
+        ]
+        qualities = [
+            float(option.get("quality", 0.0) or 0.0)
+            for _, option in samples
+        ]
+        candidate_rows.append(
+            {
+                "candidate": candidate,
+                "remediationLevel": level,
+                "width": max(passing_widths or measured_widths or [0]),
+                "measuredWidthMin": min(measured_widths or [0]),
+                "measuredWidthMax": max(measured_widths or [0]),
+                "acceptableSampleCount": len(acceptable),
+                "robustSampleCount": len(robust),
+                "positiveHeadroomSampleCount": len(positive),
+                "meanQuality": (
+                    sum(qualities) / len(qualities) if qualities else 0.0
+                ),
+            }
+        )
+
+    chain: list[dict[str, Any]] = []
+    for level in sorted({int(item["remediationLevel"]) for item in candidate_rows}):
+        candidates = [
+            item for item in candidate_rows
+            if int(item["remediationLevel"]) == level
+        ]
+        if not candidates:
+            continue
+        chosen = max(
+            candidates,
+            key=lambda item: (
+                int(item["robustSampleCount"]),
+                int(item["acceptableSampleCount"]),
+                int(item["positiveHeadroomSampleCount"]),
+                float(item["meanQuality"]),
+                str(item["candidate"]),
+            ),
+        )
+        chain.append(copy.deepcopy(chosen))
+
+    levels = [int(item["remediationLevel"]) for item in chain]
+    complete = bool(chain) and levels == list(range(levels[0], levels[-1] + 1))
+    return {
+        "version": RESPONSIVE_STATE_MACHINE_VERSION,
+        "state": "complete" if complete else "incomplete",
+        "candidates": chain,
+        "levels": levels,
+        "issues": (
+            []
+            if complete
+            else [
+                "authored responsive candidates do not form a contiguous remediation chain"
+            ]
+        ),
+    }
+
+
+def responsive_transition_evidence_rows(
+    profile_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Serialize proof-only viewports separately from policy selections."""
+
+    evidence: list[dict[str, Any]] = []
+    for profile_row in profile_rows:
+        profile = profile_row["profile"]
+        if not is_responsive_transition_evidence_profile(profile):
+            continue
+        options = []
+        for option in profile_row.get("allOptions") or []:
+            options.append(
+                {
+                    "candidate": str(option.get("candidate") or ""),
+                    "status": str(option.get("status") or ""),
+                    "remediationLevel": int(
+                        option.get("remediationLevel", 0) or 0
+                    ),
+                    "headroom": float(option.get("headroom", -1.0) or 0.0),
+                    "rawHeadroom": float(
+                        option.get(
+                            "rawHeadroom",
+                            option.get("headroom", -1.0),
+                        )
+                        or 0.0
+                    ),
+                }
+            )
+        evidence.append(
+            {
+                "viewportProfile": profile.name,
+                "width": int(profile.width),
+                "height": int(profile.height),
+                "band": str((profile_row.get("band") or {}).get("id") or ""),
+                "options": sorted(
+                    options,
+                    key=lambda item: (
+                        int(item["remediationLevel"]),
+                        str(item["candidate"]),
+                    ),
+                ),
+            }
+        )
+    return sorted(evidence, key=lambda item: -int(item["width"]))
+
+
+def select_authored_hysteretic_path(
+    profile_rows: list[dict[str, Any]],
+    *,
+    candidate_chain: list[dict[str, Any]],
+    transitions: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Apply an ordered shrink path instead of re-ranking inside overlap regions."""
+
+    policy_rows = [
+        row
+        for row in sorted(
+            profile_rows,
+            key=lambda item: (
+                -int(item["profile"].width),
+                -int(item["profile"].height),
+            ),
+        )
+        if not is_responsive_transition_evidence_profile(row["profile"])
+    ]
+    if not candidate_chain:
+        return [], {
+            "version": RESPONSIVE_STATE_MACHINE_VERSION,
+            "state": "fail",
+            "reason": "No authored responsive candidate chain was available.",
+            "candidateSequence": [],
+            "transitionEvidenceExcluded": True,
+            "missingSelections": [],
+        }
+
+    chain_by_candidate = {
+        str(item["candidate"]): item for item in candidate_chain
+    }
+    transition_by_from = {
+        str(item["fromCandidate"]): item for item in transitions
+    }
+    current = str(candidate_chain[0]["candidate"])
+    selected: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    applied_switches: list[dict[str, Any]] = []
+
+    for profile_row in policy_rows:
+        profile = profile_row["profile"]
+        width = int(profile.width)
+        while current in transition_by_from:
+            transition = transition_by_from[current]
+            if width > int(transition["switchDownBelow"]):
+                break
+            next_candidate = str(transition["toCandidate"])
+            applied_switches.append(
+                {
+                    "width": width,
+                    "fromCandidate": current,
+                    "toCandidate": next_candidate,
+                    "threshold": int(transition["switchDownBelow"]),
+                }
+            )
+            current = next_candidate
+
+        matching = [
+            option
+            for option in profile_row.get("allOptions") or []
+            if str(option.get("candidate") or "") == current
+        ]
+        if not matching:
+            missing.append(
+                {
+                    "viewportProfile": profile.name,
+                    "width": width,
+                    "candidate": current,
+                    "reason": "state-machine candidate was not rendered at this policy probe",
+                }
+            )
+            fallback = list(profile_row.get("options") or [])
+            if not fallback:
+                continue
+            option = copy.deepcopy(
+                max(
+                    fallback,
+                    key=lambda item: (
+                        float(item.get("quality", 0.0) or 0.0),
+                        str(item.get("candidate") or ""),
+                    ),
+                )
+            )
+            option["transitionGap"] = True
+            option["capacityAdmissible"] = False
+            option["forcedBeyondBand"] = False
+            option["stateMachineCandidateMissing"] = current
+        else:
+            option = copy.deepcopy(
+                max(
+                    matching,
+                    key=lambda item: (
+                        float(item.get("quality", 0.0) or 0.0),
+                        str(item.get("candidate") or ""),
+                    ),
+                )
+            )
+            acceptable = (
+                str(option.get("status") or "") in ACCEPTABLE_LAYOUT_STATUSES
+            )
+            level = int(option.get("remediationLevel", 0) or 0)
+            max_level = int(
+                (profile_row.get("band") or {}).get(
+                    "maxRemediationLevel",
+                    level,
+                )
+                or 0
+            )
+            option["capacityAdmissible"] = bool(
+                acceptable and level <= max_level
+            )
+            option["forcedBeyondBand"] = bool(
+                acceptable and level > max_level
+            )
+            option["transitionGap"] = not acceptable
+            option["unnecessaryRemediationLevels"] = 0
+            option["admissibilitySource"] = "ordered-hysteretic-state-machine"
+            option["admissibilityReason"] = (
+                "candidate retained until its verified shrink threshold was crossed"
+            )
+            option["lowerLevelRejected"] = []
+            option["declaredBandCompatible"] = level <= max_level
+
+        option["stateMachineCandidate"] = current
+        option["stateMachineVersion"] = RESPONSIVE_STATE_MACHINE_VERSION
+        option["stateMachineChainLevel"] = int(
+            chain_by_candidate.get(current, {}).get(
+                "remediationLevel",
+                option.get("remediationLevel", 0),
+            )
+            or 0
+        )
+        selected.append(option)
+
+    levels = [int(item.get("remediationLevel", 0) or 0) for item in selected]
+    monotonic_violations = sum(
+        int(current_level < previous_level)
+        for previous_level, current_level in zip(levels, levels[1:])
+    )
+    candidate_sequence = [
+        str(item.get("candidate") or "") for item in selected
+    ]
+    compressed_sequence = [
+        candidate
+        for index, candidate in enumerate(candidate_sequence)
+        if index == 0 or candidate != candidate_sequence[index - 1]
+    ]
+    expected_sequence = [
+        str(item["candidate"]) for item in candidate_chain
+    ]
+    return selected, {
+        "version": RESPONSIVE_STATE_MACHINE_VERSION,
+        "state": (
+            "complete"
+            if not missing
+            and not monotonic_violations
+            and compressed_sequence == expected_sequence
+            else "fail"
+        ),
+        "candidateSequence": compressed_sequence,
+        "expectedCandidateSequence": expected_sequence,
+        "appliedSwitches": applied_switches,
+        "monotonicViolationCount": monotonic_violations,
+        "transitionEvidenceExcluded": True,
+        "policyProbeCount": len(policy_rows),
+        "missingSelections": missing,
+    }
+
+
 def responsive_transition_rules(
     selections: list[dict[str, Any]],
     *,
@@ -11663,7 +13511,12 @@ def responsive_policy_for_hierarchy(
     profiles: list[ViewportProfile],
     hysteresis_px: int | None = None,
 ) -> dict[str, Any]:
-    """Select a monotonic, capacity-admissible composition across resize probes."""
+    """Resolve one capacity-admissible responsive policy across resize probes.
+
+    Authored layouts use an ordered hysteretic state machine.  Shared-width
+    transition probes contribute evidence to the transition graph but are never
+    treated as autonomous local winners.
+    """
 
     contract = responsive_contract_for_hierarchy(hierarchy)
     if hysteresis_px is not None:
@@ -11677,7 +13530,7 @@ def responsive_policy_for_hierarchy(
             for item in measurements
         )
     ]
-    profile_rows = [
+    all_profile_rows = [
         _responsive_profile_options(
             hierarchy=hierarchy,
             measurements=measurements,
@@ -11686,88 +13539,169 @@ def responsive_policy_for_hierarchy(
         )
         for profile in available_profiles
     ]
-    if not profile_rows:
+    if not all_profile_rows:
         return {
             "hierarchyId": hierarchy.get("id", ""),
             "state": "notMeasured",
             "policyVersion": RESPONSIVE_POLICY_VERSION,
+            "stateMachineVersion": RESPONSIVE_STATE_MACHINE_VERSION,
             "selections": [],
             "transitions": [],
         }
 
-    # Dynamic programming favors stable candidates, rejects unnecessary remediation
-    # at larger widths, and keeps remediation monotonic as width shrinks.
-    paths: dict[str, tuple[float, list[dict[str, Any]], int]] = {}
-    for index, profile_row in enumerate(profile_rows):
-        next_paths: dict[str, tuple[float, list[dict[str, Any]], int]] = {}
-        for option in profile_row["options"]:
-            local_cost = 100.0 - float(option["quality"])
-            local_cost += (
-                float(contract["unnecessaryRemediationPenalty"])
-                * int(option["unnecessaryRemediationLevels"])
-            )
-            if option["forcedBeyondBand"]:
-                local_cost += 24.0
-            if option["transitionGap"]:
-                local_cost += 120.0
-            if index == 0:
-                next_paths[option["candidate"]] = (
-                    local_cost,
-                    [option],
-                    0,
-                )
-                continue
-            for previous_cost, previous_path, previous_violations in paths.values():
-                previous = previous_path[-1]
-                monotonic_violation = (
-                    int(option["remediationLevel"])
-                    < int(previous["remediationLevel"])
-                )
-                transition_cost = (
-                    0.0
-                    if option["candidate"] == previous["candidate"]
-                    else float(contract["switchPenalty"])
-                )
-                if monotonic_violation:
-                    transition_cost += 80.0
-                candidate_cost = previous_cost + local_cost + transition_cost
-                candidate_violations = previous_violations + int(monotonic_violation)
-                existing = next_paths.get(option["candidate"])
-                proposal = (
-                    candidate_cost,
-                    [*previous_path, option],
-                    candidate_violations,
-                )
-                if existing is None or (
-                    proposal[0],
-                    proposal[2],
-                    option["candidate"],
-                ) < (
-                    existing[0],
-                    existing[2],
-                    existing[1][-1]["candidate"],
-                ):
-                    next_paths[option["candidate"]] = proposal
-        paths = next_paths
+    authored_mode = any(bool(row.get("authoredMode")) for row in all_profile_rows)
+    transition_evidence = responsive_transition_evidence_rows(all_profile_rows)
+    candidate_chain_report: dict[str, Any] = {
+        "version": RESPONSIVE_STATE_MACHINE_VERSION,
+        "state": "notApplicable",
+        "candidates": [],
+        "levels": [],
+        "issues": [],
+    }
+    stateful_path: dict[str, Any] = {
+        "version": RESPONSIVE_STATE_MACHINE_VERSION,
+        "state": "notApplicable",
+        "candidateSequence": [],
+        "transitionEvidenceExcluded": False,
+        "missingSelections": [],
+    }
 
-    if not paths:
+    if authored_mode:
+        candidate_chain_report = authored_responsive_candidate_chain(
+            all_profile_rows
+        )
+        candidate_chain = list(candidate_chain_report.get("candidates") or [])
+        if candidate_chain_report.get("state") != "complete":
+            return {
+                "hierarchyId": hierarchy.get("id", ""),
+                "state": "fail",
+                "policyVersion": RESPONSIVE_POLICY_VERSION,
+                "stateMachineVersion": RESPONSIVE_STATE_MACHINE_VERSION,
+                "reason": "Authored responsive candidates did not form a complete ordered chain.",
+                "candidateChain": candidate_chain_report,
+                "transitionEvidence": transition_evidence,
+                "transitionEvidenceCount": len(transition_evidence),
+                "selections": [],
+                "transitions": [],
+            }
+        transitions = responsive_transition_rules(
+            candidate_chain,
+            hysteresis_px=int(contract["hysteresisPx"]),
+            profile_rows=all_profile_rows,
+        )
+        selected_options, stateful_path = select_authored_hysteretic_path(
+            all_profile_rows,
+            candidate_chain=candidate_chain,
+            transitions=transitions,
+        )
+        profile_rows = [
+            row
+            for row in sorted(
+                all_profile_rows,
+                key=lambda item: (
+                    -int(item["profile"].width),
+                    -int(item["profile"].height),
+                ),
+            )
+            if not is_responsive_transition_evidence_profile(row["profile"])
+        ]
+        monotonic_violations = int(
+            stateful_path.get("monotonicViolationCount", 0) or 0
+        )
+    else:
+        profile_rows = all_profile_rows
+        # Generic synthetic hierarchies retain bounded dynamic programming.
+        paths: dict[str, tuple[float, list[dict[str, Any]], int]] = {}
+        for index, profile_row in enumerate(profile_rows):
+            next_paths: dict[str, tuple[float, list[dict[str, Any]], int]] = {}
+            for option in profile_row["options"]:
+                local_cost = 100.0 - float(option["quality"])
+                local_cost += (
+                    float(contract["unnecessaryRemediationPenalty"])
+                    * int(option["unnecessaryRemediationLevels"])
+                )
+                if option["forcedBeyondBand"]:
+                    local_cost += 24.0
+                if option["transitionGap"]:
+                    local_cost += 120.0
+                if index == 0:
+                    next_paths[option["candidate"]] = (
+                        local_cost,
+                        [option],
+                        0,
+                    )
+                    continue
+                for previous_cost, previous_path, previous_violations in paths.values():
+                    previous = previous_path[-1]
+                    monotonic_violation = (
+                        int(option["remediationLevel"])
+                        < int(previous["remediationLevel"])
+                    )
+                    transition_cost = (
+                        0.0
+                        if option["candidate"] == previous["candidate"]
+                        else float(contract["switchPenalty"])
+                    )
+                    if monotonic_violation:
+                        transition_cost += 80.0
+                    candidate_cost = previous_cost + local_cost + transition_cost
+                    candidate_violations = previous_violations + int(
+                        monotonic_violation
+                    )
+                    existing = next_paths.get(option["candidate"])
+                    proposal = (
+                        candidate_cost,
+                        [*previous_path, option],
+                        candidate_violations,
+                    )
+                    if existing is None or (
+                        proposal[0],
+                        proposal[2],
+                        option["candidate"],
+                    ) < (
+                        existing[0],
+                        existing[2],
+                        existing[1][-1]["candidate"],
+                    ):
+                        next_paths[option["candidate"]] = proposal
+            paths = next_paths
+
+        if not paths:
+            return {
+                "hierarchyId": hierarchy.get("id", ""),
+                "state": "fail",
+                "policyVersion": RESPONSIVE_POLICY_VERSION,
+                "stateMachineVersion": RESPONSIVE_STATE_MACHINE_VERSION,
+                "reason": "No responsive candidate path was available.",
+                "selections": [],
+                "transitions": [],
+            }
+
+        _, selected_options, monotonic_violations = min(
+            paths.values(),
+            key=lambda entry: (
+                entry[2],
+                entry[0],
+                entry[1][-1]["candidate"],
+            ),
+        )
+        transitions = []
+
+    if len(profile_rows) != len(selected_options):
         return {
             "hierarchyId": hierarchy.get("id", ""),
             "state": "fail",
             "policyVersion": RESPONSIVE_POLICY_VERSION,
-            "reason": "No responsive candidate path was available.",
+            "stateMachineVersion": RESPONSIVE_STATE_MACHINE_VERSION,
+            "reason": "Responsive state-machine selections did not cover every policy probe.",
+            "candidateChain": candidate_chain_report,
+            "statefulPath": stateful_path,
+            "transitionEvidence": transition_evidence,
+            "transitionEvidenceCount": len(transition_evidence),
             "selections": [],
-            "transitions": [],
+            "transitions": transitions,
         }
 
-    _, selected_options, monotonic_violations = min(
-        paths.values(),
-        key=lambda entry: (
-            entry[2],
-            entry[0],
-            entry[1][-1]["candidate"],
-        ),
-    )
     selections: list[dict[str, Any]] = []
     for profile_row, option in zip(profile_rows, selected_options):
         profile = profile_row["profile"]
@@ -11822,14 +13756,25 @@ def responsive_policy_for_hierarchy(
                 "responsivePresentation": responsive_presentation_evidence(item),
                 "responsiveEligibleShadow": bool(item.get("responsiveEligible")),
                 "snapshots": copy.deepcopy(item.get("phaseSnapshots") or {}),
+                "stateMachineCandidate": str(
+                    option.get("stateMachineCandidate")
+                    or option.get("candidate")
+                    or ""
+                ),
+                "stateMachineVersion": str(
+                    option.get("stateMachineVersion")
+                    or RESPONSIVE_STATE_MACHINE_VERSION
+                ),
             }
         )
 
-    transitions = responsive_transition_rules(
-        selections,
-        hysteresis_px=int(contract["hysteresisPx"]),
-        profile_rows=profile_rows,
-    )
+    if not authored_mode:
+        transitions = responsive_transition_rules(
+            selections,
+            hysteresis_px=int(contract["hysteresisPx"]),
+            profile_rows=all_profile_rows,
+        )
+
     coverage = responsive_sampled_coverage(selections)
     down = simulate_responsive_resize(
         selections, transitions, direction="down"
@@ -11837,7 +13782,6 @@ def responsive_policy_for_hierarchy(
     up = simulate_responsive_resize(selections, transitions, direction="up")
     gaps = [item for item in selections if item["transitionGap"]]
     forced = [item for item in selections if item["forcedBeyondBand"]]
-    authored_mode = any(bool(row.get("authoredMode")) for row in profile_rows)
     unverified_transitions = [
         item
         for item in transitions
@@ -11862,6 +13806,9 @@ def responsive_policy_for_hierarchy(
         selections[index]["width"] - selections[index + 1]["width"]
         for index in range(len(selections) - 1)
     ]
+    state_machine_failed = bool(
+        authored_mode and stateful_path.get("state") != "complete"
+    )
     state = "pass"
     if (
         gaps
@@ -11872,6 +13819,7 @@ def responsive_policy_for_hierarchy(
         or not coverage["coverageComplete"]
         or not down["stable"]
         or not up["stable"]
+        or state_machine_failed
     ):
         state = "fail"
     elif (
@@ -11887,8 +13835,11 @@ def responsive_policy_for_hierarchy(
         "hierarchyId": hierarchy.get("id", ""),
         "state": state,
         "policyVersion": RESPONSIVE_POLICY_VERSION,
+        "stateMachineVersion": RESPONSIVE_STATE_MACHINE_VERSION,
         "selectionMode": (
-            "authored-hint-chain" if authored_mode else "generic-responsive"
+            "authored-hint-hysteretic-state-machine"
+            if authored_mode
+            else "generic-responsive"
         ),
         "contract": contract,
         "semanticContractStable": bool(
@@ -11898,7 +13849,13 @@ def responsive_policy_for_hierarchy(
             and not forced
             and not unverified_transitions
             and coverage["coverageComplete"]
+            and not state_machine_failed
         ),
+        "candidateChain": candidate_chain_report,
+        "statefulPath": stateful_path,
+        "transitionEvidence": transition_evidence,
+        "transitionEvidenceCount": len(transition_evidence),
+        "policyProbeCount": len(selections),
         "selections": selections,
         "transitions": transitions,
         "sampledCoverage": coverage,
@@ -12499,6 +14456,11 @@ def run_synthetic_trials(
                                     if isinstance(candidate, dict)
                                     else {}
                                 )
+                                measurement["userLayoutMutation"] = (
+                                    copy.deepcopy(candidate.get("userLayoutMutation") or {})
+                                    if isinstance(candidate, dict)
+                                    else {}
+                                )
                                 measurement["unitComposition"] = copy.deepcopy(
                                     realized.get("unitComposition") or {}
                                 )
@@ -12575,6 +14537,11 @@ def run_synthetic_trials(
                                 if isinstance(candidate, dict)
                                 else {}
                             )
+                            aggregate["userLayoutMutation"] = (
+                                copy.deepcopy(candidate.get("userLayoutMutation") or {})
+                                if isinstance(candidate, dict)
+                                else {}
+                            )
                             apply_semantic_contract_fit(
                                 hierarchy,
                                 aggregate,
@@ -12596,6 +14563,15 @@ def run_synthetic_trials(
         profiles_by_hierarchy=profiles_by_hierarchy,
         responsive_mode=responsive_mode,
         hysteresis_px=responsive_hysteresis_px,
+    )
+    user_layout_hint_evidence = build_user_layout_hint_shadow_evidence(
+        hierarchies
+    )
+    user_layout_hint_browser_evidence = analyze_user_layout_hint_browser_evidence(
+        hierarchies=hierarchies,
+        measurements=measurements,
+        semantic_evidence=user_layout_hint_evidence,
+        responsive_policies=responsive_policies,
     )
     best_by_hierarchy = best_by_hierarchy_viewport_rows(
         measurements,
@@ -12624,6 +14600,15 @@ def run_synthetic_trials(
         "layoutHintRefinementVersion": LAYOUT_HINT_REFINEMENT_VERSION,
         "layoutHintRefinements": layout_hint_refinements,
         "layoutHintResponsiveVersion": LAYOUT_HINT_RESPONSIVE_VERSION,
+        "userLayoutHintContractVersion": USER_LAYOUT_HINT_CONTRACT_VERSION,
+        "userLayoutHintOperationVersion": USER_LAYOUT_HINT_OPERATION_VERSION,
+        "userLayoutHintMode": USER_LAYOUT_HINT_MODE,
+        "userLayoutHintEvidence": user_layout_hint_evidence,
+        "userLayoutHintBrowserProofVersion": (
+            USER_LAYOUT_HINT_BROWSER_PROOF_VERSION
+        ),
+        "userLayoutHintBrowserMode": USER_LAYOUT_HINT_BROWSER_MODE,
+        "userLayoutHintBrowserEvidence": user_layout_hint_browser_evidence,
         "responsivePresentationContractVersion": (
             RESPONSIVE_PRESENTATION_CONTRACT_VERSION
         ),
@@ -12631,6 +14616,7 @@ def run_synthetic_trials(
         "responsiveTransitionProofVersion": RESPONSIVE_TRANSITION_PROOF_VERSION,
         "responsiveMode": responsive_mode,
         "responsivePolicyVersion": RESPONSIVE_POLICY_VERSION,
+        "responsiveStateMachineVersion": RESPONSIVE_STATE_MACHINE_VERSION,
         "responsiveHysteresisPx": int(responsive_hysteresis_px),
         "responsivePolicies": responsive_policies,
         "renderedPolicyFingerprintVersion": RENDERED_POLICY_FINGERPRINT_VERSION,
@@ -13247,6 +15233,17 @@ def write_reports(
         "(FLOG-only)"
     )
     lines.append(
+        f"- User layout hints: "
+        f"`{report.get('userLayoutHintContractVersion', 'off')}` "
+        f"operations=`{report.get('userLayoutHintOperationVersion', 'off')}` "
+        f"mode=`{report.get('userLayoutHintMode', 'off')}`"
+    )
+    lines.append(
+        f"- User layout browser proof: "
+        f"`{report.get('userLayoutHintBrowserProofVersion', 'off')}` "
+        f"mode=`{report.get('userLayoutHintBrowserMode', 'off')}`"
+    )
+    lines.append(
         f"- Responsive resize policy: "
         f"`{report.get('responsivePolicyVersion', 'off')}` "
         f"mode=`{report.get('responsiveMode', 'off')}` "
@@ -13301,6 +15298,10 @@ def write_reports(
     lines.append("Milestone 1E compares the deterministic authored hint result with already-rendered one-policy alternatives, reports the smallest browser-verified hint correction, and prepares the authored fallback chain without editing live application files.")
     lines.append("Milestone 2 compiles distinct right, bottom, tab, sequential-stage, and trigger realizations; transforms each phase into a capacity-relative presentation contract; derives capacity bands from authored minimum geometry; samples both sides of every derived boundary; and treats invalid sampled intervals as uncovered rather than ranking through them.")
     lines.append("Milestone 2.4 samples all adjacent authored transitions, distinguishes tolerance-only passing from positive raw headroom, and certifies hysteresis only when the browser proves the full declared overlap width.")
+    lines.append("Milestone 2.5 resolves those verified envelopes as one ordered hysteretic state machine; transition probes remain evidence and cannot act as local policy winners.")
+    lines.append("Milestone 2.6 hardens the narrow tab realization by trimming decorative tab and feedback chrome while preserving semantic surfaces, phase floors, clipping gates, and transition thresholds.")
+    lines.append("Milestone 3.1 models live user layout intent as semantic dock-tree operations, validates those operations against authored capabilities and invariants, and proves responsive remediation/restoration without editing live application files.")
+    lines.append("Milestone 3.2 compiles accepted user preferences into bounded shadow candidates, measures their personalized geometry across responsive capacities, and requires restored wide layouts to reproduce the same painted-geometry fingerprint.")
     lines.append("Raw rectangles remain in the report for diagnosis, but ranking, pass/fail, phase minimums, contract visibility, and recursive unit scoring use effective painted geometry.")
     lines.append("It does **not** prove that the live app hierarchy is good enough yet; the synthetic hierarchies are training/evidence fixtures for the FLOG method.")
     lines.append("")
@@ -13479,6 +15480,140 @@ def write_reports(
                         )
             lines.append("")
 
+    if report.get("userLayoutHintEvidence"):
+        lines.append("## Shadow user layout hints")
+        lines.append("")
+        lines.append(
+            "Milestone 3.1 applies semantic user operations to the authored dock "
+            "tree in FLOG only. Preferences are retained through responsive "
+            "fallback and restored when capacity returns; no raw pixel coordinates "
+            "or live application files are involved."
+        )
+        lines.append("")
+        for evidence in report.get("userLayoutHintEvidence") or []:
+            lines.append(
+                f"### `{evidence.get('hierarchyId', '')}` — "
+                f"state=`{evidence.get('state', 'unknown')}`"
+            )
+            lines.append("")
+            lines.append(
+                f"- Contract: `{evidence.get('version', '')}` "
+                f"operations=`{evidence.get('operationVersion', '')}` "
+                f"mode=`{evidence.get('mode', '')}`"
+            )
+            lines.append(
+                f"- Live application files touched: "
+                f"`{bool(evidence.get('liveApplicationFilesTouched', False))}`"
+            )
+            lines.append(
+                f"- Storage model: `{evidence.get('storageModel', '')}` "
+                f"rawPixelCoordinatesStored="
+                f"`{bool(evidence.get('rawPixelCoordinatesStored', False))}`"
+            )
+            for item in evidence.get("operationTrace") or []:
+                lines.append(
+                    f"  - `{item.get('operationId', '')}` "
+                    f"kind=`{item.get('kind', '')}` "
+                    f"outcome=`{item.get('outcome', '')}` "
+                    f"userId=`{item.get('userId', '')}`"
+                )
+            round_trip = evidence.get("roundTrip") or {}
+            lines.append(
+                f"- Responsive preference round trip: "
+                f"restored=`{bool(round_trip.get('restoredAfterRoundTrip', False))}` "
+                f"retained=`{bool(round_trip.get('preferenceRetainedAtEveryProbe', False))}`"
+            )
+            for probe in round_trip.get("probes") or []:
+                placements = ", ".join(
+                    f"{unit}={placement}"
+                    for unit, placement in (
+                        probe.get("effectivePlacements") or {}
+                    ).items()
+                )
+                lines.append(
+                    f"  - `{probe.get('viewportProfile', '')}` "
+                    f"{probe.get('width', 0)}px band=`{probe.get('capacityBand', '')}` "
+                    f"placements=`{placements}` "
+                    f"remediations=`{len(probe.get('remediations') or [])}`"
+                )
+            rejected = evidence.get("rejectedInvariantExample") or {}
+            lines.append(
+                f"- Required-workflow collapse rejected: "
+                f"`{bool(rejected.get('rejected', False))}`"
+            )
+            lines.append("")
+
+    if report.get("userLayoutHintBrowserEvidence"):
+        lines.append("## Shadow user-layout browser proofs")
+        lines.append("")
+        lines.append(
+            "Milestone 3.2 compiles accepted semantic preferences into actual "
+            "FLOG candidates. Chromium applies the same clipping, ownership, "
+            "interception, phase-floor, and responsive-presentation gates used by "
+            "the authored layouts. These proofs remain synthetic and do not edit "
+            "live application files."
+        )
+        lines.append("")
+        for evidence in report.get("userLayoutHintBrowserEvidence") or []:
+            lines.append(
+                f"### `{evidence.get('hierarchyId', '')}` — "
+                f"state=`{evidence.get('state', 'unknown')}`"
+            )
+            lines.append("")
+            lines.append(
+                f"- Contract: `{evidence.get('version', '')}` "
+                f"mode=`{evidence.get('mode', '')}`"
+            )
+            lines.append(
+                f"- Profiles: `{evidence.get('profileCount', 0)}` "
+                f"browser aggregates=`{evidence.get('browserAggregateCount', 0)}` "
+                f"PNG proofs=`{evidence.get('pngProofCount', 0)}`"
+            )
+            lines.append(
+                f"- Browser gates passed: "
+                f"`{bool(evidence.get('allBrowserGatesPassed', False))}` "
+                f"preferences retained=`{bool(evidence.get('allPreferencesRetained', False))}` "
+                f"hysteresis coverage=`{bool(evidence.get('allHysteresisCoveragePassed', False))}` "
+                f"restorations matched=`{bool(evidence.get('allRequiredRestorationsMatched', False))}`"
+            )
+            lines.append(
+                f"- Live application files touched: "
+                f"`{bool(evidence.get('liveApplicationFilesTouched', False))}`"
+            )
+            for profile in evidence.get("profiles") or []:
+                lines.append(
+                    f"  - Profile `{profile.get('profileId', '')}` "
+                    f"state=`{profile.get('state', 'unknown')}` "
+                    f"aggregates=`{profile.get('browserAggregateCount', 0)}` "
+                    f"PNGs=`{profile.get('pngProofCount', 0)}` "
+                    f"path=`{' → '.join(profile.get('placementSequence') or [])}` "
+                    f"hysteresis=`{bool(profile.get('hysteresisCoveragePassed', False))}` "
+                    f"restorationMatch=`{bool(profile.get('restorationFingerprintMatch', False))}`"
+                )
+                for proof in profile.get("proofs") or []:
+                    lines.append(
+                        f"    - `{proof.get('viewportProfile', '')}` "
+                        f"{proof.get('width', 0)}×{proof.get('height', 0)} "
+                        f"variant=`{proof.get('variant', '')}` "
+                        f"placement=`{proof.get('effectivePlacement', '')}` "
+                        f"share=`{float(proof.get('preferredShare', 0) or 0):.1%}` "
+                        f"status=`{proof.get('status', '')}` "
+                        f"headroom=`{float(proof.get('worstPhaseHeadroom', -1) or 0):+.3%}` "
+                        f"blocked=`{proof.get('blockedCriticalControlCount', 0)}` "
+                        f"remediations=`{len(proof.get('remediations') or [])}`"
+                    )
+            undo_reset = evidence.get("undoResetEvidence") or {}
+            lines.append(
+                f"- Undo/reset restored authored default: "
+                f"`{bool(undo_reset.get('restoredAuthoredDefault', False))}`"
+            )
+            migration = evidence.get("migrationEvidence") or {}
+            lines.append(
+                f"- Stable-ID migration: state=`{migration.get('state', '')}` "
+                f"changes=`{len(migration.get('changes') or [])}`"
+            )
+            lines.append("")
+
     if report.get("responsivePolicies"):
         lines.append("## Responsive resize policies")
         lines.append("")
@@ -13521,6 +15656,18 @@ def write_reports(
                 f"complete=`{bool(policy.get('coverageComplete', False))}` "
                 f"uncoveredIntervals=`{policy.get('uncoveredIntervalCount', 0)}`"
             )
+            lines.append(
+                f"- Stateful policy probes: `{policy.get('policyProbeCount', policy.get('probeCount', 0))}` "
+                f"transition evidence probes: `{policy.get('transitionEvidenceCount', 0)}` "
+                f"stateMachine=`{policy.get('stateMachineVersion', '')}`"
+            )
+            stateful_path = policy.get("statefulPath") or {}
+            if stateful_path:
+                lines.append(
+                    f"- Stateful candidate sequence: "
+                    f"`{' → '.join(stateful_path.get('candidateSequence') or []) or 'none'}` "
+                    f"state=`{stateful_path.get('state', 'unknown')}`"
+                )
             for selection in policy.get("selections") or []:
                 lines.append(
                     f"  - `{selection.get('viewportProfile')}` "
