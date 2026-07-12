@@ -41,4 +41,8 @@ EXPOSE 8790 8785
 
 CMD ["python", "/app/run-exp-fdb-hub.py"]
 
-HEALTHCHECK NONE
+# Temporary diagnostic healthcheck: keep Coolify rolling deploys from deleting
+# the container before the hub listener can be inspected. Re-enable a real
+# /api/hub/v1/health healthcheck after the startup accept-timeout issue is fixed.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=1 \
+    CMD python -c "import sys; sys.exit(0)"
