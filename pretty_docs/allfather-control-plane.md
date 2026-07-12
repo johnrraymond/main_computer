@@ -65,6 +65,13 @@ running after discovery so we can inspect it in Coolify when something acts up.
 A future finalization action can stop or remove probes after the control path is
 stable.
 
+
+The result reader uses Coolify's application-log API (`/api/v1/applications/<application_uuid>/logs`)
+when the probe service detail includes an embedded application UUID. Parent
+service log paths are kept only as compatibility fallbacks because service-level
+`/api/v1/services/<uuid>/logs` paths may return `404` on current Coolify
+versions.
+
 Preview the probe payloads without changing Coolify:
 
 ```powershell
@@ -75,6 +82,30 @@ Mainnet/testnet topology must come from live guard responses and explicit
 add/remove operations, not from the private seed file. `discover` reports whether
 the Coolify-managed probes were synced and whether any probe result was observed;
 it does not treat the private seed file as topology.
+
+
+## Output verbosity
+
+`discover` uses an operator summary by default. The normal output includes only
+the readiness reason, high-level counts, head/probe service IDs, whether a probe
+result was observed, and a single compact last error. It does not dump Coolify
+API attempt lists, embedded Compose text, server settings, token sources, probe
+targets, or failed log-endpoint paths.
+
+Use `--json` when a compact machine-readable diagnostic payload is needed:
+
+```powershell
+python tools/allfather_control.py discover --json
+```
+
+Use `--verbose` only when a raw diagnostic dump is needed:
+
+```powershell
+python tools/allfather_control.py discover --verbose
+```
+
+Verbose discovery may print large Coolify API payloads and should not be pasted
+into normal chat/debug loops unless those raw records are needed.
 
 ## Guardrail
 
@@ -92,3 +123,28 @@ python tools/allfather_control.py write-heads `
 ```
 
 This writes one guard/head manifest and one compose file per Coolify host.
+
+
+## Compact discovery output
+
+`discover` should return `ok=false` until at least one private probe result is
+observed from the running probe services. Syncing the probe services is not
+enough to call topology discovery healthy.
+
+Normal operator summary:
+
+```powershell
+python tools/allfather_control.py discover
+```
+
+Detailed compact JSON:
+
+```powershell
+python tools/allfather_control.py discover --json
+```
+
+Raw diagnostics:
+
+```powershell
+python tools/allfather_control.py discover --verbose
+```

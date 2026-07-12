@@ -894,18 +894,63 @@ def sync_probe_service(
     return service_uuid, "created", existing
 
 
-def fetch_probe_logs(client: Any, service_uuid: str, tried: list[dict[str, Any]]) -> dict[str, Any]:
-    if not service_uuid:
-        return {"ok": False, "source": "missing-service-uuid", "body": None}
-    paths = [
-        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/logs",
-        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/logs?tail=300",
-        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/application/logs",
-        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/docker/logs",
-    ]
-    for path in paths:
+def application_records_from_service_detail(detail: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Return compact application records embedded in a Coolify service detail payload."""
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return []
+    applications = body.get("applications")
+    if not isinstance(applications, list):
+        return []
+    records: list[dict[str, str]] = []
+    for app in applications:
+        if not isinstance(app, Mapping):
+            continue
+        uuid = str(app.get("uuid") or "").strip()
+        name = str(app.get("name") or "").strip()
+        if uuid:
+            records.append({"uuid": uuid, "name": name})
+    return records
+
+
+def fetch_probe_logs(
+    client: Any,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    application_uuid: str = "",
+) -> dict[str, Any]:
+    if not service_uuid and not application_uuid:
+        return {"ok": False, "source": "missing-service-or-application-uuid", "body": None}
+
+    # Coolify's public API exposes runtime logs on the application resource, not
+    # on the parent service.  Keep the older service paths as a fallback for
+    # version differences, but try the application UUID first when the service
+    # detail gives us one.
+    paths: list[tuple[str, str]] = []
+    if application_uuid:
+        quoted_app = urllib.parse.quote(application_uuid)
+        paths.extend(
+            [
+                ("get-allfather-probe-application-logs", f"/api/v1/applications/{quoted_app}/logs?lines=500"),
+                ("get-allfather-probe-application-logs", f"/api/v1/applications/{quoted_app}/logs"),
+            ]
+        )
+    if service_uuid:
+        quoted_service = urllib.parse.quote(service_uuid)
+        paths.extend(
+            [
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/logs"),
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/logs?tail=300"),
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/application/logs"),
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/docker/logs"),
+            ]
+        )
+
+    for operation, path in paths:
         response = client.request("GET", path)
-        tried.append({"operation": "get-allfather-probe-logs", "path": path, "response": hub_service_tool().response_to_dict(response)})
+        tried.append({"operation": operation, "path": path, "response": hub_service_tool().response_to_dict(response)})
         if response.ok:
             return {"ok": True, "source": path, "body": response.body}
         if response.status not in {400, 404, 405, 422}:
@@ -1408,7 +1453,9 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
             else:
                 deploy_result = None
             probe_detail = fetch_service_detail(client, probe_service_uuid, tried)
-            probe_logs = fetch_probe_logs(client, probe_service_uuid, tried)
+            probe_applications = application_records_from_service_detail(probe_detail)
+            probe_application_uuid = probe_applications[0]["uuid"] if probe_applications else ""
+            probe_logs = fetch_probe_logs(client, probe_service_uuid, tried, application_uuid=probe_application_uuid)
             probe_result = latest_probe_result(probe_logs)
             return {
                 "ok": True,
@@ -1425,6 +1472,8 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
                 "probe_deployed": deploy_result is not None,
                 "probe_deploy_result": deploy_result,
                 "probe_detail": probe_detail,
+                "probe_application_uuid": probe_application_uuid,
+                "probe_applications": probe_applications,
                 "probe_logs": probe_logs,
                 "probe_result": probe_result,
                 "probe_targets": probe_targets_for_plan(plan),
@@ -1473,6 +1522,207 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
         }
 
 
+
+
+def _small_mapping(value: Mapping[str, Any], keys: Sequence[str]) -> dict[str, Any]:
+    """Return a small stable subset of a noisy API mapping."""
+
+    return {key: value[key] for key in keys if key in value and value[key] not in (None, "", [], {})}
+
+
+def compact_coolify_response(response: Any) -> dict[str, Any]:
+    """Summarize a Coolify response without embedding full service records or compose text."""
+
+    if not isinstance(response, Mapping):
+        return {"summary": str(type(response).__name__)}
+    compact = _small_mapping(response, ["method", "path", "status", "ok", "error"])
+    body = response.get("body")
+    if isinstance(body, Mapping):
+        compact_body = _small_mapping(
+            body,
+            [
+                "uuid",
+                "name",
+                "human_name",
+                "status",
+                "fqdn",
+                "required_fqdn",
+                "server_status",
+                "message",
+                "error",
+                "docs",
+            ],
+        )
+        if "applications" in body and isinstance(body.get("applications"), list):
+            compact_body["applications"] = [
+                _small_mapping(app, ["uuid", "name", "status", "fqdn", "ports"])
+                for app in body.get("applications", [])[:5]
+                if isinstance(app, Mapping)
+            ]
+            if len(body.get("applications") or []) > 5:
+                compact_body["applications_truncated"] = True
+        if "server" in body and isinstance(body.get("server"), Mapping):
+            compact_body["server"] = _small_mapping(body["server"], ["uuid", "name", "ip", "status"])
+        if compact_body:
+            compact["body"] = compact_body
+    elif isinstance(body, list):
+        compact["body"] = {"items": len(body)}
+    elif isinstance(body, str) and body:
+        compact["body"] = {"preview": body[:200], "truncated": len(body) > 200}
+    return compact
+
+
+def compact_tried(tried: Any) -> list[dict[str, Any]]:
+    """Summarize attempted Coolify API calls.
+
+    This helper is intentionally reserved for explicit verbose/diagnostic use.
+    Default discovery output must not include the per-attempt list because even
+    compact service records are noisy during repeated probe/log endpoint checks.
+    """
+
+    if not isinstance(tried, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for item in tried:
+        if not isinstance(item, Mapping):
+            continue
+        out = _small_mapping(item, ["operation", "path", "action"])
+        response = item.get("response")
+        if isinstance(response, Mapping):
+            out["response"] = compact_coolify_response(response)
+        elif response is not None:
+            out["response"] = {"summary": str(type(response).__name__)}
+        compact.append(out)
+    return compact
+
+
+def summarize_coolify_attempts(tried: Any) -> dict[str, Any]:
+    """Return a small status summary for default discovery output."""
+
+    if not isinstance(tried, list):
+        return {"attempt_count": 0, "failed_count": 0, "operations": []}
+
+    operations: list[str] = []
+    failed_count = 0
+    last_error: dict[str, Any] = {}
+
+    for item in tried:
+        if not isinstance(item, Mapping):
+            continue
+        operation = str(item.get("operation") or item.get("action") or "").strip()
+        if operation and operation not in operations:
+            operations.append(operation)
+        response = item.get("response")
+        response_ok = True
+        if isinstance(response, Mapping):
+            response_ok = bool(response.get("ok", True))
+            if not response_ok:
+                failed_count += 1
+                last_error = {
+                    "operation": operation,
+                    "path": response.get("path"),
+                    "status": response.get("status"),
+                }
+                body = response.get("body")
+                if isinstance(body, Mapping):
+                    message = body.get("message") or body.get("error")
+                    if message:
+                        last_error["message"] = message
+        elif response is not None:
+            response_ok = False
+            failed_count += 1
+            last_error = {"operation": operation, "error": str(type(response).__name__)}
+
+    summary: dict[str, Any] = {
+        "attempt_count": len(tried),
+        "failed_count": failed_count,
+        "operations": operations[:12],
+    }
+    if len(operations) > 12:
+        summary["operations_truncated"] = True
+    if last_error:
+        summary["last_error"] = last_error
+    return summary
+
+
+def compact_probe_result(probe_result: Any) -> dict[str, Any]:
+    """Keep probe-result status without dumping every target payload."""
+
+    if not isinstance(probe_result, Mapping):
+        return {"ok": False, "error": "no probe result"}
+    compact = _small_mapping(probe_result, ["ok", "source", "error"])
+    result = probe_result.get("result")
+    if isinstance(result, Mapping):
+        compact["result"] = _small_mapping(
+            result,
+            [
+                "ok",
+                "service",
+                "cell_id",
+                "coolify_server",
+                "transport",
+                "public_guard_routes",
+                "ssh_used",
+                "direct_vpn_used",
+                "target_count",
+                "targets_error",
+                "updated_at",
+                "uptime_s",
+            ],
+        )
+        targets = result.get("targets")
+        if isinstance(targets, list):
+            compact["result"]["targets"] = [
+                {
+                    "guard_url": target.get("guard_url"),
+                    "ok": bool(target.get("ok")),
+                    "identity_ok": bool((target.get("identity") or {}).get("ok")) if isinstance(target.get("identity"), Mapping) else False,
+                    "topology_ok": bool((target.get("topology") or {}).get("ok")) if isinstance(target.get("topology"), Mapping) else False,
+                    "status_ok": bool((target.get("status") or {}).get("ok")) if isinstance(target.get("status"), Mapping) else False,
+                    "healthz_ok": bool((target.get("healthz") or {}).get("ok")) if isinstance(target.get("healthz"), Mapping) else False,
+                }
+                for target in targets
+                if isinstance(target, Mapping)
+            ]
+    return compact
+
+
+def compact_probe_record(probe: Mapping[str, Any]) -> dict[str, Any]:
+    """Compact per-head probe details for default discovery output."""
+
+    compact = _small_mapping(
+        probe,
+        [
+            "ok",
+            "dry_run",
+            "method",
+            "token_source",
+            "head_service_name",
+            "head_service_uuid",
+            "probe_service_name",
+            "probe_service_uuid",
+            "probe_application_uuid",
+            "probe_action",
+            "probe_deployed",
+            "probe_left_running",
+            "finalization_action",
+            "public_guard_routes",
+            "ssh_used",
+            "direct_vpn_used",
+            "error",
+        ],
+    )
+    compact["probe_result"] = compact_probe_result(probe.get("probe_result"))
+    compact["probe_targets"] = list(probe.get("probe_targets") or [])
+    if "probe_logs" in probe and isinstance(probe.get("probe_logs"), Mapping):
+        compact["probe_logs"] = _small_mapping(probe["probe_logs"], ["ok", "source", "error"])
+    if "tried" in probe:
+        compact["coolify_api"] = summarize_coolify_attempts(probe.get("tried"))
+    if probe.get("probe_compose") is not None:
+        # This is only present when the operator explicitly asks for probe compose.
+        compact["probe_compose"] = probe.get("probe_compose")
+    return compact
+
 def networks_from_probe_result(probe_result: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
     networks: dict[str, list[dict[str, Any]]] = {}
     result = probe_result.get("result") if isinstance(probe_result, Mapping) else None
@@ -1518,7 +1768,7 @@ def discover_from_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str, A
             "public_guard_routes": False,
             "ssh_used": False,
             "direct_vpn_used": False,
-            "probe": probe,
+            "probe": probe if getattr(args, "verbose", False) else compact_probe_record(probe),
         }
         heads.append(record)
 
@@ -1528,7 +1778,17 @@ def discover_from_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str, A
         for network_key, items in networks_from_probe_result(probe_result if isinstance(probe_result, Mapping) else {}, record).items():
             networks.setdefault(network_key, []).extend(items)
 
-    ok = probe_synced_count == len(plan.heads) if plan.heads else False
+    all_probes_synced = probe_synced_count == len(plan.heads) if plan.heads else False
+    topology_ready = probe_result_count > 0
+    ok = bool(plan.heads) and all_probes_synced and topology_ready
+    if ok:
+        reason = ""
+    elif not plan.heads:
+        reason = "no all-father heads are planned"
+    elif not all_probes_synced:
+        reason = "one or more Coolify-managed discovery probes could not be synced"
+    else:
+        reason = "Coolify probes are synced, but no probe result has been observed yet"
     return {
         "ok": ok,
         "operation": "discover",
@@ -1544,14 +1804,106 @@ def discover_from_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str, A
             "coolify_seen_heads": coolify_head_count,
             "probe_services_synced": probe_synced_count,
             "probe_results_observed": probe_result_count,
-            "topology_ready": probe_result_count > 0,
+            "topology_ready": topology_ready,
             "vpn_guard_urls_are_local_operator_urls": False,
         },
-        "reason": "" if ok else "one or more Coolify-managed discovery probes could not be synced",
+        "reason": reason,
         "errors": errors,
         "heads": heads,
         "networks": networks,
         "guardrails": plan.guardrails,
+    }
+
+
+def short_error_from_probe(probe: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return one compact diagnostic without leaking API paths or full Coolify records."""
+
+    probe_result = probe.get("probe_result")
+    if isinstance(probe_result, Mapping) and not probe_result.get("ok", False):
+        error = str(probe_result.get("error") or "").strip()
+        source = str(probe_result.get("source") or "").strip()
+        if error:
+            return {"source": source or "probe_result", "message": error}
+
+    probe_logs = probe.get("probe_logs")
+    if isinstance(probe_logs, Mapping) and not probe_logs.get("ok", False):
+        error = str(probe_logs.get("error") or "").strip()
+        source = str(probe_logs.get("source") or "").strip()
+        if error:
+            return {"source": source or "probe_logs", "message": error}
+
+    coolify_api = probe.get("coolify_api")
+    if isinstance(coolify_api, Mapping):
+        last_error = coolify_api.get("last_error")
+        if isinstance(last_error, Mapping):
+            message = str(last_error.get("message") or "Coolify API request failed").strip()
+            status = last_error.get("status")
+            return {
+                "source": "coolify-api",
+                "message": message,
+                "status": status,
+                "operation": last_error.get("operation"),
+            }
+
+    return None
+
+
+def compact_discover_for_operator(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Default discover output: enough for operators, no per-request/API spam."""
+
+    heads: list[dict[str, Any]] = []
+    for head in payload.get("heads") or []:
+        if not isinstance(head, Mapping):
+            continue
+        probe = head.get("probe") if isinstance(head.get("probe"), Mapping) else {}
+        probe_result = probe.get("probe_result") if isinstance(probe.get("probe_result"), Mapping) else {}
+        probe_logs = probe.get("probe_logs") if isinstance(probe.get("probe_logs"), Mapping) else {}
+        coolify_api = probe.get("coolify_api") if isinstance(probe.get("coolify_api"), Mapping) else {}
+
+        heads.append(
+            {
+                "head_id": head.get("head_id"),
+                "server": head.get("server"),
+                "operator_transport": head.get("operator_transport"),
+                "peer_guard_url_scope": head.get("peer_guard_url_scope"),
+                "head_service": {
+                    "name": probe.get("head_service_name"),
+                    "uuid": probe.get("head_service_uuid"),
+                },
+                "probe_service": {
+                    "name": probe.get("probe_service_name"),
+                    "uuid": probe.get("probe_service_uuid"),
+                    "deployed": bool(probe.get("probe_deployed")),
+                    "left_running": bool(probe.get("probe_left_running")),
+                },
+                "probe_result_observed": bool(probe_result.get("ok")),
+                "probe_logs_available": bool(probe_logs.get("ok")),
+                "probe_target_count": len(probe.get("probe_targets") or []),
+                "coolify_api": {
+                    "attempt_count": coolify_api.get("attempt_count", 0),
+                    "failed_count": coolify_api.get("failed_count", 0),
+                },
+                "last_error": short_error_from_probe(probe),
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
+        )
+
+    return {
+        "ok": bool(payload.get("ok")),
+        "operation": payload.get("operation"),
+        "operator_transport": payload.get("operator_transport"),
+        "reason": payload.get("reason") or "",
+        "summary": payload.get("summary") or {},
+        "heads": heads,
+        "networks": payload.get("networks") or {},
+        "guardrails": payload.get("guardrails") or {},
+        "probe_services_left_running": bool(payload.get("probe_services_left_running")),
+        "finalization_action": payload.get("finalization_action"),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
     }
 
 def write_heads(plan: HeadPlan, out_dir: Path, *, dockerfile: str = DEFAULT_DOCKERFILE, image: str = DEFAULT_IMAGE) -> list[Path]:
@@ -1658,7 +2010,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
 
     for subparser in (plan_parser, write_parser, boot_parser, discover_parser):
-        subparser.add_argument("--json", action="store_true", help="Print JSON output. Human output is used only for write-heads.")
+        subparser.add_argument("--json", action="store_true", help="Print detailed compact JSON. Default discover output is an operator summary.")
+        subparser.add_argument("--verbose", action="store_true", help="Include raw Coolify diagnostics and large API records in JSON output.")
 
     return parser.parse_args(argv)
 
@@ -1695,7 +2048,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print_json(apply_bootstrap_heads(plan, args))
             return 0
         if args.command == "discover":
-            print_json(discover_from_heads(plan, args))
+            payload = discover_from_heads(plan, args)
+            if getattr(args, "json", False) or getattr(args, "verbose", False) or getattr(args, "dry_run", False):
+                print_json(payload)
+            else:
+                print_json(compact_discover_for_operator(payload))
             return 0
         raise AllfatherControlError(f"Unsupported command: {args.command}")
     except Exception as exc:

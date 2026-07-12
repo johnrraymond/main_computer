@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 from main_computer.main_log_codec import LexLogWriter, canonical_json_line
 from main_computer.log_surprise_compressor import LogSurpriseCompressor
+from main_computer.main_log_pack import MainLogPackOptions, build_main_log_pack_zip_bytes
 from main_computer.main_log_client import (
     DEFAULT_MAIN_LOG_HOST,
     DEFAULT_MAIN_LOG_PORT,
@@ -55,6 +56,16 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[s
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _zip_response(handler: BaseHTTPRequestHandler, status: int, body: bytes, *, filename: str = "main-log-surprise-pack.zip") -> None:
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/zip")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+    handler.send_header("Cache-Control", "no-cache")
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -163,6 +174,7 @@ class MainLogStore:
             "state_path": str(self.state_path),
             "surprise_path": str(self.surprise_path),
             "follow_path": "/v1/log/follow",
+            "compress_path": "/v1/log/compress",
             "pid_file": str(self.pid_path),
             "updated_at": _now_iso(),
         }
@@ -191,6 +203,7 @@ class MainLogStore:
             "state_path": str(self.state_path),
             "surprise_path": str(self.surprise_path),
             "follow_path": "/v1/log/follow",
+            "compress_path": "/v1/log/compress",
             "pid_file": str(self.pid_path),
             "message": message,
             "updated_at": _now_iso(),
@@ -354,6 +367,7 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
                     "raw_mirror": self.server.store.raw_mirror,
                     "surprise_path": str(self.server.store.surprise_path),
                     "follow_path": "/v1/log/follow",
+                    "compress_path": "/v1/log/compress",
                     "at": _now_iso(),
                 },
             )
@@ -372,10 +386,43 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
                 limit = _coerce_port(query["limit"][0], fallback=DEFAULT_RECENT_LIMIT)
             _json_response(self, 200, self.server.store.surprise_snapshot(limit=limit))
             return
+        if parsed.path == "/v1/log/compress":
+            self._handle_compress(parsed.query or "")
+            return
         if parsed.path == "/v1/log/follow":
             self._handle_follow(parsed.query or "")
             return
         _json_response(self, 404, {"ok": False, "state": "not-found", "path": parsed.path})
+
+    def _handle_compress(self, query_string: str) -> None:
+        query = parse_qs(query_string or "")
+        top = _coerce_nonnegative_int(query.get("top", ["200"])[0], fallback=200, maximum=10_000)
+        bins = _coerce_nonnegative_int(query.get("bins", ["16"])[0], fallback=16, maximum=200)
+        threshold = _coerce_float(query.get("surprise_threshold", ["8"])[0], fallback=8.0, minimum=0.0, maximum=10_000.0)
+        alpha = _coerce_float(query.get("alpha", ["0.5"])[0], fallback=0.5, minimum=0.000001, maximum=100.0)
+        compression = str(query.get("compression", ["lzma"])[0] or "lzma").strip().lower()
+        if compression not in {"lzma", "deflate", "bzip2", "stored"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-compression", "formats": ["lzma", "deflate", "bzip2", "stored"]})
+            return
+        include_lossless_source = str(query.get("include_raw", ["0"])[0] or "").strip().lower() in {"1", "true", "yes", "on"}
+        include_report = str(query.get("report", ["1"])[0] or "").strip().lower() not in {"0", "false", "no", "off"}
+        include_surprise_literals = str(query.get("surprise_literals", ["1"])[0] or "").strip().lower() not in {"0", "false", "no", "off"}
+        options = MainLogPackOptions(
+            alpha=alpha,
+            top=max(1, top),
+            histogram_bins=max(1, bins),
+            surprise_threshold_bits=threshold,
+            include_lossless_source=include_lossless_source,
+            include_surprise_literals=include_surprise_literals,
+            include_report=include_report,
+            compression=compression,
+        )
+        try:
+            body = build_main_log_pack_zip_bytes(root=self.server.store.root, input_path=self.server.store.log_path, options=options)
+        except Exception as exc:
+            _json_response(self, 500, {"ok": False, "state": "compress-failed", "error": str(exc)})
+            return
+        _zip_response(self, 200, body)
 
     def _handle_follow(self, query_string: str) -> None:
         query = parse_qs(query_string or "")

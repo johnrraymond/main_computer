@@ -276,10 +276,11 @@ def test_discover_does_not_probe_vpn_urls_from_local(monkeypatch: pytest.MonkeyP
 
     payload = control.discover_from_heads(plan, args)
 
-    assert payload["ok"] is True
+    assert payload["ok"] is False
     assert payload["summary"]["probe_services_synced"] == 2
     assert payload["summary"]["probe_results_observed"] == 0
     assert payload["summary"]["topology_ready"] is False
+    assert "no probe result" in payload["reason"]
     assert payload["heads"][0]["probe"]["method"] == "coolify-patch-probe"
 
 
@@ -304,12 +305,14 @@ def test_discover_dry_run_renders_private_probe_payloads(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr + result.stdout
     payload = json.loads(result.stdout)
-    assert payload["ok"] is True
+    assert payload["ok"] is False
     assert payload["operator_transport"] == "coolify-patch-probe"
     assert payload["public_guard_routes"] is False
     assert payload["ssh_used"] is False
     assert payload["direct_vpn_used"] is False
     assert payload["summary"]["probe_services_synced"] == 2
+    assert payload["summary"]["probe_results_observed"] == 0
+    assert payload["summary"]["topology_ready"] is False
     probe = payload["heads"][0]["probe"]
     assert probe["dry_run"] is True
     assert probe["probe_left_running"] is True
@@ -337,6 +340,108 @@ def test_probe_log_parser_extracts_latest_probe_result() -> None:
 
 
 
+
+def test_discover_compacts_raw_coolify_api_records_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+
+    huge_compose = "services:\n  noisy:\n" + ("    image: x\n" * 200)
+
+    def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "method": "coolify-patch-probe",
+            "head_service_uuid": f"head-{head.head_id}",
+            "probe_service_uuid": f"probe-{head.head_id}",
+            "probe_left_running": True,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "probe_result": {"ok": False, "error": "probe has not logged a result yet"},
+            "tried": [
+                {
+                    "operation": "get-service-detail",
+                    "response": {
+                        "ok": True,
+                        "status": 200,
+                        "path": "/api/v1/services/noisy",
+                        "body": {
+                            "uuid": "service-uuid",
+                            "name": "allfather-control-probe",
+                            "status": "running:healthy",
+                            "docker_compose": huge_compose,
+                        },
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(control, "sync_and_query_probe_for_head", fake_sync_and_query_probe_for_head)
+    args = type("Args", (), {"dry_run": False, "verbose": False})()
+
+    payload = control.discover_from_heads(plan, args)
+
+    probe = payload["heads"][0]["probe"]
+    serialized = json.dumps(probe)
+    assert "docker_compose" not in serialized
+    assert huge_compose not in serialized
+    assert probe["coolify_api"]["attempt_count"] == 1
+    assert probe["coolify_api"]["failed_count"] == 0
+    assert probe["coolify_api"]["operations"] == ["get-service-detail"]
+    assert "coolify_attempts" not in probe
+
+    assert "service-uuid" not in serialized
+
+
+def test_discover_default_summarizes_failed_coolify_attempts_without_lists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+
+    def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "method": "coolify-patch-probe",
+            "probe_left_running": True,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "probe_result": {"ok": False, "error": "no ALLFATHER_PROBE_RESULT entry found"},
+            "tried": [
+                {
+                    "operation": "get-allfather-probe-logs",
+                    "response": {
+                        "ok": False,
+                        "status": 404,
+                        "path": "/api/v1/services/probe/logs",
+                        "body": {"message": "Not found.", "docs": "https://coolify.io/docs"},
+                    },
+                },
+                {
+                    "operation": "get-allfather-probe-logs",
+                    "response": {
+                        "ok": False,
+                        "status": 404,
+                        "path": "/api/v1/services/probe/docker/logs",
+                        "body": {"message": "Not found.", "docs": "https://coolify.io/docs"},
+                    },
+                },
+            ],
+        }
+
+    monkeypatch.setattr(control, "sync_and_query_probe_for_head", fake_sync_and_query_probe_for_head)
+    args = type("Args", (), {"dry_run": False, "verbose": False})()
+
+    payload = control.discover_from_heads(plan, args)
+
+    probe = payload["heads"][0]["probe"]
+    serialized = json.dumps(probe)
+    assert "coolify_attempts" not in probe
+    assert "/api/v1/services/probe/logs" not in serialized
+    assert probe["coolify_api"]["attempt_count"] == 2
+    assert probe["coolify_api"]["failed_count"] == 2
+    assert probe["coolify_api"]["last_error"]["status"] == 404
+
+
 def test_operator_url_extraction_prefers_public_coolify_routes() -> None:
     record = {
         "fqdn": "https://allfather-head-coolify-a.example.com",
@@ -349,3 +454,136 @@ def test_operator_url_extraction_prefers_public_coolify_routes() -> None:
         "https://head-a.example.com",
         "https://head-b.example.com",
     ]
+
+
+def test_discover_is_not_ok_until_probe_result_is_observed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+
+    def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "method": "coolify-patch-probe",
+            "head_service_name": f"head-{head.head_id}",
+            "head_service_uuid": f"head-uuid-{head.head_id}",
+            "probe_service_name": f"probe-{head.head_id}",
+            "probe_service_uuid": f"probe-uuid-{head.head_id}",
+            "probe_deployed": True,
+            "probe_left_running": True,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "probe_targets": [head.guard_url],
+            "probe_logs": {"ok": False, "source": "coolify-api", "error": "no known Coolify logs endpoint returned probe logs"},
+            "probe_result": {"ok": False, "source": "coolify-probe-logs", "error": "no ALLFATHER_PROBE_RESULT entry found"},
+            "tried": [],
+        }
+
+    monkeypatch.setattr(control, "sync_and_query_probe_for_head", fake_sync_and_query_probe_for_head)
+    args = type("Args", (), {"dry_run": False, "verbose": False})()
+
+    payload = control.discover_from_heads(plan, args)
+
+    assert payload["ok"] is False
+    assert payload["summary"]["probe_services_synced"] == 2
+    assert payload["summary"]["probe_results_observed"] == 0
+    assert payload["summary"]["topology_ready"] is False
+    assert "no probe result" in payload["reason"]
+
+
+def test_default_discover_operator_summary_hides_probe_internals(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+
+    def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "method": "coolify-patch-probe",
+            "token_source": "private-state:coolify.hosts.a.api_token",
+            "head_service_name": f"head-{head.head_id}",
+            "head_service_uuid": f"head-uuid-{head.head_id}",
+            "probe_service_name": f"probe-{head.head_id}",
+            "probe_service_uuid": f"probe-uuid-{head.head_id}",
+            "probe_action": "updated",
+            "probe_deployed": True,
+            "probe_left_running": True,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "probe_targets": ["http://10.116.0.3:41400", "http://10.124.0.3:41401"],
+            "probe_logs": {"ok": False, "source": "coolify-api", "error": "no known Coolify logs endpoint returned probe logs"},
+            "probe_result": {"ok": False, "source": "coolify-probe-logs", "error": "no ALLFATHER_PROBE_RESULT entry found"},
+            "tried": [
+                {
+                    "operation": "get-allfather-probe-logs",
+                    "response": {
+                        "ok": False,
+                        "status": 404,
+                        "path": "/api/v1/services/probe/docker/logs",
+                        "body": {"message": "Not found.", "docs": "https://coolify.io/docs"},
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(control, "sync_and_query_probe_for_head", fake_sync_and_query_probe_for_head)
+    args = type("Args", (), {"dry_run": False, "verbose": False})()
+
+    payload = control.discover_from_heads(plan, args)
+    summary = control.compact_discover_for_operator(payload)
+    serialized = json.dumps(summary)
+
+    assert summary["ok"] is False
+    assert summary["heads"][0]["probe_result_observed"] is False
+    assert summary["heads"][0]["probe_logs_available"] is False
+    assert summary["heads"][0]["probe_target_count"] == 2
+    assert "probe_targets" not in serialized
+    assert "coolify_api" in summary["heads"][0]
+    assert "operations" not in serialized
+    assert "/api/v1/services/probe/docker/logs" not in serialized
+    assert "token_source" not in serialized
+
+
+def test_fetch_probe_logs_prefers_application_uuid_before_service_fallback() -> None:
+    class Response:
+        def __init__(self, status: int, body: object) -> None:
+            self.status = status
+            self.body = body
+            self.ok = 200 <= status < 300
+            self.method = "GET"
+            self.path = ""
+
+    class Client:
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        def request(self, method: str, path: str) -> Response:
+            self.paths.append(path)
+            response = Response(200, "ALLFATHER_PROBE_RESULT {\"ok\": true}\n")
+            response.method = method
+            response.path = path
+            return response
+
+    client = Client()
+    tried: list[dict[str, object]] = []
+
+    logs = control.fetch_probe_logs(client, "service-uuid", tried, application_uuid="app-uuid")
+
+    assert logs["ok"] is True
+    assert logs["source"] == "/api/v1/applications/app-uuid/logs?lines=500"
+    assert client.paths == ["/api/v1/applications/app-uuid/logs?lines=500"]
+    assert tried[0]["operation"] == "get-allfather-probe-application-logs"
+
+
+def test_application_records_from_service_detail_reads_embedded_app_uuid() -> None:
+    detail = {
+        "body": {
+            "applications": [
+                {"name": "allfather-control-probe-coolify-a", "uuid": "app-uuid-a", "status": "running:healthy"}
+            ]
+        }
+    }
+
+    records = control.application_records_from_service_detail(detail)
+
+    assert records == [{"uuid": "app-uuid-a", "name": "allfather-control-probe-coolify-a"}]

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import threading
+import zipfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -25,6 +27,7 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
         assert health["ok"] is True
         assert "surprise_path" in health
         assert health["follow_path"] == "/v1/log/follow"
+        assert health["compress_path"] == "/v1/log/compress"
 
         for index in range(12):
             result = emit_main_log_event(
@@ -63,6 +66,11 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
                 for line in response.read().decode("utf-8").splitlines()
                 if line.strip()
             ]
+
+        compress_request = Request(f"http://127.0.0.1:{port}/v1/log/compress?top=5&surprise_threshold=4", method="GET")
+        with urlopen(compress_request, timeout=5) as response:
+            assert response.headers.get_content_type() == "application/zip"
+            compressed_zip = response.read()
     finally:
         server.shutdown()
         server.server_close()
@@ -92,6 +100,14 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
     assert follow_log_lines[-1]["record"]["message"].startswith("2026-07-11T20:42:59Z ERROR")
     assert follow_log_lines[-1]["signature_preview"]
     assert follow_log_lines[-1]["surprise_bits"] > 0
+
+    with zipfile.ZipFile(io.BytesIO(compressed_zip), "r") as zf:
+        assert "main-log-surprise-pack.json" in zf.namelist()
+        pack = json.loads(zf.read("main-log-surprise-pack.json").decode("utf-8"))
+    assert pack["schema"] == "mclog-surprise-pack-v1"
+    assert pack["summary"]["total_events"] == 13
+    assert pack["summary"]["unique_signatures"] == 2
+    assert pack["summary"]["run_count"] == 2
 
     recent = store.recent(limit=1)[0]
     assert "_main_log_surprise_bits" in recent
