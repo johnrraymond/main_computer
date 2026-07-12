@@ -18,11 +18,13 @@ The working rule is:
 
 That is the reason the platform spine exposes the subsumption lattice and the adoption case gate. The lattice says what MCEL wants to replace; the adoption case says what must be proven before that replacement is justified.
 
-## User-space contract
+## User-space contract and application authoring
 
 The user-facing contract is documented in `pretty_docs/mcel-user-space-contract.md` and exposed by `McelLabContract.buildUserSpaceContract()` / `MCEL.buildUserSpaceContract()`.
 
-Use that contract, not internal law names, when deciding whether a builder workflow can rely on MCEL. The current planning rule is: source traits are the durable input, generated runtime structure is discardable, serialization is the source firewall, repair is bounded regeneration, reports are gates, browser facts are snapshots, and adoption is narrow and reversible.
+The application-authoring model across HTML, application contract data, JavaScript behavior, layout hints, user layout operations, themes, chrome, and FLOG is documented in `pretty_docs/mcel-application-authoring.md`. That guide marks the boundary between the live MCEL facade and the browser-proven layout APIs that are still proposed for V1 integration.
+
+Use the user-space contract, not internal law names, when deciding whether a builder workflow can rely on MCEL. The current planning rule is: source traits are the durable input, generated runtime structure is discardable, serialization is the source firewall, repair is bounded regeneration, reports are gates, browser facts are snapshots, and adoption is narrow and reversible.
 
 ## Where MCEL lives
 

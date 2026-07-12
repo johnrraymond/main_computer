@@ -6296,7 +6296,7 @@ def test_layout_hint_milestone32_serializes_undo_reset_and_stable_id_migration_e
         == "repository.phase-support"
     )
     assert module.USER_LAYOUT_HINT_BROWSER_PROOF_VERSION == (
-        "mcel-user-layout-browser-proof-v4"
+        "mcel-user-layout-browser-proof-v5"
     )
     assert module.USER_LAYOUT_HINT_BROWSER_MODE == "shadow-browser-proof"
 
@@ -6364,7 +6364,7 @@ def test_layout_hint_milestone35_user_tab_workbench_calibrates_realized_parent_g
         in rendered
     )
     assert (
-        'data-flog-user-summary-calibration-mode="realized-parent-two-pass"'
+        'data-flog-user-summary-calibration-mode="realized-summary-slot-two-pass"'
         in rendered
     )
     summary_contract = candidate["userLayoutMutation"]["summaryMinimumShares"]
@@ -6379,7 +6379,7 @@ def test_layout_hint_milestone35_user_tab_workbench_calibrates_realized_parent_g
     assert summary_contract["parentEffectiveRootShare"] is None
     assert summary_contract["resolvedLocalShares"] == {}
     assert abs(summary_contract["requestedTrackRootShare"] - 0.107) < 1e-9
-    assert summary_contract["calibrationMode"] == "realized-parent-two-pass"
+    assert summary_contract["calibrationMode"] == "realized-summary-slot-two-pass"
     assert (
         'data-flog-user-workflow-summary-allocated-root-share="0.059"'
         in rendered
@@ -6390,11 +6390,23 @@ def test_layout_hint_milestone35_user_tab_workbench_calibrates_realized_parent_g
     )
     assert "--flog-user-tab-summary-track-min-block:10.7000vh;" in rendered
     assert 'data-flog-summary-for="workflow"' in rendered
+    assert 'data-flog-summary-slot="workflow"' in rendered
+    assert 'data-mc-layout-slot="compact-summary"' in rendered
     assert 'data-flog-return-to="workflow"' in rendered
     assert 'id="flog-surface-workflow"' not in rendered
     assert ".unit-policy-user-tab-workbench" in module.TRIAL_CSS
+    assert 'data-flog-summary-slot="workflow"' in module.TRIAL_CSS
+    assert "align-self: stretch !important" in module.TRIAL_CSS
+    assert "grid-row: 2" in module.TRIAL_CSS
+    assert 'element.style.setProperty("grid-row", row, "important")' in (
+        module.USER_TAB_WORKBENCH_CALIBRATION_JS
+    )
+    assert "min-block-size: var(--flog-user-workflow-summary-allocated-root-block" in module.TRIAL_CSS
     assert "initialParentRootShare" in module.USER_TAB_WORKBENCH_CALIBRATION_JS
     assert "finalParentRootShare" in module.USER_TAB_WORKBENCH_CALIBRATION_JS
+    assert "summarySlotRootShares" in module.USER_TAB_WORKBENCH_CALIBRATION_JS
+    assert "summarySlotFillRatios" in module.USER_TAB_WORKBENCH_CALIBRATION_JS
+    assert 'grid-template-rows' in module.USER_TAB_WORKBENCH_CALIBRATION_JS
     assert "data-flog-user-summary-calibrated" in (
         module.USER_TAB_WORKBENCH_CALIBRATION_JS
     )
@@ -6425,13 +6437,24 @@ def test_layout_hint_milestone35_summary_delivery_uses_browser_calibration_and_m
         "required": True,
         "state": "complete",
         "passed": True,
-        "calibrationMode": "realized-parent-two-pass",
+        "calibrationMode": "realized-summary-slot-two-pass",
         "finalParentRootShare": 0.11,
         "resolvedLocalShares": {
             "command": 0.2727272727,
             "workflow": 0.5363636364,
             "safety": 0.1909090909,
         },
+        "summarySlotRootShares": {
+            "command": 0.031,
+            "workflow": 0.060,
+        },
+        "summarySlotFillRatios": {
+            "command": 1.0,
+            "workflow": 1.0,
+        },
+        "summarySlotAllocationPassed": True,
+        "summarySlotFillPassed": True,
+        "semanticNodeDeliveryPassed": True,
         "deliveredRootShares": {
             "command": 0.031,
             "workflow": 0.060,
@@ -6466,9 +6489,9 @@ def test_layout_hint_milestone35_summary_delivery_uses_browser_calibration_and_m
     passed = module._user_layout_summary_delivery_diagnostics(item, mutation)
     assert passed["passed"] is True
     assert passed["coordinateSystem"] == (
-        "browser-measured-parent-to-local-two-pass"
+        "browser-measured-summary-slot-fill-two-pass"
     )
-    assert passed["calibrationMode"] == "realized-parent-two-pass"
+    assert passed["calibrationMode"] == "realized-summary-slot-two-pass"
     assert passed["calibrations"][0]["state"] == "complete"
     workflow_row = next(
         row for row in passed["rows"] if row["slot"] == "workflow"
@@ -6493,6 +6516,97 @@ def test_layout_hint_milestone35_summary_delivery_uses_browser_calibration_and_m
         "calibration did not complete" in failure
         for failure in missing["failures"]
     )
+
+
+def test_layout_hint_milestone36_fails_closed_when_semantic_summary_does_not_fill_allocated_slot():
+    module = load_module()
+    hierarchy = next(
+        item
+        for item in module.synthetic_hierarchies()
+        if item["id"] == "git-tools-workflow-workbench"
+    )
+    contract = module._user_tab_workbench_summary_contract(hierarchy)
+    mutation = {
+        "userTabWorkbench": True,
+        "summaryMinimumShares": contract,
+    }
+    root = {
+        "area": 100000.0,
+        "width": 1000.0,
+        "height": 100.0,
+        "left": 0.0,
+        "top": 0.0,
+        "right": 1000.0,
+        "bottom": 100.0,
+    }
+    calibration = {
+        "required": True,
+        "state": "slot-not-filled",
+        "passed": False,
+        "calibrationMode": "realized-summary-slot-two-pass",
+        "finalParentRootShare": 0.11,
+        "resolvedLocalShares": {
+            "command": 0.2727272727,
+            "workflow": 0.5363636364,
+            "safety": 0.1909090909,
+        },
+        "summarySlotRootShares": {
+            "command": 0.031,
+            "workflow": 0.060,
+        },
+        "summarySlotFillRatios": {
+            "command": 1.0,
+            "workflow": 0.55,
+        },
+        "summarySlotAllocationPassed": True,
+        "summarySlotFillPassed": False,
+        "semanticNodeDeliveryPassed": True,
+        "deliveredRootShares": {
+            "command": 0.031,
+            "workflow": 0.060,
+        },
+    }
+    item = {
+        "phaseMeasurements": [
+            {
+                "phase": "planning",
+                "realizationStates": {
+                    "command": "compact-summary",
+                    "workflow": "compact-summary",
+                },
+                "userLayoutCalibration": calibration,
+                "geometryFacts": {"root": {"clipped": root}},
+                "examples": {
+                    "nodes": [
+                        {
+                            "slot": "command",
+                            "effectiveVisibleShare": 0.031,
+                        },
+                        {
+                            "slot": "workflow",
+                            "effectiveVisibleShare": 0.060,
+                        },
+                    ]
+                },
+            }
+        ]
+    }
+
+    result = module._user_layout_summary_delivery_diagnostics(item, mutation)
+
+    assert result["passed"] is False
+    assert any(
+        "semantic summary nodes did not fill their allocated grid tracks"
+        in failure
+        for failure in result["failures"]
+    )
+    workflow_row = next(
+        row for row in result["rows"] if row["slot"] == "workflow"
+    )
+    assert workflow_row["summarySlotRootShare"] == 0.060
+    assert workflow_row["summarySlotAllocatedShareMet"] is True
+    assert workflow_row["summarySlotFillRatio"] == 0.55
+    assert workflow_row["summarySlotFilled"] is False
 
 
 def test_layout_hint_milestone35_browser_gate_fails_closed_on_calibrated_summary_under_delivery():
@@ -6538,13 +6652,24 @@ def test_layout_hint_milestone35_browser_gate_fails_closed_on_calibrated_summary
             "required": True,
             "state": "complete",
             "passed": True,
-            "calibrationMode": "realized-parent-two-pass",
+            "calibrationMode": "realized-summary-slot-two-pass",
             "finalParentRootShare": 0.11,
             "resolvedLocalShares": {
                 "command": 0.2727272727,
                 "workflow": 0.5363636364,
                 "safety": 0.1909090909,
             },
+            "summarySlotRootShares": {
+                "command": 0.031,
+                "workflow": 0.060,
+            },
+            "summarySlotFillRatios": {
+                "command": 1.0,
+                "workflow": 1.0,
+            },
+            "summarySlotAllocationPassed": True,
+            "summarySlotFillPassed": True,
+            "semanticNodeDeliveryPassed": False,
             "deliveredRootShares": {
                 "command": 0.031,
                 "workflow": 0.035,

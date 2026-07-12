@@ -109,7 +109,7 @@ LAYOUT_HINT_FALLBACK_PROFILES = {
 USER_LAYOUT_HINT_CONTRACT_VERSION = "mcel-user-layout-hints-v1"
 USER_LAYOUT_HINT_OPERATION_VERSION = "mcel-user-layout-operations-v1"
 USER_LAYOUT_HINT_MODE = "shadow-only"
-USER_LAYOUT_HINT_BROWSER_PROOF_VERSION = "mcel-user-layout-browser-proof-v4"
+USER_LAYOUT_HINT_BROWSER_PROOF_VERSION = "mcel-user-layout-browser-proof-v5"
 USER_LAYOUT_HINT_BROWSER_MODE = "shadow-browser-proof"
 USER_LAYOUT_HINT_USER_TAB_PRESENTATION = "user-tab-workbench"
 USER_LAYOUT_HINT_BROWSER_VIEWPORTS = (
@@ -3240,7 +3240,7 @@ def _user_tab_workbench_summary_contract(
 ) -> dict[str, Any]:
     """Describe root-relative summary floors for browser calibration.
 
-    M3.5 deliberately does not guess the effective root share of the nested
+    M3.6 deliberately does not guess the effective root share of the nested
     ``command-workflow`` unit.  The HTML carries only semantic root-relative
     requirements plus a conservative calibration scaffold.  Chromium then
     measures the realized root, parent, and summary widths, resolves the local
@@ -3269,7 +3269,7 @@ def _user_tab_workbench_summary_contract(
         "requestedTrackRootShare": requested_track_root,
         "rootMarginShare": root_margin,
         "trackSafetyRootShare": track_safety_root,
-        "calibrationMode": "realized-parent-two-pass",
+        "calibrationMode": "realized-summary-slot-two-pass",
         "source": "required-companion-floor-browser-calibrated",
     }
 
@@ -3294,7 +3294,7 @@ def compile_user_layout_hint_browser_candidates(
 ) -> list[dict[str, Any]]:
     """Compile accepted user profiles into bounded browser-rendered candidates.
 
-    M3.5 renders three semantic profiles across wide, medium, narrow, and compact
+    M3.6 renders three semantic profiles across wide, medium, narrow, and compact
     capacity.  Every profile also receives a restored-wide duplicate for an exact
     painted-geometry fingerprint comparison, yielding 15 candidate/viewport
     aggregates and 90 phase PNGs for the six-phase Git fixture.
@@ -3508,9 +3508,9 @@ def _user_layout_summary_delivery_diagnostics(
 ) -> dict[str, Any]:
     """Verify browser-calibrated root-relative summary delivery.
 
-    M3.5 fails closed unless every phase that realizes both compact summaries
-    reports a completed two-pass calibration.  The final gate still consumes
-    Chromium's effective painted root shares rather than trusting requested CSS.
+    M3.6 fails closed unless every phase that realizes both compact summaries
+    reports a completed slot-fill calibration.  The final gate consumes both
+    Chromium's effective painted root shares and the calibrated grid-slot fill.
     """
 
     if not bool(mutation.get("userTabWorkbench", False)):
@@ -3570,9 +3570,27 @@ def _user_layout_summary_delivery_diagnostics(
                     f"{phase} user-tab summary calibration did not complete "
                     f"(state={calibration.get('state', 'missing')})"
                 )
+            if not bool(calibration.get("summarySlotAllocationPassed", False)):
+                failures.append(
+                    f"{phase} user-tab summary grid tracks did not receive their "
+                    "allocated root-relative shares"
+                )
+            if not bool(calibration.get("summarySlotFillPassed", False)):
+                fill = dict(calibration.get("summarySlotFillRatios") or {})
+                failures.append(
+                    f"{phase} semantic summary nodes did not fill their allocated "
+                    f"grid tracks (command={float(fill.get('command', 0) or 0):.1%}, "
+                    f"workflow={float(fill.get('workflow', 0) or 0):.1%})"
+                )
 
         calibration_local = dict(
             calibration.get("resolvedLocalShares") or {}
+        )
+        calibration_slots = dict(
+            calibration.get("summarySlotRootShares") or {}
+        )
+        calibration_fill = dict(
+            calibration.get("summarySlotFillRatios") or {}
         )
         calibration_parent = float(
             calibration.get("finalParentRootShare", 0) or 0
@@ -3592,6 +3610,16 @@ def _user_layout_summary_delivery_diagnostics(
             resolved_local_share = float(
                 calibration_local.get(slot, 0) or 0
             )
+            slot_root_share = float(
+                calibration_slots.get(slot, 0) or 0
+            )
+            slot_fill_ratio = float(
+                calibration_fill.get(slot, 0) or 0
+            )
+            slot_gate = phase_share_floor_check(
+                slot_root_share,
+                allocated_share,
+            )
             row = {
                 "phase": phase,
                 "slot": slot,
@@ -3599,6 +3627,10 @@ def _user_layout_summary_delivery_diagnostics(
                 "allocatedRootShare": allocated_share,
                 "resolvedLocalShare": resolved_local_share,
                 "measuredParentRootShare": calibration_parent,
+                "summarySlotRootShare": slot_root_share,
+                "summarySlotAllocatedShareMet": bool(slot_gate["met"]),
+                "summarySlotFillRatio": slot_fill_ratio,
+                "summarySlotFilled": slot_fill_ratio >= 0.98,
                 "measuredRootShare": measured_share,
                 "requiredRootShareMet": bool(gate["met"]),
                 "rawHeadroom": float(gate["rawHeadroom"]),
@@ -3628,7 +3660,7 @@ def _user_layout_summary_delivery_diagnostics(
     return {
         "required": True,
         "passed": not failures,
-        "coordinateSystem": "browser-measured-parent-to-local-two-pass",
+        "coordinateSystem": "browser-measured-summary-slot-fill-two-pass",
         "calibrationMode": str(contract.get("calibrationMode") or ""),
         "requestedRootShares": requested_root,
         "allocatedRootShares": allocated_root,
@@ -8613,6 +8645,8 @@ def node_markup(node: dict[str, Any], focus_slot: str) -> str:
         attrs["class"] = f"flog-node flog-summary {base_class}"
         attrs["data-flog-min-visible-share"] = "0.008"
         attrs["data-flog-summary-for"] = slot
+        attrs["data-flog-summary-slot"] = slot
+        attrs["data-mc-layout-slot"] = "compact-summary"
         attrs["id"] = f"flog-summary-{slugify(slot)}"
         attr_text = " ".join(
             f'{name}="{html.escape(str(value), quote=True)}"'
@@ -10401,9 +10435,9 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 
 /* User-authored tabbing is not the same as a narrow emergency tab.  Its
    command/workflow context track is derived from the same required-companion
-   floors used by semantic phase scoring.  M3.5 keeps the root and local
-   coordinate systems explicit by measuring the realized parent first; each
-   summary receives the local percentage required to deliver its root share. */
+   floors used by semantic phase scoring.  M3.6 keeps the root and local
+   coordinate systems explicit, allocates concrete grid tracks, and requires
+   each semantic summary node to fill the track that it owns. */
 .has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
   .flog-layout-unit[data-flog-unit-id="git-tools-application"]:has(
     > .flog-layout-unit.unit-policy-user-tab-workbench[data-flog-unit-has-active-support="true"]
@@ -10420,7 +10454,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   > .flog-layout-unit[data-flog-unit-id="command-workflow"]:has(
     > .flog-node.node-workflow.flog-summary
   ) {
-  display: grid;
+  display: grid !important;
   grid-template-rows:
     minmax(
       var(--flog-user-command-summary-allocated-root-block, 3vh),
@@ -10431,6 +10465,7 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
       var(--flog-user-workflow-summary-local-share, 36.875%)
     );
   align-content: start;
+  align-items: stretch;
   gap: var(--gap);
 }
 .has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
@@ -10446,15 +10481,30 @@ label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 }
 .has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
   .flog-layout-unit[data-flog-unit-id="command-workflow"]
-  > .flog-node.node-workflow.flog-summary {
-  min-height: var(--flog-user-workflow-summary-allocated-root-block, 5.9vh);
-  max-height: none;
+  > .flog-node.flog-summary[data-flog-summary-slot="workflow"] {
+  min-block-size: var(--flog-user-workflow-summary-allocated-root-block, 5.9vh) !important;
+  block-size: auto !important;
+  height: auto !important;
+  max-block-size: none !important;
+  max-height: none !important;
+  align-self: stretch !important;
+  grid-row: 2;
+  order: 0;
 }
 .has-layout-units.policy-phase-aware[data-flog-user-tab-workbench="true"]
   .flog-layout-unit[data-flog-unit-id="command-workflow"]
-  > .flog-node.node-command.flog-summary {
-  min-height: var(--flog-user-command-summary-allocated-root-block, 3vh);
-  max-height: none;
+  > .flog-node.flog-summary[data-flog-summary-slot="command"] {
+  min-block-size: var(--flog-user-command-summary-allocated-root-block, 3vh) !important;
+  block-size: auto !important;
+  height: auto !important;
+  max-block-size: none !important;
+  max-height: none !important;
+  align-self: stretch !important;
+  display: grid !important;
+  grid-template-columns: minmax(110px, 0.28fr) minmax(0, 1fr);
+  align-items: center;
+  grid-row: 1;
+  order: 0;
 }
 
 /* A sequential stage gives the active phase surface the primary track and moves
@@ -10574,16 +10624,16 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
     ':scope > .flog-layout-unit[data-flog-unit-id="command-workflow"]'
   );
   const command = parent && parent.querySelector(
-    ':scope > .flog-node.node-command.flog-summary'
+    ':scope > .flog-node[data-flog-summary-slot="command"]'
   );
   const workflow = parent && parent.querySelector(
-    ':scope > .flog-node.node-workflow.flog-summary'
+    ':scope > .flog-node[data-flog-summary-slot="workflow"]'
   );
   if (!application || !parent || !command || !workflow) {
     return {
       required: false,
       state: "not-applicable",
-      reason: "phase does not realize both command and workflow summaries"
+      reason: "phase does not realize both command and workflow summary slots"
     };
   }
 
@@ -10596,11 +10646,109 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
     return {
       left: rect.left,
       top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
       width: rect.width,
       height: rect.height,
       area: Math.max(0, rect.width) * Math.max(0, rect.height)
     };
   };
+  const finitePositive = (value, fallback = 0) => (
+    Number.isFinite(value) && value > 0 ? value : fallback
+  );
+  const parseGridRows = element => {
+    const value = getComputedStyle(element).gridTemplateRows || "";
+    const rows = value
+      .split(/\s+/)
+      .map(token => Number.parseFloat(token))
+      .filter(number => Number.isFinite(number) && number >= 0);
+    return {
+      computedValue: value,
+      command: rows[0] || 0,
+      workflow: rows[1] || 0
+    };
+  };
+  const applySummaryGeometry = ({
+    parentBlock,
+    commandBlock,
+    workflowBlock
+  }) => {
+    root.style.setProperty(
+      "--flog-user-tab-summary-track-min-block",
+      `${parentBlock}px`
+    );
+    root.style.setProperty(
+      "--flog-user-command-summary-allocated-root-block",
+      `${commandBlock}px`
+    );
+    root.style.setProperty(
+      "--flog-user-workflow-summary-allocated-root-block",
+      `${workflowBlock}px`
+    );
+    parent.style.setProperty(
+      "grid-template-rows",
+      `${commandBlock}px ${workflowBlock}px`,
+      "important"
+    );
+    parent.style.setProperty("min-block-size", `${parentBlock}px`, "important");
+    parent.style.setProperty("align-items", "stretch", "important");
+    for (const [element, block, row] of [
+      [command, commandBlock, "1"],
+      [workflow, workflowBlock, "2"]
+    ]) {
+      element.style.setProperty("grid-row", row, "important");
+      element.style.setProperty("order", "0", "important");
+      element.style.setProperty("min-block-size", `${block}px`, "important");
+      element.style.setProperty("block-size", `${block}px`, "important");
+      element.style.setProperty("min-height", `${block}px`, "important");
+      element.style.setProperty("height", `${block}px`, "important");
+      element.style.setProperty("max-block-size", "none", "important");
+      element.style.setProperty("max-height", "none", "important");
+      element.style.setProperty("align-self", "stretch", "important");
+    }
+  };
+  const geometryTargets = ({
+    rootRect,
+    parentRect,
+    commandRect,
+    workflowRect,
+    gap,
+    allocatedRootShares,
+    trackSafetyRootShare
+  }) => {
+    const commandRequired = (
+      allocatedRootShares.command * rootRect.area /
+      Math.max(1, commandRect.width)
+    );
+    const workflowRequired = (
+      allocatedRootShares.workflow * rootRect.area /
+      Math.max(1, workflowRect.width)
+    );
+    const commandBlock = Math.max(
+      commandRequired,
+      command.scrollHeight || 0,
+      commandRect.height
+    );
+    const workflowBlock = Math.max(
+      workflowRequired,
+      workflow.scrollHeight || 0,
+      workflowRect.height
+    );
+    const safetyBlock = (
+      trackSafetyRootShare * rootRect.area /
+      Math.max(1, parentRect.width)
+    );
+    return {
+      commandBlock,
+      workflowBlock,
+      safetyBlock,
+      parentBlock: Math.max(
+        1,
+        commandBlock + workflowBlock + gap + safetyBlock
+      )
+    };
+  };
+
   const rootRect0 = rectFacts(root);
   const parentRect0 = rectFacts(parent);
   const commandRect0 = rectFacts(command);
@@ -10614,7 +10762,7 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
     return {
       required: true,
       state: "invalid-geometry",
-      reason: "calibration geometry has zero area or width"
+      reason: "summary-slot calibration geometry has zero area or width"
     };
   }
 
@@ -10644,29 +10792,23 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
   );
   const gap = Number.parseFloat(getComputedStyle(parent).rowGap || "0") || 0;
 
-  // Pass one measures the realized widths and reserves enough parent block
-  // size to carry both root-relative summary allocations plus safety.
-  const commandTargetPx = (
-    allocatedRootShares.command * rootRect0.area / commandRect0.width
-  );
-  const workflowTargetPx = (
-    allocatedRootShares.workflow * rootRect0.area / workflowRect0.width
-  );
-  const safetyTargetPx = (
-    trackSafetyRootShare * rootRect0.area / parentRect0.width
-  );
-  const parentTargetPx = Math.max(
-    commandTargetPx + workflowTargetPx + gap + safetyTargetPx,
-    1
-  );
-  root.style.setProperty(
-    "--flog-user-tab-summary-track-min-block",
-    `${parentTargetPx}px`
-  );
+  // Pass one reserves the root track and directly sizes the nested summary
+  // tracks.  The semantic summary nodes are themselves the painted slot owners.
+  const targets0 = geometryTargets({
+    rootRect: rootRect0,
+    parentRect: parentRect0,
+    commandRect: commandRect0,
+    workflowRect: workflowRect0,
+    gap,
+    allocatedRootShares,
+    trackSafetyRootShare
+  });
+  applySummaryGeometry(targets0);
   void root.offsetHeight;
 
-  // Pass two converts the root-relative contract through the now-realized
-  // parent area, then applies exact child block minima based on current widths.
+  // Pass two recalculates against the realized parent and child widths.  Exact
+  // pixel tracks avoid the previous mismatch where the parent received enough
+  // space while an auto-sized summary node occupied only its content height.
   const rootRect1 = rectFacts(root);
   const parentRect1 = rectFacts(parent);
   const commandRect1 = rectFacts(command);
@@ -10688,18 +10830,15 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
     0,
     1 - resolvedLocalShares.command - resolvedLocalShares.workflow
   );
-  const commandTargetPx2 = (
-    allocatedRootShares.command * rootRect1.area /
-    Math.max(1, commandRect1.width)
-  );
-  const workflowTargetPx2 = (
-    allocatedRootShares.workflow * rootRect1.area /
-    Math.max(1, workflowRect1.width)
-  );
-  const parentTargetPx2 = Math.max(
-    commandTargetPx2 + workflowTargetPx2 + gap + safetyTargetPx,
-    parentTargetPx
-  );
+  const targets1 = geometryTargets({
+    rootRect: rootRect1,
+    parentRect: parentRect1,
+    commandRect: commandRect1,
+    workflowRect: workflowRect1,
+    gap,
+    allocatedRootShares,
+    trackSafetyRootShare
+  });
 
   root.style.setProperty(
     "--flog-user-summary-parent-root-share",
@@ -10717,18 +10856,7 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
     "--flog-user-summary-safety-local-share",
     `${resolvedLocalShares.safety * 100}%`
   );
-  root.style.setProperty(
-    "--flog-user-command-summary-allocated-root-block",
-    `${commandTargetPx2}px`
-  );
-  root.style.setProperty(
-    "--flog-user-workflow-summary-allocated-root-block",
-    `${workflowTargetPx2}px`
-  );
-  root.style.setProperty(
-    "--flog-user-tab-summary-track-min-block",
-    `${parentTargetPx2}px`
-  );
+  applySummaryGeometry(targets1);
   root.setAttribute(
     "data-flog-user-summary-parent-root-share",
     String(parentRootShare1)
@@ -10738,6 +10866,10 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
     String(resolvedLocalShares.workflow)
   );
   root.setAttribute("data-flog-user-summary-calibrated", "true");
+  root.setAttribute(
+    "data-flog-user-summary-slot-mode",
+    "semantic-node-fills-grid-track"
+  );
   void root.offsetHeight;
 
   const rootRect2 = rectFacts(root);
@@ -10747,18 +10879,72 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
   const finalParentRootShare = (
     parentRect2.area / Math.max(1, rootRect2.area)
   );
+  const computedTracks = parseGridRows(parent);
+  const commandSlotHeight = finitePositive(
+    computedTracks.command,
+    targets1.commandBlock
+  );
+  const workflowSlotHeight = finitePositive(
+    computedTracks.workflow,
+    targets1.workflowBlock
+  );
+  const summarySlotRootShares = {
+    command: (
+      parentRect2.width * commandSlotHeight /
+      Math.max(1, rootRect2.area)
+    ),
+    workflow: (
+      parentRect2.width * workflowSlotHeight /
+      Math.max(1, rootRect2.area)
+    )
+  };
   const deliveredRootShares = {
     command: commandRect2.area / Math.max(1, rootRect2.area),
     workflow: workflowRect2.area / Math.max(1, rootRect2.area)
   };
-  const passed = (
+  const summarySlotFillRatios = {
+    command: Math.min(
+      1,
+      commandRect2.area /
+      Math.max(1, parentRect2.width * commandSlotHeight)
+    ),
+    workflow: Math.min(
+      1,
+      workflowRect2.area /
+      Math.max(1, parentRect2.width * workflowSlotHeight)
+    )
+  };
+  const summarySlotAllocationPassed = (
+    summarySlotRootShares.command + 0.0005 >= allocatedRootShares.command &&
+    summarySlotRootShares.workflow + 0.0005 >= allocatedRootShares.workflow
+  );
+  const summarySlotFillPassed = (
+    summarySlotFillRatios.command >= 0.98 &&
+    summarySlotFillRatios.workflow >= 0.98
+  );
+  const semanticNodeDeliveryPassed = (
     deliveredRootShares.command + 0.0005 >= requestedRootShares.command &&
     deliveredRootShares.workflow + 0.0005 >= requestedRootShares.workflow
   );
+  const passed = (
+    summarySlotAllocationPassed &&
+    summarySlotFillPassed &&
+    semanticNodeDeliveryPassed
+  );
+  let state = "complete";
+  if (!summarySlotAllocationPassed) {
+    state = "slot-under-allocated";
+  } else if (!summarySlotFillPassed) {
+    state = "slot-not-filled";
+  } else if (!semanticNodeDeliveryPassed) {
+    state = "under-delivered";
+  }
+
   return {
     required: true,
-    state: passed ? "complete" : "under-delivered",
-    calibrationMode: "realized-parent-two-pass",
+    state,
+    calibrationMode: "realized-summary-slot-two-pass",
+    ownershipMode: "semantic-node-fills-grid-track",
     requestedRootShares,
     allocatedRootShares,
     trackSafetyRootShare,
@@ -10766,12 +10952,19 @@ USER_TAB_WORKBENCH_CALIBRATION_JS = r"""
     initialParentRootShare: parentRect0.area / rootRect0.area,
     measuredParentRootShare: parentRootShare1,
     finalParentRootShare,
-    parentWidthFraction: parentRect1.width / rootRect1.width,
+    parentWidthFraction: parentRect2.width / rootRect2.width,
     resolvedLocalShares,
+    computedGridRows: computedTracks.computedValue,
+    summarySlotRootShares,
+    summarySlotFillRatios,
+    summarySlotAllocationPassed,
+    summarySlotFillPassed,
+    semanticNodeDeliveryPassed,
     appliedPixelBlocks: {
-      command: commandTargetPx2,
-      workflow: workflowTargetPx2,
-      parent: parentTargetPx2
+      command: targets1.commandBlock,
+      workflow: targets1.workflowBlock,
+      safety: targets1.safetyBlock,
+      parent: targets1.parentBlock
     },
     deliveredRootShares,
     passed
@@ -16038,7 +16231,7 @@ def write_reports(
     lines.append("Milestone 2.5 resolves those verified envelopes as one ordered hysteretic state machine; transition probes remain evidence and cannot act as local policy winners.")
     lines.append("Milestone 2.6 hardens the narrow tab realization by trimming decorative tab and feedback chrome while preserving semantic surfaces, phase floors, clipping gates, and transition thresholds.")
     lines.append("Milestone 3.1 models live user layout intent as semantic dock-tree operations, validates those operations against authored capabilities and invariants, and proves responsive remediation/restoration without editing live application files.")
-    lines.append("Milestone 3.2 compiles accepted user preferences into bounded shadow candidates and measures their personalized geometry across responsive capacities. Milestone 3.3 distinguishes user-authored tab workbenches from emergency responsive tabs and requires every claimed restoration to reproduce the same painted-geometry fingerprint. Milestone 3.4 exposed the parent-coordinate mismatch. Milestone 3.5 measures the realized parent in Chromium, resolves root-relative requirements into local shares, reapplies the tracks, and verifies the delivered browser geometry.")
+    lines.append("Milestone 3.2 compiles accepted user preferences into bounded shadow candidates and measures their personalized geometry across responsive capacities. Milestone 3.3 distinguishes user-authored tab workbenches from emergency responsive tabs and requires every claimed restoration to reproduce the same painted-geometry fingerprint. Milestone 3.4 exposed the parent-coordinate mismatch. Milestone 3.5 measured the realized parent and resolved root-relative requirements into local shares. Milestone 3.6 assigns exact summary tracks, stretches each semantic summary to its owned slot, and verifies both slot allocation and painted delivery.")
     lines.append("Raw rectangles remain in the report for diagnosis, but ranking, pass/fail, phase minimums, contract visibility, and recursive unit scoring use effective painted geometry.")
     lines.append("It does **not** prove that the live app hierarchy is good enough yet; the synthetic hierarchies are training/evidence fixtures for the FLOG method.")
     lines.append("")
@@ -16284,7 +16477,7 @@ def write_reports(
         lines.append("## Shadow user-layout browser proofs")
         lines.append("")
         lines.append(
-            "Milestone 3.5 compiles accepted semantic preferences into actual "
+            "Milestone 3.6 compiles accepted semantic preferences into actual "
             "FLOG candidates. Chromium applies the same clipping, ownership, "
             "interception, phase-floor, and responsive-presentation gates used by "
             "the authored layouts. These proofs remain synthetic and do not edit "
