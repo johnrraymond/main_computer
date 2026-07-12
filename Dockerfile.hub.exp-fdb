@@ -41,5 +41,4 @@ EXPOSE 8790 8785
 
 CMD ["python", "/app/run-exp-fdb-hub.py"]
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
-    CMD curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${HUB_HEALTH_PORT:-${PORT:-8790}}/api/hub/v1/health" >/dev/null || exit 1
+HEALTHCHECK NONE
