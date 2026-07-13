@@ -75,6 +75,7 @@ SUPPORTED_NODE_NETWORKS = ("testnet", "mainnet")
 PRIVATE_PLACEHOLDER_RE = re.compile(r"^\s*(?:<[^>]+>|TODO|TBD|CHANGEME|REPLACE_ME)\s*$", re.IGNORECASE)
 PRIVATE_STATE_GENERATOR = "tools/allfather_control.py:add-node"
 FDB_CLUSTER_ID_RE = re.compile(r"^[A-Za-z0-9_:-]{4,64}$")
+FDB_CLUSTER_DESCRIPTION_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 class AllfatherControlError(ValueError):
@@ -190,6 +191,27 @@ def safe_id(value: str, *, field: str = "id") -> str:
     if clean.startswith(".") or ".." in clean:
         raise AllfatherControlError(f"{field} contains an unsafe path-like value: {value!r}")
     return clean
+
+
+def sanitize_fdb_cluster_description(value: str) -> str:
+    """Return a FoundationDB cluster-file description token.
+
+    FoundationDB cluster file descriptions may use alphanumeric characters and
+    underscores.  Do not reuse the more permissive service-name sanitizer here:
+    hyphens make fdbcli reject the cluster file as an invalid connection string.
+    """
+
+    clean = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").strip())
+    clean = re.sub(r"_+", "_", clean).strip("_")
+    if not clean:
+        clean = "main_computer_allfather"
+    if not FDB_CLUSTER_DESCRIPTION_RE.match(clean):
+        raise AllfatherControlError(f"Could not build a valid FoundationDB cluster description from {value!r}.")
+    return clean
+
+
+def fdb_cluster_description_for_network(network_key: str) -> str:
+    return sanitize_fdb_cluster_description(f"main_computer_{clean_node_network_key(network_key)}_allfather")
 
 
 def private_value(value: Any) -> str:
@@ -2556,13 +2578,27 @@ def materialize_fdb_identity(
     *,
     generated: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    network_key = clean_node_network_key(network_key)
     fdb = ensure_mapping_child(network, "foundationdb")
-    if not nonempty_private_value(fdb.get("cluster_description")):
-        fdb["cluster_description"] = f"main-computer-{clean_node_network_key(network_key)}-allfather"
-        generated.append({"kind": "fdb_cluster_description", "network": clean_node_network_key(network_key)})
+    raw_description = nonempty_private_value(fdb.get("cluster_description"))
+    if raw_description:
+        safe_description = sanitize_fdb_cluster_description(raw_description)
+        if safe_description != raw_description:
+            fdb["cluster_description"] = safe_description
+            generated.append(
+                {
+                    "kind": "fdb_cluster_description_normalized",
+                    "network": network_key,
+                    "from": raw_description,
+                    "to": safe_description,
+                }
+            )
+    else:
+        fdb["cluster_description"] = fdb_cluster_description_for_network(network_key)
+        generated.append({"kind": "fdb_cluster_description", "network": network_key})
     if not nonempty_private_value(fdb.get("cluster_id")):
         fdb["cluster_id"] = generated_cluster_id()
-        generated.append({"kind": "fdb_cluster_id", "network": clean_node_network_key(network_key)})
+        generated.append({"kind": "fdb_cluster_id", "network": network_key})
     fdb.setdefault("coordinator_policy", "first-node-then-expand")
     fdb.setdefault("reconfigure_after_join", True)
     return fdb
@@ -2629,7 +2665,8 @@ def fdb_identity_from_private_state(state: Mapping[str, Any], network_key: str) 
     fdb = network.get("foundationdb") if isinstance(network, Mapping) else {}
     if not isinstance(fdb, Mapping):
         fdb = {}
-    description = nonempty_private_value(fdb.get("cluster_description")) or f"main-computer-{network_key}-allfather"
+    raw_description = nonempty_private_value(fdb.get("cluster_description"))
+    description = sanitize_fdb_cluster_description(raw_description) if raw_description else fdb_cluster_description_for_network(network_key)
     cluster_id = nonempty_private_value(fdb.get("cluster_id")) or "missing-cluster-id"
     return {
         "cluster_description": description,
@@ -2984,7 +3021,8 @@ def super_internal_status_counts(networks: Mapping[str, Any]) -> dict[str, int]:
 
 def fdb_cluster_file(description: str, cluster_id: str, coordinators: Sequence[str]) -> str:
     clean = [str(item).strip() for item in coordinators if str(item).strip()]
-    return f"{description}:{cluster_id}@{','.join(clean)}"
+    safe_description = sanitize_fdb_cluster_description(description)
+    return f"{safe_description}:{cluster_id}@{','.join(clean)}"
 
 
 def fdb_plan_for_super_node(

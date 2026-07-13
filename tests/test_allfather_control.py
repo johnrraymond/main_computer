@@ -1105,9 +1105,72 @@ networks:
     assert payload["private_state_updates"]["fdb_identity_generated"] is True
     assert payload["manifest"]["wallets"]["deployer"]["private_key_present"] is True
     assert payload["manifest"]["wallets"]["hub_admin"]["private_key_present"] is True
-    assert payload["manifest"]["foundationdb"]["action"] == "initialize-new-cluster"
-    assert payload["manifest"]["foundationdb"]["current_coordinators"] == ["10.116.0.3:44550"]
+    fdb = payload["manifest"]["foundationdb"]
+    assert fdb["action"] == "initialize-new-cluster"
+    assert fdb["cluster_description"] == "main_computer_testnet_allfather"
+    assert fdb["cluster_file"].startswith("main_computer_testnet_allfather:")
+    assert "-" not in fdb["cluster_description"]
+    assert fdb["current_coordinators"] == ["10.116.0.3:44550"]
     assert payload["fdb"]["existing_node_count"] == 0
+
+
+def test_add_node_normalizes_legacy_hyphenated_fdb_description(tmp_path: Path) -> None:
+    path = tmp_path / "all_father.private.yaml"
+    path.write_text(
+        """
+kind: main_computer.all_father.private_state.v1
+coolify:
+  hosts:
+    a:
+      name: coolify-a
+      url: https://coolify-a.example.invalid
+      api_token: token-a
+      vpn_ip: 10.116.0.3
+networks:
+  testnet:
+    wallets:
+      hub_admin:
+        private_key: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      deployer:
+        private_key: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    foundationdb:
+      cluster_description: main-computer-testnet-allfather
+      cluster_id: abcdef1234567890
+      coordinator_policy: first-node-then-expand
+      reconfigure_after_join: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+    args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.add_node(plan, args)
+
+    fdb = payload["manifest"]["foundationdb"]
+    assert fdb["cluster_description"] == "main_computer_testnet_allfather"
+    assert fdb["cluster_file"] == "main_computer_testnet_allfather:abcdef1234567890@10.116.0.3:44550"
+    assert payload["private_state_updates"]["fdb_cluster_description"] == "main_computer_testnet_allfather"
+    assert payload["private_state_updates"]["fdb_identity_generated"] is True
+    assert payload["private_state_updates"]["generated"] == [
+        {
+            "kind": "fdb_cluster_description_normalized",
+            "network": "testnet",
+            "from": "main-computer-testnet-allfather",
+            "to": "main_computer_testnet_allfather",
+        }
+    ]
 
 
 def test_add_node_second_fdb_node_joins_existing_cluster_before_reconfigure(tmp_path: Path) -> None:

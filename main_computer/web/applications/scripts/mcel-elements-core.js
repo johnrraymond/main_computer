@@ -47,7 +47,7 @@
 
       const definitions = [
         def("element.core.app", "App Surface", "core", "root", "Top-level semantic runtime surface.", {
-          allowedChildren: ["element.core.region", "element.core.workflow"],
+          allowedChildren: ["element.workbench.specification", "element.core.region", "element.core.workflow"],
           layoutLaws: ["single-root", "viewport-fit", "no-illegal-nested-scrollbars"],
           htmlTag: "mcel-app",
           decoderHints: ["app", "root", "workspace", "shell"],
@@ -106,6 +106,121 @@
           htmlTag: "mcel-preview",
           scrollPolicy: "owned-preview-scroll",
           decoderHints: ["preview", "details", "selected", "inspector"]
+        }),
+        def("element.workbench.specification", "Workbench Specification", "workbench", "specification", "MWSL app contract that binds dominant object, workflow, capability projection, layout slots, visual priority, evidence, and risk policy before UI is judged.", {
+          allowedChildren: [
+            "element.app.dominant-object",
+            "element.app.workflow-map",
+            "element.app.capability-projection",
+            "element.app.layout-slot",
+            "element.app.action-hierarchy",
+            "element.app.evidence-flow",
+            "element.app.visual-policy"
+          ],
+          htmlTag: "mcel-workbench-spec",
+          riskPolicy: analysis,
+          layoutLaws: ["dominant-object-visible", "primary-workflow-obvious", "advanced-risk-demoted", "evidence-near-action", "status-always-visible", "no-raw-provider-dump"],
+          stateModel: {required: ["purpose", "dominantObject", "workflows", "layout", "actionPolicy", "visualPolicy"], optional: ["capabilityProjections", "evidence", "laws", "emptyState", "errorState"]},
+          interactionModel: {mutatesDom: false, ownsTruth: true, handoff: "layout-projection"},
+          dataModel: {language: "MWSL", slots: ["identity", "primary", "actions", "inspector", "evidence", "advanced", "status"]},
+          decoderHints: ["MWSL", "workbench", "dominant object", "primary workflow", "layout projection", "capability projection"],
+          supersedes: ["screen-only app spec", "raw provider UI dump", "panel pile without product shape"],
+          proofFixtures: ["git-tools-repository-workbench", "code-editor-source-workspace", "document-git-backed-history"],
+          examples: ["Git Tools keeps repository operations primary while manual command and remote mutation stay advanced.", "Document consumes Git history as autosave, timeline, compare, and restore."]
+        }),
+        def("element.app.dominant-object", "Dominant Object", "app", "dominant-object", "User-facing object that explains what the app is fundamentally working on.", {
+          htmlTag: "mcel-dominant-object",
+          riskPolicy: analysis,
+          stateModel: {required: ["objectType", "identity", "visibleState"], optional: ["relationships", "emptyState"]},
+          decoderHints: ["selected repository", "current document", "active file", "current workbook", "wallet account", "chat thread"],
+          supersedes: ["anonymous page state", "toolbar-first app"]
+        }),
+        def("element.app.workflow-map", "Workflow Map", "app", "workflow-map", "Primary, secondary, and advanced journeys that determine visual priority before layout is rendered.", {
+          htmlTag: "mcel-workflow-map",
+          riskPolicy: analysis,
+          stateModel: {required: ["primary", "secondary", "advanced"], optional: ["blocked", "successState", "errorState"]},
+          interactionModel: {mutatesDom: false, ownsTruth: true},
+          decoderHints: ["primary workflow", "secondary workflow", "advanced workflow", "normal path", "journey"],
+          supersedes: ["flat button cluster", "all workflows visible as peers"]
+        }),
+        def("element.app.capability-projection", "Capability Projection", "app", "capability-projection", "Maps a provider capability into the consuming app's native layout and vocabulary without dumping raw provider UI.", {
+          htmlTag: "mcel-capability-projection",
+          riskPolicy: analysis,
+          stateModel: {required: ["capability", "provider", "consumer", "expose", "layoutSlots"], optional: ["advanced", "hidePrimary", "blocked", "evidence"]},
+          interactionModel: {mutatesDom: false, ownsTruth: true, providerNativeControls: "advanced-unless-provider-app"},
+          decoderHints: ["consumes", "provider", "projection", "Git-backed history", "autosave", "restore", "Open in Git Tools"],
+          supersedes: ["embedded provider app", "copy-pasted tool panel", "raw Git UI in document editor"]
+        }),
+        def("element.app.layout-slot", "Workbench Layout Slot", "app", "layout-slot", "Semantic layout role such as identity, primary work, action, inspector, evidence, advanced risk, or status.", {
+          htmlTag: "mcel-layout-slot",
+          riskPolicy: analysis,
+          stateModel: {required: ["slot", "items"], optional: ["priority", "collapsedByDefault", "requiredAlwaysVisible"]},
+          decoderHints: ["identity zone", "primary work zone", "actions", "inspector", "evidence", "advanced", "status band"],
+          supersedes: ["absolute geometry", "unranked visual region"]
+        }),
+        def("element.app.action-hierarchy", "Action Hierarchy", "app", "action-hierarchy", "Classifies controls as primary, secondary, advanced, risky, blocked, or destructive before visual priority is assigned.", {
+          htmlTag: "mcel-action-hierarchy",
+          riskPolicy: analysis,
+          stateModel: {required: ["primaryActions", "secondaryActions", "advancedActions", "blockedActions"], optional: ["maxPrimaryActions", "dangerousActionsNeverPrimary"]},
+          actionPolicy: {inspect: "inspect-only", localWrite: "no-submit", commandExecution: "no-command-execution", remoteMutation: "no-submit", destructive: "no-click"},
+          decoderHints: ["primary action", "advanced action", "dangerous action", "blocked action", "proof policy"],
+          supersedes: ["all buttons equal", "dangerous action in primary lane"]
+        }),
+        def("element.app.evidence-flow", "Evidence Flow", "app", "evidence-flow", "Binds important actions to visible proof such as diffs, logs, previews, version entries, receipts, or operation summaries.", {
+          htmlTag: "mcel-evidence-flow",
+          riskPolicy: analysis,
+          stateModel: {required: ["action", "evidence"], optional: ["placement", "sourceState", "runtimeState", "proofPolicy"]},
+          decoderHints: ["diff preview", "command output", "operation log", "version entry", "receipt", "restore summary"],
+          supersedes: ["output detached from action", "runtime result treated as source"]
+        }),
+        def("element.app.visual-policy", "Visual Policy", "app", "visual-policy", "Rules that keep the app visually coherent: one primary focus, few primary actions, collapsed advanced zones, nearby evidence, and persistent status.", {
+          htmlTag: "mcel-visual-policy",
+          riskPolicy: analysis,
+          stateModel: {required: ["primaryFocus", "statusAlwaysVisible", "advancedCollapsedByDefault"], optional: ["maxPrimaryActions", "riskyActionsSeparated", "noCompetingToolClusters", "noRawProviderDumping"]},
+          decoderHints: ["primary focus", "advanced collapsed", "status always visible", "no competing clusters"],
+          supersedes: ["visual pile", "chrome-first layout", "hidden save/sync state"]
+        }),
+        def("element.version.git-backed-history", "Git-Backed History", "version", "git-backed-history", "User-facing version history backed by Git evidence while preserving the consuming app's mental model.", {
+          allowedChildren: ["element.version.autosave-controller", "element.version.revision-timeline", "element.version.diff-preview", "element.version.restore-intent"],
+          htmlTag: "mcel-git-backed-history",
+          riskPolicy: {risk: "local-git-write", proofPolicy: "no-submit", blocked: true},
+          proofPolicy: "no-submit",
+          stateModel: {required: ["repoRoot", "objectPath", "headRevision", "dirtyState"], optional: ["lastAutosaveAt", "lastCheckpointAt", "restoreTarget", "conflictState", "syncState"]},
+          actionPolicy: {viewHistory: "inspect-only", compare: "inspect-only", autosave: "local-write-boundary", checkpoint: "local-git-write-boundary", restoreAsNewVersion: "no-submit", hardReset: "no-click", remoteSync: "no-submit"},
+          decoderHints: ["autosave", "checkpoint", "history", "revision", "compare", "restore as new version", "git-backed"],
+          supersedes: ["raw commit list primary", "git reset as restore", "checkout old commit as current state"]
+        }),
+        def("element.version.autosave-controller", "Autosave Controller", "version", "autosave-controller", "Save-state chip and debounced local-write controller that keeps current work safe without committing every keystroke.", {
+          htmlTag: "mcel-autosave-controller",
+          riskPolicy: {risk: "local-file-write", proofPolicy: "no-submit", blocked: true},
+          actionPolicy: {autosave: "local-write-boundary", checkpoint: "local-git-write-boundary"},
+          stateModel: {required: ["dirtyState", "lastSavedAt"], optional: ["saving", "paused", "error", "checkpointQueued"]},
+          decoderHints: ["Saved locally", "Saving", "Unsaved changes", "Checkpoint created", "Autosave error"],
+          supersedes: ["hidden save state", "commit every keystroke"]
+        }),
+        def("element.version.revision-timeline", "Revision Timeline", "version", "revision-timeline", "Document-native history list that can expose technical revision evidence only as expandable details.", {
+          htmlTag: "mcel-revision-timeline",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["revisions", "selectedRevision"], optional: ["author", "summary", "commitHash", "diffStat"]},
+          decoderHints: ["version history", "timeline", "autosaved", "manual checkpoint", "selected version"],
+          supersedes: ["raw Git log as primary UI"]
+        }),
+        def("element.version.diff-preview", "Version Diff Preview", "version", "diff-preview", "Inspect-only comparison between current content and selected history without mutating source.", {
+          htmlTag: "mcel-diff-preview",
+          riskPolicy: inspectOnly,
+          proofPolicy: "inspect-only",
+          stateModel: {required: ["leftRevision", "rightRevision", "changedSections"], optional: ["added", "removed", "summary"]},
+          decoderHints: ["compare", "diff", "changed sections", "restore preview"],
+          supersedes: ["compare button that mutates state"]
+        }),
+        def("element.version.restore-intent", "Restore Intent", "version", "restore-intent", "Safe restore flow that writes the selected old content as a new current version instead of resetting history.", {
+          htmlTag: "mcel-restore-intent",
+          riskPolicy: {risk: "local-git-write", proofPolicy: "no-submit", blocked: true},
+          proofPolicy: "no-submit",
+          actionPolicy: {preview: "inspect-only", restoreAsNewVersion: "no-submit", hardReset: "no-click", deleteNewerHistory: "no-click"},
+          stateModel: {required: ["restoreTarget", "previewDiff", "createsNewVersion"], optional: ["currentDraftProtected", "checkpointStatus"]},
+          decoderHints: ["restore as new version", "restore preview", "save current draft", "preserve history"],
+          supersedes: ["git reset --hard", "silent overwrite", "delete newer history"]
         }),
         def("element.core.mvc-model", "MVC Model", "core", "mvc-model", "Contract-bearing state and data model that declares fields, identity, invariants, user intent, and safety promises before a view is selected.", {
           htmlTag: "mcel-mvc-model",

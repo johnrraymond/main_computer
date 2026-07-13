@@ -1,7 +1,21 @@
     (function (global) {
       "use strict";
 
-      const PLANNER_VERSION = "0.2.0";
+      const PLANNER_VERSION = "0.3.0";
+
+
+      const MWSL_LANGUAGE_ID = "MWSL";
+      const WORKBENCH_LAYOUT_SLOTS = Object.freeze(["identity", "primary", "actions", "inspector", "evidence", "advanced", "status"]);
+      const DEFAULT_VISUAL_POLICY = Object.freeze({
+        primaryFocus: "dominant-object",
+        maxPrimaryActions: 3,
+        advancedCollapsedByDefault: true,
+        dangerousActionsNeverPrimary: true,
+        evidenceNearAction: true,
+        statusAlwaysVisible: true,
+        noRawProviderDumping: true,
+        noCompetingToolClusters: true
+      });
 
       const APP_PLANS = Object.freeze({
         "task-manager": Object.freeze({
@@ -40,7 +54,59 @@
           knownRiskFamilies: ["server-start", "server-stop", "server-restart", "remote-configure", "push", "mirror", "manual-command"],
           neverExecute: ["server lifecycle", "remote configuration", "push/mirror", "manual command"],
           decodeHints: ["git-", "gitea", "remote", "origin", "mirror", "push", "command"],
-          mountNeeds: ["keep candidate-priority intake", "verify known risky executable controls", "verify details/summary toggles stay safe"]
+          mountNeeds: ["keep candidate-priority intake", "verify known risky executable controls", "verify details/summary toggles stay safe"],
+          workbenchSpec: {
+            language: "MWSL",
+            purpose: "Operate safely on one selected repository.",
+            dominantObject: "Repository",
+            objects: {
+              Repository: {
+                identity: "selected repository",
+                state: "clean | dirty | conflicted | unknown",
+                relationships: ["Branch", "WorkingTree", "Patch", "Remote", "LocalGitea"]
+              }
+            },
+            workflows: {
+              primary: ["SelectRepository", "InspectStatus", "ReviewChanges", "PreviewPatchOrCommit", "ExecuteLocalOperation", "ReviewEvidence"],
+              secondary: ["BrowseProjects", "InspectSelectedFile", "ViewRecentOperations"],
+              advanced: ["ConfigureRemote", "MirrorRepository", "ManualGitCommand", "GiteaServerLifecycle", "Recovery"]
+            },
+            capabilityProjections: [{
+              capability: "RepositoryOperator",
+              provider: "GitTools",
+              consumer: "GitTools",
+              providerNativePrimary: true,
+              expose: ["StatusSummary", "ChangedFiles", "PatchWorkflow", "CommitWorkflow"],
+              advanced: ["RemoteSetup", "MirrorSetup", "ManualGitCommand", "GiteaServerControls", "ResetRecovery"],
+              blocked: ["Push", "Mirror", "ManualCommand", "ServerLifecycle"]
+            }],
+            layout: {
+              identity: ["SelectedRepository", "CurrentBranch", "DirtyState"],
+              primary: ["StatusSummary", "ChangedFiles", "PatchWorkflow", "CommitWorkflow"],
+              actions: ["RefreshStatus", "PreviewPatch", "CreatePatch", "PreviewCommit", "CommitLocal"],
+              inspector: ["RepositoryMetadata", "SelectedFileDetails", "RecentOperations"],
+              evidence: ["DiffPreview", "DryRunOutput", "CommandOutput", "OperationLog"],
+              advanced: ["RemoteSetup", "MirrorSetup", "ManualCommand", "GiteaServerControls", "ResetRecovery"],
+              status: ["LastOperation", "ProofBlockedPolicy", "RepoHealth"]
+            },
+            actionPolicy: {
+              safe: ["RefreshStatus", "InspectStatus"],
+              localWrite: ["CreatePatch", "CommitLocal"],
+              commandExecutionBlocked: ["ManualGitCommand"],
+              remoteMutationBlocked: ["Push", "Mirror", "RemoteConfigure"],
+              destructiveBlocked: ["ResetRecovery", "GiteaServerStop"]
+            },
+            visualPolicy: {
+              primaryFocus: "StatusAndChanges",
+              maxPrimaryActions: 5,
+              advancedCollapsedByDefault: true,
+              dangerousActionsNeverPrimary: true,
+              evidenceNearAction: true,
+              statusAlwaysVisible: true,
+              noRawProviderDumping: true,
+              noCompetingToolClusters: true
+            }
+          }
         }),
         "calculator": Object.freeze({
           app: "calculator",
@@ -78,7 +144,80 @@
           knownRiskFamilies: ["save-overwrite", "export-file", "ai-network-assist"],
           neverExecute: ["silent overwrite", "silent upload", "network AI action without policy"],
           decodeHints: ["document", "library", "page", "readonly", "export", "ai"],
-          mountNeeds: ["contenteditable/source-preservation hints", "document object/law pack", "save/export proof policy"]
+          mountNeeds: ["contenteditable/source-preservation hints", "document object/law pack", "save/export proof policy"],
+          workbenchSpec: {
+            language: "MWSL",
+            purpose: "Write, revise, compare, and restore documents.",
+            dominantObject: "Document",
+            objects: {
+              Document: {
+                identity: "documentId",
+                title: "documentTitle",
+                source: "documentPath",
+                state: "dirty | saved | autosaving | conflicted",
+                relationships: ["DocumentVersion", "RevisionTimeline", "DiffPreview", "Export"]
+              }
+            },
+            workflows: {
+              primary: ["Write", "Autosave", "Checkpoint", "ReviewHistory", "Compare", "Restore"],
+              secondary: ["InspectMetadata", "Export", "UseAI"],
+              advanced: ["GitDetails", "RepairHistory", "RemoteSync"]
+            },
+            capabilityProjections: [{
+              capability: "GitBackedHistory",
+              provider: "GitTools",
+              consumer: "DocumentEditor",
+              expose: ["AutosaveStatus", "CreateCheckpoint", "VersionTimeline", "CompareVersion", "RestoreAsNewVersion"],
+              layoutSlots: {
+                actions: ["AutosaveStatus", "CreateCheckpoint"],
+                inspector: ["VersionTimeline", "VersionDetails"],
+                evidence: ["DiffPreview", "RestorePreview"],
+                advanced: ["GitTechnicalDetails", "OpenInGitTools", "RemoteSync"]
+              },
+              advanced: ["CommitHash", "RepoPath", "Branch", "OpenInGitTools", "RemoteSync"],
+              hidePrimary: ["CommitHash", "Branch", "Reset", "Checkout", "Rebase", "Push", "Pull", "ManualGitCommand"],
+              blocked: ["HardReset", "DeleteHistory", "RemotePush", "RemotePull"]
+            }],
+            layout: {
+              identity: ["DocumentTitle", "CurrentVersion"],
+              primary: ["DocumentBody", "FormattingToolbar"],
+              actions: ["AutosaveStatus", "CreateCheckpoint"],
+              inspector: ["VersionTimeline", "VersionDetails", "DocumentMetadata"],
+              evidence: ["DiffPreview", "RestorePreview"],
+              advanced: ["GitTechnicalDetails", "OpenInGitTools", "RemoteSync", "RepairHistory"],
+              status: ["DirtyState", "LastAutosaveAt", "CheckpointStatus", "ConflictWarning"]
+            },
+            actionPolicy: {
+              safe: ["ViewHistory", "CompareVersion"],
+              localWrite: ["Autosave", "CreateCheckpoint", "RestoreAsNewVersion"],
+              remoteMutationBlocked: ["Push", "Pull", "RemoteSync"],
+              destructiveBlocked: ["HardReset", "DeleteHistory", "CheckoutOldCommit"]
+            },
+            evidence: {
+              CreateCheckpoint: ["CheckpointStatus", "RevisionTimelineEntry", "GitCommitEvidence"],
+              RestoreAsNewVersion: ["DiffPreview", "NewVersionEntry", "RestoreSummary"]
+            },
+            laws: {
+              RestorePreservesHistory: {
+                require: ["RestoreAsNewVersion", "NewVersionEntry"],
+                forbid: ["HardReset", "DeleteNewerHistory", "CheckoutOldCommitAsCurrentState"]
+              },
+              GitStaysDocumentNative: {
+                require: ["HistoryUsesDocumentLanguage", "GitTechnicalDetailsAdvanced"],
+                forbid: ["RawGitControlsInPrimaryLayout"]
+              }
+            },
+            visualPolicy: {
+              primaryFocus: "DocumentBody",
+              maxPrimaryActions: 2,
+              advancedCollapsedByDefault: true,
+              dangerousActionsNeverPrimary: true,
+              evidenceNearAction: true,
+              statusAlwaysVisible: true,
+              noRawProviderDumping: true,
+              noCompetingToolClusters: true
+            }
+          }
         }),
         "spreadsheet": Object.freeze({
           app: "spreadsheet",
@@ -195,7 +334,67 @@
           knownRiskFamilies: ["file-write", "patch-apply", "code-execution", "aider-mutation"],
           neverExecute: ["patch apply", "file write", "code run"],
           decodeHints: ["code-editor", "file-map", "aider", "output", "apply", "run"],
-          mountNeeds: ["file-write policy", "Aider action split", "editor buffer serialization"]
+          mountNeeds: ["file-write policy", "Aider action split", "editor buffer serialization"],
+          workbenchSpec: {
+            language: "MWSL",
+            purpose: "Edit and inspect project source with AI assistance and explicit mutation boundaries.",
+            dominantObject: "SourceWorkspace",
+            objects: {
+              SourceWorkspace: {
+                identity: "repoRoot",
+                relationships: ["FileTree", "ActiveFile", "SelectionSet", "AiderContext", "SCMState"]
+              },
+              File: {
+                identity: "path",
+                state: "clean | dirty | generated | readonly"
+              }
+            },
+            workflows: {
+              primary: ["SelectFile", "EditSource", "ReviewContext", "PreviewPlanOrDiff", "SaveOrApply"],
+              secondary: ["InspectSCM", "ManageAiderContext", "ViewDocumentation"],
+              advanced: ["RunCode", "RuntimePreview", "SerializationInternals", "MCELStudio", "PersistenceRepair"]
+            },
+            capabilityProjections: [{
+              capability: "RepositoryOperator",
+              provider: "GitTools",
+              consumer: "CodeEditor",
+              expose: ["SCMManifest", "DiffPreview", "PatchPreview"],
+              layoutSlots: {
+                inspector: ["SCMManifest", "SelectedFiles"],
+                evidence: ["PatchPreview", "AiderOutput", "TestOutput"],
+                advanced: ["RepositoryDiagnostics", "OpenInGitTools"]
+              },
+              advanced: ["RepositoryDiagnostics", "OpenInGitTools", "ManualGitCommand"],
+              hidePrimary: ["Push", "Mirror", "ManualGitCommand", "ServerLifecycle"],
+              blocked: ["PatchApply", "FileWrite", "CodeRun", "ManualGitCommand"]
+            }],
+            layout: {
+              identity: ["WorkspaceRoot", "ActiveFile", "DirtyState"],
+              primary: ["FileTree", "SourceEditor", "DiffPreview"],
+              actions: ["Save", "PreviewAiderPlan", "ApplyReviewedPatch"],
+              inspector: ["AiderContext", "SCMManifest", "DocumentationViewport"],
+              evidence: ["AiderOutput", "TestOutput", "PatchPreview"],
+              advanced: ["RuntimeExecution", "VRAMWidget", "MCELInternals", "PersistenceRepair"],
+              status: ["WritePolicy", "ExecutePolicy", "LastAction"]
+            },
+            actionPolicy: {
+              safe: ["OpenFile", "PreviewAiderPlan", "InspectSCM"],
+              localWrite: ["Save"],
+              commandExecutionBlocked: ["RunCode"],
+              remoteMutationBlocked: ["Push", "Mirror"],
+              destructiveBlocked: ["PatchApplyWithoutPreview", "ClearPersistence"]
+            },
+            visualPolicy: {
+              primaryFocus: "SourceEditor",
+              maxPrimaryActions: 3,
+              advancedCollapsedByDefault: true,
+              dangerousActionsNeverPrimary: true,
+              evidenceNearAction: true,
+              statusAlwaysVisible: true,
+              noRawProviderDumping: true,
+              noCompetingToolClusters: true
+            }
+          }
         }),
         "file-explorer": Object.freeze({
           app: "file-explorer",
@@ -341,8 +540,8 @@
       }
 
       function allPlans() {
-        return Object.values(APP_PLANS)
-          .map(clone)
+        return Object.keys(APP_PLANS)
+          .map((key) => planFor(key))
           .sort((left, right) => Number(left.priority || 999) - Number(right.priority || 999));
       }
 
@@ -367,11 +566,13 @@
           decodeHints: [key],
           mountNeeds: ["read-only discovery pass", "adapter/domain pack planning"]
         };
-        return {
+        const merged = {
           ...clone(base),
           ...clone(overrides || {}),
           app: key
         };
+        merged.workbenchSpec = normalizeWorkbenchSpec(merged);
+        return merged;
       }
 
       function plansByStatus(status) {
@@ -388,6 +589,96 @@
         if ((plan?.knownRiskFamilies || []).length >= 3) return "high";
         if ((plan?.knownRiskFamilies || []).length) return "medium";
         return "low";
+      }
+
+      function fallbackWorkbenchSpec(plan = {}) {
+        const label = plan.label || plan.app || "Application";
+        const dominantObject = plan.dominantObject || label.replace(/\s+Editor$/, "") || "AppObject";
+        return {
+          language: MWSL_LANGUAGE_ID,
+          purpose: plan.point || `Operate the ${label} workbench safely.`,
+          dominantObject,
+          objects: {
+            [dominantObject]: {
+              identity: `${String(dominantObject).toLowerCase()} identity`,
+              state: "unknown"
+            }
+          },
+          workflows: {
+            primary: (plan.expectedActionFamilies || []).slice(0, 4),
+            secondary: (plan.expectedRegions || []).slice(0, 3),
+            advanced: (plan.knownRiskFamilies || []).slice(0, 4)
+          },
+          capabilityProjections: [],
+          layout: {
+            identity: [dominantObject],
+            primary: (plan.expectedRegions || []).slice(0, 3),
+            actions: (plan.expectedActionFamilies || []).slice(0, 3),
+            inspector: (plan.expectedFields || []).slice(0, 3),
+            evidence: (plan.expectedFeeds || []).slice(0, 3),
+            advanced: (plan.knownRiskFamilies || []).slice(0, 4),
+            status: ["Status", "LastAction", "ProofPolicy"]
+          },
+          actionPolicy: {
+            safe: (plan.expectedActionFamilies || []).filter((item) => !String(item).includes("run")).slice(0, 3),
+            localWrite: [],
+            commandExecutionBlocked: [],
+            remoteMutationBlocked: [],
+            destructiveBlocked: plan.neverExecute || []
+          },
+          visualPolicy: {...DEFAULT_VISUAL_POLICY}
+        };
+      }
+
+      function normalizeWorkbenchSpec(plan = {}) {
+        const fallback = fallbackWorkbenchSpec(plan);
+        const authored = plan.workbenchSpec || {};
+        const layout = {...fallback.layout, ...(authored.layout || {})};
+        WORKBENCH_LAYOUT_SLOTS.forEach((slot) => {
+          layout[slot] = Array.isArray(layout[slot]) ? layout[slot].filter(Boolean) : [];
+        });
+        return {
+          ...fallback,
+          ...clone(authored),
+          language: authored.language || MWSL_LANGUAGE_ID,
+          purpose: authored.purpose || fallback.purpose,
+          dominantObject: authored.dominantObject || fallback.dominantObject,
+          workflows: {...fallback.workflows, ...(authored.workflows || {})},
+          capabilityProjections: Array.isArray(authored.capabilityProjections) ? clone(authored.capabilityProjections) : [],
+          layout,
+          actionPolicy: {...fallback.actionPolicy, ...(authored.actionPolicy || {})},
+          visualPolicy: {...DEFAULT_VISUAL_POLICY, ...(authored.visualPolicy || {})}
+        };
+      }
+
+      function workbenchLayoutSlotSummary(plan = {}) {
+        const spec = normalizeWorkbenchSpec(plan);
+        return WORKBENCH_LAYOUT_SLOTS
+          .map((slot) => `${slot}:${(spec.layout?.[slot] || []).length}`)
+          .join(", ");
+      }
+
+      function workbenchCapabilitySummary(plan = {}) {
+        const spec = normalizeWorkbenchSpec(plan);
+        return (spec.capabilityProjections || [])
+          .map((projection) => `${projection.consumer || plan.label || plan.app} consumes ${projection.capability || "capability"} from ${projection.provider || "provider"}`)
+          .join("; ");
+      }
+
+      function workbenchFindingsFor(plan = {}) {
+        const spec = normalizeWorkbenchSpec(plan);
+        const findings = [];
+        if (!spec.dominantObject) findings.push("App has no dominant object.");
+        if (!(spec.workflows?.primary || []).length) findings.push("Primary workflow is not declared.");
+        if (!(spec.layout?.primary || []).length) findings.push("Primary work zone is empty.");
+        if (!(spec.layout?.status || []).length) findings.push("Persistent status band is empty.");
+        if ((spec.layout?.actions || []).length > Number(spec.visualPolicy?.maxPrimaryActions || 3)) {
+          findings.push("Primary action zone exceeds visual policy.");
+        }
+        if ((spec.capabilityProjections || []).some((projection) => (projection.hidePrimary || []).length && !(projection.advanced || []).length)) {
+          findings.push("Consumed capability hides provider controls without advanced evidence placement.");
+        }
+        return findings;
       }
 
       function supercutPacksFor(plan) {
@@ -444,6 +735,7 @@
           domainProven: plans.filter((plan) => plan.status === "domain-proven").length,
           plannerReady: plans.filter((plan) => plan.status === "planner-ready").length,
           highRisk: plans.filter((plan) => riskLevel(plan) === "high").length,
+          workbenchSpecReady: plans.filter((plan) => normalizeWorkbenchSpec(plan).language === MWSL_LANGUAGE_ID).length,
           mountQueue: mountQueue().map(toCanonicalOption)
         };
       }
@@ -578,6 +870,10 @@
             root.setAttribute("data-mcel-kind", "canonical-app-specimen");
             root.setAttribute("data-mcel-fit", "purpose-aware");
             root.setAttribute("data-mcel-proof-surface", "planner-read-only");
+            const workbenchSpec = normalizeWorkbenchSpec(plan);
+            root.setAttribute("data-mcel-workbench-language", workbenchSpec.language || MWSL_LANGUAGE_ID);
+            root.setAttribute("data-mcel-workbench-dominant-object", workbenchSpec.dominantObject || "unknown");
+            root.setAttribute("data-mcel-workbench-primary-focus", workbenchSpec.visualPolicy?.primaryFocus || "dominant-object");
 
             const components = Array.from(root.querySelectorAll?.("section, article, aside, main, header, footer, nav, form, details, [data-mc-component-id], [role], [id], [class]") || []);
             const fields = Array.from(root.querySelectorAll?.("input, select, textarea, label") || []);
@@ -634,6 +930,13 @@
               rootPresent: true,
               planStatus: plan.status,
               point: plan.point,
+              workbenchSpec: clone(workbenchSpec),
+              workbenchLanguage: workbenchSpec.language || MWSL_LANGUAGE_ID,
+              workbenchDominantObject: workbenchSpec.dominantObject || "unknown",
+              workbenchLayoutSlots: workbenchLayoutSlotSummary(plan),
+              workbenchCapabilityProjectionCount: (workbenchSpec.capabilityProjections || []).length,
+              workbenchFindings: workbenchFindingsFor(plan),
+              workbenchFindingCount: workbenchFindingsFor(plan).length,
               regions: planRegionsFor(plan).map((region, index) => ({
                 ...region,
                 present: index === 0 || Boolean(root.querySelector?.(region.selector.replace(`${rootSelector} `, ""))),
@@ -698,6 +1001,11 @@
         inspectMountedDocument,
         toCanonicalOption,
         plannerSnapshot,
+        normalizeWorkbenchSpec,
+        workbenchLayoutSlotSummary,
+        workbenchCapabilitySummary,
+        workbenchFindingsFor,
+        WORKBENCH_LAYOUT_SLOTS,
         requiredIdsFor,
         dangerousSelectorsFor,
         createGenericAdapter,

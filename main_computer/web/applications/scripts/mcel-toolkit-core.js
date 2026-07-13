@@ -57,6 +57,13 @@
         {id: "layout.inspector-pane", elementId: "element.toolkit.inspector-pane", layer: "layout", label: "Inspector pane", contract: "Selected item metadata is read-only or edit-capable by explicit policy.", states: ["empty", "single-selected", "multi-selected", "blocked", "dirty"], supports: ["selected-detail", "properties", "policy-proof"]},
         {id: "layout.preview-pane", elementId: "element.toolkit.preview-pane", layer: "layout", label: "Preview pane", contract: "Preview content is coupled to selection and isolates unsafe rendering.", states: ["empty", "loading", "preview", "unsupported", "error"], supports: ["preview", "inspect", "read-only-boundary"]},
         {id: "layout.status-bar", elementId: "element.toolkit.status-bar", layer: "layout", label: "Status bar", contract: "Summary state, selection count, filter count, and last action are visible.", states: ["idle", "success", "warning", "error", "busy"], supports: ["feedback", "selected-output-count", "last-action"]},
+        {id: "layout.workbench.identity-zone", elementId: "element.app.layout-slot", layer: "layout", label: "Identity zone", contract: "The dominant object identity is visible or the empty state explains how to select/create it.", states: ["selected", "empty", "conflicted", "loading"], supports: ["dominant-object", "identity", "always-visible-state"]},
+        {id: "layout.workbench.primary-work-zone", elementId: "element.app.layout-slot", layer: "layout", label: "Primary work zone", contract: "The main object and normal workflow own the highest-priority space.", states: ["ready", "editing", "reviewing", "empty"], supports: ["primary-workflow", "dominant-object", "one-primary-focus"]},
+        {id: "layout.workbench.primary-action-zone", elementId: "element.app.action-hierarchy", layer: "layout", label: "Primary action zone", contract: "A small set of normal next actions stays near the primary work zone while risky actions are demoted.", states: ["ready", "disabled", "busy", "blocked"], supports: ["action-hierarchy", "max-primary-actions", "risky-actions-separated"]},
+        {id: "layout.workbench.secondary-inspector", elementId: "element.app.layout-slot", layer: "layout", label: "Secondary inspector", contract: "Selected-object details, metadata, context, and secondary workflows sit beside but do not displace the primary work.", states: ["empty", "selected", "details", "settings"], supports: ["inspector", "selection-details", "secondary-workflow"]},
+        {id: "layout.workbench.evidence-zone", elementId: "element.app.evidence-flow", layer: "layout", label: "Evidence zone", contract: "Diffs, logs, previews, receipts, and operation summaries appear close to the action that produced them.", states: ["empty", "preview", "success", "warning", "error"], supports: ["evidence-near-action", "proof-output", "source-runtime-split"]},
+        {id: "layout.workbench.advanced-risk-zone", elementId: "element.app.layout-slot", layer: "layout", label: "Advanced risk zone", contract: "Provider-native, destructive, command, remote, payment, or server controls are collapsed or visually secondary unless this app owns that capability as its dominant object.", states: ["collapsed", "expanded", "blocked", "diagnostic"], supports: ["advanced-collapsed", "no-raw-provider-dump", "dangerous-actions-never-primary"]},
+        {id: "layout.workbench.status-band", elementId: "element.app.layout-slot", layer: "layout", label: "Workbench status band", contract: "Save, sync, dirty, connection, running, conflict, and proof-blocked state remain visible across workflow stages.", states: ["idle", "dirty", "saving", "synced", "blocked", "conflict"], supports: ["status-always-visible", "state-legibility", "proof-policy"]},
         {id: "layout.terminal-viewport", elementId: "element.compute.terminal-view", layer: "layout", label: "Terminal viewport", contract: "Prompt, input buffer, stdout/stderr scrollback, and analysis output render as one owned terminal view.", states: ["ready", "typing", "running", "scrolled", "failed"], supports: ["terminal-session", "owned-terminal-scrollback", "prompt-input-output-split"]},
         {id: "layout.tabbed-workspace", elementId: "element.toolkit.tabbed-workspace", layer: "layout", label: "Tabbed workspace", contract: "Notebook shell where a tab strip selects sibling panels while preserving panel model truth.", states: ["active-tab", "inactive-panels-hidden", "route-synced", "keyboard-focus"], supports: ["single-select-tabs", "panel-switching", "route-sync", "preserve-panel-state", "keyboard-navigation"]},
         {id: "layout.tab-list", elementId: "element.toolkit.tab-list", layer: "layout", label: "Tab list", contract: "Tab strip advertises its orientation, active tab, and panel mapping instead of acting as generic navigation.", states: ["horizontal", "wrapped", "focused", "overflow"], supports: ["single-select-tabs", "roving-tabindex", "a11y-state"]},
@@ -79,7 +86,10 @@
         {id: "pattern.tabbed-workspace", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Tabbed workspace", contract: "Switch between sibling workspace panels through declared tab state, active panel mapping, and optional route sync.", states: ["active-tab", "route-synced", "keyboard-ready", "panel-state-preserved"], supports: ["single-select-tabs", "panel-switching", "route-sync", "preserve-panel-state", "keyboard-navigation"]},
         {id: "pattern.settings-editor", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Settings editor", contract: "Edit named configuration with validation, dirty state, and save policy.", states: ["clean", "dirty", "invalid", "saving", "blocked"], supports: ["form-state", "validation", "save-policy"]},
         {id: "pattern.permission-matrix", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Permission matrix", contract: "Compare principals against capabilities with partial and blocked states.", states: ["allowed", "denied", "partial", "inherited", "blocked"], supports: ["matrix", "tri-state", "audit"]},
-        {id: "pattern.log-explorer", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Log explorer", contract: "Search, filter, group, and inspect streaming events.", states: ["live", "paused", "filtered", "selected"], supports: ["timeline", "search", "preview"]}
+        {id: "pattern.log-explorer", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Log explorer", contract: "Search, filter, group, and inspect streaming events.", states: ["live", "paused", "filtered", "selected"], supports: ["timeline", "search", "preview"]},
+        {id: "pattern.workbench-specification", elementId: "element.workbench.specification", layer: "contract", label: "Workbench specification", contract: "MWSL binds dominant object, workflow, layout slots, action hierarchy, evidence, risk, and visual priority into one app-shaping contract.", states: ["draft", "authored", "projected", "proof-ready"], supports: ["dominant-object", "primary-workflow", "capability-projection", "layout-projection", "visual-policy"]},
+        {id: "pattern.capability-projection", elementId: "element.app.capability-projection", layer: "contract", label: "Capability projection", contract: "A provider capability is projected into the consumer app through native layout slots instead of dumping provider UI.", states: ["provider-owned", "consumer-projected", "advanced-details", "blocked-primary"], supports: ["provider-consumer-boundary", "no-raw-provider-dump", "layout-slots"]},
+        {id: "pattern.git-backed-document-history", elementId: "element.version.git-backed-history", layer: "contract", label: "Git-backed document history", contract: "Document-native autosave, timeline, compare, and restore-as-new-version backed by Git evidence.", states: ["dirty", "saved-locally", "checkpointed", "comparing", "restore-preview", "conflict"], supports: ["autosave-status", "revision-timeline", "diff-preview", "restore-as-new-version", "git-evidence-advanced"]}
       ];
 
       const VIEW_RECIPES = [
@@ -124,6 +134,23 @@
           capabilities: ["terminal-model", "terminal-controller", "terminal-viewport", "prompt-input-output-split", "owned-terminal-scrollback", "no-command-execution"],
           primitiveIds: ["layout.terminal-viewport", "controller.terminal-session", "controller.safety-gate"],
           bestFor: ["terminal-session", "command-staging", "shell-output-review"]
+        },
+        {
+          id: "workbench-composition-shell",
+          label: "Workbench composition shell",
+          capabilities: ["dominant-object", "primary-workflow", "identity-zone", "primary-work-zone", "primary-actions", "secondary-inspector", "evidence-zone", "advanced-risk-zone", "status-band", "visual-priority", "autosave-status", "revision-timeline", "diff-preview", "restore-as-new-version", "git-evidence-advanced"],
+          primitiveIds: [
+            "layout.workbench.identity-zone",
+            "layout.workbench.primary-work-zone",
+            "layout.workbench.primary-action-zone",
+            "layout.workbench.secondary-inspector",
+            "layout.workbench.evidence-zone",
+            "layout.workbench.advanced-risk-zone",
+            "layout.workbench.status-band",
+            "pattern.workbench-specification",
+            "pattern.capability-projection"
+          ],
+          bestFor: ["workbench-specification", "capability-projection", "git-backed-document-history", "repository-operator", "source-workspace"]
         },
         {
           id: "compact-audit-list",
@@ -196,6 +223,39 @@
           mustReject: ["button-row-as-navigation", "view-mode-controller"],
           selection: "active-tab-view-state",
           safety: ["tab activation is inspect-only view state", "route sync is optional and declared", "panel contents preserve model truth"]
+        },
+        workbenchSpecification: {
+          id: "workbench-specification",
+          label: "MWSL workbench specification contract",
+          intent: "Define an app by dominant object, workflow, layout projection, action hierarchy, evidence flow, and visual policy before screens are repaired.",
+          requires: ["dominant-object", "primary-workflow", "identity-zone", "primary-work-zone", "primary-actions", "secondary-inspector", "evidence-zone", "advanced-risk-zone", "status-band", "visual-priority"],
+          fields: ["purpose", "dominantObject", "workflows", "layout", "capabilityProjections", "actionPolicy", "visualPolicy", "evidence"],
+          requiredPrimitives: ["pattern.workbench-specification", "layout.workbench.identity-zone", "layout.workbench.primary-work-zone", "layout.workbench.primary-action-zone", "layout.workbench.secondary-inspector", "layout.workbench.evidence-zone", "layout.workbench.advanced-risk-zone", "layout.workbench.status-band", "controller.safety-gate"],
+          mustReject: ["raw-provider-dump", "flat-button-wall", "absolute-geometry-only", "advanced-actions-primary"],
+          selection: "dominant-object-plus-workflow",
+          safety: ["dangerous actions never primary", "evidence stays near action", "status remains visible", "source/preview/runtime/published boundaries stay distinct"]
+        },
+        capabilityProjection: {
+          id: "capability-projection",
+          label: "Capability projection contract",
+          intent: "Let one app consume another system capability through consumer-native layout slots and vocabulary.",
+          requires: ["provider-consumer-boundary", "layout-slots", "no-raw-provider-dump", "advanced-risk-zone"],
+          fields: ["capability", "provider", "consumer", "expose", "advanced", "hidePrimary", "blocked", "layoutSlots"],
+          requiredPrimitives: ["pattern.capability-projection", "layout.workbench.primary-action-zone", "layout.workbench.secondary-inspector", "layout.workbench.evidence-zone", "layout.workbench.advanced-risk-zone"],
+          mustReject: ["embedded-provider-app", "raw-provider-controls-primary", "provider-technical-language-primary"],
+          selection: "consumer-native-projection",
+          safety: ["provider-native risky controls are advanced or blocked unless the provider is the dominant object"]
+        },
+        gitBackedDocumentHistory: {
+          id: "git-backed-document-history",
+          label: "Git-backed document history contract",
+          intent: "Project Git capability into Document as autosave status, checkpoint, version timeline, diff preview, and restore-as-new-version.",
+          requires: ["autosave-status", "revision-timeline", "diff-preview", "restore-as-new-version", "git-evidence-advanced"],
+          fields: ["documentId", "documentPath", "dirtyState", "lastAutosaveAt", "currentRevision", "selectedRevision", "restoreTarget"],
+          requiredPrimitives: ["pattern.git-backed-document-history", "layout.workbench.status-band", "layout.workbench.primary-action-zone", "layout.workbench.secondary-inspector", "layout.workbench.evidence-zone", "layout.workbench.advanced-risk-zone", "controller.safety-gate"],
+          mustReject: ["git-reset-as-restore", "raw-git-log-primary", "commit-every-keystroke", "remote-sync-primary"],
+          selection: "document-version",
+          safety: ["restore creates a new version", "hard reset is destructive blocked", "Git commit evidence is advanced, not primary document language"]
         }
       };
 
@@ -284,9 +344,13 @@
           fileBasketBestView: fileBasketResolution[0]?.id || "none",
           titleOnlyTreeRejected: fileBasketResolution.some((candidate) => candidate.id === "plain-tree" && !candidate.eligible),
           requiredFileBasketPrimitives: CONTRACT_PATTERNS.fileBasket.requiredPrimitives.length,
+          workbenchEligibleViewCount: resolveViews(CONTRACT_PATTERNS.workbenchSpecification).filter((candidate) => candidate.eligible).length,
+          workbenchBestView: resolveViews(CONTRACT_PATTERNS.workbenchSpecification)[0]?.id || "none",
+          gitBackedDocumentHistoryEligibleViewCount: resolveViews(CONTRACT_PATTERNS.gitBackedDocumentHistory).filter((candidate) => candidate.eligible).length,
           noOneOffControls: PRIMITIVES.some((primitive) => primitive.id === "control.selection.tristate") &&
             PRIMITIVES.some((primitive) => primitive.id === "control.resize-handle") &&
-            PRIMITIVES.some((primitive) => primitive.id === "controller.view-resolver")
+            PRIMITIVES.some((primitive) => primitive.id === "controller.view-resolver") &&
+            PRIMITIVES.some((primitive) => primitive.id === "pattern.workbench-specification")
         };
       }
 

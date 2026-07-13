@@ -17848,6 +17848,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const queue = planner?.mountQueue?.() || [];
       const evidence = plan.mountedEvidence || {};
       const summary = planner?.summaryFor?.(plan) || `${plan.label || plan.app}: ${plan.point || "purpose unknown"}`;
+      const workbenchSpec = planner?.normalizeWorkbenchSpec?.(plan) || plan.workbenchSpec || {};
+      const workbenchLayout = planner?.workbenchLayoutSlotSummary?.(plan) || "";
+      const workbenchCapabilityProjection = planner?.workbenchCapabilitySummary?.(plan) || "";
+      const workbenchFindings = planner?.workbenchFindingsFor?.(plan) || [];
       if (mcelCanonicalAppPlan) {
         mcelCanonicalAppPlan.dataset.mcelPlannerApp = plan.app || specimen.app;
         mcelCanonicalAppPlan.dataset.mcelPlannerStatus = plan.status || "unknown";
@@ -17869,6 +17873,10 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           ["Risk families", (plan.knownRiskFamilies || []).join(", ") || "none declared"],
           ["Never execute", (plan.neverExecute || []).join(", ") || "unknown destructive actions"],
           ["Decode hints", (plan.decodeHints || []).join(", ") || "app id and root selector"],
+          ["MWSL workbench", `${workbenchSpec.language || "MWSL"} · object: ${workbenchSpec.dominantObject || "unknown"} · primary: ${(workbenchSpec.workflows?.primary || []).join(" → ") || "not declared"}`],
+          ["Layout projection", workbenchLayout || "identity, primary, actions, inspector, evidence, advanced, status slots not normalized"],
+          ["Capability projections", workbenchCapabilityProjection || "none declared"],
+          ["Workbench findings", workbenchFindings.join("; ") || "composition contract passes static planner checks"],
           ["Mount needs", (plan.mountNeeds || []).join("; ") || "read-only discovery pass"],
           ["Mounted evidence", evidence.rootPresent ? `${evidence.controlCount || 0} controls · ${evidence.feedCount || 0} feeds · ${evidence.editableCount || 0} editables` : "not mounted or root not inspected"]
         ];
