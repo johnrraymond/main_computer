@@ -988,8 +988,8 @@ class McelCodeStudioAppTests(unittest.TestCase):
             'data-code-studio-scm-ai-action="copy-prompt"',
             'data-code-studio-scm-ai-action="copy-helper"',
             'data-code-studio-scm-ai-action="copy-packet"',
-            "Bottom Proof Dock",
-            "Diagnostics · Receipt Vector · Evidence Detail · Replay · Draft Provenance · Serialization · Persistence · Logs",
+            "Evidence and History",
+            "Receipts · Effects · Runtime · Repair · Draft Provenance · Aider history · Documentation · Logs",
         ]
         for text in expected_markup:
             with self.subTest(markup=text):
@@ -1168,6 +1168,133 @@ class McelCodeStudioAppTests(unittest.TestCase):
         self.assertIn("wallet21aPolicyBoundSendGate", script)
         self.assertIn("wallet21bProviderOutcomeLedger", script)
         self.assertIn("wallet21cTransactionWatcher", script)
+
+
+    def test_code_studio_aider_control_owns_the_right_inspector(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        contract = LAYOUT_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        inspector_start = app.index('<aside class="code-studio-inspector"')
+        inspector_end = app.index("</aside>", inspector_start)
+        proof_start = app.index('id="code-studio-bottom-panel"')
+        receipt_start = app.index('id="code-studio-flagship-inspector"')
+        doc_start = app.index('id="code-editor-doc-viewport"')
+        history_start = app.index('id="aider-history-list"')
+
+        self.assertLess(inspector_start, app.index('id="code-studio-aider-control"'))
+        self.assertLess(app.index('id="aider-repo"'), inspector_end)
+        self.assertLess(app.index('id="aider-files"'), inspector_end)
+        self.assertLess(app.index('id="aider-instruction"'), inspector_end)
+        self.assertLess(app.index('id="aider-preview"'), inspector_end)
+        self.assertLess(app.index('id="aider-run"'), inspector_end)
+        self.assertLess(app.index('id="aider-output"'), inspector_end)
+        self.assertNotIn("SCM Receipt", app[inspector_start:inspector_end])
+
+        self.assertLess(proof_start, receipt_start)
+        self.assertLess(proof_start, doc_start)
+        self.assertLess(proof_start, history_start)
+
+        for element_id in [
+            "aider-repo",
+            "aider-files",
+            "aider-instruction",
+            "aider-preview",
+            "aider-run",
+            "aider-dry-run",
+            "aider-output",
+        ]:
+            with self.subTest(element_id=element_id):
+                self.assertEqual(app.count(f'id="{element_id}"'), 1)
+
+        expected_style = [
+            "Patch 19A: Aider owns the operational inspector",
+            ".code-studio-aider-control",
+            ".code-studio-aider-control-scroll",
+            ".code-studio-aider-control-grid",
+            ".code-studio-proof-workspace",
+            ".code-studio-proof-receipts",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        self.assertIn('role: "agent-control"', contract)
+        self.assertIn('role: "evidence-history"', contract)
+        self.assertIn(
+            '{subject: "code-editor.inspector", relation: "controls", object: "code-editor.editor", strength: "strong"}',
+            contract,
+        )
+        self.assertIn(
+            '{subject: "code-editor.proof", relation: "records", object: "aider.operation", strength: "strong"}',
+            contract,
+        )
+
+
+    def test_code_studio_file_map_is_part_of_the_aider_control_surface(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        contract = LAYOUT_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        sidebar_start = app.index('<aside class="code-studio-sidebar"')
+        sidebar_end = app.index("</aside>", sidebar_start)
+        inspector_start = app.index('<aside class="code-studio-inspector"')
+        inspector_end = app.index("</aside>", inspector_start)
+        repo_start = app.index('id="aider-repo"', inspector_start)
+        map_start = app.index('class="code-studio-file-map-dock code-studio-aider-file-map"', inspector_start)
+        selected_files_start = app.index('id="aider-files"', inspector_start)
+
+        self.assertNotIn('id="file-map-list"', app[sidebar_start:sidebar_end])
+        self.assertNotIn("Repo file map", app[sidebar_start:sidebar_end])
+        self.assertLess(inspector_start, repo_start)
+        self.assertLess(repo_start, map_start)
+        self.assertLess(map_start, selected_files_start)
+        self.assertLess(selected_files_start, inspector_end)
+
+        for element_id in [
+            "file-map-search",
+            "file-map-refresh",
+            "file-map-apply",
+            "file-map-status",
+            "file-map-list",
+        ]:
+            with self.subTest(element_id=element_id):
+                self.assertEqual(app.count(f'id="{element_id}"'), 1)
+                self.assertLess(app.index(f'id="{element_id}"'), inspector_end)
+
+        self.assertIn('aria-label="Explorer"', app[sidebar_start:sidebar_end])
+        self.assertIn("Repository context", app[inspector_start:inspector_end])
+        self.assertIn("Choose files for Aider", app[inspector_start:inspector_end])
+        self.assertIn(
+            'data-mc-component-owner="code-editor.aider.workspace"',
+            app[map_start:inspector_end],
+        )
+        self.assertIn(
+            'placeholder="Mark files in the repository context above."',
+            app[map_start:inspector_end],
+        )
+
+        expected_style = [
+            "Patch 19B: the repository file map is part of the Aider control surface",
+            ".code-studio-aider-file-map",
+            "grid-template-rows: auto auto auto;",
+            "max-block-size: none;",
+            "overflow: visible;",
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        self.assertIn('"code-editor.file-map": {', contract)
+        self.assertIn('role: "agent-context-selector"', contract)
+        self.assertIn(
+            '{subject: "code-editor.file-map", relation: "selects", object: "workspace.selection", strength: "hard"}',
+            contract,
+        )
+        self.assertIn(
+            '{subject: "code-editor.file-map", relation: "feeds", object: "code-editor.inspector", strength: "strong"}',
+            contract,
+        )
 
 
     def test_code_studio_flagship_workbench_regions_are_hard_split(self) -> None:

@@ -804,9 +804,13 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "entrypoint: null" in payload["compose"]
     assert "entrypoint: []" not in payload["compose"]
     assert "FROM hyperledger/besu:latest" in payload["compose"]
+    assert "ENTRYPOINT [\"python\", \"-u\", \"/usr/local/bin/allfather-super-guard.py\"]" in payload["compose"]
+    assert "/usr/local/bin/allfather-super-guard.py" in payload["compose"]
+    assert "command:" not in payload["compose"]
     assert "python:3.12-slim" not in payload["compose"]
     assert "10.116.0.3:41500:41414/tcp" in payload["compose"]
     assert "MC_ALLFATHER_COMPONENTS" in payload["compose"]
+    assert "MC_ALLFATHER_IMAGE_ENTRYPOINT" in payload["compose"]
     assert "traefik.http.routers" not in payload["compose"]
 
 
@@ -1077,6 +1081,49 @@ def test_add_node_uses_coolify_inventory_count_for_next_ordinal(tmp_path: Path) 
     assert payload["contracts_requested"] is False
 
 
+def test_live_add_node_rejects_non_contiguous_super_inventory(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+
+    with pytest.raises(control.AllfatherControlError, match="Non-contiguous testnet super-node inventory"):
+        control.require_contiguous_super_ordinals([2], "testnet", head)
+
+
+def test_live_add_node_rejects_existing_inventory_without_fdb_seed(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    state = control.load_yaml_mapping(path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    existing = [control.super_inventory_entry("testnet", head, 1, source="coolify-inventory")]
+
+    with pytest.raises(control.AllfatherControlError, match="has no FoundationDB seed identity"):
+        control.require_fdb_seed_for_existing_super_nodes(state, path, "testnet", head, existing)
+
+
+def test_remove_node_waits_until_deleted_service_leaves_coolify_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_service_items_for_client(client: object, tried: list[dict[str, object]]) -> list[dict[str, object]]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return [{"name": "testneta-super1", "uuid": "still-visible", "status": "deleting"}]
+        return []
+
+    monkeypatch.setattr(control, "service_items_for_client", fake_service_items_for_client)
+
+    result = control.wait_for_coolify_service_absent(
+        object(),
+        service_name="testneta-super1",
+        tried=[],
+        wait_s=1,
+        poll_s=0.1,
+    )
+
+    assert result["confirmed_absent"] is True
+    assert result["attempt_count"] == 2
+
+
 def test_add_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     args = control.parse_args(
@@ -1226,3 +1273,119 @@ def test_remove_node_errors_when_no_super_node_exists(tmp_path: Path) -> None:
 
     with pytest.raises(control.AllfatherControlError, match="nothing to remove"):
         control.remove_node(plan, args)
+
+
+def test_probe_targets_include_heads_and_super_nodes(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    node = control.super_inventory_entry("testnet", plan.heads[0], 1, source="test")
+
+    targets = control.probe_target_records_for_plan(plan, super_inventory=[node])
+
+    assert [target["kind"] for target in targets] == ["head", "head", "super-node"]
+    assert targets[-1]["service_name"] == "testneta-super1"
+    assert targets[-1]["guard_url"] == "http://10.116.0.3:41500"
+    assert targets[-1]["network_key"] == "testnet"
+
+
+def test_discover_can_enrich_super_inventory_from_private_probe_result(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    node = control.super_inventory_entry("testnet", plan.heads[0], 1, source="coolify-service-list")
+    probe_result = {
+        "ok": True,
+        "result": {
+            "targets": [
+                {
+                    "kind": "super-node",
+                    "service_name": "testneta-super1",
+                    "guard_url": "http://10.116.0.3:41500",
+                    "ok": True,
+                    "identity_ok": True,
+                    "topology_ok": True,
+                    "status_ok": True,
+                    "healthz_ok": True,
+                    "functions": {
+                        "guard": {"running": True, "status": "running"},
+                        "validator_rpc": {"running": False, "status": "pending-supervisor"},
+                    },
+                }
+            ]
+        },
+    }
+
+    enriched = control.enrich_super_inventory_with_probe_status([node], probe_result)
+
+    assert enriched[0]["internal_status"]["observed"] is True
+    assert enriched[0]["internal_status"]["ok"] is True
+    assert enriched[0]["internal_status"]["functions"]["guard"]["running"] is True
+    assert enriched[0]["internal_status"]["functions"]["validator_rpc"]["status"] == "pending-supervisor"
+
+
+def test_discover_marks_super_internal_status_unobserved_until_probe_reports(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    node = control.super_inventory_entry("testnet", plan.heads[0], 1, source="coolify-service-list")
+
+    enriched = control.enrich_super_inventory_with_probe_status([node], {"ok": False})
+
+    assert enriched[0]["internal_status"]["observed"] is False
+    assert enriched[0]["internal_status"]["source"] == "coolify-private-probe"
+
+
+def test_probe_result_covers_expected_super_targets_when_result_mentions_each_super() -> None:
+    targets = [
+        {"kind": "head", "service_name": "allfather-head-coolify-a"},
+        {"kind": "super-node", "service_name": "testneta-super1"},
+        {"kind": "super-node", "service_name": "testneta-super2"},
+    ]
+    probe_result = {
+        "ok": True,
+        "result": {
+            "targets": [
+                {"kind": "head", "service_name": "allfather-head-coolify-a", "ok": True},
+                {"kind": "super-node", "service_name": "testneta-super1", "ok": False, "error": "Connection refused"},
+                {"kind": "super-node", "service_name": "testneta-super2", "ok": True},
+            ]
+        },
+    }
+
+    assert control.probe_result_covers_expected_super_targets(probe_result, targets) is True
+
+
+def test_probe_result_does_not_cover_expected_super_target_when_callback_is_stale() -> None:
+    targets = [
+        {"kind": "head", "service_name": "allfather-head-coolify-a"},
+        {"kind": "super-node", "service_name": "testneta-super1"},
+    ]
+    stale_result = {
+        "ok": True,
+        "result": {
+            "targets": [
+                {"kind": "head", "service_name": "allfather-head-coolify-a", "ok": True},
+            ]
+        },
+    }
+
+    assert control.probe_result_covers_expected_super_targets(stale_result, targets) is False
+
+
+def test_super_internal_status_counts_reports_observed_and_healthy_nodes() -> None:
+    networks = {
+        "testnet": {
+            "hosts": {
+                "coolify-a": {
+                    "super_nodes": [
+                        {"service_name": "testneta-super1", "internal_status": {"observed": True, "ok": True}},
+                        {"service_name": "testneta-super2", "internal_status": {"observed": True, "ok": False}},
+                        {"service_name": "testneta-super3", "internal_status": {"observed": False, "ok": False}},
+                    ]
+                }
+            }
+        }
+    }
+
+    assert control.super_internal_status_counts(networks) == {
+        "super_nodes_internal_observed": 2,
+        "super_nodes_internal_healthy": 1,
+    }

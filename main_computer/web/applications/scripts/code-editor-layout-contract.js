@@ -117,7 +117,7 @@
         id: "code-editor",
         version: 1,
         root: "code-editor.workbench",
-        description: "IDE-grade dock workbench with a required center editor and semantic user layout operations.",
+        description: "IDE-grade dock workbench with a required center editor, an operational Aider companion, and semantic user layout operations.",
         generatedLayoutContract: GENERATED_LAYOUT_CONTRACT,
         units: {
           "code-editor.workbench": {
@@ -160,13 +160,18 @@
               containment: "owned-remaining-track",
             },
           },
+          "code-editor.file-map": {
+            role: "agent-context-selector",
+            selector: ".code-studio-aider-file-map",
+            required: false,
+          },
           "code-editor.inspector": {
-            role: "assistant-and-inspection",
+            role: "agent-control",
             selector: ".code-studio-inspector",
             required: false,
           },
           "code-editor.proof": {
-            role: "proof-and-terminal",
+            role: "evidence-history",
             selector: "#code-studio-bottom-panel",
             required: false,
           },
@@ -180,8 +185,12 @@
           {subject: "code-editor.activity", relation: "selects", object: "code-editor.editor", strength: "strong"},
           {subject: "code-editor.explorer", relation: "navigates", object: "code-editor.editor", strength: "hard"},
           {subject: "code-editor.explorer", relation: "scopes", object: "code-editor.editor", strength: "hard"},
-          {subject: "code-editor.inspector", relation: "reflects", object: "code-editor.editor", strength: "strong"},
+          {subject: "code-editor.file-map", relation: "selects", object: "workspace.selection", strength: "hard"},
+          {subject: "code-editor.file-map", relation: "feeds", object: "code-editor.inspector", strength: "strong"},
+          {subject: "code-editor.inspector", relation: "controls", object: "code-editor.editor", strength: "strong"},
+          {subject: "code-editor.inspector", relation: "consumes", object: "workspace.selection", strength: "hard"},
           {subject: "code-editor.proof", relation: "proves", object: "editor.operation", strength: "strong"},
+          {subject: "code-editor.proof", relation: "records", object: "aider.operation", strength: "strong"},
           {subject: "code-editor.status", relation: "confirms", object: "editor.state", strength: "hard"},
           {subject: "code-editor.status", relation: "confirms", object: "layout.state", strength: "hard"},
         ],

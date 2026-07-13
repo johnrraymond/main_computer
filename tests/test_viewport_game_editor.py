@@ -4,6 +4,7 @@ import base64
 import copy
 import io
 import json
+import shutil
 import hashlib
 import tempfile
 import threading
@@ -26,14 +27,17 @@ class ViewportGameEditorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
-        project_root = self.root / "game_projects" / "starter-game"
-        for folder in ("assets", "scripts", "data", "builds"):
-            (project_root / folder).mkdir(parents=True, exist_ok=True)
-        (project_root / "project.json").write_text(json.dumps(STARTER_PROJECT, indent=2), encoding="utf-8")
-        webgl_root = self.root / "game_projects" / "webgl-demo"
-        for folder in ("assets", "scripts", "data", "builds"):
-            (webgl_root / folder).mkdir(parents=True, exist_ok=True)
-        (webgl_root / "project.json").write_text(json.dumps(WEBGL_PROJECT, indent=2), encoding="utf-8")
+        for project_id, project_payload in (("starter-game", STARTER_PROJECT), ("webgl-demo", WEBGL_PROJECT)):
+            source_root = ROOT / "game_projects" / project_id
+            project_root = self.root / "game_projects" / project_id
+            for folder in ("assets", "scripts", "data", "builds"):
+                source_folder = source_root / folder
+                target_folder = project_root / folder
+                if project_id == "webgl-demo" and folder == "assets" and source_folder.exists():
+                    shutil.copytree(source_folder, target_folder, dirs_exist_ok=True)
+                else:
+                    target_folder.mkdir(parents=True, exist_ok=True)
+            (project_root / "project.json").write_text(json.dumps(project_payload, indent=2), encoding="utf-8")
         self.server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=self.root), verbose=False)
         self.server.debug_root = self.root
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -107,6 +111,31 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertNotIn("player-capsule", json.dumps(project["project"]))
         self.assertNotIn("hero-mesh", json.dumps(project["project"]))
         self.assertRegex(project["content_hash"], r"^[0-9a-f]{64}$")
+
+    def test_project_read_prelinks_prebuilt_gpu_forge_atlas_for_game_surface(self) -> None:
+        project = self.read_project()
+        scene = project["project"]["scenes"][0]
+        effect = next(obj for obj in scene["objects"] if obj["id"] == "arcstorm-nova")
+        atlas = effect["props"]["gpuForgeAtlas"]
+
+        self.assertEqual(atlas["path"], "gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.svg")
+        self.assertEqual(atlas["metadataPath"], "gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.json")
+        self.assertEqual(atlas["backend"], "prebuilt-game-gpu-forge-atlas")
+        self.assertEqual(atlas["playback"], "sprite-sheet")
+        self.assertTrue(atlas["prebuilt"])
+        self.assertEqual(effect["props"]["gpuForgePlayback"], "sprite-sheet")
+        self.assertEqual(project["project"]["metadata"]["gpuForgePrebuilt"]["effect_id"], "arcstorm-nova")
+
+        assets = self.post("/api/applications/game-editor/assets", {"project_id": "webgl-demo"})
+        paths = {asset["path"]: asset for asset in assets["assets"]}
+        self.assertIn(atlas["path"], paths)
+        self.assertEqual(paths[atlas["path"]]["kind"], "image")
+        self.assertIn(atlas["metadataPath"], paths)
+        self.assertEqual(paths[atlas["metadataPath"]]["kind"], "text")
+
+        with urlopen(f"{self.base_url}/api/applications/game-editor/asset/read?project_id=webgl-demo&path={atlas['path']}", timeout=5) as response:
+            self.assertEqual(response.headers.get("X-Content-Type-Options"), "nosniff")
+            self.assertIn(b"<svg", response.read())
 
     def test_project_write_saves_and_rejects_stale_hash(self) -> None:
         current = self.read_project()
@@ -192,6 +221,66 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertTrue(moved["ok"])
         deleted = self.post("/api/applications/game-editor/asset/delete", {"project_id": "starter-game", "path": "renamed.js", "expected_content_hash": moved["content_hash"]})
         self.assertTrue(deleted["deleted"])
+
+    def test_gpu_forge_status_and_effect_atlas_bake_write_project_assets(self) -> None:
+        status = self.post("/api/applications/game-editor/gpu-forge/status", {"project_id": "webgl-demo"})
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["mode"], "game-gpu-forge")
+        self.assertFalse(status["capabilities"]["screen_repaint"])
+        self.assertTrue(status["capabilities"]["effect_atlas_bake"])
+        self.assertTrue(status["capabilities"]["browser_atlas_playback"])
+        self.assertFalse(status["renderer"]["live_stream_required"])
+        self.assertEqual(status["endpoints"]["bake_effect_atlas"], "/api/applications/game-editor/gpu-forge/bake-effect-atlas")
+
+        data = self.post(
+            "/api/applications/game-editor/gpu-forge/bake-effect-atlas",
+            {
+                "project_id": "webgl-demo",
+                "scene_id": "default-empty-scene",
+                "effect_id": "hero-arc-bolt",
+            },
+        )
+
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["mode"], "game-gpu-forge-effect-atlas")
+        self.assertIn(data["metadata"]["backend"], {"local-procedural-svg-fallback", "container-procedural-svg"})
+        self.assertEqual(data["metadata"]["future_backend"], "game-renderer-container-gpu")
+        self.assertEqual(data["metadata"]["effect_id"], "hero-arc-bolt")
+        self.assertEqual(data["metadata"]["effect_motion"], "spell-bolt")
+        self.assertFalse(data["metadata"]["container_contract"]["live_stream_required"])
+        self.assertEqual(data["metadata"]["frame_count"], 8)
+        self.assertEqual(data["metadata"]["browser_binding"]["target"], "particle-emitter.props.gpuForgeAtlas")
+        self.assertEqual(data["object_patch"]["gpuForgeAtlas"]["path"], data["metadata"]["atlas_path"])
+        self.assertEqual(data["object_patch"]["gpuForgeAtlas"]["playback"], "sprite-sheet")
+
+        atlas_asset = data["atlas_asset"]
+        metadata_asset = data["metadata_asset"]
+        self.assertEqual(atlas_asset["kind"], "image")
+        self.assertEqual(metadata_asset["kind"], "text")
+        self.assertTrue(atlas_asset["path"].startswith("gpu-forge/"))
+        self.assertTrue(metadata_asset["path"].startswith("gpu-forge/"))
+        self.assertTrue((self.root / "game_projects" / "webgl-demo" / "assets" / atlas_asset["path"]).is_file())
+        self.assertTrue((self.root / "game_projects" / "webgl-demo" / "assets" / metadata_asset["path"]).is_file())
+
+        with urlopen(f"{self.base_url}/api/applications/game-editor/asset/read?project_id=webgl-demo&path={atlas_asset['path']}", timeout=5) as response:
+            self.assertEqual(response.headers.get("X-Content-Type-Options"), "nosniff")
+            self.assertIn(b"<svg", response.read())
+
+
+    def test_gpu_forge_frontend_links_baked_atlas_for_scene_viewer_playback(self) -> None:
+        editor_script = (ROOT / "main_computer" / "web" / "applications" / "scripts" / "game-editor.js").read_text(encoding="utf-8")
+        scene_viewer_script = (ROOT / "main_computer" / "web" / "applications" / "scripts" / "scene-viewer.js").read_text(encoding="utf-8")
+        editor_style = (ROOT / "main_computer" / "web" / "applications" / "styles" / "game-editor.css").read_text(encoding="utf-8")
+
+        self.assertIn("applyGameEditorGpuForgeBakeToScene", editor_script)
+        self.assertIn("activeGameEditorGpuForgeBinding", editor_script)
+        self.assertIn("prebuilt GPU Forge atlas active", editor_script)
+        self.assertIn("gpuForgeAtlas", editor_script)
+        self.assertIn("save project to persist link", editor_script)
+        self.assertIn("sceneObjectGpuForgeAtlas", scene_viewer_script)
+        self.assertIn("scene-gpu-forge-atlas", scene_viewer_script)
+        self.assertIn("data-gpu-forge-atlas", editor_style)
+        self.assertIn("scene-gpu-forge-atlas-play", editor_style)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
         data = self.post(
@@ -445,6 +534,10 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("particle-emitter", APPLICATIONS_INDEX_HTML)
         self.assertIn('id="game-editor-particle-density"', APPLICATIONS_INDEX_HTML)
         self.assertIn('id="webgl-particle-density"', APPLICATIONS_INDEX_HTML)
+        self.assertIn('id="game-editor-gpu-forge-bake"', APPLICATIONS_INDEX_HTML)
+        self.assertIn("function bakeGameEditorGpuForgeAtlas", APPLICATIONS_INDEX_HTML)
+        self.assertIn("/api/applications/game-editor/gpu-forge/bake-effect-atlas", APPLICATIONS_INDEX_HTML)
+        self.assertIn("live_stream_required: false", APPLICATIONS_INDEX_HTML)
         self.assertIn('id="game-editor-preview"', APPLICATIONS_INDEX_HTML)
         self.assertIn('id="game-editor-webgl-canvas"', APPLICATIONS_INDEX_HTML)
         self.assertIn('id="game-editor-chat-toggle"', APPLICATIONS_INDEX_HTML)

@@ -3642,3 +3642,429 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
   display: none;
 }
 
+
+
+/* Patch 19A: Aider owns the operational inspector; receipts and history live in the proof dock.
+   The right companion is now the agent control surface that acts on the center editor.
+   SCM receipts, documentation, and Aider history remain available without competing with the primary controls. */
+#code-editor-app .code-studio-inspector {
+  grid-template-rows: minmax(0, 1fr) !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-aider-control {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  background: #181818;
+}
+
+#code-editor-app .code-studio-aider-control-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid #333333;
+  background: #252526;
+}
+
+#code-editor-app .code-studio-aider-control-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+#code-editor-app .code-studio-aider-control-heading strong {
+  color: #ffffff;
+}
+
+#code-editor-app .code-studio-aider-control-heading span {
+  min-width: 0;
+  color: #9d9d9d;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app .code-studio-aider-control-state {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid #3c3c3c;
+  border-radius: 999px;
+  color: #b5cea8 !important;
+  background: #1b1b1b;
+}
+
+#code-editor-app .code-studio-aider-control-shell {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: #181818 !important;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-workspace {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  gap: 0 !important;
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-context-toolbar {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #333333;
+  background: #1f1f1f;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-context-meta {
+  min-width: 0;
+  max-height: 44px;
+  overflow: hidden;
+  color: #cccccc;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-context-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-context-actions button {
+  min-width: 0;
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+}
+
+#code-editor-app .code-studio-aider-control-scroll {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 12px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+#code-editor-app .code-studio-aider-control-grid {
+  min-width: 0;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 10px !important;
+}
+
+#code-editor-app .code-studio-aider-control-grid > label,
+#code-editor-app .code-studio-aider-advanced-grid > label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: #c7c7c7;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+#code-editor-app .code-studio-aider-control-grid input,
+#code-editor-app .code-studio-aider-control-grid select,
+#code-editor-app .code-studio-aider-control-grid textarea,
+#code-editor-app .code-studio-aider-advanced-grid input,
+#code-editor-app .code-studio-aider-advanced-grid select {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#code-editor-app .code-studio-aider-control-shell #aider-files {
+  min-height: 66px !important;
+  max-height: 96px !important;
+  resize: vertical;
+}
+
+#code-editor-app .code-studio-aider-control-shell #aider-instruction {
+  min-height: 118px !important;
+  max-height: 220px !important;
+  resize: vertical;
+}
+
+#code-editor-app .code-studio-aider-advanced {
+  min-width: 0;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  background: #1b1b1b;
+}
+
+#code-editor-app .code-studio-aider-advanced summary {
+  padding: 8px 10px;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+#code-editor-app .code-studio-aider-advanced-grid {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 0 10px 10px;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-actions {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-actions button {
+  min-width: 0;
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-dry-run {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #cccccc;
+  font-size: 12px;
+}
+
+#code-editor-app .code-studio-aider-control-shell .aider-output {
+  min-width: 0 !important;
+  min-height: 72px !important;
+  max-height: 150px !important;
+  padding: 10px;
+  overflow: auto !important;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  background: #111111;
+  color: #d4d4d4;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#code-editor-app .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"] {
+  overflow: hidden !important;
+}
+
+#code-editor-app .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"]:not([data-expanded="true"]) .code-studio-proof-workspace {
+  display: none !important;
+}
+
+#code-editor-app .code-studio-bottom-panel[data-code-studio-workbench-region="proof-dock"][data-expanded="true"] {
+  grid-template-rows: 36px minmax(0, 1fr) !important;
+}
+
+#code-editor-app .code-studio-proof-workspace {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 12px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  background: #181818;
+}
+
+#code-editor-app .code-studio-proof-receipts {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(420px, 1.6fr) minmax(240px, 0.7fr);
+  gap: 10px;
+  align-items: start;
+}
+
+#code-editor-app .code-studio-proof-receipts .code-studio-scm-ai-inspector {
+  grid-row: span 2;
+  grid-template-rows: auto auto auto;
+  max-height: none;
+  overflow: visible;
+}
+
+#code-editor-app .code-studio-proof-receipts .code-studio-scm-ai-panel,
+#code-editor-app .code-studio-proof-receipts .code-studio-status-card {
+  max-height: none;
+  overflow: visible;
+}
+
+#code-editor-app .code-studio-proof-receipts .code-studio-contract-envelope {
+  min-width: 0;
+  max-height: none;
+}
+
+#code-editor-app .code-studio-proof-receipts .code-studio-contract-envelope pre {
+  min-width: 0;
+  max-height: 180px;
+  overflow: auto;
+}
+
+#code-editor-app .code-studio-proof-documentation,
+#code-editor-app .code-studio-aider-proof-shell {
+  min-width: 0;
+  min-height: 0;
+}
+
+#code-editor-app .code-studio-aider-proof-shell {
+  display: block;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+
+#code-editor-app .code-studio-aider-proof-shell .aider-history-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
+}
+
+@media (max-width: 900px) {
+  #code-editor-app .code-studio-proof-receipts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #code-editor-app .code-studio-proof-receipts .code-studio-scm-ai-inspector {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  #code-editor-app .code-studio-aider-control-heading {
+    padding: 8px 10px;
+  }
+
+  #code-editor-app .code-studio-aider-control-scroll {
+    padding: 10px;
+  }
+
+  #code-editor-app .code-studio-aider-control-shell #aider-instruction {
+    min-height: 96px !important;
+  }
+}
+
+/* Patch 19B: the repository file map is part of the Aider control surface.
+   The Explorer remains source navigation; Aider owns repository search, marking,
+   selected context, instruction, execution, and output in one operational dock. */
+#code-editor-app .code-studio-sidebar {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+#code-editor-app .code-studio-aider-file-map {
+  min-inline-size: 0;
+  min-block-size: 0;
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 8px;
+  padding: 0;
+  overflow: visible;
+  border-top: 0;
+}
+
+#code-editor-app .code-studio-aider-file-map > .code-studio-panel-heading {
+  min-inline-size: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+}
+
+#code-editor-app .code-studio-aider-file-map > .code-studio-panel-heading strong {
+  color: #d7ba7d;
+}
+
+#code-editor-app .code-studio-aider-file-map > .code-studio-panel-heading span {
+  min-inline-size: 0;
+  color: #9d9d9d;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app .code-studio-aider-file-map .file-map-panel {
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: auto;
+  max-block-size: none;
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  overflow: visible;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  background: #111111;
+}
+
+#code-editor-app .code-studio-aider-file-map .file-map-toolbar {
+  min-inline-size: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+#code-editor-app .code-studio-aider-file-map .file-map-toolbar label,
+#code-editor-app .code-studio-aider-file-map .file-map-toolbar input,
+#code-editor-app .code-studio-aider-file-map .file-map-toolbar button {
+  min-inline-size: 0;
+  inline-size: 100%;
+  box-sizing: border-box;
+}
+
+#code-editor-app .code-studio-aider-file-map .file-map-status {
+  min-inline-size: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+#code-editor-app .code-studio-aider-file-map .file-map-list {
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: auto;
+  max-block-size: none;
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+#code-editor-app .code-studio-aider-file-map .file-map-row {
+  min-inline-size: 0;
+  grid-template-columns: 18px auto minmax(0, 1fr) auto;
+}
+
+#code-editor-app .code-studio-aider-file-map .file-map-row > span {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+#code-editor-app .code-studio-aider-control-shell #aider-files {
+  resize: none;
+}
+
+@media (max-width: 720px) {
+  #code-editor-app .code-studio-aider-file-map > .code-studio-panel-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+}

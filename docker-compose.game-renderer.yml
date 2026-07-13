@@ -1,0 +1,23 @@
+name: main-computer-game-renderer
+
+services:
+  game-renderer:
+    build:
+      context: ./docker/game-renderer
+    image: main-computer/game-renderer:local
+    container_name: main-computer-game-renderer
+    restart: "no"
+    environment:
+      GAME_RENDERER_BIND: 0.0.0.0
+      GAME_RENDERER_PORT: 8798
+      GAME_RENDERER_MODE: ${GAME_RENDERER_MODE:-smoke}
+      GAME_RENDERER_BACKEND: ${GAME_RENDERER_BACKEND:-procedural-svg}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    ports:
+      - "${GAME_RENDERER_HOST:-127.0.0.1}:${GAME_RENDERER_PORT:-8798}:8798"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8798/health', timeout=2)); raise SystemExit(0 if data.get('ok') else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

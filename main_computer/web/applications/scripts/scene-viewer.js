@@ -540,6 +540,18 @@
         return sceneAssetsByPath(options).get(assetPath) || null;
       }
 
+      function sceneObjectGpuForgeAtlas(object, options = {}) {
+        const props = object?.props && typeof object.props === "object" ? object.props : {};
+        const atlas = props.gpuForgeAtlas && typeof props.gpuForgeAtlas === "object"
+          ? props.gpuForgeAtlas
+          : {path: props.gpuForgeAtlas || props.gpuForgeAtlasPath || ""};
+        const path = String(atlas.path || "").trim();
+        if (!path) return null;
+        const asset = sceneAssetsByPath(options).get(path);
+        if (!asset || !asset.url) return null;
+        return {asset, atlas};
+      }
+
       function sceneProjection(scene) {
         const explicit = String(scene?.metadata?.projection || "").trim().toLowerCase();
         if (explicit) return explicit;
@@ -1179,7 +1191,7 @@
       }
 
 
-      function renderParticleEmitter(element, object, scene) {
+      function renderParticleEmitter(element, object, scene, options = {}) {
         element.classList.add("scene-object--particle-emitter");
         element.dataset.sceneParticleEmitter = "true";
         element.dataset.particleMotion = String(object.props?.motion || "orbit");
@@ -1219,6 +1231,23 @@
         element.style.color = color;
         if (projection === "isometric" && motion !== "spell-bolt") {
           element.style.transform = "translate(-50%, -82%)";
+        }
+        const forgeAtlas = sceneObjectGpuForgeAtlas(object, options);
+        if (forgeAtlas?.asset?.url) {
+          const atlas = forgeAtlas.atlas || {};
+          const frameCount = Math.max(1, Math.round(Number(atlas.frameCount || atlas.columns || 8) || 8));
+          const durationMs = Math.max(220, Math.round(Number(atlas.durationMs || object.props?.durationMs || 960) || 960));
+          element.dataset.gpuForgeAtlas = "true";
+          element.dataset.gpuForgeBackend = String(atlas.backend || "");
+          const sheet = document.createElement("span");
+          sheet.className = "scene-gpu-forge-atlas";
+          sheet.setAttribute("aria-hidden", "true");
+          sheet.style.backgroundImage = `url("${forgeAtlas.asset.url}")`;
+          sheet.style.setProperty("--gpu-forge-frames", String(frameCount));
+          sheet.style.setProperty("--gpu-forge-duration", `${durationMs}ms`);
+          sheet.style.setProperty("--gpu-forge-columns", String(Math.max(1, Math.round(Number(atlas.columns || frameCount) || frameCount))));
+          element.append(sheet);
+          return;
         }
         if (motion === "spell-bolt") {
           field.classList.add("scene-particle-field--linked-spell");
@@ -1727,10 +1756,12 @@
         if (projected.transform) element.style.transform = projected.transform;
         element.dataset.sceneAnchor = projected.anchor;
         if (objectType === "particle-emitter") {
-          if (options.particleLayer) {
+          if (sceneObjectGpuForgeAtlas(object, options)) {
+            renderParticleEmitter(element, object, scene, options);
+          } else if (options.particleLayer) {
             renderWebglParticleEmitterMarker(element, object, scene, projected, options.particleLayer);
           } else {
-            renderParticleEmitter(element, object, scene);
+            renderParticleEmitter(element, object, scene, options);
           }
         } else if (objectType === "sprite-actor") {
           renderSpriteActor(element, object);

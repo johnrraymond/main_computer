@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import random
 from pathlib import Path
 import re
 import sys
@@ -95,9 +96,17 @@ class ProfileMapOptions:
     max_coverage_points: int = 10_000
     max_profiles: int = 300
     alpha: float = 0.5
-    normalize: str = "log1p"
+    normalize: str = "log1p_l1"
+    distance: str = "manhattan"
+    feature_weighting: str = "tfidf"
+    min_df: int = 1
+    max_df_fraction: float = 0.95
+    embedding: str = "pca"
     dimensions: int = 2
     include_distance_matrix: bool = False
+    nmds_iterations: int = 80
+    nmds_restarts: int = 3
+    nmds_seed: int = 17
 
 
 def _now_iso() -> str:
@@ -454,10 +463,95 @@ def _normalize_counts(counts: dict[str, float], mode: str) -> dict[str, float]:
         return {key: 1.0 for key, value in counts.items() if value}
     if mode == "log1p":
         return {key: math.log1p(value) for key, value in counts.items() if value}
+    if mode == "sqrt":
+        return {key: math.sqrt(value) for key, value in counts.items() if value > 0}
     if mode == "l1":
         total = sum(abs(value) for value in counts.values())
         return {key: value / total for key, value in counts.items() if value} if total else {}
+    if mode == "log1p_l1":
+        logged = {key: math.log1p(value) for key, value in counts.items() if value}
+        total = sum(abs(value) for value in logged.values())
+        return {key: value / total for key, value in logged.items() if value} if total else {}
     return {key: value for key, value in counts.items() if value}
+
+
+def _l2_normalize(vector: dict[str, float]) -> dict[str, float]:
+    norm = math.sqrt(sum(value * value for value in vector.values()))
+    return {key: value / norm for key, value in vector.items() if value} if norm else {}
+
+
+def _prepare_vectors(profiles: list[dict[str, Any]], options: ProfileMapOptions) -> tuple[list[dict[str, float]], dict[str, Any]]:
+    """Build comparable profile vectors and filter features that hide shape.
+
+    The first profile-map version fed every coverage count straight into
+    Manhattan distance.  That is faithful but often visually one-dimensional:
+    always-on fields and high-volume windows dominate the first MDS axis, while
+    behavioral composition collapses into a strip.  This preparation step keeps
+    the original Manhattan option, but adds explicit, queryable controls for
+    common-feature filtering and IDF weighting.
+    """
+
+    base_vectors = [_normalize_counts(_combined_counts(profile), options.normalize) for profile in profiles]
+    profile_count = len(base_vectors)
+    if profile_count == 0:
+        return [], {
+            "normalize": options.normalize,
+            "feature_weighting": options.feature_weighting,
+            "features_seen": 0,
+            "features_retained": 0,
+            "features_dropped_rare": 0,
+            "features_dropped_common": 0,
+        }
+
+    df: Counter[str] = Counter()
+    for vector in base_vectors:
+        for key, value in vector.items():
+            if value:
+                df[key] += 1
+
+    min_df = max(1, int(options.min_df))
+    max_df_fraction = max(0.0, min(1.0, float(options.max_df_fraction)))
+    max_df = max(1, math.floor(profile_count * max_df_fraction)) if max_df_fraction > 0 else profile_count
+
+    retained = {
+        key
+        for key, count in df.items()
+        if count >= min_df and count <= max_df
+    }
+    dropped_rare = sum(1 for count in df.values() if count < min_df)
+    dropped_common = sum(1 for count in df.values() if count > max_df)
+
+    weighting = (options.feature_weighting or "none").strip().lower()
+    if weighting not in {"none", "idf", "tfidf", "tfidf_l2"}:
+        weighting = "none"
+    idf = {
+        key: math.log((1.0 + profile_count) / (1.0 + count)) + 1.0
+        for key, count in df.items()
+    }
+
+    vectors: list[dict[str, float]] = []
+    for vector in base_vectors:
+        filtered = {key: value for key, value in vector.items() if key in retained and value}
+        if weighting in {"idf", "tfidf", "tfidf_l2"}:
+            filtered = {key: value * idf.get(key, 1.0) for key, value in filtered.items()}
+        if weighting == "tfidf_l2":
+            filtered = _l2_normalize(filtered)
+        vectors.append(filtered)
+
+    diagnostics = {
+        "normalize": options.normalize,
+        "feature_weighting": weighting,
+        "min_df": min_df,
+        "max_df_fraction": _round(max_df_fraction),
+        "max_df": max_df,
+        "profile_count": profile_count,
+        "features_seen": len(df),
+        "features_retained": len(retained),
+        "features_dropped_rare": dropped_rare,
+        "features_dropped_common": dropped_common,
+        "note": "Filtering/weighting is applied before distance calculation; missing retained features are zeros.",
+    }
+    return vectors, diagnostics
 
 
 def _manhattan(a: dict[str, float], b: dict[str, float]) -> float:
@@ -465,18 +559,78 @@ def _manhattan(a: dict[str, float], b: dict[str, float]) -> float:
     return sum(abs(a.get(key, 0.0) - b.get(key, 0.0)) for key in keys)
 
 
-def _distance_matrix(vectors: list[dict[str, float]]) -> list[list[float]]:
+def _braycurtis(a: dict[str, float], b: dict[str, float]) -> float:
+    keys = set(a) | set(b)
+    numerator = sum(abs(a.get(key, 0.0) - b.get(key, 0.0)) for key in keys)
+    denominator = sum(abs(a.get(key, 0.0)) + abs(b.get(key, 0.0)) for key in keys)
+    return numerator / denominator if denominator else 0.0
+
+
+def _weighted_jaccard(a: dict[str, float], b: dict[str, float]) -> float:
+    keys = set(a) | set(b)
+    numerator = 0.0
+    denominator = 0.0
+    for key in keys:
+        av = max(0.0, a.get(key, 0.0))
+        bv = max(0.0, b.get(key, 0.0))
+        numerator += min(av, bv)
+        denominator += max(av, bv)
+    return 1.0 - (numerator / denominator) if denominator else 0.0
+
+
+def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
+    keys = set(a) & set(b)
+    numerator = sum(a[key] * b[key] for key in keys)
+    an = math.sqrt(sum(value * value for value in a.values()))
+    bn = math.sqrt(sum(value * value for value in b.values()))
+    if not an and not bn:
+        return 0.0
+    if not an or not bn:
+        return 1.0
+    similarity = max(-1.0, min(1.0, numerator / (an * bn)))
+    return 1.0 - similarity
+
+
+def _distance(a: dict[str, float], b: dict[str, float], metric: str) -> float:
+    metric = (metric or "manhattan").strip().lower()
+    if metric == "braycurtis":
+        return _braycurtis(a, b)
+    if metric == "weighted_jaccard":
+        return _weighted_jaccard(a, b)
+    if metric == "cosine":
+        return _cosine(a, b)
+    return _manhattan(a, b)
+
+
+def _distance_matrix(vectors: list[dict[str, float]], metric: str = "manhattan") -> list[list[float]]:
     n = len(vectors)
     matrix = [[0.0] * n for _ in range(n)]
     for i in range(n):
         for j in range(i + 1, n):
-            d = _manhattan(vectors[i], vectors[j])
+            d = _distance(vectors[i], vectors[j], metric)
             matrix[i][j] = d
             matrix[j][i] = d
     return matrix
 
 
-def _jacobi_eigen_symmetric(matrix: list[list[float]], *, max_sweeps: int = 80, tolerance: float = 1e-10) -> tuple[list[float], list[list[float]]]:
+def _distance_diagnostics(distance: list[list[float]]) -> dict[str, Any]:
+    values: list[float] = []
+    for i in range(len(distance)):
+        for j in range(i + 1, len(distance)):
+            values.append(distance[i][j])
+    if not values:
+        return {"pair_count": 0, "min": None, "mean": None, "max": None, "zero_fraction": None}
+    zeros = sum(1 for value in values if abs(value) < 1e-12)
+    return {
+        "pair_count": len(values),
+        "min": _round(min(values)),
+        "mean": _round(sum(values) / len(values)),
+        "max": _round(max(values)),
+        "zero_fraction": _round(zeros / len(values)),
+    }
+
+
+def _jacobi_eigen_symmetric(matrix: list[list[float]], *, max_sweeps: int = 240, tolerance: float = 1e-10) -> tuple[list[float], list[list[float]]]:
     n = len(matrix)
     if n == 0:
         return [], []
@@ -560,10 +714,386 @@ def _classical_mds(distance: list[list[float]], dimensions: int) -> tuple[list[l
         "negative_eigenvalue_fraction": _round(neg_mass / (pos_mass + neg_mass) if (pos_mass + neg_mass) else 0.0),
         "dimensions_requested": dimensions,
         "dimensions_filled": min(dimensions, len(positive)),
-        "note": "Classical MDS on Manhattan distances can have negative eigenvalues; coordinates are a best-effort 2D map.",
+        "note": "Classical MDS on non-Euclidean distances can have negative eigenvalues; coordinates are a best-effort 2D map.",
     }
     return coords, diagnostics
 
+
+
+
+
+def _center_coordinates(coords: list[list[float]]) -> list[list[float]]:
+    if not coords:
+        return coords
+    dims = len(coords[0]) if coords[0] else 0
+    if dims == 0:
+        return coords
+    means = [sum(row[dim] for row in coords) / len(coords) for dim in range(dims)]
+    return [[row[dim] - means[dim] for dim in range(dims)] for row in coords]
+
+
+def _coordinate_energy(coords: list[list[float]]) -> float:
+    return sum(value * value for row in coords for value in row)
+
+
+def _ensure_nmds_initial_spread(coords: list[list[float]], *, seed: int) -> list[list[float]]:
+    if not coords:
+        return coords
+    rng = random.Random(seed)
+    dims = len(coords[0]) if coords[0] else 2
+    out = [row[:] for row in coords]
+    if _coordinate_energy(out) <= 1e-18:
+        out = [[rng.uniform(-0.5, 0.5) for _ in range(dims)] for _ in out]
+    # A purely one-dimensional classical solution can trap an iterative NMDS
+    # update in a line.  Add a tiny deterministic perturbation to any empty axis.
+    for dim in range(dims):
+        if sum(row[dim] * row[dim] for row in out) <= 1e-18:
+            for idx, row in enumerate(out):
+                row[dim] = 1e-3 * math.sin((idx + 1) * (dim + 1) * 1.61803398875)
+    return _center_coordinates(out)
+
+
+def _nmds_pair_groups(distance: list[list[float]]) -> tuple[list[tuple[int, int, float]], list[tuple[int, int, float, int]]]:
+    pairs: list[tuple[int, int, float]] = []
+    for i in range(len(distance)):
+        for j in range(i + 1, len(distance)):
+            delta = max(0.0, float(distance[i][j]))
+            if delta > 1e-12:
+                pairs.append((i, j, delta))
+    pairs.sort(key=lambda item: item[2])
+    groups: list[tuple[int, int, float, int]] = []
+    start = 0
+    while start < len(pairs):
+        end = start + 1
+        total = pairs[start][2]
+        while end < len(pairs) and abs(pairs[end][2] - pairs[start][2]) <= 1e-12:
+            total += pairs[end][2]
+            end += 1
+        groups.append((start, end, total / (end - start), end - start))
+        start = end
+    return pairs, groups
+
+
+def _pava_non_decreasing(values: list[float], weights: list[float]) -> list[float]:
+    if not values:
+        return []
+    blocks: list[dict[str, float | int]] = []
+    for idx, (value, weight) in enumerate(zip(values, weights)):
+        w = max(1e-12, float(weight))
+        blocks.append({"start": idx, "end": idx + 1, "weight": w, "mean": float(value)})
+        while len(blocks) >= 2 and float(blocks[-2]["mean"]) > float(blocks[-1]["mean"]):
+            right = blocks.pop()
+            left = blocks.pop()
+            weight_sum = float(left["weight"]) + float(right["weight"])
+            mean = (
+                float(left["mean"]) * float(left["weight"]) +
+                float(right["mean"]) * float(right["weight"])
+            ) / weight_sum
+            blocks.append({
+                "start": int(left["start"]),
+                "end": int(right["end"]),
+                "weight": weight_sum,
+                "mean": mean,
+            })
+    fitted = [0.0] * len(values)
+    for block in blocks:
+        for idx in range(int(block["start"]), int(block["end"])):
+            fitted[idx] = float(block["mean"])
+    return fitted
+
+
+def _pairwise_euclidean(coords: list[list[float]], pairs: list[tuple[int, int, float]]) -> list[float]:
+    values: list[float] = []
+    for i, j, _delta in pairs:
+        total = 0.0
+        for dim in range(len(coords[i])):
+            diff = coords[i][dim] - coords[j][dim]
+            total += diff * diff
+        values.append(math.sqrt(max(0.0, total)))
+    return values
+
+
+def _monotone_disparities(
+    pair_distances: list[float],
+    groups: list[tuple[int, int, float, int]],
+) -> list[float]:
+    if not pair_distances:
+        return []
+    group_means: list[float] = []
+    weights: list[float] = []
+    for start, end, _delta, weight in groups:
+        group_means.append(sum(pair_distances[start:end]) / max(1, end - start))
+        weights.append(float(weight))
+    fitted_groups = _pava_non_decreasing(group_means, weights)
+    disparities = [0.0] * len(pair_distances)
+    for group_index, (start, end, _delta, _weight) in enumerate(groups):
+        value = fitted_groups[group_index]
+        for idx in range(start, end):
+            disparities[idx] = value
+
+    # NMDS disparities are only defined up to scale.  Keep their norm aligned
+    # with the current configuration so stress values are comparable across
+    # iterations and restarts.
+    dist_norm = math.sqrt(sum(value * value for value in pair_distances))
+    disp_norm = math.sqrt(sum(value * value for value in disparities))
+    if dist_norm > 1e-12 and disp_norm > 1e-12:
+        scale = dist_norm / disp_norm
+        disparities = [value * scale for value in disparities]
+    return disparities
+
+
+def _nmds_stress(pair_distances: list[float], disparities: list[float]) -> float:
+    if not pair_distances or not disparities:
+        return 0.0
+    sse = sum((distance - disparity) ** 2 for distance, disparity in zip(pair_distances, disparities))
+    denom = sum(distance * distance for distance in pair_distances)
+    if denom <= 1e-18:
+        denom = sum(disparity * disparity for disparity in disparities)
+    return math.sqrt(sse / denom) if denom > 1e-18 else 0.0
+
+
+def _nmds_once(
+    distance: list[list[float]],
+    *,
+    dimensions: int,
+    iterations: int,
+    seed: int,
+    init: str,
+) -> tuple[list[list[float]], dict[str, Any]]:
+    n = len(distance)
+    if n == 0:
+        return [], {"stress": 0.0, "iterations": 0, "init": init}
+    if n == 1:
+        return [[0.0] * dimensions], {"stress": 0.0, "iterations": 0, "init": init}
+
+    pairs, groups = _nmds_pair_groups(distance)
+    if not pairs:
+        return [[0.0] * dimensions for _ in range(n)], {"stress": 0.0, "iterations": 0, "init": init, "pair_count": 0}
+
+    rng = random.Random(seed)
+    if init == "classical_mds":
+        coords, _diagnostics = _classical_mds(distance, dimensions)
+        coords = _ensure_nmds_initial_spread(coords, seed=seed)
+    else:
+        coords = [[rng.uniform(-0.5, 0.5) for _ in range(dimensions)] for _ in range(n)]
+        coords = _center_coordinates(coords)
+
+    best_coords = [row[:] for row in coords]
+    best_stress = float("inf")
+    previous_stress: float | None = None
+    converged = False
+    iteration_count = 0
+
+    for iteration in range(max(1, iterations)):
+        pair_distances = _pairwise_euclidean(coords, pairs)
+        disparities = _monotone_disparities(pair_distances, groups)
+        stress = _nmds_stress(pair_distances, disparities)
+        iteration_count = iteration + 1
+        if stress < best_stress:
+            best_stress = stress
+            best_coords = [row[:] for row in coords]
+        if previous_stress is not None and abs(previous_stress - stress) <= 1e-7 * max(1.0, previous_stress):
+            converged = True
+            break
+        previous_stress = stress
+
+        transformed = [[0.0] * dimensions for _ in range(n)]
+        degrees = [0.0] * n
+        for (i, j, _delta), current_distance, disparity in zip(pairs, pair_distances, disparities):
+            if current_distance <= 1e-12:
+                continue
+            ratio = disparity / current_distance
+            degrees[i] += 1.0
+            degrees[j] += 1.0
+            for dim in range(dimensions):
+                diff = coords[i][dim] - coords[j][dim]
+                contribution = ratio * diff
+                transformed[i][dim] += contribution
+                transformed[j][dim] -= contribution
+        for i in range(n):
+            if degrees[i] > 0:
+                for dim in range(dimensions):
+                    transformed[i][dim] /= degrees[i]
+            else:
+                transformed[i] = coords[i][:]
+        coords = _center_coordinates(transformed)
+        if _coordinate_energy(coords) <= 1e-18:
+            coords = [[rng.uniform(-0.5, 0.5) for _ in range(dimensions)] for _ in range(n)]
+            coords = _center_coordinates(coords)
+
+    # One final stress against the retained best coordinates.
+    final_pair_distances = _pairwise_euclidean(best_coords, pairs)
+    final_disparities = _monotone_disparities(final_pair_distances, groups)
+    final_stress = _nmds_stress(final_pair_distances, final_disparities)
+    return best_coords, {
+        "stress": _round(final_stress),
+        "iterations": iteration_count,
+        "converged": converged,
+        "init": init,
+        "pair_count": len(pairs),
+        "monotone_groups": len(groups),
+    }
+
+
+def _nmds_embedding(
+    distance: list[list[float]],
+    dimensions: int,
+    *,
+    iterations: int = 80,
+    restarts: int = 3,
+    seed: int = 17,
+) -> tuple[list[list[float]], dict[str, Any]]:
+    """Non-metric MDS over the chosen profile distance matrix.
+
+    This is intentionally distance-first, like ecological/metagenomic NMDS:
+    the original sparse coverage vectors are converted to a dissimilarity
+    matrix, and NMDS only tries to preserve the rank order of those
+    dissimilarities.  The implementation is a small deterministic SMACOF-style
+    loop with isotonic regression (PAVA) for monotone disparities.
+    """
+
+    n = len(distance)
+    dimensions = max(1, int(dimensions))
+    iterations = max(1, int(iterations))
+    restarts = max(1, int(restarts))
+    if n == 0:
+        return [], {"method": "nmds", "stress": 0.0, "profile_count": 0}
+    if n == 1:
+        return [[0.0] * dimensions], {"method": "nmds", "stress": 0.0, "profile_count": 1, "dimensions_filled": 0}
+
+    attempts: list[dict[str, Any]] = []
+    best_coords: list[list[float]] | None = None
+    best_stress = float("inf")
+
+    init_plan = ["classical_mds"] + ["random"] * max(0, restarts - 1)
+    for attempt_index, init in enumerate(init_plan):
+        coords, diagnostics = _nmds_once(
+            distance,
+            dimensions=dimensions,
+            iterations=iterations,
+            seed=seed + attempt_index * 1009,
+            init=init,
+        )
+        stress = float(diagnostics.get("stress") or 0.0)
+        attempts.append(diagnostics)
+        if stress < best_stress:
+            best_stress = stress
+            best_coords = coords
+
+    coords = best_coords if best_coords is not None else [[0.0] * dimensions for _ in range(n)]
+    diagnostics = {
+        "method": "nmds",
+        "basis": "rank_order_of_profile_distance_matrix",
+        "distance_matrix_used": True,
+        "dimensions_requested": dimensions,
+        "dimensions_filled": dimensions if n > 1 else 0,
+        "iterations_requested": iterations,
+        "restarts_requested": restarts,
+        "seed": int(seed),
+        "stress": _round(best_stress),
+        "attempts": attempts,
+        "note": "NMDS preserves ranked dissimilarities, not exact distances; lower stress indicates a better 2D rank-order fit.",
+    }
+    return coords, diagnostics
+
+
+def _sparse_dot(a: dict[str, float], b: dict[str, float]) -> float:
+    if len(a) > len(b):
+        a, b = b, a
+    return sum(value * b.get(key, 0.0) for key, value in a.items())
+
+
+def _pca_embedding(vectors: list[dict[str, float]], dimensions: int) -> tuple[list[list[float]], dict[str, Any]]:
+    """Project profiles onto the top orthogonal variance directions.
+
+    Classical MDS starts from a distance matrix.  That is useful when the
+    distance is the primary object, but it can also flatten log profiles into a
+    strip when the first distance component is just activity volume.  This path
+    instead builds the centered profile-feature Gram matrix and returns the top
+    principal-component score coordinates.  The axes are true orthogonal
+    eigenvector directions of the sparse coverage matrix after the same
+    normalization/filtering/weighting used for distances.
+    """
+
+    n = len(vectors)
+    dimensions = max(1, int(dimensions))
+    if n == 0:
+        return [], {"positive_eigenvalues": 0, "method": "pca"}
+    if n == 1:
+        return [[0.0] * dimensions], {"positive_eigenvalues": 0, "method": "pca", "dimensions_filled": 0}
+
+    feature_sums: defaultdict[str, float] = defaultdict(float)
+    for vector in vectors:
+        for key, value in vector.items():
+            feature_sums[key] += value
+    mean = {key: value / n for key, value in feature_sums.items() if value}
+    mean_dot_mean = _sparse_dot(mean, mean)
+    vector_dot_mean = [_sparse_dot(vector, mean) for vector in vectors]
+
+    gram = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        gram[i][i] = _sparse_dot(vectors[i], vectors[i]) - 2.0 * vector_dot_mean[i] + mean_dot_mean
+        for j in range(i + 1, n):
+            value = _sparse_dot(vectors[i], vectors[j]) - vector_dot_mean[i] - vector_dot_mean[j] + mean_dot_mean
+            gram[i][j] = value
+            gram[j][i] = value
+
+    eigenvalues, eigenvectors = _jacobi_eigen_symmetric(gram)
+    positive = [(value, vec) for value, vec in zip(eigenvalues, eigenvectors) if value > 1e-9]
+    coords = [[0.0] * dimensions for _ in range(n)]
+    for dim, (value, vec) in enumerate(positive[:dimensions]):
+        scale = math.sqrt(value)
+        # Deterministic sign: make the largest magnitude loading positive so
+        # repeated renders do not randomly mirror the map.
+        max_idx = max(range(len(vec)), key=lambda idx: abs(vec[idx])) if vec else 0
+        sign = -1.0 if vec and vec[max_idx] < 0 else 1.0
+        for i in range(n):
+            coords[i][dim] = vec[i] * scale * sign
+
+    positive_mass = sum(value for value in eigenvalues if value > 1e-9)
+    negative_mass = sum(abs(value) for value in eigenvalues if value < -1e-9)
+    kept = [value for value, _ in positive[:dimensions]]
+    diagnostics = {
+        "method": "pca",
+        "basis": "centered_sparse_profile_vectors",
+        "positive_eigenvalues": sum(1 for value in eigenvalues if value > 1e-9),
+        "negative_eigenvalues": sum(1 for value in eigenvalues if value < -1e-9),
+        "positive_eigenvalue_mass": _round(positive_mass),
+        "negative_eigenvalue_abs_mass": _round(negative_mass),
+        "negative_eigenvalue_fraction": _round(negative_mass / (positive_mass + negative_mass) if (positive_mass + negative_mass) else 0.0),
+        "dimensions_requested": dimensions,
+        "dimensions_filled": min(dimensions, len(positive)),
+        "eigenvalues_kept": [_round(value) for value in kept],
+        "explained_variance_ratio_kept": [
+            _round(value / positive_mass if positive_mass else 0.0)
+            for value in kept
+        ],
+        "note": "PCA coordinates are the top orthogonal eigenvector dimensions of the centered sparse coverage matrix.",
+    }
+    return coords, diagnostics
+
+
+def _embed_profiles(
+    vectors: list[dict[str, float]],
+    distance: list[list[float]],
+    options: ProfileMapOptions,
+) -> tuple[list[list[float]], dict[str, Any], str]:
+    method = (options.embedding or "pca").strip().lower()
+    if method in {"nmds", "nonmetric_mds", "non_metric_mds"}:
+        coords, diagnostics = _nmds_embedding(
+            distance,
+            max(1, int(options.dimensions)),
+            iterations=options.nmds_iterations,
+            restarts=options.nmds_restarts,
+            seed=options.nmds_seed,
+        )
+        return coords, diagnostics, "nmds"
+    if method in {"mds", "classical_mds", "pcoa"}:
+        coords, diagnostics = _classical_mds(distance, max(1, int(options.dimensions)))
+        diagnostics = {**diagnostics, "method": "classical_mds", "distance_matrix_used": True}
+        return coords, diagnostics, "classical_mds"
+    coords, diagnostics = _pca_embedding(vectors, max(1, int(options.dimensions)))
+    return coords, diagnostics, "pca"
 
 def _dominant_points(profile: dict[str, Any], coverage_points: dict[str, dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
     counts: Counter[str] = Counter()
@@ -593,9 +1123,10 @@ def build_log_profile_map(root: Path | str, input_path: Path | str | None = None
     records = iter_main_log_records(path)
     events = _iter_profile_events(records, alpha=options.alpha, dictionary=dictionary)
     profiles = _window_profiles(events, options)
-    vectors = [_normalize_counts(_combined_counts(profile), options.normalize) for profile in profiles]
-    distance = _distance_matrix(vectors)
-    coords, mds_diagnostics = _classical_mds(distance, max(1, int(options.dimensions)))
+    vectors, vector_diagnostics = _prepare_vectors(profiles, options)
+    distance = _distance_matrix(vectors, metric=options.distance)
+    distance_diagnostics = _distance_diagnostics(distance)
+    coords, embedding_diagnostics, embedding_method = _embed_profiles(vectors, distance, options)
 
     points: list[dict[str, Any]] = []
     for profile, coord in zip(profiles, coords):
@@ -636,9 +1167,16 @@ def build_log_profile_map(root: Path | str, input_path: Path | str | None = None
             "max_coverage_points": options.max_coverage_points,
             "max_profiles": options.max_profiles,
             "normalize": options.normalize,
-            "metric": "manhattan",
-            "embedding": "classical_mds",
+            "distance": options.distance,
+            "feature_weighting": options.feature_weighting,
+            "min_df": options.min_df,
+            "max_df_fraction": options.max_df_fraction,
+            "metric": options.distance,
+            "embedding": options.embedding,
             "dimensions": options.dimensions,
+            "nmds_iterations": options.nmds_iterations,
+            "nmds_restarts": options.nmds_restarts,
+            "nmds_seed": options.nmds_seed,
         },
         "summary": {
             "event_count": len(events),
@@ -647,21 +1185,26 @@ def build_log_profile_map(root: Path | str, input_path: Path | str | None = None
             "truncated_new_coverage_points": dictionary.truncated_new_points,
             "sparse_profile": True,
             "zero_semantics": "missing coverage point means no evidence in the profile window; explicit skips are stored separately",
+            "vector_features_seen": vector_diagnostics.get("features_seen", 0),
+            "vector_features_retained": vector_diagnostics.get("features_retained", 0),
         },
         "coverage_points": dictionary.points,
         "profiles": profiles,
         "distance": {
-            "metric": "manhattan",
+            "metric": options.distance,
             "normalization": options.normalize,
+            "feature_weighting": vector_diagnostics.get("feature_weighting", options.feature_weighting),
+            "vector_diagnostics": vector_diagnostics,
+            "diagnostics": distance_diagnostics,
             "profile_order": [profile["profile_id"] for profile in profiles],
             "matrix_included": bool(options.include_distance_matrix),
             "matrix": distance if options.include_distance_matrix else None,
         },
         "embedding": {
-            "method": "classical_mds",
-            "dimensions": 2,
+            "method": embedding_method,
+            "dimensions": max(1, int(options.dimensions)),
             "points": points,
-            "diagnostics": mds_diagnostics,
+            "diagnostics": embedding_diagnostics,
         },
         "warning": "This is log-derived behavioral coverage, not source-code instrumentation coverage.",
     }
@@ -679,7 +1222,7 @@ def render_profile_map_svg(
 ) -> str:
     """Render a readable static SVG for the profile map.
 
-    The JSON payload keeps the exact MDS coordinates.  The SVG is a view of
+    The JSON payload keeps the exact embedding coordinates.  The SVG is a view of
     those coordinates, so it applies two display-only aids that keep a single
     outlier or repeated coordinates from turning the map into an unreadable
     strip of overlapping labels:
@@ -827,7 +1370,7 @@ def render_profile_map_svg(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="#0b1020"/>',
         '<text x="20" y="30" fill="#e5e7eb" font-family="monospace" font-size="18">Main log behavior profile map</text>',
-        '<text x="20" y="52" fill="#9ca3af" font-family="monospace" font-size="12">Manhattan distance + classical MDS; model-relative log-derived coverage</text>',
+        f'<text x="20" y="52" fill="#9ca3af" font-family="monospace" font-size="12">{_escape_xml(str(profile_map.get("embedding", {}).get("method", "pca")))} embedding; { _escape_xml(str(profile_map.get("distance", {}).get("metric", "manhattan")))} distance diagnostics; model-relative log-derived coverage</text>',
         f'<text x="20" y="70" fill="#9ca3af" font-family="monospace" font-size="11">{_escape_xml(subtitle)}</text>',
         f'<rect x="{left:.2f}" y="{top:.2f}" width="{plot_w:.2f}" height="{plot_h:.2f}" fill="none" stroke="#1f2937" stroke-width="1"/>',
     ]
@@ -911,7 +1454,7 @@ def _write_json(path: str | None, payload: dict[str, Any]) -> None:
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build sparse log-derived coverage profiles and a 2D MDS behavior map.")
+    parser = argparse.ArgumentParser(description="Build sparse log-derived coverage profiles and a 2D behavior map.")
     parser.add_argument("--root", default=".")
     parser.add_argument("--input", default="")
     parser.add_argument("--output", default="")
@@ -924,8 +1467,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seconds-stride", type=float, default=60.0)
     parser.add_argument("--max-coverage-points", type=int, default=10_000)
     parser.add_argument("--max-profiles", type=int, default=300)
-    parser.add_argument("--normalize", choices=["raw", "log1p", "l1", "binary"], default="log1p")
+    parser.add_argument("--normalize", choices=["raw", "log1p", "sqrt", "l1", "log1p_l1", "binary"], default="log1p_l1")
+    parser.add_argument("--distance", "--metric", dest="distance", choices=["manhattan", "braycurtis", "weighted_jaccard", "cosine"], default="manhattan")
+    parser.add_argument("--feature-weighting", choices=["none", "idf", "tfidf", "tfidf_l2"], default="tfidf")
+    parser.add_argument("--min-df", type=int, default=1)
+    parser.add_argument("--max-df-fraction", type=float, default=0.95)
     parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument("--embedding", choices=["pca", "mds", "classical_mds", "pcoa", "nmds", "nonmetric_mds"], default="pca")
+    parser.add_argument("--nmds-iterations", type=int, default=80)
+    parser.add_argument("--nmds-restarts", type=int, default=3)
+    parser.add_argument("--nmds-seed", type=int, default=17)
     parser.add_argument("--include-distance-matrix", action="store_true")
     parser.add_argument("--svg-output", default="")
     parser.add_argument("--svg-width", type=int, default=1200)
@@ -949,7 +1500,15 @@ def main(argv: list[str] | None = None) -> int:
         max_coverage_points=args.max_coverage_points,
         max_profiles=args.max_profiles,
         normalize=args.normalize,
+        distance=args.distance,
+        feature_weighting=args.feature_weighting,
+        min_df=args.min_df,
+        max_df_fraction=args.max_df_fraction,
+        embedding=args.embedding,
         alpha=args.alpha,
+        nmds_iterations=args.nmds_iterations,
+        nmds_restarts=args.nmds_restarts,
+        nmds_seed=args.nmds_seed,
         include_distance_matrix=args.include_distance_matrix,
     )
     result = build_log_profile_map(

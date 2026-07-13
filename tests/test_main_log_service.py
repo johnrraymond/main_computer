@@ -29,6 +29,7 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
         assert health["follow_path"] == "/v1/log/follow"
         assert health["compress_path"] == "/v1/log/compress"
         assert health["profile_map_path"] == "/v1/log/profile-map"
+        assert health["profile_nmds_path"] == "/v1/log/profile-nmds"
 
         for index in range(12):
             result = emit_main_log_event(
@@ -74,7 +75,7 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
             compressed_zip = response.read()
 
         profile_request = Request(
-            f"http://127.0.0.1:{port}/v1/log/profile-map?window=events&event_window=5&event_stride=5&max_profiles=10",
+            f"http://127.0.0.1:{port}/v1/log/profile-map?window=events&event_window=5&event_stride=5&max_profiles=10&distance=weighted_jaccard&normalize=log1p_l1&feature_weighting=tfidf&max_df_fraction=0.95",
             method="GET",
         )
         with urlopen(profile_request, timeout=5) as response:
@@ -87,6 +88,13 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
         with urlopen(profile_svg_request, timeout=5) as response:
             assert response.headers.get_content_type() == "image/svg+xml"
             profile_svg = response.read().decode("utf-8")
+
+        profile_nmds_request = Request(
+            f"http://127.0.0.1:{port}/v1/log/profile-nmds?window=events&event_window=5&event_stride=5&max_profiles=10&nmds_iterations=8&nmds_restarts=1",
+            method="GET",
+        )
+        with urlopen(profile_nmds_request, timeout=5) as response:
+            profile_nmds = json.loads(response.read().decode("utf-8"))
     finally:
         server.shutdown()
         server.server_close()
@@ -128,8 +136,16 @@ def test_main_log_service_accepts_events_writes_lexlog_and_exposes_surprise(tmp_
     assert profile_map["ok"] is True
     assert profile_map["schema"] == "mclog-profile-map-v1"
     assert profile_map["summary"]["profile_count"] >= 1
+    assert profile_map["distance"]["metric"] == "weighted_jaccard"
+    assert profile_map["distance"]["feature_weighting"] == "tfidf"
+    assert profile_map["embedding"]["method"] == "pca"
     assert profile_map["embedding"]["points"]
     assert "Main log behavior profile map" in profile_svg
+
+    assert profile_nmds["ok"] is True
+    assert profile_nmds["embedding"]["method"] == "nmds"
+    assert profile_nmds["embedding"]["diagnostics"]["distance_matrix_used"] is True
+    assert profile_nmds["embedding"]["points"]
 
     recent = store.recent(limit=1)[0]
     assert "_main_log_surprise_bits" in recent

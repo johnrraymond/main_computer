@@ -108,6 +108,12 @@ class ViewportGameRoutesMixin:
             if route == "/api/applications/game-editor/assets":
                 self._send_json(self._game_assets_payload(str(body.get("project_id", "") or "")))
                 return
+            if route == "/api/applications/game-editor/gpu-forge/status":
+                self._handle_game_gpu_forge_status()
+                return
+            if route == "/api/applications/game-editor/gpu-forge/bake-effect-atlas":
+                self._handle_game_gpu_forge_bake_effect_atlas(body)
+                return
             if route == "/api/applications/game-editor/asset/upload":
                 self._handle_game_asset_upload(body)
                 return
@@ -1533,6 +1539,60 @@ class ViewportGameRoutesMixin:
     def _default_game_project_id(self) -> str:
         return "webgl-demo"
 
+    def _game_gpu_forge_service(self):
+        service = self.server.game_gpu_forge
+        service.bind_repo_root(self.server.debug_root)
+        return service
+
+    def _handle_game_gpu_forge_status(self) -> None:
+        service = self._game_gpu_forge_service()
+        self.server.signal("api-game-gpu-forge-status")
+        self._send_json(service.status())
+
+    def _handle_game_gpu_forge_bake_effect_atlas(self, body: dict[str, Any]) -> None:
+        project_id = self._game_project_id(str(body.get("project_id", "") or self._default_game_project_id()))
+        project_payload = self._game_project_read_payload(project_id)
+        project = body.get("project") if isinstance(body.get("project"), dict) else project_payload.get("project")
+        if not isinstance(project, dict):
+            raise ValueError("project payload did not contain a project object.")
+        scene_id = str(body.get("scene_id") or project.get("activeSceneId") or "").strip()
+        effect_id = str(body.get("effect_id") or body.get("selected_object_id") or "").strip()
+        root = self._game_project_root(project_id)
+        service = self._game_gpu_forge_service()
+        result = service.bake_effect_atlas(
+            project_id=project_id,
+            project=project,
+            scene_id=scene_id,
+            effect_id=effect_id,
+            output_root=root / "assets",
+        )
+        assets = [
+            self._game_asset_payload(result.atlas_path),
+            self._game_asset_payload(result.metadata_path),
+        ]
+        self.server.signal(
+            "api-game-gpu-forge-bake-effect-atlas",
+            project_id=project_id,
+            scene_id=result.metadata.get("scene_id"),
+            effect_id=result.metadata.get("effect_id"),
+            atlas=result.metadata.get("atlas_path"),
+        )
+        self._send_json(
+            {
+                "ok": True,
+                "mode": "game-gpu-forge-effect-atlas",
+                "project_id": project_id,
+                "scene_id": result.metadata.get("scene_id"),
+                "effect_id": result.metadata.get("effect_id"),
+                "metadata": result.metadata,
+                "object_patch": result.metadata.get("browser_binding", {}).get("particle_emitter_props", {}),
+                "assets": assets,
+                "atlas_asset": assets[0],
+                "metadata_asset": assets[1],
+                "status": service.status(),
+            }
+        )
+
     def _handle_game_project_write(self, body: dict[str, Any]) -> None:
         project_id = str(body.get("project_id", "") or "")
         project_file = self._game_project_root(project_id) / "project.json"
@@ -2155,6 +2215,11 @@ class ViewportGameRoutesMixin:
         root = self._game_project_root(project_id)
         project_file = root / "project.json"
         project = json.loads(project_file.read_text(encoding="utf-8"))
+        project = self._game_gpu_forge_service().apply_prebuilt_atlas_binding(
+            project_id=root.name,
+            project=project,
+            assets_root=root / "assets",
+        )
         return {"ok": True, "project_id": root.name, "project": project, **self._game_file_shared(project_file)}
 
     def _game_asset_kind(self, path: Path) -> str:

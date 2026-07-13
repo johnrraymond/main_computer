@@ -12,6 +12,7 @@ from main_computer.viewport_routes_applications import ViewportApplicationRoutes
 from main_computer.viewport_routes_aider import ViewportAiderRoutesMixin
 from main_computer.viewport_routes_astrometric import ViewportAstrometricRoutesMixin
 from main_computer.astrometric_renderer_service import AstrometricRendererService
+from main_computer.game_gpu_forge_service import GameGpuForgeService
 from main_computer.viewport_routes_calculator import ViewportCalculatorRoutesMixin
 from main_computer.viewport_routes_chat_console import ViewportChatConsoleRoutesMixin
 from main_computer.viewport_routes_conductor import ViewportConductorRoutesMixin
@@ -118,6 +119,7 @@ class ViewportServer(ThreadingHTTPServer):
         )
         self.aider_web_context = AiderWebContextStore(self.debug_root / "aider_web_context")
         self.astrometric_renderer = AstrometricRendererService(self.debug_root)
+        self.game_gpu_forge = GameGpuForgeService(self.debug_root)
         self.aider_jobs = AiderActionJobRegistry(self)
         self.worker_runtime_lock = threading.RLock()
         self.worker_runtime_service = WorkerRuntimeService(self)

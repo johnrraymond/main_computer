@@ -24,6 +24,7 @@ import json
 import hashlib
 import re
 import secrets
+import time
 from datetime import datetime, timezone
 import sys
 import urllib.parse
@@ -50,6 +51,8 @@ DEFAULT_GUARD_CONTAINER_PORT = 41414
 DEFAULT_GUARD_HOST_BASE = 41400
 DEFAULT_PROBE_CONTAINER_PORT = 41415
 DEFAULT_PROBE_INTERVAL_S = 15.0
+DEFAULT_REMOVE_DELETE_WAIT_S = 45.0
+DEFAULT_REMOVE_DELETE_POLL_S = 2.0
 DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
@@ -667,8 +670,70 @@ def probe_targets_for_plan(plan: HeadPlan) -> list[str]:
     return [head.guard_url for head in plan.heads]
 
 
-def probe_targets_b64(plan: HeadPlan) -> str:
-    return base64.b64encode(json.dumps(probe_targets_for_plan(plan), sort_keys=True).encode("utf-8")).decode("ascii")
+def probe_target_records_for_plan(
+    plan: HeadPlan,
+    *,
+    super_inventory: Sequence[Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Return private guard targets for the Coolify-managed probe.
+
+    Head targets keep the control surface observable.  Super-node targets let
+    discover report whether each container is actually answering its private
+    guard API and which internal functions are running/pending.  These URLs are
+    still remote/VPN-only and are only called from the Coolify-managed probe.
+    """
+
+    targets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for head in plan.heads:
+        url = str(head.guard_url or "").rstrip("/")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        targets.append(
+            {
+                "kind": "head",
+                "guard_url": url,
+                "service_name": head.service_name,
+                "head_id": head.head_id,
+                "coolify_server": head.coolify_server,
+                "host_slot": head.slot,
+                "scope": "remote-vpn-peer-only",
+            }
+        )
+
+    for node in super_inventory or []:
+        if not isinstance(node, Mapping):
+            continue
+        url = str(node.get("guard_url") or "").rstrip("/")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        targets.append(
+            {
+                "kind": "super-node",
+                "guard_url": url,
+                "service_name": str(node.get("service_name") or ""),
+                "network_key": str(node.get("network_key") or ""),
+                "coolify_server": str(node.get("coolify_server") or ""),
+                "host_slot": str(node.get("host_slot") or ""),
+                "host_prefix": str(node.get("host_prefix") or ""),
+                "ordinal": node.get("ordinal"),
+                "components": node.get("components") if isinstance(node.get("components"), Mapping) else {},
+                "scope": "remote-vpn-super-only",
+            }
+        )
+    return targets
+
+
+def probe_targets_b64(
+    plan: HeadPlan,
+    *,
+    super_inventory: Sequence[Mapping[str, Any]] | None = None,
+) -> str:
+    return base64.b64encode(
+        json.dumps(probe_target_records_for_plan(plan, super_inventory=super_inventory), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
 
 
 def probe_server_command_script() -> str:
@@ -745,8 +810,13 @@ def fetch_json(url: str) -> dict:
 
 def run_probe_once() -> dict:
     results = []
-    for base in TARGETS:
-        clean = str(base or "").rstrip("/")
+    for target in TARGETS:
+        if isinstance(target, dict):
+            meta = dict(target)
+            clean = str(meta.get("guard_url") or meta.get("url") or "").rstrip("/")
+        else:
+            meta = {"kind": "legacy", "guard_url": str(target or "").rstrip("/")}
+            clean = str(target or "").rstrip("/")
         if not clean:
             continue
         identity = fetch_json(f"{clean}/identity")
@@ -755,6 +825,7 @@ def run_probe_once() -> dict:
         healthz = fetch_json(f"{clean}/healthz")
         results.append(
             {
+                **meta,
                 "guard_url": clean,
                 "ok": bool(identity.get("ok") or topology.get("ok") or status.get("ok") or healthz.get("ok")),
                 "identity": identity,
@@ -793,7 +864,16 @@ def callback_payload(result: dict) -> dict:
         healthz = target.get("healthz") if isinstance(target.get("healthz"), dict) else {}
         compact_targets.append(
             {
+                "kind": target.get("kind") or target.get("target_kind") or "",
                 "guard_url": target.get("guard_url"),
+                "service_name": target.get("service_name") or identity.get("cell_id") or status.get("cell_id") or "",
+                "head_id": target.get("head_id") or "",
+                "cell_id": identity.get("cell_id") or status.get("cell_id") or topology.get("cell_id") or "",
+                "coolify_server": target.get("coolify_server") or identity.get("coolify_server") or status.get("coolify_server") or "",
+                "network_key": target.get("network_key") or identity.get("network_key") or status.get("network_key") or topology.get("network_key") or "",
+                "ordinal": target.get("ordinal") or identity.get("ordinal") or status.get("ordinal") or "",
+                "components": status.get("components") if isinstance(status.get("components"), dict) else target.get("components") if isinstance(target.get("components"), dict) else {},
+                "functions": status.get("functions") if isinstance(status.get("functions"), dict) else identity.get("functions") if isinstance(identity.get("functions"), dict) else {},
                 "ok": bool(target.get("ok")),
                 "identity_ok": bool(identity.get("ok")),
                 "topology_ok": bool(topology.get("ok")),
@@ -940,6 +1020,7 @@ def render_probe_compose(
     callback_api_url: str = "",
     callback_token: str = "",
     callback_service_uuid: str = "",
+    super_inventory: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
     """Render the private Coolify-managed probe service.
 
@@ -975,7 +1056,7 @@ def render_probe_compose(
             f"      MC_ALLFATHER_PROBE_PORT: {yaml_quote(probe_container_port)}",
             f"      MC_ALLFATHER_PROBE_INTERVAL_S: {yaml_quote(probe_interval_s)}",
             f"      MC_ALLFATHER_PROBE_TIMEOUT_S: {yaml_quote(4)}",
-            f"      MC_ALLFATHER_PROBE_TARGETS_B64: {yaml_quote(probe_targets_b64(plan))}",
+            f"      MC_ALLFATHER_PROBE_TARGETS_B64: {yaml_quote(probe_targets_b64(plan, super_inventory=super_inventory))}",
             f"      MC_ALLFATHER_PROBE_STATE_DIR: {yaml_quote('/state')}",
             f"      MC_ALLFATHER_PROBE_CALLBACK_API_URL: {yaml_quote(callback_api_url)}",
             f"      MC_ALLFATHER_PROBE_CALLBACK_TOKEN: {yaml_quote(callback_token)}",
@@ -1006,6 +1087,7 @@ def render_probe_compose_for_client(
     client: Any,
     *,
     callback_service_uuid: str = "",
+    super_inventory: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
     """Render probe compose with the Coolify metadata callback wired in."""
 
@@ -1018,6 +1100,7 @@ def render_probe_compose_for_client(
         callback_api_url=str(getattr(client, "base_url", "") or ""),
         callback_token=str(getattr(client, "token", "") or ""),
         callback_service_uuid=callback_service_uuid,
+        super_inventory=super_inventory,
     )
 
 
@@ -1035,6 +1118,7 @@ def probe_service_payload(
         image=getattr(args, "probe_image", getattr(args, "image", DEFAULT_IMAGE)),
         probe_container_port=getattr(args, "probe_container_port", DEFAULT_PROBE_CONTAINER_PORT),
         probe_interval_s=getattr(args, "probe_interval_s", DEFAULT_PROBE_INTERVAL_S),
+        super_inventory=super_inventory,
     )
     payload = {
         "server_uuid": (context or {}).get("server_uuid") or "",
@@ -1062,15 +1146,17 @@ def sync_probe_service(
     args: argparse.Namespace,
     context: Mapping[str, Any],
     tried: list[dict[str, Any]],
+    *,
+    super_inventory: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
     service_name = probe_service_name(head)
     service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
     if service_uuid:
-        compose = render_probe_compose_for_client(plan, head, args, client, callback_service_uuid=service_uuid)
+        compose = render_probe_compose_for_client(plan, head, args, client, callback_service_uuid=service_uuid, super_inventory=super_inventory)
         fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
         return service_uuid, "updated", existing
 
-    service_uuid = fdb_tool().create_service(client, probe_service_payload(plan, head, args, context=context), tried)
+    service_uuid = fdb_tool().create_service(client, probe_service_payload(plan, head, args, context=context, super_inventory=super_inventory), tried)
     # A newly-created probe cannot know its own Coolify service UUID until after
     # creation. Patch the compose once more so the long-running private probe can
     # publish results back into its own service metadata.
@@ -1199,6 +1285,78 @@ def probe_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, A
     if not isinstance(result, Mapping):
         return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
     return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+def probe_result_targets(probe_result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    result = probe_result.get("result") if isinstance(probe_result, Mapping) else None
+    if not isinstance(result, Mapping):
+        return []
+    return [dict(item) for item in (result.get("targets") or []) if isinstance(item, Mapping)]
+
+
+def probe_result_service_names(probe_result: Mapping[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for target in probe_result_targets(probe_result):
+        name = str(target.get("service_name") or target.get("cell_id") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def expected_super_target_names(targets: Sequence[Mapping[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for target in targets:
+        if not isinstance(target, Mapping):
+            continue
+        if str(target.get("kind") or "") != "super-node":
+            continue
+        name = str(target.get("service_name") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def probe_result_covers_expected_super_targets(
+    probe_result: Mapping[str, Any],
+    targets: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Return true once a probe result has at least mentioned every super target.
+
+    A private super-node guard might be down, in which case the target result is
+    still useful because it carries the connection error.  The readiness check
+    therefore requires the target record to be present, not necessarily healthy.
+    """
+
+    expected = expected_super_target_names(targets)
+    if not expected:
+        return bool(probe_result.get("ok"))
+    return expected <= probe_result_service_names(probe_result)
+
+
+def wait_for_probe_metadata_result(
+    client: Any,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    expected_targets: Sequence[Mapping[str, Any]],
+    wait_s: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Poll the probe service description until the callback covers super targets."""
+
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_detail: dict[str, Any] = {}
+    last_result: dict[str, Any] = {"ok": False, "source": "coolify-service-description", "error": "probe metadata callback was not observed"}
+    first = True
+    while first or time.time() < deadline:
+        first = False
+        last_detail = fetch_service_detail(client, service_uuid, tried)
+        last_result = probe_result_from_service_metadata(last_detail)
+        if last_result.get("ok") and probe_result_covers_expected_super_targets(last_result, expected_targets):
+            return last_detail, last_result
+        if time.time() >= deadline:
+            break
+        time.sleep(min(2.0, max(0.25, deadline - time.time())))
+    return last_detail, last_result
 
 
 def context_args_for_host(args: argparse.Namespace, host: HeadNode) -> argparse.Namespace:
@@ -1609,7 +1767,7 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
             "head_service_name": head.service_name,
             "probe_service_name": probe_service_name(head),
             "peer_guard_url": head.guard_url,
-            "probe_targets": probe_targets_for_plan(plan),
+            "probe_targets": probe_target_records_for_plan(plan),
             "super_inventory": [],
             "super_inventory_error": "",
             "probe_compose": render_probe_compose(
@@ -1661,7 +1819,15 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
         if getattr(args, "no_sync_probe", False):
             probe_result = {"ok": False, "error": "probe sync disabled by --no-sync-probe"}
         else:
-            probe_service_uuid, action, probe_existing = sync_probe_service(client, plan, head, args, context, tried)
+            probe_service_uuid, action, probe_existing = sync_probe_service(
+                client,
+                plan,
+                head,
+                args,
+                context,
+                tried,
+                super_inventory=super_inventory,
+            )
             if not getattr(args, "no_deploy_probe", False):
                 deploy_result = hub_service_tool().trigger_deploy_service(
                     client,
@@ -1671,13 +1837,21 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
                 )
             else:
                 deploy_result = None
-            probe_detail = fetch_service_detail(client, probe_service_uuid, tried)
+            expected_targets = probe_target_records_for_plan(plan, super_inventory=super_inventory)
+            probe_detail, probe_result = wait_for_probe_metadata_result(
+                client,
+                probe_service_uuid,
+                tried,
+                expected_targets=expected_targets,
+                wait_s=float(getattr(args, "probe_result_wait_s", 20.0)),
+            )
             probe_applications = application_records_from_service_detail(probe_detail)
             probe_application_uuid = probe_applications[0]["uuid"] if probe_applications else ""
-            probe_result = probe_result_from_service_metadata(probe_detail)
-            if not probe_result.get("ok"):
+            if not probe_result.get("ok") or not probe_result_covers_expected_super_targets(probe_result, expected_targets):
                 probe_logs = fetch_probe_logs(client, probe_service_uuid, tried, application_uuid=probe_application_uuid)
-                probe_result = latest_probe_result(probe_logs)
+                log_result = latest_probe_result(probe_logs)
+                if log_result.get("ok"):
+                    probe_result = log_result
             else:
                 probe_logs = {"ok": True, "source": "coolify-service-description", "body": None}
             return {
@@ -1699,7 +1873,7 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
                 "probe_applications": probe_applications,
                 "probe_logs": probe_logs,
                 "probe_result": probe_result,
-                "probe_targets": probe_targets_for_plan(plan),
+                "probe_targets": expected_targets,
                 "super_inventory": super_inventory,
                 "super_inventory_error": super_inventory_error,
                 "probe_left_running": True,
@@ -1721,7 +1895,7 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
             "probe_service_name": probe_service_name(head),
             "probe_service_uuid": probe_service_uuid,
             "probe_result": probe_result,
-            "probe_targets": probe_targets_for_plan(plan),
+            "probe_targets": probe_target_records_for_plan(plan, super_inventory=super_inventory),
             "super_inventory": super_inventory,
             "super_inventory_error": super_inventory_error,
             "probe_left_running": False,
@@ -1952,6 +2126,66 @@ def compact_probe_record(probe: Mapping[str, Any]) -> dict[str, Any]:
         compact["probe_compose"] = probe.get("probe_compose")
     return compact
 
+def super_statuses_from_probe_result(probe_result: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return super-node guard observations keyed by service/cell name."""
+
+    statuses: dict[str, dict[str, Any]] = {}
+    result = probe_result.get("result") if isinstance(probe_result, Mapping) else None
+    if not isinstance(result, Mapping):
+        return statuses
+
+    for target in result.get("targets") or []:
+        if not isinstance(target, Mapping):
+            continue
+        kind = str(target.get("kind") or "").strip()
+        service_name = str(target.get("service_name") or target.get("cell_id") or "").strip()
+        if kind != "super-node" and "-super" not in service_name:
+            continue
+        if not service_name:
+            continue
+        functions = target.get("functions") if isinstance(target.get("functions"), Mapping) else {}
+        statuses[service_name] = {
+            "observed": True,
+            "ok": bool(target.get("ok")),
+            "guard_url": target.get("guard_url"),
+            "source": "coolify-private-probe",
+            "identity_ok": bool(target.get("identity_ok")),
+            "topology_ok": bool(target.get("topology_ok")),
+            "status_ok": bool(target.get("status_ok")),
+            "healthz_ok": bool(target.get("healthz_ok")),
+            "error": target.get("error") or "",
+            "functions": dict(functions),
+        }
+    return statuses
+
+
+def enrich_super_inventory_with_probe_status(
+    nodes: Sequence[Mapping[str, Any]],
+    probe_result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    statuses = super_statuses_from_probe_result(probe_result)
+    enriched: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        copied = dict(node)
+        status = statuses.get(str(copied.get("service_name") or ""))
+        if status:
+            copied["internal_status"] = status
+        else:
+            copied.setdefault(
+                "internal_status",
+                {
+                    "observed": False,
+                    "ok": False,
+                    "source": "coolify-private-probe",
+                    "reason": "private super-node guard status not observed yet",
+                },
+            )
+        enriched.append(copied)
+    return enriched
+
+
 def networks_from_probe_result(probe_result: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
     networks: dict[str, list[dict[str, Any]]] = {}
     result = probe_result.get("result") if isinstance(probe_result, Mapping) else None
@@ -2005,10 +2239,13 @@ def discover_from_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str, A
         if not probe.get("ok"):
             errors.append(f"{head.head_id}: {probe.get('error') or 'Coolify probe sync/query failed'}")
 
-        for node in probe.get("super_inventory") or []:
-            if isinstance(node, Mapping):
-                add_super_inventory_to_networks(networks, node)
-                coolify_super_node_count += 1
+        enriched_super_inventory = enrich_super_inventory_with_probe_status(
+            [node for node in (probe.get("super_inventory") or []) if isinstance(node, Mapping)],
+            probe_result if isinstance(probe_result, Mapping) else {},
+        )
+        for node in enriched_super_inventory:
+            add_super_inventory_to_networks(networks, node)
+            coolify_super_node_count += 1
         if probe.get("super_inventory_error"):
             errors.append(f"{head.head_id}: Coolify super-node inventory failed: {probe.get('super_inventory_error')}")
 
@@ -2042,6 +2279,7 @@ def discover_from_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str, A
             "probe_services_synced": probe_synced_count,
             "probe_results_observed": probe_result_count,
             "coolify_seen_super_nodes": coolify_super_node_count,
+            **super_internal_status_counts(networks),
             "topology_ready": topology_ready,
             "vpn_guard_urls_are_local_operator_urls": False,
         },
@@ -2479,6 +2717,67 @@ def existing_super_ordinals(services: Iterable[Mapping[str, Any]], network_key: 
     return sorted(set(ordinals))
 
 
+def missing_super_ordinal_gaps(ordinals: Iterable[int]) -> list[int]:
+    unique = sorted({int(item) for item in ordinals if int(item) > 0})
+    if not unique:
+        return []
+    expected = set(range(1, max(unique) + 1))
+    return sorted(expected.difference(unique))
+
+
+def require_contiguous_super_ordinals(ordinals: Iterable[int], network_key: str, head: HeadNode) -> list[int]:
+    """Return sorted ordinals, rejecting impossible host-local gaps.
+
+    all-father add/remove never accepts an ordinal from the operator.  That only
+    stays safe if the live Coolify inventory for one network+host is contiguous:
+    super1, super2, ... superN.  If Coolify still reports a just-deleted service
+    or a previous run left only super2, creating super3 would make recovery
+    worse, so add-node refuses and asks the operator to shrink back to pristine.
+    """
+
+    unique = sorted({int(item) for item in ordinals if int(item) > 0})
+    gaps = missing_super_ordinal_gaps(unique)
+    if gaps:
+        found = ", ".join(str(item) for item in unique)
+        missing = ", ".join(str(item) for item in gaps)
+        raise AllfatherControlError(
+            f"Non-contiguous {clean_node_network_key(network_key)} super-node inventory on {head.coolify_server}: "
+            f"found ordinal(s) [{found}], missing [{missing}]. Refusing to add another node because all-father "
+            "ordinals must remain contiguous. Run remove-node for this network+host until the inventory is pristine, "
+            "then run add-node again."
+        )
+    return unique
+
+
+def fdb_seed_identity_present(state: Mapping[str, Any], network_key: str) -> bool:
+    network_key = clean_node_network_key(network_key)
+    networks = state.get("networks")
+    network = networks.get(network_key) if isinstance(networks, Mapping) else {}
+    fdb = network.get("foundationdb") if isinstance(network, Mapping) else {}
+    if not isinstance(fdb, Mapping):
+        return False
+    return bool(nonempty_private_value(fdb.get("cluster_description")) and nonempty_private_value(fdb.get("cluster_id")))
+
+
+def require_fdb_seed_for_existing_super_nodes(
+    state: Mapping[str, Any],
+    private_state_path: Path,
+    network_key: str,
+    head: HeadNode,
+    existing_nodes: Sequence[Mapping[str, Any]],
+) -> None:
+    if not existing_nodes or fdb_seed_identity_present(state, network_key):
+        return
+    names = ", ".join(str(item.get("service_name") or "?") for item in existing_nodes)
+    raise AllfatherControlError(
+        f"Coolify reports existing {clean_node_network_key(network_key)} super-node(s) on {head.coolify_server} "
+        f"({names}), but {display_path(private_state_path)} has no FoundationDB seed identity for that network. "
+        "This usually means a just-deleted service is still visible in Coolify inventory or private state was cleaned "
+        "before Coolify deletion fully settled. Do not create the next node yet; run discover or remove-node again and "
+        "wait for the stale service to disappear, then run add-node again."
+    )
+
+
 def super_inventory_entry(network_key: str, head: HeadNode, ordinal: int, *, source: str = "coolify-inventory") -> dict[str, Any]:
     components = super_component_names(network_key, head, ordinal)
     return {
@@ -2491,6 +2790,8 @@ def super_inventory_entry(network_key: str, head: HeadNode, ordinal: int, *, sou
         "service_name": components["super"],
         "components": components,
         "vpn_ip": head.guard_publish_host,
+        "guard_url": f"http://{head.guard_publish_host}:{super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_SUPER_GUARD_BASE, mainnet_base=DEFAULT_MAINNET_SUPER_GUARD_BASE)}",
+        "guard_host_port": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_SUPER_GUARD_BASE, mainnet_base=DEFAULT_MAINNET_SUPER_GUARD_BASE),
         "fdb_endpoint": f"{head.guard_publish_host}:{super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_FDB_BASE, mainnet_base=DEFAULT_MAINNET_FDB_BASE)}",
         "fdb_host_port": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_FDB_BASE, mainnet_base=DEFAULT_MAINNET_FDB_BASE),
     }
@@ -2656,6 +2957,31 @@ def add_probe_records_to_networks(networks: dict[str, Any], network_key: str, re
         probe_records.extend(dict(item) for item in records)
 
 
+def super_internal_status_counts(networks: Mapping[str, Any]) -> dict[str, int]:
+    observed = 0
+    healthy = 0
+    for network in networks.values():
+        if not isinstance(network, Mapping):
+            continue
+        hosts = network.get("hosts")
+        if not isinstance(hosts, Mapping):
+            continue
+        for host_payload in hosts.values():
+            if not isinstance(host_payload, Mapping):
+                continue
+            for node in host_payload.get("super_nodes") or []:
+                if not isinstance(node, Mapping):
+                    continue
+                internal = node.get("internal_status")
+                if not isinstance(internal, Mapping):
+                    continue
+                if internal.get("observed"):
+                    observed += 1
+                if internal.get("ok"):
+                    healthy += 1
+    return {"super_nodes_internal_observed": observed, "super_nodes_internal_healthy": healthy}
+
+
 def fdb_cluster_file(description: str, cluster_id: str, coordinators: Sequence[str]) -> str:
     clean = [str(item).strip() for item in coordinators if str(item).strip()]
     return f"{description}:{cluster_id}@{','.join(clean)}"
@@ -2710,7 +3036,7 @@ def fdb_plan_for_super_node(
 
 
 def next_super_ordinal_from_inventory(services: Iterable[Mapping[str, Any]], network_key: str, head: HeadNode) -> int:
-    ordinals = existing_super_ordinals(services, network_key, head)
+    ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
     return (max(ordinals) + 1) if ordinals else 1
 
 
@@ -2811,13 +3137,67 @@ def super_server_command_script() -> str:
 import base64
 import json
 import os
+import shutil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 manifest = json.loads(base64.b64decode(os.environ["MC_ALLFATHER_SUPER_MANIFEST_B64"]).decode("utf-8"))
 port = int(os.environ.get("MC_ALLFATHER_GUARD_PORT", "41414"))
 
+def function_statuses() -> dict:
+    components = manifest.get("components") if isinstance(manifest.get("components"), dict) else {}
+    ports = manifest.get("ports") if isinstance(manifest.get("ports"), dict) else {}
+    bootstrap = manifest.get("bootstrap") if isinstance(manifest.get("bootstrap"), dict) else {}
+    fdb_plan = manifest.get("foundationdb") if isinstance(manifest.get("foundationdb"), dict) else {}
+    return {
+        "guard": {
+            "name": components.get("guard"),
+            "desired": True,
+            "running": True,
+            "status": "running",
+            "port": port,
+        },
+        "foundationdb": {
+            "name": components.get("fdb"),
+            "desired": True,
+            "running": False,
+            "status": "pending-supervisor",
+            "port": ports.get("fdb_container"),
+            "bootstrap_action": fdb_plan.get("action"),
+            "cluster_file_present": bool(fdb_plan.get("cluster_file")),
+        },
+        "hub": {
+            "name": components.get("hub"),
+            "desired": True,
+            "running": False,
+            "status": "pending-validator-rpc",
+            "port": ports.get("hub_container"),
+            "public_cutover_deferred": bool(bootstrap.get("hub_public_cutover_deferred", True)),
+        },
+        "validator_rpc": {
+            "name": components.get("validator_rpc"),
+            "desired": True,
+            "running": False,
+            "status": "pending-supervisor",
+            "rpc_port": ports.get("rpc_container"),
+            "p2p_port": ports.get("p2p_container"),
+            "besu_binary_present": bool(shutil.which("besu")),
+        },
+        "hub_admin": {
+            "desired": bool(bootstrap.get("hub_admin_requested", True)),
+            "running": False,
+            "status": "deferred-until-live-validator-rpc",
+            "private_key_present": bool(bootstrap.get("hub_admin_private_key_present")),
+        },
+        "contracts": {
+            "desired": bool(bootstrap.get("contracts_requested")),
+            "running": False,
+            "status": "deferred-until-live-validator-rpc" if bootstrap.get("contracts_requested") else "disabled",
+        },
+    }
+
 def payload(status: str = "running"):
+    functions = function_statuses()
     return {
         "ok": True,
         "service": "main-computer-allfather-super-node",
@@ -2827,6 +3207,7 @@ def payload(status: str = "running"):
         "coolify_server": manifest.get("coolify_server"),
         "ordinal": manifest.get("ordinal"),
         "components": manifest.get("components"),
+        "functions": functions,
         "desired_counts": manifest.get("desired_counts"),
         "bootstrap": manifest.get("bootstrap"),
         "public_routes": manifest.get("public_routes"),
@@ -2864,16 +3245,23 @@ ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
 
-def super_node_dockerfile_inline(base_image: str) -> str:
+def super_node_dockerfile_inline(base_image: str, guard_script: str | None = None) -> str:
     """Return a Dockerfile for the all-father super-node image.
 
     The control-plane heads may use a tiny public Python image, but super-nodes
     must be Besu/QBFT-capable from the beginning.  The guard starts first and
     keeps the container alive while FDB, Hub, validator-RPC, hub_admin, and
     contracts are guarded/deferred in the manifest.
+
+    The guard entrypoint is baked into the built image instead of relying on a
+    Compose-level entrypoint override.  Coolify accepts ``entrypoint: null`` in
+    the compose file, so the built image must replace the inherited Besu
+    entrypoint itself; otherwise Compose ``command`` arguments are passed to the
+    Besu entrypoint and the private guard never binds.
     """
 
     base = str(base_image or DEFAULT_SUPER_BASE_IMAGE).strip() or DEFAULT_SUPER_BASE_IMAGE
+    guard_script_b64 = base64.b64encode((guard_script or super_server_command_script()).encode("utf-8")).decode("ascii")
     return f"""
 FROM {base}
 
@@ -2902,10 +3290,19 @@ RUN set -eux; \\
     fi; \\
     besu --version
 
+RUN python - <<'PY'
+import base64
+from pathlib import Path
+Path("/usr/local/bin/allfather-super-guard.py").write_bytes(base64.b64decode("{guard_script_b64}"))
+PY
+
 ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-allfather-super \\
-    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,hub,fdb,validator-rpc,besu,qbft,traefik-targets
+    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,hub,fdb,validator-rpc,besu,qbft,traefik-targets \\
+    MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-guard
 
 EXPOSE {DEFAULT_SUPER_GUARD_CONTAINER_PORT} {DEFAULT_SUPER_HUB_CONTAINER_PORT} {DEFAULT_SUPER_RPC_CONTAINER_PORT} {DEFAULT_SUPER_FDB_CONTAINER_PORT} {DEFAULT_SUPER_P2P_CONTAINER_PORT}
+
+ENTRYPOINT ["python", "-u", "/usr/local/bin/allfather-super-guard.py"]
 """.strip()
 
 
@@ -2940,7 +3337,7 @@ def render_super_node_compose(
             return f"{private_bind_host}:{host_port}:{container_port}/tcp"
         return f"{host_port}:{container_port}/tcp"
     built_image = f"main-computer-allfather-super-{service_name}:latest"
-    dockerfile_inline = super_node_dockerfile_inline(image)
+    dockerfile_inline = super_node_dockerfile_inline(image, guard_script=command_script)
     lines = [
         f"name: {service_name}",
         "",
@@ -2954,14 +3351,11 @@ def render_super_node_compose(
     lines.extend(yaml_block_scalar(dockerfile_inline, 8))
     lines.extend([
         "    restart: unless-stopped",
+        "    # Coolify's Compose validator accepts a null service entrypoint.",
+        "    # The built image overrides the inherited Besu entrypoint and starts",
+        "    # /usr/local/bin/allfather-super-guard.py so the private guard binds.",
         "    entrypoint: null",
-        "    command:",
-        "      - python",
-        "      - -u",
-        "      - -c",
-        "      - |",
     ])
-    lines.extend(f"        {line}" for line in command_script.splitlines())
     lines.extend(
         [
             "    environment:",
@@ -3265,6 +3659,55 @@ def delete_coolify_service(client: Any, *, service_uuid: str, service_name: str,
     raise AllfatherControlError(f"Coolify service delete failed on all known endpoints for {service_name!r}: {last_response}")
 
 
+def wait_for_coolify_service_absent(
+    client: Any,
+    *,
+    service_name: str,
+    tried: list[dict[str, Any]],
+    wait_s: float,
+    poll_s: float,
+) -> dict[str, Any]:
+    """Poll Coolify inventory until a deleted service no longer appears.
+
+    Coolify can accept a delete request before the service list stops returning
+    the deleted record.  Returning from remove-node during that window lets the
+    next add-node see stale super1 and incorrectly allocate super2.  This helper
+    makes removal settle before private seed cleanup and before operators re-add.
+    """
+
+    wait_s = max(0.0, float(wait_s))
+    poll_s = max(0.1, float(poll_s))
+    deadline = time.monotonic() + wait_s
+    attempts = 0
+    last_services: list[dict[str, Any]] = []
+    last_matches: list[dict[str, Any]] = []
+
+    while True:
+        attempts += 1
+        last_services = service_items_for_client(client, tried)
+        last_matches = [item for item in last_services if service_name_from_item(item) == service_name]
+        if not last_matches:
+            return {
+                "confirmed_absent": True,
+                "attempt_count": attempts,
+                "wait_s": wait_s,
+                "service_name": service_name,
+                "services": last_services,
+            }
+        if wait_s <= 0 or time.monotonic() >= deadline:
+            return {
+                "confirmed_absent": False,
+                "attempt_count": attempts,
+                "wait_s": wait_s,
+                "service_name": service_name,
+                "last_status": service_status_from_item(last_matches[0]),
+                "last_uuid": service_uuid_from_item(last_matches[0]),
+                "services": last_services,
+            }
+        sleep_for = min(poll_s, max(0.1, deadline - time.monotonic()))
+        time.sleep(sleep_for)
+
+
 def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     network_key = clean_node_network_key(args.network)
     if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
@@ -3314,18 +3757,44 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     if not service_uuid:
         raise AllfatherControlError(f"Cannot remove {service_name}: Coolify service UUID is missing.")
 
-    _new_state, private_state_updates = cleanup_private_state_for_remove_node(
-        state,
-        private_state_path,
-        network_key,
-        remaining_count=remaining_count,
-        dry_run=bool(getattr(args, "dry_run", False)),
-        keep_seed_material=bool(getattr(args, "keep_seed_material", False)),
-    )
+    delete_confirmed_absent = False
+    delete_wait_result: dict[str, Any] | None = None
 
-    if not getattr(args, "dry_run", False):
+    if getattr(args, "dry_run", False):
+        _new_state, private_state_updates = cleanup_private_state_for_remove_node(
+            state,
+            private_state_path,
+            network_key,
+            remaining_count=remaining_count,
+            dry_run=True,
+            keep_seed_material=bool(getattr(args, "keep_seed_material", False)),
+        )
+    else:
         delete_response = delete_coolify_service(client, service_uuid=service_uuid, service_name=service_name, tried=tried)
         deleted = True
+        delete_wait_result = wait_for_coolify_service_absent(
+            client,
+            service_name=service_name,
+            tried=tried,
+            wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S)),
+            poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
+        )
+        delete_confirmed_absent = bool(delete_wait_result.get("confirmed_absent"))
+        if not delete_confirmed_absent:
+            raise AllfatherControlError(
+                f"Coolify accepted deletion for {service_name!r}, but the service is still present in live inventory "
+                f"after {delete_wait_result.get('wait_s')}s. Private seed material was not cleaned. Do not run add-node yet; "
+                "run remove-node again or rerun discover until the stale service disappears."
+            )
+        remaining_count = len(existing_super_ordinals(delete_wait_result.get("services", []), network_key, head))
+        _new_state, private_state_updates = cleanup_private_state_for_remove_node(
+            state,
+            private_state_path,
+            network_key,
+            remaining_count=remaining_count,
+            dry_run=False,
+            keep_seed_material=bool(getattr(args, "keep_seed_material", False)),
+        )
 
     result = {
         "ok": True,
@@ -3337,11 +3806,17 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "service_name": service_name,
         "service_uuid": service_uuid,
         "service_status_before_remove": target_status,
-        "removed_last_host_node": ordinal == 1,
+        "removed_last_host_node": remaining_count == 0,
         "remaining_host_super_nodes": remaining_count,
         "network_pristine_after_remove": remaining_count == 0,
         "private_state_updates": private_state_updates,
         "service_deleted": deleted,
+        "delete_confirmed_absent": delete_confirmed_absent,
+        "delete_wait": (
+            {key: value for key, value in (delete_wait_result or {}).items() if key != "services"}
+            if (getattr(args, "verbose", False) or delete_wait_result)
+            else None
+        ),
         "delete_response": delete_response if getattr(args, "verbose", False) else ("<hidden; pass --verbose>" if delete_response else None),
         "public_guard_routes": False,
         "ssh_used": False,
@@ -3383,8 +3858,10 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         if not version.ok:
             raise AllfatherControlError(f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}")
         services = service_items_for_client(client, tried)
+        ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
         existing_nodes = existing_super_inventory_from_services(services, network_key, head)
-        ordinal = next_super_ordinal_from_inventory(services, network_key, head)
+        require_fdb_seed_for_existing_super_nodes(state, private_state_path, network_key, head, existing_nodes)
+        ordinal = (max(ordinals) + 1) if ordinals else 1
         context = resolve_super_context(client, args, head, tried)
         service_uuid = ""
         service_action = "planned"
@@ -3572,6 +4049,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     discover_parser.add_argument("--probe-image", default=DEFAULT_IMAGE)
     discover_parser.add_argument("--probe-container-port", type=int, default=DEFAULT_PROBE_CONTAINER_PORT)
     discover_parser.add_argument("--probe-interval-s", type=float, default=DEFAULT_PROBE_INTERVAL_S)
+    discover_parser.add_argument("--probe-result-wait-s", type=float, default=20.0, help="Seconds to wait for the private probe callback to include newly discovered super-node targets.")
     discover_parser.add_argument("--no-sync-probe", action="store_true", help="Do not create/update the long-running Coolify probe service.")
     discover_parser.add_argument("--no-deploy-probe", action="store_true", help="Create/update the probe service but do not trigger deployment.")
     discover_parser.add_argument("--force-deploy-probe", action="store_true", help="Force deployment of the probe service after sync.")
@@ -3604,6 +4082,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     remove_node_parser.add_argument("--allow-mainnet", action="store_true", help="Required before removing a mainnet super-node.")
     remove_node_parser.add_argument("--dry-run", action="store_true", help="Plan the removal without deleting the Coolify service or writing private state.")
     remove_node_parser.add_argument("--existing-count", type=int, default=None, help=argparse.SUPPRESS)
+    remove_node_parser.add_argument("--delete-wait-s", type=float, default=DEFAULT_REMOVE_DELETE_WAIT_S, help="Seconds to wait for Coolify inventory to stop reporting the deleted service before cleaning seed material.")
+    remove_node_parser.add_argument("--delete-poll-s", type=float, default=DEFAULT_REMOVE_DELETE_POLL_S, help=argparse.SUPPRESS)
     remove_node_parser.add_argument("--keep-seed-material", action="store_true", help="Do not clean generated first-node keys/FDB identity when the network becomes empty.")
 
     for subparser in (plan_parser, write_parser, boot_parser, discover_parser, add_node_parser, remove_node_parser):

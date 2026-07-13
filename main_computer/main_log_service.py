@@ -187,6 +187,7 @@ class MainLogStore:
             "follow_path": "/v1/log/follow",
             "compress_path": "/v1/log/compress",
             "profile_map_path": "/v1/log/profile-map",
+            "profile_nmds_path": "/v1/log/profile-nmds",
             "pid_file": str(self.pid_path),
             "updated_at": _now_iso(),
         }
@@ -217,6 +218,7 @@ class MainLogStore:
             "follow_path": "/v1/log/follow",
             "compress_path": "/v1/log/compress",
             "profile_map_path": "/v1/log/profile-map",
+            "profile_nmds_path": "/v1/log/profile-nmds",
             "pid_file": str(self.pid_path),
             "message": message,
             "updated_at": _now_iso(),
@@ -381,7 +383,8 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
                     "surprise_path": str(self.server.store.surprise_path),
                     "follow_path": "/v1/log/follow",
                     "compress_path": "/v1/log/compress",
-            "profile_map_path": "/v1/log/profile-map",
+                    "profile_map_path": "/v1/log/profile-map",
+                    "profile_nmds_path": "/v1/log/profile-nmds",
                     "at": _now_iso(),
                 },
             )
@@ -404,22 +407,37 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
             self._handle_compress(parsed.query or "")
             return
         if parsed.path == "/v1/log/profile-map":
-            self._handle_profile_map(parsed.query or "")
+            self._handle_profile_map(parsed.query or "", default_embedding="pca")
+            return
+        if parsed.path == "/v1/log/profile-nmds":
+            self._handle_profile_map(parsed.query or "", default_embedding="nmds")
             return
         if parsed.path == "/v1/log/follow":
             self._handle_follow(parsed.query or "")
             return
         _json_response(self, 404, {"ok": False, "state": "not-found", "path": parsed.path})
 
-    def _handle_profile_map(self, query_string: str) -> None:
+    def _handle_profile_map(self, query_string: str, *, default_embedding: str = "pca") -> None:
         query = parse_qs(query_string or "")
         window = str(query.get("window", ["information"])[0] or "information").strip().lower()
         if window not in {"information", "events", "time"}:
             _json_response(self, 400, {"ok": False, "state": "bad-window", "windows": ["information", "events", "time"]})
             return
-        normalize = str(query.get("normalize", ["log1p"])[0] or "log1p").strip().lower()
-        if normalize not in {"raw", "log1p", "l1", "binary"}:
-            _json_response(self, 400, {"ok": False, "state": "bad-normalize", "normalizations": ["raw", "log1p", "l1", "binary"]})
+        normalize = str(query.get("normalize", ["log1p_l1"])[0] or "log1p_l1").strip().lower()
+        if normalize not in {"raw", "log1p", "sqrt", "l1", "log1p_l1", "binary"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-normalize", "normalizations": ["raw", "log1p", "sqrt", "l1", "log1p_l1", "binary"]})
+            return
+        distance = str(query.get("distance", query.get("metric", ["manhattan"]))[0] or "manhattan").strip().lower()
+        if distance not in {"manhattan", "braycurtis", "weighted_jaccard", "cosine"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-distance", "distances": ["manhattan", "braycurtis", "weighted_jaccard", "cosine"]})
+            return
+        feature_weighting = str(query.get("feature_weighting", ["tfidf"])[0] or "tfidf").strip().lower()
+        if feature_weighting not in {"none", "idf", "tfidf", "tfidf_l2"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-feature-weighting", "feature_weightings": ["none", "idf", "tfidf", "tfidf_l2"]})
+            return
+        embedding = str(query.get("embedding", [default_embedding])[0] or default_embedding).strip().lower()
+        if embedding not in {"pca", "mds", "classical_mds", "pcoa", "nmds", "nonmetric_mds", "non_metric_mds"}:
+            _json_response(self, 400, {"ok": False, "state": "bad-embedding", "embeddings": ["pca", "mds", "classical_mds", "pcoa", "nmds", "nonmetric_mds"]})
             return
         output_format = str(query.get("format", ["json"])[0] or "json").strip().lower()
         if output_format not in {"json", "svg"}:
@@ -436,7 +454,15 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
             max_coverage_points=_coerce_nonnegative_int(query.get("max_coverage_points", ["10000"])[0], fallback=10_000, maximum=100_000),
             max_profiles=_coerce_nonnegative_int(query.get("max_profiles", ["200"])[0], fallback=200, maximum=2_000),
             normalize=normalize,
+            distance=distance,
+            feature_weighting=feature_weighting,
+            min_df=_coerce_nonnegative_int(query.get("min_df", ["1"])[0], fallback=1, maximum=10_000),
+            max_df_fraction=_coerce_float(query.get("max_df_fraction", ["0.95"])[0], fallback=0.95, minimum=0.000001, maximum=1.0),
+            embedding=embedding,
             alpha=_coerce_float(query.get("alpha", ["0.5"])[0], fallback=0.5, minimum=0.000001, maximum=100.0),
+            nmds_iterations=_coerce_nonnegative_int(query.get("nmds_iterations", ["80"])[0], fallback=80, maximum=2_000),
+            nmds_restarts=max(1, _coerce_nonnegative_int(query.get("nmds_restarts", ["3"])[0], fallback=3, maximum=100)),
+            nmds_seed=_coerce_nonnegative_int(query.get("nmds_seed", ["17"])[0], fallback=17, maximum=2_147_483_647),
             include_distance_matrix=str(query.get("include_distance_matrix", ["0"])[0] or "").strip().lower() in {"1", "true", "yes", "on"},
         )
         try:

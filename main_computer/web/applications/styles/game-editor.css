@@ -106,6 +106,51 @@
   font-size: 0.75rem;
 }
 
+
+
+.game-editor-gpu-forge {
+  display: grid;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--gold, #fbbf24) 34%, transparent);
+  border-radius: 14px;
+  padding: 12px;
+  background:
+    radial-gradient(circle at 90% 0%, color-mix(in srgb, var(--gold, #fbbf24) 13%, transparent), transparent 55%),
+    color-mix(in srgb, var(--surface, Canvas) 88%, transparent);
+}
+
+.game-editor-gpu-forge h3 {
+  margin: 0;
+  color: var(--gold, currentColor);
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.game-editor-gpu-forge p {
+  margin: 0;
+  color: var(--muted, currentColor);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.game-editor-gpu-forge button {
+  justify-self: start;
+}
+
+.game-editor-gpu-forge pre {
+  margin: 0;
+  max-width: 100%;
+  overflow: auto;
+  border-radius: 10px;
+  padding: 9px;
+  background: color-mix(in srgb, var(--panel, Canvas) 72%, #020617);
+  color: var(--ink, currentColor);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
 .webgl-vfx-controls {
   display: flex;
   flex-wrap: wrap;
@@ -759,6 +804,40 @@
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
+}
+
+.scene-object--particle-emitter[data-gpu-forge-atlas="true"] {
+  filter:
+    drop-shadow(0 0 20px color-mix(in srgb, var(--particle-color, var(--mint, currentColor)) 48%, transparent))
+    drop-shadow(0 0 42px color-mix(in srgb, var(--particle-color, var(--mint, currentColor)) 18%, transparent));
+}
+
+.scene-gpu-forge-atlas {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-position: 0 0;
+  background-size: calc(var(--gpu-forge-columns, var(--gpu-forge-frames, 8)) * 100%) 100%;
+  mix-blend-mode: screen;
+  opacity: calc(0.78 * var(--scene-effect-alpha, 1));
+  animation: scene-gpu-forge-atlas-play var(--gpu-forge-duration, 960ms) steps(var(--gpu-forge-frames, 8)) infinite;
+  will-change: background-position, opacity, transform;
+}
+
+@keyframes scene-gpu-forge-atlas-play {
+  from {
+    background-position: 0 0;
+    opacity: calc(0.58 * var(--scene-effect-alpha, 1));
+    transform: scale(0.96);
+  }
+
+  to {
+    background-position: 100% 0;
+    opacity: calc(0.96 * var(--scene-effect-alpha, 1));
+    transform: scale(1.04);
+  }
 }
 
 .scene-particle {

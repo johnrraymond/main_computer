@@ -14,6 +14,8 @@
       project: null,
       projects: [],
       assets: [],
+      gpuForge: null,
+      gpuForgeBake: null,
       contentHash: "",
       runtime: null,
       chatController: null,
@@ -121,6 +123,14 @@
                     <button type="button" data-vfx-preset="4">4x</button>
                   </div>
                 </div>
+                <div class="game-editor-gpu-forge" aria-label="Game GPU Forge">
+                  <div>
+                    <h3>GPU Forge</h3>
+                    <p id="game-editor-gpu-forge-status">Bake reusable effect atlases; the browser still owns gameplay and composition.</p>
+                  </div>
+                  <button type="button" id="game-editor-gpu-forge-bake">Bake VFX Atlas</button>
+                  <pre id="game-editor-gpu-forge-result" hidden></pre>
+                </div>
                 <div class="game-editor-section-head">
                   <div>
                     <h3>Entities</h3>
@@ -209,6 +219,9 @@
         effectIntensity: gameEditorApp.querySelector("#game-editor-effect-intensity"),
         effectIntensityValue: gameEditorApp.querySelector("#game-editor-effect-intensity-value"),
         vfxPresetButtons: [...gameEditorApp.querySelectorAll("[data-vfx-preset]")],
+        gpuForgeBake: gameEditorApp.querySelector("#game-editor-gpu-forge-bake"),
+        gpuForgeStatus: gameEditorApp.querySelector("#game-editor-gpu-forge-status"),
+        gpuForgeResult: gameEditorApp.querySelector("#game-editor-gpu-forge-result"),
         assetUpload: gameEditorApp.querySelector("#game-editor-asset-upload"),
         uploadAsset: gameEditorApp.querySelector("#game-editor-upload-asset"),
         assetList: gameEditorApp.querySelector("#game-editor-asset-list"),
@@ -227,6 +240,7 @@
       nodes.saveProject?.addEventListener("click", () => saveGameEditorProject().catch(reportGameEditorError));
       nodes.resetProject?.addEventListener("click", () => readGameEditorProject(gameEditorState.projectId, {reason: "reset"}).catch(reportGameEditorError));
       nodes.uploadAsset?.addEventListener("click", () => uploadGameEditorAsset().catch(reportGameEditorError));
+      nodes.gpuForgeBake?.addEventListener("click", () => bakeGameEditorGpuForgeAtlas().catch(reportGameEditorError));
       nodes.frameSelected?.addEventListener("click", frameSelectedGameEditorObject);
       nodes.chatToggle?.addEventListener("click", () => setGameEditorChatOpen(!gameEditorState.chatOpen));
       nodes.chatClose?.addEventListener("click", () => {
@@ -543,6 +557,11 @@
               kind: String(script?.kind || "script")
             }
         )),
+        gpu_forge: {
+          contract: "effect-atlas-bake",
+          live_stream_required: false,
+          last_bake: gameEditorState.gpuForgeBake?.metadata || null
+        },
         guardrails: {
           target_policy: "selected_game_project_only",
           phase: "ui-context-only",
@@ -790,6 +809,132 @@
       syncGameEditorSceneStore({reason: "vfx-density"});
     }
 
+    function setGameEditorGpuForgeStatus(message) {
+      if (gameEditorState.nodes.gpuForgeStatus) gameEditorState.nodes.gpuForgeStatus.textContent = message;
+    }
+
+    function activeGameEditorGpuForgeBinding() {
+      const scene = activeGameEditorScene();
+      if (!scene || !Array.isArray(scene.objects)) return null;
+      for (const object of scene.objects) {
+        const props = object?.props && typeof object.props === "object" ? object.props : {};
+        const atlas = props.gpuForgeAtlas && typeof props.gpuForgeAtlas === "object"
+          ? props.gpuForgeAtlas
+          : {path: props.gpuForgeAtlas || props.gpuForgeAtlasPath || ""};
+        if (atlas?.path) {
+          return {object, atlas};
+        }
+      }
+      return null;
+    }
+
+    function renderGameEditorGpuForgeResult() {
+      const node = gameEditorState.nodes.gpuForgeResult;
+      if (!node) return;
+      const bake = gameEditorState.gpuForgeBake;
+      if (!bake?.metadata) {
+        const active = activeGameEditorGpuForgeBinding();
+        if (!active) {
+          node.hidden = true;
+          node.textContent = "";
+          return;
+        }
+        const atlas = active.atlas || {};
+        const label = displayObjectLabel(active.object);
+        const lines = [
+          `prebuilt atlas: assets/${atlas.path || ""}`,
+          `metadata: assets/${atlas.metadataPath || ""}`,
+          `effect: ${label || active.object?.id || "scene effect"}`,
+          `backend: ${atlas.backend || "prebuilt-game-gpu-forge-atlas"}`,
+          "renderer: prebuilt forge asset",
+          "browser: sprite-sheet playback/composition, no screen stream"
+        ];
+        node.textContent = lines.join("\n");
+        node.hidden = false;
+        return;
+      }
+      const metadata = bake.metadata;
+      const renderer = metadata.renderer || {};
+      const lines = [
+        `atlas: assets/${metadata.atlas_path || ""}`,
+        `metadata: assets/${metadata.metadata_path || ""}`,
+        `effect: ${metadata.effect_label || metadata.effect_id || "scene effect"} (${metadata.effect_motion || "effect"})`,
+        `backend: ${metadata.backend || "local-procedural-svg-fallback"}`,
+        `renderer: ${renderer.used ? "sidecar" : "local fallback"}`,
+        `linked: ${metadata.browser_binding?.target || "particle-emitter.props.gpuForgeAtlas"}`,
+        "browser: sprite-sheet playback/composition, no screen stream"
+      ];
+      node.textContent = lines.join("\n");
+      node.hidden = false;
+    }
+
+    function applyGameEditorGpuForgeBakeToScene(data) {
+      const metadata = data?.metadata || {};
+      const binding = metadata.browser_binding?.particle_emitter_props?.gpuForgeAtlas;
+      if (!binding?.path) return false;
+      const scene = activeGameEditorScene();
+      if (!scene || !Array.isArray(scene.objects)) return false;
+      const effectId = String(metadata.effect_id || data.effect_id || "");
+      let object = effectId ? scene.objects.find((candidate) => String(candidate?.id || "") === effectId) : null;
+      if (!object || object.type !== "particle-emitter") {
+        const selected = selectedGameEditorObject();
+        object = selected?.type === "particle-emitter" ? selected : scene.objects.find((candidate) => candidate?.type === "particle-emitter");
+      }
+      if (!object) return false;
+      object.props = object.props && typeof object.props === "object" ? object.props : {};
+      object.props.gpuForgeAtlas = {
+        path: String(binding.path || ""),
+        metadataPath: String(binding.metadataPath || ""),
+        frameCount: Number(binding.frameCount) || 8,
+        frameWidth: Number(binding.frameWidth) || 128,
+        frameHeight: Number(binding.frameHeight) || 128,
+        columns: Number(binding.columns) || Number(binding.frameCount) || 8,
+        rows: Number(binding.rows) || 1,
+        digest: String(binding.digest || metadata.digest || ""),
+        backend: String(binding.backend || metadata.backend || "local-procedural-svg-fallback"),
+        playback: String(binding.playback || "sprite-sheet")
+      };
+      object.props.gpuForgePlayback = "sprite-sheet";
+      gameEditorState.selectedObjectId = String(object.id || gameEditorState.selectedObjectId || "");
+      markGameEditorDirty("GPU Forge atlas linked - save project to persist scene reference");
+      syncGameEditorInspector();
+      renderGameEditorEntityList();
+      renderGameEditorPreview();
+      return true;
+    }
+
+    async function bakeGameEditorGpuForgeAtlas() {
+      if (!gameEditorState.project) {
+        setGameEditorGpuForgeStatus("load a game project before baking an atlas");
+        return null;
+      }
+      const scene = activeGameEditorScene();
+      if (!scene) {
+        setGameEditorGpuForgeStatus("select a scene before baking an atlas");
+        return null;
+      }
+      const selected = selectedGameEditorObject();
+      const selectedEffectId = selected?.type === "particle-emitter" ? String(selected.id || "") : "";
+      const label = selectedEffectId ? displayObjectLabel(selected) : "first compatible particle emitter";
+      setGameEditorGpuForgeStatus(`baking ${label} into a local atlas...`);
+      const data = await gameEditorPost("/api/applications/game-editor/gpu-forge/bake-effect-atlas", {
+        project_id: gameEditorState.projectId,
+        scene_id: scene.id || gameEditorState.selectedSceneId,
+        effect_id: selectedEffectId,
+        selected_object_id: selectedEffectId,
+        project: gameEditorState.project
+      });
+      gameEditorState.gpuForge = data.status || null;
+      gameEditorState.gpuForgeBake = data;
+      await loadGameEditorAssets();
+      const linked = applyGameEditorGpuForgeBakeToScene(data);
+      renderGameEditorGpuForgeResult();
+      const metadata = data.metadata || {};
+      setGameEditorGpuForgeStatus(`baked ${metadata.effect_label || metadata.effect_id || "effect"} atlas into project assets${linked ? " and linked it to the emitter" : ""}`);
+      setGameEditorStatus(`GPU Forge baked atlas: assets/${metadata.atlas_path || data.atlas_asset?.path || ""}${linked ? " (save project to persist link)" : ""}`);
+      return data;
+    }
+
     function gameEditorProjectScenes(project = gameEditorState.project) {
       return Array.isArray(project?.scenes) ? project.scenes : [];
     }
@@ -828,6 +973,7 @@
       syncGameEditorInspector();
       renderGameEditorEntityList();
       renderGameEditorAssets();
+      renderGameEditorGpuForgeResult();
       renderGameEditorPreview();
       syncGameEditorSceneStore({reason});
       if (updateRoute) updateGameEditorRouteParams();
@@ -987,6 +1133,10 @@
       renderGameEditorProject();
       updateGameEditorRouteParams();
       refreshGameEditorChatMount(previousProjectId);
+      const activeForge = activeGameEditorGpuForgeBinding();
+      if (activeForge) {
+        setGameEditorGpuForgeStatus(`prebuilt GPU Forge atlas active on ${displayObjectLabel(activeForge.object)}`);
+      }
       setGameEditorStatus(reason === "reset" ? "project reloaded" : "project loaded");
       return gameEditorState;
     }

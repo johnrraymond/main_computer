@@ -79,6 +79,7 @@ def test_log_profile_map_builds_sparse_profiles_and_2d_embedding(tmp_path: Path)
     assert result["summary"]["profile_count"] == 2
     assert result["summary"]["coverage_point_count"] > 0
     assert result["distance"]["metric"] == "manhattan"
+    assert result["embedding"]["method"] == "pca"
     assert len(result["distance"]["matrix"]) == 2
     assert len(result["embedding"]["points"]) == 2
     assert all("x" in point and "y" in point for point in result["embedding"]["points"])
@@ -94,6 +95,66 @@ def test_log_profile_map_builds_sparse_profiles_and_2d_embedding(tmp_path: Path)
     svg = render_profile_map_svg(result)
     assert svg.startswith("<svg")
     assert "Main log behavior profile map" in svg
+
+
+def test_log_profile_map_pca_uses_top_orthogonal_vector_dimensions(tmp_path: Path) -> None:
+    log_path = tmp_path / "runtime" / "main_log" / "main.log.lex"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    events = []
+    seq = 1
+    # Four behavioral regions that differ along two independent dimensions:
+    # app/executor on one axis and healthy/error on the other.
+    regions = [
+        ("app", "ready", "main-computer-app-service: health ready state=ON phase=serving"),
+        ("app", "error", "Traceback RuntimeError app failed status=500 phase=serving"),
+        ("executor", "ready", "main-computer-executor-service: health ready state=ON phase=worker"),
+        ("executor", "error", "Traceback RuntimeError executor failed status=500 phase=worker"),
+    ]
+    for service, state, message in regions:
+        for index in range(8):
+            events.append(
+                {
+                    "schema_version": 1,
+                    "ingest_seq": seq,
+                    "at": f"2026-07-12T22:{seq // 60:02d}:{seq % 60:02d}+00:00",
+                    "kind": "child-stream",
+                    "service": f"main-computer-{service}-service",
+                    "source_service": service,
+                    "stream": "stderr" if state == "error" else "stdout",
+                    "process_name": f"{service}_service.py",
+                    "message": f"{message} loop_count={index}",
+                }
+            )
+            seq += 1
+    with LexLogWriter(log_path) as writer:
+        for event in events:
+            writer.write_record(event)
+
+    result = build_log_profile_map(
+        root=tmp_path,
+        options=ProfileMapOptions(
+            window="events",
+            event_window=8,
+            event_stride=8,
+            max_profiles=10,
+            embedding="pca",
+            normalize="binary",
+            feature_weighting="none",
+            max_df_fraction=1.0,
+        ),
+    )
+
+    assert result["embedding"]["method"] == "pca"
+    diagnostics = result["embedding"]["diagnostics"]
+    assert diagnostics["dimensions_filled"] >= 2
+    ratios = diagnostics["explained_variance_ratio_kept"]
+    assert len(ratios) >= 2
+    assert ratios[0] > 0
+    assert ratios[1] > 0
+    points = result["embedding"]["points"]
+    assert len({point["x"] for point in points}) > 1
+    assert len({point["y"] for point in points}) > 1
+
 
 
 def test_log_profile_map_information_windows_are_sparse(tmp_path: Path) -> None:
@@ -118,6 +179,104 @@ def test_log_profile_map_information_windows_are_sparse(tmp_path: Path) -> None:
         assert profile["nonzero_points"] < result["summary"]["coverage_point_count"]
         assert isinstance(profile["positive_counts"], dict)
 
+
+
+def test_log_profile_map_supports_overlap_distance_for_better_dispersion(tmp_path: Path) -> None:
+    log_path = tmp_path / "runtime" / "main_log" / "main.log.lex"
+    _write_log(log_path)
+
+    result = build_log_profile_map(
+        root=tmp_path,
+        options=ProfileMapOptions(
+            window="events",
+            event_window=3,
+            event_stride=3,
+            max_profiles=10,
+            max_coverage_points=10_000,
+            normalize="log1p_l1",
+            distance="weighted_jaccard",
+            feature_weighting="tfidf",
+            max_df_fraction=0.95,
+            include_distance_matrix=True,
+        ),
+    )
+
+    assert result["ok"] is True
+    assert result["distance"]["metric"] == "weighted_jaccard"
+    assert result["distance"]["feature_weighting"] == "tfidf"
+    assert result["distance"]["diagnostics"]["pair_count"] >= 1
+    assert result["summary"]["vector_features_retained"] > 0
+    assert len(result["embedding"]["points"]) == result["summary"]["profile_count"]
+
+    svg = render_profile_map_svg(result, label_limit=2)
+    assert "pca embedding" in svg
+    assert "Main log behavior profile map" in svg
+
+
+def test_log_profile_map_nmds_uses_distance_ranks(tmp_path: Path) -> None:
+    log_path = tmp_path / "runtime" / "main_log" / "main.log.lex"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    events = []
+    seq = 1
+    # Four distinct behavioral sample windows arranged so NMDS has both
+    # service and outcome variation to preserve from the distance ranks.
+    regions = [
+        ("app", "ready", "main-computer-app-service: health ready state=ON phase=serving"),
+        ("app", "error", "Traceback RuntimeError app failed status=500 phase=serving"),
+        ("executor", "ready", "main-computer-executor-service: health ready state=ON phase=worker"),
+        ("executor", "error", "Traceback RuntimeError executor failed status=500 phase=worker"),
+    ]
+    for service, state, message in regions:
+        for index in range(6):
+            events.append(
+                {
+                    "schema_version": 1,
+                    "ingest_seq": seq,
+                    "at": f"2026-07-12T23:{seq // 60:02d}:{seq % 60:02d}+00:00",
+                    "kind": "child-stream",
+                    "service": f"main-computer-{service}-service",
+                    "source_service": service,
+                    "stream": "stderr" if state == "error" else "stdout",
+                    "process_name": f"{service}_service.py",
+                    "message": f"{message} loop_count={index}",
+                }
+            )
+            seq += 1
+    with LexLogWriter(log_path) as writer:
+        for event in events:
+            writer.write_record(event)
+
+    result = build_log_profile_map(
+        root=tmp_path,
+        options=ProfileMapOptions(
+            window="events",
+            event_window=6,
+            event_stride=6,
+            max_profiles=10,
+            embedding="nmds",
+            normalize="binary",
+            distance="manhattan",
+            feature_weighting="none",
+            max_df_fraction=1.0,
+            nmds_iterations=25,
+            nmds_restarts=2,
+            nmds_seed=123,
+        ),
+    )
+
+    assert result["embedding"]["method"] == "nmds"
+    diagnostics = result["embedding"]["diagnostics"]
+    assert diagnostics["distance_matrix_used"] is True
+    assert diagnostics["stress"] is not None
+    assert diagnostics["stress"] >= 0
+    assert diagnostics["attempts"]
+    points = result["embedding"]["points"]
+    assert len(points) == 4
+    assert len({point["x"] for point in points}) > 1
+    assert len({point["y"] for point in points}) > 1
+
+    svg = render_profile_map_svg(result, label_limit=4)
+    assert "nmds embedding" in svg
 
 def test_profile_map_svg_uses_readable_defaults_for_outlier_heavy_maps() -> None:
     points = []
