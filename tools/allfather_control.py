@@ -25,6 +25,7 @@ import hashlib
 import re
 import secrets
 import time
+import zlib
 from datetime import datetime, timezone
 import sys
 import urllib.parse
@@ -53,6 +54,8 @@ DEFAULT_PROBE_CONTAINER_PORT = 41415
 DEFAULT_PROBE_INTERVAL_S = 15.0
 DEFAULT_REMOVE_DELETE_WAIT_S = 45.0
 DEFAULT_REMOVE_DELETE_POLL_S = 2.0
+DEFAULT_ADD_NODE_READY_WAIT_S = 360.0
+DEFAULT_ADD_NODE_READY_POLL_S = 5.0
 DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
@@ -76,6 +79,22 @@ PRIVATE_PLACEHOLDER_RE = re.compile(r"^\s*(?:<[^>]+>|TODO|TBD|CHANGEME|REPLACE_M
 PRIVATE_STATE_GENERATOR = "tools/allfather_control.py:add-node"
 FDB_CLUSTER_ID_RE = re.compile(r"^[A-Za-z0-9_:-]{4,64}$")
 FDB_CLUSTER_DESCRIPTION_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+ALLFATHER_CONTRACT_SOURCE_FILES = {
+    "AlphaBetaLockout.sol": REPO_ROOT / "contracts" / "AlphaBetaLockout.sol",
+    "src/HubCreditBridgeEscrow.sol": REPO_ROOT / "contracts" / "src" / "HubCreditBridgeEscrow.sol",
+    "src/XLagBridgeReserve.sol": REPO_ROOT / "contracts" / "src" / "XLagBridgeReserve.sol",
+}
+
+
+def allfather_contract_sources_b64() -> dict[str, str]:
+    """Return contract sources embedded into the self-contained super-node image."""
+
+    payload: dict[str, str] = {}
+    for contract_path, source_path in ALLFATHER_CONTRACT_SOURCE_FILES.items():
+        payload[contract_path] = base64.b64encode(source_path.read_text(encoding="utf-8").encode("utf-8")).decode("ascii")
+    return payload
+
 
 
 class AllfatherControlError(ValueError):
@@ -531,6 +550,7 @@ import base64
 import json
 import os
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(os.environ.get("MC_ALLFATHER_GUARD_PORT", "41414"))
@@ -766,6 +786,7 @@ import json
 import os
 import threading
 import time
+import zlib
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -2610,26 +2631,31 @@ def materialize_private_state_for_add_node(
     network_key: str,
     *,
     ordinal: int,
+    cell_id: str,
     no_contracts: bool,
     dry_run: bool,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Ensure add-node has local bootstrap secrets without treating state as topology.
 
-    Missing ``hub_admin`` and first-node ``deployer`` keys are generated into
-    ``all_father.private.yaml``.  The file remains a seed/control file: it stores
-    secrets and FDB cluster identity, not the list of running super-nodes.
+    A node-scoped ``hub_admin`` key is generated for every new super-node, while
+    the first-node ``deployer`` key remains network-scoped because it deploys
+    network-level contracts once.  The file remains a seed/control file: it
+    stores secrets and FDB cluster identity, not the list of running super-nodes.
     """
 
     network_key = clean_node_network_key(network_key)
     mutable_state = json.loads(json.dumps(dict(state)))
     network = ensure_network_private_state(mutable_state, network_key)
     wallets = ensure_mapping_child(network, "wallets")
+    node_seed_material = ensure_mapping_child(network, "node_seed_material")
+    node_seed = ensure_mapping_child(node_seed_material, str(cell_id or f"super{ordinal}"))
+    node_wallets = ensure_mapping_child(node_seed, "wallets")
     generated: list[dict[str, Any]] = []
 
     materialize_wallet_key(
-        wallets,
+        node_wallets,
         "hub_admin",
-        reason=f"{network_key} all-father hub_admin bootstrap",
+        reason=f"{network_key} {cell_id} node hub_admin bootstrap",
         generated=generated,
     )
     if ordinal == 1 and not no_contracts:
@@ -2646,12 +2672,27 @@ def materialize_private_state_for_add_node(
         write_yaml_mapping(path, mutable_state)
 
     wallets_for_network = network_wallets_from_private_state(mutable_state, network_key)
+    node_hub_admin = _wallet_mapping_from_state_path(
+        mutable_state,
+        "networks",
+        network_key,
+        "node_seed_material",
+        str(cell_id or f"super{ordinal}"),
+        "wallets",
+        "hub_admin",
+    )
+    if node_hub_admin:
+        wallets_for_network = dict(wallets_for_network)
+        wallets_for_network["hub_admin"] = node_hub_admin
     return mutable_state, wallets_for_network, {
         "path": display_path(path),
         "written": bool(generated and not dry_run),
         "dry_run": bool(dry_run),
         "generated": generated,
         "wallets_generated": [item["wallet"] for item in generated if item.get("kind") == "wallet_private_key"],
+        "node_hub_admin_cell_id": str(cell_id or f"super{ordinal}"),
+        "node_hub_admin_private_key_present": bool(wallet_private_key(wallets_for_network, "hub_admin")),
+        "node_seed_material_path": f"networks.{network_key}.node_seed_material.{cell_id or f'super{ordinal}'}.wallets.hub_admin",
         "fdb_identity_generated": any(str(item.get("kind", "")).startswith("fdb_") for item in generated),
         "fdb_cluster_description": str(fdb.get("cluster_description") or ""),
         "fdb_cluster_id_present": bool(nonempty_private_value(fdb.get("cluster_id"))),
@@ -3153,6 +3194,8 @@ def super_manifest(
                 "private_key_present": bool(wallet_material["hub_admin_private_key"]),
                 "create_requested": bool(wallet_material["hub_admin_create_requested"]),
                 "key_source": wallet_material["hub_admin_key_source"],
+                "scope": "node",
+                "cell_id": names["super"],
             },
             "deployer": {
                 "address": wallet_material["deployer_address"],
@@ -3171,7 +3214,9 @@ def super_manifest(
 
 
 def super_server_command_script() -> str:
-    return r"""
+    contract_sources_b64 = allfather_contract_sources_b64()
+    script = r"""
+from __future__ import annotations
 import base64
 import json
 import os
@@ -3181,10 +3226,12 @@ import socket
 import subprocess
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 import urllib.request
+import urllib.error
 
 manifest = json.loads(base64.b64decode(os.environ["MC_ALLFATHER_SUPER_MANIFEST_B64"]).decode("utf-8"))
 port = int(os.environ.get("MC_ALLFATHER_GUARD_PORT", "41414"))
@@ -3198,6 +3245,8 @@ network_key = str(manifest.get("network_key") or "")
 cell_id = str(manifest.get("cell_id") or "")
 ordinal = int(manifest.get("ordinal") or 0)
 vpn_ip = str(manifest.get("vpn_ip") or (fdb_plan.get("new_node") or {}).get("vpn_ip") or "").strip()
+CONTRACT_SOURCES_B64 = __ALLFATHER_CONTRACT_SOURCES_B64__
+BOOTSTRAP_MARKER_BYTECODE = "0x6001600c60003960016000f300"
 
 started_at = time.time()
 lock = threading.RLock()
@@ -3305,6 +3354,304 @@ def run_once(name: str, command: list[str], timeout: int = 30) -> tuple[bool, st
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
 
+
+def normalize_private_key(value: str) -> str:
+    clean = str(value or "").strip()
+    if not clean:
+        return ""
+    if clean.startswith("0x"):
+        clean = clean[2:]
+    if len(clean) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in clean):
+        return ""
+    return "0x" + clean.lower()
+
+def env_private_key(name: str) -> str:
+    return normalize_private_key(os.environ.get(name, ""))
+
+def deterministic_private_key(label: str) -> str:
+    import hashlib
+    digest = hashlib.sha256(f"{network_key}:{cell_id}:{label}".encode("utf-8")).hexdigest()
+    if set(digest) == {"0"}:
+        digest = "1" + digest[1:]
+    return "0x" + digest
+
+def derive_address(private_key: str) -> str:
+    key = normalize_private_key(private_key)
+    if not key:
+        return ""
+    try:
+        from eth_account import Account
+        return str(Account.from_key(key).address)
+    except Exception:
+        return ""
+
+def bootstrap_wallets() -> dict:
+    hub_admin_key = env_private_key("MC_ALLFATHER_HUB_ADMIN_PRIVATE_KEY")
+    deployer_key = env_private_key("MC_ALLFATHER_DEPLOYER_PRIVATE_KEY")
+    wallets = {
+        "hub_admin": {"private_key_present": bool(hub_admin_key), "address": derive_address(hub_admin_key), "scope": "node"},
+        "deployer": {"private_key_present": bool(deployer_key), "address": derive_address(deployer_key), "scope": "network"},
+    }
+    office_keys = []
+    for index in range(4):
+        if index == 0 and hub_admin_key:
+            office_keys.append(hub_admin_key)
+        elif index == 1 and deployer_key:
+            office_keys.append(deployer_key)
+        else:
+            office_keys.append(deterministic_private_key(f"governance-office-{index}"))
+    wallets["governance_offices"] = [
+        {"index": index, "address": derive_address(key), "runtime_key_source": "hub-admin" if index == 0 and hub_admin_key else "deployer" if index == 1 and deployer_key else "deterministic-node-seed"}
+        for index, key in enumerate(office_keys)
+    ]
+    return wallets
+
+def bootstrap_alloc_addresses() -> list[str]:
+    wallets = bootstrap_wallets()
+    addresses = []
+    for key in ("hub_admin", "deployer"):
+        address = str(wallets.get(key, {}).get("address") or "").strip()
+        if address:
+            addresses.append(address)
+    for record in wallets.get("governance_offices") or []:
+        address = str(record.get("address") or "").strip() if isinstance(record, dict) else ""
+        if address:
+            addresses.append(address)
+    seen = set()
+    unique = []
+    for address in addresses:
+        clean = address.lower()
+        if clean not in seen:
+            seen.add(clean)
+            unique.append(address)
+    return unique
+
+def fund_genesis_accounts(genesis_path: Path) -> None:
+    try:
+        payload = json.loads(genesis_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    alloc = payload.setdefault("alloc", {})
+    if not isinstance(alloc, dict):
+        alloc = {}
+        payload["alloc"] = alloc
+    for address in bootstrap_alloc_addresses():
+        clean = str(address).strip()
+        if clean.startswith("0x"):
+            clean = clean[2:]
+        if len(clean) == 40:
+            alloc.setdefault(clean.lower(), {"balance": "0x3635C9ADC5DEA00000"})
+    genesis_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+def json_rpc(method: str, params: list | None = None, timeout: float = 3.0):
+    rpc_port = int(ports.get("rpc_container") or 8545)
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{rpc_port}",
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+def local_enode() -> str:
+    try:
+        payload = json_rpc("admin_nodeInfo", timeout=2.0)
+        result = payload.get("result") if isinstance(payload, dict) else {}
+        return str(result.get("enode") or "").strip() if isinstance(result, dict) else ""
+    except Exception:
+        return ""
+
+def qbft_bootstrap_payload() -> dict:
+    genesis = state_root / "qbft" / "config" / "genesis.json"
+    bootnodes = []
+    enode = local_enode()
+    if enode:
+        bootnodes.append(enode)
+    genesis_payload = {}
+    try:
+        genesis_payload = json.loads(genesis.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {
+        "ok": bool(genesis_payload),
+        "network_key": network_key,
+        "cell_id": cell_id,
+        "qbft": {
+            "genesis": genesis_payload,
+            "bootnodes": bootnodes,
+            "rpc_port": int(ports.get("rpc_container") or 8545),
+            "p2p_port": int(ports.get("p2p_container") or 30303),
+        },
+    }
+
+def fetch_shared_qbft_config() -> tuple[bool, str, dict, list[str]]:
+    for node in fdb_plan.get("existing_nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        guard_url = str(node.get("guard_url") or "").rstrip("/")
+        if not guard_url:
+            continue
+        try:
+            request = urllib.request.Request(f"{guard_url}/qbft/bootstrap", headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=4.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            qbft = payload.get("qbft") if isinstance(payload, dict) else {}
+            genesis = qbft.get("genesis") if isinstance(qbft, dict) else {}
+            bootnodes = qbft.get("bootnodes") if isinstance(qbft, dict) else []
+            if isinstance(genesis, dict) and genesis:
+                return True, f"shared-qbft-config-from-{node.get('service_name') or guard_url}", genesis, [str(item) for item in bootnodes if str(item).strip()]
+        except Exception:
+            continue
+    return False, "blocked-awaiting-shared-qbft-genesis", {}, []
+
+def write_node_key(key_file: Path, *, label: str = "validator") -> None:
+    if key_file.exists():
+        return
+    key_file.write_text(deterministic_private_key(label)[2:] + "\n", encoding="utf-8")
+
+def deployment_state_path(kind: str) -> Path:
+    ensure_dirs()
+    path = state_root / "bootstrap"
+    path.mkdir(parents=True, exist_ok=True)
+    return path / f"{kind}.json"
+
+def ensure_hub_admin(validator_ready: bool) -> bool:
+    desired = bool(bootstrap.get("hub_admin_requested", True))
+    marker = deployment_state_path("hub_admin")
+    if not desired:
+        state("hub_admin", desired=False, running=False, status="disabled")
+        return True
+    if not validator_ready:
+        state("hub_admin", desired=True, running=False, status="deferred-until-live-validator-rpc", private_key_present=bool(env_private_key("MC_ALLFATHER_HUB_ADMIN_PRIVATE_KEY")))
+        return False
+    if marker.exists():
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        state("hub_admin", desired=True, running=True, status="bootstrapped", private_key_present=True, address=payload.get("address"), scope="node", completed=True)
+        return True
+    key = env_private_key("MC_ALLFATHER_HUB_ADMIN_PRIVATE_KEY")
+    address = derive_address(key)
+    if not key or not address:
+        state("hub_admin", desired=True, running=False, status="missing-or-invalid-hub-admin-key", private_key_present=bool(key), scope="node")
+        return False
+    payload = {
+        "schema": "main-computer.allfather.hub-admin-bootstrap.v1",
+        "network_key": network_key,
+        "cell_id": cell_id,
+        "address": address,
+        "scope": "node",
+        "created_at_uptime_s": now_s(),
+        "validator_rpc": f"http://127.0.0.1:{int(ports.get('rpc_container') or 8545)}",
+    }
+    marker.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    state("hub_admin", desired=True, running=True, status="bootstrapped", private_key_present=True, address=address, scope="node", completed=True)
+    return True
+
+def compile_contracts() -> dict:
+    from solcx import compile_standard, set_solc_version
+    set_solc_version("0.8.24")
+    sources = {
+        name: {"content": base64.b64decode(encoded).decode("utf-8")}
+        for name, encoded in CONTRACT_SOURCES_B64.items()
+    }
+    return compile_standard(
+        {
+            "language": "Solidity",
+            "sources": sources,
+            "settings": {
+                "optimizer": {"enabled": True, "runs": 200},
+                "outputSelection": {"*": {"*": ["abi", "evm.bytecode.object"]}},
+            },
+        }
+    )
+
+def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name: str, args: list) -> dict:
+    contract_data = compiled["contracts"][source_name][contract_name]
+    abi = contract_data["abi"]
+    bytecode = "0x" + contract_data["evm"]["bytecode"]["object"]
+    contract = w3.eth.contract(abi=abi, bytecode=bytecode)
+    tx = contract.constructor(*args).build_transaction(
+        {
+            "from": account.address,
+            "nonce": w3.eth.get_transaction_count(account.address),
+            "gas": 8000000,
+            "gasPrice": 0,
+            "chainId": int(w3.eth.chain_id),
+        }
+    )
+    signed = account.sign_transaction(tx)
+    raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
+    tx_hash = w3.eth.send_raw_transaction(raw)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=90)
+    address = str(receipt.contractAddress or "")
+    if not address:
+        raise RuntimeError(f"{contract_name} deployment did not return a contract address")
+    return {"address": address, "transaction_hash": w3.to_hex(tx_hash), "target": f"{source_name}:{contract_name}"}
+
+def ensure_contracts(validator_ready: bool, hub_admin_ready: bool) -> bool:
+    desired = bool(bootstrap.get("contracts_requested"))
+    marker = deployment_state_path("contracts")
+    if not desired:
+        state("contracts", desired=False, running=False, status="not-required-existing-network" if ordinal != 1 else "disabled")
+        return True
+    if not validator_ready:
+        state("contracts", desired=True, running=False, status="deferred-until-live-validator-rpc")
+        return False
+    if not hub_admin_ready:
+        state("contracts", desired=True, running=False, status="deferred-until-hub-admin")
+        return False
+    if marker.exists():
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        state("contracts", desired=True, running=True, status="deployed", deployment=payload, contract_count=len(payload.get("contracts") or {}), completed=True)
+        return True
+    deployer_key = env_private_key("MC_ALLFATHER_DEPLOYER_PRIVATE_KEY")
+    if not deployer_key:
+        state("contracts", desired=True, running=False, status="missing-deployer-private-key")
+        return False
+    try:
+        from eth_account import Account
+        from web3 import Web3
+        w3 = Web3(Web3.HTTPProvider(f"http://127.0.0.1:{int(ports.get('rpc_container') or 8545)}", request_kwargs={"timeout": 10}))
+        if not w3.is_connected():
+            state("contracts", desired=True, running=False, status="waiting-validator-rpc-json-rpc")
+            return False
+        account = Account.from_key(deployer_key)
+        wallets = bootstrap_wallets()
+        hub_admin_address = str(wallets.get("hub_admin", {}).get("address") or account.address)
+        offices = [str(item.get("address")) for item in wallets.get("governance_offices") or [] if isinstance(item, dict) and str(item.get("address") or "").strip()]
+        if len(set(offices)) < 4:
+            offices = [account.address, hub_admin_address, derive_address(deterministic_private_key("governance-office-2")), derive_address(deterministic_private_key("governance-office-3"))]
+        compiled = compile_contracts()
+        deployments = {
+            "alpha-beta-lockout": deploy_contract(w3, account, compiled, "AlphaBetaLockout.sol", "AlphaBetaLockout", [offices[:4]]),
+            "xlag-bridge-reserve": deploy_contract(w3, account, compiled, "src/XLagBridgeReserve.sol", "XLagBridgeReserve", [offices[:4], int(os.environ.get("MC_ALLFATHER_MAX_PAYOUT_WEI", "1000000000000000000")), 1, 1]),
+            "hub_credit_bridge_escrow": deploy_contract(w3, account, compiled, "src/HubCreditBridgeEscrow.sol", "HubCreditBridgeEscrow", [hub_admin_address]),
+        }
+        payload = {
+            "schema": "main-computer.allfather.contract-deployment.v1",
+            "network_key": network_key,
+            "cell_id": cell_id,
+            "chain": {"chain_id": int(w3.eth.chain_id), "rpc_url": f"http://127.0.0.1:{int(ports.get('rpc_container') or 8545)}"},
+            "hub_admin": {"address": hub_admin_address, "scope": "node"},
+            "offices": offices[:4],
+            "contracts": deployments,
+            "created_at_uptime_s": now_s(),
+        }
+        marker.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        state("contracts", desired=True, running=True, status="deployed", deployment=payload, contract_count=len(deployments), completed=True)
+        return True
+    except Exception as exc:
+        state("contracts", desired=True, running=False, status="deployment-failed", last_error=f"{type(exc).__name__}: {exc}")
+        return False
+
+
 def ensure_fdb() -> bool:
     fdb_port = int(ports.get("fdb_container") or 4550)
     cluster_file = write_fdb_cluster_file()
@@ -3367,7 +3714,13 @@ def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
     if genesis.exists() and key_file.exists():
         return True, "existing-qbft-config", genesis, key_file
     if ordinal != 1 and str(fdb_plan.get("action") or "") != "initialize-new-cluster":
-        return False, "blocked-awaiting-shared-qbft-genesis", None, None
+        ok, reason, shared_genesis, bootnodes = fetch_shared_qbft_config()
+        if not ok:
+            return False, reason, None, None
+        genesis.write_text(json.dumps(shared_genesis, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        write_node_key(key_file, label="validator-rpc-joiner")
+        (config_dir / "bootnodes.json").write_text(json.dumps({"bootnodes": bootnodes}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return True, reason, genesis, key_file
     if not command_exists("besu"):
         return False, "missing-besu", None, None
 
@@ -3417,6 +3770,7 @@ def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
     if not generated_genesis.exists() or not generated_keys:
         return False, "qbft-config-generation-missing-output", None, None
     genesis.write_text(generated_genesis.read_text(encoding="utf-8"), encoding="utf-8")
+    fund_genesis_accounts(genesis)
     key_file.write_text(generated_keys[0].read_text(encoding="utf-8").strip() + "\n", encoding="utf-8")
     return True, "generated-single-validator-qbft-config", genesis, key_file
 
@@ -3433,6 +3787,14 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
     data_path = state_root / "qbft" / "data"
     data_path.mkdir(parents=True, exist_ok=True)
     p2p_host = vpn_ip or "127.0.0.1"
+    bootnodes = []
+    bootnodes_file = state_root / "qbft" / "config" / "bootnodes.json"
+    if bootnodes_file.exists():
+        try:
+            bootnodes_payload = json.loads(bootnodes_file.read_text(encoding="utf-8"))
+            bootnodes = [str(item).strip() for item in bootnodes_payload.get("bootnodes") or [] if str(item).strip()]
+        except Exception:
+            bootnodes = []
     command = [
         "besu",
         "--data-path", str(data_path),
@@ -3449,6 +3811,8 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         "--min-gas-price=0",
         "--logging=INFO",
     ]
+    if bootnodes:
+        command.append("--bootnodes=" + ",".join(bootnodes))
     start_child("validator_rpc", command)
     running = child_running("validator_rpc")
     rpc_ok = http_json_ok(f"http://127.0.0.1:{rpc_port}", timeout=0.7) or port_open("127.0.0.1", rpc_port)
@@ -3466,6 +3830,7 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         genesis_file_present=genesis.exists(),
         node_key_present=key_file.exists(),
         rpc_http_ok=rpc_ok,
+        bootnode_count=len(bootnodes),
         last_exit_code=child_exit("validator_rpc"),
     )
     return running and rpc_ok
@@ -3509,24 +3874,16 @@ def ensure_hub(validator_ready: bool) -> bool:
     )
     return running and health_ok
 
-def update_deferred(validator_ready: bool) -> None:
-    hub_admin_desired = bool(bootstrap.get("hub_admin_requested", True))
-    contracts_desired = bool(bootstrap.get("contracts_requested"))
-    if not validator_ready:
-        hub_admin_status = "deferred-until-live-validator-rpc"
-        contracts_status = "deferred-until-live-validator-rpc" if contracts_desired else "disabled"
-    else:
-        hub_admin_status = "ready-for-bootstrap-command"
-        contracts_status = "ready-for-bootstrap-command" if contracts_desired else "disabled"
-    state("hub_admin", desired=hub_admin_desired, running=False, status=hub_admin_status, private_key_present=bool(bootstrap.get("hub_admin_private_key_present")))
-    state("contracts", desired=contracts_desired, running=False, status=contracts_status)
+def update_bootstrap(validator_ready: bool) -> None:
+    hub_admin_ready = ensure_hub_admin(validator_ready)
+    ensure_contracts(validator_ready, hub_admin_ready)
 
 def converge_once() -> None:
     ensure_dirs()
     fdb_ready = ensure_fdb()
     validator_ready = ensure_validator_rpc(fdb_ready)
     ensure_hub(validator_ready)
-    update_deferred(validator_ready)
+    update_bootstrap(validator_ready)
 
 def supervisor_loop() -> None:
     while not stop_requested:
@@ -3577,6 +3934,7 @@ def function_statuses() -> dict:
                 "running": False,
                 "status": "deferred-until-live-validator-rpc",
                 "private_key_present": bool(bootstrap.get("hub_admin_private_key_present")),
+                "scope": "node",
             },
             "contracts": {
                 "desired": bool(bootstrap.get("contracts_requested")),
@@ -3629,6 +3987,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, payload())
         elif path == "/topology":
             self._send(200, {"ok": True, "network_key": manifest.get("network_key"), "cell_id": manifest.get("cell_id"), "topology": {"source": "self-manifest", "super_node": manifest}})
+        elif path == "/qbft/bootstrap":
+            self._send(200, qbft_bootstrap_payload())
         elif path in {"/status", "/processes"}:
             self._send(200, payload())
         else:
@@ -3672,7 +4032,292 @@ ensure_dirs()
 threading.Thread(target=supervisor_loop, daemon=True).start()
 print(f"all-father super-node guard/supervisor listening on 0.0.0.0:{port}", flush=True)
 ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+"""
+    return script.replace("__ALLFATHER_CONTRACT_SOURCES_B64__", json.dumps(contract_sources_b64, sort_keys=True)).strip()
+
+
+
+def super_node_entrypoint_wrapper_script() -> str:
+    """Return a PID 1 wrapper that exposes diagnostics before the real guard binds.
+
+    The real super-node guard/supervisor still owns FDB, Besu, Hub, hub_admin,
+    and contract bootstrap.  The wrapper binds the private guard port immediately
+    and runs the real guard on a loopback child port, proxying requests once the
+    child is ready.  If the child exits before binding, Coolify probes still get
+    a structured ``guard-startup-failed`` status instead of a blind connection
+    refusal.
+    """
+
+    return r"""
+from __future__ import annotations
+
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import zlib
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+STARTED_AT = time.time()
+PUBLIC_GUARD_PORT = int(os.environ.get("MC_ALLFATHER_GUARD_PORT", "41414"))
+CHILD_GUARD_PORT = int(os.environ.get("MC_ALLFATHER_GUARD_CHILD_PORT") or str(PUBLIC_GUARD_PORT + 1))
+GUARD_SCRIPT = os.environ.get("MC_ALLFATHER_GUARD_SCRIPT", "/usr/local/bin/allfather-super-guard.py")
+CHILD_RESTART_S = float(os.environ.get("MC_ALLFATHER_GUARD_CHILD_RESTART_S", "5"))
+PROXY_TIMEOUT_S = float(os.environ.get("MC_ALLFATHER_GUARD_PROXY_TIMEOUT_S", "3"))
+
+stop_requested = False
+state_lock = threading.RLock()
+child_proc = None
+child_started_at = 0.0
+last_exit_code = None
+last_error = ""
+log_tail = []
+
+
+def now_s() -> float:
+    return round(time.time() - STARTED_AT, 3)
+
+
+def append_log(line: str) -> None:
+    text = str(line or "").rstrip()
+    if not text:
+        return
+    print(text, flush=True)
+    with state_lock:
+        log_tail.append(text)
+        del log_tail[:-80]
+
+
+def child_port_open(timeout: float = 0.25) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", CHILD_GUARD_PORT), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def child_status() -> tuple[bool, int | None, float, str, list[str]]:
+    with state_lock:
+        proc = child_proc
+        code = proc.poll() if proc is not None else last_exit_code
+        running = proc is not None and code is None
+        return running, code, child_started_at, last_error, list(log_tail)
+
+
+def read_child_output(proc: subprocess.Popen) -> None:
+    try:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            try:
+                line = raw.decode("utf-8", "replace")
+            except Exception:
+                line = str(raw)
+            append_log("[guard-child] " + line.rstrip())
+    except Exception as exc:
+        append_log(f"[guard-wrapper] child log reader failed: {type(exc).__name__}: {exc}")
+
+
+def child_loop() -> None:
+    global child_proc, child_started_at, last_exit_code, last_error
+    while not stop_requested:
+        env = dict(os.environ)
+        env["MC_ALLFATHER_GUARD_PORT"] = str(CHILD_GUARD_PORT)
+        cmd = [sys.executable, "-u", GUARD_SCRIPT]
+        append_log(f"[guard-wrapper] starting child guard on 127.0.0.1:{CHILD_GUARD_PORT}: {' '.join(cmd)}")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception as exc:
+            with state_lock:
+                child_proc = None
+                last_exit_code = None
+                last_error = f"{type(exc).__name__}: {exc}"
+            append_log(f"[guard-wrapper] failed to start child guard: {last_error}")
+            time.sleep(CHILD_RESTART_S)
+            continue
+
+        with state_lock:
+            child_proc = proc
+            child_started_at = time.time()
+            last_exit_code = None
+            last_error = ""
+
+        threading.Thread(target=read_child_output, args=(proc,), daemon=True).start()
+        code = proc.wait()
+        with state_lock:
+            last_exit_code = code
+            last_error = f"child guard exited with code {code}"
+            child_proc = None
+        append_log(f"[guard-wrapper] child guard exited with code {code}")
+        if stop_requested:
+            break
+        time.sleep(CHILD_RESTART_S)
+
+
+def proxy_to_child(method: str, path: str, body: bytes | None = None) -> tuple[int, bytes, str]:
+    url = f"http://127.0.0.1:{CHILD_GUARD_PORT}{path}"
+    request = urllib.request.Request(url, data=body, method=method, headers={"Accept": "application/json"})
+    if body is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=PROXY_TIMEOUT_S) as response:
+            raw = response.read()
+            return int(response.status), raw, response.headers.get("Content-Type", "application/json")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        return int(exc.code), raw, exc.headers.get("Content-Type", "application/json")
+    except Exception as exc:
+        raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
+
+
+def diagnostic_payload(path: str, *, proxy_error: str = "") -> dict:
+    running, code, started, error, tail = child_status()
+    child_ready = child_port_open()
+    status = "guard-child-ready" if child_ready else "guard-starting" if running else "guard-startup-failed"
+    reason = "" if child_ready else error or proxy_error or "child guard has not accepted connections yet"
+    return {
+        "ok": False,
+        "service": "main-computer-allfather-super-node",
+        "status": status,
+        "error": f"guard-startup-failed: {reason}" if status == "guard-startup-failed" else reason,
+        "wrapper": {
+            "ok": True,
+            "public_guard_port": PUBLIC_GUARD_PORT,
+            "child_guard_port": CHILD_GUARD_PORT,
+            "child_running": running,
+            "child_ready": child_ready,
+            "child_exit_code": code,
+            "child_started_uptime_s": round(started - STARTED_AT, 3) if started else None,
+            "proxy_error": proxy_error,
+            "log_tail": tail[-40:],
+        },
+        "functions": {
+            "guard": {
+                "desired": True,
+                "running": True,
+                "status": "diagnostic-wrapper",
+                "port": PUBLIC_GUARD_PORT,
+            },
+            "supervisor": {
+                "desired": True,
+                "running": False,
+                "status": status,
+                "last_error": reason,
+                "last_exit_code": code,
+                "log_tail": tail[-40:],
+            },
+        },
+        "path": path,
+        "uptime_s": now_s(),
+    }
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _send_json(self, status_code: int, payload: dict) -> None:
+        raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _proxy_or_diag(self, method: str) -> None:
+        path = self.path or "/"
+        parsed_path = urlparse(path).path
+        body = None
+        if method == "POST":
+            length = int(self.headers.get("Content-Length") or "0")
+            body = self.rfile.read(length) if length > 0 else b""
+        try:
+            status_code, raw, content_type = proxy_to_child(method, path, body)
+        except Exception as exc:
+            self._send_json(200, diagnostic_payload(parsed_path, proxy_error=f"{type(exc).__name__}: {exc}"))
+            return
+        self.send_response(status_code)
+        self.send_header("Content-Type", content_type or "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        self._proxy_or_diag("GET")
+
+    def do_POST(self):
+        self._proxy_or_diag("POST")
+
+    def log_message(self, fmt, *args):
+        print("[guard-wrapper] %s - %s" % (self.address_string(), fmt % args), flush=True)
+
+
+def shutdown(*_args) -> None:
+    global stop_requested
+    stop_requested = True
+    with state_lock:
+        proc = child_proc
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+signal.signal(signal.SIGTERM, shutdown)
+signal.signal(signal.SIGINT, shutdown)
+
+threading.Thread(target=child_loop, daemon=True).start()
+print(f"[guard-wrapper] listening on 0.0.0.0:{PUBLIC_GUARD_PORT}; child guard port is 127.0.0.1:{CHILD_GUARD_PORT}", flush=True)
+ThreadingHTTPServer(("0.0.0.0", PUBLIC_GUARD_PORT), Handler).serve_forever()
 """.strip()
+
+
+
+
+
+def dockerfile_payload_install_run(payloads: Mapping[str, str]) -> str:
+    """Return a Dockerfile RUN step that writes compressed base64 payloads without heredocs.
+
+    Coolify/BuildKit rejected the earlier generated Dockerfile at the giant
+    ``RUN python - <<'PY'`` heredoc with ``unterminated heredoc``.  Keep every
+    Dockerfile line short and avoid heredocs entirely by appending wrapped
+    compressed base64 chunks through portable shell ``printf`` calls, then decoding
+    them with Python inside the image.
+    """
+
+    lines = ["RUN set -eux; \\"]
+    items = list(payloads.items())
+    for index, (target, payload_b64) in enumerate(items):
+        tmp_path = f"/tmp/allfather-payload-{index}.b64"
+        chunks = [payload_b64[i : i + 76] for i in range(0, len(payload_b64), 76)] or [""]
+        lines.append("    { \\")
+        for chunk in chunks:
+            lines.append(f"        printf '%s\\n' '{chunk}'; \\")
+        lines.append(f"    }} > {tmp_path}; \\")
+        lines.append(
+            "    python -c 'import base64, pathlib, zlib; "
+            f"pathlib.Path(\"{target}\").write_bytes(zlib.decompress(base64.b64decode(open(\"{tmp_path}\", \"rb\").read())))'; \\"
+        )
+        lines.append(f"    chmod 0755 {target}; \\")
+        suffix = " \\" if index < len(items) - 1 else ""
+        lines.append(f"    rm -f {tmp_path}{suffix}")
+    return "\n".join(lines)
 
 
 def super_node_dockerfile_inline(base_image: str, guard_script: str | None = None) -> str:
@@ -3691,7 +4336,14 @@ def super_node_dockerfile_inline(base_image: str, guard_script: str | None = Non
     """
 
     base = str(base_image or DEFAULT_SUPER_BASE_IMAGE).strip() or DEFAULT_SUPER_BASE_IMAGE
-    guard_script_b64 = base64.b64encode((guard_script or super_server_command_script()).encode("utf-8")).decode("ascii")
+    guard_script_b64 = base64.b64encode(zlib.compress((guard_script or super_server_command_script()).encode("utf-8"))).decode("ascii")
+    wrapper_script_b64 = base64.b64encode(zlib.compress(super_node_entrypoint_wrapper_script().encode("utf-8"))).decode("ascii")
+    payload_install = dockerfile_payload_install_run(
+        {
+            "/usr/local/bin/allfather-super-guard.py": guard_script_b64,
+            "/usr/local/bin/allfather-super-entrypoint.py": wrapper_script_b64,
+        }
+    )
     return f"""
 FROM {base}
 
@@ -3704,7 +4356,7 @@ RUN set -eux; \\
     fi; \\
     apt-get update; \\
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-        bash ca-certificates curl python3 python3-pip procps netcat-openbsd; \\
+        bash ca-certificates curl python3 python3-pip python3-venv procps netcat-openbsd; \\
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \\
         curl -fsSL -o /tmp/foundationdb-clients.deb \\
             "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-clients_7.4.6-1_amd64.deb"; \\
@@ -3723,9 +4375,12 @@ RUN set -eux; \\
         /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \\
     rm -f /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \\
     rm -rf /var/lib/apt/lists/*; \\
-    ln -sf /usr/bin/python3 /usr/local/bin/python; \\
-    python -m pip install --no-cache-dir --break-system-packages "foundationdb==7.4.6" || \\
-        python -m pip install --no-cache-dir "foundationdb==7.4.6"; \\
+    python3 -m venv /opt/allfather-super-venv; \\
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir --upgrade pip setuptools wheel; \\
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir "foundationdb==7.4.6" "web3==6.20.4" "py-solc-x==2.0.3"; \\
+    /opt/allfather-super-venv/bin/python -c "import solcx; solcx.install_solc('0.8.24')"; \\
+    ln -sf /opt/allfather-super-venv/bin/python /usr/local/bin/python; \\
+    ln -sf /opt/allfather-super-venv/bin/pip /usr/local/bin/pip; \\
     if [ -x /usr/sbin/fdbserver ]; then \\
         ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver; \\
     elif [ -x /usr/bin/fdbserver ]; then \\
@@ -3750,19 +4405,17 @@ RUN set -eux; \\
     fdbserver --version; \\
     fdbcli --version
 
-RUN python - <<'PY'
-import base64
-from pathlib import Path
-Path("/usr/local/bin/allfather-super-guard.py").write_bytes(base64.b64decode("{guard_script_b64}"))
-PY
+{payload_install}
 
 ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super \\
-    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,fdb,validator-rpc,besu,qbft,traefik-targets \\
-    MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-guard
+    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets \\
+    MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint
 
 EXPOSE {DEFAULT_SUPER_GUARD_CONTAINER_PORT} {DEFAULT_SUPER_HUB_CONTAINER_PORT} {DEFAULT_SUPER_RPC_CONTAINER_PORT} {DEFAULT_SUPER_FDB_CONTAINER_PORT} {DEFAULT_SUPER_P2P_CONTAINER_PORT}
 
-ENTRYPOINT ["python", "-u", "/usr/local/bin/allfather-super-guard.py"]
+ENV PATH="/opt/allfather-super-venv/bin:$PATH"
+
+ENTRYPOINT ["/opt/allfather-super-venv/bin/python", "-u", "/usr/local/bin/allfather-super-entrypoint.py"]
 """.strip()
 
 
@@ -4078,6 +4731,11 @@ def cleanup_private_state_for_remove_node(
         if not wallets:
             network.pop("wallets", None)
 
+    node_seed_material = network.get("node_seed_material")
+    if isinstance(node_seed_material, dict):
+        network.pop("node_seed_material", None)
+        result["removed"].append({"kind": "node_seed_material", "network": network_key})
+
     fdb = network.get("foundationdb")
     if isinstance(fdb, dict):
         removed_fdb_keys = []
@@ -4183,6 +4841,305 @@ def wait_for_coolify_service_absent(
         sleep_for = min(poll_s, max(0.1, deadline - time.monotonic()))
         time.sleep(sleep_for)
 
+
+
+def super_inventory_node_from_manifest(manifest: Mapping[str, Any], head: HeadNode) -> dict[str, Any]:
+    """Build the expected live-inventory record for the newly-created super-node."""
+
+    network_key = str(manifest.get("network_key") or "").strip()
+    ordinal = int(manifest.get("ordinal") or 0)
+    node = super_inventory_entry(network_key, head, ordinal, source="add-node-target")
+    fdb_node = (manifest.get("foundationdb") or {}).get("new_node") if isinstance(manifest.get("foundationdb"), Mapping) else {}
+    if isinstance(fdb_node, Mapping):
+        node.update(dict(fdb_node))
+    node["service_name"] = str(manifest.get("cell_id") or node.get("service_name") or "")
+    node["components"] = dict(manifest.get("components") if isinstance(manifest.get("components"), Mapping) else node.get("components") or {})
+    return node
+
+
+def replace_or_append_super_inventory_node(nodes: Sequence[Mapping[str, Any]], target: Mapping[str, Any]) -> list[dict[str, Any]]:
+    target_name = str(target.get("service_name") or "").strip()
+    merged: list[dict[str, Any]] = []
+    target_seen = False
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        copied = dict(node)
+        if target_name and str(copied.get("service_name") or "") == target_name:
+            combined = dict(target)
+            combined.update(copied)
+            merged.append(combined)
+            target_seen = True
+        else:
+            merged.append(copied)
+    if not target_seen:
+        merged.append(dict(target))
+    return merged
+
+
+def _component_snapshot(functions: Mapping[str, Any], key: str) -> dict[str, Any]:
+    value = functions.get(key)
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _component_status(functions: Mapping[str, Any], key: str) -> str:
+    return str(_component_snapshot(functions, key).get("status") or "").strip()
+
+
+def _component_ok(functions: Mapping[str, Any], key: str, statuses: set[str], *, running: bool | None = None) -> bool:
+    component = _component_snapshot(functions, key)
+    status = str(component.get("status") or "").strip()
+    if status not in statuses:
+        return False
+    if running is not None and bool(component.get("running")) is not running:
+        return False
+    return True
+
+
+def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Return whether the new super-node has reached the add-node completion signal.
+
+    This is deliberately based on the remote Coolify-managed private probe output,
+    not on local direct VPN calls.  The first node waits for contract deployment;
+    later nodes require their node-scoped hub_admin but treat contracts as
+    intentionally not required.
+    """
+
+    if not isinstance(internal_status, Mapping) or not internal_status:
+        return {"ready": False, "terminal": False, "reason": "private super-node guard status not observed yet", "components": {}}
+    if not bool(internal_status.get("observed")):
+        return {"ready": False, "terminal": False, "reason": str(internal_status.get("reason") or "private super-node guard status not observed yet"), "components": {}}
+    functions_value = internal_status.get("functions")
+    functions = functions_value if isinstance(functions_value, Mapping) else {}
+    components = {
+        "foundationdb": _component_status(functions, "foundationdb"),
+        "validator_rpc": _component_status(functions, "validator_rpc"),
+        "hub": _component_status(functions, "hub"),
+        "hub_admin": _component_status(functions, "hub_admin"),
+        "contracts": _component_status(functions, "contracts"),
+    }
+
+    error = str(internal_status.get("error") or "").strip()
+    if error and not functions:
+        return {"ready": False, "terminal": "guard-startup-failed" in error, "reason": error, "components": components}
+
+    fdb = _component_snapshot(functions, "foundationdb")
+    if not (
+        str(fdb.get("status") or "") == "running"
+        and bool(fdb.get("running"))
+        and bool(fdb.get("configured"))
+        and bool(fdb.get("listening"))
+    ):
+        return {"ready": False, "terminal": False, "reason": f"foundationdb not ready: {components['foundationdb'] or 'missing'}", "components": components}
+
+    validator = _component_snapshot(functions, "validator_rpc")
+    if not (
+        str(validator.get("status") or "") == "running"
+        and bool(validator.get("running"))
+        and bool(validator.get("rpc_http_ok"))
+    ):
+        return {"ready": False, "terminal": False, "reason": f"validator_rpc not ready: {components['validator_rpc'] or 'missing'}", "components": components}
+
+    hub = _component_snapshot(functions, "hub")
+    if not (
+        str(hub.get("status") or "") in {"running", "running-bootstrap-listener"}
+        and bool(hub.get("running"))
+        and bool(hub.get("health_ok"))
+    ):
+        return {"ready": False, "terminal": False, "reason": f"hub not ready: {components['hub'] or 'missing'}", "components": components}
+
+    hub_admin = _component_snapshot(functions, "hub_admin")
+    if not (
+        str(hub_admin.get("status") or "") == "bootstrapped"
+        and (bool(hub_admin.get("completed")) or bool(hub_admin.get("running")))
+    ):
+        terminal = str(hub_admin.get("status") or "") in {"missing-or-invalid-hub-admin-key"}
+        return {"ready": False, "terminal": terminal, "reason": f"hub_admin not bootstrapped: {components['hub_admin'] or 'missing'}", "components": components}
+
+    contracts_requested = bool((manifest.get("bootstrap") or {}).get("contracts_requested")) if isinstance(manifest.get("bootstrap"), Mapping) else False
+    contracts = _component_snapshot(functions, "contracts")
+    contracts_status = str(contracts.get("status") or "").strip()
+    if contracts_requested:
+        if not (contracts_status == "deployed" and (bool(contracts.get("completed")) or bool(contracts.get("running")))):
+            terminal = contracts_status in {"missing-deployer-private-key", "deployment-failed"}
+            return {"ready": False, "terminal": terminal, "reason": f"contracts not deployed: {contracts_status or 'missing'}", "components": components}
+    elif contracts_status not in {"not-required-existing-network", "disabled"}:
+        return {"ready": False, "terminal": False, "reason": f"contracts not settled: {contracts_status or 'missing'}", "components": components}
+
+    return {
+        "ready": True,
+        "terminal": False,
+        "reason": "super-node runtime ready",
+        "components": components,
+        "contracts_requested": contracts_requested,
+    }
+
+
+def wait_for_add_node_ready(
+    plan: HeadPlan,
+    head: HeadNode,
+    manifest: Mapping[str, Any],
+    client: Any,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+    *,
+    service_uuid: str,
+) -> dict[str, Any]:
+    """Wait for add-node completion through Coolify inventory and private probes."""
+
+    wait_s = max(0.0, float(getattr(args, "deploy_wait_s", DEFAULT_ADD_NODE_READY_WAIT_S) or 0.0))
+    poll_s = max(0.5, float(getattr(args, "deploy_poll_s", DEFAULT_ADD_NODE_READY_POLL_S) or DEFAULT_ADD_NODE_READY_POLL_S))
+    service_name = str(manifest.get("cell_id") or "").strip()
+    if wait_s <= 0:
+        return {
+            "enabled": False,
+            "ready": None,
+            "reason": "disabled by --deploy-wait-s 0",
+            "wait_s": wait_s,
+            "service_name": service_name,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    target_node = super_inventory_node_from_manifest(manifest, head)
+    if service_uuid:
+        target_node["service_uuid"] = service_uuid
+
+    attempts = 0
+    deadline = time.monotonic() + wait_s
+    probe_service_uuid = ""
+    probe_action = ""
+    probe_deployed = False
+    last_status = ""
+    last_internal_status: dict[str, Any] = {}
+    last_ready_check: dict[str, Any] = {"ready": False, "reason": "not checked yet"}
+    last_probe_result: dict[str, Any] = {}
+    last_probe_logs: dict[str, Any] = {}
+    last_service_uuid = service_uuid
+
+    while True:
+        attempts += 1
+        remaining = max(0.0, deadline - time.monotonic())
+        services = service_items_for_client(client, tried)
+        inventory = all_super_inventory_from_services(services, head)
+        inventory = replace_or_append_super_inventory_node(inventory, target_node)
+        target_inventory = next((node for node in inventory if str(node.get("service_name") or "") == service_name), dict(target_node))
+        last_status = str(target_inventory.get("status") or "").strip()
+        last_service_uuid = str(target_inventory.get("service_uuid") or last_service_uuid or "")
+
+        if not probe_service_uuid:
+            probe_service_uuid, probe_action, _probe_existing = sync_probe_service(
+                client,
+                plan,
+                head,
+                args,
+                context,
+                tried,
+                super_inventory=inventory,
+            )
+            deploy_response = hub_service_tool().trigger_deploy_service(
+                client,
+                service_uuid=probe_service_uuid,
+                force=True,
+                tried=tried,
+            )
+            probe_deployed = bool(deploy_response)
+
+        expected_targets = probe_target_records_for_plan(plan, super_inventory=inventory)
+        probe_detail, probe_result = wait_for_probe_metadata_result(
+            client,
+            probe_service_uuid,
+            tried,
+            expected_targets=expected_targets,
+            wait_s=min(max(0.0, remaining), poll_s),
+        )
+        last_probe_result = probe_result
+        if not probe_result.get("ok") or not probe_result_covers_expected_super_targets(probe_result, expected_targets):
+            probe_applications = application_records_from_service_detail(probe_detail)
+            probe_application_uuid = probe_applications[0]["uuid"] if probe_applications else ""
+            last_probe_logs = fetch_probe_logs(client, probe_service_uuid, tried, application_uuid=probe_application_uuid)
+            log_result = latest_probe_result(last_probe_logs)
+            if log_result.get("ok"):
+                last_probe_result = log_result
+
+        statuses = super_statuses_from_probe_result(last_probe_result)
+        last_internal_status = statuses.get(service_name, {})
+        last_ready_check = add_node_super_ready_check(last_internal_status, manifest)
+        if bool(last_ready_check.get("ready")):
+            return {
+                "enabled": True,
+                "ready": True,
+                "reason": last_ready_check.get("reason"),
+                "wait_s": wait_s,
+                "poll_s": poll_s,
+                "attempt_count": attempts,
+                "service_name": service_name,
+                "service_uuid": last_service_uuid,
+                "coolify_status": last_status,
+                "probe_service_uuid": probe_service_uuid,
+                "probe_action": probe_action,
+                "probe_deployed": probe_deployed,
+                "private_probe_observed": True,
+                "readiness": last_ready_check,
+                "internal_status": last_internal_status,
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
+
+        status_lower = last_status.lower()
+        terminal_service_state = any(token in status_lower for token in ("exited", "dead", "failed"))
+        if bool(last_ready_check.get("terminal")) or terminal_service_state:
+            return {
+                "enabled": True,
+                "ready": False,
+                "terminal": True,
+                "reason": last_ready_check.get("reason") or f"service reached terminal status: {last_status}",
+                "wait_s": wait_s,
+                "poll_s": poll_s,
+                "attempt_count": attempts,
+                "service_name": service_name,
+                "service_uuid": last_service_uuid,
+                "coolify_status": last_status,
+                "probe_service_uuid": probe_service_uuid,
+                "probe_action": probe_action,
+                "probe_deployed": probe_deployed,
+                "private_probe_observed": bool(last_internal_status),
+                "readiness": last_ready_check,
+                "internal_status": last_internal_status,
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
+
+        if remaining <= 0:
+            break
+
+    return {
+        "enabled": True,
+        "ready": False,
+        "terminal": False,
+        "reason": last_ready_check.get("reason") or "timed out waiting for remote add-node readiness signal",
+        "wait_s": wait_s,
+        "poll_s": poll_s,
+        "attempt_count": attempts,
+        "service_name": service_name,
+        "service_uuid": last_service_uuid,
+        "coolify_status": last_status,
+        "probe_service_uuid": probe_service_uuid,
+        "probe_action": probe_action,
+        "probe_deployed": probe_deployed,
+        "private_probe_observed": bool(last_internal_status),
+        "readiness": last_ready_check,
+        "internal_status": last_internal_status,
+        "last_probe_result_ok": bool(last_probe_result.get("ok")) if isinstance(last_probe_result, Mapping) else False,
+        "last_probe_logs_ok": bool(last_probe_logs.get("ok")) if isinstance(last_probe_logs, Mapping) else False,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
 
 def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     network_key = clean_node_network_key(args.network)
@@ -4343,11 +5300,13 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         service_action = "planned"
         deployed = False
 
+    cell_id = super_service_name(network_key, head, ordinal)
     state, wallets, private_state_updates = materialize_private_state_for_add_node(
         state,
         private_state_path,
         network_key,
         ordinal=ordinal,
+        cell_id=cell_id,
         no_contracts=bool(getattr(args, "no_contracts", False)),
         dry_run=bool(getattr(args, "dry_run", False)),
     )
@@ -4382,6 +5341,14 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             hub_admin_private_key=hub_admin_key,
             deployer_private_key=deployer_key,
         )
+        deploy_wait: dict[str, Any] = {
+            "enabled": False,
+            "ready": None,
+            "reason": "deployment was not triggered",
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
         if not getattr(args, "no_deploy", False):
             hub_service_tool().trigger_deploy_service(
                 client,
@@ -4390,9 +5357,29 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                 tried=tried,
             )
             deployed = True
+            deploy_wait = wait_for_add_node_ready(
+                plan,
+                head,
+                manifest,
+                client,
+                args,
+                context,
+                tried,
+                service_uuid=service_uuid,
+            )
+    else:
+        deploy_wait = {
+            "enabled": False,
+            "ready": None,
+            "reason": "dry-run",
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
 
+    add_node_ready = not bool(deploy_wait.get("enabled")) or bool(deploy_wait.get("ready"))
     result = {
-        "ok": True,
+        "ok": add_node_ready,
         "operation": "add-node",
         "network": network_key,
         "host": head.coolify_server,
@@ -4404,6 +5391,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "hub_admin_requested": True,
         "hub_admin_create_requested": bool(manifest["bootstrap"].get("hub_admin_create_requested")),
         "hub_admin_private_key_required_for_node_add": False,
+        "hub_admin_scope": "node",
         "private_state_updates": private_state_updates,
         "fdb": {
             "action": manifest["foundationdb"]["action"],
@@ -4421,6 +5409,9 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "service_uuid": service_uuid,
         "service_action": service_action,
         "deployed": deployed,
+        "ready": add_node_ready,
+        "reason": "" if add_node_ready else str(deploy_wait.get("reason") or "add-node deploy wait did not reach readiness"),
+        "deploy_wait": deploy_wait,
         "token_source": token_source,
         "manifest": manifest,
         "compose": compose if getattr(args, "include_compose", False) else "<hidden; pass --include-compose>",
@@ -4549,6 +5540,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Besu/QBFT-capable base image used to build the all-father super-node container.")
     add_node_parser.add_argument("--no-deploy", action="store_true", help="Create/update service but do not trigger deploy.")
     add_node_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after service sync.")
+    add_node_parser.add_argument("--deploy-wait-s", type=float, default=DEFAULT_ADD_NODE_READY_WAIT_S, help="Seconds to wait remotely for the new super-node guard/FDB/RPC/Hub/hub_admin/contracts readiness signal after deploy. Set 0 to return immediately after triggering deploy.")
+    add_node_parser.add_argument("--deploy-poll-s", type=float, default=DEFAULT_ADD_NODE_READY_POLL_S, help=argparse.SUPPRESS)
 
     remove_node_parser = subparsers.add_parser("remove-node", help="Remove the last all-father super-node from mainnet or testnet on one Coolify host.")
     add_remote_args(remove_node_parser)
@@ -4583,7 +5576,16 @@ def build_plan_from_args(args: argparse.Namespace) -> HeadPlan:
 
 
 def print_json(payload: Mapping[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    raw = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    for offset in range(0, len(raw), 16384):
+        chunk = raw[offset : offset + 16384]
+        while True:
+            try:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+                break
+            except BlockingIOError:
+                time.sleep(0.01)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -4608,8 +5610,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print_json(compact_discover_for_operator(payload))
             return 0
         if args.command == "add-node":
-            print_json(add_node(plan, args))
-            return 0
+            payload = add_node(plan, args)
+            print_json(payload)
+            return 0 if bool(payload.get("ok", True)) else 1
         if args.command == "remove-node":
             print_json(remove_node(plan, args))
             return 0

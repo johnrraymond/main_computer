@@ -1,6 +1,6 @@
-<div class="document-app" id="document-app" aria-label="Document editor">
-            <div class="document-shell app-widget" data-widget-label="Document Editor">
-              <aside class="document-library" id="document-library" aria-label="Pretty Docs library" aria-hidden="true">
+<div class="document-app document-library-open document-ai-open" id="document-app" aria-label="Document editor" data-mcel-workbench="document-editor" data-mcel-layout="page-centered-writing-workbench">
+            <div class="document-shell app-widget" data-widget-label="Document Editor" data-mcel-element="element.layout.document-workbench">
+              <aside class="document-library" id="document-library" aria-label="Pretty Docs library" aria-hidden="false" data-mcel-layout-zone="navigation" data-mcel-element="element.layout.document-navigation-zone">
                 <div class="document-library-head">
                   <strong>Pretty Docs</strong>
                   <div class="document-library-head-actions">
@@ -14,28 +14,52 @@
                 </div>
               </aside>
               <div class="document-library-scrim" id="document-library-scrim" hidden></div>
-              <div class="document-workspace">
-                <div class="document-head">
-                  <div>
+              <div class="document-workspace" data-mcel-layout-zone="primary">
+                <div class="document-head" data-mcel-layout-zone="menu" data-mcel-element="element.layout.document-menu-zone">
+                  <div class="document-identity">
                     <strong>Document Editor</strong>
-                    <span>Editable writing workspace for notes and drafts.</span>
+                    <span class="document-identity-purpose">Editable writing workspace</span>
+                    <span class="document-current-path" id="document-current-path">local draft</span>
                   </div>
                   <div class="document-head-actions">
-                    <button class="document-library-toggle" type="button" id="document-library-toggle" aria-expanded="false" aria-controls="document-library">Pretty Docs</button>
-                    <button class="document-ai-toggle" type="button" id="document-ai-toggle" aria-expanded="false" aria-controls="document-ai-pane">Document AI</button>
-                    <div class="document-status" id="document-status">document ready</div>
+                    <button class="document-library-toggle" type="button" id="document-library-toggle" aria-expanded="true" aria-controls="document-library">Docs</button>
+                    <button class="document-ai-toggle" type="button" id="document-ai-toggle" aria-expanded="true" aria-controls="document-ai-pane">AI</button>
+                    <details class="document-menu-popover" id="document-insert-menu">
+                      <summary>Insert</summary>
+                      <div class="document-menu-popover-body">
+                        <button type="button" id="document-insert-inline-math">Inline Math</button>
+                        <button type="button" id="document-insert-paragraph-math">Paragraph Math</button>
+                        <button type="button" id="document-insert-scene">Scene Embed</button>
+                        <button type="button" id="document-insert-game-scene">Game Scene Plugin</button>
+                      </div>
+                    </details>
+                    <details class="document-menu-popover" id="document-export-menu">
+                      <summary>Export</summary>
+                      <div class="document-menu-popover-body">
+                        <button type="button" id="document-export-epub">Export EPUB</button>
+                        <button type="button" id="document-export-pdf" title="Export a fast fixed-fit Chromium/vector PDF from the live document layout.">Export PDF</button>
+                        <details class="document-debug-tools" id="document-debug-tools">
+                          <summary aria-label="Show PDF debug tools">PDF debug tools</summary>
+                          <div class="document-debug-tools-body">
+                            <button type="button" id="document-export-pdf-vector" title="Debug comparison: use Chromium/vector PDF rendering.">Export Vector PDF</button>
+                            <button type="button" id="document-export-pdf-smoke">Save PDF Smoke</button>
+                            <button type="button" id="document-export-pdf-raster-smoke">Save Raster PDF Smoke</button>
+                            <button type="button" id="document-export-pdf-vector-fit-smoke" title="Compare live page PNGs against vector PDF setting candidates.">Save Vector Fit Smoke</button>
+                          </div>
+                        </details>
+                      </div>
+                    </details>
+                    <details class="document-menu-popover" id="document-advanced-menu">
+                      <summary>Advanced</summary>
+                      <div class="document-menu-popover-body">
+                        <button type="button" id="document-toggle-math-layout">Switch Math Layout</button>
+                        <button type="button" id="document-add-hidden-plugin">Hidden Plugin</button>
+                      </div>
+                    </details>
+                    <div class="document-status" id="document-status" data-mcel-layout-zone="status">document ready</div>
                   </div>
                 </div>
-                <div class="document-current-path" id="document-current-path">local draft</div>
-                <div class="document-readonly-note" id="document-readonly-note">Backend draft storage is enabled. Edits auto-save to the server.</div>
-                <div class="document-draft-banner" id="document-draft-banner" hidden>Backend draft shown. Edits are saved on the server.</div>
-                <div class="document-draft-controls" aria-label="Backend draft controls">
-                  <span id="document-draft-state">loaded read-only doc</span>
-                  <span id="document-version-token"></span>
-                  <button type="button" id="document-reload-doc">Reload from disk</button>
-                  <button type="button" id="document-discard-draft">Discard draft</button>
-                </div>
-                <div class="document-toolbar document-page-toolbar" id="document-toolbar" aria-label="Document toolbar">
+                <div class="document-toolbar document-page-toolbar" id="document-toolbar" aria-label="Document toolbar" data-mcel-layout-zone="toolbar" data-mcel-element="element.layout.document-toolbar-zone">
                   <select id="document-format" aria-label="Block format">
                     <option value="P">Paragraph</option>
                     <option value="H1">Heading 1</option>
@@ -49,23 +73,6 @@
                   <button type="button" data-document-command="insertUnorderedList">Bullet List</button>
                   <button type="button" data-document-command="insertOrderedList">Numbered List</button>
                   <button type="button" data-document-command="removeFormat">Clear Format</button>
-                  <button type="button" id="document-insert-inline-math">Inline Math</button>
-                  <button type="button" id="document-insert-paragraph-math">Paragraph Math</button>
-                  <button type="button" id="document-toggle-math-layout">Switch Math Layout</button>
-                  <button type="button" id="document-add-hidden-plugin">Hidden Plugin</button>
-                  <button type="button" id="document-insert-scene">Scene Embed</button>
-                  <button type="button" id="document-insert-game-scene">Game Scene Plugin</button>
-                  <button type="button" id="document-export-epub">Export EPUB</button>
-                  <button type="button" id="document-export-pdf" title="Export a fast fixed-fit Chromium/vector PDF from the live document layout.">Export PDF</button>
-                  <details class="document-debug-tools" id="document-debug-tools">
-                    <summary aria-label="Show PDF debug tools">PDF debug tools</summary>
-                    <div class="document-debug-tools-body">
-                      <button type="button" id="document-export-pdf-vector" title="Debug comparison: use Chromium/vector PDF rendering.">Export Vector PDF</button>
-                      <button type="button" id="document-export-pdf-smoke">Save PDF Smoke</button>
-                      <button type="button" id="document-export-pdf-raster-smoke">Save Raster PDF Smoke</button>
-                      <button type="button" id="document-export-pdf-vector-fit-smoke" title="Compare live page PNGs against vector PDF setting candidates.">Save Vector Fit Smoke</button>
-                    </div>
-                  </details>
                   <button class="document-layout-button" type="button" id="document-layout-button" aria-expanded="false" aria-controls="document-layout-popover">Page Layout</button>
                   <div class="document-layout-popover" id="document-layout-popover" hidden>
                     <div class="document-layout-grid">
@@ -109,8 +116,18 @@
                     </div>
                   </div>
                 </div>
-                <div class="document-object-stage" id="document-object-stage">
-                  <aside class="document-plugin-rail" id="document-plugin-rail" aria-label="Editor-only hidden document plugins">
+                <div class="document-top-status" data-mcel-layout-zone="status" data-mcel-element="element.layout.document-status-zone">
+                  <div class="document-readonly-note" id="document-readonly-note">Backend draft storage is enabled. Edits auto-save to the server.</div>
+                  <div class="document-draft-banner" id="document-draft-banner" hidden>Backend draft shown. Edits are saved on the server.</div>
+                  <div class="document-draft-controls" aria-label="Backend draft controls">
+                    <span id="document-draft-state">loaded read-only doc</span>
+                    <span id="document-version-token"></span>
+                    <button type="button" id="document-reload-doc">Reload from disk</button>
+                    <button type="button" id="document-discard-draft">Discard draft</button>
+                  </div>
+                </div>
+                <div class="document-object-stage" id="document-object-stage" data-mcel-layout-zone="primary" data-mcel-element="element.layout.document-page-zone">
+                  <aside class="document-plugin-rail" id="document-plugin-rail" aria-label="Editor-only hidden document plugins" data-mcel-layout-zone="advanced">
                     <div class="document-plugin-rail-head">
                       <strong>Plugins</strong>
                       <span>editor rail</span>
@@ -129,7 +146,7 @@
                 </div>
               </div>
               <div class="document-ai-scrim" id="document-ai-scrim" hidden></div>
-              <aside class="document-ai-pane" id="document-ai-pane" aria-label="Document AI" aria-hidden="true">
+              <aside class="document-ai-pane" id="document-ai-pane" aria-label="Document AI" aria-hidden="false" data-mcel-layout-zone="companion" data-mcel-element="element.layout.document-companion-zone">
                 <div class="document-ai-head">
                   <strong>Document AI</strong>
                   <div class="document-ai-head-actions">

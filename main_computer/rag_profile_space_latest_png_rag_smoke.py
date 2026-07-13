@@ -43,6 +43,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1191,11 +1192,12 @@ def build_prompt(
     manifest: dict[str, Any],
     args: argparse.Namespace,
 ) -> str:
-    payload = {
+    payload: dict[str, Any] = {
         "latest_picture_contract": {
             "meaning": "bounded latest diagnostic picture of the running system",
             "time": args.time,
             "max_latest_bytes": args.max_latest_bytes,
+            "diagnosis_depth": args.diagnosis_depth,
             "anchor": "cumulative profile space",
             "overlays": {
                 "cumulative": "black/gray background points",
@@ -1208,6 +1210,11 @@ def build_prompt(
                 "image_1": "NMDS-style profile-space PNG",
                 "correlation_rule": "both images encode the same underlying profile ids/features with different coordinates",
             },
+            "response_budget": {
+                "goal": "fast smoke decode unless --diagnosis-depth full is requested",
+                "max_items_per_array": 3 if args.diagnosis_depth != "full" else 6,
+                "max_words_per_string": 24 if args.diagnosis_depth != "full" else 60,
+            },
         },
         "smoke_beacon_id": beacon or None,
         "manifest": manifest,
@@ -1217,15 +1224,55 @@ def build_prompt(
         "log_context": log_context,
         "code_context": code_context,
     }
+
+    if args.diagnosis_depth == "probe":
+        # Probe mode is intentionally tiny: prove the two PNGs are readable and
+        # correlate to logs without asking for a long incident report.
+        payload = {
+            "latest_picture_contract": payload["latest_picture_contract"],
+            "smoke_beacon_id": beacon or None,
+            "pca_profile_space_summary": {
+                "projection": pca_summary.get("projection"),
+                "profile_count": pca_summary.get("profile_count"),
+                "overlay_counts": pca_summary.get("overlay_counts"),
+                "points": (pca_summary.get("points") or [])[:4],
+            },
+            "nmds_profile_space_summary": {
+                "projection": nmds_summary.get("projection"),
+                "profile_count": nmds_summary.get("profile_count"),
+                "overlay_counts": nmds_summary.get("overlay_counts"),
+                "points": (nmds_summary.get("points") or [])[:4],
+            },
+            "log_context": {
+                "source": log_context.get("source"),
+                "recent_excerpt": truncate_text(str(log_context.get("text") or log_context.get("excerpt") or ""), 1400),
+                "stats": log_context.get("stats") or {},
+            },
+        }
+
     sidecars = json_dumps(payload)
     sidecars = truncate_text(sidecars, args.max_prompt_sidecar_chars, marker="prompt sidecars truncated")
 
-    task = args.task.strip() or (
-        "Use the two PNG plots plus the provided log/code/profile sidecars to diagnose "
-        "the current state of the system at this moment."
-    )
+    task = args.task.strip()
+    if not task:
+        if args.diagnosis_depth == "probe":
+            task = (
+                "Fast smoke probe: decode the two PNG plots and say whether their "
+                "recent/anomaly overlays connect to the supplied log context."
+            )
+        elif args.diagnosis_depth == "full":
+            task = (
+                "Use the two PNG plots plus the provided log/code/profile sidecars to diagnose "
+                "the current state of the system at this moment."
+            )
+        else:
+            task = (
+                "Fast diagnostic smoke: use the two PNG plots plus bounded log/code/profile "
+                "sidecars to decide whether the latest picture is enough to diagnose the current moment."
+            )
 
-    return f"""
+    if args.diagnosis_depth == "full":
+        return f"""
 You are a Main Computer multimodal RAG diagnostic smoke model.
 
 You are given two attached PNG images plus bounded text sidecars.
@@ -1245,7 +1292,8 @@ Task:
 Use RAG over the provided logs, profile JSON summaries, and code snippets as needed.
 Decide whether the latest picture is enough to diagnose the current system state right now.
 
-Return JSON only, with this schema:
+Return compact valid JSON only. Use double quotes and commas between every field.
+Return this schema:
 {{
   "image_seen": true,
   "plots_decoded": [
@@ -1274,52 +1322,246 @@ Return JSON only, with this schema:
   "current_system_state": "concise diagnosis of the system right now",
   "latest_picture_is_enough": true,
   "missing_evidence_if_not_enough": ["exact artifact, log, route, source file, or time window needed"],
-  "smoke_beacon_decode": {{
-    "beacon_seen": true,
-    "beacon_id": "{beacon}"
-  }},
+  "smoke_beacon_id_decoded": "{beacon if beacon else ''}",
   "confidence": 0.0
 }}
 
-Rules:
-- If the images are unreadable, set image_seen=false and explain what failed.
-- Do not invent clusters that are not supported by either PNG or the sidecars.
-- If the two plots disagree, say so.
-- If the latest picture is not enough for diagnosis, name the exact missing evidence.
-- If a smoke beacon appears in logs, JSON, or image text, decode it exactly.
+LATEST_PROFILE_SPACE_RAG_SIDECARS_JSON
+{sidecars}
+LATEST_PROFILE_SPACE_RAG_SIDECARS_JSON
+""".strip()
 
-Bounded sidecars:
-<<<LATEST_PROFILE_SPACE_RAG_SIDECARS_JSON
+    # Default/probe prompt: deliberately tiny. Gemma vision models can otherwise
+    # spend the full token budget before closing the JSON object.
+    return f"""
+You are a strict JSON-only multimodal RAG smoke model.
+
+Two PNG plots are attached:
+- image[0] = PCA latest profile-space plot.
+- image[1] = NMDS latest profile-space plot.
+Both encode the same log profiles. Gray/black=cumulative. Red=recent. Amber=anomaly. Bright red ring=recent+anomaly.
+
+Task:
+{task}
+
+Use the PNGs first, then the bounded sidecars. Be brief.
+Return one compact valid JSON object only. No markdown. No prose outside JSON.
+Keep every string under 12 words. Arrays max 2 items.
+
+Required schema:
+{{
+  "image_seen": true,
+  "plots_decoded": [
+    {{"image_index": 0, "projection": "pca", "evidence": "short visual fact"}},
+    {{"image_index": 1, "projection": "nmds", "evidence": "short visual fact"}}
+  ],
+  "two_plot_correlation": {{"same_underlying_profile_set": true, "evidence": "shared visual/log fact"}},
+  "current_system_state": "brief diagnosis",
+  "latest_picture_is_enough": true,
+  "missing_evidence_if_not_enough": "none or exact missing item",
+  "smoke_beacon_id_decoded": "{beacon if beacon else ''}",
+  "confidence": 0.0
+}}
+
+LATEST_PROFILE_SPACE_RAG_SIDECARS_JSON
 {sidecars}
 LATEST_PROFILE_SPACE_RAG_SIDECARS_JSON
 """.strip()
 
 
+
+def build_compact_retry_prompt(
+    *,
+    beacon: str,
+    pca_summary: dict[str, Any],
+    nmds_summary: dict[str, Any],
+    log_context: dict[str, Any],
+    args: argparse.Namespace,
+) -> str:
+    """Build an ultra-small retry prompt for local vision models that truncate JSON.
+
+    The first call is allowed to be diagnostic. This retry is only a smoke
+    contract: prove the two attached PNGs and log/profile sidecars can be bound
+    together in one parseable JSON object.
+    """
+    payload = {
+        "time": args.time,
+        "smoke_beacon_id": beacon or None,
+        "pca": {
+            "projection": pca_summary.get("projection") or "pca",
+            "profile_count": pca_summary.get("profile_count"),
+            "overlay_counts": pca_summary.get("overlay_counts") or pca_summary.get("overlay") or {},
+            "points": (pca_summary.get("points") or [])[:2],
+        },
+        "nmds": {
+            "projection": nmds_summary.get("projection") or "nmds",
+            "profile_count": nmds_summary.get("profile_count"),
+            "overlay_counts": nmds_summary.get("overlay_counts") or nmds_summary.get("overlay") or {},
+            "points": (nmds_summary.get("points") or [])[:2],
+        },
+        "log_hint": truncate_text(str(log_context.get("text") or log_context.get("excerpt") or ""), 900),
+        "log_stats": log_context.get("stats") or {},
+    }
+    sidecars = truncate_text(json_dumps(payload), min(args.max_prompt_sidecar_chars, 2500), marker="retry sidecars truncated")
+    return f"""
+Return JSON only. Decode the two attached PNG profile-space plots.
+
+image[0]=PCA, image[1]=NMDS. Gray=baseline, red=recent, amber=anomaly, bright-ring=recent anomaly.
+Use this sidecar only as hints:
+{sidecars}
+
+Return exactly this compact schema and close the JSON:
+{{
+  "image_seen": true,
+  "plots_decoded": [
+    {{"image_index": 0, "projection": "pca", "evidence": "seen"}},
+    {{"image_index": 1, "projection": "nmds", "evidence": "seen"}}
+  ],
+  "two_plot_correlation": {{"same_underlying_profile_set": true, "evidence": "same profiles"}},
+  "current_system_state": "brief",
+  "latest_picture_is_enough": true,
+  "missing_evidence_if_not_enough": "none",
+  "smoke_beacon_id_decoded": "{beacon if beacon else ''}",
+  "confidence": 0.0
+}}
+""".strip()
+
+
+def strip_markdown_json_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if not lines:
+        return stripped
+    if lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def balanced_json_object_slice(text: str) -> str | None:
+    """Return the first balanced JSON-looking object, respecting strings.
+
+    Vision models often wrap JSON in prose or markdown.  This is stricter than
+    `find("{")`/`rfind("}")`, so a brace inside a visible-text string does not
+    accidentally select the wrong tail.
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    end = text.rfind("}")
+    if end > start:
+        return text[start : end + 1]
+    return None
+
+
+def repair_json_like_text(candidate: str) -> str:
+    """Repair small JSON formatting slips common in local vision-model output.
+
+    The smoke's target is multimodal decoding, not perfect prose formatting.  A
+    missing comma between line-oriented object fields should not hide a successful
+    image/log decode.  Keep this repair deliberately conservative: it only removes
+    trailing commas and inserts commas before a newline-delimited quoted key when
+    the previous token is a complete JSON value.
+    """
+    text = strip_markdown_json_fence(candidate)
+    text = text.replace("\ufeff", "")
+    text = text.replace("\u201c", '"').replace("\u201d", '"')
+    text = text.replace("\u2018", "'").replace("\u2019", "'")
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+
+    key = r'"[^"\n\r]+":'
+    # "value"\n"next_key":, 123\n"next_key":, ]\n"next_key":, }\n"next_key":
+    text = re.sub(r'([}\]"0-9])\s*\n\s*(' + key + r')', r'\1,\n\2', text)
+    # true/false/null need an explicit group instead of a variable-width lookbehind.
+    text = re.sub(rf'\b(true|false|null)\s*\n\s*({key})', r'\1,\n\2', text)
+    return text
+
+
+def try_parse_json_object(candidate: str) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed, None
+        return None, f"JSON was {type(parsed).__name__}, not object"
+    except json.JSONDecodeError as exc:
+        json_error = f"JSON parse failed: {exc}"
+
+    # Some models drift into Python-ish single-quoted literals.  Accept that only
+    # after strict JSON failed, and only for dicts.
+    try:
+        parsed = ast.literal_eval(candidate)
+        if isinstance(parsed, dict):
+            return json.loads(json.dumps(parsed, ensure_ascii=False, default=str)), None
+        return None, f"literal was {type(parsed).__name__}, not object"
+    except Exception:
+        return None, json_error
+
+
 def extract_json_object(raw: str) -> tuple[dict[str, Any] | None, str | None]:
-    text = raw.strip()
+    text = strip_markdown_json_fence(raw)
     if not text:
         return None, "empty model response"
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
+
+    candidates: list[tuple[str, str]] = [("raw", text)]
+    balanced = balanced_json_object_slice(text)
+    if balanced and balanced != text:
+        candidates.append(("balanced-object", balanced))
+    elif balanced:
+        candidates.append(("balanced-object", balanced))
+
+    seen: set[str] = set()
+    errors: list[str] = []
+    for label, candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        parsed, error = try_parse_json_object(candidate)
+        if parsed is not None:
             return parsed, None
-        return None, f"top-level JSON was {type(parsed).__name__}, not object"
-    except json.JSONDecodeError:
-        pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
+        if error:
+            errors.append(f"{label}: {error}")
+
+        repaired = repair_json_like_text(candidate)
+        if repaired not in seen:
+            seen.add(repaired)
+            parsed, repaired_error = try_parse_json_object(repaired)
+            if parsed is not None:
+                parsed["_smoke_json_repaired"] = True
+                parsed["_smoke_json_repair_source"] = label
+                return parsed, None
+            if repaired_error:
+                errors.append(f"{label}+repair: {repaired_error}")
+
+    if "{" not in text or "}" not in text:
         return None, "no JSON object braces found"
-    try:
-        parsed = json.loads(text[start : end + 1])
-        if isinstance(parsed, dict):
-            return parsed, None
-        return None, f"extracted JSON was {type(parsed).__name__}, not object"
-    except json.JSONDecodeError as exc:
-        return None, f"JSON parse failed: {exc}"
+    return None, "; ".join(errors[-3:]) if errors else "model response was not parseable JSON"
 
 
-def build_ollama_payload(args: argparse.Namespace, prompt: str, images: list[bytes], *, minimal: bool = False) -> dict[str, Any]:
+def build_ollama_payload(args: argparse.Namespace, prompt: str, images: list[bytes], *, minimal: bool = False, num_predict_override: int | None = None) -> dict[str, Any]:
     """Build an Ollama /api/chat payload.
 
     Keep the default payload deliberately conservative. Some Ollama builds reject
@@ -1343,7 +1585,7 @@ def build_ollama_payload(args: argparse.Namespace, prompt: str, images: list[byt
 
     options: dict[str, Any] = {
         "temperature": args.temperature,
-        "num_predict": args.num_predict,
+        "num_predict": int(num_predict_override if num_predict_override is not None else args.num_predict),
     }
     if getattr(args, "num_ctx", 0) and args.num_ctx > 0:
         options["num_ctx"] = args.num_ctx
@@ -1364,6 +1606,8 @@ def build_ollama_payload(args: argparse.Namespace, prompt: str, images: list[byt
             },
         ],
     }
+    if not args.no_ollama_json_format:
+        payload["format"] = "json"
     if args.keep_alive:
         payload["keep_alive"] = args.keep_alive
     return payload
@@ -1379,14 +1623,14 @@ def payload_without_image_bodies(payload: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
-def call_ollama(args: argparse.Namespace, prompt: str, images: list[bytes]) -> tuple[str, dict[str, Any]]:
-    payload = build_ollama_payload(args, prompt, images, minimal=False)
+def call_ollama(args: argparse.Namespace, prompt: str, images: list[bytes], *, num_predict_override: int | None = None, label: str = "") -> tuple[str, dict[str, Any]]:
+    payload = build_ollama_payload(args, prompt, images, minimal=False, num_predict_override=num_predict_override)
     prompt_bytes = len(prompt.encode("utf-8", errors="replace"))
     redacted_payload = payload_without_image_bodies(payload)
     redacted_payload_bytes = len(json.dumps(redacted_payload, ensure_ascii=False).encode("utf-8"))
     full_payload_bytes = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     log(
-        "posting to Ollama "
+        f"posting to Ollama{(' [' + label + ']') if label else ''} "
         f"model={args.model} prompt_bytes={prompt_bytes} "
         f"payload_bytes_without_image_bodies={redacted_payload_bytes} "
         f"payload_bytes_with_images={full_payload_bytes} image_count={len(images)}"
@@ -1427,6 +1671,10 @@ def validate_response(parsed: dict[str, Any] | None, raw: str, parse_error: str 
     if parsed is None:
         failures.append(parse_error or "model response was not parseable JSON")
     else:
+        if parsed.get("_smoke_json_repaired"):
+            warnings.append("model JSON had a minor formatting slip and was repaired before validation")
+        if parsed.get("_smoke_compact_retry"):
+            warnings.append("primary model response was not parseable JSON; compact retry was used")
         if parsed.get("image_seen") is not True:
             failures.append("image_seen was not true")
         plots = parsed.get("plots_decoded")
@@ -1601,11 +1849,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL)
-    parser.add_argument("--ollama-timeout", type=float, default=180.0)
+    parser.add_argument("--ollama-timeout", type=float, default=420.0, help="Seconds to wait for Ollama; local vision models can be slow on first load.")
     parser.add_argument("--service-timeout", type=float, default=6.0)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--num-predict", type=int, default=700)
-    parser.add_argument("--num-ctx", type=int, default=16384, help="Ollama context window to request through options.num_ctx; use 0 to omit.")
+    parser.add_argument("--num-predict", type=int, default=320, help="Default is a fast smoke budget; use --diagnosis-depth full with a larger value for long reports.")
+    parser.add_argument("--num-ctx", type=int, default=8192, help="Ollama context window to request through options.num_ctx; use 0 to omit.")
+    parser.add_argument("--no-ollama-json-format", action="store_true", help="Do not request Ollama JSON mode; the smoke will still try to repair minor JSON slips.")
+    parser.add_argument("--no-compact-parse-retry", action="store_true", help="Do not retry with an ultra-compact prompt when the model returns malformed or truncated JSON.")
     parser.add_argument("--keep-alive", default="10m")
     parser.add_argument("--pull", action="store_true", help="Run `ollama pull <model>` before calling Ollama.")
     parser.add_argument("--dry-run", action="store_true", help="Build plots, prompt, and report without calling Ollama.")
@@ -1635,13 +1885,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--recent-fraction", type=float, default=0.12)
     parser.add_argument("--anomaly-quantile", type=float, default=0.95)
 
-    parser.add_argument("--recent-log-limit", type=int, default=120)
+    parser.add_argument("--recent-log-limit", type=int, default=60)
     parser.add_argument("--local-log-tail-bytes", type=int, default=256 * 1024)
     parser.add_argument("--max-log-text-bytes", type=int, default=512 * 1024)
-    parser.add_argument("--max-code-text-bytes", type=int, default=60_000)
-    parser.add_argument("--max-prompt-sidecar-chars", type=int, default=24_000, help="Bound text sidecars inside the Ollama prompt; lower this if Ollama reports context errors.")
-    parser.add_argument("--max-summary-points", type=int, default=24)
-    parser.add_argument("--max-summary-coverage-points", type=int, default=80)
+    parser.add_argument("--max-code-text-bytes", type=int, default=30_000)
+    parser.add_argument("--max-prompt-sidecar-chars", type=int, default=8_000, help="Bound text sidecars inside the Ollama prompt; lower this if Ollama times out or reports context errors.")
+    parser.add_argument("--max-summary-points", type=int, default=12)
+    parser.add_argument("--max-summary-coverage-points", type=int, default=40)
     parser.add_argument("--max-latest-json-artifacts", type=int, default=4, help="When /latest exists, load up to this many JSON sidecars.")
     parser.add_argument("--max-latest-json-artifact-bytes", type=int, default=512 * 1024, help="Per-JSON-artifact byte cap for /latest sidecars.")
     parser.add_argument("--count-profile-json-bytes", type=int, default=512 * 1024, help="How much each full profile JSON artifact counts against latest byte budget.")
@@ -1651,6 +1901,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--beacon", default="auto", help="Smoke beacon id; use 'none' to disable or 'auto' to generate one.")
     parser.add_argument("--emit-beacon-log", action="store_true", help="POST a smoke-only beacon event to /v1/log/events before building the plots.")
     parser.add_argument("--require-beacon-decode", action="store_true", help="Fail if the model does not decode the beacon.")
+    parser.add_argument("--diagnosis-depth", choices=["probe", "fast", "full"], default="fast", help="Prompt depth for Ollama: probe is tiny, fast is default bounded diagnosis, full is the older long diagnostic prompt.")
     parser.add_argument("--task", default="", help="Override the default diagnostic task in the model prompt.")
     args = parser.parse_args(normalize_time_argv(argv))
     args.time = normalize_lookback_time(args.time)
@@ -1695,6 +1946,7 @@ def main(argv: list[str] | None = None) -> int:
         log(f"attached PNGs: {len(images)}; bytes={[len(image) for image in images]}")
         log(f"max_latest_bytes={args.max_latest_bytes}")
         log(f"model={args.model}")
+        log(f"diagnosis_depth={args.diagnosis_depth} num_predict={args.num_predict} ollama_timeout={args.ollama_timeout}")
 
         raw_response = ""
         response_data: dict[str, Any] = {}
@@ -1707,12 +1959,44 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if args.pull:
                 subprocess.run(["ollama", "pull", args.model], check=True)
-            raw_response, response_data = call_ollama(args, prompt, images)
+            raw_response, response_data = call_ollama(args, prompt, images, label="primary")
             (out_dir / "model_response_raw.json").write_text(json_dumps(response_data) + "\n", encoding="utf-8")
             (out_dir / "model_response.txt").write_text(raw_response, encoding="utf-8")
             parsed, parse_error = extract_json_object(raw_response)
+
+            if parsed is None and not args.no_compact_parse_retry:
+                log("model response was not parseable JSON; retrying once with an ultra-compact decode prompt")
+                retry_prompt = build_compact_retry_prompt(
+                    beacon=beacon,
+                    pca_summary=pca_summary,
+                    nmds_summary=nmds_summary,
+                    log_context=log_context,
+                    args=args,
+                )
+                (out_dir / "model_prompt_retry_compact.txt").write_text(retry_prompt, encoding="utf-8")
+                retry_raw, retry_data = call_ollama(
+                    args,
+                    retry_prompt,
+                    images,
+                    num_predict_override=max(int(args.num_predict), 320),
+                    label="compact-retry",
+                )
+                (out_dir / "model_response_retry_raw.json").write_text(json_dumps(retry_data) + "\n", encoding="utf-8")
+                (out_dir / "model_response_retry.txt").write_text(retry_raw, encoding="utf-8")
+                retry_parsed, retry_parse_error = extract_json_object(retry_raw)
+                if retry_parsed is not None:
+                    retry_parsed["_smoke_compact_retry"] = True
+                    parsed = retry_parsed
+                    raw_response = retry_raw
+                    response_data = {"primary": response_data, "compact_retry": retry_data}
+                    parse_error = None
+                else:
+                    parse_error = f"primary: {parse_error}; compact-retry: {retry_parse_error}"
+
             if parsed is not None:
                 (out_dir / "model_response_parsed.json").write_text(json_dumps(parsed) + "\n", encoding="utf-8")
+                if parsed.get("_smoke_json_repaired"):
+                    (out_dir / "model_response_repaired.json").write_text(json_dumps(parsed) + "\n", encoding="utf-8")
             validation = validate_response(parsed, raw_response, parse_error, beacon=beacon, args=args)
 
         report = {
@@ -1760,7 +2044,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[profile-space-latest-png-rag-smoke] FAIL: could not reach service: {exc}", file=sys.stderr)
         return 4
     except TimeoutError as exc:
-        print(f"[profile-space-latest-png-rag-smoke] FAIL: timeout: {exc}", file=sys.stderr)
+        print(f"[profile-space-latest-png-rag-smoke] FAIL: timeout waiting for Ollama/service: {exc}", file=sys.stderr)
+        try:
+            print(
+                "[profile-space-latest-png-rag-smoke] artifacts were already written under "
+                f"{out_dir}; try --diagnosis-depth probe or increase --ollama-timeout",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
         return 4
     except Exception as exc:
         print(f"[profile-space-latest-png-rag-smoke] FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)

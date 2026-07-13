@@ -796,6 +796,10 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert payload["component_names"]["validator_rpc"] == "testneta-validator-rpc1"
     assert payload["contracts_requested"] is True
     assert payload["hub_admin_requested"] is True
+    assert payload["hub_admin_scope"] == "node"
+    assert payload["manifest"]["wallets"]["hub_admin"]["scope"] == "node"
+    assert payload["private_state_updates"]["node_hub_admin_cell_id"] == "testneta-super1"
+    assert payload["private_state_updates"]["node_hub_admin_private_key_present"] is True
     assert payload["public_guard_routes"] is False
     assert payload["hub_public_cutover_deferred"] is True
     assert "0xaaaaaaaa" not in payload["compose"]
@@ -812,10 +816,13 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "$${FDB_PYTHON_VERSION}" not in payload["compose"]
     assert "foundationdb-server_7.4.6-1_amd64.deb" in payload["compose"]
     assert "foundationdb-server_7.4.6-1_arm64.deb" in payload["compose"]
+    assert "web3==6.20.4" in payload["compose"]
+    assert "py-solc-x==2.0.3" in payload["compose"]
+    assert "solcx.install_solc" in payload["compose"]
     assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" in payload["compose"]
     assert "test -x /usr/bin/fdbserver" not in payload["compose"]
     assert "MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super" in payload["compose"]
-    assert "MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,fdb,validator-rpc,besu,qbft,traefik-targets" in payload["compose"]
+    assert "MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets" in payload["compose"]
     assert "ENTRYPOINT [\"python\", \"-u\", \"/usr/local/bin/allfather-super-guard.py\"]" in payload["compose"]
     assert "/usr/local/bin/allfather-super-guard.py" in payload["compose"]
     assert "command:" not in payload["compose"]
@@ -837,8 +844,60 @@ def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
     assert "rpc-http-enabled=true" in script
     assert "def ensure_hub" in script
     assert "running-bootstrap-listener" in script
-    assert "deferred-until-live-validator-rpc" in script
+    assert "def ensure_hub_admin" in script
+    assert "def ensure_contracts" in script
+    assert "bootstrapped" in script
+    assert "deployed" in script
+    assert "/qbft/bootstrap" in script
+    assert "fetch_shared_qbft_config" in script
+    assert "ready-for-bootstrap-command" not in script
     assert "0.0.0.0" in script
+
+
+def test_super_guard_script_compiles_with_future_annotations() -> None:
+    script = control.super_server_command_script()
+
+    assert script.startswith("from __future__ import annotations")
+    compile(script, "<allfather-super-guard>", "exec")
+
+
+def test_super_entrypoint_wrapper_binds_public_port_and_proxies_child_guard() -> None:
+    wrapper = control.super_node_entrypoint_wrapper_script()
+
+    assert "PUBLIC_GUARD_PORT" in wrapper
+    assert "CHILD_GUARD_PORT" in wrapper
+    assert "MC_ALLFATHER_GUARD_CHILD_PORT" in wrapper
+    assert "guard-startup-failed" in wrapper
+    assert "proxy_to_child" in wrapper
+    assert "diagnostic_payload" in wrapper
+    compile(wrapper, "<allfather-super-entrypoint>", "exec")
+
+
+def test_super_dockerfile_uses_diagnostic_wrapper_entrypoint() -> None:
+    dockerfile = control.super_node_dockerfile_inline("hyperledger/besu:latest")
+
+    assert "/usr/local/bin/allfather-super-guard.py" in dockerfile
+    assert "/usr/local/bin/allfather-super-entrypoint.py" in dockerfile
+    assert "zlib.decompress(base64.b64decode" in dockerfile
+    assert "RUN python - <<'PY'" not in dockerfile
+    assert "<<'PY'" not in dockerfile
+    assert "allfather-super-entrypoint" in dockerfile
+    assert "MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint" in dockerfile
+    assert "python3-venv" in dockerfile
+    assert "python -m pip install --no-cache-dir --break-system-packages" not in dockerfile
+    assert "python3 -m venv /opt/allfather-super-venv" in dockerfile
+    assert "/opt/allfather-super-venv/bin/python -m pip install --no-cache-dir" in dockerfile
+    assert 'ENTRYPOINT ["/opt/allfather-super-venv/bin/python", "-u", "/usr/local/bin/allfather-super-entrypoint.py"]' in dockerfile
+    assert 'ENTRYPOINT ["python", "-u", "/usr/local/bin/allfather-super-guard.py"]' not in dockerfile
+
+
+def test_super_dockerfile_payload_writer_avoids_long_heredoc_lines() -> None:
+    dockerfile = control.super_node_dockerfile_inline("hyperledger/besu:latest")
+
+    assert "printf '%s\\n'" in dockerfile
+    assert "unterminated heredoc" not in dockerfile
+    assert "write_bytes(base64.b64decode" not in dockerfile
+    assert max(len(line) for line in dockerfile.splitlines()) < 300
 
 
 def test_super_guard_status_helper_accepts_component_name_field(
@@ -897,7 +956,14 @@ def test_super_compose_is_build_only_and_escapes_inline_dockerfile(tmp_path: Pat
     assert "$${FDB_PYTHON_VERSION}" not in compose
     assert "foundationdb-clients_7.4.6-1_amd64.deb" in compose
     assert "foundationdb-server_7.4.6-1_arm64.deb" in compose
+    assert "web3==6.20.4" in compose
+    assert "py-solc-x==2.0.3" in compose
+    assert "python3-venv" in compose
+    assert "python3 -m venv /opt/allfather-super-venv" in compose
+    assert "python -m pip install --no-cache-dir --break-system-packages" not in compose
     assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" in compose
+    assert "allfather-super-entrypoint.py" in compose
+    assert "MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint" in compose
 
 
 def test_add_node_publish_routes_labels_only_hub_and_rpc(tmp_path: Path) -> None:
@@ -1003,6 +1069,8 @@ networks:
     assert payload["hub_admin_create_requested"] is False
     assert payload["hub_admin_private_key_required_for_node_add"] is False
     assert payload["private_state_updates"]["wallets_generated"] == ["hub_admin"]
+    assert payload["private_state_updates"]["node_hub_admin_cell_id"] == "testneta-super1"
+    assert payload["manifest"]["wallets"]["hub_admin"]["scope"] == "node"
     assert payload["manifest"]["bootstrap"]["hub_admin_create_requested"] is False
     assert payload["manifest"]["bootstrap"]["contracts_deferred_until_hub_admin_ready"] is False
     assert payload["manifest"]["wallets"]["hub_admin"]["private_key_present"] is True
@@ -1199,6 +1267,12 @@ def test_add_node_second_fdb_node_joins_existing_cluster_before_reconfigure(tmp_
     assert fdb["target_coordinators"] == ["10.116.0.3:44550", "10.116.0.3:44551"]
     assert fdb["coordinator_reconfigure_required"] is True
     assert payload["fdb"]["existing_node_count"] == 1
+    assert payload["contracts_requested"] is False
+    assert payload["hub_admin_scope"] == "node"
+    assert payload["private_state_updates"]["node_hub_admin_cell_id"] == "testneta-super2"
+    assert payload["private_state_updates"]["node_hub_admin_private_key_present"] is True
+    assert payload["manifest"]["bootstrap"]["contracts_requested"] is False
+    assert payload["manifest"]["wallets"]["hub_admin"]["scope"] == "node"
 
 
 def test_add_node_uses_coolify_inventory_count_for_next_ordinal(tmp_path: Path) -> None:
@@ -1536,3 +1610,175 @@ def test_super_internal_status_counts_reports_observed_and_healthy_nodes() -> No
         "super_nodes_internal_observed": 2,
         "super_nodes_internal_healthy": 1,
     }
+
+
+def ready_internal_status_for_add_node(*, contracts_status: str = "deployed") -> dict[str, object]:
+    return {
+        "observed": True,
+        "ok": True,
+        "identity_ok": True,
+        "topology_ok": True,
+        "status_ok": True,
+        "healthz_ok": True,
+        "functions": {
+            "foundationdb": {
+                "running": True,
+                "status": "running",
+                "configured": True,
+                "listening": True,
+            },
+            "validator_rpc": {
+                "running": True,
+                "status": "running",
+                "rpc_http_ok": True,
+            },
+            "hub": {
+                "running": True,
+                "status": "running-bootstrap-listener",
+                "health_ok": True,
+            },
+            "hub_admin": {
+                "running": True,
+                "status": "bootstrapped",
+                "completed": True,
+            },
+            "contracts": {
+                "running": contracts_status == "deployed",
+                "status": contracts_status,
+                "completed": contracts_status == "deployed",
+            },
+        },
+    }
+
+
+def test_add_node_ready_check_requires_first_node_contract_deployment() -> None:
+    manifest = {
+        "bootstrap": {"contracts_requested": True},
+    }
+
+    ready = control.add_node_super_ready_check(ready_internal_status_for_add_node(), manifest)
+    assert ready["ready"] is True
+    assert ready["components"]["contracts"] == "deployed"
+
+    pending = ready_internal_status_for_add_node(contracts_status="deferred-until-hub-admin")
+    not_ready = control.add_node_super_ready_check(pending, manifest)
+    assert not_ready["ready"] is False
+    assert "contracts not deployed" in not_ready["reason"]
+
+
+def test_add_node_ready_check_accepts_second_node_without_contract_redeploy() -> None:
+    manifest = {
+        "bootstrap": {"contracts_requested": False},
+    }
+    status = ready_internal_status_for_add_node(contracts_status="not-required-existing-network")
+
+    ready = control.add_node_super_ready_check(status, manifest)
+
+    assert ready["ready"] is True
+    assert ready["contracts_requested"] is False
+    assert ready["components"]["hub_admin"] == "bootstrapped"
+
+
+def test_add_node_parse_defaults_wait_for_remote_readiness(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+
+    args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+        ]
+    )
+
+    assert args.deploy_wait_s == control.DEFAULT_ADD_NODE_READY_WAIT_S
+    assert args.deploy_poll_s == control.DEFAULT_ADD_NODE_READY_POLL_S
+
+
+def test_add_node_wait_uses_private_probe_ready_signal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    dry_args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+        ]
+    )
+    plan = control.build_plan_from_args(dry_args)
+    manifest = control.add_node(plan, dry_args)["manifest"]
+    head = control.choose_head_for_host(plan, "coolify-a")
+    runtime_status = ready_internal_status_for_add_node()
+
+    monkeypatch.setattr(
+        control,
+        "service_items_for_client",
+        lambda client, tried: [{"name": "testneta-super1", "uuid": "service-uuid", "status": "running:healthy"}],
+    )
+    monkeypatch.setattr(
+        control,
+        "sync_probe_service",
+        lambda client, plan, head, args, context, tried, super_inventory=None: ("probe-uuid", "updated", {}),
+    )
+
+    class FakeHubService:
+        def trigger_deploy_service(self, client, *, service_uuid: str, force: bool, tried: list[dict[str, object]]) -> dict[str, object]:
+            return {"ok": True, "service_uuid": service_uuid, "force": force}
+
+    monkeypatch.setattr(control, "hub_service_tool", lambda: FakeHubService())
+
+    def fake_wait_for_probe_metadata_result(client, service_uuid, tried, *, expected_targets, wait_s):
+        target = next(item for item in expected_targets if item.get("kind") == "super-node")
+        return {}, {
+            "ok": True,
+            "result": {
+                "targets": [
+                    {
+                        "kind": "super-node",
+                        "service_name": target["service_name"],
+                        **runtime_status,
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(control, "wait_for_probe_metadata_result", fake_wait_for_probe_metadata_result)
+
+    wait_args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--deploy-wait-s",
+            "10",
+            "--deploy-poll-s",
+            "0.1",
+        ]
+    )
+
+    result = control.wait_for_add_node_ready(
+        plan,
+        head,
+        manifest,
+        client=object(),
+        args=wait_args,
+        context={},
+        tried=[],
+        service_uuid="service-uuid",
+    )
+
+    assert result["ready"] is True
+    assert result["private_probe_observed"] is True
+    assert result["readiness"]["components"]["foundationdb"] == "running"
+    assert result["ssh_used"] is False
+    assert result["direct_vpn_used"] is False

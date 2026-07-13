@@ -64,6 +64,12 @@
         {id: "layout.workbench.evidence-zone", elementId: "element.app.evidence-flow", layer: "layout", label: "Evidence zone", contract: "Diffs, logs, previews, receipts, and operation summaries appear close to the action that produced them.", states: ["empty", "preview", "success", "warning", "error"], supports: ["evidence-near-action", "proof-output", "source-runtime-split"]},
         {id: "layout.workbench.advanced-risk-zone", elementId: "element.app.layout-slot", layer: "layout", label: "Advanced risk zone", contract: "Provider-native, destructive, command, remote, payment, or server controls are collapsed or visually secondary unless this app owns that capability as its dominant object.", states: ["collapsed", "expanded", "blocked", "diagnostic"], supports: ["advanced-collapsed", "no-raw-provider-dump", "dangerous-actions-never-primary"]},
         {id: "layout.workbench.status-band", elementId: "element.app.layout-slot", layer: "layout", label: "Workbench status band", contract: "Save, sync, dirty, connection, running, conflict, and proof-blocked state remain visible across workflow stages.", states: ["idle", "dirty", "saving", "synced", "blocked", "conflict"], supports: ["status-always-visible", "state-legibility", "proof-policy"]},
+        {id: "layout.document.menu-zone", elementId: "element.layout.document-menu-zone", layer: "layout", label: "Document menu zone", contract: "Global and less-used document commands live above the writing surface, not in the primary page lane.", states: ["ready", "open", "disabled"], supports: ["document-menu", "global-commands", "advanced-commands-secondary"]},
+        {id: "layout.document.toolbar-zone", elementId: "element.layout.document-toolbar-zone", layer: "layout", label: "Document toolbar zone", contract: "Common writing controls and save state stay compact and visible without becoming a feature dump.", states: ["ready", "busy", "overflow"], supports: ["document-toolbar", "compact-writing-controls", "autosave-status"]},
+        {id: "layout.document.navigation-zone", elementId: "element.layout.document-navigation-zone", layer: "layout", label: "Document navigation zone", contract: "Document tabs, chapters, headings, outline, and search results occupy the left navigation lane.", states: ["ready", "collapsed", "searching"], supports: ["document-navigation", "left-nav", "outline", "chapter-list"]},
+        {id: "layout.document.page-zone", elementId: "element.layout.document-page-zone", layer: "layout", label: "Document page zone", contract: "The authored document page/editor remains the centered primary surface.", states: ["empty", "editing", "readonly", "selected"], supports: ["document-page-primary", "authored-text-source", "selection-surface"]},
+        {id: "layout.document.companion-zone", elementId: "element.layout.document-companion-zone", layer: "layout", label: "Document companion zone", contract: "AI, comments, selection tools, history, and diff/restore previews stay in a contextual right-side companion.", states: ["collapsed", "assistant", "selection", "history", "diff", "error"], supports: ["document-companion", "right-inspector", "ai-proposal", "history-preview"]},
+        {id: "layout.document.status-zone", elementId: "element.layout.document-status-zone", layer: "layout", label: "Document status zone", contract: "Dirty/saved/autosaving, word count, current section, AI running, checkpoint, and conflict status remain compact and persistent.", states: ["idle", "dirty", "saving", "saved", "conflict", "ai-running"], supports: ["document-status", "state-legibility", "autosave-status", "conflict-warning"]},
         {id: "layout.terminal-viewport", elementId: "element.compute.terminal-view", layer: "layout", label: "Terminal viewport", contract: "Prompt, input buffer, stdout/stderr scrollback, and analysis output render as one owned terminal view.", states: ["ready", "typing", "running", "scrolled", "failed"], supports: ["terminal-session", "owned-terminal-scrollback", "prompt-input-output-split"]},
         {id: "layout.tabbed-workspace", elementId: "element.toolkit.tabbed-workspace", layer: "layout", label: "Tabbed workspace", contract: "Notebook shell where a tab strip selects sibling panels while preserving panel model truth.", states: ["active-tab", "inactive-panels-hidden", "route-synced", "keyboard-focus"], supports: ["single-select-tabs", "panel-switching", "route-sync", "preserve-panel-state", "keyboard-navigation"]},
         {id: "layout.tab-list", elementId: "element.toolkit.tab-list", layer: "layout", label: "Tab list", contract: "Tab strip advertises its orientation, active tab, and panel mapping instead of acting as generic navigation.", states: ["horizontal", "wrapped", "focused", "overflow"], supports: ["single-select-tabs", "roving-tabindex", "a11y-state"]},
@@ -89,7 +95,8 @@
         {id: "pattern.log-explorer", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Log explorer", contract: "Search, filter, group, and inspect streaming events.", states: ["live", "paused", "filtered", "selected"], supports: ["timeline", "search", "preview"]},
         {id: "pattern.workbench-specification", elementId: "element.workbench.specification", layer: "contract", label: "Workbench specification", contract: "MWSL binds dominant object, workflow, layout slots, action hierarchy, evidence, risk, and visual priority into one app-shaping contract.", states: ["draft", "authored", "projected", "proof-ready"], supports: ["dominant-object", "primary-workflow", "capability-projection", "layout-projection", "visual-policy"]},
         {id: "pattern.capability-projection", elementId: "element.app.capability-projection", layer: "contract", label: "Capability projection", contract: "A provider capability is projected into the consumer app through native layout slots instead of dumping provider UI.", states: ["provider-owned", "consumer-projected", "advanced-details", "blocked-primary"], supports: ["provider-consumer-boundary", "no-raw-provider-dump", "layout-slots"]},
-        {id: "pattern.git-backed-document-history", elementId: "element.version.git-backed-history", layer: "contract", label: "Git-backed document history", contract: "Document-native autosave, timeline, compare, and restore-as-new-version backed by Git evidence.", states: ["dirty", "saved-locally", "checkpointed", "comparing", "restore-preview", "conflict"], supports: ["autosave-status", "revision-timeline", "diff-preview", "restore-as-new-version", "git-evidence-advanced"]}
+        {id: "pattern.git-backed-document-history", elementId: "element.version.git-backed-history", layer: "contract", label: "Git-backed document history", contract: "Document-native autosave, timeline, compare, and restore-as-new-version backed by Git evidence.", states: ["dirty", "saved-locally", "checkpointed", "comparing", "restore-preview", "conflict"], supports: ["autosave-status", "revision-timeline", "diff-preview", "restore-as-new-version", "git-evidence-advanced"]},
+        {id: "pattern.document-editor-workbench", elementId: "element.layout.document-workbench", layer: "contract", label: "Document editor workbench", contract: "A product-facing writing layout grammar that keeps the page primary, navigation left, companion right, toolbar compact, status persistent, and spec/debug UI hidden.", states: ["draft", "bound", "proof-ready", "rework-ready"], supports: ["document-workbench", "document-layout-binding", "document-page-primary", "document-navigation", "document-companion", "document-status", "no-visible-spec-cards"]}
       ];
 
       const VIEW_RECIPES = [
@@ -151,6 +158,23 @@
             "pattern.capability-projection"
           ],
           bestFor: ["workbench-specification", "capability-projection", "git-backed-document-history", "repository-operator", "source-workspace"]
+        },
+        {
+          id: "document-authoring-workbench",
+          label: "Document authoring workbench",
+          capabilities: ["document-workbench", "document-menu", "document-toolbar", "document-navigation", "document-page-primary", "document-companion", "document-status", "ai-proposal", "git-backed-document-history", "restore-as-new-version", "no-visible-spec-cards"],
+          primitiveIds: [
+            "layout.document.menu-zone",
+            "layout.document.toolbar-zone",
+            "layout.document.navigation-zone",
+            "layout.document.page-zone",
+            "layout.document.companion-zone",
+            "layout.document.status-zone",
+            "pattern.document-editor-workbench",
+            "pattern.git-backed-document-history",
+            "controller.safety-gate"
+          ],
+          bestFor: ["document-editor-workbench", "document-layout-binding", "git-backed-document-history", "selection-aware-ai-companion"]
         },
         {
           id: "compact-audit-list",
@@ -245,6 +269,17 @@
           mustReject: ["embedded-provider-app", "raw-provider-controls-primary", "provider-technical-language-primary"],
           selection: "consumer-native-projection",
           safety: ["provider-native risky controls are advanced or blocked unless the provider is the dominant object"]
+        },
+        documentEditorWorkbench: {
+          id: "document-editor-workbench",
+          label: "Document editor workbench layout contract",
+          intent: "Prepare the document editor for a calm writing layout: menu and compact toolbar above, document navigation left, authored page centered, contextual AI/history companion right, persistent status below.",
+          requires: ["document-menu", "document-toolbar", "document-navigation", "document-page-primary", "document-companion", "document-status", "ai-proposal", "no-visible-spec-cards"],
+          fields: ["dominantObject", "layoutGrammar", "placementRules", "visualPolicy", "stateModel", "responsivePolicy", "forbiddenProductUi"],
+          requiredPrimitives: ["pattern.document-editor-workbench", "layout.document.menu-zone", "layout.document.toolbar-zone", "layout.document.navigation-zone", "layout.document.page-zone", "layout.document.companion-zone", "layout.document.status-zone", "controller.safety-gate"],
+          mustReject: ["visible-mwsl-card", "debug-contract-in-product-ui", "toolbar-feature-dump", "ai-direct-source-mutation", "raw-git-controls-primary"],
+          selection: "current-document-plus-selection",
+          safety: ["AI output is proposal-only until accepted", "history restore creates a new version", "raw provider controls stay advanced", "status remains visible without crowding the page"]
         },
         gitBackedDocumentHistory: {
           id: "git-backed-document-history",
@@ -347,6 +382,8 @@
           workbenchEligibleViewCount: resolveViews(CONTRACT_PATTERNS.workbenchSpecification).filter((candidate) => candidate.eligible).length,
           workbenchBestView: resolveViews(CONTRACT_PATTERNS.workbenchSpecification)[0]?.id || "none",
           gitBackedDocumentHistoryEligibleViewCount: resolveViews(CONTRACT_PATTERNS.gitBackedDocumentHistory).filter((candidate) => candidate.eligible).length,
+          documentEditorWorkbenchEligibleViewCount: resolveViews(CONTRACT_PATTERNS.documentEditorWorkbench).filter((candidate) => candidate.eligible).length,
+          documentEditorWorkbenchBestView: resolveViews(CONTRACT_PATTERNS.documentEditorWorkbench)[0]?.id || "none",
           noOneOffControls: PRIMITIVES.some((primitive) => primitive.id === "control.selection.tristate") &&
             PRIMITIVES.some((primitive) => primitive.id === "control.resize-handle") &&
             PRIMITIVES.some((primitive) => primitive.id === "controller.view-resolver") &&

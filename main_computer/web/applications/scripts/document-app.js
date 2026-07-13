@@ -48,7 +48,6 @@
     }
     function setDocumentAiOpen(open) {
       const isOpen = Boolean(open);
-      if (isOpen) setDocumentLibraryOpen(false);
       documentApp?.classList.toggle("document-ai-open", isOpen);
       documentAiPane?.setAttribute("aria-hidden", isOpen ? "false" : "true");
       documentAiToggle?.setAttribute("aria-expanded", isOpen ? "true" : "false");
@@ -63,7 +62,6 @@
     }
     function setDocumentLibraryOpen(open) {
       const isOpen = Boolean(open);
-      if (isOpen) setDocumentAiOpen(false);
       documentApp?.classList.toggle("document-library-open", isOpen);
       documentLibrary?.setAttribute("aria-hidden", isOpen ? "false" : "true");
       documentLibraryToggle?.setAttribute("aria-expanded", isOpen ? "true" : "false");
@@ -296,9 +294,6 @@
         documentLibraryToggle?.addEventListener("click", toggleDocumentLibrary);
         documentLibraryClose?.addEventListener("click", () => setDocumentLibraryOpen(false));
         documentLibraryScrim?.addEventListener("click", () => setDocumentLibraryOpen(false));
-        documentLibraryList?.addEventListener("click", (event) => {
-          if (event.target.closest(".document-library-item")) setDocumentLibraryOpen(false);
-        });
         documentAiToggle?.addEventListener("click", toggleDocumentAi);
         documentAiClose?.addEventListener("click", () => setDocumentAiOpen(false));
         documentAiScrim?.addEventListener("click", () => setDocumentAiOpen(false));

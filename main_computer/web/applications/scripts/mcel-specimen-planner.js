@@ -1,11 +1,12 @@
     (function (global) {
       "use strict";
 
-      const PLANNER_VERSION = "0.3.0";
+      const PLANNER_VERSION = "0.3.1";
 
 
       const MWSL_LANGUAGE_ID = "MWSL";
       const WORKBENCH_LAYOUT_SLOTS = Object.freeze(["identity", "primary", "actions", "inspector", "evidence", "advanced", "status"]);
+      const DOCUMENT_WORKBENCH_LAYOUT_ZONES = Object.freeze(["menu", "toolbar", "navigation", "primary", "companion", "evidence", "status", "advanced"]);
       const DEFAULT_VISUAL_POLICY = Object.freeze({
         primaryFocus: "dominant-object",
         maxPrimaryActions: 3,
@@ -137,17 +138,17 @@
           point: "Edit, paginate, import/export, and optionally AI-assist local documents without losing author intent or executing hidden mutations.",
           domainPack: "document-domain",
           adapter: "planner-generic-adapter",
-          expectedRegions: ["library", "toolbar", "document-canvas", "pagination", "ai-panel"],
-          expectedFeeds: ["status", "current-path", "pagination-report"],
-          expectedFields: ["title", "body", "search", "ai-prompt"],
-          expectedActionFamilies: ["open", "save", "export", "library-refresh", "ai-assist"],
-          knownRiskFamilies: ["save-overwrite", "export-file", "ai-network-assist"],
-          neverExecute: ["silent overwrite", "silent upload", "network AI action without policy"],
-          decodeHints: ["document", "library", "page", "readonly", "export", "ai"],
-          mountNeeds: ["contenteditable/source-preservation hints", "document object/law pack", "save/export proof policy"],
+          expectedRegions: ["menu-zone", "toolbar-zone", "document-navigation", "document-page", "companion-inspector", "status-zone"],
+          expectedFeeds: ["autosave-status", "current-section", "ai-proposal", "history-diff-preview"],
+          expectedFields: ["title", "body", "search", "ai-prompt", "selection-context"],
+          expectedActionFamilies: ["open", "save", "format", "document-navigation", "ai-proposal", "history-restore"],
+          knownRiskFamilies: ["save-overwrite", "export-file", "ai-network-assist", "history-restore", "raw-git-provider-action"],
+          neverExecute: ["silent overwrite", "silent upload", "network AI action without policy", "AI direct source mutation", "raw Git reset/checkout from document UI"],
+          decodeHints: ["document", "page", "left navigation", "right companion", "autosave", "selection", "history", "diff", "restore"],
+          mountNeeds: ["document workbench layout binding", "selection-aware AI companion contract", "document-native version/history projection"],
           workbenchSpec: {
             language: "MWSL",
-            purpose: "Write, revise, compare, and restore documents.",
+            purpose: "Write, revise, navigate, improve, and restore long-form documents.",
             dominantObject: "Document",
             objects: {
               Document: {
@@ -155,13 +156,16 @@
                 title: "documentTitle",
                 source: "documentPath",
                 state: "dirty | saved | autosaving | conflicted",
-                relationships: ["DocumentVersion", "RevisionTimeline", "DiffPreview", "Export"]
+                relationships: ["DocumentTab", "Chapter", "Section", "Selection", "AISuggestion", "Revision", "Export"]
               }
             },
             workflows: {
-              primary: ["Write", "Autosave", "Checkpoint", "ReviewHistory", "Compare", "Restore"],
-              secondary: ["InspectMetadata", "Export", "UseAI"],
-              advanced: ["GitDetails", "RepairHistory", "RemoteSync"]
+              primary: ["OpenDocument", "Navigate", "Write", "Format", "Save"],
+              aiAssist: ["SelectText", "AskAI", "ReviewSuggestion", "AcceptOrDiscard"],
+              history: ["ViewHistory", "CompareRevision", "RestoreAsNewVersion"],
+              export: ["PrepareExport", "PreviewExport", "ExportFile"],
+              secondary: ["InspectMetadata", "UseAI", "ReviewHistory", "Export"],
+              advanced: ["GitDetails", "RepairHistory", "RemoteSync", "RawProviderDiagnostics"]
             },
             capabilityProjections: [{
               capability: "GitBackedHistory",
@@ -179,17 +183,67 @@
               blocked: ["HardReset", "DeleteHistory", "RemotePush", "RemotePull"]
             }],
             layout: {
-              identity: ["DocumentTitle", "CurrentVersion"],
-              primary: ["DocumentBody", "FormattingToolbar"],
-              actions: ["AutosaveStatus", "CreateCheckpoint"],
-              inspector: ["VersionTimeline", "VersionDetails", "DocumentMetadata"],
-              evidence: ["DiffPreview", "RestorePreview"],
-              advanced: ["GitTechnicalDetails", "OpenInGitTools", "RemoteSync", "RepairHistory"],
-              status: ["DirtyState", "LastAutosaveAt", "CheckpointStatus", "ConflictWarning"]
+              identity: ["DocumentTitle", "CurrentSection", "SaveState"],
+              primary: ["DocumentPage", "DocumentBody", "SelectionSurface"],
+              actions: ["AutosaveStatus", "AIQuickAction"],
+              inspector: ["DocumentNavigation", "DocumentMetadata", "VersionTimeline"],
+              evidence: ["AISuggestionPreview", "DiffPreview", "RestorePreview", "ExportPreview"],
+              advanced: ["GitTechnicalDetails", "OpenInGitTools", "RemoteSync", "RepairHistory", "RawProviderDiagnostics"],
+              status: ["DirtyState", "AutosaveState", "WordCount", "CurrentChapter", "AIState", "ConflictWarning"]
+            },
+            layoutGrammar: {
+              shell: "page-centered-writing-workbench",
+              zones: {
+                menu: ["FileMenu", "EditMenu", "ViewMenu", "InsertMenu", "FormatMenu", "ToolsMenu", "ExtensionsMenu", "HelpMenu"],
+                toolbar: ["UndoRedo", "SaveStatus", "StyleControls", "FormatControls", "LinkCommentControls", "AIQuickAction"],
+                navigation: ["DocumentTabs", "ChapterList", "OutlineTree", "SearchResults"],
+                primary: ["DocumentPage", "DocumentBody", "SelectionSurface"],
+                companion: ["AIAssistant", "SelectionTools", "ChapterInspector", "HistoryInspector", "DiffPreview", "DocumentHealth"],
+                evidence: ["AISuggestionPreview", "DiffPreview", "RestorePreview", "ExportResult"],
+                status: ["DirtyState", "AutosaveState", "WordCount", "CurrentChapter", "CheckpointState", "AIState", "ConflictWarning"],
+                advanced: ["GitTechnicalDetails", "RemoteSync", "RepairHistory", "DebugDiagnostics"]
+              },
+              placementRules: {
+                documentNavigation: "navigation",
+                commonWritingControls: "toolbar",
+                authoredDocumentSource: "primary",
+                aiAssistant: "companion",
+                selectionTools: "companion",
+                historyTimeline: "companion",
+                diffPreview: "companion/evidence",
+                autosaveState: "toolbar/status",
+                importExport: "menu",
+                rawGitDetails: "advanced",
+                debugDiagnostics: "devOnly"
+              },
+              forbiddenProductUi: ["visible-mwsl-card", "debug-contract-card", "raw-git-controls-primary", "ai-direct-source-mutation"],
+              responsivePolicy: {
+                desktop: "navigation + centered page + companion",
+                medium: "collapsible navigation, companion drawer",
+                small: "page primary, navigation and companion as overlays"
+              }
+            },
+            layoutBinding: {
+              root: "[data-mcel-workbench='document-editor']",
+              shell: "[data-mcel-layout='page-centered-writing-workbench']",
+              zones: {
+                menu: "[data-mcel-layout-zone='menu']",
+                toolbar: "[data-mcel-layout-zone='toolbar']",
+                navigation: "[data-mcel-layout-zone='navigation']",
+                primary: "[data-mcel-layout-zone='primary']",
+                companion: "[data-mcel-layout-zone='companion']",
+                status: "[data-mcel-layout-zone='status']",
+                advanced: "[data-mcel-layout-zone='advanced']"
+              },
+              requiredDesktopLanes: ["navigation", "primary", "companion"],
+              topChromeBudget: "compact menu + compact toolbar + compact status, not stacked feature rows"
             },
             actionPolicy: {
-              safe: ["ViewHistory", "CompareVersion"],
-              localWrite: ["Autosave", "CreateCheckpoint", "RestoreAsNewVersion"],
+              inspect: ["ViewOutline", "ViewHistory", "PreviewSuggestion", "PreviewDiff", "PreviewExport"],
+              localEdit: ["TypeText", "FormatText", "InsertComment"],
+              localWrite: ["SaveDocument", "AutosaveDocument", "CreateCheckpoint"],
+              proposalOnly: ["AskAI", "GenerateRewrite", "SummarizeChapter"],
+              mutationBoundary: ["AcceptSuggestion", "RestoreAsNewVersion"],
               remoteMutationBlocked: ["Push", "Pull", "RemoteSync"],
               destructiveBlocked: ["HardReset", "DeleteHistory", "CheckoutOldCommit"]
             },
@@ -208,14 +262,18 @@
               }
             },
             visualPolicy: {
-              primaryFocus: "DocumentBody",
+              primaryFocus: "DocumentPage",
               maxPrimaryActions: 2,
               advancedCollapsedByDefault: true,
               dangerousActionsNeverPrimary: true,
               evidenceNearAction: true,
               statusAlwaysVisible: true,
               noRawProviderDumping: true,
-              noCompetingToolClusters: true
+              noCompetingToolClusters: true,
+              noVisibleSpecCards: true,
+              toolbarIsCompact: true,
+              rightCompanionCollapsible: true,
+              leftNavigationStable: true
             }
           }
         }),
@@ -646,6 +704,7 @@
           workflows: {...fallback.workflows, ...(authored.workflows || {})},
           capabilityProjections: Array.isArray(authored.capabilityProjections) ? clone(authored.capabilityProjections) : [],
           layout,
+          layoutGrammar: authored.layoutGrammar ? clone(authored.layoutGrammar) : null,
           actionPolicy: {...fallback.actionPolicy, ...(authored.actionPolicy || {})},
           visualPolicy: {...DEFAULT_VISUAL_POLICY, ...(authored.visualPolicy || {})}
         };
@@ -665,6 +724,52 @@
           .join("; ");
       }
 
+      function documentWorkbenchLayoutSummary(plan = {}) {
+        const spec = normalizeWorkbenchSpec(plan);
+        const zones = spec.layoutGrammar?.zones || {};
+        return DOCUMENT_WORKBENCH_LAYOUT_ZONES
+          .map((zone) => `${zone}:${Array.isArray(zones[zone]) ? zones[zone].length : 0}`)
+          .join(", ");
+      }
+
+      function documentWorkbenchPlacementSummary(plan = {}) {
+        const spec = normalizeWorkbenchSpec(plan);
+        const rules = spec.layoutGrammar?.placementRules || {};
+        return Object.keys(rules)
+          .sort()
+          .map((key) => `${key}->${rules[key]}`)
+          .join(", ");
+      }
+
+      function documentWorkbenchFindingsFor(plan = {}) {
+        const spec = normalizeWorkbenchSpec(plan);
+        const grammar = spec.layoutGrammar || {};
+        const zones = grammar.zones || {};
+        const findings = [];
+        if (plan.app !== "document") return findings;
+        DOCUMENT_WORKBENCH_LAYOUT_ZONES.forEach((zone) => {
+          if (!Array.isArray(zones[zone]) || zones[zone].length === 0) {
+            findings.push(`Document workbench ${zone} zone is not declared.`);
+          }
+        });
+        if (!((zones.primary || []).includes("DocumentPage") || (zones.primary || []).includes("DocumentBody"))) {
+          findings.push("Document page is not the primary work zone.");
+        }
+        if (!((zones.navigation || []).includes("DocumentTabs") || (zones.navigation || []).includes("OutlineTree"))) {
+          findings.push("Document navigation is not mapped to the left navigation zone.");
+        }
+        if (!((zones.companion || []).includes("AIAssistant") || (zones.companion || []).includes("SelectionTools"))) {
+          findings.push("AI/selection tools are not mapped to the right companion zone.");
+        }
+        if (!((zones.status || []).includes("DirtyState") && (zones.status || []).includes("AutosaveState"))) {
+          findings.push("Document save/autosave state is not persistent.");
+        }
+        if (!(grammar.forbiddenProductUi || []).includes("visible-mwsl-card")) {
+          findings.push("Visible MCEL/spec cards are not forbidden from product UI.");
+        }
+        return findings;
+      }
+
       function workbenchFindingsFor(plan = {}) {
         const spec = normalizeWorkbenchSpec(plan);
         const findings = [];
@@ -678,6 +783,7 @@
         if ((spec.capabilityProjections || []).some((projection) => (projection.hidePrimary || []).length && !(projection.advanced || []).length)) {
           findings.push("Consumed capability hides provider controls without advanced evidence placement.");
         }
+        findings.push(...documentWorkbenchFindingsFor(plan));
         return findings;
       }
 
@@ -736,6 +842,8 @@
           plannerReady: plans.filter((plan) => plan.status === "planner-ready").length,
           highRisk: plans.filter((plan) => riskLevel(plan) === "high").length,
           workbenchSpecReady: plans.filter((plan) => normalizeWorkbenchSpec(plan).language === MWSL_LANGUAGE_ID).length,
+          documentWorkbenchReady: documentWorkbenchFindingsFor(planFor("document")).length === 0,
+          documentWorkbenchLayout: documentWorkbenchLayoutSummary(planFor("document")),
           mountQueue: mountQueue().map(toCanonicalOption)
         };
       }
@@ -934,6 +1042,8 @@
               workbenchLanguage: workbenchSpec.language || MWSL_LANGUAGE_ID,
               workbenchDominantObject: workbenchSpec.dominantObject || "unknown",
               workbenchLayoutSlots: workbenchLayoutSlotSummary(plan),
+              documentWorkbenchLayout: documentWorkbenchLayoutSummary(plan),
+              documentWorkbenchPlacements: documentWorkbenchPlacementSummary(plan),
               workbenchCapabilityProjectionCount: (workbenchSpec.capabilityProjections || []).length,
               workbenchFindings: workbenchFindingsFor(plan),
               workbenchFindingCount: workbenchFindingsFor(plan).length,
@@ -1004,8 +1114,12 @@
         normalizeWorkbenchSpec,
         workbenchLayoutSlotSummary,
         workbenchCapabilitySummary,
+        documentWorkbenchLayoutSummary,
+        documentWorkbenchPlacementSummary,
+        documentWorkbenchFindingsFor,
         workbenchFindingsFor,
         WORKBENCH_LAYOUT_SLOTS,
+        DOCUMENT_WORKBENCH_LAYOUT_ZONES,
         requiredIdsFor,
         dangerousSelectorsFor,
         createGenericAdapter,

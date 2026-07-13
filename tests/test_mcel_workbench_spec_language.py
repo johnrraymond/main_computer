@@ -33,6 +33,13 @@ def test_mwsl_elements_define_workbench_capability_projection_and_git_history() 
         "element.app.action-hierarchy",
         "element.app.evidence-flow",
         "element.app.visual-policy",
+        "element.layout.document-workbench",
+        "element.layout.document-menu-zone",
+        "element.layout.document-toolbar-zone",
+        "element.layout.document-navigation-zone",
+        "element.layout.document-page-zone",
+        "element.layout.document-companion-zone",
+        "element.layout.document-status-zone",
         "element.version.git-backed-history",
         "element.version.autosave-controller",
         "element.version.revision-timeline",
@@ -47,6 +54,8 @@ def test_mwsl_elements_define_workbench_capability_projection_and_git_history() 
     assert "restore as new version" in elements
     assert "git reset --hard" in elements
     assert "commit every keystroke" in elements
+    assert "no-visible-spec-cards" in elements
+    assert "Document page owns the center lane" in elements
 
 
 def test_mwsl_toolkit_patterns_resolve_to_workbench_composition_shell() -> None:
@@ -62,29 +71,40 @@ def test_mwsl_toolkit_patterns_resolve_to_workbench_composition_shell() -> None:
         const api = sandbox.McelToolkitCore;
         const workbench = api.CONTRACT_PATTERNS.workbenchSpecification;
         const gitHistory = api.CONTRACT_PATTERNS.gitBackedDocumentHistory;
+        const documentWorkbench = api.CONTRACT_PATTERNS.documentEditorWorkbench;
         const readiness = api.buildToolkitReadinessReport();
         const workbenchResolution = api.resolveViews(workbench)[0];
         const gitResolution = api.resolveViews(gitHistory)[0];
+        const documentResolution = api.resolveViews(documentWorkbench)[0];
         process.stdout.write(JSON.stringify({{
           primitiveCount: readiness.primitiveCount,
           workbenchBestView: readiness.workbenchBestView,
+          documentEditorWorkbenchBestView: readiness.documentEditorWorkbenchBestView,
           workbenchEligibleViewCount: readiness.workbenchEligibleViewCount,
           gitBackedDocumentHistoryEligibleViewCount: readiness.gitBackedDocumentHistoryEligibleViewCount,
+          documentEditorWorkbenchEligibleViewCount: readiness.documentEditorWorkbenchEligibleViewCount,
           workbenchResolution: workbenchResolution.id,
           gitResolution: gitResolution.id,
+          documentResolution: documentResolution.id,
           gitRejects: gitHistory.mustReject,
+          documentRejects: documentWorkbench.mustReject,
         }}));
         """
     )
     result = run_node_json(script)
 
     assert result["workbenchBestView"] == "workbench-composition-shell"
+    assert result["documentEditorWorkbenchBestView"] == "document-authoring-workbench"
     assert result["workbenchResolution"] == "workbench-composition-shell"
     assert result["gitResolution"] == "workbench-composition-shell"
+    assert result["documentResolution"] == "document-authoring-workbench"
     assert result["workbenchEligibleViewCount"] >= 1
     assert result["gitBackedDocumentHistoryEligibleViewCount"] >= 1
+    assert result["documentEditorWorkbenchEligibleViewCount"] >= 1
     assert "raw-git-log-primary" in result["gitRejects"]
     assert "git-reset-as-restore" in result["gitRejects"]
+    assert "visible-mwsl-card" in result["documentRejects"]
+    assert "toolbar-feature-dump" in result["documentRejects"]
 
 
 def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_object() -> None:
@@ -105,6 +125,7 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
         process.stdout.write(JSON.stringify({{
           version: planner.PLANNER_VERSION,
           slots: planner.WORKBENCH_LAYOUT_SLOTS,
+          documentZones: planner.DOCUMENT_WORKBENCH_LAYOUT_ZONES,
           gitObject: git.workbenchSpec.dominantObject,
           gitAdvanced: git.workbenchSpec.layout.advanced,
           gitFindings: planner.workbenchFindingsFor(git),
@@ -116,7 +137,13 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
           docHidePrimary: documentPlan.workbenchSpec.capabilityProjections[0].hidePrimary,
           docLaws: Object.keys(documentPlan.workbenchSpec.laws),
           docLayout: documentPlan.workbenchSpec.layout,
+          docGrammar: documentPlan.workbenchSpec.layoutGrammar,
+          docLayoutBinding: documentPlan.workbenchSpec.layoutBinding,
           docFindings: planner.workbenchFindingsFor(documentPlan),
+          docLayoutSummary: planner.documentWorkbenchLayoutSummary(documentPlan),
+          docPlacementSummary: planner.documentWorkbenchPlacementSummary(documentPlan),
+          docWorkbenchFindings: planner.documentWorkbenchFindingsFor(documentPlan),
+          documentWorkbenchReady: snapshot.documentWorkbenchReady,
           workbenchSpecReady: snapshot.workbenchSpecReady,
           capabilitySummary: planner.workbenchCapabilitySummary(documentPlan),
           layoutSummary: planner.workbenchLayoutSlotSummary(documentPlan),
@@ -125,8 +152,9 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
     )
     result = run_node_json(script)
 
-    assert result["version"] == "0.3.0"
+    assert result["version"] == "0.3.1"
     assert result["slots"] == ["identity", "primary", "actions", "inspector", "evidence", "advanced", "status"]
+    assert result["documentZones"] == ["menu", "toolbar", "navigation", "primary", "companion", "evidence", "status", "advanced"]
     assert result["gitObject"] == "Repository"
     assert "ManualCommand" in result["gitAdvanced"]
     assert result["gitFindings"] == []
@@ -138,9 +166,20 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
     assert "RestoreAsNewVersion" in result["docExpose"]
     assert "ManualGitCommand" in result["docHidePrimary"]
     assert "RestorePreservesHistory" in result["docLaws"]
-    assert result["docLayout"]["actions"] == ["AutosaveStatus", "CreateCheckpoint"]
+    assert result["docLayout"]["actions"] == ["AutosaveStatus", "AIQuickAction"]
+    assert result["docGrammar"]["shell"] == "page-centered-writing-workbench"
+    assert "DocumentPage" in result["docGrammar"]["zones"]["primary"]
+    assert result["docLayoutBinding"]["root"] == "[data-mcel-workbench='document-editor']"
+    assert result["docLayoutBinding"]["zones"]["companion"] == "[data-mcel-layout-zone='companion']"
+    assert "AIAssistant" in result["docGrammar"]["zones"]["companion"]
+    assert "OutlineTree" in result["docGrammar"]["zones"]["navigation"]
+    assert "visible-mwsl-card" in result["docGrammar"]["forbiddenProductUi"]
     assert "GitTechnicalDetails" in result["docLayout"]["advanced"]
     assert result["docFindings"] == []
+    assert result["docWorkbenchFindings"] == []
+    assert result["documentWorkbenchReady"] is True
+    assert "companion:" in result["docLayoutSummary"]
+    assert "aiAssistant->companion" in result["docPlacementSummary"]
     assert result["workbenchSpecReady"] >= 3
     assert "DocumentEditor consumes GitBackedHistory from GitTools" in result["capabilitySummary"]
     assert "identity:" in result["layoutSummary"]
@@ -158,9 +197,37 @@ def test_mcel_lab_surfaces_mwsl_workbench_projection_in_planner_panel() -> None:
     assert "normalizeWorkbenchSpec" in lab
     assert "workbenchLayoutSlotSummary" in lab
     assert "workbenchCapabilitySummary" in lab
+    assert "documentWorkbenchLayoutSummary" in planner
+    assert "DOCUMENT_WORKBENCH_LAYOUT_ZONES" in planner
 
     assert 'capability: "GitBackedHistory"' in planner
     assert 'provider: "GitTools"' in planner
     assert 'consumer: "DocumentEditor"' in planner
     assert "RawGitControlsInPrimaryLayout" in planner
     assert "RestoreAsNewVersion" in planner
+
+
+def test_mwsl_workbench_contract_stays_hidden_from_product_apps() -> None:
+    app_layout_css = (WEB_APP / "styles" / "app-layout.css").read_text(encoding="utf-8")
+    app_files = [
+        WEB_APP / "apps" / "git-tools.html",
+        WEB_APP / "apps" / "code-editor.html",
+        WEB_APP / "apps" / "document.html",
+        WEB_APP / "apps" / "mcel-lab.html",
+    ]
+
+    assert ".mwsl-workbench-card" not in app_layout_css
+
+    for app_file in app_files:
+        source = app_file.read_text(encoding="utf-8")
+        assert "mwsl-workbench-card" not in source
+        assert "MWSL workbench contract" not in source
+        assert "data-mwsl-slot" not in source
+
+    document = (WEB_APP / "apps" / "document.html").read_text(encoding="utf-8")
+    assert "document-toolbar" in document
+    assert "document-canvas" in document
+    assert "document-ai-pane" in document
+    assert 'data-mcel-workbench="document-editor"' in document
+    assert 'data-mcel-layout-zone="navigation"' in document
+    assert 'data-mcel-layout-zone="companion"' in document

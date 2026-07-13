@@ -180,6 +180,67 @@
           decoderHints: ["primary focus", "advanced collapsed", "status always visible", "no competing clusters"],
           supersedes: ["visual pile", "chrome-first layout", "hidden save/sync state"]
         }),
+        def("element.layout.document-workbench", "Document Workbench Layout", "layout", "document-workbench", "Hidden MCEL layout grammar for a calm writing app: menu and compact toolbar above, document navigation left, page/editor centered, companion inspector right, compact status state always available.", {
+          allowedChildren: [
+            "element.layout.document-menu-zone",
+            "element.layout.document-toolbar-zone",
+            "element.layout.document-navigation-zone",
+            "element.layout.document-page-zone",
+            "element.layout.document-companion-zone",
+            "element.layout.document-status-zone"
+          ],
+          htmlTag: "mcel-document-workbench-layout",
+          riskPolicy: analysis,
+          layoutLaws: ["document-page-primary", "left-nav-is-document-structure", "right-companion-is-contextual", "toolbar-is-compact", "status-is-persistent", "no-visible-spec-cards"],
+          stateModel: {required: ["dominantObject", "zones", "placementRules", "visualPolicy"], optional: ["responsivePolicy", "forbiddenProductUi"]},
+          interactionModel: {mutatesDom: false, ownsTruth: true, handoff: "document-layout-binding"},
+          decoderHints: ["document workbench", "writing workbench", "left navigation", "right companion", "center page", "status strip"],
+          supersedes: ["component pile", "overlay-first editor", "debug-card product UI"],
+          examples: ["Document page owns the center lane while AI/history proposals live in the right companion."]
+        }),
+        def("element.layout.document-menu-zone", "Document Menu Zone", "layout", "document-menu-zone", "Global and less-frequent document commands such as file, edit, view, insert, format, tools, export, settings, and advanced history.", {
+          htmlTag: "mcel-document-menu-zone",
+          riskPolicy: analysis,
+          stateModel: {required: ["commands"], optional: ["advancedCommands", "riskFamilies"]},
+          decoderHints: ["File", "Edit", "View", "Insert", "Format", "Tools", "Extensions", "Help"],
+          supersedes: ["advanced command in writing toolbar"]
+        }),
+        def("element.layout.document-toolbar-zone", "Document Toolbar Zone", "layout", "document-toolbar-zone", "Compact always-visible writing controls and save state; not a dumping ground for debug, raw provider, export, or plugin internals.", {
+          htmlTag: "mcel-document-toolbar-zone",
+          riskPolicy: analysis,
+          stateModel: {required: ["commonWritingControls", "saveState"], optional: ["quickAiAction", "maxPrimaryActions"]},
+          decoderHints: ["undo", "redo", "style", "font", "bold", "italic", "link", "comment", "autosave"],
+          supersedes: ["wrapping feature dump toolbar", "visible spec card"]
+        }),
+        def("element.layout.document-navigation-zone", "Document Navigation Zone", "layout", "document-navigation-zone", "Persistent left-side document structure: tabs, chapters, headings, outline, and search results when active.", {
+          htmlTag: "mcel-document-navigation-zone",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["documentTabs", "outline"], optional: ["chapters", "searchResults", "collapsedState"]},
+          decoderHints: ["document tabs", "chapter list", "outline", "headings", "left nav"],
+          supersedes: ["generic tool drawer", "library overlay as primary navigation"]
+        }),
+        def("element.layout.document-page-zone", "Document Page Zone", "layout", "document-page-zone", "Centered authored document source surface: page, text body, selection, cursor, comments, and pagination affordances.", {
+          htmlTag: "mcel-document-page-zone",
+          riskPolicy: analysis,
+          stateModel: {required: ["documentBody", "selectionSurface"], optional: ["pagination", "comments", "readonlyState"]},
+          decoderHints: ["page", "document body", "editor canvas", "contenteditable", "selection"],
+          supersedes: ["AI output as source", "history preview as primary page"]
+        }),
+        def("element.layout.document-companion-zone", "Document Companion Zone", "layout", "document-companion-zone", "Collapsible right-side contextual assistant/inspector for AI proposals, selection tools, chapter notes, comments, history, diff preview, and document health.", {
+          htmlTag: "mcel-document-companion-zone",
+          riskPolicy: analysis,
+          stateModel: {required: ["mode", "contextSource"], optional: ["aiProposal", "historyTimeline", "diffPreview", "restorePreview"]},
+          interactionModel: {mutatesDom: false, ownsTruth: false, proposalOnlyUntilAccepted: true},
+          decoderHints: ["AI assistant", "selection tools", "history", "diff preview", "right companion", "inspector"],
+          supersedes: ["generic chat dump", "fixed overlay on desktop", "proposal mutates document directly"]
+        }),
+        def("element.layout.document-status-zone", "Document Status Zone", "layout", "document-status-zone", "Compact persistent trust state for dirty/saved/autosaving, current section, word count, AI running, checkpoint, and conflict status.", {
+          htmlTag: "mcel-document-status-zone",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["dirtyState", "saveState"], optional: ["wordCount", "currentSection", "aiState", "checkpointState", "conflictState"]},
+          decoderHints: ["Saved locally", "Unsaved changes", "Autosaving", "word count", "checkpoint", "conflict"],
+          supersedes: ["scattered status rows", "hidden save state"]
+        }),
         def("element.version.git-backed-history", "Git-Backed History", "version", "git-backed-history", "User-facing version history backed by Git evidence while preserving the consuming app's mental model.", {
           allowedChildren: ["element.version.autosave-controller", "element.version.revision-timeline", "element.version.diff-preview", "element.version.restore-intent"],
           htmlTag: "mcel-git-backed-history",

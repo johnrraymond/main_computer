@@ -93,14 +93,21 @@ guard: running
 foundationdb: running
 validator_rpc: running
 hub: running-bootstrap-listener
-hub_admin: ready-for-bootstrap-command
-contracts: ready-for-bootstrap-command or disabled
+hub_admin: bootstrapped
+contracts: deployed, not-required-existing-network, or disabled
 ```
+
+The first super-node bootstraps the network-level contract set once after its
+validator-RPC is live.  Later super-nodes do not redeploy those contracts; they
+fetch the shared QBFT genesis and bootnode information from an existing private
+super-node guard (`/qbft/bootstrap`) and join from that live network view.  Every
+new super-node still receives its own node-scoped `hub_admin` seed so node admin
+material is not reused across nodes.
 
 The Hub process is explicitly reported as a bootstrap listener until the full
 Main Computer Hub runtime is bundled into the inline Coolify image. That keeps
-the status honest: Hub/RPC ports can be supervised without pretending contract
-or account bootstrap has completed.
+the status honest: Hub/RPC ports can be supervised while hub-admin and contract
+bootstrap status is reported separately by the guard supervisor.
 
 
 The generated super-node Compose is intentionally a **build-only** service. It
