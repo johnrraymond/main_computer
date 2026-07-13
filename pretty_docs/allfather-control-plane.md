@@ -162,6 +162,53 @@ API/key pathway. Logs remain a fallback diagnostic channel, and the probe servic
 is left running until a later finalization action removes or disables it.
 
 
+
+## Super-node inventory in discovery
+
+`discover` also scans the live Coolify service inventory for all-father
+super-node service names such as `testneta-super1`, `testneta-super2`,
+`mainneta-super1`, and `mainnetb-super1`.
+
+This inventory is grouped under `networks.<network>.hosts.<coolify-host>` so the
+operator can see newly added super-nodes even before the super-node guard has
+reported detailed internal Hub/FDB/QBFT status. The private state remains seed
+material only; it is not used as topology. The current topology is the union of:
+
+```text
+Coolify service inventory
+Coolify-managed probe results
+private guard/head responses, when available
+```
+
+Example shape:
+
+```json
+{
+  "networks": {
+    "testnet": {
+      "super_node_count": 1,
+      "hosts": {
+        "coolify-a": {
+          "host_prefix": "testneta",
+          "super_node_count": 1,
+          "super_nodes": [
+            {
+              "service_name": "testneta-super1",
+              "status": "running:healthy",
+              "components": {
+                "hub": "testneta-hub1",
+                "fdb": "testneta-fdb1",
+                "validator_rpc": "testneta-validator-rpc1"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
 ## Add one super-node
 
 Once the control heads are present, grow a network one all-father super-container
@@ -325,3 +372,75 @@ That gives the runtime guard a safe sequence: join the existing FDB cluster firs
 wait for health, then perform the coordinator reconfiguration. It keeps the
 private file as seed material and uses Coolify inventory/live discovery for the
 actual node count.
+
+## Remove one super-node
+
+Removal shrinks a network one host-local super-container at a time. The operator
+does not choose or renumber ordinals. The command reads live Coolify service
+inventory for the selected network and host, removes the highest existing
+`<network><host-letter>-superN` service, and leaves lower-numbered nodes
+unchanged.
+
+For the failed first testnet node on `coolify-a`, dry-run:
+
+```powershell
+python tools/allfather_control.py remove-node testnet `
+  --host coolify-a `
+  --dry-run
+```
+
+Apply:
+
+```powershell
+python tools/allfather_control.py remove-node testnet `
+  --host coolify-a
+```
+
+Mainnet removal requires an explicit confirmation:
+
+```powershell
+python tools/allfather_control.py remove-node mainnet `
+  --host coolify-a `
+  --allow-mainnet `
+  --dry-run
+```
+
+If removing the selected node leaves no super-nodes in that network, the command
+cleans generated first-node seed material from `runtime/state/all_father.private.yaml`
+so the network can be added again from a pristine all-father bootstrap state.
+Generated `hub_admin` and `deployer` keys are removed only when they were created
+by `tools/allfather_control.py:add-node`; migrated or hand-supplied wallet keys
+are preserved. FDB cluster seed identity is also cleared when the network becomes
+empty.
+
+Pass `--keep-seed-material` only when you intentionally want to preserve the
+generated wallet/FDB seed material after the last node is removed.
+
+`remove-node` deletes the Coolify service through the Coolify API/key path. It
+does not use SSH, does not expose guard routes, does not curl VPN URLs from the
+operator machine, and does not renumber surviving nodes.
+
+
+## Super-node image and public routing
+
+`add-node` now builds an all-father super-node image from the Besu/QBFT base
+image instead of running the workload cell from the simple Python control-head
+image. The generated service is still guard-first: the private guard keeps the
+container alive while FDB, Hub, validator-RPC, `hub_admin`, and contract
+bootstrap converge in order.
+
+The super-node compose uses an inline Dockerfile whose base image defaults to
+`hyperledger/besu:latest`. The build installs only the guard/support tools it
+needs on top of that base image, then verifies that `besu` exists before the
+image is accepted.
+
+Private ports remain private host bindings:
+
+- guard -> VPN/private host bind
+- FDB -> VPN/private host bind
+- Besu P2P -> VPN/private host bind
+
+Hub and RPC are the only world-facing services. They are exposed through Traefik
+labels only when `--publish-routes` is used, and no guard, FDB, or P2P public
+router is generated.
+

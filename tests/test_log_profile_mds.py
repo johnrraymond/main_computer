@@ -117,3 +117,50 @@ def test_log_profile_map_information_windows_are_sparse(tmp_path: Path) -> None:
     for profile in result["profiles"]:
         assert profile["nonzero_points"] < result["summary"]["coverage_point_count"]
         assert isinstance(profile["positive_counts"], dict)
+
+
+def test_profile_map_svg_uses_readable_defaults_for_outlier_heavy_maps() -> None:
+    points = []
+    for idx in range(30):
+        points.append(
+            {
+                "profile_id": f"P{idx:06d}",
+                "x": float(idx % 6),
+                "y": 0.001 * float(idx % 3),
+                "seq_start": idx * 10,
+                "seq_end": idx * 10 + 9,
+                "event_count": 10,
+                "surprise_bits_total": float(idx + 1),
+                "nonzero_points": 3,
+                "dominant_points": [{"label": "example", "count": 1, "type": "signature"}],
+            }
+        )
+    points.append(
+        {
+            "profile_id": "P999999",
+            "x": 1000.0,
+            "y": 1000.0,
+            "seq_start": 999,
+            "seq_end": 1000,
+            "event_count": 1,
+            "surprise_bits_total": 500.0,
+            "nonzero_points": 1,
+            "dominant_points": [{"label": "outlier", "count": 1, "type": "signature"}],
+        }
+    )
+    svg = render_profile_map_svg(
+        {
+            "summary": {"profile_count": len(points), "coverage_point_count": 12},
+            "embedding": {"points": points, "diagnostics": {"negative_eigenvalue_fraction": 0.0}},
+        },
+        width=900,
+        height=500,
+        label_limit=4,
+        scale="robust",
+    )
+
+    assert svg.startswith("<svg")
+    assert "labels=4" in svg
+    assert "scale=robust" in svg
+    assert "Main log behavior profile map" in svg
+    assert "P999999" in svg

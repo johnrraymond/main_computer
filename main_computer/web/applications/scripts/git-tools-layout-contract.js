@@ -2,8 +2,10 @@
   "use strict";
 
   const globalObject = typeof window !== "undefined" ? window : globalThis;
-  const CONTRACT_VERSION = "mcel-git-tools-layout.v1";
-  const STORAGE_KEY = "main-computer-git-tools-layout-preferences-v1";
+  const CONTRACT_VERSION = "mcel-git-tools-layout.v2";
+  const PREFERENCES_VERSION = 2;
+  const STORAGE_KEY = "main-computer-git-tools-layout-preferences-v2";
+  const LEGACY_STORAGE_KEY = "main-computer-git-tools-layout-preferences-v1";
   const HISTORY_LIMIT = 20;
   const RAW_GEOMETRY_KEYS = Object.freeze([
     "x", "y", "w", "h", "left", "top", "right", "bottom", "width", "height"
@@ -123,10 +125,10 @@
       allowed: ["right", "bottom", "tab", "stage", "trigger"],
       fallback: ["bottom", "tab", "stage", "trigger"],
       strength: "preferred",
-      minInline: 300,
+      minInline: 420,
       minBlock: 260,
       maxShare: 0.32,
-      preferredShare: 0.24,
+      preferredShare: 0.28,
       mutable: ["placement", "share", "collapsed", "tab-group"],
     },
     "repository.persistent-feedback": {
@@ -143,7 +145,7 @@
   });
 
   const DEFAULT_PREFERENCES = deepFreeze({
-    version: 1,
+    version: PREFERENCES_VERSION,
     units: {
       "repository.project-identity": {
         placement: "left",
@@ -153,7 +155,7 @@
       },
       "repository.phase-support": {
         placement: "right",
-        preferredShare: 0.24,
+        preferredShare: 0.28,
         collapsed: false,
         tabWith: "repository.command-workflow",
       },
@@ -309,7 +311,7 @@
       units[unitId] = normalizeUnitPreference(unitId, source.units?.[unitId], authored);
     }
     return {
-      version: 1,
+      version: PREFERENCES_VERSION,
       units,
       rawGeometryViolations: rejectRawGeometry(source),
     };
@@ -334,8 +336,8 @@
   function identityPlacementForCapacity(preference, unit, capacity, phase) {
     if (preference.collapsed) return "trigger";
     const desired = preference.placement;
-    if (capacity === "wide") return ["left", "top", "trigger"].includes(desired) ? desired : "left";
-    if (capacity === "medium") return ["left", "top", "trigger"].includes(desired) ? desired : "left";
+    if (capacity === "wide") return desired === "top" ? "top" : "left";
+    if (capacity === "medium") return desired === "top" ? "top" : "left";
     if (capacity === "narrow") {
       if (phase === "project-selection") return desired === "trigger" ? "trigger" : "stage";
       return "trigger";
@@ -447,7 +449,7 @@
       ? dimensionForShare(width, identityPreference.preferredShare, identityUnit.minInline, identityUnit.maxShare, 360)
       : 0;
     const supportInline = support === "right"
-      ? dimensionForShare(width, supportPreference.preferredShare, supportUnit.minInline, supportUnit.maxShare, 480)
+      ? dimensionForShare(width, supportPreference.preferredShare, supportUnit.minInline, supportUnit.maxShare, 540)
       : 0;
     const supportBlock = support === "bottom"
       ? dimensionForShare(height, supportPreference.preferredShare, supportUnit.minBlock, 0.42, 380)
@@ -705,12 +707,30 @@
   }
 
   function loadStoredPreferences(storage, authored) {
-    if (!storage?.getItem) return normalizePreferences(DEFAULT_PREFERENCES, authored);
+    const defaults = normalizePreferences(DEFAULT_PREFERENCES, authored);
+    if (!storage?.getItem) return defaults;
     try {
       const raw = storage.getItem(STORAGE_KEY);
-      return normalizePreferences(raw ? JSON.parse(raw) : DEFAULT_PREFERENCES, authored);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Number(parsed?.version) === PREFERENCES_VERSION) {
+          return normalizePreferences(parsed, authored);
+        }
+      }
+
+      /*
+       * The first live Git Tools layout stored states produced while the
+       * project and support surfaces were still structurally unstable. Do not
+       * replay a stale hidden-project or undersized-support state into the
+       * corrected workbench. The v2 schema starts once from authored defaults.
+       */
+      if (storage.getItem(LEGACY_STORAGE_KEY)) {
+        storage.removeItem?.(LEGACY_STORAGE_KEY);
+        saveStoredPreferences(storage, defaults);
+      }
+      return defaults;
     } catch (_error) {
-      return normalizePreferences(DEFAULT_PREFERENCES, authored);
+      return defaults;
     }
   }
 
@@ -718,7 +738,7 @@
     if (!storage?.setItem) return false;
     try {
       storage.setItem(STORAGE_KEY, JSON.stringify({
-        version: 1,
+        version: PREFERENCES_VERSION,
         units: preferences.units,
       }));
       return true;
@@ -1045,7 +1065,9 @@
 
   globalObject.MainComputerGitToolsLayout = Object.freeze({
     CONTRACT_VERSION,
+    PREFERENCES_VERSION,
     STORAGE_KEY,
+    LEGACY_STORAGE_KEY,
     APPLICATION_CONTRACT,
     SAFE_DEFAULTS,
     DEFAULT_PREFERENCES,

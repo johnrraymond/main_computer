@@ -250,6 +250,67 @@ def test_discover_uses_coolify_patch_probe_and_leaves_probe_running(monkeypatch:
     assert payload["heads"][0]["peer_guard_url_scope"] == "remote-vpn-peer-only"
 
 
+
+
+def test_discover_includes_super_nodes_from_coolify_service_inventory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+
+    def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
+        inventory: list[dict[str, object]] = []
+        if head.coolify_server == "coolify-a":
+            node = control.super_inventory_entry("testnet", head, 1, source="coolify-service-list")
+            node["service_uuid"] = "testneta-super1-uuid"
+            node["status"] = "running:healthy"
+            node["topology_source"] = "coolify-service-inventory"
+            inventory.append(node)
+        return {
+            "ok": True,
+            "method": "coolify-patch-probe",
+            "head_service_uuid": f"head-{head.head_id}",
+            "probe_service_uuid": f"probe-{head.head_id}",
+            "probe_left_running": True,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "super_inventory": inventory,
+            "probe_result": {
+                "ok": True,
+                "result": {
+                    "ok": True,
+                    "targets": [
+                        {
+                            "guard_url": head.guard_url,
+                            "identity": {"ok": True, "network_key": "control-plane"},
+                            "topology": {"ok": True, "network_key": "control-plane"},
+                            "status": {"ok": True, "network_key": "control-plane"},
+                        }
+                    ],
+                },
+            },
+        }
+
+    monkeypatch.setattr(control, "sync_and_query_probe_for_head", fake_sync_and_query_probe_for_head)
+    args = type("Args", (), {"dry_run": False, "verbose": False})()
+
+    payload = control.discover_from_heads(plan, args)
+
+    assert payload["ok"] is True
+    assert payload["summary"]["coolify_seen_super_nodes"] == 1
+    testnet = payload["networks"]["testnet"]
+    assert testnet["super_node_count"] == 1
+    assert list(testnet["hosts"]) == ["coolify-a"]
+    host = testnet["hosts"]["coolify-a"]
+    assert host["host_prefix"] == "testneta"
+    assert host["super_node_count"] == 1
+    assert host["super_nodes"][0]["service_name"] == "testneta-super1"
+    assert host["super_nodes"][0]["components"]["hub"] == "testneta-hub1"
+    assert host["super_nodes"][0]["components"]["validator_rpc"] == "testneta-validator-rpc1"
+    assert host["super_nodes"][0]["service_uuid"] == "testneta-super1-uuid"
+    assert host["super_nodes"][0]["status"] == "running:healthy"
+    assert host["super_nodes"][0]["topology_source"] == "coolify-service-inventory"
+
+
 def test_discover_does_not_probe_vpn_urls_from_local(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     path = write_private_state(tmp_path)
     plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
@@ -628,6 +689,40 @@ def test_application_records_from_service_detail_reads_embedded_app_uuid() -> No
     assert records == [{"uuid": "app-uuid-a", "name": "allfather-control-probe-coolify-a"}]
 
 
+
+
+def test_super_inventory_from_service_items_extracts_status_and_app_summary(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    services = [
+        {
+            "name": "testneta-super1",
+            "uuid": "service-uuid",
+            "status": "running:healthy",
+            "applications": [
+                {
+                    "name": "testneta-super1",
+                    "uuid": "app-uuid",
+                    "status": "running:healthy",
+                    "ports": "10.116.0.3:41500:41414/tcp",
+                }
+            ],
+        },
+        {"name": "testnetb-super1", "uuid": "other-host"},
+        {"name": "mainneta-super1", "uuid": "other-network"},
+    ]
+
+    inventory = control.super_inventory_from_service_items(services, "testnet", head)
+
+    assert len(inventory) == 1
+    assert inventory[0]["service_name"] == "testneta-super1"
+    assert inventory[0]["service_uuid"] == "service-uuid"
+    assert inventory[0]["status"] == "running:healthy"
+    assert inventory[0]["application"]["uuid"] == "app-uuid"
+    assert inventory[0]["source"] == "coolify-service-list"
+
+
 def write_private_state_with_wallets(tmp_path: Path) -> Path:
     path = tmp_path / "all_father.private.yaml"
     path.write_text(
@@ -706,8 +801,47 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "0xaaaaaaaa" not in payload["compose"]
     assert "0xbbbbbbbb" not in payload["compose"]
     assert "MC_ALLFATHER_BOOTSTRAP_CONTRACTS" in payload["compose"]
+    assert "entrypoint: null" in payload["compose"]
+    assert "entrypoint: []" not in payload["compose"]
+    assert "FROM hyperledger/besu:latest" in payload["compose"]
+    assert "python:3.12-slim" not in payload["compose"]
+    assert "10.116.0.3:41500:41414/tcp" in payload["compose"]
+    assert "MC_ALLFATHER_COMPONENTS" in payload["compose"]
     assert "traefik.http.routers" not in payload["compose"]
 
+
+
+
+def test_add_node_publish_routes_labels_only_hub_and_rpc(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "A",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+            "--publish-routes",
+            "--include-compose",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.add_node(plan, args)
+    compose = payload["compose"]
+
+    assert "traefik.http.routers.testneta-hub1.rule=Host(`testneta-hub1.greatlibrary.io`)" in compose
+    assert "traefik.http.routers.testneta-rpc1.rule=Host(`testneta-rpc1.greatlibrary.io`)" in compose
+    assert "traefik.http.routers.testneta-hub1.tls.certresolver=letsencrypt" in compose
+    assert "traefik.http.routers.testneta-rpc1.tls.certresolver=letsencrypt" in compose
+    assert "traefik.http.services.testneta-hub1-svc.loadbalancer.server.port=8785" in compose
+    assert "traefik.http.services.testneta-rpc1-svc.loadbalancer.server.port=8545" in compose
+    assert "testneta-guard1.greatlibrary.io" not in compose
+    assert "testneta-fdb1.greatlibrary.io" not in compose
 
 def test_add_node_no_contracts_disables_first_node_contract_bootstrap(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
@@ -962,3 +1096,133 @@ def test_add_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
 
     with pytest.raises(control.AllfatherControlError, match="--allow-mainnet"):
         control.add_node(plan, args)
+
+
+def test_remove_node_dry_run_removes_last_host_local_super_node_and_cleans_pristine_seed(tmp_path: Path) -> None:
+    path = tmp_path / "all_father.private.yaml"
+    path.write_text(
+        """
+kind: main_computer.all_father.private_state.v1
+coolify:
+  hosts:
+    a:
+      name: coolify-a
+      url: https://coolify-a.example.invalid
+      api_token: token-a
+      vpn_ip: 10.116.0.3
+networks:
+  testnet:
+    wallets:
+      hub_admin:
+        private_key: "0x1111111111111111111111111111111111111111111111111111111111111111"
+        metadata:
+          generated_by: tools/allfather_control.py:add-node
+      deployer:
+        private_key: "0x2222222222222222222222222222222222222222222222222222222222222222"
+        metadata:
+          generated_by: tools/allfather_control.py:add-node
+    foundationdb:
+      cluster_description: main-computer-testnet-allfather
+      cluster_id: abcdef1234567890
+      coordinator_policy: first-node-then-expand
+      reconfigure_after_join: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+    args = control.parse_args(
+        [
+            "remove-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.remove_node(plan, args)
+
+    assert payload["ok"] is True
+    assert payload["operation"] == "remove-node"
+    assert payload["service_name"] == "testneta-super1"
+    assert payload["ordinal"] == 1
+    assert payload["service_deleted"] is False
+    assert payload["network_pristine_after_remove"] is True
+    assert payload["private_state_updates"]["dry_run"] is True
+    assert payload["private_state_updates"]["seed_material_cleaned"] is True
+    removed_kinds = {item["kind"] for item in payload["private_state_updates"]["removed"]}
+    assert {"wallet_private_key", "foundationdb_seed", "network_seed"} <= removed_kinds
+    # Dry-run must not write secrets/state.
+    assert "cluster_description: main-computer-testnet-allfather" in path.read_text(encoding="utf-8")
+
+
+def test_remove_node_dry_run_removes_highest_existing_super_node_without_renumbering(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "3",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.remove_node(plan, args)
+
+    assert payload["service_name"] == "testneta-super3"
+    assert payload["ordinal"] == 3
+    assert payload["remaining_host_super_nodes"] == 2
+    assert payload["network_pristine_after_remove"] is False
+    assert payload["private_state_updates"]["seed_material_cleaned"] is False
+
+
+def test_remove_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "mainnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    with pytest.raises(control.AllfatherControlError, match="--allow-mainnet"):
+        control.remove_node(plan, args)
+
+
+def test_remove_node_errors_when_no_super_node_exists(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    with pytest.raises(control.AllfatherControlError, match="nothing to remove"):
+        control.remove_node(plan, args)

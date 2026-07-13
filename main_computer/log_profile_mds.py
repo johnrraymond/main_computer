@@ -668,41 +668,226 @@ def build_log_profile_map(root: Path | str, input_path: Path | str | None = None
     return result
 
 
-def render_profile_map_svg(profile_map: dict[str, Any], *, width: int = 1000, height: int = 700) -> str:
+def render_profile_map_svg(
+    profile_map: dict[str, Any],
+    *,
+    width: int = 1200,
+    height: int = 800,
+    label_limit: int = 24,
+    scale: str = "robust",
+    show_labels: bool = True,
+) -> str:
+    """Render a readable static SVG for the profile map.
+
+    The JSON payload keeps the exact MDS coordinates.  The SVG is a view of
+    those coordinates, so it applies two display-only aids that keep a single
+    outlier or repeated coordinates from turning the map into an unreadable
+    strip of overlapping labels:
+
+    * robust scaling clips the visual viewport to the 2nd-98th percentile when
+      that preserves real spread, while still drawing clipped points at the edge;
+    * deterministic jitter separates points that land on the same display pixel.
+
+    Tooltips preserve the underlying profile details.
+    """
+
     points = profile_map.get("embedding", {}).get("points", [])
     if not points:
         return f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><text x="20" y="40">no profile points</text></svg>'
-    xs = [float(p.get("x") or 0.0) for p in points]
-    ys = [float(p.get("y") or 0.0) for p in points]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    pad = 50.0
 
-    def sx(x: float) -> float:
-        if max_x == min_x:
-            return width / 2
-        return pad + ((x - min_x) / (max_x - min_x)) * (width - 2 * pad)
+    width = max(400, int(width))
+    height = max(300, int(height))
+    label_limit = max(0, int(label_limit))
+    scale = (scale or "robust").strip().lower()
+    if scale not in {"robust", "full"}:
+        scale = "robust"
 
-    def sy(y: float) -> float:
-        if max_y == min_y:
-            return height / 2
-        return height - pad - ((y - min_y) / (max_y - min_y)) * (height - 2 * pad)
+    raw_xs = [float(p.get("x") or 0.0) for p in points if math.isfinite(float(p.get("x") or 0.0))]
+    raw_ys = [float(p.get("y") or 0.0) for p in points if math.isfinite(float(p.get("y") or 0.0))]
+    if not raw_xs:
+        raw_xs = [0.0]
+    if not raw_ys:
+        raw_ys = [0.0]
+
+    def percentile(values: list[float], fraction: float) -> float:
+        ordered = sorted(values)
+        if len(ordered) == 1:
+            return ordered[0]
+        rank = (len(ordered) - 1) * max(0.0, min(1.0, fraction))
+        lo = math.floor(rank)
+        hi = math.ceil(rank)
+        if lo == hi:
+            return ordered[lo]
+        return ordered[lo] * (hi - rank) + ordered[hi] * (rank - lo)
+
+    def bounds(values: list[float]) -> tuple[float, float, bool]:
+        full_min, full_max = min(values), max(values)
+        if full_min == full_max:
+            spread = max(1.0, abs(full_min) * 0.1)
+            return full_min - spread, full_max + spread, False
+        if scale == "robust" and len(values) >= 12:
+            lo = percentile(values, 0.02)
+            hi = percentile(values, 0.98)
+            if hi > lo and (hi - lo) >= (full_max - full_min) * 0.01:
+                return lo, hi, True
+        return full_min, full_max, False
+
+    min_x, max_x, clipped_x = bounds(raw_xs)
+    min_y, max_y, clipped_y = bounds(raw_ys)
+
+    left = 64.0
+    right = 28.0
+    top = 82.0
+    bottom = 70.0
+    plot_w = max(1.0, width - left - right)
+    plot_h = max(1.0, height - top - bottom)
+
+    def clamp(value: float, lo: float, hi: float) -> tuple[float, bool]:
+        if value < lo:
+            return lo, True
+        if value > hi:
+            return hi, True
+        return value, False
+
+    def sx(x: float) -> tuple[float, bool]:
+        x2, was_clipped = clamp(x, min_x, max_x)
+        return left + ((x2 - min_x) / (max_x - min_x)) * plot_w, was_clipped
+
+    def sy(y: float) -> tuple[float, bool]:
+        y2, was_clipped = clamp(y, min_y, max_y)
+        return top + (1.0 - ((y2 - min_y) / (max_y - min_y))) * plot_h, was_clipped
+
+    display_points: list[dict[str, Any]] = []
+    buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for idx, point in enumerate(points):
+        x_raw = float(point.get("x") or 0.0)
+        y_raw = float(point.get("y") or 0.0)
+        x, cx = sx(x_raw)
+        y, cy = sy(y_raw)
+        item = {
+            "idx": idx,
+            "point": point,
+            "x": x,
+            "y": y,
+            "raw_x": x_raw,
+            "raw_y": y_raw,
+            "clipped": bool(cx or cy),
+        }
+        display_points.append(item)
+        buckets[(round(x / 8), round(y / 8))].append(idx)
+
+    jittered = 0
+    for members in buckets.values():
+        if len(members) <= 1:
+            continue
+        radius = min(14.0, 3.0 + math.sqrt(len(members)) * 2.0)
+        for offset, idx in enumerate(members):
+            angle = 2.0 * math.pi * (offset / len(members))
+            display_points[idx]["x"] += math.cos(angle) * radius
+            display_points[idx]["y"] += math.sin(angle) * radius
+            display_points[idx]["jittered"] = True
+            jittered += 1
+
+    # Label only a small, deterministic set: endpoints, high-surprise profiles,
+    # and geometric outliers.  All points still have <title> tooltips.
+    labels: set[int] = set()
+    if label_limit and show_labels:
+        labels.add(0)
+        labels.add(len(points) - 1)
+        surprise_rank = sorted(
+            range(len(points)),
+            key=lambda i: float(points[i].get("surprise_bits_total") or 0.0),
+            reverse=True,
+        )
+        cx = sum(item["x"] for item in display_points) / len(display_points)
+        cy = sum(item["y"] for item in display_points) / len(display_points)
+        outlier_rank = sorted(
+            range(len(display_points)),
+            key=lambda i: (display_points[i]["x"] - cx) ** 2 + (display_points[i]["y"] - cy) ** 2,
+            reverse=True,
+        )
+        for idx in surprise_rank + outlier_rank:
+            labels.add(idx)
+            if len(labels) >= label_limit:
+                break
+
+    summary = profile_map.get("summary", {})
+    diagnostics = profile_map.get("embedding", {}).get("diagnostics", {})
+    clipping_note = "robust clipped" if (clipped_x or clipped_y) and scale == "robust" else "full extent"
+    subtitle = (
+        f'profiles={summary.get("profile_count", len(points))} '
+        f'coverage={summary.get("coverage_point_count", "?")} '
+        f'labels={len(labels)} scale={scale} {clipping_note}'
+    )
+    neg = diagnostics.get("negative_eigenvalue_fraction")
+    if neg is not None:
+        subtitle += f' neg-eigen={neg}'
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="#0b1020"/>',
         '<text x="20" y="30" fill="#e5e7eb" font-family="monospace" font-size="18">Main log behavior profile map</text>',
         '<text x="20" y="52" fill="#9ca3af" font-family="monospace" font-size="12">Manhattan distance + classical MDS; model-relative log-derived coverage</text>',
+        f'<text x="20" y="70" fill="#9ca3af" font-family="monospace" font-size="11">{_escape_xml(subtitle)}</text>',
+        f'<rect x="{left:.2f}" y="{top:.2f}" width="{plot_w:.2f}" height="{plot_h:.2f}" fill="none" stroke="#1f2937" stroke-width="1"/>',
     ]
-    for point in points:
-        x = sx(float(point.get("x") or 0.0))
-        y = sy(float(point.get("y") or 0.0))
+
+    for t in (0.25, 0.5, 0.75):
+        gx = left + plot_w * t
+        gy = top + plot_h * t
+        parts.append(f'<line x1="{gx:.2f}" y1="{top:.2f}" x2="{gx:.2f}" y2="{top + plot_h:.2f}" stroke="#111827" stroke-width="1"/>')
+        parts.append(f'<line x1="{left:.2f}" y1="{gy:.2f}" x2="{left + plot_w:.2f}" y2="{gy:.2f}" stroke="#111827" stroke-width="1"/>')
+
+    max_surprise = max(float(p.get("surprise_bits_total") or 0.0) for p in points) or 1.0
+    for item in display_points:
+        point = item["point"]
+        x = max(left - 12, min(width - right + 12, float(item["x"])))
+        y = max(top - 12, min(height - bottom + 12, float(item["y"])))
         surprise = float(point.get("surprise_bits_total") or 0.0)
-        radius = max(3.0, min(12.0, math.log1p(surprise)))
-        label = str(point.get("profile_id") or "")
-        title = json.dumps({k: point.get(k) for k in ("profile_id", "seq_start", "seq_end", "event_count", "surprise_bits_total")}, sort_keys=True)
-        parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{radius:.2f}" fill="#60a5fa" opacity="0.82"><title>{_escape_xml(title)}</title></circle>')
-        parts.append(f'<text x="{x + radius + 3:.2f}" y="{y + 4:.2f}" fill="#d1d5db" font-family="monospace" font-size="10">{_escape_xml(label)}</text>')
+        radius = max(3.0, min(13.0, 3.0 + 8.0 * math.sqrt(max(0.0, surprise) / max_surprise)))
+        opacity = 0.72 if item.get("jittered") else 0.86
+        stroke = "#f59e0b" if item.get("clipped") else "#93c5fd"
+        dominant = [
+            {"label": dp.get("label"), "count": dp.get("count"), "type": dp.get("type")}
+            for dp in (point.get("dominant_points") or [])[:4]
+        ]
+        title = json.dumps(
+            {
+                "profile_id": point.get("profile_id"),
+                "seq_start": point.get("seq_start"),
+                "seq_end": point.get("seq_end"),
+                "event_count": point.get("event_count"),
+                "surprise_bits_total": point.get("surprise_bits_total"),
+                "dominant": dominant,
+            },
+            sort_keys=True,
+        )
+        parts.append(
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{radius:.2f}" '
+            f'fill="#60a5fa" opacity="{opacity:.2f}" stroke="{stroke}" stroke-width="1">'
+            f'<title>{_escape_xml(title)}</title></circle>'
+        )
+
+    if show_labels and label_limit:
+        for idx in sorted(labels):
+            item = display_points[idx]
+            point = item["point"]
+            x = max(left - 12, min(width - right + 12, float(item["x"])))
+            y = max(top - 12, min(height - bottom + 12, float(item["y"])))
+            label = str(point.get("profile_id") or "")
+            # Alternate label offsets to reduce remaining collisions.
+            above = (idx % 2) == 0
+            dy = -9 if above else 15
+            parts.append(
+                f'<text x="{x + 8:.2f}" y="{y + dy:.2f}" fill="#d1d5db" '
+                f'font-family="monospace" font-size="10">{_escape_xml(label)}</text>'
+            )
+
+    if jittered:
+        parts.append(
+            f'<text x="20" y="{height - 22}" fill="#9ca3af" font-family="monospace" font-size="10">'
+            f'{jittered} overlapping points were separated with deterministic display jitter; JSON coordinates are unchanged.</text>'
+        )
     parts.append("</svg>")
     return "\n".join(parts) + "\n"
 
@@ -743,6 +928,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--include-distance-matrix", action="store_true")
     parser.add_argument("--svg-output", default="")
+    parser.add_argument("--svg-width", type=int, default=1200)
+    parser.add_argument("--svg-height", type=int, default=800)
+    parser.add_argument("--svg-label-limit", type=int, default=24)
+    parser.add_argument("--svg-scale", choices=["robust", "full"], default="robust")
+    parser.add_argument("--svg-no-labels", action="store_true")
     return parser
 
 
@@ -769,7 +959,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     _write_json(args.output or None, result)
     if args.svg_output:
-        Path(args.svg_output).expanduser().resolve().write_text(render_profile_map_svg(result), encoding="utf-8")
+        Path(args.svg_output).expanduser().resolve().write_text(
+            render_profile_map_svg(
+                result,
+                width=args.svg_width,
+                height=args.svg_height,
+                label_limit=args.svg_label_limit,
+                scale=args.svg_scale,
+                show_labels=not args.svg_no_labels,
+            ),
+            encoding="utf-8",
+        )
     return 0
 
 

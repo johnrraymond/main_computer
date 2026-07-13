@@ -73,13 +73,35 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             ".git-project-gitignore-workbench.is-dirty",
             ".git-project-gitignore-file-panel",
             ".git-project-card-inline-panel.is-gitignore",
-            "max-height: var(--gitignore-inline-cap, calc(100dvh - 150px));",
-            "max-height: var(--gitignore-panel-cap, calc(100dvh - 170px));",
-            "grid-template-rows: auto auto minmax(0, 1fr) auto auto;",
-            "overscroll-behavior: contain;",
+            "grid-template-rows: auto auto auto auto auto;",
+            ".git-project-gitignore-workbench .git-project-ignore-selected-preview",
+            "#git-tools-app[data-git-layout-live=\"true\"] .git-project-wizard-plan",
+            "scrollbar-gutter: stable;",
         ):
             with self.subTest(css_snippet=snippet):
                 self.assertIn(snippet, GIT_TOOLS_CSS)
+
+        self.assertNotIn("max-height: var(--gitignore-inline-cap", GIT_TOOLS_CSS)
+        self.assertNotIn("max-height: var(--gitignore-panel-cap", GIT_TOOLS_CSS)
+        self.assertIn(
+            """.git-project-gitignore-lines {
+  display: grid;
+  gap: 4px;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;""",
+            GIT_TOOLS_CSS,
+        )
+        self.assertIn(
+            """.git-project-gitignore-suggestions,
+.git-project-gitignore-file-panel {
+  box-sizing: border-box;
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;""",
+            GIT_TOOLS_CSS,
+        )
 
     def test_git_page_wizard_ui_is_removed_from_git_tools_page(self) -> None:
         removed_snippets = (

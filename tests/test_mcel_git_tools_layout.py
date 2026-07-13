@@ -152,7 +152,7 @@ def test_git_tools_resolver_is_monotonic_and_rejects_raw_geometry() -> None:
         """
     )
     result = run_node_json(script)
-    assert result["contractVersion"] == "mcel-git-tools-layout.v1"
+    assert result["contractVersion"] == "mcel-git-tools-layout.v2"
     assert result["capacities"] == ["wide", "medium", "narrow", "compact"]
     assert result["support"] == ["right", "bottom", "tab", "stage"]
     assert result["identity"] == ["left", "left", "trigger", "trigger"]
@@ -330,4 +330,114 @@ def test_git_tools_preserves_publish_surface_across_support_views() -> None:
     assert '[data-git-support-panel]:not([data-git-support-panel="server"])' not in GIT_TOOLS_CSS
     assert '[data-git-support-panel="server"] {' in GIT_TOOLS_CSS
     assert 'selecting either adds that view without hiding the configured push path' in GIT_TOOLS_CSS
+
+def test_git_tools_v2_defaults_restore_project_context_and_usable_support_width() -> None:
+    source_path = PROJECT_ROOT / "main_computer/web/applications/scripts/git-tools-layout-contract.js"
+    script = textwrap.dedent(
+        f"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const source = fs.readFileSync({json.dumps(str(source_path))}, "utf8");
+        const sandbox = {{console}};
+        sandbox.globalThis = sandbox;
+        vm.runInNewContext(source, sandbox, {{filename: "git-tools-layout-contract.js"}});
+        const api = sandbox.MainComputerGitToolsLayout;
+        const authored = {{
+          complete: true,
+          missing: [],
+          mismatches: [],
+          units: api.SAFE_DEFAULTS,
+        }};
+        const preferences = api.normalizePreferences(api.DEFAULT_PREFERENCES, authored);
+        const wide = api.resolveLayout({{
+          viewport: {{width: 1920, height: 900}},
+          authored,
+          preferences,
+          phase: "selected-project-default",
+        }});
+        const staleTrigger = api.normalizePreferences({{
+          version: 1,
+          units: {{
+            "repository.project-identity": {{
+              placement: "trigger",
+              preferredShare: 0.20,
+              collapsed: false,
+            }},
+          }},
+        }}, authored);
+        const recovered = api.resolveLayout({{
+          viewport: {{width: 1920, height: 900}},
+          authored,
+          preferences: staleTrigger,
+          phase: "selected-project-default",
+        }});
+        process.stdout.write(JSON.stringify({{
+          version: api.PREFERENCES_VERSION,
+          storageKey: api.STORAGE_KEY,
+          legacyStorageKey: api.LEGACY_STORAGE_KEY,
+          defaultSupportShare: preferences.units["repository.phase-support"].preferredShare,
+          wideIdentity: wide.actual.identity,
+          wideSupport: wide.actual.support,
+          supportInline: wide.dimensions.supportInline,
+          recoveredIdentity: recovered.actual.identity,
+        }}));
+        """
+    )
+    result = run_node_json(script)
+    assert result["version"] == 2
+    assert result["storageKey"].endswith("-v2")
+    assert result["legacyStorageKey"].endswith("-v1")
+    assert result["defaultSupportShare"] == 0.28
+    assert result["wideIdentity"] == "left"
+    assert result["wideSupport"] == "right"
+    assert result["supportInline"] >= 420
+    assert result["recoveredIdentity"] == "left"
+
+
+def test_git_tools_inner_surfaces_adapt_to_owned_width_without_horizontal_scroll() -> None:
+    expected = (
+        "container-name: git-tools-workflow;",
+        "@container git-tools-workflow (max-width: 1100px)",
+        "grid-template-columns: minmax(0, 1fr);",
+        ".git-tools-support-tabs {",
+        "grid-template-columns: repeat(3, minmax(0, 1fr));",
+        "#gitea-workflow-layout code,",
+        "overflow-x: hidden;",
+        ".gitea-remote-choice-grid,",
+        "label.gitea-remote-choice-card",
+    )
+    for snippet in expected:
+        assert snippet in GIT_TOOLS_CSS
+
+    assert 'data-mc-layout-min-inline="420"' in GIT_TOOLS_HTML
+    assert 'data-mc-layout-preferred-share="0.28"' in GIT_TOOLS_HTML
+    assert 'value="0.28" data-git-layout-share="repository.phase-support"' in GIT_TOOLS_HTML
+
+def test_git_tools_commit_card_adapts_to_owned_width_and_keeps_outer_scroll_owner() -> None:
+    expected = (
+        "container-name: git-tools-commit-card;",
+        "@container git-tools-commit-card (max-width: 980px)",
+        "@container git-tools-commit-card (max-width: 560px)",
+        ".git-project-commit-body {",
+        "grid-template-columns: minmax(0, 1fr);",
+        ".git-project-commit-tree-fallback {",
+        "max-height: none;",
+        "overflow: visible;",
+        ".git-project-commit-panel-actions button {",
+        'data-git-commit-wunderbaum-fallback="true"',
+        "height: auto !important;",
+        "min-height: 0 !important;",
+        "white-space: normal;",
+        "overflow-wrap: anywhere;",
+    )
+    for snippet in expected:
+        assert snippet in GIT_TOOLS_CSS
+
+    assert """.git-project-commit-center,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-right,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-panel,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-tree-fallback {
+  max-height: none;
+  overflow: visible;
+}""" in GIT_TOOLS_CSS
 

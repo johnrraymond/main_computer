@@ -1327,23 +1327,19 @@
 .git-project-card-inline-body.is-gitignore,
 .git-project-gitignore-workbench {
   min-height: 0;
-  overflow: hidden;
-}
-
-.git-project-card-inline-panel.is-gitignore,
-.git-project-card-inline-body.is-gitignore {
-  max-height: var(--gitignore-inline-cap, calc(100dvh - 150px));
+  max-height: none;
+  overflow: visible;
 }
 
 .git-project-gitignore-workbench {
   display: grid;
   grid-template-columns: minmax(280px, 0.85fr) minmax(360px, 1.15fr);
-  align-items: stretch;
+  align-items: start;
   gap: 10px;
   min-width: 0;
   min-height: 0;
-  max-height: var(--gitignore-workbench-cap, calc(100dvh - 150px));
-  overflow: hidden;
+  max-height: none;
+  overflow: visible;
 }
 
 .git-project-gitignore-success {
@@ -1365,18 +1361,19 @@
 .git-project-gitignore-suggestions,
 .git-project-gitignore-file-panel {
   box-sizing: border-box;
-  max-height: var(--gitignore-panel-cap, calc(100dvh - 170px));
-}
-
-.git-project-gitignore-suggestions {
-  overflow: auto;
-  overscroll-behavior: contain;
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
 }
 
 .git-project-gitignore-file-panel {
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
-  align-content: stretch;
-  overflow: hidden;
+  grid-template-rows: auto auto auto auto auto;
+  align-content: start;
+}
+
+.git-project-gitignore-workbench .git-project-ignore-selected-preview {
+  max-height: none;
+  overflow: visible;
 }
 
 .git-project-commit-workbench {
@@ -2267,9 +2264,9 @@
   gap: 4px;
   min-height: 0;
   max-height: none;
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding-right: 4px;
+  overflow: visible;
+  overscroll-behavior: auto;
+  padding-right: 0;
 }
 
 .git-project-gitignore-line {
@@ -4208,3 +4205,260 @@ body[data-active-app="git-tools"] .canvas-wrap {
     height: 100vh;
   }
 }
+
+/* Git Tools workbench legibility correction.
+   The live dock contract owns the page-level tracks; each surface must then
+   adapt to the width it actually receives instead of preserving desktop-only
+   intrinsic minimums that create clipping and horizontal scroll. */
+#git-tools-app[data-git-layout-live="true"] .git-tools-shell {
+  --git-layout-support-inline: 420px;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-main {
+  container-name: git-tools-workflow;
+  container-type: inline-size;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-gitignore-workbench > *,
+#git-tools-app[data-git-layout-live="true"] .git-project-subscreen-panel-head > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-subscreen-panel-head strong {
+  flex: 1 1 220px;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-subscreen-panel-head span {
+  flex: 0 1 auto;
+  max-width: 100%;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-gitignore-suggestions,
+#git-tools-app[data-git-layout-live="true"] .git-project-gitignore-file-panel {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-gitignore-suggestions code,
+#git-tools-app[data-git-layout-live="true"] .git-project-gitignore-file-panel code,
+#git-tools-app[data-git-layout-live="true"] .git-project-ignore-selected-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@container git-tools-workflow (max-width: 1100px) {
+  #git-tools-app[data-git-layout-live="true"] .git-project-gitignore-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-gitignore-success {
+    grid-column: 1;
+  }
+}
+
+/* A right dock is a compact command surface, not a clipped desktop page. */
+#git-tools-app[data-git-layout-live="true"] .git-tools-support-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-tools-support-tabs button {
+  min-width: 0;
+  width: 100%;
+  padding-inline: 6px;
+  line-height: 1.2;
+  white-space: normal;
+  text-align: center;
+}
+
+#git-tools-app[data-git-layout-live="true"] #git-workflow-accordion,
+#git-tools-app[data-git-layout-live="true"] #git-server-pane,
+#git-tools-app[data-git-layout-live="true"] #gitea-workflow-layout {
+  overflow-x: hidden;
+}
+
+#git-tools-app[data-git-layout-live="true"] #gitea-workflow-layout > *,
+#git-tools-app[data-git-layout-live="true"] #gitea-workflow-layout * {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#git-tools-app[data-git-layout-live="true"] #gitea-workflow-layout code,
+#git-tools-app[data-git-layout-live="true"] #gitea-workflow-layout pre,
+#git-tools-app[data-git-layout-live="true"] #gitea-workflow-layout .git-tools-status {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .gitea-remote-choice-grid,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .gitea-target-settings-grid,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .gitea-workflow-steps,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .git-server-remote-fields,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .git-server-external-fields,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .git-server-mirror-fields,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .git-patch-actions-toolbar,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .git-shim-toolbar,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .git-dry-run-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  label.gitea-remote-choice-card {
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 0;
+  padding: 10px;
+}
+
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .gitea-workflow-card {
+  gap: 10px;
+  padding: 10px;
+}
+
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .gitea-card-title > strong,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .gitea-workflow-card > strong,
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support="right"]
+  .gitea-advanced-section > strong {
+  font-size: 0.95rem;
+}
+
+/* Commit-card owned-width and scroll-ownership correction.
+   The workflow plan is the vertical scroll owner. Expanded commit cards must
+   adapt to the inline space actually assigned by MCEL instead of keeping the
+   old viewport-sized two-column minimums. */
+#git-tools-app[data-git-layout-live="true"] .git-project-card-inline-body.is-commit {
+  container-name: git-tools-commit-card;
+  container-type: inline-size;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-card-inline-panel.is-commit,
+#git-tools-app[data-git-layout-live="true"] .git-project-card-inline-body.is-commit,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-workbench,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-body,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-center,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-right,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-panel {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-center,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-right,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-panel,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-tree-fallback {
+  max-height: none;
+  overflow: visible;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-summary-grid code,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-right code,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-right p,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-tree-fallback strong,
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-tree-fallback small {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#git-tools-app[data-git-layout-live="true"] .git-project-commit-panel-actions button {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+
+
+#git-tools-app[data-git-layout-live="true"]
+  .git-project-commit-workbench[data-git-commit-wunderbaum-fallback="true"]
+  .git-project-commit-wunderbaum {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+  padding: 8px !important;
+}
+
+@container git-tools-commit-card (max-width: 980px) {
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-workbench {
+    grid-template-rows: auto auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-items: start;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-center,
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-right {
+    width: 100%;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-wunderbaum-shell {
+    flex-basis: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-tree-fallback {
+    max-height: none;
+    overflow: visible;
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-basket-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container git-tools-commit-card (max-width: 560px) {
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-summary-grid span {
+    margin-top: 4px;
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-panel-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-panel-actions button {
+    width: 100%;
+  }
+
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-basket-summary,
+  #git-tools-app[data-git-layout-live="true"] .git-project-commit-review-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+

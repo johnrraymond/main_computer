@@ -445,7 +445,26 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
             _json_response(self, 500, {"ok": False, "state": "profile-map-failed", "error": str(exc)})
             return
         if output_format == "svg":
-            _svg_response(self, 200, render_profile_map_svg(profile_map))
+            svg_scale = str(query.get("svg_scale", query.get("scale", ["robust"]))[0] or "robust").strip().lower()
+            if svg_scale not in {"robust", "full"}:
+                _json_response(self, 400, {"ok": False, "state": "bad-svg-scale", "svg_scales": ["robust", "full"]})
+                return
+            label_limit = _coerce_nonnegative_int(query.get("label_limit", ["24"])[0], fallback=24, maximum=1000)
+            show_labels = str(query.get("labels", ["1"])[0] or "1").strip().lower() not in {"0", "false", "no", "off"}
+            svg_width = _coerce_nonnegative_int(query.get("width", ["1200"])[0], fallback=1200, maximum=5000)
+            svg_height = _coerce_nonnegative_int(query.get("height", ["800"])[0], fallback=800, maximum=5000)
+            _svg_response(
+                self,
+                200,
+                render_profile_map_svg(
+                    profile_map,
+                    width=svg_width,
+                    height=svg_height,
+                    label_limit=label_limit,
+                    scale=svg_scale,
+                    show_labels=show_labels,
+                ),
+            )
             return
         _json_response(self, 200, profile_map)
 
