@@ -22,6 +22,12 @@ PROFILE_MAP_SCHEMA = "mclog-profile-map-v1"
 
 
 _MESSAGE_KEY_VALUE_RE = re.compile(r"\b(?P<key>[A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*(?P<value>[^\s,;]+)")
+_HTTP_REQUEST_RE = re.compile(r"\b(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(?P<path>/[^\s\"']*)", re.IGNORECASE)
+_URL_PATH_RE = re.compile(r"\bhttps?://[^/\s]+(?P<path>/[^\s\"']*)", re.IGNORECASE)
+_WINDOWS_PATH_VALUE_RE = re.compile(r"^[A-Za-z]:\\")
+_UUID_VALUE_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_HASH_VALUE_RE = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{32,128}$")
+_LONG_DIGIT_VALUE_RE = re.compile(r"^\d{8,}$")
 _STABLE_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,80}$")
 _VOLATILE_KEY_PARTS = (
     "id",
@@ -63,6 +69,14 @@ _SEMANTIC_KEYS = {
     "attempt",
     "retries",
     "retry",
+    "path",
+    "route",
+    "endpoint",
+    "operation",
+    "action",
+    "command",
+    "command_name",
+    "child",
 }
 _RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("rule.traceback", ("traceback", "most recent call last")),
@@ -160,16 +174,86 @@ def _message_text(record: dict[str, Any]) -> str:
     return " | ".join(chunks)
 
 
+def _stable_wordy_value(value: str) -> bool:
+    text = str(value).strip().strip("\"'")
+    if not text or len(text) > 120:
+        return False
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:[-_.:][A-Za-z][A-Za-z0-9]*){0,12}", text):
+        return False
+    digit_fraction = sum(c.isdigit() for c in text) / max(1, len(text))
+    return digit_fraction <= 0.25
+
+
+def _route_bucket(value: str) -> str | None:
+    text = str(value).strip().strip("\"'").split("?", 1)[0].split("#", 1)[0]
+    if not text:
+        return None
+    if text.startswith(("http://", "https://")):
+        match = _URL_PATH_RE.search(text)
+        text = match.group("path") if match else ""
+    if not text.startswith("/") or "\\" in text or _WINDOWS_PATH_VALUE_RE.match(text):
+        return None
+    pieces: list[str] = []
+    for part in text.split("/"):
+        if not part:
+            continue
+        low = part.lower()
+        if _UUID_VALUE_RE.fullmatch(low):
+            pieces.append("uuid")
+        elif _HASH_VALUE_RE.fullmatch(low):
+            pieces.append("hash")
+        elif _LONG_DIGIT_VALUE_RE.fullmatch(low) or re.fullmatch(r"\d+", low):
+            pieces.append("num")
+        elif re.fullmatch(r"[a-z0-9_.:-]{1,48}", low) and not _LONG_DIGIT_VALUE_RE.fullmatch(low):
+            pieces.append(low)
+        else:
+            pieces.append("value")
+    if not pieces:
+        return None
+    return "route:" + ".".join(pieces[:12])
+
+
+def _command_family(command: str) -> str | None:
+    text = " ".join(str(command).strip().lower().split())
+    if not text:
+        return None
+    if "coolify-local-docker.py" in text:
+        for action in ("init", "wait", "ensure-infra", "deploy", "status"):
+            if f" {action} " in f" {text} ":
+                return f"coolify-local-docker:{action}"
+        return "coolify-local-docker"
+    if "docker compose" in text or "podman-compose" in text:
+        for action in ("build", "ps", "up", "down", "logs", "version"):
+            if f" {action} " in f" {text} ":
+                return f"compose:{action}"
+        return "compose"
+    if "podman.exe" in text or "podman " in text:
+        return "podman"
+    if "docker.exe" in text or "docker " in text:
+        return "docker"
+    if "wsl.exe" in text:
+        return "wsl"
+    return None
+
+
 def _value_bucket(key: str, value: str) -> str | None:
-    key_l = key.lower()
+    key_l = key.lower().replace("-", "_")
     value_s = str(value).strip().strip("\"'")
     value_l = value_s.lower()
 
-    if any(part in key_l for part in _VOLATILE_KEY_PARTS) and key_l not in _SEMANTIC_KEYS:
-        return None
     if not value_s:
         return None
-    if len(value_s) > 120:
+
+    if key_l in {"path", "route", "endpoint"}:
+        route = _route_bucket(value_s)
+        return route if route is not None else None
+
+    if key_l in {"command"}:
+        return _command_family(value_s)
+
+    if any(part in key_l for part in _VOLATILE_KEY_PARTS) and key_l not in _SEMANTIC_KEYS:
+        return None
+    if len(value_s) > 160:
         return None
 
     if key_l in {"status", "status_code", "exit_code", "returncode"}:
@@ -190,12 +274,14 @@ def _value_bucket(key: str, value: str) -> str | None:
             return "1000_4999"
         return "gte5000"
 
-    if key_l in _SEMANTIC_KEYS or _STABLE_TOKEN_RE.match(value_s):
+    if key_l in _SEMANTIC_KEYS or _STABLE_TOKEN_RE.match(value_s) or _stable_wordy_value(value_s):
         # Normalize huge numeric counters into presence buckets. They are useful,
         # but should not create unlimited coverage columns.
         if re.fullmatch(r"\d{4,}", value_s):
             return "large_number"
-        return value_l[:80]
+        if _UUID_VALUE_RE.fullmatch(value_s) or _HASH_VALUE_RE.fullmatch(value_s) or _LONG_DIGIT_VALUE_RE.fullmatch(value_s):
+            return None
+        return value_l[:120]
 
     return None
 
@@ -255,12 +341,41 @@ def _event_coverage_points(
             positive.append(cp)
 
     hit(f"signature:{signature_hash}", f"signature {signature_preview[:160]}", "signature")
+    structured: dict[str, str] = {}
     for field in ("service", "source_service", "kind", "stream", "process_name"):
         value = record.get(field)
         if value not in (None, ""):
-            cleaned = str(value).strip().lower()[:100]
+            cleaned = str(value).strip().lower()[:120]
             if cleaned:
-                hit(f"field:{field}={cleaned}", f"{field}={cleaned}", "field", parent_key=f"signature:{signature_hash}")
+                structured[field] = cleaned
+                # Stable structured fields define the execution pathway.  They
+                # are deliberately not treated as volatile/random, even when
+                # their values are hyphenated or dotted.
+                hit(f"field:{field}={cleaned}", f"{field}={cleaned}", "field")
+
+    service = structured.get("service") or structured.get("source_service")
+    source = structured.get("source_service")
+    kind = structured.get("kind")
+    stream = structured.get("stream")
+    process = structured.get("process_name")
+    if service and kind:
+        hit(f"pathway:{service}:{kind}", f"pathway {service} / {kind}", "pathway", parent_key=f"field:service={service}")
+    if source and kind:
+        hit(f"source_pathway:{source}:{kind}", f"source {source} / {kind}", "pathway", parent_key=f"field:source_service={source}")
+    if service and process:
+        hit(f"process_pathway:{service}:{process}", f"process {service} / {process}", "pathway", parent_key=f"field:service={service}")
+    if kind and stream:
+        hit(f"stream_pathway:{kind}:{stream}", f"stream {kind} / {stream}", "pathway", parent_key=f"field:kind={kind}")
+
+    command_family = _command_family(str(record.get("command") or ""))
+    if command_family:
+        hit(f"command:{command_family}", f"command {command_family}", "command", parent_key=f"process_pathway:{service}:{process}" if service and process else None)
+
+    record_path = record.get("path")
+    if isinstance(record_path, str):
+        route = _route_bucket(record_path)
+        if route:
+            hit(f"route:{route}", route, "route")
 
     if previous_signature_hash:
         hit(
@@ -271,18 +386,41 @@ def _event_coverage_points(
 
     message = _message_text(record)
     message_l = message.lower()
+
+    # HTTP routes and URL paths are semantic in this project.  The previous
+    # extractor often folded them into <random_string>/<path>, which made
+    # unrelated request pathways look identical.
+    for match in _HTTP_REQUEST_RE.finditer(message):
+        method = match.group("method").upper()
+        route = _route_bucket(match.group("path"))
+        if route:
+            hit(f"http:{method}:{route}", f"http {method} {route}", "route")
+    for match in _URL_PATH_RE.finditer(message):
+        route = _route_bucket(match.group("path"))
+        if route:
+            hit(f"url_path:{route}", route, "route")
+
     for key, values in _RULES:
         if any(value.lower() in message_l for value in values):
             bucket = "skipped" if key == "rule.skipped" else ("failed" if key in {"rule.traceback", "rule.python_exception", "rule.error"} else "positive")
             hit(key, key.replace("rule.", ""), "rule", bucket=bucket)
 
+    message_kv: dict[str, str] = {}
     for match in _MESSAGE_KEY_VALUE_RE.finditer(message):
         key = match.group("key")
+        key_l = key.lower().replace("-", "_")
         bucketed = _value_bucket(key, match.group("value"))
         if bucketed is None:
             continue
+        message_kv[key_l] = bucketed
         bucket = "skipped" if bucketed == "skipped" else ("failed" if bucketed in {"failed", "error", "down"} else "positive")
-        hit(f"kv:{key.lower()}={bucketed}", f"{key.lower()}={bucketed}", "key_value", bucket=bucket)
+        hit(f"kv:{key_l}={bucketed}", f"{key_l}={bucketed}", "key_value", bucket=bucket)
+
+    method_bucket = message_kv.get("method")
+    route_bucket = message_kv.get("path") or message_kv.get("route") or message_kv.get("endpoint")
+    if method_bucket and route_bucket and route_bucket.startswith("route:"):
+        method = method_bucket.upper()
+        hit(f"http:{method}:{route_bucket}", f"http {method} {route_bucket}", "route")
 
     for key in ("returncode", "exit_code"):
         value = record.get(key)

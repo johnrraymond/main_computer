@@ -58,20 +58,20 @@
 
       <aside class="code-studio-sidebar" aria-label="Explorer" data-code-studio-workbench-region="workspace-sidebar" data-mc-component-id="code-editor.studio.sidebar" data-mc-component-kind="panel" data-mc-component-label="VS Code Style Explorer" data-mc-component-owner="code-editor.studio.body" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-layout-user-id="code-editor.explorer" data-mc-layout-prefer="left" data-mc-layout-allowed="left trigger" data-mc-layout-fallback="trigger" data-mc-layout-strength="strong" data-mc-layout-policy="workspace-sidebar" data-mc-layout-inactive="trigger" data-mc-layout-min-inline="220" data-mc-layout-min-block="260" data-mc-layout-max-share="0.28" data-mc-layout-preferred-share="0.18" data-mc-layout-user-mutable="share collapsed" data-mc-selects="code-editor.studio.editor-group" data-mc-navigates="code-editor.studio.editor-group" data-mc-scopes="code-editor.studio.editor-group">
         <div class="code-studio-sidebar-title">Explorer</div>
-        <div class="code-studio-open-editors">
+        <div class="code-studio-open-editors" data-mc-component-id="code-editor.explorer.open-editors" data-mc-component-kind="collection" data-mc-component-label="Open Editors" data-mc-component-owner="code-editor.studio.sidebar" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-widget-kind="repeater" data-mc-item-display-preset="compact" data-mc-density="compact" data-mc-layout-track="content" data-mc-layout-overflow="contain">
           <strong>Open Editors</strong>
-          <button type="button" class="code-studio-file active" data-code-studio-file="src/app.js">src/app.js</button>
-          <button type="button" class="code-studio-file" data-code-studio-file="tests/app.test.js">tests/app.test.js</button>
-          <button type="button" class="code-studio-file" data-code-studio-file="mcel.contract.json">mcel.contract.json</button>
+          <button type="button" class="code-studio-file active" data-code-studio-file="src/app.js" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">src/app.js</button>
+          <button type="button" class="code-studio-file" data-code-studio-file="tests/app.test.js" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">tests/app.test.js</button>
+          <button type="button" class="code-studio-file" data-code-studio-file="mcel.contract.json" data-mc-item-kind="open-editor-file" data-mc-item-density="compact">mcel.contract.json</button>
         </div>
-        <div class="code-studio-tree" aria-label="Project tree">
+        <div class="code-studio-tree" aria-label="Project tree" data-mc-component-id="code-editor.explorer.workspace-tree" data-mc-component-kind="tree" data-mc-component-label="Project Tree" data-mc-component-owner="code-editor.studio.sidebar" data-mc-feature-id="code-editor.feature.mcel-code-studio" data-mc-widget-kind="tree" data-mc-item-display-preset="compact" data-mc-density="compact" data-mc-layout-fill="remaining" data-mc-layout-overflow="scroll">
           <strong>MCEL-WORKSPACE</strong>
-          <div>▾ src</div>
-          <button type="button" data-code-studio-file="src/app.js">app.js</button>
-          <div>▾ tests</div>
-          <button type="button" data-code-studio-file="tests/app.test.js">app.test.js</button>
-          <div>▾ .mcel</div>
-          <button type="button" data-code-studio-file="mcel.contract.json">contract.json</button>
+          <div data-mc-item-kind="workspace-tree-folder" data-mc-item-density="compact">▾ src</div>
+          <button type="button" data-code-studio-file="src/app.js" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">app.js</button>
+          <div data-mc-item-kind="workspace-tree-folder" data-mc-item-density="compact">▾ tests</div>
+          <button type="button" data-code-studio-file="tests/app.test.js" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">app.test.js</button>
+          <div data-mc-item-kind="workspace-tree-folder" data-mc-item-density="compact">▾ .mcel</div>
+          <button type="button" data-code-studio-file="mcel.contract.json" data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact">contract.json</button>
         </div>
       </aside>
 

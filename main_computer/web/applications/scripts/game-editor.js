@@ -847,7 +847,7 @@
           `effect: ${label || active.object?.id || "scene effect"}`,
           `backend: ${atlas.backend || "prebuilt-game-gpu-forge-atlas"}`,
           "renderer: prebuilt forge asset",
-          "browser: sprite-sheet playback/composition, no screen stream"
+          `browser: ${atlas.playback || "storm-lash"} playback/composition, no screen stream`
         ];
         node.textContent = lines.join("\n");
         node.hidden = false;
@@ -862,7 +862,7 @@
         `backend: ${metadata.backend || "local-procedural-svg-fallback"}`,
         `renderer: ${renderer.used ? "sidecar" : "local fallback"}`,
         `linked: ${metadata.browser_binding?.target || "particle-emitter.props.gpuForgeAtlas"}`,
-        "browser: sprite-sheet playback/composition, no screen stream"
+        `browser: ${metadata.browser_binding?.particle_emitter_props?.gpuForgeAtlas?.playback || metadata.playback || "sprite-sheet"} playback/composition, no screen stream`
       ];
       node.textContent = lines.join("\n");
       node.hidden = false;
@@ -885,16 +885,16 @@
       object.props.gpuForgeAtlas = {
         path: String(binding.path || ""),
         metadataPath: String(binding.metadataPath || ""),
-        frameCount: Number(binding.frameCount) || 8,
+        frameCount: Number(binding.frameCount) || (String(binding.playback || metadata.playback || "") === "storm-lash" ? 12 : 8),
         frameWidth: Number(binding.frameWidth) || 128,
         frameHeight: Number(binding.frameHeight) || 128,
-        columns: Number(binding.columns) || Number(binding.frameCount) || 8,
+        columns: Number(binding.columns) || Number(binding.frameCount) || (String(binding.playback || metadata.playback || "") === "storm-lash" ? 12 : 8),
         rows: Number(binding.rows) || 1,
         digest: String(binding.digest || metadata.digest || ""),
         backend: String(binding.backend || metadata.backend || "local-procedural-svg-fallback"),
-        playback: String(binding.playback || "sprite-sheet")
+        playback: String(binding.playback || metadata.playback || "sprite-sheet")
       };
-      object.props.gpuForgePlayback = "sprite-sheet";
+      object.props.gpuForgePlayback = String(binding.playback || metadata.playback || "sprite-sheet");
       gameEditorState.selectedObjectId = String(object.id || gameEditorState.selectedObjectId || "");
       markGameEditorDirty("GPU Forge atlas linked - save project to persist scene reference");
       syncGameEditorInspector();

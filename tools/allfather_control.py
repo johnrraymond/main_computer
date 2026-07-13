@@ -3138,70 +3138,429 @@ import base64
 import json
 import os
 import shutil
+import signal
+import socket
+import subprocess
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
+import urllib.request
 
 manifest = json.loads(base64.b64decode(os.environ["MC_ALLFATHER_SUPER_MANIFEST_B64"]).decode("utf-8"))
 port = int(os.environ.get("MC_ALLFATHER_GUARD_PORT", "41414"))
+components = manifest.get("components") if isinstance(manifest.get("components"), dict) else {}
+ports = manifest.get("ports") if isinstance(manifest.get("ports"), dict) else {}
+bootstrap = manifest.get("bootstrap") if isinstance(manifest.get("bootstrap"), dict) else {}
+fdb_plan = manifest.get("foundationdb") if isinstance(manifest.get("foundationdb"), dict) else {}
+public_routes = manifest.get("public_routes") if isinstance(manifest.get("public_routes"), dict) else {}
+state_root = Path(str(manifest.get("state_root") or "/data/main-computer/allfather/supernodes/unknown"))
+network_key = str(manifest.get("network_key") or "")
+cell_id = str(manifest.get("cell_id") or "")
+ordinal = int(manifest.get("ordinal") or 0)
+vpn_ip = str(manifest.get("vpn_ip") or (fdb_plan.get("new_node") or {}).get("vpn_ip") or "").strip()
+
+started_at = time.time()
+lock = threading.RLock()
+stop_requested = False
+children = {}
+component_state = {}
+
+def now_s() -> float:
+    return round(time.time() - started_at, 3)
+
+def state(component_key: str, **updates) -> None:
+    with lock:
+        current = component_state.setdefault(component_key, {})
+        current.update(updates)
+        current["updated_uptime_s"] = now_s()
+
+def command_exists(name: str) -> bool:
+    return bool(shutil.which(name))
+
+def port_open(host: str, check_port: int, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, int(check_port)), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def http_json_ok(url: str, timeout: float = 1.0) -> bool:
+    try:
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+        payload = json.loads(raw.decode("utf-8"))
+        return isinstance(payload, dict) and bool(payload.get("ok", True))
+    except Exception:
+        return False
+
+def ensure_dirs() -> None:
+    for sub in ("foundationdb/data", "foundationdb/logs", "qbft/data", "qbft/config", "hub", "logs"):
+        (state_root / sub).mkdir(parents=True, exist_ok=True)
+    (state_root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+def write_fdb_cluster_file() -> Path:
+    ensure_dirs()
+    cluster = str(fdb_plan.get("cluster_file") or fdb_plan.get("join_cluster_file") or "").strip()
+    if not cluster:
+        cluster = f"{cell_id}:0000000000000000@127.0.0.1:{ports.get('fdb_container') or 4550}"
+    cluster_path = state_root / "foundationdb" / "fdb.cluster"
+    cluster_path.write_text(cluster + "\n", encoding="utf-8")
+    try:
+        Path("/etc/foundationdb").mkdir(parents=True, exist_ok=True)
+        Path("/etc/foundationdb/fdb.cluster").write_text(cluster + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    return cluster_path
+
+def child_running(name: str) -> bool:
+    proc = children.get(name)
+    return proc is not None and proc.poll() is None
+
+def child_exit(name: str):
+    proc = children.get(name)
+    if proc is None:
+        return None
+    code = proc.poll()
+    return None if code is None else int(code)
+
+def start_child(name: str, command: list[str], *, cwd: str | None = None, env_extra: dict | None = None) -> bool:
+    if child_running(name):
+        return True
+    env = os.environ.copy()
+    env["MC_ALLFATHER_PROCESS_NAME"] = name
+    env["MC_ALLFATHER_NETWORK"] = network_key
+    env["MC_ALLFATHER_CELL_ID"] = cell_id
+    if env_extra:
+        env.update({str(k): str(v) for k, v in env_extra.items()})
+    try:
+        log = open(state_root / "logs" / f"{name}.log", "ab", buffering=0)
+        children[name] = subprocess.Popen(
+            command,
+            cwd=cwd or str(state_root),
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        return True
+    except Exception as exc:
+        state(name, desired=True, running=False, status="start-failed", last_error=f"{type(exc).__name__}: {exc}", command=command)
+        return False
+
+def run_once(name: str, command: list[str], timeout: int = 30) -> tuple[bool, str]:
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(state_root),
+            env=os.environ.copy(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return proc.returncode == 0, (proc.stdout or "")[-1200:]
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+def ensure_fdb() -> bool:
+    fdb_port = int(ports.get("fdb_container") or 4550)
+    cluster_file = write_fdb_cluster_file()
+    if not command_exists("fdbserver"):
+        state("foundationdb", name=components.get("fdb"), desired=True, running=False, status="missing-fdbserver", port=fdb_port, cluster_file_present=cluster_file.exists())
+        return False
+    public_address = str((fdb_plan.get("new_node") or {}).get("fdb_endpoint") or f"{vpn_ip or '127.0.0.1'}:{ports.get('fdb_host') or fdb_port}")
+    command = [
+        "fdbserver",
+        "--cluster-file", str(cluster_file),
+        "--datadir", str(state_root / "foundationdb" / "data"),
+        "--logdir", str(state_root / "foundationdb" / "logs"),
+        "--listen-address", f"0.0.0.0:{fdb_port}",
+        "--public-address", public_address,
+        "--class", "storage",
+        "--locality-machineid", cell_id or "allfather-super",
+        "--locality-zoneid", str(manifest.get("coolify_server") or manifest.get("host_slot") or "zone-a"),
+    ]
+    start_child("foundationdb", command)
+    running = child_running("foundationdb")
+    listening = port_open("127.0.0.1", fdb_port)
+    configured = False
+    configure_output = ""
+    if running and str(fdb_plan.get("action") or "") == "initialize-new-cluster" and command_exists("fdbcli"):
+        marker = state_root / "foundationdb" / ".configured"
+        if marker.exists():
+            configured = True
+        else:
+            ok, configure_output = run_once("fdb-configure", ["fdbcli", "-C", str(cluster_file), "--exec", "configure new single ssd"], timeout=25)
+            if ok or "already" in configure_output.lower() or "database already exists" in configure_output.lower():
+                marker.write_text(str(time.time()) + "\n", encoding="utf-8")
+                configured = True
+    elif running and str(fdb_plan.get("action") or "") != "initialize-new-cluster":
+        configured = True
+    status = "running" if running and (listening or configured) else "starting"
+    if running and str(fdb_plan.get("action") or "") == "initialize-new-cluster" and not configured:
+        status = "running-unconfigured"
+    state(
+        "foundationdb",
+        name=components.get("fdb"),
+        desired=True,
+        running=running,
+        status=status,
+        port=fdb_port,
+        bootstrap_action=fdb_plan.get("action"),
+        cluster_file_present=cluster_file.exists(),
+        configured=configured,
+        listening=listening,
+        public_address=public_address,
+        last_exit_code=child_exit("foundationdb"),
+        last_configure_output=configure_output,
+    )
+    return running and (configured or listening)
+
+def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
+    ensure_dirs()
+    config_dir = state_root / "qbft" / "config"
+    genesis = config_dir / "genesis.json"
+    key_file = config_dir / "key"
+    if genesis.exists() and key_file.exists():
+        return True, "existing-qbft-config", genesis, key_file
+    if ordinal != 1 and str(fdb_plan.get("action") or "") != "initialize-new-cluster":
+        return False, "blocked-awaiting-shared-qbft-genesis", None, None
+    if not command_exists("besu"):
+        return False, "missing-besu", None, None
+
+    chain_id = 20260000 + (1 if network_key == "mainnet" else 2)
+    operator_config = {
+        "genesis": {
+            "config": {
+                "chainId": chain_id,
+                "berlinBlock": 0,
+                "qbft": {
+                    "blockperiodseconds": 2,
+                    "epochlength": 30000,
+                    "requesttimeoutseconds": 4,
+                },
+            },
+            "nonce": "0x0",
+            "timestamp": "0x58ee40ba",
+            "gasLimit": "0x1fffffffffffff",
+            "difficulty": "0x1",
+            "mixHash": "0x63746963616c2062797a616e74696e65206661756c7420746f6c6572616e6365",
+            "coinbase": "0x0000000000000000000000000000000000000000",
+            "alloc": {},
+        },
+        "blockchain": {"nodes": {"generate": True, "count": 1}},
+    }
+    operator_file = config_dir / "qbft-config.json"
+    operator_file.write_text(json.dumps(operator_config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    out_dir = config_dir / "operator-output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ok, output = run_once(
+        "besu-qbft-generate",
+        [
+            "besu",
+            "operator",
+            "generate-blockchain-config",
+            "--config-file", str(operator_file),
+            "--to", str(out_dir),
+            "--private-key-file-name", "key",
+        ],
+        timeout=60,
+    )
+    if not ok:
+        return False, "qbft-config-generation-failed: " + output, None, None
+
+    generated_genesis = out_dir / "genesis.json"
+    generated_keys = sorted(out_dir.glob("keys/*/key"))
+    if not generated_genesis.exists() or not generated_keys:
+        return False, "qbft-config-generation-missing-output", None, None
+    genesis.write_text(generated_genesis.read_text(encoding="utf-8"), encoding="utf-8")
+    key_file.write_text(generated_keys[0].read_text(encoding="utf-8").strip() + "\n", encoding="utf-8")
+    return True, "generated-single-validator-qbft-config", genesis, key_file
+
+def ensure_validator_rpc(fdb_ready: bool) -> bool:
+    rpc_port = int(ports.get("rpc_container") or 8545)
+    p2p_port = int(ports.get("p2p_container") or 30303)
+    if not fdb_ready:
+        state("validator_rpc", name=components.get("validator_rpc"), desired=True, running=False, status="waiting-foundationdb", rpc_port=rpc_port, p2p_port=p2p_port, besu_binary_present=command_exists("besu"))
+        return False
+    ok, reason, genesis, key_file = write_qbft_config()
+    if not ok or genesis is None or key_file is None:
+        state("validator_rpc", name=components.get("validator_rpc"), desired=True, running=False, status=reason, rpc_port=rpc_port, p2p_port=p2p_port, besu_binary_present=command_exists("besu"))
+        return False
+    data_path = state_root / "qbft" / "data"
+    data_path.mkdir(parents=True, exist_ok=True)
+    p2p_host = vpn_ip or "127.0.0.1"
+    command = [
+        "besu",
+        "--data-path", str(data_path),
+        "--genesis-file", str(genesis),
+        "--node-private-key-file", str(key_file),
+        "--rpc-http-enabled=true",
+        "--rpc-http-host=0.0.0.0",
+        f"--rpc-http-port={rpc_port}",
+        "--rpc-http-api=ETH,NET,WEB3,QBFT,ADMIN,TXPOOL",
+        "--rpc-http-cors-origins=*",
+        "--host-allowlist=*",
+        f"--p2p-port={p2p_port}",
+        f"--p2p-host={p2p_host}",
+        "--min-gas-price=0",
+        "--logging=INFO",
+    ]
+    start_child("validator_rpc", command)
+    running = child_running("validator_rpc")
+    rpc_ok = http_json_ok(f"http://127.0.0.1:{rpc_port}", timeout=0.7) or port_open("127.0.0.1", rpc_port)
+    status = "running" if running and rpc_ok else "starting" if running else "stopped"
+    state(
+        "validator_rpc",
+        name=components.get("validator_rpc"),
+        desired=True,
+        running=running,
+        status=status,
+        rpc_port=rpc_port,
+        p2p_port=p2p_port,
+        besu_binary_present=command_exists("besu"),
+        qbft_config=reason,
+        genesis_file_present=genesis.exists(),
+        node_key_present=key_file.exists(),
+        rpc_http_ok=rpc_ok,
+        last_exit_code=child_exit("validator_rpc"),
+    )
+    return running and rpc_ok
+
+def write_bootstrap_hub_script() -> Path:
+    ensure_dirs()
+    script = state_root / "hub" / "allfather-bootstrap-hub.py"
+    script.write_bytes(base64.b64decode("aW1wb3J0IGpzb24KaW1wb3J0IG9zCmZyb20gaHR0cC5zZXJ2ZXIgaW1wb3J0IEJhc2VIVFRQUmVxdWVzdEhhbmRsZXIsIFRocmVhZGluZ0hUVFBTZXJ2ZXIKZnJvbSB1cmxsaWIucGFyc2UgaW1wb3J0IHVybHBhcnNlCnBvcnQgPSBpbnQob3MuZW52aXJvbi5nZXQoIk1DX0FMTEZBVEhFUl9IVUJfUE9SVCIsICI4Nzg1IikpCmNlbGxfaWQgPSBvcy5lbnZpcm9uLmdldCgiTUNfQUxMRkFUSEVSX0NFTExfSUQiLCAiIikKbmV0d29yayA9IG9zLmVudmlyb24uZ2V0KCJNQ19BTExGQVRIRVJfTkVUV09SSyIsICIiKQpjbGFzcyBIYW5kbGVyKEJhc2VIVFRQUmVxdWVzdEhhbmRsZXIpOgogICAgZGVmIF9zZW5kKHNlbGYsIHN0YXR1cywgcGF5bG9hZCk6CiAgICAgICAgcmF3ID0ganNvbi5kdW1wcyhwYXlsb2FkLCBzb3J0X2tleXM9VHJ1ZSkuZW5jb2RlKCJ1dGYtOCIpCiAgICAgICAgc2VsZi5zZW5kX3Jlc3BvbnNlKHN0YXR1cykKICAgICAgICBzZWxmLnNlbmRfaGVhZGVyKCJDb250ZW50LVR5cGUiLCAiYXBwbGljYXRpb24vanNvbiIpCiAgICAgICAgc2VsZi5zZW5kX2hlYWRlcigiQ29udGVudC1MZW5ndGgiLCBzdHIobGVuKHJhdykpKQogICAgICAgIHNlbGYuZW5kX2hlYWRlcnMoKQogICAgICAgIHNlbGYud2ZpbGUud3JpdGUocmF3KQogICAgZGVmIGRvX0dFVChzZWxmKToKICAgICAgICBwYXRoID0gdXJscGFyc2Uoc2VsZi5wYXRoKS5wYXRoCiAgICAgICAgaWYgcGF0aCBpbiB7Ii8iLCAiL2hlYWx0aHoiLCAiL2FwaS9odWIvdjEvaGVhbHRoIn06CiAgICAgICAgICAgIHNlbGYuX3NlbmQoMjAwLCB7CiAgICAgICAgICAgICAgICAib2siOiBUcnVlLAogICAgICAgICAgICAgICAgInNlcnZpY2UiOiAibWFpbi1jb21wdXRlci1hbGxmYXRoZXItYm9vdHN0cmFwLWh1YiIsCiAgICAgICAgICAgICAgICAibmV0d29ya19rZXkiOiBuZXR3b3JrLAogICAgICAgICAgICAgICAgImNlbGxfaWQiOiBjZWxsX2lkLAogICAgICAgICAgICAgICAgImJvb3RzdHJhcF9odWIiOiBUcnVlLAogICAgICAgICAgICAgICAgImZ1bGxfbWFpbl9jb21wdXRlcl9odWIiOiBGYWxzZSwKICAgICAgICAgICAgICAgICJyZWFzb24iOiAiaW5saW5lIENvb2xpZnkgc3VwZXItbm9kZSBpbWFnZSBoYXMgbm90IGJ1bmRsZWQgdGhlIGZ1bGwgTWFpbiBDb21wdXRlciBodWIgcnVudGltZSB5ZXQiCiAgICAgICAgICAgIH0pCiAgICAgICAgZWxzZToKICAgICAgICAgICAgc2VsZi5fc2VuZCg0MDQsIHsib2siOiBGYWxzZSwgImVycm9yIjogIm5vdC1mb3VuZCIsICJwYXRoIjogcGF0aH0pCiAgICBkZWYgbG9nX21lc3NhZ2Uoc2VsZiwgZm10LCAqYXJncyk6CiAgICAgICAgcHJpbnQoIltodWItYm9vdHN0cmFwXSAiICsgKGZtdCAlIGFyZ3MpLCBmbHVzaD1UcnVlKQpUaHJlYWRpbmdIVFRQU2VydmVyKCgiMC4wLjAuMCIsIHBvcnQpLCBIYW5kbGVyKS5zZXJ2ZV9mb3JldmVyKCkK"))
+    return script
+
+def ensure_hub(validator_ready: bool) -> bool:
+    hub_port = int(ports.get("hub_container") or 8785)
+    if not validator_ready:
+        state("hub", name=components.get("hub"), desired=True, running=False, status="pending-validator-rpc", port=hub_port, public_cutover_deferred=bool(bootstrap.get("hub_public_cutover_deferred", True)))
+        return False
+    script = write_bootstrap_hub_script()
+    start_child(
+        "hub",
+        ["python", "-u", str(script)],
+        env_extra={
+            "MC_ALLFATHER_HUB_PORT": str(hub_port),
+            "MC_ALLFATHER_NETWORK": network_key,
+            "MC_ALLFATHER_CELL_ID": cell_id,
+        },
+    )
+    running = child_running("hub")
+    health_ok = http_json_ok(f"http://127.0.0.1:{hub_port}/api/hub/v1/health", timeout=0.7)
+    status = "running-bootstrap-listener" if running and health_ok else "starting" if running else "stopped"
+    state(
+        "hub",
+        name=components.get("hub"),
+        desired=True,
+        running=running,
+        status=status,
+        port=hub_port,
+        health_ok=health_ok,
+        bootstrap_hub=True,
+        full_main_computer_hub=False,
+        public_cutover_deferred=bool(bootstrap.get("hub_public_cutover_deferred", True)),
+        last_exit_code=child_exit("hub"),
+    )
+    return running and health_ok
+
+def update_deferred(validator_ready: bool) -> None:
+    hub_admin_desired = bool(bootstrap.get("hub_admin_requested", True))
+    contracts_desired = bool(bootstrap.get("contracts_requested"))
+    if not validator_ready:
+        hub_admin_status = "deferred-until-live-validator-rpc"
+        contracts_status = "deferred-until-live-validator-rpc" if contracts_desired else "disabled"
+    else:
+        hub_admin_status = "ready-for-bootstrap-command"
+        contracts_status = "ready-for-bootstrap-command" if contracts_desired else "disabled"
+    state("hub_admin", desired=hub_admin_desired, running=False, status=hub_admin_status, private_key_present=bool(bootstrap.get("hub_admin_private_key_present")))
+    state("contracts", desired=contracts_desired, running=False, status=contracts_status)
+
+def converge_once() -> None:
+    ensure_dirs()
+    fdb_ready = ensure_fdb()
+    validator_ready = ensure_validator_rpc(fdb_ready)
+    ensure_hub(validator_ready)
+    update_deferred(validator_ready)
+
+def supervisor_loop() -> None:
+    while not stop_requested:
+        try:
+            converge_once()
+        except Exception as exc:
+            state("supervisor", desired=True, running=True, status="error", last_error=f"{type(exc).__name__}: {exc}")
+        time.sleep(float(os.environ.get("MC_ALLFATHER_SUPERVISOR_TICK_S", "5")))
 
 def function_statuses() -> dict:
-    components = manifest.get("components") if isinstance(manifest.get("components"), dict) else {}
-    ports = manifest.get("ports") if isinstance(manifest.get("ports"), dict) else {}
-    bootstrap = manifest.get("bootstrap") if isinstance(manifest.get("bootstrap"), dict) else {}
-    fdb_plan = manifest.get("foundationdb") if isinstance(manifest.get("foundationdb"), dict) else {}
-    return {
-        "guard": {
-            "name": components.get("guard"),
-            "desired": True,
-            "running": True,
-            "status": "running",
-            "port": port,
-        },
-        "foundationdb": {
-            "name": components.get("fdb"),
-            "desired": True,
-            "running": False,
-            "status": "pending-supervisor",
-            "port": ports.get("fdb_container"),
-            "bootstrap_action": fdb_plan.get("action"),
-            "cluster_file_present": bool(fdb_plan.get("cluster_file")),
-        },
-        "hub": {
-            "name": components.get("hub"),
-            "desired": True,
-            "running": False,
-            "status": "pending-validator-rpc",
-            "port": ports.get("hub_container"),
-            "public_cutover_deferred": bool(bootstrap.get("hub_public_cutover_deferred", True)),
-        },
-        "validator_rpc": {
-            "name": components.get("validator_rpc"),
-            "desired": True,
-            "running": False,
-            "status": "pending-supervisor",
-            "rpc_port": ports.get("rpc_container"),
-            "p2p_port": ports.get("p2p_container"),
-            "besu_binary_present": bool(shutil.which("besu")),
-        },
-        "hub_admin": {
-            "desired": bool(bootstrap.get("hub_admin_requested", True)),
-            "running": False,
-            "status": "deferred-until-live-validator-rpc",
-            "private_key_present": bool(bootstrap.get("hub_admin_private_key_present")),
-        },
-        "contracts": {
-            "desired": bool(bootstrap.get("contracts_requested")),
-            "running": False,
-            "status": "deferred-until-live-validator-rpc" if bootstrap.get("contracts_requested") else "disabled",
-        },
-    }
+    with lock:
+        functions = {
+            "guard": {
+                "name": components.get("guard"),
+                "desired": True,
+                "running": True,
+                "status": "running",
+                "port": port,
+            },
+            "foundationdb": {
+                "name": components.get("fdb"),
+                "desired": True,
+                "running": False,
+                "status": "pending-supervisor",
+                "port": ports.get("fdb_container"),
+                "bootstrap_action": fdb_plan.get("action"),
+                "cluster_file_present": bool(fdb_plan.get("cluster_file")),
+            },
+            "validator_rpc": {
+                "name": components.get("validator_rpc"),
+                "desired": True,
+                "running": False,
+                "status": "pending-supervisor",
+                "rpc_port": ports.get("rpc_container"),
+                "p2p_port": ports.get("p2p_container"),
+                "besu_binary_present": bool(shutil.which("besu")),
+            },
+            "hub": {
+                "name": components.get("hub"),
+                "desired": True,
+                "running": False,
+                "status": "pending-validator-rpc",
+                "port": ports.get("hub_container"),
+                "public_cutover_deferred": bool(bootstrap.get("hub_public_cutover_deferred", True)),
+            },
+            "hub_admin": {
+                "desired": bool(bootstrap.get("hub_admin_requested", True)),
+                "running": False,
+                "status": "deferred-until-live-validator-rpc",
+                "private_key_present": bool(bootstrap.get("hub_admin_private_key_present")),
+            },
+            "contracts": {
+                "desired": bool(bootstrap.get("contracts_requested")),
+                "running": False,
+                "status": "deferred-until-live-validator-rpc" if bootstrap.get("contracts_requested") else "disabled",
+            },
+        }
+        for key, updates in component_state.items():
+            if key in functions and isinstance(updates, dict):
+                functions[key].update(updates)
+            elif isinstance(updates, dict):
+                functions[key] = dict(updates)
+        return functions
 
 def payload(status: str = "running"):
     functions = function_statuses()
+    supervisor_healthy = all(bool(functions.get(name, {}).get("running")) for name in ("foundationdb", "validator_rpc", "hub"))
     return {
         "ok": True,
         "service": "main-computer-allfather-super-node",
         "status": status,
+        "supervisor_healthy": supervisor_healthy,
         "network_key": manifest.get("network_key"),
         "cell_id": manifest.get("cell_id"),
         "coolify_server": manifest.get("coolify_server"),
@@ -3210,8 +3569,9 @@ def payload(status: str = "running"):
         "functions": functions,
         "desired_counts": manifest.get("desired_counts"),
         "bootstrap": manifest.get("bootstrap"),
-        "public_routes": manifest.get("public_routes"),
+        "public_routes": public_routes,
         "guardrails": manifest.get("guardrails"),
+        "uptime_s": now_s(),
     }
 
 class Handler(BaseHTTPRequestHandler):
@@ -3226,7 +3586,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/healthz":
-            self._send(200, {"ok": True, "cell_id": manifest.get("cell_id")})
+            self._send(200, {"ok": True, "cell_id": manifest.get("cell_id"), "supervisor": function_statuses()})
         elif path == "/identity":
             self._send(200, payload())
         elif path == "/topology":
@@ -3236,28 +3596,60 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"ok": False, "error": "not-found", "path": path})
 
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/wake":
+            converge_once()
+            self._send(200, {"ok": True, "wake": "all", "functions": function_statuses()})
+        else:
+            self._send(404, {"ok": False, "error": "not-found", "path": path})
+
     def log_message(self, fmt, *args):
         print("%s - %s" % (self.address_string(), fmt % args), flush=True)
 
-print(f"all-father super-node guard listening on 0.0.0.0:{port}", flush=True)
+def shutdown(*_args):
+    global stop_requested
+    stop_requested = True
+    with lock:
+        for name, proc in list(children.items()):
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        deadline = time.time() + 10
+        for name, proc in list(children.items()):
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.wait(timeout=max(0.1, deadline - time.time()))
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+signal.signal(signal.SIGTERM, shutdown)
+signal.signal(signal.SIGINT, shutdown)
+ensure_dirs()
+threading.Thread(target=supervisor_loop, daemon=True).start()
+print(f"all-father super-node guard/supervisor listening on 0.0.0.0:{port}", flush=True)
 ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 """.strip()
-
 
 
 def super_node_dockerfile_inline(base_image: str, guard_script: str | None = None) -> str:
     """Return a Dockerfile for the all-father super-node image.
 
-    The control-plane heads may use a tiny public Python image, but super-nodes
-    must be Besu/QBFT-capable from the beginning.  The guard starts first and
-    keeps the container alive while FDB, Hub, validator-RPC, hub_admin, and
-    contracts are guarded/deferred in the manifest.
+    The generated Coolify stack uses ``dockerfile_inline`` with no repository
+    checkout in the build context, so this image must be self-contained.  It
+    keeps the Besu/QBFT base and installs FoundationDB server/client plus Python
+    runtime tools, then bakes in the private guard/supervisor script.  The guard
+    starts first and supervises FDB -> Besu validator-RPC -> Hub bootstrap.
 
-    The guard entrypoint is baked into the built image instead of relying on a
-    Compose-level entrypoint override.  Coolify accepts ``entrypoint: null`` in
-    the compose file, so the built image must replace the inherited Besu
-    entrypoint itself; otherwise Compose ``command`` arguments are passed to the
-    Besu entrypoint and the private guard never binds.
+    FoundationDB's Debian package installs ``fdbserver`` under ``/usr/sbin`` on
+    common platforms, not ``/usr/bin``.  The image therefore validates both
+    locations and creates stable ``/usr/local/bin`` symlinks instead of assuming
+    one package layout.
     """
 
     base = str(base_image or DEFAULT_SUPER_BASE_IMAGE).strip() or DEFAULT_SUPER_BASE_IMAGE
@@ -3268,27 +3660,57 @@ FROM {base}
 USER root
 
 RUN set -eux; \\
-    if command -v apt-get >/dev/null 2>&1; then \\
-        apt-get update; \\
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-            bash ca-certificates curl python3 procps netcat-openbsd; \\
-        rm -rf /var/lib/apt/lists/*; \\
-    elif command -v microdnf >/dev/null 2>&1; then \\
-        microdnf install -y bash ca-certificates curl python3 procps-ng nc || \\
-        microdnf install -y bash ca-certificates curl python3 procps-ng nmap-ncat; \\
-        microdnf clean all; \\
-    elif command -v apk >/dev/null 2>&1; then \\
-        apk add --no-cache bash ca-certificates curl python3 procps netcat-openbsd; \\
-    else \\
-        echo "No supported package manager found in all-father super-node base image" >&2; \\
+    if ! command -v apt-get >/dev/null 2>&1; then \\
+        echo "The all-father super-node inline image currently requires a Debian/Ubuntu Besu base so FoundationDB server .deb packages can be installed." >&2; \\
         exit 1; \\
     fi; \\
-    ln -sf "$(command -v python3)" /usr/local/bin/python; \\
+    apt-get update; \\
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
+        bash ca-certificates curl python3 python3-pip procps netcat-openbsd; \\
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \\
+        curl -fsSL -o /tmp/foundationdb-clients.deb \\
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-clients_7.4.6-1_amd64.deb"; \\
+        curl -fsSL -o /tmp/foundationdb-server.deb \\
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-server_7.4.6-1_amd64.deb"; \\
+    elif [ "$(dpkg --print-architecture)" = "arm64" ]; then \\
+        curl -fsSL -o /tmp/foundationdb-clients.deb \\
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-clients_7.4.6-1_arm64.deb"; \\
+        curl -fsSL -o /tmp/foundationdb-server.deb \\
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-server_7.4.6-1_arm64.deb"; \\
+    else \\
+        echo "Unsupported FoundationDB architecture: $(dpkg --print-architecture)" >&2; \\
+        exit 1; \\
+    fi; \\
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
+        /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \\
+    rm -f /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \\
+    rm -rf /var/lib/apt/lists/*; \\
+    ln -sf /usr/bin/python3 /usr/local/bin/python; \\
+    python -m pip install --no-cache-dir --break-system-packages "foundationdb==7.4.6" || \\
+        python -m pip install --no-cache-dir "foundationdb==7.4.6"; \\
+    if [ -x /usr/sbin/fdbserver ]; then \\
+        ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver; \\
+    elif [ -x /usr/bin/fdbserver ]; then \\
+        ln -sf /usr/bin/fdbserver /usr/local/bin/fdbserver; \\
+    else \\
+        echo "FoundationDB server binary was not found after package install" >&2; \\
+        exit 1; \\
+    fi; \\
+    if [ -x /usr/bin/fdbcli ]; then \\
+        ln -sf /usr/bin/fdbcli /usr/local/bin/fdbcli; \\
+    elif [ -x /usr/sbin/fdbcli ]; then \\
+        ln -sf /usr/sbin/fdbcli /usr/local/bin/fdbcli; \\
+    else \\
+        echo "FoundationDB CLI binary was not found after package install" >&2; \\
+        exit 1; \\
+    fi; \\
     if ! command -v besu >/dev/null 2>&1; then \\
         echo "Besu binary is required in the all-father super-node base image" >&2; \\
         exit 1; \\
     fi; \\
-    besu --version
+    besu --version; \\
+    fdbserver --version; \\
+    fdbcli --version
 
 RUN python - <<'PY'
 import base64
@@ -3296,14 +3718,29 @@ from pathlib import Path
 Path("/usr/local/bin/allfather-super-guard.py").write_bytes(base64.b64decode("{guard_script_b64}"))
 PY
 
-ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-allfather-super \\
-    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,hub,fdb,validator-rpc,besu,qbft,traefik-targets \\
+ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super \\
+    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,fdb,validator-rpc,besu,qbft,traefik-targets \\
     MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-guard
 
 EXPOSE {DEFAULT_SUPER_GUARD_CONTAINER_PORT} {DEFAULT_SUPER_HUB_CONTAINER_PORT} {DEFAULT_SUPER_RPC_CONTAINER_PORT} {DEFAULT_SUPER_FDB_CONTAINER_PORT} {DEFAULT_SUPER_P2P_CONTAINER_PORT}
 
 ENTRYPOINT ["python", "-u", "/usr/local/bin/allfather-super-guard.py"]
 """.strip()
+
+
+
+def escape_compose_interpolation(text: str) -> str:
+    """Escape Docker Compose interpolation inside literal inline payloads.
+
+    ``dockerfile_inline`` is still parsed as part of the Compose file before it
+    is handed to Docker BuildKit.  A Dockerfile naturally contains shell and ARG
+    references like ``$arch`` and ``${FDB_VERSION}``; without escaping, Compose
+    treats them as Compose variables and Coolify logs noisy "variable is not
+    set" warnings before building the wrong Dockerfile.  Compose converts ``$$``
+    back to ``$`` for the builder.
+    """
+
+    return text.replace("$", "$$")
 
 
 def yaml_block_scalar(text: str, indent: int) -> list[str]:
@@ -3336,14 +3773,15 @@ def render_super_node_compose(
         if private_bind_host:
             return f"{private_bind_host}:{host_port}:{container_port}/tcp"
         return f"{host_port}:{container_port}/tcp"
-    built_image = f"main-computer-allfather-super-{service_name}:latest"
-    dockerfile_inline = super_node_dockerfile_inline(image, guard_script=command_script)
+    dockerfile_inline = escape_compose_interpolation(super_node_dockerfile_inline(image, guard_script=command_script))
     lines = [
         f"name: {service_name}",
         "",
         "services:",
         f"  {service_name}:",
-        f"    image: {yaml_quote(built_image)}",
+        "    # Build-only service: do not set image here. Coolify runs a pull phase",
+        "    # before build, and a local generated image name causes pull access",
+        "    # denied instead of letting the inline Dockerfile build.",
         "    build:",
         "      context: .",
         "      dockerfile_inline: |",

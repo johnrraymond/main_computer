@@ -69,3 +69,24 @@ def test_signature_keeps_operational_status_while_bucketing_latency() -> None:
     assert "request_id=<request_id>" in sig
     assert "duration_ms=<latency:very_slow>" in sig
     assert "status=500" in sig
+
+
+def test_signature_preserves_stable_pathway_fields_and_route_shapes() -> None:
+    sig = signature_for_event(
+        {
+            "kind": "child-stream",
+            "service": "main-computer-service-supervisor",
+            "source_service": "applications",
+            "stream": "stdout",
+            "process_name": "app_control.py",
+            "message": "[signal] http-request method=GET path=/api/activity/snapshot request_id=abc9182fae292",
+        }
+    )
+
+    assert "service=main-computer-service-supervisor" in sig
+    assert "source_service=applications" in sig
+    assert "process_name=app_control.py" in sig
+    assert "method=get" in sig
+    assert "path=<route:api.activity.snapshot>" in sig
+    assert "service=<random_string>" not in sig
+    assert "process_name=<random_string>" not in sig

@@ -1297,6 +1297,55 @@ class McelCodeStudioAppTests(unittest.TestCase):
         )
 
 
+    def test_code_studio_explorer_uses_mcel_compact_collections(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        style = STYLE_PATH.read_text(encoding="utf-8")
+        contract = LAYOUT_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        sidebar_start = app.index('<aside class="code-studio-sidebar"')
+        sidebar_end = app.index("</aside>", sidebar_start)
+        sidebar = app[sidebar_start:sidebar_end]
+
+        expected_markup = [
+            'data-mc-component-id="code-editor.explorer.open-editors"',
+            'data-mc-widget-kind="repeater" data-mc-item-display-preset="compact" data-mc-density="compact"',
+            'data-mc-component-id="code-editor.explorer.workspace-tree"',
+            'data-mc-widget-kind="tree" data-mc-item-display-preset="compact" data-mc-density="compact"',
+            'data-mc-layout-fill="remaining" data-mc-layout-overflow="scroll"',
+            'data-mc-item-kind="workspace-tree-file" data-mc-item-density="compact"',
+        ]
+        for text in expected_markup:
+            with self.subTest(markup=text):
+                self.assertIn(text, sidebar)
+
+        expected_style = [
+            "Patch 20A: MCEL Explorer compact collections",
+            '#code-editor-app .code-studio-open-editors[data-mc-widget-kind="repeater"]',
+            '#code-editor-app .code-studio-tree[data-mc-widget-kind="tree"]',
+            'block-size: 22px;',
+            'border: 0;',
+            'background: transparent;',
+            'scrollbar-gutter: stable;',
+        ]
+        for text in expected_style:
+            with self.subTest(style=text):
+                self.assertIn(text, style)
+
+        expected_contract = [
+            '"code-editor.explorer.open-editors": {',
+            'role: "workspace-open-editor-list"',
+            '"code-editor.explorer.tree": {',
+            'role: "workspace-file-tree"',
+            'density: "compact"',
+            '{subject: "code-editor.explorer", relation: "owns", object: "code-editor.explorer.tree", strength: "hard"}',
+        ]
+        for text in expected_contract:
+            with self.subTest(contract=text):
+                self.assertIn(text, contract)
+
+        self.assertEqual(style.count("{"), style.count("}"))
+
+
     def test_code_studio_flagship_workbench_regions_are_hard_split(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")
         style = STYLE_PATH.read_text(encoding="utf-8")

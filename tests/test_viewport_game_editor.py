@@ -115,16 +115,16 @@ class ViewportGameEditorTests(unittest.TestCase):
     def test_project_read_prelinks_prebuilt_gpu_forge_atlas_for_game_surface(self) -> None:
         project = self.read_project()
         scene = project["project"]["scenes"][0]
-        effect = next(obj for obj in scene["objects"] if obj["id"] == "arcstorm-nova")
+        effect = next(obj for obj in scene["objects"] if obj["id"] == "hero-arc-bolt")
         atlas = effect["props"]["gpuForgeAtlas"]
 
-        self.assertEqual(atlas["path"], "gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.svg")
-        self.assertEqual(atlas["metadataPath"], "gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.json")
+        self.assertEqual(atlas["path"], "gpu-forge/default-empty-scene-hero-arc-bolt-storm-lash-prebuilt.svg")
+        self.assertEqual(atlas["metadataPath"], "gpu-forge/default-empty-scene-hero-arc-bolt-storm-lash-prebuilt.json")
         self.assertEqual(atlas["backend"], "prebuilt-game-gpu-forge-atlas")
-        self.assertEqual(atlas["playback"], "sprite-sheet")
+        self.assertEqual(atlas["playback"], "storm-lash")
         self.assertTrue(atlas["prebuilt"])
-        self.assertEqual(effect["props"]["gpuForgePlayback"], "sprite-sheet")
-        self.assertEqual(project["project"]["metadata"]["gpuForgePrebuilt"]["effect_id"], "arcstorm-nova")
+        self.assertEqual(effect["props"]["gpuForgePlayback"], "storm-lash")
+        self.assertEqual(project["project"]["metadata"]["gpuForgePrebuilt"]["effect_id"], "hero-arc-bolt")
 
         assets = self.post("/api/applications/game-editor/assets", {"project_id": "webgl-demo"})
         paths = {asset["path"]: asset for asset in assets["assets"]}
@@ -248,10 +248,10 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(data["metadata"]["effect_id"], "hero-arc-bolt")
         self.assertEqual(data["metadata"]["effect_motion"], "spell-bolt")
         self.assertFalse(data["metadata"]["container_contract"]["live_stream_required"])
-        self.assertEqual(data["metadata"]["frame_count"], 8)
+        self.assertEqual(data["metadata"]["frame_count"], 12)
         self.assertEqual(data["metadata"]["browser_binding"]["target"], "particle-emitter.props.gpuForgeAtlas")
         self.assertEqual(data["object_patch"]["gpuForgeAtlas"]["path"], data["metadata"]["atlas_path"])
-        self.assertEqual(data["object_patch"]["gpuForgeAtlas"]["playback"], "sprite-sheet")
+        self.assertEqual(data["object_patch"]["gpuForgeAtlas"]["playback"], "storm-lash")
 
         atlas_asset = data["atlas_asset"]
         metadata_asset = data["metadata_asset"]
@@ -279,7 +279,10 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("save project to persist link", editor_script)
         self.assertIn("sceneObjectGpuForgeAtlas", scene_viewer_script)
         self.assertIn("scene-gpu-forge-atlas", scene_viewer_script)
+        self.assertIn("renderGpuForgeStormLash", scene_viewer_script)
+        self.assertIn("storm-lash", scene_viewer_script)
         self.assertIn("data-gpu-forge-atlas", editor_style)
+        self.assertIn("scene-gpu-forge-storm-lash", editor_style)
         self.assertIn("scene-gpu-forge-atlas-play", editor_style)
 
     def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:

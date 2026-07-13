@@ -803,7 +803,19 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "MC_ALLFATHER_BOOTSTRAP_CONTRACTS" in payload["compose"]
     assert "entrypoint: null" in payload["compose"]
     assert "entrypoint: []" not in payload["compose"]
+    assert "image: \"main-computer-allfather-super-testneta-super1:latest\"" not in payload["compose"]
+    assert "pull access denied" not in payload["compose"]
     assert "FROM hyperledger/besu:latest" in payload["compose"]
+    assert "$$arch" not in payload["compose"]
+    assert "$${FDB_VERSION}" not in payload["compose"]
+    assert "$${deb_arch}" not in payload["compose"]
+    assert "$${FDB_PYTHON_VERSION}" not in payload["compose"]
+    assert "foundationdb-server_7.4.6-1_amd64.deb" in payload["compose"]
+    assert "foundationdb-server_7.4.6-1_arm64.deb" in payload["compose"]
+    assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" in payload["compose"]
+    assert "test -x /usr/bin/fdbserver" not in payload["compose"]
+    assert "MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super" in payload["compose"]
+    assert "MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,fdb,validator-rpc,besu,qbft,traefik-targets" in payload["compose"]
     assert "ENTRYPOINT [\"python\", \"-u\", \"/usr/local/bin/allfather-super-guard.py\"]" in payload["compose"]
     assert "/usr/local/bin/allfather-super-guard.py" in payload["compose"]
     assert "command:" not in payload["compose"]
@@ -814,6 +826,78 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "traefik.http.routers" not in payload["compose"]
 
 
+def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
+    script = control.super_server_command_script()
+
+    assert "def ensure_fdb" in script
+    assert "fdbserver" in script
+    assert "configure new single ssd" in script
+    assert "def ensure_validator_rpc" in script
+    assert "generate-blockchain-config" in script
+    assert "rpc-http-enabled=true" in script
+    assert "def ensure_hub" in script
+    assert "running-bootstrap-listener" in script
+    assert "deferred-until-live-validator-rpc" in script
+    assert "0.0.0.0" in script
+
+
+def test_super_guard_status_helper_accepts_component_name_field(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    script = control.super_server_command_script()
+    manifest = {
+        "cell_id": "testneta-super1",
+        "network_key": "testnet",
+        "state_root": str(tmp_path / "super-state"),
+        "components": {"fdb": "testneta-fdb1"},
+        "ports": {"fdb_container": 4550},
+        "foundationdb": {"action": "initialize-new-cluster"},
+    }
+    encoded = base64.b64encode(json.dumps(manifest).encode("utf-8")).decode("ascii")
+    monkeypatch.setenv("MC_ALLFATHER_SUPER_MANIFEST_B64", encoded)
+    namespace: dict[str, object] = {}
+
+    prefix = script.split("\nsignal.signal", 1)[0]
+    exec(compile(prefix, "<allfather-super-guard-prefix>", "exec"), namespace)
+
+    assert namespace["ensure_fdb"]() is False
+    component_state = namespace["component_state"]
+    assert component_state["foundationdb"]["name"] == "testneta-fdb1"
+    assert component_state["foundationdb"]["status"] == "missing-fdbserver"
+
+
+def test_super_compose_is_build_only_and_escapes_inline_dockerfile(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "A",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+            "--include-compose",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.add_node(plan, args)
+    compose = payload["compose"]
+
+    assert "    image:" not in compose
+    assert "    build:" in compose
+    assert "      dockerfile_inline: |" in compose
+    assert "$${TARGETARCH" not in compose
+    assert "$${FDB_VERSION}" not in compose
+    assert "$$arch" not in compose
+    assert "$${deb_arch}" not in compose
+    assert "$${FDB_PYTHON_VERSION}" not in compose
+    assert "foundationdb-clients_7.4.6-1_amd64.deb" in compose
+    assert "foundationdb-server_7.4.6-1_arm64.deb" in compose
+    assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" in compose
 
 
 def test_add_node_publish_routes_labels_only_hub_and_rpc(tmp_path: Path) -> None:

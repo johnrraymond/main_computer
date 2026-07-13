@@ -4068,3 +4068,86 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
     flex-direction: column;
   }
 }
+
+/* Patch 20A: MCEL Explorer compact collections.
+   The Explorer owns compact file-navigation collections; global button chrome
+   must not turn file rows into tall cards or steal the tree's remaining track. */
+#code-editor-app .code-studio-sidebar[data-mc-layout-policy="workspace-sidebar"] {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+#code-editor-app .code-studio-open-editors[data-mc-widget-kind="repeater"],
+#code-editor-app .code-studio-tree[data-mc-widget-kind="tree"] {
+  min-inline-size: 0;
+  min-block-size: 0;
+  padding: 8px 10px;
+  border-top: 1px solid #333333;
+}
+
+#code-editor-app .code-studio-open-editors[data-mc-widget-kind="repeater"] {
+  max-block-size: 132px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+#code-editor-app .code-studio-tree[data-mc-widget-kind="tree"] {
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+#code-editor-app .code-studio-open-editors[data-mc-widget-kind="repeater"] strong,
+#code-editor-app .code-studio-tree[data-mc-widget-kind="tree"] strong {
+  display: block;
+  margin: 0 0 6px;
+  color: #cccccc;
+  font-size: 11px;
+  line-height: 18px;
+  text-transform: uppercase;
+}
+
+#code-editor-app .code-studio-open-editors[data-mc-item-display-preset="compact"] .code-studio-file,
+#code-editor-app .code-studio-tree[data-mc-item-display-preset="compact"] button,
+#code-editor-app .code-studio-tree[data-mc-item-display-preset="compact"] div {
+  display: flex;
+  align-items: center;
+  inline-size: 100%;
+  min-inline-size: 0;
+  block-size: 22px;
+  min-block-size: 22px;
+  margin: 0;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: none;
+  color: #cccccc;
+  font: 500 12px/22px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#code-editor-app .code-studio-tree[data-mc-item-display-preset="compact"] div {
+  padding-inline-start: 4px;
+  color: #d7ba7d;
+}
+
+#code-editor-app .code-studio-tree[data-mc-item-display-preset="compact"] button {
+  padding-inline-start: 22px;
+}
+
+#code-editor-app .code-studio-open-editors[data-mc-item-display-preset="compact"] .code-studio-file.active,
+#code-editor-app .code-studio-open-editors[data-mc-item-display-preset="compact"] .code-studio-file:hover,
+#code-editor-app .code-studio-tree[data-mc-item-display-preset="compact"] button:hover {
+  background: #37373d;
+  color: #ffffff;
+}
+
+#code-editor-app .code-studio-open-editors[data-mc-item-display-preset="compact"] .code-studio-file + .code-studio-file,
+#code-editor-app .code-studio-tree[data-mc-item-display-preset="compact"] div + button,
+#code-editor-app .code-studio-tree[data-mc-item-display-preset="compact"] button + div {
+  margin-block-start: 1px;
+}

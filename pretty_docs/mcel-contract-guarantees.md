@@ -32,7 +32,29 @@ MCEL does not guarantee:
 - user-authored content placed inside generated nodes can be recovered;
 - caller code is safe when it ignores `serializerClean=false`, failed proof reports, failed contract guarantees, or uncovered guarantees;
 - browser measurements remain true after viewport, CSS, or content changes;
+- application-local layout sidecars are generic platform guarantees merely because they pass one application's tests;
+- `data-mcel-layout-*` runtime traits are durable source policy;
 - MCEL is a better platform replacement without evidence gates.
+
+## Application-local layout guarantees
+
+Code Editor and Git Tools currently have live application-local layout contracts. Their guarantees are scoped to those applications and their evidence:
+
+```text
+code-editor-layout-contract.js
+git-tools-layout-contract.js
+flog_code_editor_live_smoke.py
+```
+
+A layout behavior becomes a global MCEL guarantee only after it has:
+
+- a stable generic contract entry;
+- a normalized schema in `mcel-contract.js`;
+- a public implementation in the MCEL facade/runtime;
+- stated preconditions and non-guarantees;
+- cross-application proof.
+
+Until then, treat app-local layout reports as named workflow evidence, not as additions to the global contract envelope.
 
 ## Required fail-closed behavior
 

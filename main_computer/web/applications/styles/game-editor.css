@@ -840,6 +840,341 @@
   }
 }
 
+.scene-object--particle-emitter[data-gpu-forge-playback="storm-lash"] {
+  --storm-lash-gold: #facc15;
+  --storm-lash-ice: #e0f2fe;
+  overflow: visible;
+  filter:
+    drop-shadow(0 0 16px color-mix(in srgb, var(--particle-color, var(--mint, #7dd3fc)) 66%, transparent))
+    drop-shadow(0 0 34px color-mix(in srgb, var(--storm-lash-gold) 24%, transparent));
+}
+
+.scene-object--particle-emitter[data-gpu-forge-playback="storm-lash"][data-scene-anchor="linked-spell-path"] {
+  height: max(52px, var(--scene-path-height, 72px));
+}
+
+.scene-gpu-forge-storm-lash {
+  position: absolute;
+  left: -18px;
+  right: -26px;
+  top: 50%;
+  height: 96px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  overflow: visible;
+  mix-blend-mode: screen;
+}
+
+.scene-gpu-forge-storm-lash__rail,
+.scene-gpu-forge-storm-lash__wake,
+.scene-gpu-forge-storm-lash__texture,
+.scene-gpu-forge-storm-lash__head,
+.scene-gpu-forge-storm-lash__fangs,
+.scene-gpu-forge-storm-lash__impact,
+.scene-gpu-forge-storm-lash__runes {
+  position: absolute;
+  pointer-events: none;
+}
+
+.scene-gpu-forge-storm-lash__rail {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 5px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--particle-color, #7dd3fc) 48%, transparent) 16%, var(--storm-lash-ice) 52%, color-mix(in srgb, var(--storm-lash-gold) 54%, transparent) 78%, transparent 100%);
+  box-shadow:
+    0 0 14px color-mix(in srgb, var(--particle-color, #7dd3fc) 72%, transparent),
+    0 0 26px color-mix(in srgb, var(--storm-lash-gold) 34%, transparent);
+  opacity: 0.55;
+  transform: translateY(-50%);
+  animation: scene-gpu-forge-storm-rail var(--gpu-forge-duration, 1480ms) ease-in-out infinite;
+}
+
+.scene-gpu-forge-storm-lash__wake {
+  left: 3%;
+  right: 2%;
+  top: 50%;
+  height: 46px;
+  transform: translateY(-50%);
+  clip-path: polygon(0 52%, 8% 30%, 15% 56%, 25% 22%, 35% 61%, 47% 28%, 57% 68%, 70% 35%, 82% 76%, 100% 48%, 82% 38%, 72% 58%, 60% 22%, 48% 55%, 36% 18%, 27% 48%, 16% 28%, 8% 48%);
+  background:
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--particle-color, #7dd3fc) 22%, transparent), color-mix(in srgb, var(--storm-lash-ice) 34%, transparent), color-mix(in srgb, var(--storm-lash-gold) 22%, transparent), transparent);
+  filter: blur(1px);
+  opacity: 0.48;
+  animation: scene-gpu-forge-storm-wake var(--gpu-forge-duration, 1480ms) cubic-bezier(.2, .8, .2, 1) infinite;
+}
+
+.scene-gpu-forge-storm-lash__texture.scene-gpu-forge-atlas {
+  inset: auto;
+  left: 0;
+  top: 50%;
+  width: 34%;
+  height: 82px;
+  border-radius: 0;
+  background-repeat: no-repeat;
+  background-size: calc(var(--gpu-forge-columns, var(--gpu-forge-frames, 12)) * 100%) 100%;
+  opacity: calc(0.58 * var(--scene-effect-alpha, 1));
+  transform: translate(-20%, -50%) skewX(-16deg);
+  clip-path: polygon(2% 58%, 16% 28%, 32% 62%, 48% 18%, 62% 54%, 84% 8%, 98% 34%, 78% 56%, 100% 82%, 64% 66%, 42% 96%, 30% 70%, 8% 88%);
+  animation:
+    scene-gpu-forge-storm-sprite var(--gpu-forge-duration, 1480ms) steps(var(--gpu-forge-frames, 12)) infinite,
+    scene-gpu-forge-storm-texture var(--gpu-forge-duration, 1480ms) cubic-bezier(.18, .82, .12, 1) infinite;
+  will-change: left, opacity, transform, background-position;
+}
+
+.scene-gpu-forge-storm-lash__head {
+  left: 0;
+  top: 50%;
+  width: 64px;
+  height: 42px;
+  transform: translate(-50%, -50%);
+  clip-path: polygon(0 50%, 32% 8%, 72% 24%, 100% 50%, 72% 76%, 32% 92%);
+  background:
+    radial-gradient(circle at 70% 50%, var(--storm-lash-ice), color-mix(in srgb, var(--particle-color, #7dd3fc) 86%, white) 32%, color-mix(in srgb, var(--particle-color, #7dd3fc) 54%, transparent) 64%, transparent 78%),
+    linear-gradient(90deg, color-mix(in srgb, var(--particle-color, #7dd3fc) 88%, transparent), var(--storm-lash-ice));
+  box-shadow:
+    0 0 18px var(--storm-lash-ice),
+    0 0 34px color-mix(in srgb, var(--particle-color, #7dd3fc) 72%, transparent);
+  animation: scene-gpu-forge-storm-head var(--gpu-forge-duration, 1480ms) cubic-bezier(.16, .76, .18, 1) infinite;
+  z-index: 4;
+}
+
+.scene-gpu-forge-storm-lash__head::before,
+.scene-gpu-forge-storm-lash__head::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  width: 20px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--storm-lash-gold);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--storm-lash-gold) 78%, transparent);
+}
+
+.scene-gpu-forge-storm-lash__head::before {
+  top: 8px;
+  transform: rotate(-34deg);
+}
+
+.scene-gpu-forge-storm-lash__head::after {
+  bottom: 8px;
+  transform: rotate(34deg);
+}
+
+.scene-gpu-forge-storm-lash__fangs {
+  left: 0;
+  top: 50%;
+  width: 58px;
+  height: 58px;
+  transform: translate(-50%, -50%);
+  background:
+    linear-gradient(135deg, transparent 42%, var(--storm-lash-gold) 43% 48%, transparent 49%),
+    linear-gradient(45deg, transparent 42%, var(--storm-lash-gold) 43% 48%, transparent 49%);
+  opacity: 0;
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--storm-lash-gold) 72%, transparent));
+  animation: scene-gpu-forge-storm-fangs var(--gpu-forge-duration, 1480ms) cubic-bezier(.16, .76, .18, 1) infinite;
+  z-index: 3;
+}
+
+.scene-gpu-forge-storm-lash__runes {
+  inset: 0;
+}
+
+.scene-gpu-forge-storm-lash__rune {
+  position: absolute;
+  left: var(--storm-rune-at, 50%);
+  top: calc(50% + var(--storm-rune-y, 0px));
+  width: 11px;
+  height: 11px;
+  border: 2px solid color-mix(in srgb, var(--storm-lash-gold) 72%, transparent);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  opacity: 0;
+  transform: translate(-50%, -50%) rotate(45deg) scale(0.6);
+  animation: scene-gpu-forge-storm-rune var(--gpu-forge-duration, 1480ms) ease-out infinite;
+  animation-delay: var(--storm-rune-delay, 0ms);
+}
+
+.scene-gpu-forge-storm-lash__impact {
+  right: -28px;
+  top: 50%;
+  width: 112px;
+  height: 92px;
+  transform: translate(50%, -50%);
+  opacity: 0;
+  z-index: 5;
+  animation: scene-gpu-forge-storm-impact var(--gpu-forge-duration, 1480ms) ease-out infinite;
+}
+
+.scene-gpu-forge-storm-lash__impact::before,
+.scene-gpu-forge-storm-lash__impact::after,
+.scene-gpu-forge-storm-lash__impact-slashes {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.scene-gpu-forge-storm-lash__impact::before {
+  clip-path: polygon(50% 0, 58% 34%, 100% 22%, 66% 52%, 92% 92%, 54% 68%, 30% 100%, 36% 60%, 0 48%, 36% 38%);
+  background:
+    radial-gradient(circle at 52% 48%, color-mix(in srgb, var(--storm-lash-gold) 80%, transparent), transparent 62%),
+    conic-gradient(from 0.12turn, transparent, color-mix(in srgb, var(--storm-lash-gold) 72%, transparent), transparent, color-mix(in srgb, var(--particle-color, #7dd3fc) 62%, transparent), transparent);
+  filter: blur(0.5px);
+}
+
+.scene-gpu-forge-storm-lash__impact::after {
+  inset: 17% 6%;
+  clip-path: polygon(6% 44%, 34% 34%, 48% 4%, 56% 36%, 94% 24%, 66% 52%, 84% 88%, 50% 66%, 18% 94%, 30% 58%);
+  background: color-mix(in srgb, var(--storm-lash-ice) 80%, transparent);
+  opacity: 0.72;
+}
+
+.scene-gpu-forge-storm-lash__impact-slashes {
+  background:
+    linear-gradient(104deg, transparent 40%, var(--storm-lash-ice) 41% 45%, transparent 46%),
+    linear-gradient(78deg, transparent 45%, var(--storm-lash-gold) 46% 50%, transparent 51%),
+    linear-gradient(124deg, transparent 50%, color-mix(in srgb, var(--particle-color, #7dd3fc) 90%, white) 51% 54%, transparent 55%);
+  opacity: 0.9;
+  filter: drop-shadow(0 0 12px var(--storm-lash-ice));
+}
+
+@keyframes scene-gpu-forge-storm-head {
+  0% {
+    left: 2%;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.52) rotate(-8deg);
+  }
+
+  14% {
+    opacity: 1;
+  }
+
+  62% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.02) rotate(4deg);
+  }
+
+  78%, 100% {
+    left: 98%;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.24) rotate(10deg);
+  }
+}
+
+@keyframes scene-gpu-forge-storm-fangs {
+  0%, 12% {
+    left: 2%;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.58) rotate(-10deg);
+  }
+
+  24%, 64% {
+    opacity: 0.72;
+  }
+
+  78%, 100% {
+    left: 98%;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.32) rotate(12deg);
+  }
+}
+
+@keyframes scene-gpu-forge-storm-sprite {
+  from {
+    background-position: 0 0;
+  }
+
+  to {
+    background-position: 100% 0;
+  }
+}
+
+@keyframes scene-gpu-forge-storm-texture {
+  0% {
+    left: 2%;
+    opacity: 0;
+    transform: translate(-30%, -50%) skewX(-18deg) scaleX(0.42);
+  }
+
+  18% {
+    opacity: calc(0.62 * var(--scene-effect-alpha, 1));
+  }
+
+  68% {
+    opacity: calc(0.76 * var(--scene-effect-alpha, 1));
+    transform: translate(-50%, -50%) skewX(-12deg) scaleX(0.92);
+  }
+
+  100% {
+    left: 92%;
+    opacity: 0;
+    transform: translate(-50%, -50%) skewX(9deg) scaleX(0.38);
+  }
+}
+
+@keyframes scene-gpu-forge-storm-wake {
+  0% {
+    opacity: 0;
+    transform: translateY(-50%) scaleX(0.2);
+    clip-path: polygon(0 52%, 8% 30%, 15% 56%, 25% 22%, 35% 61%, 47% 28%, 57% 68%, 70% 35%, 82% 76%, 100% 48%, 82% 38%, 72% 58%, 60% 22%, 48% 55%, 36% 18%, 27% 48%, 16% 28%, 8% 48%);
+  }
+
+  32% {
+    opacity: 0.52;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-50%) scaleX(1.06);
+    clip-path: polygon(0 44%, 10% 62%, 18% 34%, 28% 70%, 39% 24%, 50% 65%, 60% 30%, 74% 76%, 86% 34%, 100% 58%, 88% 70%, 76% 44%, 62% 82%, 48% 38%, 36% 78%, 26% 43%, 14% 70%, 6% 50%);
+  }
+}
+
+@keyframes scene-gpu-forge-storm-rail {
+  0%, 100% {
+    opacity: 0.2;
+    transform: translateY(-50%) scaleX(0.78);
+  }
+
+  28%, 72% {
+    opacity: 0.7;
+    transform: translateY(-50%) scaleX(1.02);
+  }
+}
+
+@keyframes scene-gpu-forge-storm-rune {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(45deg) scale(0.3);
+  }
+
+  34% {
+    opacity: 0.82;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -180%) rotate(315deg) scale(1.15);
+  }
+}
+
+@keyframes scene-gpu-forge-storm-impact {
+  0%, 64% {
+    opacity: 0;
+    transform: translate(50%, -50%) scale(0.32) rotate(-12deg);
+  }
+
+  78% {
+    opacity: 0.98;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(50%, -50%) scale(1.3) rotate(14deg);
+  }
+}
+
 .scene-particle {
   position: absolute;
   left: calc(50% + var(--particle-x, 0px));

@@ -41,7 +41,7 @@ def _procedural_svg_atlas(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]
     color = _normalize_color(payload.get("color") or props.get("color") or "#7dd3fc")
     label = _effect_label(payload)
     digest = _effect_seed(payload)
-    frame_count = 8
+    frame_count = 12 if motion == "spell-bolt" else 8
     frame_width = 128
     frame_height = 128
     safe_label = html.escape(label)
@@ -72,10 +72,16 @@ def _procedural_svg_atlas(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]
             po = 0.24 + ((raw // 100000000) % 60) / 100
             dots.append(f'<circle cx="{px:.2f}" cy="{py:.2f}" r="{pr:.2f}" fill="{safe_color}" opacity="{min(0.94, po):.2f}"/>')
         if motion == "spell-bolt":
+            head_x = 24 + phase * 82
+            head_y = 76 - phase * 22
+            fork_y = 28 + ((index % 4) * 9)
             main_shape = f'''
-    <path d="M20 78 C 42 {50 - index * 2}, 62 {92 - index * 3}, 108 34" fill="none" stroke="{safe_color}" stroke-width="11" stroke-linecap="round" opacity="0.22"/>
-    <path d="M18 80 C 44 {bolt_y:.2f}, 72 {42 + index * 2}, 110 {30 + index * 4}" fill="none" stroke="{safe_color}" stroke-width="5" stroke-linecap="round" stroke-dasharray="{dash} 10" opacity="0.88"/>
-    <circle cx="{bolt_x:.2f}" cy="{bolt_y:.2f}" r="{7 + index * 0.7:.2f}" fill="{safe_color}" opacity="0.92"/>'''
+    <path d="M12 84 L32 58 L48 72 L66 34 L80 56 L112 18" fill="none" stroke="#e0f2fe" stroke-width="13" stroke-linejoin="round" stroke-linecap="round" opacity="0.18"/>
+    <path d="M10 86 L30 58 L48 72 L66 34 L80 56 L114 18" fill="none" stroke="{safe_color}" stroke-width="5" stroke-linejoin="round" stroke-linecap="round" opacity="{ring_opacity + 0.12:.2f}"/>
+    <path d="M36 62 L54 {fork_y:.2f} L62 66" fill="none" stroke="#fef3c7" stroke-width="3" stroke-linecap="round" opacity="{0.45 + phase * 0.35:.2f}"/>
+    <path d="M68 38 L94 {92 - index * 3:.2f} L106 66" fill="none" stroke="#fef3c7" stroke-width="3" stroke-linecap="round" opacity="{0.28 + phase * 0.32:.2f}"/>
+    <polygon points="{head_x:.2f},{head_y - 18:.2f} {head_x + 26:.2f},{head_y:.2f} {head_x:.2f},{head_y + 18:.2f} {head_x + 8:.2f},{head_y:.2f}" fill="#e0f2fe" opacity="0.92"/>
+    <polygon points="86,24 92,39 108,42 95,52 98,68 84,58 70,66 75,49 62,39 79,38" fill="#facc15" opacity="{0.18 + phase * 0.38:.2f}"/>'''
         elif motion in {"nova-ring", "shockwave-ring", "rune-ring"}:
             main_shape = f'''
     <ellipse cx="64" cy="68" rx="{radius:.2f}" ry="{max(8, radius * 0.38):.2f}" fill="none" stroke="{safe_color}" stroke-width="{max(3, 10 - index):.2f}" opacity="{ring_opacity:.2f}"/>
@@ -131,6 +137,7 @@ def _procedural_svg_atlas(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]
         "atlas_columns": frame_count,
         "atlas_rows": 1,
         "live_stream_required": False,
+        "playback": "storm-lash" if motion == "spell-bolt" else "sprite-sheet",
     }
     return svg, metadata
 

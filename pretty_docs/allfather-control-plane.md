@@ -66,6 +66,52 @@ A future finalization action can stop or remove probes after the control path is
 stable.
 
 
+The same probe now also checks every discovered all-father super-node guard.
+`discover` merges that private probe result into each super-node inventory entry
+so the operator can see whether the container is merely present in Coolify or
+whether its guard is answering and reporting internal function state.
+
+After updating a probe with newly discovered super-node targets, `discover` waits
+briefly for the Coolify metadata callback to include those targets. This avoids
+returning a stale probe result that only covered the head guards. If a super-node
+guard is unreachable, the probe should still return a target record with the
+connection error so `internal_status.observed` can distinguish "checked and
+failed" from "not checked yet."
+
+The super-node guard is now a real in-container supervisor. It starts the private
+guard first, then converges local functions in order:
+
+```text
+guard -> FoundationDB -> Besu/QBFT validator-RPC -> Hub bootstrap listener
+```
+
+`discover` reports those internal states from the private guard. A healthy first
+node should move from `starting` to states shaped like:
+
+```text
+guard: running
+foundationdb: running
+validator_rpc: running
+hub: running-bootstrap-listener
+hub_admin: ready-for-bootstrap-command
+contracts: ready-for-bootstrap-command or disabled
+```
+
+The Hub process is explicitly reported as a bootstrap listener until the full
+Main Computer Hub runtime is bundled into the inline Coolify image. That keeps
+the status honest: Hub/RPC ports can be supervised without pretending contract
+or account bootstrap has completed.
+
+
+The generated super-node Compose is intentionally a **build-only** service. It
+does not set a local `image:` name because Coolify runs a pull phase before
+building; a generated local image name would make Docker try to pull a
+nonexistent private repository. The inline Dockerfile also avoids brittle
+Compose-time shell variables for the FoundationDB install path and validates both
+common `fdbserver` package locations (`/usr/sbin/fdbserver` and
+`/usr/bin/fdbserver`) before creating a stable `/usr/local/bin/fdbserver`
+symlink for the guard supervisor.
+
 The result reader uses Coolify's application-log API (`/api/v1/applications/<application_uuid>/logs`)
 when the probe service detail includes an embedded application UUID. Parent
 service log paths are kept only as compatibility fallbacks because service-level
@@ -257,6 +303,14 @@ The private state file is still not topology. It only supplies Coolify access an
 wallet bootstrap material. `add-node` uses live Coolify inventory to pick the
 next host-local number.
 
+The generated super-node image is self-contained because Coolify's inline
+Compose build context does not include the repository checkout. It keeps the
+Besu base image, installs FoundationDB server/client, bakes in the private
+guard/supervisor script, and exposes only Hub/RPC through Traefik when public
+cutover is explicitly requested. Guard, FoundationDB, and P2P remain private
+host/VPN ports.
+
+
 ## Wallet bootstrap and contracts
 
 `tools/allfather_private_state.py migrate-coolify` now copies the Coolify host
@@ -420,6 +474,16 @@ generated wallet/FDB seed material after the last node is removed.
 does not use SSH, does not expose guard routes, does not curl VPN URLs from the
 operator machine, and does not renumber surviving nodes.
 
+After Coolify accepts the delete request, `remove-node` waits for live Coolify
+service inventory to stop reporting the deleted service before it cleans
+generated seed material or reports the network as pristine. This protects the
+next `add-node` from seeing a stale just-deleted `super1` record and incorrectly
+creating `super2`.
+
+`add-node` also refuses to proceed when live inventory is non-contiguous, for
+example when Coolify reports `testneta-super2` but no `testneta-super1`. Shrink
+with `remove-node` until the host-local inventory is pristine, then add again.
+
 
 ## Super-node image and public routing
 
@@ -433,6 +497,13 @@ The super-node compose uses an inline Dockerfile whose base image defaults to
 `hyperledger/besu:latest`. The build installs only the guard/support tools it
 needs on top of that base image, then verifies that `besu` exists before the
 image is accepted.
+
+The built image also replaces the inherited Besu image entrypoint with the
+all-father guard entrypoint. Coolify's Compose validator expects the service
+`entrypoint` field to remain `null`, so the entrypoint override must live in the
+built image itself. This keeps `command` from being passed to the Besu binary and
+ensures the private guard binds `0.0.0.0:41414` for `/healthz`, `/identity`,
+`/status`, `/topology`, and `/processes`.
 
 Private ports remain private host bindings:
 

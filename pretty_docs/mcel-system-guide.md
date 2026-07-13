@@ -22,7 +22,9 @@ That is the reason the platform spine exposes the subsumption lattice and the ad
 
 The user-facing contract is documented in `pretty_docs/mcel-user-space-contract.md` and exposed by `McelLabContract.buildUserSpaceContract()` / `MCEL.buildUserSpaceContract()`.
 
-The application-authoring model across HTML, application contract data, JavaScript behavior, layout hints, user layout operations, themes, chrome, and FLOG is documented in `pretty_docs/mcel-application-authoring.md`. That guide marks the boundary between the live MCEL facade and the browser-proven layout APIs that are still proposed for V1 integration.
+The application-authoring model across HTML, application contract data, JavaScript behavior, layout hints, user layout operations, themes, chrome, and FLOG is documented in `pretty_docs/mcel-application-authoring.md`.
+
+Application-local layout contracts are now live in Code Editor and Git Tools. They parse `data-mc-layout-*` hints, resolve dock trees, persist semantic preferences, and expose app-specific controllers. They are not yet generic `window.MCEL` guarantees. The authoring guide documents that boundary and the rules for promoting a proven application behavior into the platform contract.
 
 Use the user-space contract, not internal law names, when deciding whether a builder workflow can rely on MCEL. The current planning rule is: source traits are the durable input, generated runtime structure is discardable, serialization is the source firewall, repair is bounded regeneration, reports are gates, browser facts are snapshots, and adoption is narrow and reversible.
 
@@ -39,6 +41,9 @@ Use the user-space contract, not internal law names, when deciding whether a bui
 | Law registry | `main_computer/web/applications/scripts/mcel-law-registry.js` | Registers and lists law descriptors. |
 | Platform spine | `main_computer/web/applications/scripts/mcel-platform-spine.js` | Runs cross-law proof, builds the subsumption lattice, and builds the adoption case. |
 | Browser proof | `mcel-browser-observer.js`, `mcel-browser-runner.js` | Captures browser facts and turns them into proof evidence. |
+| Code Editor layout contract | `main_computer/web/applications/scripts/code-editor-layout-contract.js` | Live application-local dock tree, semantic preferences, owned-track fill, and generated containment. |
+| Git Tools layout contract | `main_computer/web/applications/scripts/git-tools-layout-contract.js` | Live application-local repository workflow layout and semantic preferences. |
+| Live Code Editor FLOG | `main_computer/flog_code_editor_live_smoke.py` | Verifies owned center fill, containment, control interception, proof-dock reclamation, and user-layout states. |
 | Runtime packager | `main_computer/mcel_runtime_package.py` | Builds the single-file runtime used by Website Builder exports. |
 | Checked-in runtime | `deploy/local-platform/site-runtimes/mcel-runtime.js` | Generated browser runtime for local platform exports. |
 | Hub runtime copy | `runtime/websites/hub-site/runtime.js` | Runtime copy used by the Hub site. |
@@ -74,6 +79,21 @@ Clean source is the source of truth. It should contain semantic HTML and source-
 ### Runtime DOM
 
 The runtime DOM is allowed to be noisy. It can have generated wrappers, parts, measured facts, layout helpers, browser-derived details, and proof metadata. That machinery is acceptable only because MCEL can regenerate or discard it.
+
+Application-local layout compilers may emit `data-mcel-layout-*` traits to describe the resolved runtime hierarchy. Those traits are discardable runtime output. Durable author intent remains in `data-mc-layout-*`.
+
+### Owned layout slots
+
+A layout unit owns a slot, not an arbitrary portion of the whole viewport. Fill and phase-floor measurements must use the owned slot as the denominator.
+
+```text
+owned slot
+→ semantic unit
+→ active pane
+→ primary surface
+```
+
+Sibling docks and chrome are separate owners. MCEL layout verification must also identify the intentional scroll owner and prevent descendants from painting or forcing intrinsic size outside their owned track.
 
 ### Laws
 

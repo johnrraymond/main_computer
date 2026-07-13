@@ -323,3 +323,57 @@ def test_profile_map_svg_uses_readable_defaults_for_outlier_heavy_maps() -> None
     assert "scale=robust" in svg
     assert "Main log behavior profile map" in svg
     assert "P999999" in svg
+
+
+def test_profile_coverage_preserves_routes_commands_and_stable_pathway_fields(tmp_path: Path) -> None:
+    log_path = tmp_path / "runtime" / "main_log" / "main.log.lex"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    events = [
+        {
+            "schema_version": 1,
+            "ingest_seq": 1,
+            "at": "2026-07-12T22:00:00+00:00",
+            "kind": "child-stream",
+            "service": "main-computer-service-supervisor",
+            "source_service": "app",
+            "stream": "stdout",
+            "process_name": "app_control.py",
+            "message": "[signal] http-request method=GET path=/api/activity/snapshot",
+        },
+        {
+            "schema_version": 1,
+            "ingest_seq": 2,
+            "at": "2026-07-12T22:00:01+00:00",
+            "kind": "subprocess-stream",
+            "service": "main-computer-applications-service",
+            "source_service": "main-computer-applications-service",
+            "stream": "stdout",
+            "process_name": "applications_service.py",
+            "command": "docker compose --project-name main-computer-applications ps --format json",
+            "message": "Coolify health endpoint is reachable",
+        },
+    ]
+    with LexLogWriter(log_path) as writer:
+        for event in events:
+            writer.write_record(event)
+
+    result = build_log_profile_map(
+        root=tmp_path,
+        options=ProfileMapOptions(
+            window="events",
+            event_window=2,
+            event_stride=2,
+            max_profiles=4,
+            normalize="binary",
+            feature_weighting="none",
+            max_df_fraction=1.0,
+        ),
+    )
+
+    labels = [point["label"] for point in result["coverage_points"].values()]
+    assert any("service=main-computer-service-supervisor" == label for label in labels)
+    assert any("process_name=app_control.py" == label for label in labels)
+    assert any("http GET route:api.activity.snapshot" == label for label in labels)
+    assert any("command compose:ps" == label for label in labels)
+    assert not any("service=<random_string>" in label for label in labels)
+    assert not any("process_name=<random_string>" in label for label in labels)

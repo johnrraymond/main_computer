@@ -18,20 +18,34 @@ The three surfaces must converge on the same stable component identities. None o
 
 ## Status of this guide
 
-This guide distinguishes between the platform that is live now and the application-layout system that has been browser-proven but is not yet wired into live application markup.
+MCEL now has two related implementation layers:
+
+1. the global source/runtime contract exposed through `window.MCEL`; and
+2. live application-local layout contracts used by Code Editor and Git Tools.
+
+The application-local contracts are real runtime code, not shadow fixtures. They are still narrower than a global platform guarantee: each application owns its contract module, resolver, persistence key, and FLOG evidence.
 
 | Area | Current status |
 | --- | --- |
-| `data-mc` source elements and platform traits | Live |
-| `MCEL.compile()`, `audit()`, `repair()`, and `serialize()` | Live |
-| Component, route, chrome, proof, and browser APIs on `window.MCEL` | Live |
-| Git Tools semantic metadata such as `data-mc-controls`, `data-mc-phase`, and `data-mc-proves` | Present in live HTML and consumed by FLOG |
-| Deterministic authored layout-hint compiler | Browser-proven in FLOG, shadow-only |
-| Responsive right → bottom → tab → stage resolution | Browser-proven in FLOG, shadow-only |
-| Semantic user layout operations and restoration | Browser-proven in FLOG, shadow-only |
-| Live `MCEL.defineApplicationContract()` / layout resolver facade | Proposed V1 API, not yet live |
+| `data-mc` source elements and platform traits | Live global MCEL contract |
+| `MCEL.compile()`, `audit()`, `repair()`, and `serialize()` | Live global MCEL facade |
+| Component, route, chrome, proof, and browser APIs on `window.MCEL` | Live global MCEL facade |
+| `data-mc-layout-*` authored hints | Live in application markup and parsed by application-local contracts |
+| Code Editor dock tree, semantic preferences, remediation, and restoration | Live through `code-editor-layout-contract.js`; browser-verified by the live Code Editor FLOG |
+| Code Editor owned-track fill and runtime containment | Live through `mcel-owned-track-containment.v1` |
+| Git Tools dock tree and semantic preferences | Live through `git-tools-layout-contract.js`; still undergoing application-specific refinement |
+| Global `MCEL.defineApplicationContract()` / generic layout resolver | Proposed platform API, not yet part of `mcel-core.js` |
 
-Do not write production code as though the proposed layout facade already exists. The examples in the application-layout sections define the contract that live integration should implement.
+Current application-local entry points are:
+
+```text
+window.MainComputerCodeEditorLayout
+window.MainComputerCodeEditorLayoutController
+window.MainComputerGitToolsLayout
+window.MainComputerGitToolsLayoutController
+```
+
+Do not call application-local success a global MCEL guarantee. Promote a behavior into `mcel-contract.js` and `mcel-core.js` only after it has a stable schema, reusable implementation, and cross-application evidence.
 
 ## 1. Division of responsibility
 
@@ -566,9 +580,9 @@ What may the user change?
 What happens while it is inactive?
 ```
 
-### Proposed inline V1 vocabulary
+### Live application-local vocabulary
 
-The following `data-mc-layout-*` vocabulary has been proven in FLOG fixtures but is not yet part of the live `mcel-contract.js` schema:
+The following `data-mc-layout-*` vocabulary is live in Code Editor and Git Tools markup. It is parsed by their application-local contract modules, but it is not yet registered as a generic schema in `mcel-contract.js`:
 
 ```html
 <section
@@ -586,7 +600,7 @@ The following `data-mc-layout-*` vocabulary has been proven in FLOG fixtures but
 >
 ```
 
-| Proposed attribute | Meaning |
+| Application-local attribute | Meaning |
 | --- | --- |
 | `data-mc-layout-root` | Stable root layout-unit ID |
 | `data-mc-layout` | Root arrangement such as `dock-workbench` |
@@ -601,6 +615,12 @@ The following `data-mc-layout-*` vocabulary has been proven in FLOG fixtures but
 | `data-mc-layout-min-inline` | Minimum useful inline dimension |
 | `data-mc-layout-min-block` | Minimum useful block dimension |
 | `data-mc-layout-max-share` | Maximum parent or root share |
+| `data-mc-layout-preferred-share` | Authored preferred share before user overrides |
+| `data-mc-layout-fill` | Ownership claim such as `owned-center-slot`, `remaining`, or `parent` |
+| `data-mc-layout-overflow` | Intended overflow owner: `contain`, `scroll`, or delegated ownership |
+| `data-mc-layout-track` | Child track role such as `content` or `remaining` |
+| `data-mc-layout-tracks` | Parent track grammar such as `content remaining content` |
+| `data-mc-layout-containment` | Paint/size containment obligation |
 | `data-mc-layout-user-id` | Stable ID used by user preferences |
 | `data-mc-layout-user-mutable` | User operations permitted for the unit |
 
@@ -630,6 +650,92 @@ Do not encode fixed screen coordinates as layout hints:
 ```
 
 The contract describes structure. The resolver derives geometry from the hierarchy, content, theme metrics, chrome, and current capacity.
+
+### Source hints versus generated runtime traits
+
+Authored source uses `data-mc-layout-*`. Generated runtime descendants use `data-mcel-layout-*`.
+
+```text
+data-mc-layout-*
+  durable author intent
+  survives serialization
+
+data-mcel-layout-*
+  compiled runtime realization
+  discardable and repairable
+  must not leak into clean source
+```
+
+For example, Code Editor authors its primary center ownership as:
+
+```html
+<section
+  data-mc-layout-user-id="code-editor.editor"
+  data-mc-layout-fill="owned-center-slot"
+  data-mc-layout-overflow="contain"
+>
+```
+
+Its runtime contract may then emit:
+
+```html
+<div
+  data-mcel-layout-node="runtime-editor"
+  data-mcel-layout="stack"
+  data-mcel-layout-tracks="content remaining content"
+  data-mcel-layout-fill="parent"
+  data-mcel-layout-overflow="contain"
+>
+```
+
+The second form is generated evidence of the compiled plan, not source policy.
+
+### Owned tracks, fill propagation, and containment
+
+A placement such as `center` is incomplete without an ownership law. Required primary work must fill the track allocated to it, and every wrapper between the owner and the active surface must permit shrink and stretch.
+
+```text
+owned center slot
+→ editor group
+→ active pane
+→ primary surface
+```
+
+A valid chain requires:
+
+- `min-inline-size: 0` and `min-block-size: 0` where shrink is required;
+- `remaining` tracks compiled as `minmax(0, 1fr)` or an equivalent flex rule;
+- active descendants stretched through the chain;
+- paint contained inside the owned slot;
+- scrolling assigned to the declared scroll owner rather than created accidentally by intrinsic minimums.
+
+FLOG must compare a child with its **owned slot**, not with the entire workbench. Sibling docks, tab strips, rails, and chrome are separate owners and must not be counted as unused primary-work space.
+
+### One scroll owner per recursive unit
+
+Nested scrollbars are a contract smell unless the inner surface is an independent semantic workspace, such as a code editor, terminal, file tree, or log.
+
+For ordinary workflow content:
+
+```text
+outer workflow owns vertical scrolling
+inner cards expand naturally
+```
+
+For an independent editor-like child:
+
+```text
+parent contains the child
+child owns its internal scrolling
+```
+
+The contract should identify the owner. Do not add `overflow: auto` to every panel as defensive CSS.
+
+### Adapt to owned capacity, not only the viewport
+
+A component can be narrow inside a wide browser because sibling docks consume space. Inner components should therefore adapt to their allocated inline/block size, often through container queries or measured contract capacity, rather than only through viewport media queries.
+
+This rule applies equally to Git workflow cards, Aider controls, file maps, inspectors, and proof surfaces.
 
 ## 8. Responsive presentation contract
 
@@ -822,6 +928,21 @@ document.body.classList.add("proof-layout");
 
 CSS classes may implement a resolved plan, but application behavior should request the plan semantically.
 
+### Preserve live behavior while changing layout
+
+A layout integration must not silently replace working application behavior.
+
+When moving a live surface:
+
+- move or recompose the existing DOM; do not clone controls with duplicate IDs;
+- preserve stable IDs, labels, ARIA relationships, and event bindings;
+- preserve backend request functions and state ownership;
+- do not let phase detection overwrite an explicit user-selected surface unless the contract declares that transition;
+- keep critical operational paths reachable even when evidence or recovery views are selected;
+- treat source order and existing wrappers as information until the contract proves they are redundant.
+
+For example, the Code Editor Aider surface keeps the existing repository file map, instruction field, run controls, output, and session hooks as one operational unit. Git Tools must keep the existing project selector and Gitea publish path reachable while adding layout presentations around them.
+
 ## 12. User layout operations
 
 User movement should produce semantic dock-tree operations rather than raw coordinates.
@@ -1008,9 +1129,47 @@ saveSource(serialized.sourceHtml);
 
 Never save `runtimeRoot.innerHTML` directly.
 
-### Proposed application-layout facade
+### Live application-local layout facades
 
-The application-layout APIs below are the intended V1 surface. They are not present in `mcel-core.js` yet:
+Code Editor currently exposes:
+
+```js
+MainComputerCodeEditorLayout.extractAuthoredContract(root);
+MainComputerCodeEditorLayout.normalizePreferences(input, authored);
+MainComputerCodeEditorLayout.resolveLayout(context);
+MainComputerCodeEditorLayout.applyOperationToPreferences(preferences, operation, authored);
+MainComputerCodeEditorLayout.applyGeneratedLayoutContract(root);
+MainComputerCodeEditorLayout.mount({document});
+
+MainComputerCodeEditorLayoutController.applyOperation(operation);
+MainComputerCodeEditorLayoutController.resolve();
+MainComputerCodeEditorLayoutController.undo();
+MainComputerCodeEditorLayoutController.reset();
+MainComputerCodeEditorLayoutController.exportPreferences();
+```
+
+Git Tools exposes the corresponding application-local surface:
+
+```js
+MainComputerGitToolsLayout.extractAuthoredContract(root);
+MainComputerGitToolsLayout.normalizePreferences(input, authored);
+MainComputerGitToolsLayout.resolveLayout(context);
+MainComputerGitToolsLayout.applyOperationToPreferences(preferences, operation, authored);
+MainComputerGitToolsLayout.mount({document});
+
+MainComputerGitToolsLayoutController.applyOperation(operation);
+MainComputerGitToolsLayoutController.selectSupport(view);
+MainComputerGitToolsLayoutController.selectSurface(surface);
+MainComputerGitToolsLayoutController.undo();
+MainComputerGitToolsLayoutController.reset();
+MainComputerGitToolsLayoutController.exportPreferences();
+```
+
+These are application APIs. They are intentionally not advertised as generic `window.MCEL` guarantees.
+
+### Global application-layout facade remains proposed
+
+A reusable platform facade is still a future integration:
 
 ```js
 MCEL.defineApplicationContract(contract);
@@ -1020,19 +1179,7 @@ MCEL.exportUserLayoutPreferences();
 MCEL.resetUserLayout();
 ```
 
-A future bootstrap may look like:
-
-```js
-const compiled = MCEL.compile(sourceHtml, {
-  theme: currentTheme(),
-  chrome: currentChrome(),
-  applicationContract: gitToolsContract,
-  applicationState: state.snapshot(),
-  userLayoutHints: loadLayoutPreferences(),
-});
-```
-
-Until that integration exists, keep application contract modules and behavior code shaped for the normalized model without pretending the live facade already consumes them.
+Promotion requires one shared normalized schema and behavior proven across contrasting applications. Until then, keep application contracts shaped similarly, but do not hide their application-local status.
 
 ## 15. Recommended application file structure
 
@@ -1202,9 +1349,14 @@ FLOG should verify:
 - no foreign surface intercepts controls;
 - no undeclared overlap exists;
 - painted ownership meets phase floors;
+- primary work fills its owned slot in both axes;
+- descendants remain contained inside their owned tracks;
+- each recursive region has an intentional scroll owner;
+- components adapt to their allocated capacity, not only viewport width;
 - responsive transitions cover the supported domain;
 - hysteresis prevents resize oscillation;
 - user preferences remediate and restore correctly;
+- existing critical application actions remain reachable after layout changes;
 - serialization stays clean.
 
 Candidate search is a fallback for incomplete or failed hints, not the default authoring mechanism.
@@ -1225,10 +1377,13 @@ Before calling an MCEL application properly authored:
 - The application contract is immutable and serializable.
 - Layout units declare legal placements and fallback order.
 - Required units declare useful minimum dimensions.
+- Fill, containment, and scroll ownership are explicit for primary and independent work surfaces.
+- Child components adapt to their owned capacity.
 - User-mutability is opt-in.
 - JavaScript changes semantic state rather than pixel geometry.
 - User preferences contain semantic operations, not raw coordinates.
-- Generated runtime information is absent from source.
+- Existing IDs, event hooks, and backend actions survive layout integration.
+- Generated `data-mcel-layout-*` runtime information is absent from serialized source.
 - Compilation is deterministic.
 - Audit and proof fail closed.
 - Repair touches only generated runtime.

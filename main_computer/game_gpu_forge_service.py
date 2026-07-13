@@ -21,9 +21,9 @@ CONTAINER_NAME = "main-computer-game-renderer"
 IMAGE_NAME = "main-computer/game-renderer:local"
 CONTRACT_VERSION = 1
 PREBUILT_EFFECT_ATLAS_SCENE_ID = "default-empty-scene"
-PREBUILT_EFFECT_ATLAS_EFFECT_ID = "arcstorm-nova"
-PREBUILT_EFFECT_ATLAS_PATH = "gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.svg"
-PREBUILT_EFFECT_ATLAS_METADATA_PATH = "gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.json"
+PREBUILT_EFFECT_ATLAS_EFFECT_ID = "hero-arc-bolt"
+PREBUILT_EFFECT_ATLAS_PATH = "gpu-forge/default-empty-scene-hero-arc-bolt-storm-lash-prebuilt.svg"
+PREBUILT_EFFECT_ATLAS_METADATA_PATH = "gpu-forge/default-empty-scene-hero-arc-bolt-storm-lash-prebuilt.json"
 
 SUPPORTED_EFFECT_MOTIONS = {
     "spell-bolt",
@@ -180,7 +180,7 @@ class GameGpuForgeService:
             existing_path = str(existing)
         if not existing_path:
             props["gpuForgeAtlas"] = binding
-            props["gpuForgePlayback"] = "sprite-sheet"
+            props["gpuForgePlayback"] = str(binding.get("playback") or "storm-lash")
             props["gpuForgeSource"] = "prebuilt"
         project_metadata = bound_project.get("metadata") if isinstance(bound_project.get("metadata"), dict) else {}
         bound_project["metadata"] = project_metadata
@@ -192,7 +192,7 @@ class GameGpuForgeService:
             "atlas_path": PREBUILT_EFFECT_ATLAS_PATH,
             "metadata_path": PREBUILT_EFFECT_ATLAS_METADATA_PATH,
             "live_stream_required": False,
-            "browser_playback": "sprite-sheet",
+            "browser_playback": str(binding.get("playback") or "storm-lash"),
         }
         return bound_project
 
@@ -298,7 +298,7 @@ class GameGpuForgeService:
                             "rows": atlas_rows,
                             "digest": digest,
                             "backend": backend,
-                            "playback": "sprite-sheet",
+                            "playback": "storm-lash" if str(metadata.get("effect_motion") or bake_input.get("motion") or "") == "spell-bolt" else "sprite-sheet",
                         }
                     },
                 },
@@ -378,26 +378,42 @@ class GameGpuForgeService:
         safe_label = html.escape(label)
         safe_motion = html.escape(motion)
         safe_color = html.escape(color)
-        frame_count = 8
+        frame_count = 12 if motion == "spell-bolt" else 8
+        frame_width = 128
+        frame_height = 128
         frames = []
         for index in range(frame_count):
-            x = index * 128
+            x = index * frame_width
             phase = index / max(1, frame_count - 1)
-            radius = 16 + phase * 46
-            opacity = 0.34 + phase * 0.42
+            opacity = 0.42 + phase * 0.46
+            if motion == "spell-bolt":
+                head_x = 24 + phase * 82
+                head_y = 76 - phase * 22
+                fork_y = 28 + ((index % 4) * 9)
+                main_shape = f"""
+    <path d="M12 84 L32 58 L48 72 L66 34 L80 56 L112 18" fill="none" stroke="#e0f2fe" stroke-width="13" stroke-linejoin="round" stroke-linecap="round" opacity="0.18"/>
+    <path d="M10 86 L30 58 L48 72 L66 34 L80 56 L114 18" fill="none" stroke="{safe_color}" stroke-width="5" stroke-linejoin="round" stroke-linecap="round" opacity="{opacity:.2f}"/>
+    <path d="M36 62 L54 {fork_y:.2f} L62 66" fill="none" stroke="#fef3c7" stroke-width="3" stroke-linecap="round" opacity="{0.45 + phase * 0.35:.2f}"/>
+    <path d="M68 38 L94 {92 - index * 3:.2f} L106 66" fill="none" stroke="#fef3c7" stroke-width="3" stroke-linecap="round" opacity="{0.28 + phase * 0.32:.2f}"/>
+    <polygon points="{head_x:.2f},{head_y - 18:.2f} {head_x + 26:.2f},{head_y:.2f} {head_x:.2f},{head_y + 18:.2f} {head_x + 8:.2f},{head_y:.2f}" fill="#e0f2fe" opacity="{min(0.96, opacity + 0.12):.2f}"/>
+    <polygon points="86,24 92,39 108,42 95,52 98,68 84,58 70,66 75,49 62,39 79,38" fill="#facc15" opacity="{0.18 + phase * 0.38:.2f}"/>"""
+            else:
+                radius = 16 + phase * 46
+                main_shape = f"""
+    <circle cx="64" cy="64" r="{radius:.2f}" fill="none" stroke="{safe_color}" stroke-width="{max(3, 10 - index):.2f}" opacity="{opacity:.2f}"/>
+    <path d="M22 {92 - index * 6} C 48 {18 + index * 5}, 80 {104 - index * 7}, 106 {34 + index * 10}" fill="none" stroke="{safe_color}" stroke-width="4" stroke-linecap="round" opacity="{opacity:.2f}"/>"""
             frames.append(
                 f"""
   <g transform="translate({x} 0)" data-frame="{index + 1}">
-    <rect x="0" y="0" width="128" height="128" rx="18" fill="#020617" opacity="0.2"/>
-    <circle cx="64" cy="64" r="{radius:.2f}" fill="none" stroke="{safe_color}" stroke-width="{max(3, 10 - index):.2f}" opacity="{opacity:.2f}"/>
-    <circle cx="{36 + index * 8}" cy="{76 - index * 5}" r="{7 + index * 0.65:.2f}" fill="{safe_color}" opacity="{min(0.95, opacity + 0.2):.2f}"/>
-    <path d="M22 {92 - index * 6} C 48 {18 + index * 5}, 80 {104 - index * 7}, 106 {34 + index * 10}" fill="none" stroke="{safe_color}" stroke-width="4" stroke-linecap="round" opacity="{opacity:.2f}"/>
-    <text x="64" y="119" text-anchor="middle" font-family="monospace" font-size="8" fill="#e2e8f0" opacity="0.7">{index + 1}</text>
+    <rect x="0" y="0" width="{frame_width}" height="{frame_height}" rx="18" fill="#020617" opacity="0.14"/>
+    <path d="M8 102 C 34 70, 42 84, 58 52 S 86 46, 120 18" fill="none" stroke="{safe_color}" stroke-width="18" stroke-linecap="round" opacity="{0.05 + phase * 0.1:.2f}"/>
+    {main_shape}
+    <text x="64" y="119" text-anchor="middle" font-family="monospace" font-size="8" fill="#e2e8f0" opacity="0.58">{index + 1}</text>
   </g>"""
             )
-        atlas_text = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="128" viewBox="0 0 1024 128" role="img" aria-label="{safe_label} local GPU forge atlas">
+        atlas_text = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{frame_width * frame_count}" height="{frame_height}" viewBox="0 0 {frame_width * frame_count} {frame_height}" role="img" aria-label="{safe_label} local GPU forge atlas">
   <title>{safe_label} · {safe_motion} · forge {digest}</title>
-  <desc>Local fallback sprite atlas generated by the Main Computer Game GPU Forge contract. A running game-renderer sidecar can replace this with a container-generated texture while preserving the same browser-side contract.</desc>
+  <desc>Local fallback sprite atlas generated by the Main Computer Game GPU Forge contract. Spell-bolt frames are jagged storm-lash texture frames; the browser composes the staged strike locally instead of repainting the whole game screen.</desc>
 {''.join(frames)}
 </svg>
 """
@@ -412,11 +428,12 @@ class GameGpuForgeService:
             "effect_color": color,
             "digest": digest,
             "frame_count": frame_count,
-            "frame_width": 128,
-            "frame_height": 128,
+            "frame_width": frame_width,
+            "frame_height": frame_height,
             "atlas_columns": frame_count,
             "atlas_rows": 1,
             "live_stream_required": False,
+            "playback": "storm-lash" if motion == "spell-bolt" else "sprite-sheet",
         }
         return atlas_text, metadata
 

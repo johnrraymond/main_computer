@@ -1191,6 +1191,70 @@
       }
 
 
+      function gpuForgePlaybackMode(atlas, object) {
+        return String(atlas?.playback || object?.props?.gpuForgePlayback || "sprite-sheet").trim().toLowerCase() || "sprite-sheet";
+      }
+
+      function renderGpuForgeStormLash(element, object, atlas, asset, playbackState) {
+        const frameCount = playbackState?.frameCount || 12;
+        const durationMs = playbackState?.durationMs || 1480;
+        element.dataset.gpuForgeAtlas = "true";
+        element.dataset.gpuForgePlayback = "storm-lash";
+        element.dataset.gpuForgeBackend = String(atlas?.backend || "");
+        element.classList.add("scene-object--gpu-forge-storm-lash");
+        element.style.setProperty("--gpu-forge-frames", String(frameCount));
+        element.style.setProperty("--gpu-forge-duration", `${durationMs}ms`);
+        element.style.setProperty("--gpu-forge-columns", String(Math.max(1, Math.round(Number(atlas?.columns || frameCount) || frameCount))));
+        element.style.setProperty("--gpu-forge-frame-width", `${Math.max(1, Math.round(Number(atlas?.frameWidth || 128) || 128))}px`);
+        element.style.setProperty("--gpu-forge-frame-height", `${Math.max(1, Math.round(Number(atlas?.frameHeight || 128) || 128))}px`);
+
+        const lash = document.createElement("span");
+        lash.className = "scene-gpu-forge-storm-lash";
+        lash.setAttribute("aria-hidden", "true");
+
+        const wake = document.createElement("span");
+        wake.className = "scene-gpu-forge-storm-lash__wake";
+
+        const rail = document.createElement("span");
+        rail.className = "scene-gpu-forge-storm-lash__rail";
+
+        const texture = document.createElement("span");
+        texture.className = "scene-gpu-forge-storm-lash__texture scene-gpu-forge-atlas";
+        texture.style.backgroundImage = `url("${asset.url}")`;
+        texture.style.setProperty("--gpu-forge-frames", String(frameCount));
+        texture.style.setProperty("--gpu-forge-duration", `${durationMs}ms`);
+        texture.style.setProperty("--gpu-forge-columns", String(Math.max(1, Math.round(Number(atlas?.columns || frameCount) || frameCount))));
+
+        const head = document.createElement("span");
+        head.className = "scene-gpu-forge-storm-lash__head";
+
+        const fangs = document.createElement("span");
+        fangs.className = "scene-gpu-forge-storm-lash__fangs";
+
+        const impact = document.createElement("span");
+        impact.className = "scene-gpu-forge-storm-lash__impact";
+
+        const slash = document.createElement("span");
+        slash.className = "scene-gpu-forge-storm-lash__impact-slashes";
+
+        const runes = document.createElement("span");
+        runes.className = "scene-gpu-forge-storm-lash__runes";
+        for (let index = 0; index < 9; index += 1) {
+          const rune = document.createElement("span");
+          rune.className = "scene-gpu-forge-storm-lash__rune";
+          rune.style.setProperty("--storm-rune-index", String(index));
+          rune.style.setProperty("--storm-rune-at", `${12 + index * 9}%`);
+          rune.style.setProperty("--storm-rune-y", `${index % 2 ? -18 - index : 16 + index}px`);
+          rune.style.setProperty("--storm-rune-delay", `${-durationMs + index * 115}ms`);
+          runes.append(rune);
+        }
+
+        impact.append(slash);
+        lash.append(wake, rail, texture, runes, head, fangs, impact);
+        element.append(lash);
+      }
+
+
       function renderParticleEmitter(element, object, scene, options = {}) {
         element.classList.add("scene-object--particle-emitter");
         element.dataset.sceneParticleEmitter = "true";
@@ -1235,9 +1299,17 @@
         const forgeAtlas = sceneObjectGpuForgeAtlas(object, options);
         if (forgeAtlas?.asset?.url) {
           const atlas = forgeAtlas.atlas || {};
-          const frameCount = Math.max(1, Math.round(Number(atlas.frameCount || atlas.columns || 8) || 8));
-          const durationMs = Math.max(220, Math.round(Number(atlas.durationMs || object.props?.durationMs || 960) || 960));
+          const playback = gpuForgePlaybackMode(atlas, object);
+          const fallbackFrameCount = playback === "storm-lash" ? 12 : 8;
+          const fallbackDuration = playback === "storm-lash" ? 1480 : 960;
+          const frameCount = Math.max(1, Math.round(Number(atlas.frameCount || atlas.columns || fallbackFrameCount) || fallbackFrameCount));
+          const durationMs = Math.max(220, Math.round(Number(atlas.durationMs || object.props?.durationMs || fallbackDuration) || fallbackDuration));
+          if (playback === "storm-lash") {
+            renderGpuForgeStormLash(element, object, atlas, forgeAtlas.asset, {frameCount, durationMs});
+            return;
+          }
           element.dataset.gpuForgeAtlas = "true";
+          element.dataset.gpuForgePlayback = playback;
           element.dataset.gpuForgeBackend = String(atlas.backend || "");
           const sheet = document.createElement("span");
           sheet.className = "scene-gpu-forge-atlas";

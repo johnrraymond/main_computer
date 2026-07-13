@@ -22,7 +22,36 @@ That is the MCEL equivalent of a framework mental model. It tells you what you c
 | Repair | Repair regenerates MCEL-owned runtime structure from existing source traits. | Repair does not recover deleted source semantics or infer missing product intent. |
 | Validation | Reports are gates: failed, uncovered, or warning states must block trust. | Rendering is not proof. A law module is not a contract. |
 | Browser facts | Observations are runtime snapshots for a specific DOM, CSS, viewport, and content state. | Browser facts are not durable source policy. |
+| Application layout | App-local `data-mc-layout-*` hints may drive a named resolver and semantic preference store. | A passing app-local resolver is not automatically a generic `window.MCEL` guarantee. |
 | Adoption | MCEL owns only named workflows with named clauses and evidence. | One passed workflow does not make MCEL the default platform everywhere. |
+
+## Application-local layout extension
+
+Code Editor and Git Tools currently extend the source contract with live `data-mc-layout-*` hints and application-local JavaScript resolvers.
+
+The durable rule is:
+
+```text
+authored data-mc-layout-* intent
++ semantic user preference overlay
+→ app-local resolved layout
+→ runtime-only data-mcel-layout-* realization
+→ app-specific FLOG evidence
+```
+
+Users may rely on a named application layout only when that application's tests and FLOG pass. They must not infer that the global MCEL contract guarantees the same behavior for an unrelated application.
+
+Application-local layout preferences must:
+
+- use stable semantic IDs;
+- reject raw geometry as canonical state;
+- preserve required primary work;
+- remediate infeasible preferences without forgetting them;
+- keep generated realization traits out of serialized source;
+- preserve existing controls, IDs, and backend behavior;
+- declare owned slots, containment, and scroll ownership.
+
+Promotion into the stable user-space clauses requires a generic schema in `mcel-contract.js`, a public facade in `mcel-core.js`, and evidence across contrasting applications.
 
 ## Stable user-space clauses
 

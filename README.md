@@ -330,9 +330,11 @@ MCEL is the semantic interface layer behind the MCEL Lab and Website Builder run
 pretty_docs/mcel-system-guide.md
 pretty_docs/mcel-user-space-contract.md
 pretty_docs/mcel-contract-guarantees.md
+pretty_docs/mcel-application-authoring.md
+pretty_docs/mcel-code-studio-example.md
 ```
 
-The system guide explains the source/runtime/serialization boundary, the evidence-packet workflow, the subsumption lattice, and the adoption-case gate that prevents unsupported "MCEL is better" claims. The user-space contract is the planning surface: it states what MCEL users can rely on, what they must provide, what they must not assume, and which fail-closed signals block trust.
+The system guide explains the source/runtime/serialization boundary, the evidence-packet workflow, the subsumption lattice, and the adoption-case gate that prevents unsupported "MCEL is better" claims. The user-space contract is the planning surface. The application-authoring guide documents HTML, application contracts, JavaScript behavior, live layout hints, semantic user preferences, owned-track containment, scroll ownership, and FLOG. The Code Studio example shows those rules in a live editor and Aider workbench.
 
 ## Tests and diagnostics
 

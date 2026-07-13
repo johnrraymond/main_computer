@@ -73,6 +73,27 @@ _RANDOM_ID_KEYS = {
     "session_id",
     "span_id",
 }
+# These fields are pathway-defining.  The first compressor version applied the
+# generic high-entropy token rule to them, which turned stable values such as
+# ``main-computer-applications-service`` and ``app_control.py`` into
+# ``<random_string>``.  That collapsed unrelated behavior profiles before MDS
+# or NMDS ever saw them.
+_SEMANTIC_VALUE_KEYS = set(_CONTEXT_FIELDS) | {
+    "child",
+    "component",
+    "subsystem",
+    "mode",
+    "state",
+    "phase",
+    "reason",
+    "method",
+    "route",
+    "path",
+    "endpoint",
+    "operation",
+    "action",
+    "command_name",
+}
 
 
 BITCOUNT = tuple(bin(i).count("1") for i in range(256))
@@ -154,9 +175,28 @@ def bit_entropy(data: bytes) -> float:
     return entropy
 
 
+def _wordy_stable_token(text: str) -> bool:
+    """Return True for stable operational names that merely look entropic.
+
+    Hyphenated service names and dotted process names are common in this repo:
+    main-computer-applications-service, app_control.py, executor_service.py.
+    They have enough character classes to trip a naive entropy heuristic, but
+    they are exactly the values that define log-derived execution pathways.
+    """
+
+    if len(text) > 120:
+        return False
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:[-_.:][A-Za-z][A-Za-z0-9]*){0,12}", text):
+        return False
+    digit_fraction = sum(c.isdigit() for c in text) / max(1, len(text))
+    return digit_fraction <= 0.25
+
+
 def _looks_random_token(value: str) -> bool:
     text = value.strip().strip('"\'')
     if len(text) < 12:
+        return False
+    if _wordy_stable_token(text):
         return False
     classes = sum(
         bool(check(text))
@@ -169,6 +209,76 @@ def _looks_random_token(value: str) -> bool:
     )
     unique_fraction = len(set(text)) / max(1, len(text))
     return classes >= 2 and unique_fraction >= 0.45
+
+
+def _route_token(raw: str) -> str | None:
+    value = raw.strip().strip('"\'')
+    if not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        try:
+            # Avoid importing urllib for a tiny hot-path; split enough to keep
+            # just the path shape.
+            value = "/" + value.split("/", 3)[3].split("?", 1)[0].split("#", 1)[0]
+        except Exception:
+            return None
+    if "\\" in value or re.match(r"^[A-Za-z]:", value):
+        return None
+    if not value.startswith("/"):
+        return None
+    pieces: list[str] = []
+    for part in value.split("/"):
+        if not part:
+            continue
+        low = part.lower()
+        if _UUID_RE.fullmatch(low):
+            pieces.append("uuid")
+        elif _HASH_RE.fullmatch(low):
+            pieces.append("hash")
+        elif _LONG_DIGIT_RE.fullmatch(low) or re.fullmatch(r"\d+", low):
+            pieces.append("num")
+        elif _looks_random_token(low):
+            pieces.append("id")
+        elif re.fullmatch(r"[a-z0-9_.:-]{1,48}", low):
+            pieces.append(low)
+        else:
+            pieces.append("value")
+    if not pieces:
+        return None
+    return "<route:" + ".".join(pieces[:12]) + ">"
+
+
+def _semantic_value(key: str, value: str) -> str:
+    key_l = key.lower().replace("-", "_")
+    stripped = str(value).strip().strip('"\'').rstrip(".")
+    if not stripped:
+        return "<empty>"
+    if key_l in {"path", "route", "endpoint"}:
+        route = _route_token(stripped)
+        if route is not None:
+            return route
+        return "<path>"
+    if _TIMESTAMP_RE.fullmatch(stripped):
+        return "<ts>"
+    if _DATE_RE.fullmatch(stripped):
+        return "<date>"
+    if _TIME_RE.fullmatch(stripped):
+        return "<time>"
+    if _UUID_RE.fullmatch(stripped):
+        return "<uuid>"
+    if _HASH_RE.fullmatch(stripped):
+        return "<hash>"
+    if _LONG_DIGIT_RE.fullmatch(stripped):
+        return "<random_number_string>"
+    if _FLOAT_RE.fullmatch(stripped):
+        return "<num>"
+    # Preserve stable service/process/state/method names even when their
+    # punctuation would look random to the generic entropy rule.
+    if _wordy_stable_token(stripped) or re.fullmatch(r"[A-Za-z0-9_.:-]{1,100}", stripped):
+        return stripped.lower()
+    if _looks_random_token(stripped):
+        return "<random_string>"
+    return normalize_log_text(stripped)
 
 
 def _bucket_numeric_value(key: str, raw_value: str) -> str:
@@ -216,6 +326,9 @@ def _normalize_key_value(match: re.Match[str]) -> str:
         if _FLOAT_RE.fullmatch(stripped):
             return f"{key}={_bucket_numeric_value(key_l, stripped)}"
 
+    if key_l in _SEMANTIC_VALUE_KEYS:
+        return f"{key}={_semantic_value(key_l, value)}"
+
     if _TIMESTAMP_RE.fullmatch(stripped):
         return f"{key}=<ts>"
     if _DATE_RE.fullmatch(stripped):
@@ -262,6 +375,11 @@ def normalize_log_text(text: object) -> str:
 
     def _token(match: re.Match[str]) -> str:
         value = match.group(0)
+        if "=" in value:
+            key, _, _raw = value.partition("=")
+            key_l = key.lower().replace("-", "_")
+            if key_l in _SEMANTIC_VALUE_KEYS or key_l in _OPERATIONAL_NUMERIC_KEYS or key_l in _RANDOM_ID_KEYS:
+                return value
         return "<random_string>" if _looks_random_token(value) else value
 
     out = _HIGH_ENTROPY_TOKEN_RE.sub(_token, out)
@@ -290,7 +408,7 @@ def signature_for_event(event: dict[str, Any]) -> str:
     for field in _CONTEXT_FIELDS:
         value = event.get(field)
         if value not in (None, ""):
-            parts.append(f"{field}={normalize_log_text(value)}")
+            parts.append(f"{field}={_semantic_value(field, str(value))}")
     parts.append(normalize_log_text(_record_text(event)))
     return " | ".join(parts)
 

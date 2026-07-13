@@ -141,6 +141,26 @@
             selector: ".code-studio-sidebar",
             required: false,
           },
+          "code-editor.explorer.open-editors": {
+            role: "workspace-open-editor-list",
+            selector: ".code-studio-open-editors",
+            required: false,
+            layout: {
+              track: "content",
+              density: "compact",
+              overflow: "contain",
+            },
+          },
+          "code-editor.explorer.tree": {
+            role: "workspace-file-tree",
+            selector: ".code-studio-tree",
+            required: true,
+            layout: {
+              fill: "remaining",
+              density: "compact",
+              overflow: "scroll",
+            },
+          },
           "code-editor.editor": {
             role: "primary-work",
             selector: ".code-studio-editor-group",
@@ -183,6 +203,8 @@
         },
         relationships: [
           {subject: "code-editor.activity", relation: "selects", object: "code-editor.editor", strength: "strong"},
+          {subject: "code-editor.explorer", relation: "owns", object: "code-editor.explorer.open-editors", strength: "hard"},
+          {subject: "code-editor.explorer", relation: "owns", object: "code-editor.explorer.tree", strength: "hard"},
           {subject: "code-editor.explorer", relation: "navigates", object: "code-editor.editor", strength: "hard"},
           {subject: "code-editor.explorer", relation: "scopes", object: "code-editor.editor", strength: "hard"},
           {subject: "code-editor.file-map", relation: "selects", object: "workspace.selection", strength: "hard"},
