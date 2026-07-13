@@ -332,9 +332,20 @@ pretty_docs/mcel-user-space-contract.md
 pretty_docs/mcel-contract-guarantees.md
 pretty_docs/mcel-application-authoring.md
 pretty_docs/mcel-code-studio-example.md
+pretty_docs/mcel-lab-blueprint-studio.md
 ```
 
-The system guide explains the source/runtime/serialization boundary, the evidence-packet workflow, the subsumption lattice, and the adoption-case gate that prevents unsupported "MCEL is better" claims. The user-space contract is the planning surface. The application-authoring guide documents HTML, application contracts, JavaScript behavior, live layout hints, semantic user preferences, owned-track containment, scroll ownership, and FLOG. The Code Studio example shows those rules in a live editor and Aider workbench.
+The system guide explains the source/runtime/serialization boundary, the evidence-packet workflow, the subsumption lattice, and the adoption-case gate that prevents unsupported "MCEL is better" claims. The user-space contract is the planning surface. The application-authoring guide documents HTML, application contracts, JavaScript behavior, live layout hints, semantic user preferences, owned-track containment, scroll ownership, and FLOG. The Code Studio example shows those rules in a live editor and Aider workbench. The MCEL Lab Blueprint Studio guide defines the Lab redesign as a self-hosting app-aspect inspector that uses generic MCEL elements, loads itself as a blueprint, inspects every app aspect, lets users point at rendered elements to save refactor annotations, exports AI-ready refactor context, runs acid tests, and generates patch-ready repair plans for good-looking solid apps.
+
+## Git Tools documentation
+
+The Git Tools project-level publishing redesign is documented in:
+
+```text
+pretty_docs/git-tools-project-level-publishing.md
+```
+
+That requirements note makes the project card the home for everyday project publishing actions, including **Push to Local Gitea** and **Push Remote Origin**, while leaving server lifecycle, recovery, mirror setup, and advanced Git/Gitea controls in the support/server area. It also defines the desired status-file workbench for selecting changed files, creating previewed ignore rules, committing only selected files, pushing selected-file branch work, and unifying Secrets / Filter checks with `local.secrets` and `.githooks/pre-commit` readiness.
 
 ## Tests and diagnostics
 

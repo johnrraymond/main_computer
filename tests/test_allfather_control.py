@@ -817,14 +817,17 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "foundationdb-server_7.4.6-1_amd64.deb" in payload["compose"]
     assert "foundationdb-server_7.4.6-1_arm64.deb" in payload["compose"]
     assert "web3==6.20.4" in payload["compose"]
-    assert "py-solc-x==2.0.3" in payload["compose"]
-    assert "solcx.install_solc" in payload["compose"]
+    assert "py-solc-x" not in payload["compose"]
+    assert "solcx.install_solc" not in payload["compose"]
+    assert "github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux" in payload["compose"]
+    assert "solc --version" in payload["compose"]
     assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" in payload["compose"]
     assert "test -x /usr/bin/fdbserver" not in payload["compose"]
     assert "MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super" in payload["compose"]
     assert "MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets" in payload["compose"]
-    assert "ENTRYPOINT [\"python\", \"-u\", \"/usr/local/bin/allfather-super-guard.py\"]" in payload["compose"]
+    assert "ENTRYPOINT [\"/opt/allfather-super-venv/bin/python\", \"-u\", \"/usr/local/bin/allfather-super-entrypoint.py\"]" in payload["compose"]
     assert "/usr/local/bin/allfather-super-guard.py" in payload["compose"]
+    assert "/usr/local/bin/allfather-super-entrypoint.py" in payload["compose"]
     assert "command:" not in payload["compose"]
     assert "python:3.12-slim" not in payload["compose"]
     assert "10.116.0.3:41500:41414/tcp" in payload["compose"]
@@ -842,6 +845,10 @@ def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
     assert "def ensure_validator_rpc" in script
     assert "generate-blockchain-config" in script
     assert "rpc-http-enabled=true" in script
+    assert "eth_blockNumber" in script
+    assert "block_production_ok" in script
+    assert "waiting-qbft-block-production" in script
+    assert "emptyblockperiodseconds" in script
     assert "def ensure_hub" in script
     assert "running-bootstrap-listener" in script
     assert "def ensure_hub_admin" in script
@@ -884,6 +891,8 @@ def test_super_dockerfile_uses_diagnostic_wrapper_entrypoint() -> None:
     assert "allfather-super-entrypoint" in dockerfile
     assert "MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint" in dockerfile
     assert "python3-venv" in dockerfile
+    assert "build-essential" in dockerfile
+    assert "python3-dev" in dockerfile
     assert "python -m pip install --no-cache-dir --break-system-packages" not in dockerfile
     assert "python3 -m venv /opt/allfather-super-venv" in dockerfile
     assert "/opt/allfather-super-venv/bin/python -m pip install --no-cache-dir" in dockerfile
@@ -897,6 +906,8 @@ def test_super_dockerfile_payload_writer_avoids_long_heredoc_lines() -> None:
     assert "printf '%s\\n'" in dockerfile
     assert "unterminated heredoc" not in dockerfile
     assert "write_bytes(base64.b64decode" not in dockerfile
+    assert "rm -f /tmp/allfather-payload-0.b64; \\" in dockerfile
+    assert "rm -f /tmp/allfather-payload-0.b64 \\\n    {" not in dockerfile
     assert max(len(line) for line in dockerfile.splitlines()) < 300
 
 
@@ -957,13 +968,26 @@ def test_super_compose_is_build_only_and_escapes_inline_dockerfile(tmp_path: Pat
     assert "foundationdb-clients_7.4.6-1_amd64.deb" in compose
     assert "foundationdb-server_7.4.6-1_arm64.deb" in compose
     assert "web3==6.20.4" in compose
-    assert "py-solc-x==2.0.3" in compose
+    assert "py-solc-x" not in compose
+    assert "solcx.install_solc" not in compose
+    assert "github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux" in compose
+    assert "solc --version" in compose
     assert "python3-venv" in compose
     assert "python3 -m venv /opt/allfather-super-venv" in compose
     assert "python -m pip install --no-cache-dir --break-system-packages" not in compose
     assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" in compose
     assert "allfather-super-entrypoint.py" in compose
     assert "MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint" in compose
+
+
+def test_super_guard_uses_static_solc_standard_json() -> None:
+    script = control.super_server_command_script()
+
+    assert "from solcx" not in script
+    assert "install_solc" not in script
+    assert "[\"solc\", \"--standard-json\"]" in script
+    assert "capture_output=True" in script
+    assert "solc binary is missing" in script
 
 
 def test_add_node_publish_routes_labels_only_hub_and_rpc(tmp_path: Path) -> None:
@@ -1612,7 +1636,11 @@ def test_super_internal_status_counts_reports_observed_and_healthy_nodes() -> No
     }
 
 
-def ready_internal_status_for_add_node(*, contracts_status: str = "deployed") -> dict[str, object]:
+def ready_internal_status_for_add_node(
+    *,
+    contracts_status: str = "deployed",
+    validator_blocks: bool = True,
+) -> dict[str, object]:
     return {
         "observed": True,
         "ok": True,
@@ -1629,8 +1657,10 @@ def ready_internal_status_for_add_node(*, contracts_status: str = "deployed") ->
             },
             "validator_rpc": {
                 "running": True,
-                "status": "running",
+                "status": "running" if validator_blocks else "waiting-qbft-block-production",
                 "rpc_http_ok": True,
+                "block_number": 7 if validator_blocks else 0,
+                "block_production_ok": validator_blocks,
             },
             "hub": {
                 "running": True,
@@ -1666,6 +1696,20 @@ def test_add_node_ready_check_requires_first_node_contract_deployment() -> None:
     assert "contracts not deployed" in not_ready["reason"]
 
 
+def test_add_node_ready_check_requires_validator_block_production() -> None:
+    manifest = {
+        "bootstrap": {"contracts_requested": True},
+    }
+
+    pending = ready_internal_status_for_add_node(validator_blocks=False)
+
+    not_ready = control.add_node_super_ready_check(pending, manifest)
+
+    assert not_ready["ready"] is False
+    assert "validator_rpc not producing blocks" in not_ready["reason"]
+    assert "block_number=0" in not_ready["reason"]
+
+
 def test_add_node_ready_check_accepts_second_node_without_contract_redeploy() -> None:
     manifest = {
         "bootstrap": {"contracts_requested": False},
@@ -1693,6 +1737,9 @@ def test_add_node_parse_defaults_wait_for_remote_readiness(tmp_path: Path) -> No
         ]
     )
 
+    assert args.preflight_wait_s == control.DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S
+    assert args.preflight_poll_s == control.DEFAULT_ADD_NODE_PREFLIGHT_POLL_S
+    assert args.preflight_stable_s == control.DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S
     assert args.deploy_wait_s == control.DEFAULT_ADD_NODE_READY_WAIT_S
     assert args.deploy_poll_s == control.DEFAULT_ADD_NODE_READY_POLL_S
 
@@ -1782,3 +1829,130 @@ def test_add_node_wait_uses_private_probe_ready_signal(monkeypatch: pytest.Monke
     assert result["readiness"]["components"]["foundationdb"] == "running"
     assert result["ssh_used"] is False
     assert result["direct_vpn_used"] is False
+
+
+def test_add_node_preflight_waits_for_stable_clean_slot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    calls = {"count": 0}
+
+    def fake_service_items_for_client(client: object, tried: list[dict[str, object]]) -> list[dict[str, object]]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return [{"name": "testneta-super1", "uuid": "stale-service", "status": "deleting"}]
+        return []
+
+    monkeypatch.setattr(control, "service_items_for_client", fake_service_items_for_client)
+    monkeypatch.setattr(control.time, "sleep", lambda seconds: None)
+    now = {"value": 0.0}
+
+    def fake_monotonic() -> float:
+        now["value"] += 1.0
+        return now["value"]
+
+    monkeypatch.setattr(control.time, "monotonic", fake_monotonic)
+
+    result = control.wait_for_add_node_slot_preflight(
+        object(),
+        network_key="testnet",
+        head=head,
+        service_name="testneta-super1",
+        expected_existing_ordinals=[],
+        tried=[],
+        wait_s=10,
+        poll_s=0.1,
+        stable_s=1,
+    )
+
+    assert result["ready"] is True
+    assert result["service_name"] == "testneta-super1"
+    assert result["observed_ordinals"] == []
+    assert calls["count"] >= 2
+
+
+def test_add_node_preflight_refuses_changed_ordinal_boundary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+
+    monkeypatch.setattr(
+        control,
+        "service_items_for_client",
+        lambda client, tried: [{"name": "testneta-super1", "uuid": "existing", "status": "running"}],
+    )
+    monkeypatch.setattr(control.time, "sleep", lambda seconds: None)
+
+    result = control.wait_for_add_node_slot_preflight(
+        object(),
+        network_key="testnet",
+        head=head,
+        service_name="testneta-super1",
+        expected_existing_ordinals=[],
+        tried=[],
+        wait_s=0,
+        poll_s=0.1,
+        stable_s=0,
+    )
+
+    assert result["ready"] is False
+    assert "expected existing ordinal" in result["reason"] or "still reports target service" in result["reason"]
+
+
+def test_synced_service_predeploy_requires_single_matching_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        control,
+        "service_items_for_client",
+        lambda client, tried: [{"name": "testneta-super1", "uuid": "expected", "status": "created"}],
+    )
+
+    result = control.require_synced_super_service_ready_for_deploy(
+        object(),
+        service_name="testneta-super1",
+        service_uuid="expected",
+        tried=[],
+    )
+
+    assert result["match_count"] == 1
+    assert result["service_uuid"] == "expected"
+
+    monkeypatch.setattr(
+        control,
+        "service_items_for_client",
+        lambda client, tried: [
+            {"name": "testneta-super1", "uuid": "one", "status": "created"},
+            {"name": "testneta-super1", "uuid": "two", "status": "created"},
+        ],
+    )
+
+    with pytest.raises(control.AllfatherControlError, match="matching service records"):
+        control.require_synced_super_service_ready_for_deploy(
+            object(),
+            service_name="testneta-super1",
+            service_uuid="one",
+            tried=[],
+        )
+
+
+def test_super_compose_uses_unique_container_name_from_deployment_id(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+            "--include-compose",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+    payload = control.add_node(plan, args)
+
+    assert payload["manifest"]["deployment_id"] == "dry-run"
+    assert 'container_name: "testneta-super1-dry-run"' in payload["compose"]
+    assert "MC_ALLFATHER_DEPLOYMENT_ID:" in payload["compose"]

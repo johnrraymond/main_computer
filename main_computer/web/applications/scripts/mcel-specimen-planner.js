@@ -593,6 +593,144 @@
         return JSON.parse(JSON.stringify(value));
       }
 
+      function appBlueprintCore() {
+        return global.McelAppBlueprintsCore || null;
+      }
+
+      function genericInspectableAspectIds() {
+        const core = appBlueprintCore();
+        if (core?.genericAspectIds) return core.genericAspectIds();
+        return ["overview", "objects", "workflows", "layout", "actions", "capabilities", "evidence", "source", "tests", "annotations", "findings", "repair"];
+      }
+
+      function genericInspectableLayoutZones() {
+        const core = appBlueprintCore();
+        if (core?.genericLayoutZones) return core.genericLayoutZones();
+        return ["identity", "navigation", "primary", "inspector", "evidence", "actions", "status", "advanced"];
+      }
+
+      function fallbackInspectableAspects() {
+        return genericInspectableAspectIds().map((id) => ({
+          id,
+          label: id.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()),
+          elementId: id === "source" ? "element.inspection.source-binding" :
+            id === "tests" ? "element.inspection.acid-test-result" :
+            id === "annotations" ? "element.refactor.annotation-map" :
+            id === "findings" ? "element.inspection.repair-finding" :
+            id === "repair" ? "element.inspection.repair-plan" :
+            "element.inspection.aspect-panel",
+          findingPolicy: "missing evidence produces findings, not silent blanks"
+        }));
+      }
+
+      function fallbackAnnotationPolicy(appId) {
+        return {
+          appId,
+          annotationElementId: "element.refactor.element-annotation",
+          candidateElementIds: ["element.refactor.removal-candidate", "element.refactor.rework-candidate"],
+          allowedKinds: ["keep", "remove", "rework", "move", "hide", "merge", "investigate"],
+          requiredFields: ["targetSelector", "mcelRole", "layoutZone", "userReasoning", "allowedOutcomes", "forbiddenOutcomes", "dependencyChecks", "sourceHints", "testExpectations"],
+          requiredDependencyChecks: ["handlers", "tests", "docs", "sourceOwners", "replacementPath"],
+          removalOrReworkRequiresDependencyChecks: true,
+          dependencyChecksAreRequiredBeforeDeletion: true,
+          userIntentIsNotVerifiedFact: true
+        };
+      }
+
+      function fallbackExportPolicy(appId) {
+        return {
+          appId,
+          packetElementId: "element.refactor.refactor-export-packet",
+          requiredFiles: ["manifest.json", "app-blueprint.json", "annotations.json", "dom-snapshot.html", "layout-report.json", "source-map.json", "acid-test-report.json", "refactor-brief.md", "tests-to-update.json"],
+          mustIncludeAnnotations: true,
+          mustIncludeSourceHints: true,
+          mustIncludeAllowedAndForbiddenOutcomes: true,
+          neverClaimUncheckedDependencies: true,
+          patchMode: "replacement-file-guidance"
+        };
+      }
+
+      function fallbackInspectableBlueprintFor(appId) {
+        const normalized = String(appId || "").trim().toLowerCase();
+        const key = normalized === "document-editor" ? "document" : normalized;
+        if (!["document", "mcel-lab"].includes(key)) return null;
+        const plan = planFor(key);
+        const seedId = key === "document" ? "document-editor" : "mcel-lab";
+        const isDocument = seedId === "document-editor";
+        const isLab = seedId === "mcel-lab";
+        return {
+          appId: seedId,
+          aliases: isDocument ? ["document"] : [],
+          label: plan.label,
+          route: plan.route,
+          rootSelector: plan.rootSelector,
+          blueprintElementId: "element.workbench.specification",
+          dominantObject: plan.workbenchSpec?.dominantObject || (isLab ? "AppBlueprint" : "Application"),
+          purpose: isLab ? "Self-hosting app blueprint inspector and repair planner." : plan.workbenchSpec?.purpose || plan.point,
+          aspects: fallbackInspectableAspects(),
+          aspectIds: genericInspectableAspectIds(),
+          genericInspectionElements: [
+            "element.inspection.aspect-map",
+            "element.inspection.aspect-panel",
+            "element.inspection.blueprint-editor",
+            "element.inspection.source-binding",
+            "element.inspection.implementation-delta",
+            "element.inspection.acid-test-result",
+            "element.inspection.repair-finding",
+            "element.inspection.repair-plan"
+          ],
+          genericRefactorElements: [
+            "element.refactor.annotation-map",
+            "element.refactor.element-annotation",
+            "element.refactor.removal-candidate",
+            "element.refactor.rework-candidate",
+            "element.refactor.refactor-export-packet"
+          ],
+          layoutZones: genericInspectableLayoutZones(),
+          sourceHints: isDocument ? [
+            "main_computer/web/applications/apps/document.html",
+            "main_computer/web/applications/scripts/document-editor.js",
+            "main_computer/web/applications/styles/document-editor.css",
+            "main_computer/web/applications/scripts/mcel-specimen-planner.js"
+          ] : [
+            "main_computer/web/applications/apps/mcel-lab.html",
+            "main_computer/web/applications/scripts/mcel-lab.js",
+            "main_computer/web/applications/scripts/mcel-app-blueprints-core.js",
+            "main_computer/web/applications/scripts/mcel-specimen-planner.js",
+            "main_computer/web/applications/scripts/mcel-elements-core.js",
+            "main_computer/web/applications/scripts/mcel-toolkit-core.js",
+            "pretty_docs/mcel-lab-blueprint-studio.md"
+          ],
+          testHints: isDocument ? ["tests/test_document_editor_mcel_layout_binding.py", "tests/test_mcel_workbench_spec_language.py"] : ["tests/test_mcel_lab_app.py", "tests/test_mcel_lab_blueprint_studio_documentation.py", "tests/test_mcel_app_blueprint_contracts.py"],
+          docHints: ["pretty_docs/mcel-lab-blueprint-studio.md"],
+          riskFamilies: plan.knownRiskFamilies || [],
+          annotationPolicy: fallbackAnnotationPolicy(seedId),
+          exportPolicy: fallbackExportPolicy(seedId),
+          selfHostingPolicy: isLab ? {
+            mayEditBlueprintDraft: true,
+            mayPreviewRedesign: true,
+            mayGenerateReplacementFilePatch: true,
+            mustNotRewriteLiveImplementation: true,
+            mustAlsoInspectNonLabTargets: true
+          } : undefined
+        };
+      }
+
+      function inspectableBlueprintFor(appId) {
+        const core = appBlueprintCore();
+        if (core?.inspectableBlueprintFor) {
+          const blueprint = core.inspectableBlueprintFor(appId);
+          if (blueprint) return blueprint;
+        }
+        return fallbackInspectableBlueprintFor(appId);
+      }
+
+      function inspectableBlueprints() {
+        const core = appBlueprintCore();
+        if (core?.listInspectableAppBlueprints) return core.listInspectableAppBlueprints();
+        return ["document-editor", "mcel-lab"].map(inspectableBlueprintFor).filter(Boolean);
+      }
+
       function normalizeApp(app) {
         return String(app || "task-manager").trim().toLowerCase();
       }
@@ -844,6 +982,15 @@
           workbenchSpecReady: plans.filter((plan) => normalizeWorkbenchSpec(plan).language === MWSL_LANGUAGE_ID).length,
           documentWorkbenchReady: documentWorkbenchFindingsFor(planFor("document")).length === 0,
           documentWorkbenchLayout: documentWorkbenchLayoutSummary(planFor("document")),
+          inspectableBlueprintCount: inspectableBlueprints().length,
+          inspectableBlueprints: inspectableBlueprints().map((blueprint) => ({
+            appId: blueprint.appId,
+            route: blueprint.route,
+            rootSelector: blueprint.rootSelector,
+            dominantObject: blueprint.dominantObject,
+            aspectIds: blueprint.aspectIds,
+            layoutZones: blueprint.layoutZones
+          })),
           mountQueue: mountQueue().map(toCanonicalOption)
         };
       }
@@ -1118,6 +1265,10 @@
         documentWorkbenchPlacementSummary,
         documentWorkbenchFindingsFor,
         workbenchFindingsFor,
+        inspectableBlueprintFor,
+        inspectableBlueprints,
+        genericInspectableAspectIds,
+        genericInspectableLayoutZones,
         WORKBENCH_LAYOUT_SLOTS,
         DOCUMENT_WORKBENCH_LAYOUT_ZONES,
         requiredIdsFor,

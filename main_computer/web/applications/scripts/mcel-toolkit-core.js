@@ -96,7 +96,12 @@
         {id: "pattern.workbench-specification", elementId: "element.workbench.specification", layer: "contract", label: "Workbench specification", contract: "MWSL binds dominant object, workflow, layout slots, action hierarchy, evidence, risk, and visual priority into one app-shaping contract.", states: ["draft", "authored", "projected", "proof-ready"], supports: ["dominant-object", "primary-workflow", "capability-projection", "layout-projection", "visual-policy"]},
         {id: "pattern.capability-projection", elementId: "element.app.capability-projection", layer: "contract", label: "Capability projection", contract: "A provider capability is projected into the consumer app through native layout slots instead of dumping provider UI.", states: ["provider-owned", "consumer-projected", "advanced-details", "blocked-primary"], supports: ["provider-consumer-boundary", "no-raw-provider-dump", "layout-slots"]},
         {id: "pattern.git-backed-document-history", elementId: "element.version.git-backed-history", layer: "contract", label: "Git-backed document history", contract: "Document-native autosave, timeline, compare, and restore-as-new-version backed by Git evidence.", states: ["dirty", "saved-locally", "checkpointed", "comparing", "restore-preview", "conflict"], supports: ["autosave-status", "revision-timeline", "diff-preview", "restore-as-new-version", "git-evidence-advanced"]},
-        {id: "pattern.document-editor-workbench", elementId: "element.layout.document-workbench", layer: "contract", label: "Document editor workbench", contract: "A product-facing writing layout grammar that keeps the page primary, navigation left, companion right, toolbar compact, status persistent, and spec/debug UI hidden.", states: ["draft", "bound", "proof-ready", "rework-ready"], supports: ["document-workbench", "document-layout-binding", "document-page-primary", "document-navigation", "document-companion", "document-status", "no-visible-spec-cards"]}
+        {id: "pattern.document-editor-workbench", elementId: "element.layout.document-workbench", layer: "contract", label: "Document editor workbench", contract: "A product-facing writing layout grammar that keeps the page primary, navigation left, companion right, toolbar compact, status persistent, and spec/debug UI hidden.", states: ["draft", "bound", "proof-ready", "rework-ready"], supports: ["document-workbench", "document-layout-binding", "document-page-primary", "document-navigation", "document-companion", "document-status", "no-visible-spec-cards"]},
+        {id: "pattern.app-aspect-inspector", elementId: "element.inspection.aspect-map", layer: "contract", label: "App aspect inspector", contract: "Inspect any app through the same generic aspects: blueprint claim, implementation evidence, gaps, annotations, findings, and repair.", states: ["app-selected", "aspect-selected", "evidence-loaded", "finding-ready"], supports: ["generic-aspect-model", "aspect-map", "aspect-panel", "source-binding", "implementation-delta", "repair-findings", "no-app-specific-fake-tabs"]},
+        {id: "pattern.mounted-app-inspection", elementId: "element.inspection.source-binding", layer: "contract", label: "Mounted app inspection", contract: "Mount an app in a controlled preview and collect route, root selector, DOM/layout/source/test/doc hints without mutating source.", states: ["unmounted", "mounted", "snapshot-captured", "source-hinted"], supports: ["controlled-preview", "route-binding", "dom-snapshot", "layout-zones", "source-hints", "no-live-source-overwrite"]},
+        {id: "pattern.point-and-annotate", elementId: "element.refactor.element-annotation", layer: "contract", label: "Point and annotate", contract: "Select rendered elements and save durable annotations with selectors, MCEL role, layout zone, user reasoning, allowed/forbidden outcomes, dependency checks, source hints, and tests.", states: ["inspect-mode", "element-selected", "annotation-draft", "annotation-saved"], supports: ["stable-selector", "selected-element-record", "layout-zone", "annotation-policy", "dependency-checks", "source-hints", "test-expectations"]},
+        {id: "pattern.refactor-export-packet", elementId: "element.refactor.refactor-export-packet", layer: "contract", label: "Refactor export packet", contract: "Export an AI-ready packet containing manifest, blueprint, annotations, DOM, layout/source/test evidence, acid results, brief, and tests-to-update while separating checked facts from required checks.", states: ["draft", "validated", "exported", "warning"], supports: ["manifest", "app-blueprint", "annotations", "dom-snapshot", "layout-report", "source-map", "acid-test-report", "refactor-brief", "tests-to-update", "dependency-check-status"]},
+        {id: "pattern.self-hosting-lab", elementId: "element.inspection.blueprint-editor", layer: "contract", label: "Self-hosting Lab", contract: "The Lab can inspect its own blueprint through the same generic aspect model while never directly overwriting its own live implementation.", states: ["self-selected", "self-inspecting", "draft-editable", "patch-export-only"], supports: ["self-hosting", "generic-aspect-model", "blueprint-draft", "patch-ready-guidance", "no-direct-live-overwrite", "mcel-lab-not-special-cased"]}
       ];
 
       const VIEW_RECIPES = [
@@ -158,6 +163,32 @@
             "pattern.capability-projection"
           ],
           bestFor: ["workbench-specification", "capability-projection", "git-backed-document-history", "repository-operator", "source-workspace"]
+        },
+        {
+          id: "app-aspect-inspection-workbench",
+          label: "App aspect inspection workbench",
+          capabilities: ["generic-aspect-model", "aspect-map", "aspect-panel", "source-binding", "implementation-delta", "repair-findings", "layout-zones", "no-app-specific-fake-tabs", "controlled-preview", "route-binding", "dom-snapshot", "visible-text", "source-hints", "test-hints", "doc-hints", "no-live-source-overwrite", "stable-selector", "selected-element-record", "mcel-role", "annotation-policy", "dependency-checks", "test-expectations", "manifest", "app-blueprint", "annotations", "layout-report", "source-map", "acid-test-report", "refactor-brief", "tests-to-update", "allowed-forbidden-outcomes", "self-hosting", "patch-ready-guidance", "repair-plan"],
+          primitiveIds: [
+            "layout.workbench.identity-zone",
+            "layout.workbench.primary-work-zone",
+            "layout.workbench.secondary-inspector",
+            "layout.workbench.evidence-zone",
+            "layout.workbench.advanced-risk-zone",
+            "pattern.app-aspect-inspector",
+            "pattern.mounted-app-inspection",
+            "pattern.point-and-annotate",
+            "pattern.refactor-export-packet",
+            "pattern.self-hosting-lab",
+            "element.inspection.aspect-map",
+            "element.inspection.aspect-panel",
+            "element.inspection.source-binding",
+            "element.inspection.implementation-delta",
+            "element.refactor.annotation-map",
+            "element.refactor.element-annotation",
+            "element.refactor.refactor-export-packet",
+            "controller.safety-gate"
+          ],
+          bestFor: ["app-aspect-inspector", "mounted-app-inspection", "point-and-annotate", "refactor-export-packet", "self-hosting-lab"]
         },
         {
           id: "document-authoring-workbench",
@@ -281,6 +312,61 @@
           selection: "current-document-plus-selection",
           safety: ["AI output is proposal-only until accepted", "history restore creates a new version", "raw provider controls stay advanced", "status remains visible without crowding the page"]
         },
+        appAspectInspector: {
+          id: "app-aspect-inspector",
+          label: "App aspect inspector contract",
+          intent: "Inspect any mounted app through a generic aspect model instead of app-specific tabs or Lab-only panels.",
+          requires: ["generic-aspect-model", "aspect-map", "aspect-panel", "source-binding", "implementation-delta", "repair-findings", "layout-zones", "no-app-specific-fake-tabs"],
+          fields: ["appId", "route", "rootSelector", "selectedAspect", "availableAspects", "blueprintClaim", "implementationEvidence", "gaps", "annotations", "findings", "repair"],
+          requiredPrimitives: ["pattern.app-aspect-inspector", "element.inspection.aspect-map", "element.inspection.aspect-panel", "element.inspection.source-binding", "element.inspection.implementation-delta", "element.inspection.repair-finding", "element.layout.navigation-zone", "element.layout.primary-work-zone", "element.layout.inspector-zone", "element.layout.evidence-zone", "controller.safety-gate"],
+          mustReject: ["mcel-lab-only-tabs", "hardcoded-app-dashboard", "silent-blank-aspect", "visible-debug-spec-card"],
+          selection: "selected-app-plus-aspect",
+          safety: ["same aspect model applies to Document Editor and MCEL Lab", "missing evidence creates findings", "raw internals stay advanced"]
+        },
+        mountedAppInspection: {
+          id: "mounted-app-inspection",
+          label: "Mounted app inspection contract",
+          intent: "Load an app route into a controlled preview and collect a read-only inspection snapshot with DOM, layout, source, test, and doc hints.",
+          requires: ["controlled-preview", "route-binding", "dom-snapshot", "layout-zones", "visible-text", "source-hints", "test-hints", "doc-hints", "no-live-source-overwrite"],
+          fields: ["appId", "route", "rootSelector", "domSnapshot", "dataMcelAttributes", "layoutZones", "visibleText", "boundingBoxes", "sourceHints", "testHints", "docHints"],
+          requiredPrimitives: ["pattern.mounted-app-inspection", "element.render.preview", "element.inspection.source-binding", "element.layout.primary-work-zone", "element.layout.evidence-zone", "element.inspection.implementation-delta", "controller.safety-gate"],
+          mustReject: ["direct-live-source-mutation", "uncontrolled-iframe-mutation", "preview-as-source-of-truth"],
+          selection: "read-only-mounted-route",
+          safety: ["mounted preview is inspectable", "source is not mutated by mounting", "browser facts are snapshots"]
+        },
+        pointAndAnnotate: {
+          id: "point-and-annotate",
+          label: "Point and annotate contract",
+          intent: "Click or hover rendered elements to create stable selected-element records and durable refactor annotations.",
+          requires: ["stable-selector", "selected-element-record", "layout-zone", "mcel-role", "source-hints", "annotation-policy", "dependency-checks", "test-expectations"],
+          fields: ["targetSelector", "visibleText", "boundingBox", "mcelRole", "layoutZone", "parentZone", "sourceHints", "cssHints", "jsHandlerHints", "nearbyElements", "userReasoning", "allowedOutcomes", "forbiddenOutcomes", "dependencyChecks", "testExpectations"],
+          requiredPrimitives: ["pattern.point-and-annotate", "element.refactor.element-annotation", "element.refactor.removal-candidate", "element.refactor.rework-candidate", "element.inspection.source-binding", "element.layout.inspector-zone", "element.layout.evidence-zone"],
+          mustReject: ["vague-that-thing-reference", "blind-delete-annotation", "annotation-without-selector", "remove-without-dependency-checks"],
+          selection: "rendered-element-target",
+          safety: ["remove and rework annotations require dependency checks", "user intent is not treated as verified implementation fact"]
+        },
+        refactorExportPacket: {
+          id: "refactor-export-packet",
+          label: "Refactor export packet contract",
+          intent: "Package enough app blueprint, annotation, DOM, layout, source, test, acid-check, and brief context for narrow AI repair work.",
+          requires: ["manifest", "app-blueprint", "annotations", "dom-snapshot", "layout-report", "source-map", "acid-test-report", "refactor-brief", "tests-to-update", "allowed-forbidden-outcomes"],
+          fields: ["manifest", "appBlueprint", "annotations", "domSnapshot", "layoutReport", "sourceMap", "acidTestReport", "refactorBrief", "testsToUpdate", "dependencyCheckStatus", "packetWarnings"],
+          requiredPrimitives: ["pattern.refactor-export-packet", "element.refactor.refactor-export-packet", "element.refactor.annotation-map", "element.inspection.source-binding", "element.inspection.acid-test-result", "element.inspection.repair-plan"],
+          mustReject: ["prompt-only-export", "unchecked-dependency-claim", "missing-annotations", "missing-source-hints"],
+          selection: "app-refactor-packet",
+          safety: ["packet never claims dependency checks were completed unless evidence exists", "allowed outcomes are separated from forbidden outcomes"]
+        },
+        selfHostingLab: {
+          id: "self-hosting-lab",
+          label: "Self-hosting Lab contract",
+          intent: "MCEL Lab can inspect MCEL Lab through the same generic app aspect model used for product apps, while only producing draft edits or patch guidance.",
+          requires: ["self-hosting", "generic-aspect-model", "app-blueprint", "aspect-map", "source-binding", "repair-plan", "patch-ready-guidance", "no-direct-live-overwrite"],
+          fields: ["selectedApp", "dominantObject", "aspects", "layoutZones", "sourceHints", "testHints", "docHints", "annotationPolicy", "exportPolicy"],
+          requiredPrimitives: ["pattern.self-hosting-lab", "pattern.app-aspect-inspector", "element.inspection.aspect-map", "element.inspection.blueprint-editor", "element.inspection.source-binding", "element.inspection.repair-plan", "element.refactor.refactor-export-packet"],
+          mustReject: ["mcel-lab-special-case-only", "live-self-overwrite", "self-debug-primary", "missing-non-lab-target"],
+          selection: "mcel-lab-as-selected-app",
+          safety: ["MCEL Lab may edit its own blueprint draft", "MCEL Lab must not directly rewrite or apply its own live implementation", "Document Editor remains a required non-Lab target"]
+        },
         gitBackedDocumentHistory: {
           id: "git-backed-document-history",
           label: "Git-backed document history contract",
@@ -384,6 +470,12 @@
           gitBackedDocumentHistoryEligibleViewCount: resolveViews(CONTRACT_PATTERNS.gitBackedDocumentHistory).filter((candidate) => candidate.eligible).length,
           documentEditorWorkbenchEligibleViewCount: resolveViews(CONTRACT_PATTERNS.documentEditorWorkbench).filter((candidate) => candidate.eligible).length,
           documentEditorWorkbenchBestView: resolveViews(CONTRACT_PATTERNS.documentEditorWorkbench)[0]?.id || "none",
+          appAspectInspectorEligibleViewCount: resolveViews(CONTRACT_PATTERNS.appAspectInspector).filter((candidate) => candidate.eligible).length,
+          appAspectInspectorBestView: resolveViews(CONTRACT_PATTERNS.appAspectInspector)[0]?.id || "none",
+          mountedAppInspectionEligibleViewCount: resolveViews(CONTRACT_PATTERNS.mountedAppInspection).filter((candidate) => candidate.eligible).length,
+          pointAndAnnotateEligibleViewCount: resolveViews(CONTRACT_PATTERNS.pointAndAnnotate).filter((candidate) => candidate.eligible).length,
+          refactorExportPacketEligibleViewCount: resolveViews(CONTRACT_PATTERNS.refactorExportPacket).filter((candidate) => candidate.eligible).length,
+          selfHostingLabEligibleViewCount: resolveViews(CONTRACT_PATTERNS.selfHostingLab).filter((candidate) => candidate.eligible).length,
           noOneOffControls: PRIMITIVES.some((primitive) => primitive.id === "control.selection.tristate") &&
             PRIMITIVES.some((primitive) => primitive.id === "control.resize-handle") &&
             PRIMITIVES.some((primitive) => primitive.id === "controller.view-resolver") &&

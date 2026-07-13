@@ -6924,3 +6924,457 @@ body.mcel-modal-open {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* Phase 2 App Blueprint / Aspect Inspector shell.
+   The legacy proof lab remains available under Advanced, but the primary surface
+   now maps to generic MCEL layout zones. */
+.mcel-lab-blueprint-shell {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 12px;
+  min-height: min(960px, calc(100vh - 170px));
+}
+
+.mcel-lab-blueprint-topbar {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(180px, 220px) minmax(180px, 220px) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(125, 211, 252, 0.16), transparent 38%),
+    rgba(5, 12, 24, 0.88);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+}
+
+.mcel-lab-blueprint-title {
+  min-width: 0;
+}
+
+.mcel-lab-blueprint-title h3,
+.mcel-lab-shell-card h4 {
+  margin: 0;
+}
+
+.mcel-lab-blueprint-title p:last-child,
+.mcel-lab-shell-card p {
+  margin-bottom: 0;
+}
+
+.mcel-lab-shell-control {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: rgba(226, 232, 240, 0.78);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.mcel-lab-shell-control select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.78);
+  color: #e2e8f0;
+  padding: 8px 10px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.mcel-lab-blueprint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mcel-lab-blueprint-actions button,
+.mcel-lab-blueprint-list button,
+.mcel-lab-blueprint-pills button {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #e2e8f0;
+  cursor: pointer;
+}
+
+.mcel-lab-blueprint-actions button {
+  padding: 8px 12px;
+}
+
+.mcel-lab-blueprint-actions button[data-phase="future"]::after {
+  content: " soon";
+  color: rgba(226, 232, 240, 0.54);
+  font-size: 0.72rem;
+}
+
+.mcel-lab-blueprint-workbench {
+  grid-template-columns: clamp(210px, 18vw, 270px) minmax(640px, 1fr) clamp(300px, 25vw, 390px);
+  grid-template-areas: "navigation primary rail";
+  gap: 12px;
+  overflow: hidden;
+}
+
+.mcel-lab-blueprint-navigation {
+  grid-area: navigation;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mcel-lab-blueprint-primary {
+  grid-area: primary;
+  display: grid;
+  grid-template-rows: minmax(560px, 1fr);
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  scrollbar-gutter: stable;
+}
+
+.mcel-lab-blueprint-right-rail {
+  grid-area: rail;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  scrollbar-gutter: stable;
+}
+
+.mcel-lab-shell-card {
+  min-width: 0;
+  min-height: 0;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.mcel-lab-shell-card-heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.mcel-lab-blueprint-list,
+.mcel-lab-blueprint-pills,
+.mcel-lab-placeholder-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.mcel-lab-blueprint-list button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  border-radius: 12px;
+}
+
+.mcel-lab-blueprint-list button span,
+.mcel-lab-placeholder-stack span,
+.mcel-lab-zone-map span,
+.mcel-lab-blueprint-outline small {
+  color: rgba(226, 232, 240, 0.62);
+  font-size: 0.78rem;
+}
+
+.mcel-lab-blueprint-list button[aria-pressed="true"],
+.mcel-lab-blueprint-pills button[aria-pressed="true"] {
+  border-color: rgba(125, 211, 252, 0.78);
+  background: rgba(14, 116, 144, 0.26);
+}
+
+.mcel-lab-blueprint-pills {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mcel-lab-blueprint-pills button {
+  padding: 7px 9px;
+  text-align: center;
+}
+
+.mcel-lab-blueprint-outline {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.mcel-lab-blueprint-outline li {
+  padding: 4px 0;
+}
+
+.mcel-lab-blueprint-outline li[data-active="true"] span {
+  color: #7dd3fc;
+  font-weight: 700;
+}
+
+.mcel-lab-work-area {
+  display: grid;
+  grid-template-rows: auto minmax(340px, 1fr) auto auto;
+  gap: 12px;
+}
+
+.mcel-lab-work-area-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcel-lab-work-badge {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 999px;
+  background: rgba(8, 47, 73, 0.32);
+  color: rgba(186, 230, 253, 0.86);
+  font-size: 0.76rem;
+}
+
+.mcel-lab-work-surface {
+  display: grid;
+  min-height: 360px;
+  padding: 18px;
+  border: 1px dashed rgba(125, 211, 252, 0.24);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 50% 25%, rgba(14, 165, 233, 0.10), transparent 36%),
+    rgba(2, 6, 23, 0.32);
+}
+
+.mcel-lab-work-surface-empty {
+  place-self: center;
+  max-width: 48ch;
+  text-align: center;
+  color: rgba(226, 232, 240, 0.72);
+}
+
+.mcel-lab-work-surface-empty span {
+  display: block;
+  color: rgba(250, 204, 21, 0.72);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mcel-lab-work-surface-empty strong {
+  display: block;
+  margin-top: 5px;
+  color: #f8fafc;
+  overflow-wrap: anywhere;
+}
+
+.mcel-lab-work-brief {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mcel-lab-work-brief section,
+.mcel-lab-blueprint-facts div,
+.mcel-lab-placeholder-stack article,
+.mcel-lab-repair-placeholder {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.4);
+}
+
+.mcel-lab-plain-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.mcel-lab-blueprint-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.mcel-lab-blueprint-facts dt {
+  color: rgba(226, 232, 240, 0.58);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mcel-lab-blueprint-facts dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.mcel-lab-blueprint-details-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.mcel-lab-muted-note {
+  margin: 0 0 4px;
+  color: rgba(226, 232, 240, 0.64);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.mcel-lab-drilldowns {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.mcel-lab-drilldowns details {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.28);
+  overflow: hidden;
+}
+
+.mcel-lab-drilldowns summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: rgba(226, 232, 240, 0.88);
+  font-weight: 700;
+}
+
+.mcel-lab-drilldowns details > :not(summary) {
+  margin: 0 12px 12px;
+}
+
+.mcel-lab-zone-map {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mcel-lab-zone-map article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 12px;
+  background: rgba(8, 47, 73, 0.18);
+}
+
+.mcel-lab-blueprint-right-rail .mcel-lab-zone-map,
+.mcel-lab-blueprint-right-rail .mcel-lab-blueprint-hints,
+.mcel-lab-blueprint-right-rail .mcel-lab-blueprint-detail-facts {
+  grid-template-columns: 1fr;
+}
+
+.mcel-lab-detail-body {
+  min-width: 0;
+}
+
+.mcel-lab-blueprint-hints {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mcel-lab-blueprint-json {
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.62);
+  white-space: pre-wrap;
+}
+
+.mcel-lab-findings {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding-left: 18px;
+}
+
+.mcel-lab-blueprint-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mcel-lab-blueprint-status output {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(34, 197, 94, 0.18);
+  border-radius: 12px;
+  background: rgba(20, 83, 45, 0.16);
+  color: rgba(220, 252, 231, 0.92);
+  overflow-wrap: anywhere;
+}
+
+.mcel-lab-advanced-legacy {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.42);
+  overflow: hidden;
+}
+
+.mcel-lab-advanced-legacy > summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  color: rgba(226, 232, 240, 0.86);
+  font-weight: 700;
+}
+
+.mcel-lab-advanced-legacy > p {
+  margin: 0;
+  padding: 0 14px 12px;
+  color: rgba(226, 232, 240, 0.68);
+}
+
+.mcel-lab-legacy-proof-surface {
+  display: grid;
+  gap: 12px;
+  max-height: 70vh;
+  padding: 12px;
+  overflow: auto;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+@container (max-width: 1100px) {
+  .mcel-lab-blueprint-topbar,
+  .mcel-lab-blueprint-workbench,
+  .mcel-lab-blueprint-status {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-lab-blueprint-workbench {
+    grid-template-areas:
+      "navigation"
+      "primary"
+      "rail";
+  }
+
+  .mcel-lab-zone-map,
+  .mcel-lab-blueprint-facts,
+  .mcel-lab-work-brief,
+  .mcel-lab-blueprint-hints {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 680px) {
+  .mcel-lab-blueprint-pills,
+  .mcel-lab-zone-map,
+  .mcel-lab-blueprint-facts,
+  .mcel-lab-work-brief,
+  .mcel-lab-blueprint-hints {
+    grid-template-columns: 1fr;
+  }
+}
+

@@ -1,9 +1,10 @@
     const desktopIconSvgByApp = {
       webgl: `
-        <path d="M4.5 6.5h15v11h-15z" />
-        <path d="M4.5 10.5h15" />
-        <path d="M9.5 6.5v11" />
-        <path d="M14.5 6.5v11" />
+        <path d="M5 7.5h14v8.5a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z" />
+        <path d="M8 7.5V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v1.5" />
+        <circle cx="9" cy="12" r="1" fill="currentColor" stroke="none" />
+        <circle cx="15" cy="12" r="1" fill="currentColor" stroke="none" />
+        <path d="M10.5 15h3" />
       `,
       astrometric: `
         <circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none" />
@@ -35,11 +36,11 @@
         <path d="M4.5 14h15" />
       `,
       onlyoffice: `
-        <path d="M7 3.5h7l4 4v13H7z" />
-        <path d="M14 3.5v4h4" />
-        <path d="M9.5 12h6" />
-        <path d="M9.5 15h6" />
-        <path d="M9.5 18h4" />
+        <rect x="4.5" y="4.5" width="15" height="15" rx="3" />
+        <path d="M8 8h3v3H8z" />
+        <path d="M13 8h3v3h-3z" />
+        <path d="M8 13h3v3H8z" />
+        <path d="M13 13h3v3h-3z" />
       `,
       "task-manager": `
         <path d="M5 18.5h14" />
@@ -47,6 +48,13 @@
         <path d="M12 16V7" />
         <path d="M16.5 16V9" />
         <path d="M5.5 8.5h4l2-2 2.5 5 2-3h2.5" />
+      `,
+      conductor: `
+        <circle cx="12" cy="6.5" r="2.1" />
+        <path d="M8 12.5c1.3-1.2 2.6-1.8 4-1.8s2.7.6 4 1.8" />
+        <path d="M6.5 17.5c1.6-2.5 3.4-3.8 5.5-3.8s3.9 1.3 5.5 3.8" />
+        <path d="M5.5 9.5 9 12" />
+        <path d="M18.5 9.5 15 12" />
       `,
       terminal: `
         <path d="M5.5 7.5 9.5 11l-4 3.5" />

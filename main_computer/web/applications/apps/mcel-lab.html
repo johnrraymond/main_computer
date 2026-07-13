@@ -1,7 +1,7 @@
 <section
-  class="mcel-lab-app mc-app-shell"
+  class="mcel-lab-app mc-app-shell mcel-lab-blueprint-shell"
   id="mcel-lab-app"
-  aria-label="MCEL Lab"
+  aria-label="MCEL Lab App Blueprint Aspect Inspector"
   data-mc-component-id="mcel-lab.root"
   data-mc-component-kind="workspace"
   data-mc-component-label="MCEL Lab"
@@ -9,9 +9,280 @@
   data-mc-widget-kind="workspace"
   data-mc-widget-class="app"
   data-mc-widget-label="MCEL Lab"
+  data-mcel-workbench="mcel-lab"
+  data-mcel-layout="app-aspect-inspector-workbench"
+  data-mcel-blueprint-target="mcel-lab"
   style="display: none;"
 >
-  <header class="mcel-lab-hero">
+  <header
+    class="mcel-lab-blueprint-topbar"
+    data-mcel-zone="identity"
+    data-mcel-layout-zone="identity"
+    data-mcel-element="element.layout.identity-zone"
+    aria-label="MCEL Lab identity and target selectors"
+  >
+    <div class="mcel-lab-blueprint-title">
+      <p class="eyebrow">MCEL Lab</p>
+      <h3>App Blueprint / Aspect Inspector</h3>
+      <p>
+        Select an app and aspect, work in the center surface, then drill into MCEL internals only
+        when evidence, source hints, or export contracts are needed.
+      </p>
+    </div>
+
+    <label class="mcel-lab-shell-control">
+      Selected app
+      <select id="mcel-blueprint-app-select" aria-label="Selected inspectable app">
+        <option value="document-editor">Document Editor</option>
+        <option value="mcel-lab">MCEL Lab</option>
+      </select>
+    </label>
+
+    <label class="mcel-lab-shell-control">
+      Selected aspect
+      <select id="mcel-blueprint-aspect-select" aria-label="Selected inspection aspect">
+        <option value="overview">Overview</option><option value="objects">Objects</option><option value="workflows">Workflows</option><option value="layout">Layout</option><option value="actions">Actions</option><option value="capabilities">Capabilities</option><option value="evidence">Evidence</option><option value="source">Source</option><option value="tests">Tests</option><option value="annotations">Annotations</option><option value="findings">Findings</option><option value="repair">Repair</option>
+      </select>
+    </label>
+
+    <div
+      class="mcel-lab-blueprint-actions"
+      role="group"
+      aria-label="App blueprint inspector actions"
+      data-mcel-zone="actions"
+      data-mcel-layout-zone="actions"
+      data-mcel-element="element.layout.actions-zone"
+    >
+      <button type="button" id="mcel-blueprint-mount-action" data-phase="future">Mount</button>
+      <button type="button" id="mcel-blueprint-inspect-action" data-phase="future">Inspect</button>
+      <button type="button" id="mcel-blueprint-validate-action">Validate</button>
+      <button type="button" id="mcel-blueprint-export-action" data-phase="future">Export</button>
+    </div>
+  </header>
+
+  <div class="mcel-lab-blueprint-workbench mc-app-workspace" aria-label="MCEL Lab blueprint workbench">
+    <aside
+      class="mcel-lab-blueprint-navigation mc-app-pane"
+      data-mcel-zone="navigation"
+      data-mcel-layout-zone="navigation"
+      data-mcel-element="element.layout.navigation-zone"
+      aria-label="App and aspect navigation"
+    >
+      <section class="mcel-lab-shell-card" aria-label="Inspectable apps">
+        <div class="mcel-lab-shell-card-heading">
+          <p class="eyebrow">Apps</p>
+          <h4>Inspectable targets</h4>
+        </div>
+        <div id="mcel-blueprint-app-list" class="mcel-lab-blueprint-list" role="list">
+          <button type="button" data-mcel-blueprint-app-option="document-editor" aria-pressed="true">
+            <strong>Document Editor</strong>
+            <span>Product app</span>
+          </button>
+          <button type="button" data-mcel-blueprint-app-option="mcel-lab" aria-pressed="false">
+            <strong>MCEL Lab</strong>
+            <span>Self-hosting inspector</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="mcel-lab-shell-card" aria-label="Aspect navigator">
+        <div class="mcel-lab-shell-card-heading">
+          <p class="eyebrow">Aspects</p>
+          <h4>Generic aspect navigator</h4>
+        </div>
+        <div id="mcel-blueprint-aspect-list" class="mcel-lab-blueprint-pills" role="list">
+          <button type="button" data-mcel-blueprint-aspect-option="overview" aria-pressed="true">Overview</button>
+          <button type="button" data-mcel-blueprint-aspect-option="objects" aria-pressed="false">Objects</button>
+          <button type="button" data-mcel-blueprint-aspect-option="workflows" aria-pressed="false">Workflows</button>
+          <button type="button" data-mcel-blueprint-aspect-option="layout" aria-pressed="false">Layout</button>
+          <button type="button" data-mcel-blueprint-aspect-option="actions" aria-pressed="false">Actions</button>
+          <button type="button" data-mcel-blueprint-aspect-option="capabilities" aria-pressed="false">Capabilities</button>
+          <button type="button" data-mcel-blueprint-aspect-option="evidence" aria-pressed="false">Evidence</button>
+          <button type="button" data-mcel-blueprint-aspect-option="source" aria-pressed="false">Source</button>
+          <button type="button" data-mcel-blueprint-aspect-option="tests" aria-pressed="false">Tests</button>
+          <button type="button" data-mcel-blueprint-aspect-option="annotations" aria-pressed="false">Annotations</button>
+          <button type="button" data-mcel-blueprint-aspect-option="findings" aria-pressed="false">Findings</button>
+          <button type="button" data-mcel-blueprint-aspect-option="repair" aria-pressed="false">Repair</button>
+        </div>
+      </section>
+
+      <section class="mcel-lab-shell-card" aria-label="Blueprint outline">
+        <div class="mcel-lab-shell-card-heading">
+          <p class="eyebrow">Outline</p>
+          <h4>Blueprint outline</h4>
+        </div>
+        <ol id="mcel-blueprint-outline" class="mcel-lab-blueprint-outline">
+          <li data-mcel-blueprint-outline-item="overview"><span>Overview</span></li>
+          <li data-mcel-blueprint-outline-item="objects"><span>Objects</span></li>
+          <li data-mcel-blueprint-outline-item="workflows"><span>Workflows</span></li>
+          <li data-mcel-blueprint-outline-item="layout"><span>Layout</span></li>
+          <li data-mcel-blueprint-outline-item="actions"><span>Actions</span></li>
+          <li data-mcel-blueprint-outline-item="capabilities"><span>Capabilities</span></li>
+          <li data-mcel-blueprint-outline-item="evidence"><span>Evidence</span></li>
+          <li data-mcel-blueprint-outline-item="source"><span>Source</span></li>
+          <li data-mcel-blueprint-outline-item="tests"><span>Tests</span></li>
+          <li data-mcel-blueprint-outline-item="annotations"><span>Annotations</span></li>
+          <li data-mcel-blueprint-outline-item="findings"><span>Findings</span></li>
+          <li data-mcel-blueprint-outline-item="repair"><span>Repair</span></li>
+        </ol>
+      </section>
+    </aside>
+
+    <main
+      class="mcel-lab-blueprint-primary mc-app-primary"
+      data-mcel-zone="primary"
+      data-mcel-layout-zone="primary"
+      data-mcel-element="element.layout.primary-work-zone"
+      aria-label="Selected app and aspect workspace"
+    >
+      <section class="mcel-lab-shell-card mcel-lab-work-area" aria-label="App aspect work area">
+        <div class="mcel-lab-work-area-header">
+          <div>
+            <p class="eyebrow">Work area</p>
+            <h4 id="mcel-blueprint-aspect-title">Document Editor · Overview</h4>
+          </div>
+          <span id="mcel-blueprint-work-badge" class="mcel-lab-work-badge">static Phase 2 workspace</span>
+        </div>
+
+        <div class="mcel-lab-work-surface" id="mcel-blueprint-work-surface" aria-label="Mounted app work surface">
+          <div class="mcel-lab-work-surface-empty">
+            <span>Mount target</span>
+            <strong id="mcel-blueprint-mount-route">/applications/document</strong>
+            <p>
+              This is the primary work area. Phase 3 will mount the selected app here; later phases
+              will add point inspection, annotations, and export.
+            </p>
+          </div>
+        </div>
+
+        <div class="mcel-lab-work-brief" aria-label="Selected aspect brief">
+          <section>
+            <p class="eyebrow">Aspect summary</p>
+            <p id="mcel-blueprint-aspect-summary">
+              Overview expects app identity, dominant object, route, and purpose.
+            </p>
+          </section>
+          <section>
+            <p class="eyebrow">Needs attention</p>
+            <ul id="mcel-blueprint-required-evidence" class="mcel-lab-plain-list">
+              <li>Runtime evidence appears after mounting exists.</li>
+            </ul>
+          </section>
+          <section>
+            <p class="eyebrow">Next actions</p>
+            <ul id="mcel-blueprint-next-actions" class="mcel-lab-plain-list">
+              <li>Mount selected app in Phase 3.</li>
+            </ul>
+          </section>
+        </div>
+
+        <dl class="mcel-lab-blueprint-facts" id="mcel-blueprint-facts">
+          <div><dt>App</dt><dd id="mcel-blueprint-current-app">Document Editor</dd></div>
+          <div><dt>Route</dt><dd id="mcel-blueprint-current-route">/applications/document</dd></div>
+          <div><dt>Root</dt><dd id="mcel-blueprint-current-root">#document-app</dd></div>
+          <div><dt>Dominant object</dt><dd id="mcel-blueprint-current-object">Document</dd></div>
+        </dl>
+      </section>
+
+    </main>
+
+    <aside class="mcel-lab-blueprint-right-rail" aria-label="Inspector and evidence rail">
+      <section
+        class="mcel-lab-shell-card"
+        data-mcel-zone="inspector"
+        data-mcel-layout-zone="inspector"
+        data-mcel-element="element.layout.inspector-zone"
+        aria-label="Selected element inspector"
+      >
+        <div class="mcel-lab-shell-card-heading">
+          <p class="eyebrow">Inspector</p>
+          <h4>Selected element</h4>
+        </div>
+        <p id="mcel-blueprint-selected-element">
+          Nothing selected yet. Point-and-inspect will populate this panel in Phase 4.
+        </p>
+        <div class="mcel-lab-placeholder-stack" aria-label="Annotation placeholders">
+          <article>
+            <strong>Annotation editor</strong>
+            <span>Future keep / remove / rework decisions.</span>
+          </article>
+          <article>
+            <strong>Dependency checks</strong>
+            <span>Required before removal or rework.</span>
+          </article>
+        </div>
+      </section>
+
+      <section
+        class="mcel-lab-shell-card mcel-lab-blueprint-details-card"
+        data-mcel-zone="evidence"
+        data-mcel-layout-zone="evidence"
+        data-mcel-element="element.layout.evidence-zone"
+        aria-label="Blueprint details drill-downs"
+      >
+        <div class="mcel-lab-shell-card-heading">
+          <p class="eyebrow">Drill down</p>
+          <h4>Blueprint details</h4>
+        </div>
+        <p class="mcel-lab-muted-note">
+          Contract internals stay here in the inspector rail so the center remains the work area.
+        </p>
+        <div
+          id="mcel-blueprint-detail-stack"
+          class="mcel-lab-drilldowns"
+          data-mcel-detail-source="blueprint-detail-groups"
+          aria-label="Blueprint detail drill-downs"
+        ></div>
+      </section>
+
+      <section
+        class="mcel-lab-shell-card"
+        data-mcel-zone="evidence"
+        data-mcel-layout-zone="evidence"
+        data-mcel-element="element.layout.evidence-zone"
+        aria-label="Findings and repair evidence"
+      >
+        <div class="mcel-lab-shell-card-heading">
+          <p class="eyebrow">Evidence</p>
+          <h4>Findings and repair</h4>
+        </div>
+        <ul id="mcel-blueprint-findings" class="mcel-lab-findings">
+          <li>Runtime evidence appears after mounting exists.</li>
+        </ul>
+        <section class="mcel-lab-repair-placeholder" aria-label="Repair plan placeholder">
+          <strong>Repair plan</strong>
+          <p>Patch-ready guidance will appear after annotations and acid checks exist.</p>
+        </section>
+      </section>
+    </aside>
+  </div>
+
+  <footer
+    class="mcel-lab-blueprint-status"
+    data-mcel-zone="status"
+    data-mcel-layout-zone="status"
+    data-mcel-element="element.layout.status-zone"
+    aria-label="MCEL Lab status"
+  >
+    <output id="mcel-blueprint-validity-status">Blueprint contract pending.</output>
+    <output id="mcel-blueprint-saved-status">Saved annotations: not implemented in Phase 2.</output>
+    <output id="mcel-blueprint-export-status">Export packet: contract only.</output>
+  </footer>
+
+  <details
+    class="mcel-lab-advanced-legacy"
+    data-mcel-zone="advanced"
+    data-mcel-layout-zone="advanced"
+    data-mcel-element="element.layout.advanced-zone"
+  >
+    <summary>Advanced / Legacy proof lab</summary>
+    <p>
+      Raw MCEL internals, specimen compiler controls, scenario demos, stress/a11y proof surfaces,
+      and legacy site renderer controls are retained here for diagnostics. They are no longer the
+      primary product surface of MCEL Lab.
+    </p>
+    <div class="mcel-lab-legacy-proof-surface" aria-label="Legacy MCEL proof lab">
+<header class="mcel-lab-hero">
     <div>
       <p class="eyebrow">Web Test Bed / MCEL Lab</p>
       <h3>Semantic Interface Forge</h3>
@@ -1217,5 +1488,7 @@
     </section>
     </div>
 
+  </details>
+    </div>
   </details>
 </section>

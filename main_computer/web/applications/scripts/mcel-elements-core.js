@@ -180,6 +180,174 @@
           decoderHints: ["primary focus", "advanced collapsed", "status always visible", "no competing clusters"],
           supersedes: ["visual pile", "chrome-first layout", "hidden save/sync state"]
         }),
+
+        def("element.layout.identity-zone", "Identity Zone", "layout", "identity-zone", "Generic workbench identity band for selected app, dominant object, route, ownership, and current inspection context.", {
+          htmlTag: "mcel-identity-zone",
+          riskPolicy: analysis,
+          stateModel: {required: ["selectedApp", "dominantObject"], optional: ["route", "selectedAspect", "blueprintVersion", "owner"]},
+          decoderHints: ["selected app", "app identity", "dominant object", "route", "breadcrumb"],
+          supersedes: ["app-specific title strip", "hardcoded inspector chrome"]
+        }),
+        def("element.layout.navigation-zone", "Navigation Zone", "layout", "navigation-zone", "Generic workbench navigation zone for app lists, aspect maps, outlines, and object trees.", {
+          htmlTag: "mcel-navigation-zone",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["navigationItems", "selectedItem"], optional: ["aspectMap", "blueprintOutline", "filterState"]},
+          decoderHints: ["app list", "aspect navigator", "outline", "tree", "left navigation"],
+          supersedes: ["hardcoded left rail", "fake app-specific tabs"]
+        }),
+        def("element.layout.primary-work-zone", "Primary Work Zone", "layout", "primary-work-zone", "Generic center work surface for the dominant object, mounted app preview, selected aspect workspace, or blueprint preview.", {
+          htmlTag: "mcel-primary-work-zone",
+          riskPolicy: analysis,
+          layoutLaws: ["dominant-object-primary", "primary-surface-protected", "no-debug-primary-pollution"],
+          stateModel: {required: ["dominantObject", "workspaceMode"], optional: ["mountedPreview", "selectedAspect", "blueprintPreview"]},
+          decoderHints: ["primary", "center", "workspace", "preview", "mounted app", "aspect workspace"],
+          supersedes: ["dashboard card pile", "debug output as primary work"]
+        }),
+        def("element.layout.inspector-zone", "Inspector Zone", "layout", "inspector-zone", "Generic contextual inspector for selected elements, annotations, source hints, findings, and repair plans.", {
+          htmlTag: "mcel-inspector-zone",
+          riskPolicy: analysis,
+          stateModel: {required: ["selectedTarget"], optional: ["elementInspector", "annotationEditor", "findings", "repairPlan"]},
+          decoderHints: ["right inspector", "selected element", "annotation", "finding", "repair"],
+          supersedes: ["miscellaneous side card", "hardcoded detail pane"]
+        }),
+        def("element.layout.evidence-zone", "Evidence Zone", "layout", "evidence-zone", "Generic evidence surface for DOM snapshots, source bindings, test evidence, deltas, and acid-test results.", {
+          htmlTag: "mcel-evidence-zone",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["evidenceItems"], optional: ["domSnapshot", "sourceBindings", "testResults", "implementationDeltas"]},
+          decoderHints: ["evidence", "DOM snapshot", "source binding", "test result", "delta"],
+          supersedes: ["silent blank", "unverified claim"]
+        }),
+        def("element.layout.actions-zone", "Actions Zone", "layout", "actions-zone", "Generic action zone for safe inspection actions, mounting, saving drafts, running checks, and exporting packets with explicit policies.", {
+          htmlTag: "mcel-actions-zone",
+          riskPolicy: analysis,
+          actionPolicy: {mount: "inspect-only", inspect: "inspect-only", saveDraft: "local-write-boundary", runAcidTest: "inspect-only", exportPacket: "no-submit"},
+          stateModel: {required: ["availableActions", "actionPolicy"], optional: ["blockedActions", "lastAction"]},
+          decoderHints: ["mount", "inspect", "save", "export", "run checks", "actions"],
+          supersedes: ["unlabeled button strip", "unsafe primary mutation controls"]
+        }),
+        def("element.layout.status-zone", "Status Zone", "layout", "status-zone", "Generic persistent status band for validation state, save state, mounted-app state, and export/check results.", {
+          htmlTag: "mcel-status-zone",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["validationStatus", "saveState"], optional: ["mountState", "exportState", "acidTestState", "lastUpdatedAt"]},
+          decoderHints: ["status", "saved", "validation", "export status", "acid test status"],
+          supersedes: ["hidden save state", "status scattered across cards"]
+        }),
+        def("element.layout.advanced-zone", "Advanced Zone", "layout", "advanced-zone", "Generic collapsed-by-default zone for raw MCEL internals, debug evidence, risky controls, and developer-only diagnostics.", {
+          htmlTag: "mcel-advanced-zone",
+          riskPolicy: analysis,
+          layoutLaws: ["advanced-collapsed-by-default", "debug-not-primary", "risk-separated"],
+          stateModel: {required: ["collapsedByDefault"], optional: ["rawInternals", "debugEvidence", "riskyControls", "developerMode"]},
+          decoderHints: ["advanced", "debug", "raw internals", "developer diagnostics"],
+          supersedes: ["visible debug pollution", "raw internals in product chrome"]
+        }),
+
+        def("element.inspection.aspect-map", "Inspection Aspect Map", "inspection", "aspect-map", "Reusable map of inspectable app aspects and their evidence/finding status.", {
+          allowedChildren: ["element.inspection.aspect-panel"],
+          htmlTag: "mcel-inspection-aspect-map",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["selectedAspect", "availableAspects", "aspectStatus", "missingAspects"], optional: ["appId", "genericAspectModel"]},
+          dataModel: {aspectFields: ["id", "label", "status", "requiredElements", "evidenceCount", "findingCount"]},
+          decoderHints: ["aspect map", "aspect navigator", "overview", "objects", "workflows", "layout", "repair"],
+          supersedes: ["app-specific fake tabs", "hardcoded inspector sections"]
+        }),
+        def("element.inspection.aspect-panel", "Inspection Aspect Panel", "inspection", "aspect-panel", "Reusable panel for one selected aspect, combining blueprint claims, implementation evidence, gaps, annotations, and repair findings.", {
+          htmlTag: "mcel-inspection-aspect-panel",
+          riskPolicy: analysis,
+          stateModel: {required: ["aspect", "blueprintClaim", "implementationEvidence"], optional: ["gaps", "annotations", "repairFindings"]},
+          dataModel: {aspectEvidenceFields: ["blueprintClaim", "implementationEvidence", "gaps", "annotations", "repairFindings"]},
+          decoderHints: ["aspect panel", "blueprint claim", "implementation evidence", "gap", "finding"],
+          supersedes: ["silent blank aspect", "label-only dashboard panel"]
+        }),
+        def("element.inspection.blueprint-editor", "Blueprint Editor", "inspection", "blueprint-editor", "Safe draft editor for app blueprints that never rewrites the live implementation directly.", {
+          htmlTag: "mcel-blueprint-editor",
+          riskPolicy: analysis,
+          actionPolicy: {editDraft: "inspect-only", saveDraft: "local-write-boundary", applyLive: "no-submit"},
+          stateModel: {required: ["draftBlueprint", "dirtyState", "validationState", "sourceBlueprint", "implementationDelta"], optional: ["selectedAspect", "lastSavedAt"]},
+          interactionModel: {mutatesDom: false, ownsTruth: false, handoff: "draft-blueprint-only"},
+          decoderHints: ["blueprint editor", "draft blueprint", "validation", "implementation delta"],
+          supersedes: ["live source overwrite", "hidden blueprint mutation"]
+        }),
+        def("element.inspection.source-binding", "Source Binding", "inspection", "source-binding", "Connects blueprint claims and rendered elements to source files, DOM selectors, CSS, scripts, tests, docs, route, and ownership hints.", {
+          htmlTag: "mcel-source-binding",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["sourceFiles", "domSelectors", "cssSelectors", "scripts", "tests", "docs", "route", "ownership"], optional: ["confidence", "lastObservedAt"]},
+          dataModel: {bindingFields: ["sourceFiles", "domSelectors", "cssSelectors", "scripts", "tests", "docs", "route", "ownership"]},
+          decoderHints: ["source binding", "source hint", "DOM selector", "CSS selector", "test hint", "doc hint"],
+          supersedes: ["vague source guess", "unowned DOM claim"]
+        }),
+        def("element.inspection.implementation-delta", "Implementation Delta", "inspection", "implementation-delta", "Shows what the blueprint claims, what the implementation shows, evidence, severity, and repair hints for an aspect.", {
+          htmlTag: "mcel-implementation-delta",
+          riskPolicy: analysis,
+          stateModel: {required: ["aspect", "expected", "observed", "evidence", "severity", "repairHint"], optional: ["sourceBinding", "annotationLinks"]},
+          decoderHints: ["implementation delta", "expected", "observed", "gap", "severity", "repair hint"],
+          supersedes: ["silent mismatch", "unverified blueprint claim"]
+        }),
+        def("element.inspection.acid-test-result", "Acid Test Result", "inspection", "acid-test-result", "Reusable result object for static, rendered, workflow, risk-policy, and export-readiness MCEL acid checks.", {
+          htmlTag: "mcel-acid-test-result",
+          riskPolicy: inspectOnly,
+          stateModel: {required: ["testId", "status", "scope", "evidence", "failureMode"], optional: ["requiresRenderedGeometry", "sourceFiles", "repairHint"]},
+          decoderHints: ["acid test", "validation result", "failure", "pass", "rendered geometry", "workflow simulation"],
+          supersedes: ["label-only test", "green status without evidence"]
+        }),
+        def("element.inspection.repair-finding", "Repair Finding", "inspection", "repair-finding", "A generic finding that links an inspection gap or annotation to target elements, source hints, required checks, and repair constraints.", {
+          htmlTag: "mcel-repair-finding",
+          riskPolicy: analysis,
+          stateModel: {required: ["problemSummary", "targetElements", "sourceHints", "requiredChecks", "riskLevel"], optional: ["annotations", "proposedChangeType", "testsToUpdate"]},
+          decoderHints: ["repair finding", "problem summary", "target element", "required check", "risk level"],
+          supersedes: ["unbounded repair prompt", "AI todo without evidence"]
+        }),
+        def("element.inspection.repair-plan", "Repair Plan", "inspection", "repair-plan", "Patch-ready repair guidance derived from inspection evidence and annotations without editing live code directly.", {
+          htmlTag: "mcel-repair-plan",
+          riskPolicy: analysis,
+          actionPolicy: {generatePatchGuidance: "inspect-only", editLiveSource: "no-submit", applyPatch: "no-submit"},
+          stateModel: {required: ["problemSummary", "targetElements", "sourceFiles", "requiredChecks", "proposedChangeType", "testsToAddOrUpdate", "riskLevel", "patchMode"], optional: ["allowedOutcomes", "forbiddenOutcomes"]},
+          decoderHints: ["repair plan", "patch mode", "tests to update", "replacement-file patch", "required checks"],
+          supersedes: ["direct live edit", "broad refactor without checks"]
+        }),
+
+        def("element.refactor.annotation-map", "Refactor Annotation Map", "refactor", "annotation-map", "App-specific saved annotation index keyed by rendered targets, layout zones, workflows, source hints, and repair status.", {
+          allowedChildren: ["element.refactor.element-annotation"],
+          htmlTag: "mcel-refactor-annotation-map",
+          riskPolicy: analysis,
+          stateModel: {required: ["appId", "annotations", "annotationPolicy"], optional: ["version", "lastSavedAt", "sourceBinding"]},
+          dataModel: {annotationFields: ["targetSelector", "mcelRole", "layoutZone", "userReasoning", "allowedOutcomes", "forbiddenOutcomes", "dependencyChecks", "sourceHints", "testExpectations"]},
+          decoderHints: ["annotation map", "saved annotations", "refactor annotations", "app-specific annotations"],
+          supersedes: ["global sticky note", "annotation detached from app"]
+        }),
+        def("element.refactor.element-annotation", "Element Annotation", "refactor", "element-annotation", "Durable user annotation for a rendered element, separating user intent from verified implementation facts.", {
+          htmlTag: "mcel-element-annotation",
+          riskPolicy: analysis,
+          stateModel: {required: ["targetSelector", "mcelRole", "layoutZone", "userReasoning", "allowedOutcomes", "forbiddenOutcomes", "dependencyChecks", "sourceHints", "testExpectations"], optional: ["kind", "priority", "purpose", "currentProblem", "desiredBehavior", "doNotChange"]},
+          dataModel: {kinds: ["keep", "remove", "rework", "move", "hide", "merge", "investigate"]},
+          decoderHints: ["selected element annotation", "target selector", "layout zone", "allowed fixes", "forbidden fixes", "dependency checks"],
+          supersedes: ["blind deletion note", "vague UI complaint"]
+        }),
+        def("element.refactor.removal-candidate", "Removal Candidate", "refactor", "removal-candidate", "Specialized annotation for possible removal that requires dependency checks before deletion is allowed.", {
+          htmlTag: "mcel-removal-candidate",
+          riskPolicy: analysis,
+          actionPolicy: {markCandidate: "inspect-only", deleteElement: "no-submit"},
+          stateModel: {required: ["targetSelector", "mcelRole", "layoutZone", "userReasoning", "allowedOutcomes", "forbiddenOutcomes", "dependencyChecks", "sourceHints", "testExpectations"], optional: ["replacementPath", "devOnlyAlternative"]},
+          dataModel: {requiredDependencyChecks: ["handlers", "tests", "docs", "replacementPath", "sourceOwners"]},
+          decoderHints: ["remove candidate", "delete candidate", "dependency check", "replacement path"],
+          supersedes: ["blind deletion", "delete without handler/test/doc check"]
+        }),
+        def("element.refactor.rework-candidate", "Rework Candidate", "refactor", "rework-candidate", "Specialized annotation for moving, hiding, merging, or redesigning an element with explicit allowed and forbidden outcomes.", {
+          htmlTag: "mcel-rework-candidate",
+          riskPolicy: analysis,
+          stateModel: {required: ["targetSelector", "mcelRole", "layoutZone", "userReasoning", "allowedOutcomes", "forbiddenOutcomes", "dependencyChecks", "sourceHints", "testExpectations"], optional: ["currentProblem", "desiredBehavior", "workflowRole", "layoutRole"]},
+          dataModel: {reworkKinds: ["move", "hide", "merge", "redesign", "split", "promote", "demote"]},
+          decoderHints: ["rework candidate", "move", "hide", "merge", "desired behavior"],
+          supersedes: ["cosmetic tweak without workflow role", "leave bad primary placement"]
+        }),
+        def("element.refactor.refactor-export-packet", "Refactor Export Packet", "refactor", "refactor-export-packet", "AI-ready packet that combines blueprint, annotations, DOM snapshot, layout/source/test reports, acid results, and repair brief without claiming unperformed dependency checks.", {
+          htmlTag: "mcel-refactor-export-packet",
+          riskPolicy: analysis,
+          actionPolicy: {exportPacket: "no-submit", applyPatch: "no-submit"},
+          stateModel: {required: ["manifest", "appBlueprint", "annotations", "domSnapshot", "layoutReport", "sourceMap", "acidTestReport", "refactorBrief", "testsToUpdate"], optional: ["dependencyCheckStatus", "packetWarnings"]},
+          dataModel: {packetFiles: ["manifest.json", "app-blueprint.json", "annotations.json", "dom-snapshot.html", "layout-report.json", "source-map.json", "acid-test-report.json", "refactor-brief.md", "tests-to-update.json"]},
+          decoderHints: ["export packet", "AI-ready refactor packet", "annotations.json", "refactor brief", "tests to update"],
+          supersedes: ["prompt-only repair", "export claiming unchecked dependencies"]
+        }),
         def("element.layout.document-workbench", "Document Workbench Layout", "layout", "document-workbench", "Hidden MCEL layout grammar for a calm writing app: menu and compact toolbar above, document navigation left, page/editor centered, companion inspector right, compact status state always available.", {
           allowedChildren: [
             "element.layout.document-menu-zone",

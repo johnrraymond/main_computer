@@ -1,11 +1,18 @@
 # WebGL Demo
 
-This project is a Phase 4 sprite/particle finale showcase for the Main Computer Game Surface.
+This repo-backed Main Computer game project is now a simple 3D federation-like shuttlecraft look-around scene.
 
-The default scene starts with the main character sprite rig, two enemy sprite targets, parented spell aura emitters, linked projectile streams, impact bursts, arena starfall, a nova ring, and a ground shockwave. The Game Surface can demonstrate cast timing, targeting, depth sorting, and dramatic spell effects without introducing mesh actors, or imported character models.
+- `project.json` starts the player as `hero-sprite` / “Player Cadet” inside the shuttle cabin.
+- The scene uses the `shuttle-3d` projection and a lightweight CSS/DOM 3D renderer in the shared scene surface.
+- Drag inside the Game Surface, or use the arrow keys, to look around the shuttle interior.
+- The forward viewport shows a starfield plus the nearby mother ship.
+- Shuttle consoles, the forward viewport, seats, hatch, hull ribs, player presence, starfield, mother ship, and ambient particle cues are authored as scene objects.
+- `hero-arc-bolt` is intentionally retained as the forward sensor sweep emitter so the existing GPU Forge prebuilt atlas workflow still has a stable default target.
+- `assets/` can hold authored shuttle panels, sprites, audio, VFX masks, and future frame data.
+- `scripts/` can hold encounter logic, ship systems, onboarding prompts, and editor automation helpers.
 
-Left-clicking the isometric floor moves the main sprite/particle character to the clicked tile, Diablo-style, without adding WASD movement.
+The player is stationary for this first 3D pass: the goal is to establish the interior, mouse/keyboard look-around, and the forward view of space before adding walking or ship-system interactions.
 
 ## VFX density controls
 
-The default scene now starts at 4x particle density and 4x effect intensity. Use the Game Editor VFX Density sliders or 1x/2x/4x preset buttons to dial the showcase up or down without editing JSON by hand.
+The default scene starts at 2x particle density and 1.5x effect intensity. Use the Game Editor VFX Density sliders or preset buttons to tune the cabin haze, console glow, starfield, and sensor sweep without editing JSON by hand.

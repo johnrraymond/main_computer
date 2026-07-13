@@ -28,6 +28,7 @@
         window.McelElementRegistry &&
         window.McelLabScm &&
         window.McelElementsCore &&
+        window.McelAppBlueprintsCore &&
         window.McelElementAcidTest &&
         window.TaskManagerMcel &&
         window.McelSupercut &&
@@ -45,6 +46,8 @@
       mcelLabState = window.mcelLabState || (window.mcelLabState = createDefaultMcelLabState());
       if (mcelLabState.initialized) return;
       mcelLabState.initialized = true;
+      renderMcelBlueprintShell();
+      bindMcelBlueprintShellActionControls();
       if (mcelSourceHtml && !mcelSourceHtml.value.trim()) {
         mcelSourceHtml.value = McelLabContract.defaultSource;
       }
@@ -59,6 +62,408 @@
       renderMcelElementLibraryAcidTest("boot");
       renderMcelTinyContractTest("boot", { exercise: false });
       renderMcelAutopilotDeferred("boot");
+    }
+
+
+
+    function mcelBlueprintShellState() {
+      const shellState = mcelLabState.blueprintShell || {};
+      const selectedApp = shellState.appId || "document-editor";
+      const selectedAspect = shellState.aspectId || "overview";
+      mcelLabState.blueprintShell = {
+        appId: selectedApp,
+        aspectId: selectedAspect
+      };
+      return mcelLabState.blueprintShell;
+    }
+
+    function mcelBlueprintShellLabelForZone(zone) {
+      return String(zone || "")
+        .replace(/-/g, " ")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    }
+
+    function mcelBlueprintShellAspectSummary(aspect) {
+      if (!aspect) return "No aspect selected.";
+      const evidence = Array.isArray(aspect.requiredEvidence) && aspect.requiredEvidence.length
+        ? aspect.requiredEvidence.join(", ")
+        : "implementation evidence";
+      return `${aspect.label || aspect.id} expects ${evidence}. Missing implementation evidence should become findings, not silent blanks.`;
+    }
+
+    function mcelBlueprintShellListText(values, fallback) {
+      const list = Array.isArray(values) ? values.filter(Boolean) : [];
+      return list.length ? list.join(", ") : fallback;
+    }
+
+    function mcelBlueprintShellPopulateList(listNode, messages) {
+      if (!listNode) return;
+      listNode.innerHTML = "";
+      const visibleMessages = (Array.isArray(messages) ? messages : []).filter(Boolean);
+      (visibleMessages.length ? visibleMessages : ["Evidence pending."]).forEach((message) => {
+        const item = document.createElement("li");
+        item.textContent = message;
+        listNode.appendChild(item);
+      });
+    }
+
+    function mcelBlueprintShellSelectedBlueprint(appId) {
+      const api = window.McelAppBlueprintsCore;
+      const blueprints = api?.listInspectableAppBlueprints?.() || [];
+      return api?.inspectableBlueprintFor?.(appId) || blueprints[0] || null;
+    }
+
+    function mcelBlueprintShellTrimmedBlueprint(blueprint, aspect) {
+      if (!blueprint) return {};
+      return {
+        appId: blueprint.appId,
+        label: blueprint.label,
+        route: blueprint.route,
+        rootSelector: blueprint.rootSelector,
+        dominantObject: blueprint.dominantObject,
+        selectedAspect: aspect ? {
+          id: aspect.id,
+          label: aspect.label,
+          elementId: aspect.elementId,
+          requiredEvidence: aspect.requiredEvidence || []
+        } : null,
+        layoutZones: blueprint.layoutZones || [],
+        sourceHints: blueprint.sourceHints || [],
+        testHints: blueprint.testHints || [],
+        docHints: blueprint.docHints || [],
+        riskFamilies: blueprint.riskFamilies || [],
+        annotationPolicy: {
+          allowedKinds: blueprint.annotationPolicy?.allowedKinds || [],
+          requiredFields: blueprint.annotationPolicy?.requiredFields || [],
+          requiredDependencyChecks: blueprint.annotationPolicy?.requiredDependencyChecks || [],
+          removalOrReworkRequiresDependencyChecks: Boolean(blueprint.annotationPolicy?.removalOrReworkRequiresDependencyChecks)
+        },
+        exportPolicy: {
+          requiredFiles: blueprint.exportPolicy?.requiredFiles || [],
+          patchMode: blueprint.exportPolicy?.patchMode || "replacement-file-guidance",
+          neverClaimUncheckedDependencies: Boolean(blueprint.exportPolicy?.neverClaimUncheckedDependencies)
+        }
+      };
+    }
+
+    function mcelBlueprintShellAppendFact(parent, label, value) {
+      if (!parent) return;
+      const item = document.createElement("div");
+      const term = document.createElement("dt");
+      const description = document.createElement("dd");
+      term.textContent = label;
+      description.textContent = value;
+      item.append(term, description);
+      parent.appendChild(item);
+    }
+
+    function mcelBlueprintShellDetailGroups(blueprint, api) {
+      if (Array.isArray(blueprint?.detailGroups) && blueprint.detailGroups.length) {
+        return blueprint.detailGroups;
+      }
+      if (api?.genericDetailGroups) return api.genericDetailGroups();
+      return [];
+    }
+
+    function mcelBlueprintShellRenderDetailStack(detailStack, blueprint, aspect, api) {
+      if (!detailStack) return;
+      detailStack.innerHTML = "";
+      const groups = mcelBlueprintShellDetailGroups(blueprint, api);
+      groups.forEach((group) => {
+        const details = document.createElement("details");
+        details.dataset.mcelDetailGroup = group.id || group.renderer || "blueprint-detail";
+        const summary = document.createElement("summary");
+        summary.textContent = group.label || group.id || "Blueprint detail";
+        const body = document.createElement("div");
+        body.className = "mcel-lab-detail-body";
+        mcelBlueprintShellRenderDetailGroupBody(body, group, blueprint, aspect, api);
+        details.append(summary, body);
+        detailStack.appendChild(details);
+      });
+    }
+
+    function mcelBlueprintShellRenderDetailGroupBody(body, group, blueprint, aspect, api) {
+      const renderer = group?.renderer || "facts";
+      if (renderer === "aspect-contract") {
+        const facts = document.createElement("dl");
+        facts.className = "mcel-lab-blueprint-facts mcel-lab-blueprint-detail-facts";
+        mcelBlueprintShellAppendFact(facts, "Aspect", aspect?.label || "Overview");
+        mcelBlueprintShellAppendFact(facts, "Required evidence", mcelBlueprintShellListText(aspect?.requiredEvidence, "implementation evidence"));
+        mcelBlueprintShellAppendFact(facts, "Finding policy", aspect?.findingPolicy || "missing evidence produces findings");
+        mcelBlueprintShellAppendFact(facts, "Contract element", aspect?.elementId || "element.inspection.aspect-panel");
+        body.appendChild(facts);
+        return;
+      }
+
+      if (renderer === "layout-zones") {
+        const zoneMap = document.createElement("div");
+        zoneMap.id = "mcel-blueprint-zone-map";
+        zoneMap.className = "mcel-lab-zone-map";
+        zoneMap.setAttribute("aria-label", "Generic layout zone map");
+        (blueprint.layoutZones || api?.genericLayoutZones?.() || []).forEach((zone) => {
+          const item = document.createElement("article");
+          item.dataset.zone = zone;
+          const title = document.createElement("strong");
+          title.textContent = zone;
+          const detail = document.createElement("span");
+          detail.textContent = blueprint.layoutBinding?.zones?.[zone] || "binding pending";
+          item.append(title, detail);
+          zoneMap.appendChild(item);
+        });
+        body.appendChild(zoneMap);
+        return;
+      }
+
+      if (renderer === "support-hints") {
+        const hints = document.createElement("dl");
+        hints.className = "mcel-lab-blueprint-facts mcel-lab-blueprint-hints";
+        const hintSets = [
+          ["Source hints", "mcel-blueprint-source-hints", blueprint.sourceHints, "source hints pending"],
+          ["Test hints", "mcel-blueprint-test-hints", blueprint.testHints, "test hints pending"],
+          ["Doc hints", "mcel-blueprint-doc-hints", blueprint.docHints, "doc hints pending"],
+          ["Risk families", "mcel-blueprint-risk-hints", blueprint.riskFamilies, "risk hints pending"]
+        ];
+        hintSets.forEach(([label, id, values, fallback]) => {
+          const item = document.createElement("div");
+          const term = document.createElement("dt");
+          const description = document.createElement("dd");
+          term.textContent = label;
+          description.id = id;
+          description.textContent = mcelBlueprintShellListText(values, fallback);
+          item.append(term, description);
+          hints.appendChild(item);
+        });
+        body.appendChild(hints);
+        return;
+      }
+
+      if (renderer === "export-contract") {
+        const facts = document.createElement("dl");
+        facts.className = "mcel-lab-blueprint-facts mcel-lab-blueprint-detail-facts";
+        mcelBlueprintShellAppendFact(facts, "Export files", mcelBlueprintShellListText(blueprint.exportPolicy?.requiredFiles, "export files pending"));
+        mcelBlueprintShellAppendFact(facts, "Patch mode", blueprint.exportPolicy?.patchMode || "replacement-file-guidance");
+        mcelBlueprintShellAppendFact(facts, "Annotation kinds", mcelBlueprintShellListText(blueprint.annotationPolicy?.allowedKinds, "annotation kinds pending"));
+        mcelBlueprintShellAppendFact(facts, "Dependency checks", mcelBlueprintShellListText(blueprint.annotationPolicy?.requiredDependencyChecks, "dependency checks pending"));
+        body.appendChild(facts);
+        return;
+      }
+
+      if (renderer === "raw-json") {
+        const preview = document.createElement("pre");
+        preview.id = "mcel-blueprint-preview";
+        preview.className = "mcel-lab-blueprint-json";
+        preview.textContent = JSON.stringify(mcelBlueprintShellTrimmedBlueprint(blueprint, aspect), null, 2);
+        body.appendChild(preview);
+        return;
+      }
+
+      const fallback = document.createElement("p");
+      fallback.textContent = "Blueprint detail is declared but no renderer is available yet.";
+      body.appendChild(fallback);
+    }
+
+    
+    function renderMcelBlueprintShell(nextState = {}) {
+      const api = window.McelAppBlueprintsCore;
+      const shell = document.getElementById("mcel-lab-app");
+      const appSelect = document.getElementById("mcel-blueprint-app-select");
+      const aspectSelect = document.getElementById("mcel-blueprint-aspect-select");
+      const appList = document.getElementById("mcel-blueprint-app-list");
+      const aspectList = document.getElementById("mcel-blueprint-aspect-list");
+      const outline = document.getElementById("mcel-blueprint-outline");
+      const aspectTitle = document.getElementById("mcel-blueprint-aspect-title");
+      const workBadge = document.getElementById("mcel-blueprint-work-badge");
+      const mountRoute = document.getElementById("mcel-blueprint-mount-route");
+      const aspectSummary = document.getElementById("mcel-blueprint-aspect-summary");
+      const requiredEvidence = document.getElementById("mcel-blueprint-required-evidence");
+      const nextActions = document.getElementById("mcel-blueprint-next-actions");
+      const currentApp = document.getElementById("mcel-blueprint-current-app");
+      const currentRoute = document.getElementById("mcel-blueprint-current-route");
+      const currentRoot = document.getElementById("mcel-blueprint-current-root");
+      const currentObject = document.getElementById("mcel-blueprint-current-object");
+      const detailStack = document.getElementById("mcel-blueprint-detail-stack");
+      const findings = document.getElementById("mcel-blueprint-findings");
+      const selectedElement = document.getElementById("mcel-blueprint-selected-element");
+      const validityStatus = document.getElementById("mcel-blueprint-validity-status");
+      const savedStatus = document.getElementById("mcel-blueprint-saved-status");
+      const exportStatus = document.getElementById("mcel-blueprint-export-status");
+
+      if (!shell || !api?.listInspectableAppBlueprints) return;
+
+      const shellState = mcelBlueprintShellState();
+      if (nextState.appId) shellState.appId = nextState.appId;
+      if (nextState.aspectId) shellState.aspectId = nextState.aspectId;
+
+      const blueprints = api.listInspectableAppBlueprints();
+      const blueprint = mcelBlueprintShellSelectedBlueprint(shellState.appId);
+      if (!blueprint) return;
+      shellState.appId = blueprint.appId;
+
+      const aspects = Array.isArray(blueprint.aspects) && blueprint.aspects.length
+        ? blueprint.aspects
+        : (api.genericAspectIds?.() || []).map((id) => ({id, label: mcelBlueprintShellLabelForZone(id), requiredEvidence: []}));
+      const aspect = aspects.find((candidate) => candidate.id === shellState.aspectId) || aspects[0] || null;
+      if (aspect) shellState.aspectId = aspect.id;
+
+      shell.dataset.mcelBlueprintTarget = blueprint.appId;
+
+      if (appSelect) {
+        appSelect.innerHTML = "";
+        blueprints.forEach((candidate) => {
+          const option = document.createElement("option");
+          option.value = candidate.appId;
+          option.textContent = candidate.label || candidate.appId;
+          appSelect.appendChild(option);
+        });
+        appSelect.value = blueprint.appId;
+        if (appSelect.dataset.mcelBlueprintBound !== "true") {
+          appSelect.addEventListener("change", () => renderMcelBlueprintShell({appId: appSelect.value}));
+          appSelect.dataset.mcelBlueprintBound = "true";
+        }
+      }
+
+      if (aspectSelect) {
+        aspectSelect.innerHTML = "";
+        aspects.forEach((candidate) => {
+          const option = document.createElement("option");
+          option.value = candidate.id;
+          option.textContent = candidate.label || candidate.id;
+          aspectSelect.appendChild(option);
+        });
+        if (aspect) aspectSelect.value = aspect.id;
+        if (aspectSelect.dataset.mcelBlueprintBound !== "true") {
+          aspectSelect.addEventListener("change", () => renderMcelBlueprintShell({aspectId: aspectSelect.value}));
+          aspectSelect.dataset.mcelBlueprintBound = "true";
+        }
+      }
+
+      if (appList) {
+        appList.innerHTML = "";
+        blueprints.forEach((candidate) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.mcelBlueprintAppOption = candidate.appId;
+          button.setAttribute("aria-pressed", String(candidate.appId === blueprint.appId));
+          const title = document.createElement("strong");
+          title.textContent = candidate.label || candidate.appId;
+          const detail = document.createElement("span");
+          detail.textContent = candidate.appId === "mcel-lab" ? "Self-hosting inspector" : "Product app";
+          button.append(title, detail);
+          button.addEventListener("click", () => renderMcelBlueprintShell({appId: candidate.appId}));
+          appList.appendChild(button);
+        });
+      }
+
+      if (aspectList) {
+        aspectList.innerHTML = "";
+        aspects.forEach((candidate) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.mcelBlueprintAspectOption = candidate.id;
+          button.setAttribute("aria-pressed", String(aspect && candidate.id === aspect.id));
+          button.textContent = candidate.label || candidate.id;
+          button.addEventListener("click", () => renderMcelBlueprintShell({aspectId: candidate.id}));
+          aspectList.appendChild(button);
+        });
+      }
+
+      if (outline) {
+        outline.innerHTML = "";
+        aspects.forEach((candidate) => {
+          const item = document.createElement("li");
+          item.dataset.mcelBlueprintOutlineItem = candidate.id;
+          if (aspect && candidate.id === aspect.id) item.dataset.active = "true";
+          const title = document.createElement("span");
+          title.textContent = candidate.label || candidate.id;
+          item.append(title);
+          outline.appendChild(item);
+        });
+      }
+
+      if (aspectTitle) {
+        aspectTitle.textContent = `${blueprint.label || blueprint.appId} · ${aspect?.label || "Overview"}`;
+      }
+      if (workBadge) {
+        workBadge.textContent = "static Phase 2 workspace";
+      }
+      if (mountRoute) {
+        mountRoute.textContent = blueprint.route || "route pending";
+      }
+      if (aspectSummary) aspectSummary.textContent = mcelBlueprintShellAspectSummary(aspect);
+      mcelBlueprintShellPopulateList(requiredEvidence, [
+        aspect ? `Required evidence: ${mcelBlueprintShellListText(aspect.requiredEvidence, "implementation evidence")}.` : "No aspect selected.",
+        "Runtime DOM evidence appears after mounting exists."
+      ]);
+      mcelBlueprintShellPopulateList(nextActions, [
+        "Mount the selected app in Phase 3.",
+        "Use point-and-inspect in Phase 4.",
+        "Save annotations and export packets in later phases."
+      ]);
+      if (currentApp) currentApp.textContent = blueprint.label || blueprint.appId;
+      if (currentRoute) currentRoute.textContent = blueprint.route || "route pending";
+      if (currentRoot) currentRoot.textContent = blueprint.rootSelector || "root selector pending";
+      if (currentObject) currentObject.textContent = blueprint.dominantObject || "App";
+      mcelBlueprintShellRenderDetailStack(detailStack, blueprint, aspect, api);
+
+      if (selectedElement) {
+        selectedElement.textContent = `Nothing selected in ${blueprint.label || blueprint.appId}. Point-and-inspect is deferred to Phase 4.`;
+      }
+
+      mcelBlueprintShellPopulateList(findings, [
+        `${blueprint.label || blueprint.appId} uses the shared ${aspects.length}-aspect model.`,
+        "Runtime evidence is pending until mounting exists."
+      ]);
+
+      if (validityStatus) {
+        validityStatus.textContent = `Blueprint loaded: ${blueprint.appId} · ${aspects.length} aspects · ${(blueprint.layoutZones || []).length} zones.`;
+      }
+      if (savedStatus) {
+        savedStatus.textContent = "Saved annotations: not implemented in Phase 2.";
+      }
+      if (exportStatus) {
+        const requiredFiles = blueprint.exportPolicy?.requiredFiles?.length || 0;
+        exportStatus.textContent = `Export packet: contract only · ${requiredFiles} required files defined.`;
+      }
+    }
+
+    function validateMcelBlueprintShell() {
+      const status = document.getElementById("mcel-blueprint-validity-status");
+      const api = window.McelAppBlueprintsCore;
+      const shellState = mcelBlueprintShellState();
+      const documentBlueprint = api?.inspectableBlueprintFor?.("document-editor");
+      const labBlueprint = api?.inspectableBlueprintFor?.("mcel-lab");
+      const selectedBlueprint = api?.inspectableBlueprintFor?.(shellState.appId);
+      const sharedAspectModel = JSON.stringify(documentBlueprint?.aspectIds || []) === JSON.stringify(labBlueprint?.aspectIds || []);
+      const hasGenericZones = selectedBlueprint && (selectedBlueprint.layoutZones || []).includes("primary") && (selectedBlueprint.layoutZones || []).includes("advanced");
+      if (status) {
+        status.textContent = sharedAspectModel && hasGenericZones
+          ? `Blueprint valid: ${shellState.appId} shares the generic aspect model and layout zones.`
+          : "Blueprint invalid: generic aspect or layout-zone contract is incomplete.";
+      }
+      return Boolean(sharedAspectModel && hasGenericZones);
+    }
+
+    function bindMcelBlueprintShellActionControls() {
+      const validateButton = document.getElementById("mcel-blueprint-validate-action");
+      const mountButton = document.getElementById("mcel-blueprint-mount-action");
+      const inspectButton = document.getElementById("mcel-blueprint-inspect-action");
+      const exportButton = document.getElementById("mcel-blueprint-export-action");
+      if (validateButton && validateButton.dataset.mcelBlueprintBound !== "true") {
+        validateButton.addEventListener("click", validateMcelBlueprintShell);
+        validateButton.dataset.mcelBlueprintBound = "true";
+      }
+      [
+        [mountButton, "Mounting is deferred to Phase 3; this shell only selects the target blueprint."],
+        [inspectButton, "Point-and-inspect is deferred to Phase 4; this shell only shows placeholders."],
+        [exportButton, "Export packet generation is deferred to Phase 7; this shell only shows the contract."]
+      ].forEach(([button, message]) => {
+        if (!button || button.dataset.mcelBlueprintBound === "true") return;
+        button.addEventListener("click", () => {
+          const status = document.getElementById("mcel-blueprint-validity-status");
+          if (status) status.textContent = message;
+        });
+        button.dataset.mcelBlueprintBound = "true";
+      });
     }
 
 

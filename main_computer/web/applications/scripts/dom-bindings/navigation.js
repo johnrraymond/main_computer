@@ -5,7 +5,7 @@
     const terminalAnalysisToggle = document.querySelector("#terminal-analysis-toggle");
     const appCopy = {
       desktop: ["Desktop", "Choose an app from the desktop grid.", "Desktop app launcher is ready."],
-      webgl: ["Game Surface", "Arcstorm finale surface is ready.", "Game surface renders the selected Arcstorm finale sprite/particle showcase."],
+      webgl: ["Game Surface", "3D shuttle look-around is ready.", "Game surface renders the selected shuttlecraft interior with a forward viewport, stars, and the mother ship."],
       astrometric: ["Astrometric 3D", "Docker-backed C++/GPU Schwarzschild renderer is ready.", "Astrometric 3D streams backend-rendered frames and forwards mouse camera controls."],
       calculator: ["Calculator", "Local arithmetic tool is ready.", "Calculator is running."],
       document: ["Document Editor", "Editable writing workspace is ready.", "Document Editor is running."],

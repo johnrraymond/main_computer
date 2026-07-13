@@ -51,6 +51,41 @@ class ViewportApplicationsStaticCoreTests(unittest.TestCase):
         self.assertIn("workspace.focus({preventScroll: true});", APPLICATIONS_INDEX_HTML)
         self.assertIn("focusActiveWorkspaceAfterPointerAppSelection(button, event);", APPLICATIONS_INDEX_HTML)
 
+    def test_desktop_icons_are_large_tinted_and_distinct(self) -> None:
+        self.assertIn("grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));", APPLICATIONS_INDEX_HTML)
+        self.assertIn("min-height: 144px;", APPLICATIONS_INDEX_HTML)
+        self.assertIn("width: 52px;", APPLICATIONS_INDEX_HTML)
+        self.assertIn("height: 52px;", APPLICATIONS_INDEX_HTML)
+        self.assertIn("width: 34px;", APPLICATIONS_INDEX_HTML)
+        self.assertIn("stroke-width: 2.2;", APPLICATIONS_INDEX_HTML)
+        self.assertIn("background: linear-gradient(135deg, var(--desktop-icon-accent-bright), var(--desktop-icon-accent));", APPLICATIONS_INDEX_HTML)
+        self.assertIn("conductor: `", APPLICATIONS_INDEX_HTML)
+        self.assertIn('<circle cx="12" cy="6.5" r="2.1" />', APPLICATIONS_INDEX_HTML)
+        for app_name in (
+            "webgl",
+            "astrometric",
+            "calculator",
+            "document",
+            "spreadsheet",
+            "onlyoffice",
+            "task-manager",
+            "conductor",
+            "terminal",
+            "chat-console",
+            "ai-control",
+            "email",
+            "git-tools",
+            "code-editor",
+            "file-explorer",
+            "game-editor",
+            "website-builder",
+            "mcel-lab",
+            "worker",
+            "wallet",
+        ):
+            self.assertIn(f'.desktop-icon[data-app="{app_name}"]', APPLICATIONS_INDEX_HTML)
+
+
     def test_applications_index_contains_core_and_game_hooks(self) -> None:
         self.assertIn("Main Computer Applications", APPLICATIONS_INDEX_HTML)
         self.assertIn('class="app-card ready active" href="/applications" data-app="desktop"', APPLICATIONS_INDEX_HTML)

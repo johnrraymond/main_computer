@@ -1,884 +1,1059 @@
-# MCEL Lab Blueprint Studio Requirements and Specification
+# MCEL Lab Blueprint Studio
 
 ## Status
 
-Planning and requirements document for the first redesign patch of MCEL Lab.
+Design and requirements document for redesigning MCEL Lab into a self-hosting app-aspect inspector and blueprint studio.
 
-This document is intentionally product-facing and implementation-facing at the same time. It defines what MCEL Lab should become, how a user operates it, how it uses MCEL from start to finish, and how it proves value as a tool for generating good-looking, solid application workbenches.
-
-The first implementation patch after this document should not attempt to rebuild every MCEL runtime or every application. It should create one clean, useful MCEL Lab workflow that can inspect an app blueprint, preview its workbench layout, run acid tests, and produce repair findings.
-
-## Core thesis
-
-MCEL Lab should become **MCEL Blueprint Studio**.
-
-The route and application identity can remain `mcel-lab`, but the user-facing job changes from a diagnostic dashboard into an app-design workbench.
-
-MCEL Lab should answer one practical question:
-
-```text
-Can MCEL describe an app well enough to generate, preview, test, and repair a good-looking solid app shell?
-```
-
-The primary goal is to generate good-looking apps that are solid. In this context, "good-looking" does not mean decorative. It means the app has a coherent shape: a visible dominant object, predictable workflow, clear layout zones, restrained visual hierarchy, explicit action risk, evidence near the action that produced it, and responsive behavior that protects the primary work surface.
+This document is intentionally product-facing and implementation-facing. It defines what MCEL Lab must do for users, what app operations it must support, how it must use generic MCEL elements, and how it must prove that MCEL can help generate good-looking, solid applications.
 
 ## Product purpose
 
-MCEL Lab is the place where Main Computer users and developers design, validate, and repair app workbench blueprints before changing production apps.
+MCEL Lab should become the tool that helps us design, inspect, test, and repair apps before and during implementation.
 
-The redesigned lab should let a user:
-
-```text
-select an app or create a new app blueprint
-describe the app purpose and dominant object
-define objects, workflows, capabilities, actions, and risk policies
-assign those concepts into layout zones
-preview a generated app shell at multiple viewport sizes
-run MCEL acid tests against the blueprint and the live app implementation
-inspect findings and repair recommendations
-export a scaffold or patch plan only after the blueprint is coherent
-```
-
-The lab is allowed to show MCEL internals because it is the MCEL product surface. Product apps such as Document Editor, Git Tools, Code Editor, Wallet, Spreadsheet, and Website Builder should not display MCEL debug cards or raw contract prose.
-
-## Non-goals for the first redesign
-
-The first redesign is not a full visual app builder. It should not try to replace Code Editor, Layout Builder, Website Builder, or every app-specific runtime.
-
-The first redesign should not:
+The primary goal is:
 
 ```text
-generate production-ready app code for every app type
-provide drag-and-drop freeform design
-embed raw MCEL findings into product app pages
-rewrite Document Editor or Git Tools directly
-execute risky app actions
-trust visual previews without acid-test evidence
-claim that MCEL can lay out arbitrary apps without a blueprint
+Generate good-looking apps that are solid.
 ```
 
-The first redesign should prove the app-blueprint loop using one or two concrete specimens, with Document Editor as the recommended first blueprint because its desired shape is well understood.
+In this context, "good-looking" does not mean decorative. It means the app has a clear dominant object, coherent layout, correct visual hierarchy, safe action placement, visible evidence, and predictable behavior across workflows and viewport sizes.
+
+MCEL Lab should let us say:
+
+```text
+This app is about this object.
+These are the workflows.
+These are the layout zones.
+These controls belong here.
+These actions are safe, advanced, blocked, or destructive.
+These shared capabilities are consumed through app-native projections.
+These tests prove the app actually follows the blueprint.
+```
+
+Then MCEL Lab should compare that blueprint to the real implementation and produce findings or repair plans.
+
+## Core product law
+
+MCEL Lab must not become another hardcoded MCEL dashboard.
+
+It must be the first self-hosting MCEL workbench: a generic app-aspect inspector built from the same elements it uses to inspect other apps.
+
+The Lab is allowed to expose MCEL internals because it is the MCEL tool. Product apps are not allowed to show MCEL scaffolding or spec cards as a substitute for good UI.
 
 ## Dominant object
 
-The dominant object of the redesigned MCEL Lab is:
+The Lab's dominant object is:
 
 ```text
-App Blueprint
+AppBlueprint
 ```
 
-An app blueprint is not just a JSON dump. It is a product contract.
-
-An app blueprint describes:
+An `AppBlueprint` describes one application as a product/workbench, not merely as a route or HTML file.
 
 ```text
-purpose
-dominant object
-secondary objects
-primary workflow
-secondary workflows
-advanced workflows
-layout zones
-capabilities consumed
-provider/consumer projections
-primary actions
-secondary actions
-advanced actions
-blocked or risky actions
-state model
-evidence model
-geometry policy
-responsive policy
-acid tests
-repair findings
-implementation bindings
+object AppBlueprint {
+  identity: appId
+  title: appName
+  purpose: productPurpose
+  state: draft | valid | invalid | tested | repair-ready
+  relationships:
+    Aspect[]
+    ObjectModel[]
+    Workflow[]
+    LayoutBinding[]
+    CapabilityProjection[]
+    ActionPolicy[]
+    EvidenceModel[]
+    SourceBinding[]
+    AcidTest[]
+    RepairFinding[]
+    PatchPlan[]
+}
 ```
 
-## User roles
+The selected app blueprint is always the thing being inspected, edited, previewed, tested, or repaired.
 
-### Product author
+## Primary user requirements
 
-A product author uses MCEL Lab to describe what an app should be before implementation.
+MCEL Lab must support these user requirements.
 
-They care about:
+### Select and load an app
+
+The user can select an app blueprint from the application set.
+
+Required operations:
 
 ```text
-what the app is for
-what object the user works on
-how the app should look and feel structurally
-which actions belong in the primary flow
-which controls are advanced
-which evidence the user needs to trust the app
+Select app
+Load blueprint
+Load implementation bindings
+Show source files
+Show current validation status
 ```
 
-### Application developer
-
-An application developer uses MCEL Lab to bind a blueprint to real HTML, CSS, JavaScript, tests, and app routes.
-
-They care about:
-
-```text
-data-mcel-layout-zone bindings
-DOM ownership
-CSS grid/flex rules
-state transitions
-responsive behavior
-test fixtures
-repair guidance
-```
-
-### MCEL maintainer
-
-A MCEL maintainer uses the lab to decide whether a pattern is generic enough to promote into MCEL core.
-
-They care about:
-
-```text
-whether the pattern is cross-app
-whether it has executable evidence
-whether it fails closed
-whether it avoids source/runtime contamination
-whether product apps remain clean
-```
-
-## Primary user operations
-
-### 1. Select blueprint
-
-The user chooses an existing app blueprint or creates a new one.
-
-Required UI:
-
-```text
-app selector
-blueprint status
-blueprint source indicator
-last acid-test run
-validation state
-```
-
-Example labels:
+The first required targets are:
 
 ```text
 Document Editor
+MCEL Lab itself
 Git Tools
 Code Editor
-New Blueprint
 ```
 
-MCEL requirement:
+Document Editor is the first useful product-app target because its layout expectations are familiar and easy to judge. MCEL Lab itself is the self-hosting target.
+
+### Inspect every aspect of an app
+
+The Lab must let the user inspect each aspect of a selected app.
+
+Required aspects:
 
 ```text
-Selecting a blueprint may change the lab preview and findings.
-Selecting a blueprint must not mutate the target application.
+Product identity
+Object model
+Workflow map
+Layout binding
+Action and risk policy
+Capability projection
+Evidence model
+Source binding
+Acid tests
+Findings
+Repair plan
 ```
 
-### 2. Define purpose and dominant object
+The Lab should not collapse these into a single blob of planner output. Each aspect needs a usable UI surface.
 
-The user defines the app's product promise and the main object the app is about.
+### Mount and annotate rendered elements
+
+The Lab must let the user mount an app into an inspectable preview, point at rendered elements, and attach durable refactor intent.
+
+The primary operation is:
+
+```text
+mount app -> point at element -> capture evidence -> annotate intent -> save annotation -> export AI refactor context
+```
+
+The user must be able to select an element and say:
+
+```text
+This element needs to be removed or reworked because it is not doing anything.
+This element is misplaced and should move to Advanced.
+This element is duplicate UI and should be merged.
+This element is confusing and should be reworked.
+This element should stay, but needs a clearer purpose and tests.
+```
+
+The Lab must treat these as investigation-backed refactor candidates, not blind deletion requests.
+
+When an element is selected, the Lab should capture:
+
+```text
+selector
+stable data attributes
+visible text
+layout zone
+MCEL role
+bounding box
+nearby elements
+event-handler/source hints
+CSS ownership hints
+test ownership hints
+documentation hints
+```
+
+The annotation must be saved with the app blueprint and included in the refactor export packet.
+
+### Edit the blueprint safely
+
+The user can edit the app blueprint as a draft.
+
+Required operations:
+
+```text
+Edit purpose
+Edit dominant object
+Edit object model
+Edit workflows
+Edit layout zones
+Edit placement rules
+Edit action risk policy
+Edit capability projections
+Edit acid-test policy
+Validate draft
+Compare draft to implementation
+```
+
+Edits are draft blueprint changes until they are exported or turned into a patch. MCEL Lab must not silently rewrite live source files.
+
+### Preview the generated workbench
+
+The user can preview the app shell generated from the blueprint.
+
+Required preview modes:
+
+```text
+Desktop
+Narrow desktop
+Tablet
+Mobile
+Navigation open/closed
+Companion open/closed
+Advanced hidden/shown
+```
+
+The preview is not a replacement for the app. It is a generated proof surface that shows whether the blueprint can produce a coherent app layout.
+
+### Run acid tests
+
+The user can run MCEL acid tests against the blueprint and the implementation.
+
+Required test families:
+
+```text
+Static contract tests
+DOM binding tests
+Placement tests
+Action policy tests
+Source binding tests
+Rendered geometry tests
+Workflow behavior tests
+Capability projection tests
+Product cleanliness tests
+```
+
+The acid tests must prove that MCEL labels control real behavior. They must not stop at proving that data attributes exist.
+
+### Review findings and repair plans
+
+The user can review findings and repair plans.
+
+Required finding types:
+
+```text
+Missing dominant object
+Missing required layout zone
+Ambiguous layout owner
+Primary surface not protected
+Advanced controls in primary toolbar
+Provider UI dumped into consumer app
+Action risk not classified
+Evidence missing or detached
+Source binding missing
+Acid test missing
+Rendered layout violates geometry policy
+Product UI contains debug/spec scaffolding
+```
+
+Required repair output:
+
+```text
+Human-readable finding
+Affected aspect
+Affected source binding
+Recommended layout or source change
+Risk level
+Test that should pass after repair
+Patch plan, when available
+```
+
+### Generate patch artifacts safely
+
+The Lab may generate repair plans and patch artifacts. It must not directly apply its own repair to the live repo.
+
+Allowed:
+
+```text
+Generate patch plan
+Generate replacement-file patch zip
+Generate documentation update
+Generate tests
+Export blueprint JSON
+```
+
+Forbidden:
+
+```text
+Directly mutate live source without review
+Apply its own patch silently
+Overwrite running app implementation
+Execute provider-native destructive actions during proof
+```
+
+This keeps the Lab compatible with the existing `new_patch.py` replacement-file workflow.
+
+### Export AI refactor context
+
+The Lab must export selected annotations and app evidence as an AI-ready refactor context.
+
+The export is not a vague screenshot or prose note. It must include enough structured evidence for an AI repair pass to make a precise replacement-file patch.
+
+A refactor export packet should contain:
+
+```text
+manifest.json
+app-blueprint.json
+annotations.json
+dom-snapshot.html
+layout-report.json
+source-map.json
+css-ownership-hints.json
+js-handler-hints.json
+tests-to-update.json
+refactor-brief.md
+```
+
+The human-readable brief must include:
+
+```text
+selected app
+selected aspect
+selected element or source target
+user assessment
+current problem
+desired behavior
+allowed fixes
+forbidden fixes
+dependency checks
+source hints
+test expectations
+new_patch.py delivery expectation
+```
+
+For the common "this is not doing anything" case, the brief must say that the element is a dead/unwired/duplicate/misplaced candidate and must be investigated before deletion.
+
+## Generic MCEL element requirement
+
+The initial design must use generic MCEL elements that the system defines, adding new reusable elements only when needed.
+
+Bad design:
+
+```text
+Hardcode "MCEL Lab left panel"
+Hardcode "MCEL Lab center preview"
+Hardcode "MCEL Lab findings drawer"
+```
+
+Good design:
+
+```text
+Use element.core.app
+Use element.core.collection
+Use element.layout.navigation-zone
+Use element.layout.primary-work-zone
+Use element.layout.inspector-zone
+Use element.layout.evidence-zone
+Use element.layout.status-zone
+Use element.layout.advanced-zone
+Use element.inspection.aspect-map
+Use element.inspection.source-binding
+Use element.inspection.repair-finding
+```
+
+The Lab should prove that the generic element set is expressive enough to build a real MCEL workbench. When it is not expressive enough, we add reusable inspection elements rather than Lab-only hacks.
+
+## Required generic elements
+
+The Lab design must start with these existing generic families.
+
+### Core elements
+
+```text
+element.core.app
+element.core.region
+element.core.panel
+element.core.collection
+element.core.field
+element.core.action
+element.core.status-feed
+```
+
+### App/workbench elements
+
+```text
+element.app.dominant-object
+element.app.workflow-map
+element.app.action-hierarchy
+element.app.progressive-disclosure
+element.app.product-composition
+```
+
+### Layout elements
+
+```text
+element.layout.menu-zone
+element.layout.toolbar-zone
+element.layout.navigation-zone
+element.layout.primary-work-zone
+element.layout.inspector-zone
+element.layout.companion-zone
+element.layout.evidence-zone
+element.layout.status-zone
+element.layout.advanced-zone
+```
+
+### Resource and proof elements
+
+```text
+element.resource.artifact-workspace
+element.resource.source-buffer
+element.resource.patch-inventory
+element.proof.specimen-model
+element.proof.evidence-graph
+element.proof.law
+element.proof.fixture
+```
+
+### Agent and render elements
+
+```text
+element.agent.reasoning-trace
+element.agent.suggestion
+element.render.preview
+element.render.visual-surface
+```
+
+## New reusable inspection elements
+
+The redesign may add new elements when they represent reusable inspection concepts.
+
+Required candidates:
+
+```text
+element.inspection.aspect-map
+element.inspection.aspect-panel
+element.inspection.blueprint-editor
+element.inspection.source-binding
+element.inspection.implementation-delta
+element.inspection.acid-test-result
+element.inspection.repair-finding
+element.inspection.repair-plan
+```
+
+These are not MCEL-Lab-only concepts. Code Editor, Git Tools, Document Editor, Website Builder, and future repair tools can also use them.
+
+### `element.inspection.aspect-map`
+
+Represents the list/tree of inspectable aspects for an app blueprint.
+
+Required state:
+
+```text
+selectedAspect
+availableAspects
+aspectStatus
+missingAspects
+```
+
+### `element.inspection.blueprint-editor`
+
+Represents safe editing of the selected blueprint draft.
+
+Required state:
+
+```text
+draftBlueprint
+dirtyState
+validationState
+sourceBlueprint
+implementationDelta
+```
+
+### `element.inspection.source-binding`
+
+Connects blueprint claims to implementation files.
+
+Required state:
+
+```text
+sourceFiles
+domSelectors
+cssSelectors
+scripts
+tests
+docs
+route
+ownership
+```
+
+### `element.inspection.implementation-delta`
+
+Shows what the blueprint says versus what the implementation does.
+
+Required state:
+
+```text
+aspect
+expected
+observed
+evidence
+severity
+repairHint
+```
+
+### `element.inspection.acid-test-result`
+
+Shows static, rendered, workflow, and risk-policy test results.
+
+Required state:
+
+```text
+testId
+testFamily
+status
+evidence
+failureMessage
+repairFinding
+```
+
+### `element.inspection.repair-finding`
+
+Represents a user-actionable finding.
+
+Required state:
+
+```text
+findingId
+aspect
+severity
+summary
+affectedFiles
+evidence
+recommendedChange
+blockingTest
+```
+
+### `element.refactor.annotation-map`
+
+A durable map of user-authored element annotations for a mounted app.
+
+This element is reusable across all apps. It records the user's product/design/refactor intent at the point of inspection and connects that intent to MCEL evidence, DOM evidence, source hints, and exportable repair context.
+
+### `element.refactor.element-annotation`
+
+A single annotation attached to a rendered element, layout zone, source file, workflow, or app aspect.
 
 Required fields:
 
 ```text
-purpose
-dominantObject
-emptyState
-primaryUserPromise
+id
+appId
+target selector or source path
+annotation kind
+user assessment
+desired outcome
+allowed outcomes
+forbidden outcomes
+required checks
+source hints
+test expectations
 ```
 
-Example:
+### `element.refactor.removal-candidate`
+
+A selected element that appears dead, unused, duplicated, misleading, or harmful.
+
+Removal candidates must require dependency checks before any deletion is proposed.
+
+Required checks:
 
 ```text
-purpose: Write, revise, navigate, improve, and restore long-form documents.
-dominantObject: Document
+source references
+event handlers
+CSS selectors
+tests
+documentation
+feature flags
+debug/dev gates
+replacement path
+duplicate controls
 ```
 
-MCEL value:
+### `element.refactor.rework-candidate`
+
+A selected element that has a useful purpose but is unclear, ugly, misplaced, incomplete, or not wired to meaningful behavior.
+
+Allowed outcomes include:
 
 ```text
-A layout cannot be judged until the dominant object is known.
+rework
+move
+hide behind advanced/dev-only disclosure
+merge with duplicate control
+replace with clearer control
+keep with better label, purpose, and tests
 ```
 
-### 3. Model objects and relationships
+### `element.refactor.refactor-export-packet`
 
-The user defines the objects the app owns or consumes.
+An AI-ready export bundle that packages blueprint state, annotations, DOM evidence, source bindings, findings, and test expectations for a safe refactor.
 
-Example Document Editor objects:
+The export packet must explain:
 
 ```text
-Document
-DocumentTab
-Chapter
-Section
-Selection
-AISuggestion
-Revision
-Export
-Checkpoint
+what the user selected
+why it was marked
+what MCEL knows about it
+what source files likely own it
+what fixes are allowed
+what fixes are forbidden
+what must be verified before deletion or rewiring
+what tests should be added or updated
 ```
 
-Example Git Tools objects:
+## Lab layout specification
+
+The redesigned Lab should use this generic workbench layout.
 
 ```text
-Repository
-Branch
-WorkingTree
-Patch
-Commit
-Remote
-CommandOutput
-OperationLog
+Top:
+  selected app
+  selected aspect
+  blueprint status
+  validate
+  preview
+  run acid test
+  generate repair plan
+
+Left:
+  app list
+  blueprint outline
+  aspect navigator
+
+Center:
+  selected aspect workspace
+  blueprint editor
+  generated workbench preview
+  implementation comparison
+
+Right:
+  findings
+  evidence
+  acid-test results
+  repair recommendations
+
+Bottom:
+  validation status
+  dirty state
+  selected source files
+  patch artifact state
 ```
 
-MCEL requirement:
+Generic MCEL binding:
 
 ```text
-Every primary layout zone should be explainable by the dominant object or one of its immediate relationships.
-```
-
-### 4. Define workflows
-
-The user defines the normal flow before placing controls.
-
-Workflow categories:
-
-```text
-primary
-secondary
-advanced
-destructive
-background
-```
-
-Example Document Editor workflows:
-
-```text
-primary: OpenDocument -> Navigate -> Write -> Format -> Save
-aiAssist: SelectText -> AskAI -> ReviewSuggestion -> AcceptOrDiscard
-history: ViewHistory -> CompareRevision -> RestoreAsNewVersion
-export: PrepareExport -> PreviewExport -> ExportFile
-```
-
-MCEL value:
-
-```text
-Workflow controls should not be peers just because they are all buttons.
-```
-
-### 5. Assign layout zones
-
-The user maps objects, workflow stages, actions, and evidence into layout roles.
-
-Standard layout zones:
-
-```text
-identity
-menu
-toolbar
-navigation
-primary
-companion
-inspector
-evidence
-advanced
-status
-```
-
-Document Editor target:
-
-```text
-menu: global and less-used commands
-toolbar: compact common writing controls
-navigation: document tabs, chapters, outline
-primary: document page/editor
-companion: AI, history, comments, selected-text tools
-evidence: diff preview, AI suggestion preview, export result
-advanced: raw Git details, debug internals, provider-specific controls
-status: save state, autosave, word count, conflict state
-```
-
-MCEL value:
-
-```text
-The lab should make bad placement visible before code is changed.
-```
-
-### 6. Define capabilities consumed
-
-Apps should share capabilities without dumping provider UIs into consumer apps.
-
-Example:
-
-```text
-Document Editor consumes GitBackedHistory as DocumentHistory.
-```
-
-Correct projection:
-
-```text
-autosave
-checkpoint
-version timeline
-compare
-restore as new version
-advanced Git details
-```
-
-Incorrect projection:
-
-```text
-raw reset
-checkout
-rebase
-manual Git command
-remote push as a primary document control
-```
-
-MCEL value:
-
-```text
-The lab prevents integration from becoming app dumping.
-```
-
-### 7. Define action risk and evidence
-
-Every meaningful action should have an impact class.
-
-Recommended impact classes:
-
-```text
-inspect
-localPreview
-localEdit
-localWrite
-localGitWrite
-commandExecutionBlocked
-remoteMutationBlocked
-paymentBlocked
-destructiveBlocked
-```
-
-Every non-trivial action should declare evidence.
-
-Example:
-
-```text
-CreateCheckpoint -> CheckpointStatus, RevisionTimelineEntry, GitCommitEvidence
-RestoreAsNewVersion -> DiffPreview, RestoreSummary, NewVersionEntry
-AskAI -> Proposal, Rationale, TargetSelection
-AcceptSuggestion -> DocumentMutationEvidence, UndoAvailability
-```
-
-MCEL value:
-
-```text
-Good apps show the user what happened and why it is safe.
-```
-
-### 8. Preview workbench
-
-The center of MCEL Lab should render a generated workbench preview from the blueprint.
-
-The preview is not the full target app. It is a semantic shell showing:
-
-```text
-zones
-dominant object placement
-primary workflow placement
-companion/evidence placement
-advanced collapse behavior
-status placement
-responsive projections
-```
-
-Preview modes:
-
-```text
-desktop
-tablet
-mobile
-nav open
-nav collapsed
-companion open
-companion collapsed
-advanced shown
-advanced hidden
-```
-
-MCEL value:
-
-```text
-The preview proves whether the blueprint produces a coherent app shape before implementation.
-```
-
-### 9. Run acid tests
-
-The user runs MCEL acid tests from the lab.
-
-Acid tests should cover:
-
-```text
-contract completeness
-DOM binding completeness
-zone uniqueness
-placement legality
-visual hierarchy
-geometry policy
-responsive collapse order
-state-transition behavior
-risk boundary visibility
-evidence placement
-absence of product-page MCEL pollution
-```
-
-The lab should show pass, warn, fail, and not-covered states.
-
-### 10. Generate repair plan
-
-When a blueprint or implementation fails, the lab should produce repair findings in product terms and code terms.
-
-Good finding:
-
-```text
-Document Editor primary page is below readable width because companion and navigation lanes remain open.
-Expected collapse order: companion -> navigation.
-Repair: collapse companion before allowing primary page below the MCEL primaryMinReadableWidth policy.
-```
-
-Bad finding:
-
-```text
-Expected 760 got 612.
-```
-
-MCEL value:
-
-```text
-The lab translates failed tests into repairs that preserve the product intent.
-```
-
-## Required app layout
-
-The redesigned MCEL Lab should itself prove the app-workbench pattern.
-
-### Top bar
-
-Purpose:
-
-```text
-select app
-show blueprint validity
-switch viewport preview
-run acid test
-export scaffold or repair plan
-```
-
-Required controls:
-
-```text
-Blueprint selector
-Viewport selector
-Run Acid Test
-Show Implementation Binding
-Export Plan
-```
-
-The top bar should be compact. It must not become a stack of reports.
-
-### Left lane: blueprint outline
-
-Purpose:
-
-```text
-navigate the selected app blueprint
-```
-
-Sections:
-
-```text
-Overview
-Purpose
-Dominant Object
-Objects
-Workflows
-Capabilities
-Layout Zones
-Actions
-Risk Policy
-Geometry Policy
-Tests
-Bindings
-```
-
-The left lane is not an element catalog dump. It is a blueprint table of contents.
-
-### Center lane: workbench preview
-
-Purpose:
-
-```text
-show generated app shell from blueprint
-```
-
-The center should visually dominate the lab.
-
-It should include:
-
-```text
-semantic layout zones
-sample object placement
-workflow placement
-preview of responsive collapse
-selected zone highlight
-```
-
-For Document Editor, the preview should show:
-
-```text
-top menu and compact toolbar
-left document navigation
-center document page
-right AI/history companion
-bottom compact status
-```
-
-### Right lane: findings and acid tests
-
-Purpose:
-
-```text
-show why the blueprint is or is not ready
-```
-
-Sections:
-
-```text
-Acid Test Summary
-Layout Findings
-Risk Findings
-Capability Projection Findings
-Implementation Binding Findings
-Repair Plan
-```
-
-The right lane should use short actionable findings first, with advanced logs collapsed.
-
-### Bottom status
-
-Purpose:
-
-```text
-persistent validity and operation state
-```
-
-Examples:
-
-```text
-Blueprint valid
-3 failures
-Last acid test: 12:41 PM
-Preview: desktop 1440px
-Implementation binding: partial
-```
-
-## MCEL data model
-
-A first implementation can represent the blueprint as plain JavaScript data, but the shape should be stable enough to promote later.
-
-Recommended schema:
-
-```js
-{
-  id: "document-editor",
-  title: "Document Editor",
-  purpose: "Write, revise, navigate, improve, and restore long-form documents.",
-  dominantObject: "Document",
-  objects: [
-    { id: "Document", relationships: ["Selection", "Revision", "AISuggestion"] }
-  ],
-  workflows: {
-    primary: ["OpenDocument", "Navigate", "Write", "Format", "Save"],
-    aiAssist: ["SelectText", "AskAI", "ReviewSuggestion", "AcceptOrDiscard"],
-    history: ["ViewHistory", "CompareRevision", "RestoreAsNewVersion"]
-  },
-  layout: {
-    identity: ["DocumentTitle", "CurrentVersion"],
-    menu: ["File", "Edit", "View", "Insert", "Format", "Tools"],
-    toolbar: ["UndoRedo", "SaveStatus", "FormatControls", "AIQuickAction"],
-    navigation: ["DocumentTabs", "ChapterList", "OutlineTree"],
-    primary: ["DocumentPage", "DocumentBody"],
-    companion: ["AIAssistant", "SelectionTools", "HistoryInspector"],
-    evidence: ["DiffPreview", "SuggestionPreview", "ExportResult"],
-    advanced: ["GitTechnicalDetails", "DebugInternals"],
-    status: ["DirtyState", "AutosaveState", "WordCount", "ConflictWarning"]
-  },
-  geometryPolicy: {
-    primaryMinReadableWidth: 760,
-    topChromeMaxHeight: 120,
-    collapseOrder: ["companion", "navigation"],
-    primaryOverflow: "scroll-inside-canvas"
-  },
-  actionPolicy: {
-    inspect: ["ViewOutline", "ViewHistory", "PreviewSuggestion", "PreviewDiff"],
-    localEdit: ["TypeText", "FormatText"],
-    localWrite: ["SaveDocument", "AutosaveDocument", "CreateCheckpoint"],
-    proposalOnly: ["AskAI", "GenerateRewrite"],
-    mutationBoundary: ["AcceptSuggestion", "RestoreAsNewVersion"],
-    blockedAdvanced: ["RawGitReset", "RemoteSyncWithoutConfirmation"]
-  }
+layout {
+  identity:
+    SelectedApp
+    BlueprintStatus
+
+  navigation:
+    AppList
+    AspectNavigator
+    BlueprintOutline
+
+  primary:
+    SelectedAspectWorkspace
+    WorkbenchPreview
+    BlueprintEditor
+
+  inspector:
+    SelectedAspectDetails
+    SourceBindings
+    ImplementationDelta
+
+  evidence:
+    AcidTestResults
+    Findings
+    RepairPlan
+
+  actions:
+    LoadApp
+    ValidateBlueprint
+    RunAcidTest
+    PreviewWorkbench
+    GenerateRepairPatch
+
+  status:
+    LastValidation
+    CurrentAspect
+    DirtyState
+    PatchArtifactState
+
+  advanced:
+    RawPlannerData
+    ElementRegistry
+    DebugTrace
+    SerializedBlueprint
 }
 ```
 
-## MCEL contract rules
+## Aspect model
 
-The lab should enforce these rules when it evaluates a blueprint.
+Every app should be inspected through the same reusable aspects.
 
-### Dominant object rule
+### Product identity
 
-```text
-Every app must declare a dominant object.
-The primary zone must be dedicated to that object or its main editable/viewable surface.
-```
-
-### Zone uniqueness rule
+Questions:
 
 ```text
-Each required layout role must have one canonical owner.
-Containers may group zones, but they must not impersonate the zone unless they are the visible owner.
+What is this app for?
+What is the dominant object?
+What is the primary workflow?
+What is secondary?
+What is advanced?
 ```
 
-### Placement rule
+### Object model
+
+Questions:
 
 ```text
-Controls belong where their product role says they belong, not where implementation convenience puts them.
+What objects does the app expose?
+Which object is primary?
+How are objects related?
+What object does each action affect?
 ```
 
-Examples:
+### Workflow map
+
+Questions:
 
 ```text
-formatting -> toolbar
-document outline -> navigation
-AI suggestions -> companion/evidence
-raw Git details -> advanced
-manual commands -> advanced/blocked
-save status -> status or compact toolbar
+What is the normal path through the app?
+What are alternate workflows?
+What is advanced-only?
+What must never happen silently?
 ```
 
-### Primary protection rule
+### Layout binding
+
+Questions:
 
 ```text
-The primary work surface must be protected before side lanes are preserved.
+What are the required layout zones?
+Where are they in the DOM?
+What CSS controls them?
+Does rendered geometry obey the blueprint?
+Does the primary surface stay dominant?
 ```
 
-For a document app this means:
+### Action and risk policy
+
+Questions:
 
 ```text
-collapse companion before clipping the page
-collapse navigation before making the page unreadable
-use internal page scrolling only when needed
+What actions are inspect-only?
+What actions edit local state?
+What actions write files?
+What actions execute commands?
+What actions mutate remote/provider state?
+What actions are destructive?
 ```
 
-### Capability projection rule
+### Capability projection
+
+Questions:
 
 ```text
-A consumer app may expose capability-native value, not raw provider UI.
+What shared capabilities does the app consume?
+Who provides each capability?
+How is the provider capability projected into the consumer app?
+Is provider-native UI dumped into the wrong product surface?
 ```
+
+### Evidence model
+
+Questions:
+
+```text
+What proves the app did what it claims?
+Where are logs, diffs, previews, test results, and findings?
+Is evidence attached to the action that produced it?
+```
+
+### Source binding
+
+Questions:
+
+```text
+Which files implement this app?
+Which scripts own behavior?
+Which CSS owns layout?
+Which tests cover it?
+Which docs specify it?
+```
+
+### Refactor annotations
+
+The Lab must expose a first-class annotation aspect.
+
+This aspect shows every saved annotation for the mounted app, including removal, rework, move, hide, merge, and investigate candidates.
+
+The user should be able to inspect annotations by:
+
+```text
+selected element
+layout zone
+workflow
+source file
+priority
+kind
+required checks
+repair status
+```
+
+Annotation kinds:
+
+```text
+remove
+rework
+move
+hide
+merge
+investigate
+```
+
+The Lab must distinguish user intent from verified implementation facts.
 
 Example:
 
 ```text
-Document Editor exposes version history.
-It does not expose raw Git reset as a primary document control.
+User intent:
+  This PDF Debug button does not belong in the primary Document Editor toolbar.
+
+MCEL evidence:
+  Current zone: toolbar.
+  Expected zone: advanced/dev-only.
+  Required check: verify handlers, tests, docs, and replacement path.
+
+Allowed repairs:
+  remove if unused
+  move to Advanced if still useful
+  hide behind dev-only/debug mode
+
+Forbidden repairs:
+  leave in primary toolbar
+  delete required export functionality without replacement
 ```
 
-### Evidence rule
+### Acid tests
+
+Questions:
 
 ```text
-Every risky, generated, or state-changing action must have a visible evidence location.
+What laws must this app pass?
+Which laws are static?
+Which require rendered geometry?
+Which require workflow simulation?
+Which require source inspection?
 ```
 
-### Product cleanliness rule
+### Repair plan
+
+Questions:
 
 ```text
-Raw MCEL contracts, acid-test internals, and debug scaffolding are allowed in MCEL Lab.
-They must not appear in ordinary product app primary flows.
+What should change?
+Which source files are affected?
+Which tests prove the repair?
+Can the repair be packaged as a replacement-file patch?
 ```
 
-## Required acid tests for the redesigned lab
+## Self-hosting requirement
 
-### Blueprint completeness
-
-The selected blueprint must define:
+MCEL Lab must be able to load itself as a selected app.
 
 ```text
-purpose
-dominant object
-at least one primary workflow
-layout zones
-action policy
-geometry policy
-acid-test policy
+selectedApp: mcel-lab
+dominantObject: AppBlueprint
 ```
 
-### Layout preview completeness
+When self-loaded, the Lab must inspect itself through the same generic aspects.
 
-The preview must show:
+Required self-inspection:
 
 ```text
-identity or equivalent top context
-primary work zone
-at least one secondary/support zone
-status or validity indicator
-advanced area hidden or collapsed
+Product identity:
+  MCEL Lab is an app blueprint inspector and repair planner.
+
+Object model:
+  AppBlueprint, Aspect, Finding, AcidTest, SourceBinding, RepairPlan, PatchArtifact.
+
+Workflow map:
+  SelectApp -> InspectAspect -> EditBlueprint -> PreviewWorkbench -> RunAcidTest -> ReviewFindings -> GenerateRepairPatch.
+
+Layout binding:
+  app selector, aspect navigator, primary aspect workspace, findings/evidence panel, status band, advanced debug drawer.
+
+Action policy:
+  inspect-only, draft edit, preview, acid test, generate patch, no direct live overwrite.
+
+Source binding:
+  main_computer/web/applications/apps/mcel-lab.html
+  main_computer/web/applications/scripts/mcel-lab.js
+  main_computer/web/applications/scripts/mcel-specimen-planner.js
+  main_computer/web/applications/scripts/mcel-elements-core.js
+  main_computer/web/applications/scripts/mcel-toolkit-core.js
+  pretty_docs/mcel-lab-blueprint-studio.md
+  relevant tests.
 ```
 
-### App-specific Document Editor preview
-
-The Document Editor blueprint preview must show:
+Self-editing safety law:
 
 ```text
-document navigation
-document page
-AI/history companion
-compact toolbar
-status
-```
-
-### Findings usefulness
-
-At least one fixture should produce a failing finding that includes:
-
-```text
-product problem
-violated MCEL rule
-expected behavior
-repair recommendation
-```
-
-### No product pollution
-
-The lab may show debug/spec internals, but product app HTML fixtures must not include visible MCEL contract cards.
-
-## Operations manual
-
-### Normal operation: create or inspect a blueprint
-
-1. Open MCEL Lab.
-2. Select an app blueprint.
-3. Review purpose and dominant object.
-4. Inspect layout zones.
-5. Preview the generated workbench.
-6. Run acid tests.
-7. Read findings.
-8. Export a repair plan or scaffold only if the blueprint is coherent.
-
-### Normal operation: evaluate Document Editor
-
-1. Select `Document Editor`.
-2. Verify dominant object is `Document`.
-3. Confirm layout preview shows left navigation, center page, right companion, compact toolbar, and status.
-4. Run acid tests.
-5. Check for findings about page clipping, toolbar dumping, hidden status, or non-persistent companion lanes.
-6. Use repair findings to change `document.html`, `document.css`, and `document-app.js`.
-
-### Normal operation: evaluate Git Tools
-
-1. Select `Git Tools`.
-2. Verify dominant object is `Repository`.
-3. Confirm primary preview emphasizes selected repo, status, changed files, patch/commit, and evidence output.
-4. Confirm remote, mirror, server lifecycle, reset, and manual commands are advanced.
-5. Run acid tests.
-6. Use findings to write a better Git Tools requirements document before changing the UI.
-
-### Advanced operation: promote a pattern
-
-A pattern may move from MCEL Lab blueprint data into MCEL core only after it has:
-
-```text
-at least two app blueprints using it
-executable acid tests
-clear non-goals
-fail-closed behavior
-source/runtime boundary documentation
-product cleanliness verification
+MCEL Lab may edit its own blueprint draft.
+MCEL Lab may preview its own redesign.
+MCEL Lab may generate a replacement-file patch for itself.
+MCEL Lab must not directly rewrite or apply its own live implementation.
 ```
 
 ## First implementation target
 
-The first implementation patch after this document should redesign MCEL Lab enough to support one useful flow:
+The first useful redesign should support two target blueprints:
 
 ```text
-Select Document Editor
-View the Document Editor blueprint
-Preview a generated workbench shell
-Run acid tests
-Show useful findings
-Keep advanced MCEL internals collapsed
+Document Editor
+MCEL Lab
 ```
 
-Recommended visible layout:
+### Document Editor target
+
+The Lab must show that Document Editor is a writing workbench.
+
+Expected blueprint summary:
 
 ```text
-top: app selector, viewport selector, run acid test
-left: blueprint outline
-center: generated workbench preview
-right: acid-test findings and repair plan
-bottom: compact validation status
+dominant object: Document
+layout: left navigation, center page, right AI/history companion, compact toolbar, status band
+primary workflow: navigate -> write -> edit -> review -> save
+risk law: AI output is proposal-only until accepted
+history law: restore creates a new version
+geometry law: primary page is protected before side lanes are preserved
 ```
 
-Recommended technical files:
+Expected findings examples:
 
 ```text
-main_computer/web/applications/apps/mcel-lab.html
-main_computer/web/applications/styles/mcel-lab.css
-main_computer/web/applications/scripts/mcel-lab.js
-main_computer/web/applications/scripts/mcel-specimen-planner.js
-tests/test_mcel_lab_blueprint_studio.py
+Document page is clipped.
+Right companion disappears after document load.
+Toolbar contains advanced controls.
+Status is scattered across multiple rows.
+AI output can mutate source without preview.
 ```
 
-## Acceptance criteria for the first implementation
+### MCEL Lab target
 
-The first implementation should be considered useful only if all of these are true:
+The Lab must show itself as a blueprint inspector.
+
+Expected blueprint summary:
 
 ```text
-MCEL Lab has a clear App Blueprint Studio workflow.
-Document Editor blueprint is visible and understandable.
-The center preview is generated from blueprint data, not hand-written prose only.
-Acid-test findings are visible in the right lane.
-Raw MCEL internals are available but not the main page.
-The page helps a developer decide how to build a good-looking solid app.
-No MCEL cards or contract prose are added to ordinary product apps.
-Tests verify the blueprint, preview, findings, and no-pollution rule.
+dominant object: AppBlueprint
+layout: app/aspect navigation, aspect workspace, findings/evidence panel, status band, advanced debug
+primary workflow: select app -> inspect aspect -> preview -> acid test -> repair plan
+safety law: generate patch artifacts, do not self-apply silently
 ```
 
-## Relationship to existing MCEL documents
-
-This document complements:
+Expected findings examples:
 
 ```text
-pretty_docs/mcel-system-guide.md
-pretty_docs/mcel-user-space-contract.md
-pretty_docs/mcel-application-authoring.md
-pretty_docs/mcel-contract-guarantees.md
-pretty_docs/mcel-debug-observability.md
+Raw planner output is primary instead of advanced.
+Aspect coverage is incomplete.
+Source binding is missing for mcel-lab.js.
+Acid test results are not attached to findings.
+Repair plans do not reference affected files.
 ```
 
-The system guide explains what MCEL is. The user-space contract explains how source, runtime, repair, and serialization are bounded. The application-authoring guide explains how app markup and behavior participate in MCEL. This document defines the product requirements for the app that makes those concepts operational for designing better applications.
+## Acid-test requirements
 
-## Final principle
+The Lab's acid tests must be able to exercise MCEL end-to-end.
 
-MCEL Lab should make MCEL valuable by turning semantic app descriptions into visible, testable, repairable app blueprints.
-
-The lab succeeds when it helps create apps that are:
+Required acid-test chain:
 
 ```text
-clear in purpose
-centered on the right dominant object
-predictable in workflow
-clean in layout
-safe in action boundaries
-honest about evidence
-responsive without clipping the primary work surface
-free of debug/spec pollution in product pages
-solid enough to survive acid tests
+MCEL blueprint
+-> generic elements
+-> DOM layout binding
+-> CSS/geometry policy
+-> JS behavior policy
+-> source bindings
+-> findings
+-> repair plan
 ```
+
+The tests must fail when MCEL is present but ineffective.
+
+Examples:
+
+```text
+The app has a primary zone, but the primary surface is clipped.
+The app has an action policy, but destructive actions are visually primary.
+The app has a capability projection, but raw provider UI is dumped into the consumer app.
+The app has source bindings, but no tests or docs cover the selected aspect.
+The Lab can inspect other apps, but cannot inspect itself.
+```
+
+## Good-looking app acceptance criteria
+
+A blueprint is not valid merely because every zone exists.
+
+A blueprint is valid when MCEL can prove:
+
+```text
+The dominant object is visible.
+The primary workflow is obvious.
+The primary work surface is visually protected.
+Navigation and companion areas support the primary work instead of competing with it.
+Advanced and dangerous controls are separated from primary actions.
+Evidence is attached to the action that produced it.
+State is visible without wasting space.
+Capabilities are projected through the consumer app's language.
+Debug/spec internals stay inside MCEL Lab or advanced drawers.
+Rendered geometry follows the declared policy.
+```
+
+## First documentation-to-code acceptance criteria
+
+The first real UI redesign patch for MCEL Lab should not begin until this document is satisfied by code-level tests that assert:
+
+```text
+The Lab route has a selected AppBlueprint as its dominant object.
+The Lab UI uses generic layout zones.
+The Lab exposes reusable aspect navigation.
+The Lab can load Document Editor as a blueprint.
+The Lab can load MCEL Lab itself as a blueprint.
+The Lab shows source bindings for the selected app.
+The Lab lets users point at rendered elements and save refactor annotations.
+The Lab can export AI-ready refactor context with annotation evidence.
+The Lab shows findings and acid-test results as evidence.
+Raw planner/debug data is advanced, not primary.
+No Lab-only hardcoded element is used where a generic MCEL element exists.
+New elements are inspection-generic, not route-specific.
+```
+
+## Non-goals for the first redesign
+
+The first redesign should not attempt to fully repair every app.
+
+Non-goals:
+
+```text
+Automatically rewrite product apps in place
+Implement full drag-and-drop app building
+Replace Code Editor
+Replace Git Tools
+Replace Document Editor
+Run destructive or remote actions during proof
+Expose MCEL debug cards in product apps
+```
+
+## Summary
+
+MCEL Lab should become the system's first self-hosting MCEL workbench.
+
+It should let users inspect every meaningful aspect of an app, point at rendered elements, save durable refactor annotations, edit the blueprint safely, preview the generated workbench, run acid tests, review findings, export AI-ready refactor context, and generate patch-ready repair plans.
+
+It should be built from generic MCEL elements. New elements are allowed only when they describe reusable inspection concepts.
+
+The redesigned Lab is valuable only if it helps generate good-looking, solid apps. That means it must connect product intent, generic element semantics, layout geometry, source bindings, acid tests, and repair output into one coherent workflow.

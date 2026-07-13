@@ -474,16 +474,16 @@
     .desktop-overlay.desktop-home {
       padding: 72px 24px 24px;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 18px;
       align-content: start;
       overflow: auto;
       perspective: none;
       transform-style: flat;
       pointer-events: auto;
       background:
-        radial-gradient(circle at 18% 14%, rgba(115, 214, 255, 0.18), transparent 34%),
-        radial-gradient(circle at 84% 12%, rgba(246, 199, 91, 0.14), transparent 32%),
+        radial-gradient(circle at 18% 14%, rgba(115, 214, 255, 0.2), transparent 34%),
+        radial-gradient(circle at 84% 12%, rgba(246, 199, 91, 0.18), transparent 32%),
         #020302;
     }
     .desktop-overlay.desktop-home .desktop-caption {
@@ -500,18 +500,19 @@
       width: auto;
       min-width: 0;
       max-width: none;
-      min-height: 116px;
+      min-height: 144px;
       transform: none !important;
       transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
     }
     .desktop-overlay.desktop-home .desktop-icon:hover,
     .desktop-overlay.desktop-home .desktop-icon:focus-visible {
-      transform: translateY(-2px) !important;
-      border-color: var(--gold);
+      transform: translateY(-3px) !important;
+      border-color: var(--desktop-icon-accent);
       outline: none;
       box-shadow:
-        0 22px 34px rgba(0, 0, 0, 0.48),
-        0 0 0 1px rgba(246, 199, 91, 0.48);
+        0 24px 38px rgba(0, 0, 0, 0.52),
+        0 0 0 1px var(--desktop-icon-glow),
+        0 0 28px var(--desktop-icon-glow);
     }
     .desktop-caption {
       position: absolute;
@@ -526,31 +527,200 @@
       pointer-events: none;
     }
     .desktop-icon {
+      --desktop-icon-accent: var(--gold);
+      --desktop-icon-accent-bright: #ffe89a;
+      --desktop-icon-border: rgba(246, 199, 91, 0.36);
+      --desktop-icon-glow: rgba(246, 199, 91, 0.42);
+      --desktop-icon-panel: rgba(246, 199, 91, 0.13);
+      --desktop-icon-ink: #120d05;
       position: absolute;
       left: 50%;
       top: 50%;
-      width: min(232px, 30vw);
-      min-width: 148px;
-      max-width: 256px;
-      min-height: 104px;
+      width: min(268px, 34vw);
+      min-width: 170px;
+      max-width: 292px;
+      min-height: 128px;
       display: grid;
-      gap: 6px;
+      gap: 8px;
       align-content: start;
       text-align: left;
-      border: 1px solid rgba(247, 243, 232, 0.18);
-      border-radius: 8px;
-      padding: 12px 12px 10px;
+      border: 1px solid var(--desktop-icon-border);
+      border-radius: 12px;
+      padding: 16px 16px 14px;
       color: var(--ink);
       background:
-        linear-gradient(160deg, rgba(16, 19, 20, 0.92), rgba(5, 7, 7, 0.76)),
+        radial-gradient(circle at 20% 0%, var(--desktop-icon-panel), transparent 58%),
+        linear-gradient(160deg, rgba(16, 19, 20, 0.94), rgba(5, 7, 7, 0.76)),
         rgba(3, 4, 4, 0.84);
-      box-shadow: 0 18px 28px rgba(0, 0, 0, 0.38);
+      box-shadow:
+        0 20px 32px rgba(0, 0, 0, 0.42),
+        0 0 0 1px rgba(247, 243, 232, 0.08);
       backdrop-filter: blur(4px);
       transform-style: preserve-3d;
       pointer-events: auto;
     }
+    .desktop-icon[data-app="webgl"] {
+      --desktop-icon-accent: #ff9f43;
+      --desktop-icon-accent-bright: #ffd166;
+      --desktop-icon-border: rgba(255, 159, 67, 0.52);
+      --desktop-icon-glow: rgba(255, 159, 67, 0.48);
+      --desktop-icon-panel: rgba(255, 159, 67, 0.18);
+      --desktop-icon-ink: #171006;
+    }
+    .desktop-icon[data-app="astrometric"] {
+      --desktop-icon-accent: #73d6ff;
+      --desktop-icon-accent-bright: #b8efff;
+      --desktop-icon-border: rgba(115, 214, 255, 0.52);
+      --desktop-icon-glow: rgba(115, 214, 255, 0.44);
+      --desktop-icon-panel: rgba(115, 214, 255, 0.18);
+      --desktop-icon-ink: #041018;
+    }
+    .desktop-icon[data-app="calculator"] {
+      --desktop-icon-accent: #ff6b6b;
+      --desktop-icon-accent-bright: #ffb3a7;
+      --desktop-icon-border: rgba(255, 107, 107, 0.5);
+      --desktop-icon-glow: rgba(255, 107, 107, 0.44);
+      --desktop-icon-panel: rgba(255, 107, 107, 0.17);
+      --desktop-icon-ink: #170505;
+    }
+    .desktop-icon[data-app="document"] {
+      --desktop-icon-accent: #c5f467;
+      --desktop-icon-accent-bright: #f0ff9a;
+      --desktop-icon-border: rgba(197, 244, 103, 0.5);
+      --desktop-icon-glow: rgba(197, 244, 103, 0.42);
+      --desktop-icon-panel: rgba(197, 244, 103, 0.15);
+      --desktop-icon-ink: #0e1505;
+    }
+    .desktop-icon[data-app="spreadsheet"] {
+      --desktop-icon-accent: #45d483;
+      --desktop-icon-accent-bright: #a7f3d0;
+      --desktop-icon-border: rgba(69, 212, 131, 0.5);
+      --desktop-icon-glow: rgba(69, 212, 131, 0.42);
+      --desktop-icon-panel: rgba(69, 212, 131, 0.16);
+      --desktop-icon-ink: #04140a;
+    }
+    .desktop-icon[data-app="onlyoffice"] {
+      --desktop-icon-accent: #f472b6;
+      --desktop-icon-accent-bright: #fbcfe8;
+      --desktop-icon-border: rgba(244, 114, 182, 0.5);
+      --desktop-icon-glow: rgba(244, 114, 182, 0.42);
+      --desktop-icon-panel: rgba(244, 114, 182, 0.16);
+      --desktop-icon-ink: #160512;
+    }
+    .desktop-icon[data-app="task-manager"] {
+      --desktop-icon-accent: #a78bfa;
+      --desktop-icon-accent-bright: #ddd6fe;
+      --desktop-icon-border: rgba(167, 139, 250, 0.5);
+      --desktop-icon-glow: rgba(167, 139, 250, 0.42);
+      --desktop-icon-panel: rgba(167, 139, 250, 0.16);
+      --desktop-icon-ink: #0d0618;
+    }
+    .desktop-icon[data-app="conductor"] {
+      --desktop-icon-accent: #facc15;
+      --desktop-icon-accent-bright: #fde68a;
+      --desktop-icon-border: rgba(250, 204, 21, 0.52);
+      --desktop-icon-glow: rgba(250, 204, 21, 0.44);
+      --desktop-icon-panel: rgba(250, 204, 21, 0.16);
+      --desktop-icon-ink: #151003;
+    }
+    .desktop-icon[data-app="terminal"] {
+      --desktop-icon-accent: #67e8f9;
+      --desktop-icon-accent-bright: #ccfbf1;
+      --desktop-icon-border: rgba(103, 232, 249, 0.5);
+      --desktop-icon-glow: rgba(103, 232, 249, 0.42);
+      --desktop-icon-panel: rgba(103, 232, 249, 0.15);
+      --desktop-icon-ink: #031316;
+    }
+    .desktop-icon[data-app="chat-console"] {
+      --desktop-icon-accent: #60a5fa;
+      --desktop-icon-accent-bright: #bfdbfe;
+      --desktop-icon-border: rgba(96, 165, 250, 0.5);
+      --desktop-icon-glow: rgba(96, 165, 250, 0.42);
+      --desktop-icon-panel: rgba(96, 165, 250, 0.15);
+      --desktop-icon-ink: #05101d;
+    }
+    .desktop-icon[data-app="ai-control"] {
+      --desktop-icon-accent: #22d3ee;
+      --desktop-icon-accent-bright: #a5f3fc;
+      --desktop-icon-border: rgba(34, 211, 238, 0.5);
+      --desktop-icon-glow: rgba(34, 211, 238, 0.42);
+      --desktop-icon-panel: rgba(34, 211, 238, 0.15);
+      --desktop-icon-ink: #031215;
+    }
+    .desktop-icon[data-app="email"] {
+      --desktop-icon-accent: #fb7185;
+      --desktop-icon-accent-bright: #fecdd3;
+      --desktop-icon-border: rgba(251, 113, 133, 0.5);
+      --desktop-icon-glow: rgba(251, 113, 133, 0.42);
+      --desktop-icon-panel: rgba(251, 113, 133, 0.16);
+      --desktop-icon-ink: #180507;
+    }
+    .desktop-icon[data-app="git-tools"] {
+      --desktop-icon-accent: #f97316;
+      --desktop-icon-accent-bright: #fed7aa;
+      --desktop-icon-border: rgba(249, 115, 22, 0.5);
+      --desktop-icon-glow: rgba(249, 115, 22, 0.44);
+      --desktop-icon-panel: rgba(249, 115, 22, 0.16);
+      --desktop-icon-ink: #170905;
+    }
+    .desktop-icon[data-app="code-editor"] {
+      --desktop-icon-accent: #38bdf8;
+      --desktop-icon-accent-bright: #bae6fd;
+      --desktop-icon-border: rgba(56, 189, 248, 0.5);
+      --desktop-icon-glow: rgba(56, 189, 248, 0.42);
+      --desktop-icon-panel: rgba(56, 189, 248, 0.15);
+      --desktop-icon-ink: #04131d;
+    }
+    .desktop-icon[data-app="file-explorer"] {
+      --desktop-icon-accent: #fbbf24;
+      --desktop-icon-accent-bright: #fde68a;
+      --desktop-icon-border: rgba(251, 191, 36, 0.52);
+      --desktop-icon-glow: rgba(251, 191, 36, 0.44);
+      --desktop-icon-panel: rgba(251, 191, 36, 0.16);
+      --desktop-icon-ink: #151003;
+    }
+    .desktop-icon[data-app="game-editor"] {
+      --desktop-icon-accent: #34d399;
+      --desktop-icon-accent-bright: #bbf7d0;
+      --desktop-icon-border: rgba(52, 211, 153, 0.5);
+      --desktop-icon-glow: rgba(52, 211, 153, 0.42);
+      --desktop-icon-panel: rgba(52, 211, 153, 0.15);
+      --desktop-icon-ink: #03140c;
+    }
+    .desktop-icon[data-app="website-builder"] {
+      --desktop-icon-accent: #c084fc;
+      --desktop-icon-accent-bright: #e9d5ff;
+      --desktop-icon-border: rgba(192, 132, 252, 0.5);
+      --desktop-icon-glow: rgba(192, 132, 252, 0.42);
+      --desktop-icon-panel: rgba(192, 132, 252, 0.16);
+      --desktop-icon-ink: #10051a;
+    }
+    .desktop-icon[data-app="mcel-lab"] {
+      --desktop-icon-accent: #e879f9;
+      --desktop-icon-accent-bright: #f5d0fe;
+      --desktop-icon-border: rgba(232, 121, 249, 0.5);
+      --desktop-icon-glow: rgba(232, 121, 249, 0.42);
+      --desktop-icon-panel: rgba(232, 121, 249, 0.16);
+      --desktop-icon-ink: #16051a;
+    }
+    .desktop-icon[data-app="worker"] {
+      --desktop-icon-accent: #a3e635;
+      --desktop-icon-accent-bright: #d9f99d;
+      --desktop-icon-border: rgba(163, 230, 53, 0.5);
+      --desktop-icon-glow: rgba(163, 230, 53, 0.42);
+      --desktop-icon-panel: rgba(163, 230, 53, 0.15);
+      --desktop-icon-ink: #0d1603;
+    }
+    .desktop-icon[data-app="wallet"] {
+      --desktop-icon-accent: #2dd4bf;
+      --desktop-icon-accent-bright: #99f6e4;
+      --desktop-icon-border: rgba(45, 212, 191, 0.5);
+      --desktop-icon-glow: rgba(45, 212, 191, 0.42);
+      --desktop-icon-panel: rgba(45, 212, 191, 0.15);
+      --desktop-icon-ink: #031411;
+    }
     .desktop-icon strong {
-      font-size: 16px;
+      font-size: 17px;
       color: var(--ink);
     }
     .desktop-icon span {
@@ -559,37 +729,43 @@
       line-height: 1.35;
     }
     .desktop-icon .desktop-glyph {
-      width: 28px;
-      height: 28px;
+      width: 52px;
+      height: 52px;
       display: grid;
       place-items: center;
-      border-radius: 8px;
-      background: var(--gold);
-      color: #120d05;
-      box-shadow: inset 0 0 0 1px rgba(18, 13, 5, 0.28);
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--desktop-icon-accent-bright), var(--desktop-icon-accent));
+      color: var(--desktop-icon-ink);
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.24),
+        0 12px 24px var(--desktop-icon-glow);
       overflow: hidden;
     }
     .desktop-icon .desktop-glyph-svg {
-      width: 18px;
-      height: 18px;
+      width: 34px;
+      height: 34px;
       display: block;
       stroke: currentColor;
       fill: none;
-      stroke-width: 1.8;
+      stroke-width: 2.2;
       stroke-linecap: round;
       stroke-linejoin: round;
       vector-effect: non-scaling-stroke;
     }
     .desktop-icon.active {
-      border-color: var(--gold);
+      border-color: var(--desktop-icon-accent);
       box-shadow:
-        0 22px 36px rgba(0, 0, 0, 0.48),
-        0 0 0 1px rgba(246, 199, 91, 0.6),
-        inset 0 0 0 1px rgba(246, 199, 91, 0.16);
+        0 24px 40px rgba(0, 0, 0, 0.52),
+        0 0 0 1px var(--desktop-icon-glow),
+        0 0 32px var(--desktop-icon-glow),
+        inset 0 0 0 1px rgba(247, 243, 232, 0.12);
     }
     .desktop-icon.active .desktop-glyph {
-      background: var(--mint);
-      color: #071005;
+      background: linear-gradient(135deg, var(--desktop-icon-accent-bright), var(--desktop-icon-accent));
+      color: var(--desktop-icon-ink);
     }
     .stub-message {
       display: none;

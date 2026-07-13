@@ -54,8 +54,11 @@ DEFAULT_PROBE_CONTAINER_PORT = 41415
 DEFAULT_PROBE_INTERVAL_S = 15.0
 DEFAULT_REMOVE_DELETE_WAIT_S = 45.0
 DEFAULT_REMOVE_DELETE_POLL_S = 2.0
-DEFAULT_ADD_NODE_READY_WAIT_S = 360.0
+DEFAULT_ADD_NODE_READY_WAIT_S = 900.0
 DEFAULT_ADD_NODE_READY_POLL_S = 5.0
+DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S = 45.0
+DEFAULT_ADD_NODE_PREFLIGHT_POLL_S = 2.0
+DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S = 6.0
 DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
@@ -231,6 +234,23 @@ def sanitize_fdb_cluster_description(value: str) -> str:
 
 def fdb_cluster_description_for_network(network_key: str) -> str:
     return sanitize_fdb_cluster_description(f"main_computer_{clean_node_network_key(network_key)}_allfather")
+
+
+def docker_container_name_token(value: str) -> str:
+    clean = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "").strip()).strip("-").lower()
+    clean = re.sub(r"-+", "-", clean)
+    return clean or "allfather-super"
+
+
+def super_container_name_from_manifest(manifest: Mapping[str, Any]) -> str:
+    service_name = docker_container_name_token(str(manifest.get("cell_id") or "allfather-super"))
+    deployment_id = docker_container_name_token(str(manifest.get("deployment_id") or "deployment"))
+    # Docker allows long names, but keep this readable and below common UI limits.
+    return f"{service_name}-{deployment_id}"[:120].rstrip("-.")
+
+
+def new_super_deployment_id() -> str:
+    return f"{int(time.time())}-{secrets.token_hex(4)}"
 
 
 def private_value(value: Any) -> str:
@@ -2910,6 +2930,186 @@ def service_status_from_item(item: Mapping[str, Any]) -> str:
     return ""
 
 
+def matching_service_items(services: Iterable[Mapping[str, Any]], service_name: str) -> list[Mapping[str, Any]]:
+    clean = str(service_name or "").strip()
+    return [
+        item
+        for item in services
+        if isinstance(item, Mapping) and service_name_from_item(item) == clean
+    ]
+
+
+def service_item_summaries(items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        summaries.append(
+            {
+                "name": service_name_from_item(item),
+                "uuid": service_uuid_from_item(item),
+                "status": service_status_from_item(item),
+                "application": first_application_summary_from_item(item),
+            }
+        )
+    return summaries
+
+
+def wait_for_add_node_slot_preflight(
+    client: Any,
+    *,
+    network_key: str,
+    head: HeadNode,
+    service_name: str,
+    expected_existing_ordinals: Sequence[int],
+    tried: list[dict[str, Any]],
+    wait_s: float,
+    poll_s: float,
+    stable_s: float,
+) -> dict[str, Any]:
+    """Verify the target Coolify service slot is stably clean before add-node deploys.
+
+    Coolify deletes can briefly report stale inventory and then disappear, while
+    old Docker containers from a failed deployment may still exist.  We cannot use
+    SSH or a local direct Docker/VPN probe here, so this API preflight makes the
+    boundary explicit: the intended service name must be absent, and the lower
+    ordinals we are joining after must remain unchanged for a small stable window.
+    """
+
+    wait_s = max(0.0, float(wait_s or 0.0))
+    poll_s = max(0.5, float(poll_s or DEFAULT_ADD_NODE_PREFLIGHT_POLL_S))
+    stable_s = max(0.0, float(stable_s or 0.0))
+    expected_ordinals = sorted({int(item) for item in expected_existing_ordinals if int(item) > 0})
+    deadline = time.monotonic() + wait_s
+    stable_since: float | None = None
+    attempts = 0
+    last_services: list[Mapping[str, Any]] = []
+    last_ordinals: list[int] = []
+    last_matches: list[Mapping[str, Any]] = []
+    last_reason = "not checked yet"
+
+    while True:
+        attempts += 1
+        last_services = service_items_for_client(client, tried)
+        try:
+            last_ordinals = require_contiguous_super_ordinals(existing_super_ordinals(last_services, network_key, head), network_key, head)
+        except AllfatherControlError as exc:
+            return {
+                "enabled": True,
+                "ready": False,
+                "terminal": True,
+                "reason": str(exc),
+                "attempt_count": attempts,
+                "wait_s": wait_s,
+                "poll_s": poll_s,
+                "stable_s": stable_s,
+                "service_name": service_name,
+                "expected_existing_ordinals": expected_ordinals,
+                "observed_ordinals": existing_super_ordinals(last_services, network_key, head),
+                "matches": service_item_summaries(matching_service_items(last_services, service_name)),
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
+
+        last_matches = matching_service_items(last_services, service_name)
+        if last_ordinals != expected_ordinals:
+            stable_since = None
+            last_reason = (
+                f"Coolify super-node inventory changed while preparing {service_name!r}: "
+                f"expected existing ordinal(s) {expected_ordinals}, observed {last_ordinals}."
+            )
+        elif last_matches:
+            stable_since = None
+            last_reason = (
+                f"Coolify still reports target service {service_name!r}; refusing to create/deploy over a stale slot."
+            )
+        else:
+            now = time.monotonic()
+            if stable_since is None:
+                stable_since = now
+            stable_for = now - stable_since
+            if stable_for >= stable_s or wait_s <= 0:
+                return {
+                    "enabled": True,
+                    "ready": True,
+                    "terminal": False,
+                    "reason": "target Coolify service slot is stably clean",
+                    "attempt_count": attempts,
+                    "wait_s": wait_s,
+                    "poll_s": poll_s,
+                    "stable_s": stable_s,
+                    "stable_for_s": round(stable_for, 3),
+                    "service_name": service_name,
+                    "expected_existing_ordinals": expected_ordinals,
+                    "observed_ordinals": last_ordinals,
+                    "matches": [],
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                    "services": list(last_services),
+                }
+            last_reason = f"target service slot is clean but has only been stable for {stable_for:.1f}s"
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+
+    return {
+        "enabled": True,
+        "ready": False,
+        "terminal": False,
+        "reason": last_reason,
+        "attempt_count": attempts,
+        "wait_s": wait_s,
+        "poll_s": poll_s,
+        "stable_s": stable_s,
+        "service_name": service_name,
+        "expected_existing_ordinals": expected_ordinals,
+        "observed_ordinals": last_ordinals,
+        "matches": service_item_summaries(last_matches),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "services": list(last_services),
+    }
+
+
+def require_synced_super_service_ready_for_deploy(
+    client: Any,
+    *,
+    service_name: str,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Verify the service we are about to deploy is the only Coolify match."""
+
+    services = service_items_for_client(client, tried)
+    matches = matching_service_items(services, service_name)
+    summaries = service_item_summaries(matches)
+    if len(matches) != 1:
+        raise AllfatherControlError(
+            f"Refusing to deploy {service_name!r}: Coolify inventory has {len(matches)} matching service records "
+            f"after service sync. Matches: {summaries}. Remove stale/duplicate services before add-node deploys."
+        )
+    observed_uuid = service_uuid_from_item(matches[0])
+    if observed_uuid and service_uuid and observed_uuid != service_uuid:
+        raise AllfatherControlError(
+            f"Refusing to deploy {service_name!r}: Coolify returned service UUID {service_uuid!r}, "
+            f"but live inventory now reports {observed_uuid!r}."
+        )
+    return {
+        "service_name": service_name,
+        "service_uuid": observed_uuid or service_uuid,
+        "match_count": len(matches),
+        "status": service_status_from_item(matches[0]),
+        "matches": summaries,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
 def first_application_summary_from_item(item: Mapping[str, Any]) -> dict[str, Any]:
     applications = item.get("applications")
     if not isinstance(applications, list):
@@ -3283,6 +3483,58 @@ def http_json_ok(url: str, timeout: float = 1.0) -> bool:
     except Exception:
         return False
 
+def rpc_json_call(url: str, method: str, params: list | None = None, timeout: float = 1.0) -> tuple[bool, object, str]:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": list(params or []),
+    }
+    raw = json.dumps(payload).encode("utf-8")
+    try:
+        request = urllib.request.Request(
+            url,
+            data=raw,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+        decoded = json.loads(body.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            return False, None, "json-rpc response was not an object"
+        if decoded.get("error"):
+            return False, decoded.get("error"), "json-rpc error"
+        return True, decoded.get("result"), ""
+    except Exception as exc:
+        return False, None, f"{type(exc).__name__}: {exc}"
+
+def rpc_block_number(url: str, timeout: float = 1.0) -> tuple[bool, int | None, str]:
+    ok, result, error = rpc_json_call(url, "eth_blockNumber", timeout=timeout)
+    if not ok:
+        return False, None, error
+    try:
+        if isinstance(result, str):
+            return True, int(result, 16), ""
+        if isinstance(result, int):
+            return True, int(result), ""
+    except Exception as exc:
+        return False, None, f"invalid eth_blockNumber result: {type(exc).__name__}: {exc}"
+    return False, None, f"invalid eth_blockNumber result: {result!r}"
+
+def tail_log(name: str, max_bytes: int = 4000) -> str:
+    path = state_root / "logs" / f"{name}.log"
+    try:
+        if not path.exists():
+            return ""
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - int(max_bytes)))
+            return handle.read().decode("utf-8", "replace")[-int(max_bytes):]
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
 def ensure_dirs() -> None:
     for sub in ("foundationdb/data", "foundationdb/logs", "qbft/data", "qbft/config", "hub", "logs"):
         (state_root / sub).mkdir(parents=True, exist_ok=True)
@@ -3552,22 +3804,44 @@ def ensure_hub_admin(validator_ready: bool) -> bool:
     return True
 
 def compile_contracts() -> dict:
-    from solcx import compile_standard, set_solc_version
-    set_solc_version("0.8.24")
     sources = {
         name: {"content": base64.b64decode(encoded).decode("utf-8")}
         for name, encoded in CONTRACT_SOURCES_B64.items()
     }
-    return compile_standard(
-        {
-            "language": "Solidity",
-            "sources": sources,
-            "settings": {
-                "optimizer": {"enabled": True, "runs": 200},
-                "outputSelection": {"*": {"*": ["abi", "evm.bytecode.object"]}},
-            },
-        }
-    )
+    standard_input = {
+        "language": "Solidity",
+        "sources": sources,
+        "settings": {
+            "optimizer": {"enabled": True, "runs": 200},
+            "outputSelection": {"*": {"*": ["abi", "evm.bytecode.object"]}},
+        },
+    }
+    try:
+        proc = subprocess.run(
+            ["solc", "--standard-json"],
+            input=json.dumps(standard_input),
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("solc binary is missing from the all-father super-node image") from exc
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "solc --standard-json failed").strip())
+    try:
+        compiled = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"solc returned invalid JSON: {exc}") from exc
+    errors = [
+        item
+        for item in compiled.get("errors", [])
+        if isinstance(item, dict) and item.get("severity") == "error"
+    ]
+    if errors:
+        message = "; ".join(str(item.get("formattedMessage") or item.get("message") or item) for item in errors)
+        raise RuntimeError(message)
+    return compiled
 
 def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name: str, args: list) -> dict:
     contract_data = compiled["contracts"][source_name][contract_name]
@@ -3732,6 +4006,7 @@ def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
                 "berlinBlock": 0,
                 "qbft": {
                     "blockperiodseconds": 2,
+                    "emptyblockperiodseconds": 0,
                     "epochlength": 30000,
                     "requesttimeoutseconds": 4,
                 },
@@ -3815,8 +4090,20 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         command.append("--bootnodes=" + ",".join(bootnodes))
     start_child("validator_rpc", command)
     running = child_running("validator_rpc")
-    rpc_ok = http_json_ok(f"http://127.0.0.1:{rpc_port}", timeout=0.7) or port_open("127.0.0.1", rpc_port)
-    status = "running" if running and rpc_ok else "starting" if running else "stopped"
+    rpc_url = f"http://127.0.0.1:{rpc_port}"
+    port_listening = port_open("127.0.0.1", rpc_port)
+    json_rpc_ok, block_number, block_error = rpc_block_number(rpc_url, timeout=1.0)
+    block_production_ok = bool(json_rpc_ok and block_number is not None and int(block_number) > 0)
+    if running and block_production_ok:
+        status = "running"
+    elif running and json_rpc_ok:
+        status = "waiting-qbft-block-production"
+    elif running and port_listening:
+        status = "waiting-validator-json-rpc"
+    elif running:
+        status = "starting"
+    else:
+        status = "stopped"
     state(
         "validator_rpc",
         name=components.get("validator_rpc"),
@@ -3829,11 +4116,18 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         qbft_config=reason,
         genesis_file_present=genesis.exists(),
         node_key_present=key_file.exists(),
-        rpc_http_ok=rpc_ok,
+        rpc_http_ok=json_rpc_ok,
+        json_rpc_ok=json_rpc_ok,
+        rpc_port_listening=port_listening,
+        block_number=block_number,
+        block_production_ok=block_production_ok,
+        block_production_required=True,
+        block_production_error=block_error,
         bootnode_count=len(bootnodes),
         last_exit_code=child_exit("validator_rpc"),
+        log_tail="" if block_production_ok else tail_log("validator_rpc"),
     )
-    return running and rpc_ok
+    return running and block_production_ok
 
 def write_bootstrap_hub_script() -> Path:
     ensure_dirs()
@@ -4315,7 +4609,7 @@ def dockerfile_payload_install_run(payloads: Mapping[str, str]) -> str:
             f"pathlib.Path(\"{target}\").write_bytes(zlib.decompress(base64.b64decode(open(\"{tmp_path}\", \"rb\").read())))'; \\"
         )
         lines.append(f"    chmod 0755 {target}; \\")
-        suffix = " \\" if index < len(items) - 1 else ""
+        suffix = "; \\" if index < len(items) - 1 else ""
         lines.append(f"    rm -f {tmp_path}{suffix}")
     return "\n".join(lines)
 
@@ -4356,7 +4650,7 @@ RUN set -eux; \\
     fi; \\
     apt-get update; \\
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-        bash ca-certificates curl python3 python3-pip python3-venv procps netcat-openbsd; \\
+        bash build-essential ca-certificates curl python3 python3-dev python3-pip python3-venv procps netcat-openbsd; \\
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \\
         curl -fsSL -o /tmp/foundationdb-clients.deb \\
             "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-clients_7.4.6-1_amd64.deb"; \\
@@ -4377,8 +4671,11 @@ RUN set -eux; \\
     rm -rf /var/lib/apt/lists/*; \\
     python3 -m venv /opt/allfather-super-venv; \\
     /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir --upgrade pip setuptools wheel; \\
-    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir "foundationdb==7.4.6" "web3==6.20.4" "py-solc-x==2.0.3"; \\
-    /opt/allfather-super-venv/bin/python -c "import solcx; solcx.install_solc('0.8.24')"; \\
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir "foundationdb==7.4.6" "web3==6.20.4"; \\
+    curl -fsSL -o /usr/local/bin/solc \\
+        "https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux"; \\
+    chmod 0755 /usr/local/bin/solc; \\
+    solc --version; \\
     ln -sf /opt/allfather-super-venv/bin/python /usr/local/bin/python; \\
     ln -sf /opt/allfather-super-venv/bin/pip /usr/local/bin/pip; \\
     if [ -x /usr/sbin/fdbserver ]; then \\
@@ -4479,6 +4776,7 @@ def render_super_node_compose(
     ]
     lines.extend(yaml_block_scalar(dockerfile_inline, 8))
     lines.extend([
+        f"    container_name: {yaml_quote(super_container_name_from_manifest(manifest))}",
         "    restart: unless-stopped",
         "    # Coolify's Compose validator accepts a null service entrypoint.",
         "    # The built image overrides the inherited Besu entrypoint and starts",
@@ -4494,6 +4792,7 @@ def render_super_node_compose(
             f"      MC_ALLFATHER_RUNTIME_MODE: {yaml_quote('guard-first')}",
             f"      MC_ALLFATHER_NETWORK: {yaml_quote(str(manifest.get('network_key') or ''))}",
             f"      MC_ALLFATHER_CELL_ID: {yaml_quote(service_name)}",
+            f"      MC_ALLFATHER_DEPLOYMENT_ID: {yaml_quote(str(manifest.get('deployment_id') or ''))}",
             f"      MC_ALLFATHER_GUARD_PORT: {yaml_quote(str(ports.get('guard_container') or DEFAULT_SUPER_GUARD_CONTAINER_PORT))}",
             f"      MC_ALLFATHER_SUPER_MANIFEST_B64: {yaml_quote(manifest_b64_value)}",
             f"      MC_ALLFATHER_FDB_PLAN_B64: {yaml_quote(fdb_plan_b64_value)}",
@@ -4937,8 +5236,16 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
         str(validator.get("status") or "") == "running"
         and bool(validator.get("running"))
         and bool(validator.get("rpc_http_ok"))
+        and bool(validator.get("block_production_ok"))
     ):
-        return {"ready": False, "terminal": False, "reason": f"validator_rpc not ready: {components['validator_rpc'] or 'missing'}", "components": components}
+        block_number = validator.get("block_number")
+        reason = f"validator_rpc not producing blocks: {components['validator_rpc'] or 'missing'}"
+        if block_number is not None:
+            reason += f" block_number={block_number}"
+        error = str(validator.get("block_production_error") or "").strip()
+        if error:
+            reason += f" error={error}"
+        return {"ready": False, "terminal": False, "reason": reason, "components": components}
 
     hub = _component_snapshot(functions, "hub")
     if not (
@@ -5274,6 +5581,22 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     state = load_yaml_mapping(private_state_path)
 
     tried: list[dict[str, Any]] = []
+    preflight: dict[str, Any] = {
+        "enabled": False,
+        "ready": None,
+        "reason": "dry-run" if getattr(args, "dry_run", False) else "not run yet",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+    synced_service_predeploy: dict[str, Any] = {
+        "enabled": False,
+        "ready": None,
+        "reason": "not run yet",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
     if getattr(args, "dry_run", False) and getattr(args, "existing_count", None) is not None:
         existing_count = max(0, int(args.existing_count))
         ordinal = existing_count + 1
@@ -5292,9 +5615,33 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             raise AllfatherControlError(f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}")
         services = service_items_for_client(client, tried)
         ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
+        ordinal = (max(ordinals) + 1) if ordinals else 1
+        planned_cell_id = super_service_name(network_key, head, ordinal)
+        preflight = wait_for_add_node_slot_preflight(
+            client,
+            network_key=network_key,
+            head=head,
+            service_name=planned_cell_id,
+            expected_existing_ordinals=ordinals,
+            tried=tried,
+            wait_s=float(getattr(args, "preflight_wait_s", DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S)),
+            poll_s=float(getattr(args, "preflight_poll_s", DEFAULT_ADD_NODE_PREFLIGHT_POLL_S)),
+            stable_s=float(getattr(args, "preflight_stable_s", DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S)),
+        )
+        if not bool(preflight.get("ready")):
+            raise AllfatherControlError(
+                f"Host {head.coolify_server} is not ready to add {planned_cell_id}: {preflight.get('reason')}"
+            )
+        services = list(preflight.get("services") or services)
+        ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
         existing_nodes = existing_super_inventory_from_services(services, network_key, head)
         require_fdb_seed_for_existing_super_nodes(state, private_state_path, network_key, head, existing_nodes)
         ordinal = (max(ordinals) + 1) if ordinals else 1
+        if super_service_name(network_key, head, ordinal) != planned_cell_id:
+            raise AllfatherControlError(
+                f"Coolify inventory changed while preparing add-node on {head.coolify_server}: planned {planned_cell_id}, "
+                f"but the next service would now be {super_service_name(network_key, head, ordinal)}. Rerun discover/remove-node before add-node."
+            )
         context = resolve_super_context(client, args, head, tried)
         service_uuid = ""
         service_action = "planned"
@@ -5321,6 +5668,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         no_contracts=bool(getattr(args, "no_contracts", False)),
         publish_routes=bool(getattr(args, "publish_routes", False)),
     )
+    manifest["deployment_id"] = "dry-run" if getattr(args, "dry_run", False) else new_super_deployment_id()
     hub_admin_key = wallet_private_key(wallets, "hub_admin")
     deployer_key = wallet_private_key(wallets, "deployer") if manifest["bootstrap"]["contracts_requested"] else ""
     compose = render_super_node_compose(
@@ -5341,6 +5689,15 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             hub_admin_private_key=hub_admin_key,
             deployer_private_key=deployer_key,
         )
+        synced_service_predeploy = require_synced_super_service_ready_for_deploy(
+            client,
+            service_name=manifest["cell_id"],
+            service_uuid=service_uuid,
+            tried=tried,
+        )
+        synced_service_predeploy["enabled"] = True
+        synced_service_predeploy["ready"] = True
+        synced_service_predeploy["reason"] = "single matching Coolify service is ready for deploy"
         deploy_wait: dict[str, Any] = {
             "enabled": False,
             "ready": None,
@@ -5411,6 +5768,8 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "deployed": deployed,
         "ready": add_node_ready,
         "reason": "" if add_node_ready else str(deploy_wait.get("reason") or "add-node deploy wait did not reach readiness"),
+        "preflight": {key: value for key, value in preflight.items() if key != "services"},
+        "predeploy_service_check": synced_service_predeploy,
         "deploy_wait": deploy_wait,
         "token_source": token_source,
         "manifest": manifest,
@@ -5540,6 +5899,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Besu/QBFT-capable base image used to build the all-father super-node container.")
     add_node_parser.add_argument("--no-deploy", action="store_true", help="Create/update service but do not trigger deploy.")
     add_node_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after service sync.")
+    add_node_parser.add_argument("--preflight-wait-s", type=float, default=DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S, help="Seconds to wait for Coolify inventory to show the target super-node service slot is stably clean before add-node creates or deploys.")
+    add_node_parser.add_argument("--preflight-poll-s", type=float, default=DEFAULT_ADD_NODE_PREFLIGHT_POLL_S, help=argparse.SUPPRESS)
+    add_node_parser.add_argument("--preflight-stable-s", type=float, default=DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S, help=argparse.SUPPRESS)
     add_node_parser.add_argument("--deploy-wait-s", type=float, default=DEFAULT_ADD_NODE_READY_WAIT_S, help="Seconds to wait remotely for the new super-node guard/FDB/RPC/Hub/hub_admin/contracts readiness signal after deploy. Set 0 to return immediately after triggering deploy.")
     add_node_parser.add_argument("--deploy-poll-s", type=float, default=DEFAULT_ADD_NODE_READY_POLL_S, help=argparse.SUPPRESS)
 

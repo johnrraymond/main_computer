@@ -3,20 +3,22 @@
 Smoke-test the "latest system picture" multimodal/RAG contract.
 
 This smoke builds or fetches a bounded latest profile-space bundle, renders two
-correlated PNG measurements, attaches the PNGs to an Ollama vision model, and
+diagnostic PNG measurements, attaches the PNGs to an Ollama vision model, and
 asks the model to diagnose the current system state from:
 
-  - Plot A PNG: cumulative profile space with recent/anomaly overlays
-  - Plot B PNG: a second projection of the same profile set
+  - Plot A PNG: cumulative all-profiles behavior space
+  - Plot B PNG: current-window-only behavior space for the last --time interval
   - recent/surprise log evidence
   - profile-space JSON summaries
   - source/code hierarchy snippets that generated the plots
 
 Default model: gemma3:4b
 
-The important contract is that the cumulative/full profile set anchors the
-space.  The moving window and anomaly signals are overlays inside that same
-space; they are not separate projections.
+The important contract is that the cumulative graph first exercises the full
+2D profile-projection code path across all retained profiles.  The current
+window graph then exercises that same projection/rendering path on only the
+newish log records.  The two images should tell a visual story: the full system
+behavior map versus what the logs say is happening right now.
 
 Examples:
 
@@ -569,7 +571,115 @@ def summarize_latest_json_for_prompt(value: Any) -> Any:
     return value
 
 
-def build_local_profile_maps(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
+def record_time_seconds(record: dict[str, Any]) -> float | None:
+    """Return a comparable event timestamp from a main-log record."""
+
+    for key in ("at", "received_at", "time", "timestamp"):
+        value = record.get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, (int, float)):
+            number = parse_float_or_none(value)
+            if number is not None:
+                return number
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            number = parse_float_or_none(text)
+            if number is not None:
+                return number
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    return None
+
+
+def write_current_window_log_slice(
+    *,
+    args: argparse.Namespace,
+    root: Path,
+    log_path: Path,
+    out_dir: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Persist a bounded last-X log slice for the current-window projection.
+
+    The cumulative graph uses the original log.  The current graph should use
+    the same profile-map builder on only the newish records, so write a JSONL
+    sidecar and pass that path back through build_log_profile_map.
+    """
+
+    try:
+        from main_computer.main_log_pack import iter_main_log_records
+    except Exception as exc:
+        raise RuntimeError(f"could not import main log reader for current-window slice: {exc}") from exc
+
+    records = list(iter_main_log_records(log_path))
+    if not records:
+        raise FileNotFoundError(f"main log had no records: {log_path}")
+
+    recent_seconds = parse_duration_seconds(args.time, fallback=parse_duration_seconds(DEFAULT_TIME_WINDOW))
+    stamped = [(idx, record_time_seconds(record)) for idx, record in enumerate(records)]
+    finite = [(idx, ts) for idx, ts in stamped if ts is not None]
+    selected_indexes: list[int]
+    cutoff_time: float | None = None
+    newest_time: float | None = None
+    basis = "profile_tail"
+
+    if finite:
+        newest_time = max(ts for _, ts in finite)
+        cutoff_time = newest_time - recent_seconds
+        selected_indexes = [idx for idx, ts in finite if ts >= cutoff_time]
+        basis = "time"
+    else:
+        selected_indexes = []
+
+    min_records = max(1, int(args.current_window_min_records))
+    tail_records = max(min_records, int(args.current_window_tail_records))
+    max_records = max(min_records, int(args.current_window_max_records))
+
+    if len(selected_indexes) < min_records:
+        selected_indexes = list(range(max(0, len(records) - tail_records), len(records)))
+        basis = "tail_fallback_under_min_records" if finite else "tail_fallback_no_timestamps"
+
+    if len(selected_indexes) > max_records:
+        selected_indexes = selected_indexes[-max_records:]
+        basis += "_capped_to_tail"
+
+    selected_records = [records[idx] for idx in selected_indexes]
+    current_path = out_dir / "current_window_main_log.jsonl"
+    with current_path.open("w", encoding="utf-8", newline="\n") as handle:
+        for record in selected_records:
+            handle.write(compact_json(record) + "\n")
+
+    summary = {
+        "path": rel(current_path, root),
+        "source_log_path": rel(log_path, root),
+        "record_count": len(selected_records),
+        "source_record_count": len(records),
+        "first_source_index": selected_indexes[0] if selected_indexes else None,
+        "last_source_index": selected_indexes[-1] if selected_indexes else None,
+        "time": args.time,
+        "recent_seconds": recent_seconds,
+        "basis": basis,
+        "cutoff_time": cutoff_time,
+        "newest_time": newest_time,
+        "max_records": max_records,
+        "min_records": min_records,
+        "tail_records": tail_records,
+        "contract": "current-window graph is built by rerunning the same profile-map projection code path on this bounded recent log slice",
+    }
+    (out_dir / "current_window_source.json").write_text(json_dumps(summary) + "\n", encoding="utf-8")
+    return current_path, summary
+
+
+def build_local_profile_maps(args: argparse.Namespace, out_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         from main_computer.log_profile_mds import ProfileMapOptions, build_log_profile_map
     except Exception as exc:
@@ -580,19 +690,45 @@ def build_local_profile_maps(args: argparse.Namespace) -> tuple[dict[str, Any], 
     if not log_path.exists():
         raise FileNotFoundError(f"main log not found: {log_path}")
 
-    log(f"building local PCA profile map from {rel(log_path, root)}")
-    pca = build_log_profile_map(
+    log(f"building local cumulative profile map from {rel(log_path, root)}")
+    cumulative = build_log_profile_map(
         root=root,
         input_path=log_path,
-        options=ProfileMapOptions(**_profile_option_kwargs(args, embedding="pca")),
+        options=ProfileMapOptions(**_profile_option_kwargs(args, embedding=args.cumulative_embedding)),
     )
-    log(f"building local NMDS profile map from {rel(log_path, root)}")
-    nmds = build_log_profile_map(
+    cumulative.setdefault("graph_contract", {})
+    cumulative["graph_contract"].update({
+        "graph_role": "cumulative_all_profiles",
+        "projection_input": "all retained profiles from the source log",
+        "story_role": "full system behavior map",
+    })
+
+    current_log_path, current_source = write_current_window_log_slice(
+        args=args,
         root=root,
-        input_path=log_path,
-        options=ProfileMapOptions(**_profile_option_kwargs(args, embedding="nmds")),
+        log_path=log_path,
+        out_dir=out_dir,
     )
-    return pca, nmds
+
+    log(
+        "building local current-window profile map from "
+        f"{rel(current_log_path, root)} records={current_source.get('record_count')} "
+        f"basis={current_source.get('basis')}"
+    )
+    current = build_log_profile_map(
+        root=root,
+        input_path=current_log_path,
+        options=ProfileMapOptions(**_profile_option_kwargs(args, embedding=args.current_window_embedding)),
+    )
+    current.setdefault("graph_contract", {})
+    current["graph_contract"].update({
+        "graph_role": "current_window_only",
+        "projection_input": "only records selected for the moving current-time window",
+        "story_role": "what the system is doing right now",
+        "current_window_source": current_source,
+    })
+    current["current_window_source"] = current_source
+    return cumulative, current
 
 
 def profile_by_id(profile_map: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -613,7 +749,14 @@ def parse_float_or_none(value: Any) -> float | None:
     return number
 
 
-def overlay_flags(profile_map: dict[str, Any], args: argparse.Namespace) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+def overlay_flags(
+    profile_map: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    graph_scope: str = "cumulative_all_profiles",
+    force_recent: bool = False,
+    enable_recent: bool = True,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     profiles = list(profile_map.get("profiles", []) or [])
     points = list(profile_map.get("embedding", {}).get("points", []) or [])
     profiles_by_id = profile_by_id(profile_map)
@@ -659,7 +802,13 @@ def overlay_flags(profile_map: dict[str, Any], args: argparse.Namespace) -> tupl
             continue
         surprise = float(profile.get("surprise_bits_total") or 0.0)
         time_end = parse_float_or_none(profile.get("time_end"))
-        if recent_by_time and time_end is not None and recent_cutoff_time is not None:
+        if force_recent:
+            recent = True
+            recent_basis = "current_window_only"
+        elif not enable_recent:
+            recent = False
+            recent_basis = "disabled_for_cumulative_graph"
+        elif recent_by_time and time_end is not None and recent_cutoff_time is not None:
             recent = time_end >= recent_cutoff_time
             recent_basis = "time"
         else:
@@ -692,11 +841,19 @@ def overlay_flags(profile_map: dict[str, Any], args: argparse.Namespace) -> tupl
     for item in flags.values():
         counts[item["overlay_class"]] = counts.get(item["overlay_class"], 0) + 1
 
+    if force_recent:
+        recent_basis_summary = "current_window_only"
+    elif not enable_recent:
+        recent_basis_summary = "disabled_for_cumulative_graph"
+    else:
+        recent_basis_summary = "time" if recent_by_time else "profile_tail"
+
     summary = {
-        "anchor": "cumulative",
+        "anchor": "cumulative" if graph_scope == "cumulative_all_profiles" else "current_window",
+        "graph_scope": graph_scope,
         "time": args.time,
         "recent_seconds": recent_seconds,
-        "recent_basis": "time" if recent_by_time else "profile_tail",
+        "recent_basis": recent_basis_summary,
         "recent_cutoff_time": recent_cutoff_time,
         "anomaly_quantile": args.anomaly_quantile,
         "anomaly_threshold_surprise_bits": threshold if math.isfinite(threshold) else None,
@@ -704,12 +861,14 @@ def overlay_flags(profile_map: dict[str, Any], args: argparse.Namespace) -> tupl
         "point_count": len(points),
         "counts": counts,
         "semantics": {
-            "cumulative": "background historical profile cloud",
-            "recent": "inside the moving window, drawn red",
+            "cumulative": "all-profile historical behavior map" if graph_scope == "cumulative_all_profiles" else "non-anomalous current-window profile",
+            "recent": "current-window profile, drawn red",
             "anomalous": "high-surprise profile, drawn amber/orange",
-            "recent_anomalous": "both moving-window and anomalous, drawn bright red with a ring",
+            "recent_anomalous": "current-window profile that is also anomalous, drawn bright red with a ring",
         },
     }
+    if graph_scope == "current_window_only":
+        summary["current_window_source"] = profile_map.get("current_window_source") or (profile_map.get("graph_contract") or {}).get("current_window_source")
     return flags, summary
 
 
@@ -717,11 +876,17 @@ def attach_overlay(profile_map: dict[str, Any], flags: dict[str, dict[str, Any]]
     # Deep-copy via JSON keeps the persisted sidecar plain and deterministic.
     copied = json.loads(json.dumps(profile_map, default=str))
     copied["overlay"] = summary
+    graph_scope = str(summary.get("graph_scope") or "cumulative_all_profiles")
     copied.setdefault("latest_contract", {})
     copied["latest_contract"].update({
-        "anchor": "cumulative",
+        "anchor": "cumulative" if graph_scope == "cumulative_all_profiles" else "current_window",
         "overlays": ["recent", "anomalous", "recent_anomalous"],
-        "projection_coordinates": "computed from the cumulative profile set; overlays do not define a new projection",
+        "graph_scope": graph_scope,
+        "projection_coordinates": (
+            "computed from all retained profiles in the cumulative source log"
+            if graph_scope == "cumulative_all_profiles"
+            else "computed by rerunning the same profile projection path on only the current-window log slice"
+        ),
     })
 
     for point in copied.get("embedding", {}).get("points", []) or []:
@@ -814,10 +979,18 @@ def draw_png_with_pillow(path: Path, profile_map: dict[str, Any], title: str, ar
     points = list(profile_map.get("embedding", {}).get("points", []) or [])
     scaled = scale_points(points, width, height)
 
+    summary = profile_map.get("overlay") or {}
+    graph_scope = str(summary.get("graph_scope") or "cumulative_all_profiles")
+    if graph_scope == "current_window_only":
+        legend = "current-window profiles = red    current anomalies = bright red ring    high-surprise = amber ring"
+        story = "Plot B: projection was recomputed from only the current-window log slice."
+    else:
+        legend = "all cumulative profiles = black/gray    historical anomalies = amber ring"
+        story = "Plot A: projection was computed from all retained profiles in the cumulative log."
     # Frame and legend.
     draw.rectangle([78, 92, width - 34, height - 74], outline=(190, 190, 190), width=1)
     draw.text((24, 20), title, fill=(0, 0, 0), font=font)
-    draw.text((24, 40), "cumulative = black/gray    recent = red    anomalous = amber ring    recent+anomalous = bright red ring", fill=(40, 40, 40), font=font)
+    draw.text((24, 40), legend, fill=(40, 40, 40), font=font)
     if beacon and beacon != "none":
         draw.text((24, 60), f"SMOKE_BEACON_ID={beacon}", fill=(120, 0, 0), font=font)
 
@@ -853,15 +1026,14 @@ def draw_png_with_pillow(path: Path, profile_map: dict[str, Any], title: str, ar
         label = str(point.get("profile_id") or "?")
         draw.text((px + 8, py - 8), label, fill=(0, 0, 0), font=font)
 
-    summary = profile_map.get("overlay") or {}
     counts = summary.get("counts") or {}
     footer = (
         f"profiles={summary.get('profile_count')} recent={counts.get('recent', 0)} "
         f"anomalous={counts.get('anomalous', 0)} both={counts.get('recent_anomalous', 0)} "
-        f"window={summary.get('time')}"
+        f"window={summary.get('time')} scope={graph_scope}"
     )
     draw.text((24, height - 42), footer, fill=(0, 0, 0), font=font)
-    draw.text((24, height - 24), "Anchor: cumulative profile space; overlays classify points inside this same coordinate system.", fill=(40, 40, 40), font=font)
+    draw.text((24, height - 24), story, fill=(40, 40, 40), font=font)
 
     image.save(path)
     return True
@@ -1017,6 +1189,7 @@ def summarize_profile_map(profile_map: dict[str, Any], *, max_points: int, max_c
             "dominant_signatures": profile.get("dominant_signatures") or [],
         })
 
+    overlay = profile_map.get("overlay") or {}
     return {
         "ok": profile_map.get("ok"),
         "schema": profile_map.get("schema"),
@@ -1024,7 +1197,12 @@ def summarize_profile_map(profile_map: dict[str, Any], *, max_points: int, max_c
         "source": profile_map.get("source"),
         "options": profile_map.get("options"),
         "summary": profile_map.get("summary"),
-        "overlay": profile_map.get("overlay"),
+        "profile_count": len(profiles),
+        "projection": (profile_map.get("embedding") or {}).get("method"),
+        "graph_contract": profile_map.get("graph_contract"),
+        "current_window_source": profile_map.get("current_window_source"),
+        "overlay": overlay,
+        "overlay_counts": overlay.get("counts"),
         "embedding": {
             "method": (profile_map.get("embedding") or {}).get("method"),
             "diagnostics": (profile_map.get("embedding") or {}).get("diagnostics"),
@@ -1198,17 +1376,16 @@ def build_prompt(
             "time": args.time,
             "max_latest_bytes": args.max_latest_bytes,
             "diagnosis_depth": args.diagnosis_depth,
-            "anchor": "cumulative profile space",
-            "overlays": {
-                "cumulative": "black/gray background points",
-                "recent": "red moving-window points",
-                "anomalous": "amber/orange high-surprise points",
-                "recent_anomalous": "bright red ringed points",
+            "graph_pair": {
+                "image_0": "cumulative all-profiles behavior-space PNG",
+                "image_1": "current-window-only behavior-space PNG for the last --time interval",
+                "relationship_rule": "image 1 is built by rerunning the same profile projection path on a recent log slice, not by merely recoloring image 0",
             },
-            "projection_pair": {
-                "image_0": "PCA-style profile-space PNG",
-                "image_1": "NMDS-style profile-space PNG",
-                "correlation_rule": "both images encode the same underlying profile ids/features with different coordinates",
+            "visual_encoding": {
+                "image_0_black_gray": "all cumulative profile points",
+                "image_0_amber": "historical high-surprise/anomalous profiles",
+                "image_1_red": "current-window profile points",
+                "image_1_bright_red_ring": "current-window points that are also anomalous",
             },
             "response_budget": {
                 "goal": "fast smoke decode unless --diagnosis-depth full is requested",
@@ -1218,8 +1395,8 @@ def build_prompt(
         },
         "smoke_beacon_id": beacon or None,
         "manifest": manifest,
-        "pca_profile_space_summary": pca_summary,
-        "nmds_profile_space_summary": nmds_summary,
+        "cumulative_profile_space_summary": pca_summary,
+        "current_window_profile_space_summary": nmds_summary,
         "service_context": service_context,
         "log_context": log_context,
         "code_context": code_context,
@@ -1231,16 +1408,18 @@ def build_prompt(
         payload = {
             "latest_picture_contract": payload["latest_picture_contract"],
             "smoke_beacon_id": beacon or None,
-            "pca_profile_space_summary": {
+            "cumulative_profile_space_summary": {
                 "projection": pca_summary.get("projection"),
                 "profile_count": pca_summary.get("profile_count"),
                 "overlay_counts": pca_summary.get("overlay_counts"),
+                "graph_scope": (pca_summary.get("overlay") or {}).get("graph_scope"),
                 "points": (pca_summary.get("points") or [])[:4],
             },
-            "nmds_profile_space_summary": {
+            "current_window_profile_space_summary": {
                 "projection": nmds_summary.get("projection"),
                 "profile_count": nmds_summary.get("profile_count"),
                 "overlay_counts": nmds_summary.get("overlay_counts"),
+                "graph_scope": (nmds_summary.get("overlay") or {}).get("graph_scope"),
                 "points": (nmds_summary.get("points") or [])[:4],
             },
             "log_context": {
@@ -1257,18 +1436,18 @@ def build_prompt(
     if not task:
         if args.diagnosis_depth == "probe":
             task = (
-                "Fast smoke probe: decode the two PNG plots and say whether their "
-                "recent/anomaly overlays connect to the supplied log context."
+                "Fast smoke probe: decode the cumulative graph and the current-window graph, "
+                "then say whether the current graph connects to the supplied log context."
             )
         elif args.diagnosis_depth == "full":
             task = (
-                "Use the two PNG plots plus the provided log/code/profile sidecars to diagnose "
-                "the current state of the system at this moment."
+                "Use the cumulative all-profile PNG, the current-window-only PNG, and the "
+                "provided log/code/profile sidecars to diagnose the current state of the system at this moment."
             )
         else:
             task = (
-                "Fast diagnostic smoke: use the two PNG plots plus bounded log/code/profile "
-                "sidecars to decide whether the latest picture is enough to diagnose the current moment."
+                "Fast diagnostic smoke: compare the cumulative all-profile graph with the "
+                "current-window graph and bounded logs to decide whether the latest picture diagnoses this moment."
             )
 
     if args.diagnosis_depth == "full":
@@ -1278,13 +1457,11 @@ You are a Main Computer multimodal RAG diagnostic smoke model.
 You are given two attached PNG images plus bounded text sidecars.
 
 The attached PNGs are not decoration. Treat them as measurements:
-- image[0] is a cumulative profile-space plot using a PCA-style projection.
-- image[1] is a correlated profile-space plot using an NMDS-style projection.
-- Both images should show the same underlying profile set and overlays.
-- Black/gray means cumulative background.
-- Red means the moving-window recent overlay.
-- Amber/orange means anomalous high-surprise profiles.
-- Bright red ring means both recent and anomalous.
+- image[0] is the cumulative all-profiles behavior-space plot.
+- image[1] is the current-window-only behavior-space plot for the last --time interval.
+- The two images use the same profile-map projection/rendering code path, but image[1] projects only newish log records.
+- In image[0], black/gray means the cumulative historical profile map and amber/orange means historical high-surprise profiles.
+- In image[1], red means current-window profiles and bright red rings mean current-window anomalies.
 
 Task:
 {task}
@@ -1308,9 +1485,9 @@ Return this schema:
     }}
   ],
   "two_plot_correlation": {{
-    "same_underlying_profile_set": true,
-    "shared_clusters_or_regions": ["what both plots agree on"],
-    "differences_explained_by_projection": ["how the geometries differ while facts remain shared"]
+    "cumulative_contains_current_window": true,
+    "current_window_story": ["what the recent-only plot says now"],
+    "differences_explained_by_input_scope": ["image 0 all profiles; image 1 current-window records only"]
   }},
   "log_evidence": ["specific facts from the logs or recent/surprise context"],
   "code_hierarchy_evidence": ["specific route/module/function evidence from code snippets"],
@@ -1337,9 +1514,9 @@ LATEST_PROFILE_SPACE_RAG_SIDECARS_JSON
 You are a strict JSON-only multimodal RAG smoke model.
 
 Two PNG plots are attached:
-- image[0] = PCA latest profile-space plot.
-- image[1] = NMDS latest profile-space plot.
-Both encode the same log profiles. Gray/black=cumulative. Red=recent. Amber=anomaly. Bright red ring=recent+anomaly.
+- image[0] = cumulative all-profiles behavior map.
+- image[1] = current-window-only behavior map from the last --time interval.
+Both use the same profile-map projection path. Image[0] shows the system map; image[1] shows now.
 
 Task:
 {task}
@@ -1352,10 +1529,10 @@ Required schema:
 {{
   "image_seen": true,
   "plots_decoded": [
-    {{"image_index": 0, "projection": "pca", "evidence": "short visual fact"}},
-    {{"image_index": 1, "projection": "nmds", "evidence": "short visual fact"}}
+    {{"image_index": 0, "plot_role": "cumulative_all_profiles", "evidence": "short visual fact"}},
+    {{"image_index": 1, "plot_role": "current_window_only", "evidence": "short visual fact"}}
   ],
-  "two_plot_correlation": {{"same_underlying_profile_set": true, "evidence": "shared visual/log fact"}},
+  "two_plot_correlation": {{"cumulative_contains_current_window": true, "evidence": "current plot is recent slice of cumulative story"}},
   "current_system_state": "brief diagnosis",
   "latest_picture_is_enough": true,
   "missing_evidence_if_not_enough": "none or exact missing item",
@@ -1387,14 +1564,14 @@ def build_compact_retry_prompt(
     payload = {
         "time": args.time,
         "smoke_beacon_id": beacon or None,
-        "pca": {
-            "projection": pca_summary.get("projection") or "pca",
+        "cumulative": {
+            "projection": pca_summary.get("projection") or args.cumulative_embedding,
             "profile_count": pca_summary.get("profile_count"),
             "overlay_counts": pca_summary.get("overlay_counts") or pca_summary.get("overlay") or {},
             "points": (pca_summary.get("points") or [])[:2],
         },
-        "nmds": {
-            "projection": nmds_summary.get("projection") or "nmds",
+        "current_window": {
+            "projection": nmds_summary.get("projection") or args.current_window_embedding,
             "profile_count": nmds_summary.get("profile_count"),
             "overlay_counts": nmds_summary.get("overlay_counts") or nmds_summary.get("overlay") or {},
             "points": (nmds_summary.get("points") or [])[:2],
@@ -1406,7 +1583,7 @@ def build_compact_retry_prompt(
     return f"""
 Return JSON only. Decode the two attached PNG profile-space plots.
 
-image[0]=PCA, image[1]=NMDS. Gray=baseline, red=recent, amber=anomaly, bright-ring=recent anomaly.
+image[0]=cumulative all profiles. image[1]=current-window only. Compare the full system map to now.
 Use this sidecar only as hints:
 {sidecars}
 
@@ -1414,10 +1591,10 @@ Return exactly this compact schema and close the JSON:
 {{
   "image_seen": true,
   "plots_decoded": [
-    {{"image_index": 0, "projection": "pca", "evidence": "seen"}},
-    {{"image_index": 1, "projection": "nmds", "evidence": "seen"}}
+    {{"image_index": 0, "plot_role": "cumulative_all_profiles", "evidence": "seen"}},
+    {{"image_index": 1, "plot_role": "current_window_only", "evidence": "seen"}}
   ],
-  "two_plot_correlation": {{"same_underlying_profile_set": true, "evidence": "same profiles"}},
+  "two_plot_correlation": {{"cumulative_contains_current_window": true, "evidence": "current slice relates to full map"}},
   "current_system_state": "brief",
   "latest_picture_is_enough": true,
   "missing_evidence_if_not_enough": "none",
@@ -1728,15 +1905,16 @@ def build_manifest(
             "max_latest_bytes": args.max_latest_bytes,
             "used_latest_bytes_before_prompt": budget.used_bytes,
             "remaining_latest_bytes_before_prompt": budget.remaining,
-            "anchor": "cumulative",
-            "moving_window": "overlay-only; does not define a new projection",
+            "anchor": "cumulative plus current-window",
+            "moving_window": "current-window graph is projected separately from a bounded recent log slice",
             "artifact_retention": "this smoke consumes the newest bounded picture; it does not require storing every historical time query",
         },
         "artifacts": {
-            "plot_a_pca_png": pca_artifact,
-            "plot_b_nmds_png": nmds_artifact,
-            "profile_space_pca_json": rel(out_dir / "profile_space_pca_overlay.json"),
-            "profile_space_nmds_json": rel(out_dir / "profile_space_nmds_overlay.json"),
+            "plot_a_cumulative_png": pca_artifact,
+            "plot_b_current_window_png": nmds_artifact,
+            "profile_space_cumulative_json": rel(out_dir / "profile_space_cumulative_overlay.json"),
+            "profile_space_current_window_json": rel(out_dir / "profile_space_current_window_overlay.json"),
+            "current_window_source": rel(out_dir / "current_window_source.json"),
             "prompt": rel(out_dir / "model_prompt.txt"),
             "response": rel(out_dir / "model_response.txt"),
             "report": rel(out_dir / "report.json"),
@@ -1748,8 +1926,8 @@ def build_manifest(
             "latest_endpoint_used": latest_endpoint_manifest is not None,
         },
         "plots": {
-            "pca_summary": pca_summary.get("overlay"),
-            "nmds_summary": nmds_summary.get("overlay"),
+            "cumulative_summary": pca_summary.get("overlay"),
+            "current_window_summary": nmds_summary.get("overlay"),
         },
     }
 
@@ -1769,34 +1947,35 @@ def prepare_latest_bundle(args: argparse.Namespace, out_dir: Path, beacon: str) 
         (out_dir / "latest_picture_manifest.json").write_text(json_dumps(manifest) + "\n", encoding="utf-8")
         return images, manifest, pca_summary, nmds_summary, service_context, log_context, code_context
 
-    pca_map, nmds_map = build_local_profile_maps(args)
+    pca_map, nmds_map = build_local_profile_maps(args, out_dir)
 
-    flags, overlay_summary = overlay_flags(pca_map, args)
+    flags, overlay_summary = overlay_flags(pca_map, args, graph_scope="cumulative_all_profiles", enable_recent=False)
     pca_overlay = attach_overlay(pca_map, flags, overlay_summary)
-    nmds_overlay = attach_overlay(nmds_map, flags, {**overlay_summary, "projection_overlay_note": "same flags as PCA; coordinates differ by projection"})
+    current_flags, current_overlay_summary = overlay_flags(nmds_map, args, graph_scope="current_window_only", force_recent=True)
+    nmds_overlay = attach_overlay(nmds_map, current_flags, {**current_overlay_summary, "projection_overlay_note": "same profile projection path as cumulative graph; input is the current-window log slice"})
 
-    pca_json_path = out_dir / "profile_space_pca_overlay.json"
-    nmds_json_path = out_dir / "profile_space_nmds_overlay.json"
+    pca_json_path = out_dir / "profile_space_cumulative_overlay.json"
+    nmds_json_path = out_dir / "profile_space_current_window_overlay.json"
     pca_json_path.write_text(json_dumps(pca_overlay) + "\n", encoding="utf-8")
     nmds_json_path.write_text(json_dumps(nmds_overlay) + "\n", encoding="utf-8")
 
     # The full JSON files are artifacts; the prompt only receives summaries.
-    budget.reserve("profile_space_pca_json", min(pca_json_path.stat().st_size, args.count_profile_json_bytes))
-    budget.reserve("profile_space_nmds_json", min(nmds_json_path.stat().st_size, args.count_profile_json_bytes))
+    budget.reserve("profile_space_cumulative_json", min(pca_json_path.stat().st_size, args.count_profile_json_bytes))
+    budget.reserve("profile_space_current_window_json", min(nmds_json_path.stat().st_size, args.count_profile_json_bytes))
 
-    pca_png_path = out_dir / "profile_space_plot_a_pca.png"
-    nmds_png_path = out_dir / "profile_space_plot_b_nmds.png"
+    pca_png_path = out_dir / "profile_space_plot_a_cumulative.png"
+    nmds_png_path = out_dir / "profile_space_plot_b_current_window.png"
     pca_artifact = render_profile_png(
         pca_png_path,
         pca_overlay,
-        f"Plot A: latest cumulative profile space PCA overlay window={args.time}",
+        f"Plot A: cumulative all-profiles behavior space ({args.cumulative_embedding})",
         args,
         beacon,
     )
     nmds_artifact = render_profile_png(
         nmds_png_path,
         nmds_overlay,
-        f"Plot B: latest cumulative profile space NMDS overlay window={args.time}",
+        f"Plot B: current-window behavior space ({args.current_window_embedding}) window={args.time}",
         args,
         beacon,
     )
@@ -1804,11 +1983,11 @@ def prepare_latest_bundle(args: argparse.Namespace, out_dir: Path, beacon: str) 
     pca_bytes = pca_png_path.read_bytes()
     nmds_bytes = nmds_png_path.read_bytes()
     if not pca_bytes.startswith(PNG_MAGIC):
-        raise ValueError(f"PCA plot was not a PNG: {pca_png_path}")
+        raise ValueError(f"cumulative plot was not a PNG: {pca_png_path}")
     if not nmds_bytes.startswith(PNG_MAGIC):
-        raise ValueError(f"NMDS plot was not a PNG: {nmds_png_path}")
-    budget.reserve("profile_space_pca_png", len(pca_bytes))
-    budget.reserve("profile_space_nmds_png", len(nmds_bytes))
+        raise ValueError(f"current-window plot was not a PNG: {nmds_png_path}")
+    budget.reserve("profile_space_cumulative_png", len(pca_bytes))
+    budget.reserve("profile_space_current_window_png", len(nmds_bytes))
 
     service_context = fetch_service_context(args, out_dir, budget)
     log_context = read_local_log_context(args, out_dir, budget)
@@ -1861,6 +2040,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Build plots, prompt, and report without calling Ollama.")
 
     parser.add_argument("--profile-window", choices=["information", "events", "time"], default="information")
+    parser.add_argument("--cumulative-embedding", choices=["pca", "mds", "nmds"], default="pca", help="Embedding for image[0], the all-profile cumulative graph.")
+    parser.add_argument("--current-window-embedding", choices=["pca", "mds", "nmds"], default="pca", help="Embedding for image[1], the current-window-only graph. Defaults to the same fast PCA path.")
+    parser.add_argument("--current-window-min-records", type=int, default=200, help="Minimum recent records for the current-window graph; tail fallback is used below this.")
+    parser.add_argument("--current-window-tail-records", type=int, default=2000, help="Tail-record fallback size for the current-window graph.")
+    parser.add_argument("--current-window-max-records", type=int, default=20000, help="Hard cap on records written to the current-window log slice.")
     parser.add_argument("--target-surprise-bits", type=float, default=512.0)
     parser.add_argument("--stride-surprise-bits", type=float, default=512.0)
     parser.add_argument("--event-window", type=int, default=500)
