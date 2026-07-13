@@ -54,7 +54,7 @@ DEFAULT_PROBE_CONTAINER_PORT = 41415
 DEFAULT_PROBE_INTERVAL_S = 15.0
 DEFAULT_REMOVE_DELETE_WAIT_S = 45.0
 DEFAULT_REMOVE_DELETE_POLL_S = 2.0
-DEFAULT_ADD_NODE_READY_WAIT_S = 900.0
+DEFAULT_ADD_NODE_READY_WAIT_S = 1800.0
 DEFAULT_ADD_NODE_READY_POLL_S = 5.0
 DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S = 45.0
 DEFAULT_ADD_NODE_PREFLIGHT_POLL_S = 2.0
@@ -3422,6 +3422,7 @@ import json
 import os
 import shutil
 import signal
+import re
 import socket
 import subprocess
 import threading
@@ -3452,6 +3453,7 @@ started_at = time.time()
 lock = threading.RLock()
 stop_requested = False
 children = {}
+children_started_at = {}
 component_state = {}
 
 def now_s() -> float:
@@ -3522,6 +3524,15 @@ def rpc_block_number(url: str, timeout: float = 1.0) -> tuple[bool, int | None, 
         return False, None, f"invalid eth_blockNumber result: {type(exc).__name__}: {exc}"
     return False, None, f"invalid eth_blockNumber result: {result!r}"
 
+def latest_besu_log_block_number(log_text: str) -> int | None:
+    latest: int | None = None
+    for match in re.finditer(r"Produced empty block #(\d+)", str(log_text or "")):
+        try:
+            latest = int(match.group(1))
+        except Exception:
+            pass
+    return latest
+
 def tail_log(name: str, max_bytes: int = 4000) -> str:
     path = state_root / "logs" / f"{name}.log"
     try:
@@ -3565,6 +3576,26 @@ def child_exit(name: str):
     code = proc.poll()
     return None if code is None else int(code)
 
+def child_uptime_s(name: str) -> float | None:
+    started = children_started_at.get(name)
+    if started is None:
+        return None
+    return round(max(0.0, time.time() - float(started)), 3)
+
+def open_child_log(name: str):
+    log_dir = state_root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{name}.log"
+    previous_path = log_dir / f"{name}.previous.log"
+    try:
+        if log_path.exists():
+            if previous_path.exists():
+                previous_path.unlink()
+            log_path.replace(previous_path)
+    except Exception:
+        pass
+    return open(log_path, "ab", buffering=0)
+
 def start_child(name: str, command: list[str], *, cwd: str | None = None, env_extra: dict | None = None) -> bool:
     if child_running(name):
         return True
@@ -3575,7 +3606,7 @@ def start_child(name: str, command: list[str], *, cwd: str | None = None, env_ex
     if env_extra:
         env.update({str(k): str(v) for k, v in env_extra.items()})
     try:
-        log = open(state_root / "logs" / f"{name}.log", "ab", buffering=0)
+        log = open_child_log(name)
         children[name] = subprocess.Popen(
             command,
             cwd=cwd or str(state_root),
@@ -3585,6 +3616,7 @@ def start_child(name: str, command: list[str], *, cwd: str | None = None, env_ex
             stdin=subprocess.DEVNULL,
             close_fds=True,
         )
+        children_started_at[name] = time.time()
         return True
     except Exception as exc:
         state(name, desired=True, running=False, status="start-failed", last_error=f"{type(exc).__name__}: {exc}", command=command)
@@ -4093,9 +4125,16 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
     rpc_url = f"http://127.0.0.1:{rpc_port}"
     port_listening = port_open("127.0.0.1", rpc_port)
     json_rpc_ok, block_number, block_error = rpc_block_number(rpc_url, timeout=1.0)
+    log_tail = "" if json_rpc_ok else tail_log("validator_rpc")
+    log_block_number = latest_besu_log_block_number(log_tail)
+    log_block_production_ok = bool(log_block_number is not None and int(log_block_number) > 0)
+    shutdown_observed = "Shutting down BFT event processor" in log_tail or "BesuCommand-Shutdown-Hook" in log_tail
+    observed_block_number = block_number if block_number is not None else log_block_number
     block_production_ok = bool(json_rpc_ok and block_number is not None and int(block_number) > 0)
     if running and block_production_ok:
         status = "running"
+    elif running and log_block_production_ok and not json_rpc_ok:
+        status = "waiting-validator-json-rpc-after-block-production"
     elif running and json_rpc_ok:
         status = "waiting-qbft-block-production"
     elif running and port_listening:
@@ -4119,13 +4158,18 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         rpc_http_ok=json_rpc_ok,
         json_rpc_ok=json_rpc_ok,
         rpc_port_listening=port_listening,
-        block_number=block_number,
+        block_number=observed_block_number,
+        rpc_block_number=block_number,
+        log_block_number=log_block_number,
         block_production_ok=block_production_ok,
+        log_block_production_ok=log_block_production_ok,
         block_production_required=True,
         block_production_error=block_error,
+        shutdown_observed=shutdown_observed,
         bootnode_count=len(bootnodes),
         last_exit_code=child_exit("validator_rpc"),
-        log_tail="" if block_production_ok else tail_log("validator_rpc"),
+        child_uptime_s=child_uptime_s("validator_rpc"),
+        log_tail="" if block_production_ok else log_tail,
     )
     return running and block_production_ok
 
@@ -5239,12 +5283,17 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
         and bool(validator.get("block_production_ok"))
     ):
         block_number = validator.get("block_number")
-        reason = f"validator_rpc not producing blocks: {components['validator_rpc'] or 'missing'}"
+        if bool(validator.get("log_block_production_ok")) and not bool(validator.get("rpc_http_ok")):
+            reason = f"validator_rpc produced blocks but JSON-RPC is not reachable: {components['validator_rpc'] or 'missing'}"
+        else:
+            reason = f"validator_rpc not producing blocks: {components['validator_rpc'] or 'missing'}"
         if block_number is not None:
             reason += f" block_number={block_number}"
         error = str(validator.get("block_production_error") or "").strip()
         if error:
             reason += f" error={error}"
+        if bool(validator.get("shutdown_observed")):
+            reason += " shutdown_observed=true"
         return {"ready": False, "terminal": False, "reason": reason, "components": components}
 
     hub = _component_snapshot(functions, "hub")
@@ -5397,7 +5446,12 @@ def wait_for_add_node_ready(
             }
 
         status_lower = last_status.lower()
-        terminal_service_state = any(token in status_lower for token in ("exited", "dead", "failed"))
+        # During Coolify create/deploy/recreate, inventory can transiently report the
+        # previous application status as "exited" even though the new image/container
+        # is still building, unpacking, or starting.  Treat hard failures as terminal,
+        # but let "exited" flow through the normal wait/timeout path so a slow cold
+        # deploy does not return a false blocker while Docker is still working.
+        terminal_service_state = any(token in status_lower for token in ("dead", "failed"))
         if bool(last_ready_check.get("terminal")) or terminal_service_state:
             return {
                 "enabled": True,

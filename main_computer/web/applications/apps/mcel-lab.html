@@ -25,8 +25,8 @@
       <p class="eyebrow">MCEL Lab</p>
       <h3>App Blueprint / Aspect Inspector</h3>
       <p>
-        Select an app and aspect, work in the center surface, then drill into MCEL internals only
-        when evidence, source hints, or export contracts are needed.
+        Select an app and aspect, mount it into the center work surface, then drill into MCEL
+        evidence, source hints, or export contracts only when needed.
       </p>
     </div>
 
@@ -53,7 +53,7 @@
       data-mcel-layout-zone="actions"
       data-mcel-element="element.layout.actions-zone"
     >
-      <button type="button" id="mcel-blueprint-mount-action" data-phase="future">Mount</button>
+      <button type="button" id="mcel-blueprint-mount-action" data-mcel-mount-action="same-page-contained-clone">Mount</button>
       <button type="button" id="mcel-blueprint-inspect-action" data-phase="future">Inspect</button>
       <button type="button" id="mcel-blueprint-validate-action">Validate</button>
       <button type="button" id="mcel-blueprint-export-action" data-phase="future">Export</button>
@@ -141,7 +141,7 @@
             <p class="eyebrow">Work area</p>
             <h4 id="mcel-blueprint-aspect-title">Document Editor · Overview</h4>
           </div>
-          <span id="mcel-blueprint-work-badge" class="mcel-lab-work-badge">static Phase 2 workspace</span>
+          <span id="mcel-blueprint-work-badge" class="mcel-lab-work-badge">mount idle</span>
         </div>
 
         <div class="mcel-lab-work-surface" id="mcel-blueprint-work-surface" aria-label="Mounted app work surface">
@@ -149,8 +149,8 @@
             <span>Mount target</span>
             <strong id="mcel-blueprint-mount-route">/applications/document</strong>
             <p>
-              This is the primary work area. Phase 3 will mount the selected app here; later phases
-              will add point inspection, annotations, and export.
+              This is the primary work area. Use Mount to clone the selected app into a contained
+              preview. Later phases will add point inspection, annotations, and export.
             </p>
           </div>
         </div>
@@ -171,7 +171,7 @@
           <section>
             <p class="eyebrow">Next actions</p>
             <ul id="mcel-blueprint-next-actions" class="mcel-lab-plain-list">
-              <li>Mount selected app in Phase 3.</li>
+              <li>Mount selected app into the contained preview.</li>
             </ul>
           </section>
         </div>
@@ -211,6 +211,34 @@
             <span>Required before removal or rework.</span>
           </article>
         </div>
+      </section>
+
+      <section
+        class="mcel-lab-shell-card mcel-lab-mount-evidence-card"
+        data-mcel-zone="evidence"
+        data-mcel-layout-zone="evidence"
+        data-mcel-element="element.inspection.implementation-delta"
+        aria-label="Mounted app evidence"
+      >
+        <div class="mcel-lab-shell-card-heading">
+          <p class="eyebrow">Mount evidence</p>
+          <h4>Mounted app snapshot</h4>
+        </div>
+        <p id="mcel-blueprint-mount-status" class="mcel-lab-muted-note">
+          No app mounted yet. The mount action creates an inert contained preview and records DOM evidence.
+        </p>
+        <dl id="mcel-blueprint-mount-report" class="mcel-lab-blueprint-facts mcel-lab-mount-report">
+          <div><dt>App</dt><dd data-mcel-mount-report-field="appId">not mounted</dd></div>
+          <div><dt>Route</dt><dd data-mcel-mount-report-field="route">not mounted</dd></div>
+          <div><dt>MCEL attrs</dt><dd data-mcel-mount-report-field="dataMcelAttributes">0</dd></div>
+          <div><dt>Layout zones</dt><dd data-mcel-mount-report-field="layoutZones">0</dd></div>
+          <div><dt>Visible text</dt><dd data-mcel-mount-report-field="visibleText">not captured</dd></div>
+          <div><dt>Bounding boxes</dt><dd data-mcel-mount-report-field="boundingBoxes">pending</dd></div>
+        </dl>
+        <details class="mcel-lab-mount-snapshot">
+          <summary>DOM snapshot</summary>
+          <pre id="mcel-blueprint-dom-snapshot" aria-label="Mounted app DOM snapshot">Mount an app to capture its DOM snapshot.</pre>
+        </details>
       </section>
 
       <section
@@ -264,8 +292,8 @@
     data-mcel-element="element.layout.status-zone"
     aria-label="MCEL Lab status"
   >
-    <output id="mcel-blueprint-validity-status">Blueprint contract pending.</output>
-    <output id="mcel-blueprint-saved-status">Saved annotations: not implemented in Phase 2.</output>
+    <output id="mcel-blueprint-validity-status">Blueprint contract pending; mount idle.</output>
+    <output id="mcel-blueprint-saved-status">Saved annotations: not implemented in Phase 3.</output>
     <output id="mcel-blueprint-export-status">Export packet: contract only.</output>
   </footer>
 

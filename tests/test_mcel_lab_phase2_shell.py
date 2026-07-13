@@ -52,6 +52,10 @@ def test_mcel_lab_phase_two_renders_app_blueprint_aspect_inspector_shell() -> No
     assert 'class="mcel-lab-shell-card mcel-lab-work-area"' in source
     assert 'id="mcel-blueprint-work-surface"' in source
     assert "Drill down" in source
+    assert 'id="mcel-blueprint-mount-status"' in source
+    assert 'id="mcel-blueprint-mount-report"' in source
+    assert 'id="mcel-blueprint-dom-snapshot"' in source
+    assert 'data-mcel-mount-action="same-page-contained-clone"' in source
 
     for zone in GENERIC_ZONES:
         assert f'data-mcel-zone="{zone}"' in source
@@ -126,7 +130,7 @@ def test_mcel_lab_legacy_proof_lab_is_advanced_not_primary() -> None:
         assert marker not in primary_region
 
 
-def test_mcel_lab_shell_script_consumes_blueprint_core_without_mounting_or_persistence() -> None:
+def test_mcel_lab_shell_script_consumes_blueprint_core_with_contained_mounting_but_without_persistence() -> None:
     source = MCEL_LAB_JS.read_text(encoding="utf-8")
 
     assert "function renderMcelBlueprintShell" in source
@@ -135,7 +139,12 @@ def test_mcel_lab_shell_script_consumes_blueprint_core_without_mounting_or_persi
     assert "inspectableBlueprintFor" in source
     assert "document-editor" in source
     assert "mcel-lab" in source
-    assert "Mounting is deferred to Phase 3" in source
+    assert "function mcelBlueprintShellMountSelectedApp" in source
+    assert "function mcelBlueprintShellPreparePreviewClone" in source
+    assert "function mcelBlueprintShellBuildMountReport" in source
+    assert "same-page-contained-clone" in source
+    assert "data-mcel-preview-clone" in source
+    assert "sourceMutationAllowed" in source
     assert "Point-and-inspect is deferred to Phase 4" in source
     assert "Export packet generation is deferred to Phase 7" in source
     assert "mcelBlueprintShellPopulateList" in source
@@ -150,6 +159,7 @@ def test_mcel_lab_shell_script_consumes_blueprint_core_without_mounting_or_persi
     assert "localStorage.setItem" not in phase_two_block
     assert "fetch(" not in phase_two_block
     assert "iframe" not in phase_two_block.lower()
+    assert "fetch(" not in phase_two_block
 
 
 def test_mcel_lab_phase_two_styles_define_generic_workbench_regions() -> None:
@@ -166,6 +176,9 @@ def test_mcel_lab_phase_two_styles_define_generic_workbench_regions() -> None:
         ".mcel-lab-work-area",
         ".mcel-lab-work-surface",
         ".mcel-lab-drilldowns",
+        ".mcel-lab-mount-evidence-card",
+        ".mcel-lab-mounted-preview",
+        ".mcel-lab-mounted-preview-frame",
         ".mcel-lab-advanced-legacy",
     ]
 

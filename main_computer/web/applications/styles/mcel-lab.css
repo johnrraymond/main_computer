@@ -7174,6 +7174,94 @@ body.mcel-modal-open {
   overflow-wrap: anywhere;
 }
 
+.mcel-lab-mounted-preview {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mcel-lab-mounted-preview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcel-lab-mounted-preview-header h5 {
+  margin: 2px 0 0;
+  color: #f8fafc;
+  font-size: 0.95rem;
+}
+
+.mcel-lab-mounted-preview-frame {
+  min-width: 0;
+  min-height: 430px;
+  max-height: 64vh;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.72);
+  scrollbar-gutter: stable;
+}
+
+.mcel-lab-mounted-preview-frame [data-mcel-preview-clone] {
+  display: block !important;
+  min-height: 360px;
+  pointer-events: none;
+  transform-origin: top left;
+}
+
+.mcel-lab-mounted-preview-frame [data-mcel-preview-clone] * {
+  pointer-events: none;
+}
+
+.mcel-lab-mounted-preview-frame .document-app,
+.mcel-lab-mounted-preview-frame .mcel-lab-app {
+  width: max(760px, 100%);
+  min-height: 420px;
+  color: inherit;
+}
+
+.mcel-lab-mount-evidence-card {
+  display: grid;
+  gap: 8px;
+}
+
+.mcel-lab-mount-report {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mcel-lab-blueprint-right-rail .mcel-lab-mount-report {
+  grid-template-columns: 1fr;
+}
+
+.mcel-lab-mount-snapshot {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.28);
+  overflow: hidden;
+}
+
+.mcel-lab-mount-snapshot summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: rgba(226, 232, 240, 0.88);
+  font-weight: 700;
+}
+
+.mcel-lab-mount-snapshot pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: rgba(226, 232, 240, 0.76);
+}
+
 .mcel-lab-work-brief {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) repeat(2, minmax(0, 1fr));

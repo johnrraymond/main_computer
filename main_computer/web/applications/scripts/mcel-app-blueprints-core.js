@@ -67,6 +67,22 @@
         "tests-to-update.json"
       ]);
 
+      const REQUIRED_MOUNT_CAPTURE_FIELDS = Object.freeze([
+        "appId",
+        "route",
+        "domSnapshot",
+        "dataMcelAttributes",
+        "layoutZones",
+        "visibleText",
+        "boundingBoxes",
+        "sourceFileHints",
+        "plannerMetadata",
+        "knownTests",
+        "knownDocs",
+        "cssOwners",
+        "jsOwners"
+      ]);
+
       const BLUEPRINT_DETAIL_GROUPS = Object.freeze([
         Object.freeze({
           id: "aspect-contract",
@@ -179,6 +195,23 @@
         });
       }
 
+      function mountPolicy(appId, rootSelector, route, options = {}) {
+        return Object.freeze({
+          appId,
+          mode: "same-page-contained-clone",
+          route,
+          rootSelector,
+          previewSurfaceSelector: "#mcel-blueprint-work-surface",
+          preserveDataMcelAttributes: true,
+          stripDuplicateIds: true,
+          inertPreview: true,
+          sourceMutationAllowed: false,
+          selfMountRecursionGuard: Boolean(options.selfMountRecursionGuard),
+          requiredCaptureFields: REQUIRED_MOUNT_CAPTURE_FIELDS,
+          detailSource: "blueprint.mountPolicy"
+        });
+      }
+
       const BLUEPRINTS = freezeDeep({
         "document-editor": {
           appId: "document-editor",
@@ -186,6 +219,7 @@
           label: "Document Editor",
           route: "/applications/document",
           rootSelector: "#document-app",
+          mountPolicy: mountPolicy("document-editor", "#document-app", "/applications/document"),
           blueprintElementId: "element.workbench.specification",
           dominantObject: "Document",
           purpose: "Inspectable writing workbench with document page primary, navigation left, companion/history/AI context right, and visible save/status evidence.",
@@ -212,7 +246,7 @@
           sourceHints: [
             "main_computer/web/applications/apps/document.html",
             "main_computer/web/applications/scripts/document-editor.js",
-            "main_computer/web/applications/styles/document-editor.css",
+            "main_computer/web/applications/styles/document.css",
             "main_computer/web/applications/scripts/mcel-specimen-planner.js",
             "main_computer/web/applications/scripts/mcel-elements-core.js",
             "main_computer/web/applications/scripts/mcel-toolkit-core.js"
@@ -240,6 +274,7 @@
           label: "MCEL Lab",
           route: "/applications/mcel-lab",
           rootSelector: "#mcel-lab-app",
+          mountPolicy: mountPolicy("mcel-lab", "#mcel-lab-app", "/applications/mcel-lab", {selfMountRecursionGuard: true}),
           blueprintElementId: "element.workbench.specification",
           dominantObject: "AppBlueprint",
           purpose: "Self-hosting app blueprint inspector and repair planner that can inspect itself through the same generic aspects used for product apps.",
@@ -265,6 +300,7 @@
           sourceHints: [
             "main_computer/web/applications/apps/mcel-lab.html",
             "main_computer/web/applications/scripts/mcel-lab.js",
+            "main_computer/web/applications/styles/mcel-lab.css",
             "main_computer/web/applications/scripts/mcel-app-blueprints-core.js",
             "main_computer/web/applications/scripts/mcel-specimen-planner.js",
             "main_computer/web/applications/scripts/mcel-elements-core.js",
@@ -336,6 +372,10 @@
         return Array.from(REQUIRED_EXPORT_PACKET_FILES);
       }
 
+      function requiredMountCaptureFields() {
+        return Array.from(REQUIRED_MOUNT_CAPTURE_FIELDS);
+      }
+
       global.McelAppBlueprintsCore = {
         BLUEPRINTS_CORE_VERSION,
         GENERIC_ASPECT_IDS: Array.from(GENERIC_ASPECT_IDS),
@@ -345,6 +385,7 @@
         BLUEPRINT_DETAIL_GROUPS: clone(BLUEPRINT_DETAIL_GROUPS),
         REQUIRED_DEPENDENCY_CHECKS: Array.from(REQUIRED_DEPENDENCY_CHECKS),
         REQUIRED_EXPORT_PACKET_FILES: Array.from(REQUIRED_EXPORT_PACKET_FILES),
+        REQUIRED_MOUNT_CAPTURE_FIELDS: Array.from(REQUIRED_MOUNT_CAPTURE_FIELDS),
         BLUEPRINTS: clone(BLUEPRINTS),
         listInspectableAppBlueprints,
         inspectableBlueprintFor,
@@ -352,6 +393,7 @@
         genericLayoutZones,
         genericDetailGroups,
         requiredDependencyChecks,
-        requiredExportPacketFiles
+        requiredExportPacketFiles,
+        requiredMountCaptureFields
       };
     })(window);

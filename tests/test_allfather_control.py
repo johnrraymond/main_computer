@@ -848,6 +848,11 @@ def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
     assert "eth_blockNumber" in script
     assert "block_production_ok" in script
     assert "waiting-qbft-block-production" in script
+    assert "waiting-validator-json-rpc-after-block-production" in script
+    assert "latest_besu_log_block_number" in script
+    assert "open_child_log" in script
+    assert "previous.log" in script
+    assert "log_block_production_ok" in script
     assert "emptyblockperiodseconds" in script
     assert "def ensure_hub" in script
     assert "running-bootstrap-listener" in script
@@ -1710,6 +1715,33 @@ def test_add_node_ready_check_requires_validator_block_production() -> None:
     assert "block_number=0" in not_ready["reason"]
 
 
+def test_add_node_ready_check_reports_blocks_but_rpc_unreachable() -> None:
+    manifest = {
+        "bootstrap": {"contracts_requested": True},
+    }
+    pending = ready_internal_status_for_add_node()
+    validator = pending["functions"]["validator_rpc"]
+    validator.update(
+        {
+            "status": "waiting-validator-json-rpc-after-block-production",
+            "rpc_http_ok": False,
+            "json_rpc_ok": False,
+            "block_production_ok": False,
+            "log_block_production_ok": True,
+            "block_number": 710,
+            "block_production_error": "URLError: <urlopen error [Errno 111] Connection refused>",
+            "shutdown_observed": True,
+        }
+    )
+
+    not_ready = control.add_node_super_ready_check(pending, manifest)
+
+    assert not_ready["ready"] is False
+    assert "produced blocks but JSON-RPC is not reachable" in not_ready["reason"]
+    assert "block_number=710" in not_ready["reason"]
+    assert "shutdown_observed=true" in not_ready["reason"]
+
+
 def test_add_node_ready_check_accepts_second_node_without_contract_redeploy() -> None:
     manifest = {
         "bootstrap": {"contracts_requested": False},
@@ -1829,6 +1861,107 @@ def test_add_node_wait_uses_private_probe_ready_signal(monkeypatch: pytest.Monke
     assert result["readiness"]["components"]["foundationdb"] == "running"
     assert result["ssh_used"] is False
     assert result["direct_vpn_used"] is False
+
+
+def test_add_node_wait_does_not_treat_transient_exited_as_terminal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    dry_args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+        ]
+    )
+    plan = control.build_plan_from_args(dry_args)
+    manifest = control.add_node(plan, dry_args)["manifest"]
+    head = control.choose_head_for_host(plan, "coolify-a")
+    calls = {"services": 0, "probe": 0}
+
+    def fake_service_items_for_client(client: object, tried: list[dict[str, object]]) -> list[dict[str, object]]:
+        calls["services"] += 1
+        if calls["services"] == 1:
+            return [{"name": "testneta-super1", "uuid": "service-uuid", "status": "exited"}]
+        return [{"name": "testneta-super1", "uuid": "service-uuid", "status": "running:healthy"}]
+
+    monkeypatch.setattr(control, "service_items_for_client", fake_service_items_for_client)
+    monkeypatch.setattr(
+        control,
+        "sync_probe_service",
+        lambda client, plan, head, args, context, tried, super_inventory=None: ("probe-uuid", "updated", {}),
+    )
+
+    class FakeHubService:
+        def trigger_deploy_service(self, client, *, service_uuid: str, force: bool, tried: list[dict[str, object]]) -> dict[str, object]:
+            return {"ok": True, "service_uuid": service_uuid, "force": force}
+
+    monkeypatch.setattr(control, "hub_service_tool", lambda: FakeHubService())
+
+    def fake_wait_for_probe_metadata_result(client, service_uuid, tried, *, expected_targets, wait_s):
+        calls["probe"] += 1
+        target = next(item for item in expected_targets if item.get("kind") == "super-node")
+        if calls["probe"] == 1:
+            runtime_status = {
+                "observed": True,
+                "ok": False,
+                "healthz_ok": False,
+                "identity_ok": False,
+                "topology_ok": False,
+                "status_ok": False,
+                "error": "URLError: <urlopen error [Errno 111] Connection refused>",
+                "functions": {},
+            }
+        else:
+            runtime_status = ready_internal_status_for_add_node()
+        return {}, {
+            "ok": True,
+            "result": {
+                "targets": [
+                    {
+                        "kind": "super-node",
+                        "service_name": target["service_name"],
+                        **runtime_status,
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(control, "wait_for_probe_metadata_result", fake_wait_for_probe_metadata_result)
+
+    wait_args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--deploy-wait-s",
+            "10",
+            "--deploy-poll-s",
+            "0.1",
+        ]
+    )
+
+    result = control.wait_for_add_node_ready(
+        plan,
+        head,
+        manifest,
+        client=object(),
+        args=wait_args,
+        context={},
+        tried=[],
+        service_uuid="service-uuid",
+    )
+
+    assert result["ready"] is True
+    assert result["coolify_status"] == "running:healthy"
+    assert calls["probe"] >= 2
 
 
 def test_add_node_preflight_waits_for_stable_clean_slot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
