@@ -5,7 +5,7 @@
     const terminalAnalysisToggle = document.querySelector("#terminal-analysis-toggle");
     const appCopy = {
       desktop: ["Desktop", "Choose an app from the desktop grid.", "Desktop app launcher is ready."],
-      webgl: ["Game Surface", "3D shuttle look-around is ready.", "Game surface renders the selected shuttlecraft interior with a forward viewport, stars, and the mother ship."],
+      webgl: ["Game Surface", "Vertex-built 3D shuttle look-around is ready.", "Game surface renders real shuttle hull geometry with a forward opening onto the stars and mother ship."],
       astrometric: ["Astrometric 3D", "Docker-backed C++/GPU Schwarzschild renderer is ready.", "Astrometric 3D streams backend-rendered frames and forwards mouse camera controls."],
       calculator: ["Calculator", "Local arithmetic tool is ready.", "Calculator is running."],
       document: ["Document Editor", "Editable writing workspace is ready.", "Document Editor is running."],
@@ -22,7 +22,7 @@
       "file-explorer": ["File Explorer", "Read-only system file browser is ready.", "File Explorer is running read-only."],
       "game-editor": ["Game Editor", "Project-backed scene editor is ready.", "Game Editor is scene-backed."],
       "website-builder": ["Website Builder", "Manage site manifests, save website files, and publish local Docker lanes.", "Website Builder is running."],
-      "mcel-lab": ["MCEL Lab", "Semantic HTML compiler workbench is ready.", "MCEL Lab is proving source, runtime, serializer, and debugger contracts."],
+      "mcel-lab": ["MCEL Lab", "App blueprint and point-inspection workbench is ready.", "MCEL Lab mounts inspectable app previews and records selected-element evidence."],
       worker: ["Worker", "Configure remote AI use and local AI rental behavior.", "Worker configuration is ready."],
       wallet: ["Wallet", "Standalone wallet connect/disconnect workbench is ready.", "Wallet connection workbench is running."]
     };

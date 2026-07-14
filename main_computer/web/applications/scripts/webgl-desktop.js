@@ -170,8 +170,8 @@
     function fallbackWebglScene(sceneId = "default-empty-scene") {
       const scene = {
       "id": "default-empty-scene",
-      "name": "Shuttlecraft Lookaround",
-      "version": 7,
+      "name": "Shuttlecraft Walkaround",
+      "version": 9,
       "background": "radial-gradient(circle at 50% 18%, rgba(59, 130, 246, 0.18), rgba(2, 6, 23, 0.98) 58%, #000 100%)",
       "objects": [
             {
@@ -189,7 +189,7 @@
                         "z": 26,
                         "bob": 5,
                         "motion": "idle",
-                        "spellState": "looking-around",
+                        "spellState": "exploring-cabin",
                         "spriteSeries": [
                               "stand",
                               "scan",
@@ -586,13 +586,13 @@
                   "width": 0,
                   "height": 0,
                   "props": {
-                        "label": "Look-around Camera",
-                        "role": "camera",
+                        "label": "First-person Camera",
+                        "role": "player-camera",
                         "yaw": 0,
                         "pitch": -2,
-                        "yawLimit": 34,
-                        "pitchLimit": 18,
-                        "instructions": "Drag or use arrow keys to look around the shuttle interior."
+                        "yawLimit": 180,
+                        "pitchLimit": 28,
+                        "instructions": "Drag or use arrow keys to look. Use W/A/S/D to walk and Shift to sprint."
                   }
             }
       ],
@@ -606,9 +606,9 @@
             "particleOnly": false,
             "includesDefaultPlayer": true,
             "isometric": false,
-            "rolloutPhase": "phase-2-shuttle-3d-lookaround",
+            "rolloutPhase": "phase-4-shuttle-first-person-movement",
             "setting": "federation-like shuttle craft interior with stars and mother ship visible through the forward viewport",
-            "starterScene": "shuttlecraft-lookaround-spawn",
+            "starterScene": "shuttlecraft-walkaround-spawn",
             "characterModel": "first-person-cadet-presence",
             "meshActorsEnabled": false,
             "parentedParticles": true,
@@ -617,7 +617,7 @@
             "targetedParticles": true,
             "shuttleInterior": true,
             "choreography": {
-                  "title": "Shuttle Look-Around Boot",
+                  "title": "Shuttle Walk-Around Boot",
                   "durationMs": 7600,
                   "cameraPulse": true,
                   "beats": [
@@ -642,17 +642,18 @@
                               "cue": "mother-ship"
                         },
                         {
-                              "label": "Ready to look",
+                              "label": "Ready to explore",
                               "timeMs": 6200,
                               "cue": "lookaround-camera"
                         }
                   ]
             },
             "controls": {
-                  "mode": "lookaround",
+                  "mode": "first-person",
                   "pointerDrag": true,
-                  "keyboard": "arrow-keys",
-                  "movement": "stationary-inside-shuttle"
+                  "keyboard": "wasd-and-arrow-keys",
+                  "movement": "bounded-first-person-walk",
+                  "sprint": "shift"
             },
             "movementBounds": {
                   "minX": 1.1,
@@ -671,26 +672,172 @@
             "viewportShowsStars": true,
             "viewportShowsMotherShip": true,
             "camera": {
-                  "mode": "lookaround",
+                  "mode": "first-person",
+                  "position": [0.0, 0.75, 3.35],
                   "yaw": 0,
                   "pitch": -2,
-                  "yawLimit": 34,
-                  "pitchLimit": 18,
-                  "hint": "Drag inside the Game Surface or use arrow keys to look around."
+                  "yawLimit": 180,
+                  "pitchLimit": 28,
+                  "hint": "Drag or use arrow keys to look. Use W/A/S/D to walk, and hold Shift to sprint inside the shuttle."
             },
             "shuttle3d": {
-                  "mode": "simple-css-3d",
+                  "mode": "webgl-vertex-mesh",
                   "lookAround": true,
                   "viewport": "forward-viewer",
                   "starfield": "viewport-starfield",
                   "motherShip": "mother-ship",
                   "motherShipLabel": "Mother Ship",
                   "playerAnchor": "hero-sprite",
-                  "controlsHint": "Drag to look around the shuttle. The forward viewport shows stars and the mother ship."
+                  "controlsHint": "Click to focus • Drag or arrows to look • W/A/S/D to walk • Shift to sprint",
+                  "movement": {
+                    "enabled": true,
+                    "scheme": "wasd",
+                    "walkSpeed": 2.65,
+                    "sprintMultiplier": 1.7,
+                    "radius": 0.28,
+                    "eyeHeight": 0.75,
+                    "start": [
+                      0.0,
+                      0.75,
+                      3.35
+                    ],
+                    "bounds": {
+                      "minX": -3.92,
+                      "maxX": 3.92,
+                      "minZ": -7.72,
+                      "maxZ": 5.82
+                    },
+                    "colliders": [
+                      {
+                        "id": "helm-console",
+                        "minX": -3.0,
+                        "maxX": -0.3,
+                        "minZ": -5.55,
+                        "maxZ": -3.55
+                      },
+                      {
+                        "id": "science-console",
+                        "minX": 0.3,
+                        "maxX": 3.0,
+                        "minZ": -5.55,
+                        "maxZ": -3.55
+                      },
+                      {
+                        "id": "port-console",
+                        "minX": -4.25,
+                        "maxX": -3.45,
+                        "minZ": -4.05,
+                        "maxZ": -0.95
+                      },
+                      {
+                        "id": "starboard-console",
+                        "minX": 3.45,
+                        "maxX": 4.25,
+                        "minZ": -4.05,
+                        "maxZ": -0.95
+                      },
+                      {
+                        "id": "port-seat",
+                        "minX": -2.15,
+                        "maxX": -0.7,
+                        "minZ": -3.0,
+                        "maxZ": -1.05
+                      },
+                      {
+                        "id": "starboard-seat",
+                        "minX": 0.7,
+                        "maxX": 2.15,
+                        "minZ": -3.0,
+                        "maxZ": -1.05
+                      },
+                      {
+                        "id": "aft-hatch",
+                        "minX": -1.45,
+                        "maxX": 1.45,
+                        "minZ": 5.7,
+                        "maxZ": 6.45
+                      }
+                    ]
+                  },
+                  "geometry": {
+                      "renderer": "raw-webgl",
+                      "primitive": "triangles",
+                      "boundsVertexCount": 12,
+                      "boundsVertices": [
+                        [
+                          -4.5,
+                          -1.45,
+                          -8.8
+                        ],
+                        [
+                          -4.5,
+                          2.05,
+                          -8.8
+                        ],
+                        [
+                          -3.55,
+                          3.15,
+                          -8.8
+                        ],
+                        [
+                          3.55,
+                          3.15,
+                          -8.8
+                        ],
+                        [
+                          4.5,
+                          2.05,
+                          -8.8
+                        ],
+                        [
+                          4.5,
+                          -1.45,
+                          -8.8
+                        ],
+                        [
+                          -4.5,
+                          -1.45,
+                          6.8
+                        ],
+                        [
+                          -4.5,
+                          2.05,
+                          6.8
+                        ],
+                        [
+                          -3.55,
+                          3.15,
+                          6.8
+                        ],
+                        [
+                          3.55,
+                          3.15,
+                          6.8
+                        ],
+                        [
+                          4.5,
+                          2.05,
+                          6.8
+                        ],
+                        [
+                          4.5,
+                          -1.45,
+                          6.8
+                        ]
+                      ],
+                      "viewportOpening": {
+                        "left": -2.92,
+                        "right": 2.92,
+                        "bottom": 0.0,
+                        "top": 2.32,
+                        "z": -8.8
+                      },
+                      "actualHullBounds": true
+                  }
             }
       }
 };
-      if (sceneId && sceneId !== scene.id) return {...scene, id: sceneId, name: scene.name || "Shuttlecraft Lookaround"};
+      if (sceneId && sceneId !== scene.id) return {...scene, id: sceneId, name: scene.name || "Shuttlecraft Walkaround"};
       return scene;
     }
 
@@ -708,7 +855,7 @@
       const selectedObjectId = String(candidate?.selectedObjectId || "");
       gameSurfaceRuntime = window.MainComputerSceneViewer?.renderSceneSurface?.(surface, scene, {
         mode: "game-surface",
-        label: `3D shuttle look-around surface: ${scene.name || scene.id}`,
+        label: `Vertex-built shuttle walk-around surface: ${scene.name || scene.id}`,
         projectId,
         selectedObjectId,
         assets: Array.isArray(candidate?.assets) ? candidate.assets : [],

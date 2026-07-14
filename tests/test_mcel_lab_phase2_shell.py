@@ -145,8 +145,9 @@ def test_mcel_lab_shell_script_consumes_blueprint_core_with_contained_mounting_b
     assert "same-page-contained-clone" in source
     assert "data-mcel-preview-clone" in source
     assert "sourceMutationAllowed" in source
-    assert "Point-and-inspect is deferred to Phase 4" in source
-    assert "Export packet generation is deferred to Phase 7" in source
+    assert "function mcelBlueprintShellToggleInspectMode" in source
+    assert "function mcelBlueprintShellBuildSelectedElementRecord" in source
+    assert "Export packet generation is deferred to Phase 7" not in source
     assert "mcelBlueprintShellPopulateList" in source
     assert "mcelBlueprintShellRenderDetailStack" in source
     assert "genericDetailGroups" in source
@@ -186,7 +187,7 @@ def test_mcel_lab_phase_two_styles_define_generic_workbench_regions() -> None:
         assert selector in source
 
     assert 'grid-template-areas: "navigation primary rail";' in source
-    assert "minmax(640px, 1fr)" in source
+    assert "minmax(700px, 1fr)" in source
     assert "Phase 2 App Blueprint / Aspect Inspector shell" in source
 
 

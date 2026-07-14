@@ -1,7 +1,7 @@
     (function (global) {
       "use strict";
 
-      const BLUEPRINTS_CORE_VERSION = "0.1.0";
+      const BLUEPRINTS_CORE_VERSION = "0.2.0";
       const GENERIC_ASPECT_IDS = Object.freeze([
         "overview",
         "objects",
@@ -81,6 +81,26 @@
         "knownDocs",
         "cssOwners",
         "jsOwners"
+      ]);
+
+      const REQUIRED_INSPECTION_FIELDS = Object.freeze([
+        "recordId",
+        "appId",
+        "selector",
+        "previewPath",
+        "visibleText",
+        "tagName",
+        "role",
+        "mcelElementGuess",
+        "layoutZone",
+        "parentRegion",
+        "boundingBox",
+        "dataMcelAttributes",
+        "nearbyElements",
+        "sourceHints",
+        "cssOwners",
+        "jsOwners",
+        "testHints"
       ]);
 
       const BLUEPRINT_DETAIL_GROUPS = Object.freeze([
@@ -206,9 +226,42 @@
           stripDuplicateIds: true,
           inertPreview: true,
           sourceMutationAllowed: false,
+          autoMountOnActivate: options.autoMountOnActivate !== false,
+          autoMountOnSelect: options.autoMountOnSelect !== false,
           selfMountRecursionGuard: Boolean(options.selfMountRecursionGuard),
           requiredCaptureFields: REQUIRED_MOUNT_CAPTURE_FIELDS,
           detailSource: "blueprint.mountPolicy"
+        });
+      }
+
+      function inspectionPolicy(appId) {
+        return Object.freeze({
+          appId,
+          mode: "contained-clone-point-inspection",
+          enabled: true,
+          patternId: "pattern.point-and-annotate",
+          selectedElementId: "element.refactor.element-annotation",
+          preventDefaultActions: true,
+          sourceMutationAllowed: false,
+          hoverHighlight: true,
+          selectionHighlight: true,
+          selectorAttributes: Object.freeze([
+            "data-mc-component-id",
+            "data-mc-widget-id",
+            "data-mcel-element",
+            "aria-label"
+          ]),
+          layoutZoneAttributes: Object.freeze([
+            "data-mcel-layout-zone",
+            "data-mcel-zone"
+          ]),
+          roleAttributes: Object.freeze([
+            "role",
+            "data-mc-component-kind",
+            "data-mc-widget-kind"
+          ]),
+          requiredSelectedElementFields: REQUIRED_INSPECTION_FIELDS,
+          detailSource: "blueprint.inspectionPolicy"
         });
       }
 
@@ -220,6 +273,7 @@
           route: "/applications/document",
           rootSelector: "#document-app",
           mountPolicy: mountPolicy("document-editor", "#document-app", "/applications/document"),
+          inspectionPolicy: inspectionPolicy("document-editor"),
           blueprintElementId: "element.workbench.specification",
           dominantObject: "Document",
           purpose: "Inspectable writing workbench with document page primary, navigation left, companion/history/AI context right, and visible save/status evidence.",
@@ -275,6 +329,7 @@
           route: "/applications/mcel-lab",
           rootSelector: "#mcel-lab-app",
           mountPolicy: mountPolicy("mcel-lab", "#mcel-lab-app", "/applications/mcel-lab", {selfMountRecursionGuard: true}),
+          inspectionPolicy: inspectionPolicy("mcel-lab"),
           blueprintElementId: "element.workbench.specification",
           dominantObject: "AppBlueprint",
           purpose: "Self-hosting app blueprint inspector and repair planner that can inspect itself through the same generic aspects used for product apps.",
@@ -376,6 +431,10 @@
         return Array.from(REQUIRED_MOUNT_CAPTURE_FIELDS);
       }
 
+      function requiredInspectionFields() {
+        return Array.from(REQUIRED_INSPECTION_FIELDS);
+      }
+
       global.McelAppBlueprintsCore = {
         BLUEPRINTS_CORE_VERSION,
         GENERIC_ASPECT_IDS: Array.from(GENERIC_ASPECT_IDS),
@@ -386,6 +445,7 @@
         REQUIRED_DEPENDENCY_CHECKS: Array.from(REQUIRED_DEPENDENCY_CHECKS),
         REQUIRED_EXPORT_PACKET_FILES: Array.from(REQUIRED_EXPORT_PACKET_FILES),
         REQUIRED_MOUNT_CAPTURE_FIELDS: Array.from(REQUIRED_MOUNT_CAPTURE_FIELDS),
+        REQUIRED_INSPECTION_FIELDS: Array.from(REQUIRED_INSPECTION_FIELDS),
         BLUEPRINTS: clone(BLUEPRINTS),
         listInspectableAppBlueprints,
         inspectableBlueprintFor,
@@ -394,6 +454,7 @@
         genericDetailGroups,
         requiredDependencyChecks,
         requiredExportPacketFiles,
-        requiredMountCaptureFields
+        requiredMountCaptureFields,
+        requiredInspectionFields
       };
     })(window);

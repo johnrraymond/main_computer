@@ -25,6 +25,7 @@ import hashlib
 import re
 import secrets
 import time
+import textwrap
 import zlib
 from datetime import datetime, timezone
 import sys
@@ -62,8 +63,13 @@ DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S = 6.0
 DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
-DEFAULT_SUPER_BASE_IMAGE = "hyperledger/besu:latest"
+DEFAULT_SUPER_BASE_SOURCE_IMAGE = "hyperledger/besu:latest"
+DEFAULT_SUPER_BASE_IMAGE = "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713"
 DEFAULT_SUPER_IMAGE = DEFAULT_SUPER_BASE_IMAGE
+DEFAULT_SUPER_BASE_BUILDER_IMAGE = "docker:27-cli"
+DEFAULT_SUPER_BASE_BUILDER_PREFIX = "allfather-super-base-builder"
+DEFAULT_SUPER_BASE_BUILDER_CONTAINER_PORT = 41616
+DEFAULT_SUPER_BASE_BUILDER_HOST_BASE = 41700
 DEFAULT_SUPER_ENVIRONMENT = "allfather-supernodes"
 DEFAULT_SUPER_STATE_ROOT_PREFIX = "/data/main-computer/allfather/supernodes"
 DEFAULT_SUPER_GUARD_CONTAINER_PORT = 41414
@@ -251,6 +257,35 @@ def super_container_name_from_manifest(manifest: Mapping[str, Any]) -> str:
 
 def new_super_deployment_id() -> str:
     return f"{int(time.time())}-{secrets.token_hex(4)}"
+
+
+def host_slot_index(slot: str) -> int:
+    clean = str(slot or "").strip().upper()
+    if len(clean) == 1 and "A" <= clean <= "Z":
+        return ord(clean) - ord("A")
+    try:
+        return max(0, int(clean) - 1)
+    except Exception:
+        return 0
+
+
+def super_base_builder_service_name(head: HeadNode) -> str:
+    return f"{DEFAULT_SUPER_BASE_BUILDER_PREFIX}-{docker_container_name_token(head.coolify_server or head.slot or 'host')}"
+
+
+def super_base_builder_host_port(head: HeadNode) -> int:
+    return DEFAULT_SUPER_BASE_BUILDER_HOST_BASE + host_slot_index(head.slot)
+
+
+def super_base_builder_url(head: HeadNode) -> str:
+    host = str(head.guard_publish_host or "").strip()
+    if not host:
+        return ""
+    return f"http://{host}:{super_base_builder_host_port(head)}"
+
+
+def shell_single_quote(value: Any) -> str:
+    return "'" + str(value).replace("'", "'\''") + "'"
 
 
 def private_value(value: Any) -> str:
@@ -570,6 +605,7 @@ import base64
 import json
 import os
 import time
+import textwrap
 import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -690,7 +726,8 @@ def render_head_compose(
         "      - -c",
         "      - |",
     ]
-    lines.extend(f"        {line}" for line in command_script.splitlines())
+    compose_command_script = command_script.replace("$", "$$")
+    lines.extend(f"        {line}" for line in compose_command_script.splitlines())
     lines.extend(
         [
             "    environment:",
@@ -806,6 +843,7 @@ import json
 import os
 import threading
 import time
+import textwrap
 import zlib
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -942,6 +980,9 @@ def callback_payload(result: dict) -> dict:
                 "topology_ok": bool(topology.get("ok")),
                 "status_ok": bool(status.get("ok")),
                 "healthz_ok": bool(healthz.get("ok")),
+                "phase": status.get("phase") or status.get("status") or healthz.get("phase") or healthz.get("status") or "",
+                "status_text": status.get("status") or status.get("phase") or "",
+                "image": status.get("image") or healthz.get("image") or "",
                 "identity_network_key": identity.get("network_key", ""),
                 "topology_network_key": topology.get("network_key", ""),
                 "status_network_key": status.get("network_key", ""),
@@ -1532,6 +1573,7 @@ def apply_bootstrap_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str,
     phases: list[dict[str, Any]] = []
     for head in plan.heads:
         tried: list[dict[str, Any]] = []
+        operator_log(args, f"coolify: checking API and inventory on {head.coolify_server}")
         client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
         version = client.request("GET", "/api/v1/version")
         tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
@@ -2892,6 +2934,8 @@ def super_inventory_entry(network_key: str, head: HeadNode, ordinal: int, *, sou
         "guard_host_port": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_SUPER_GUARD_BASE, mainnet_base=DEFAULT_MAINNET_SUPER_GUARD_BASE),
         "fdb_endpoint": f"{head.guard_publish_host}:{super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_FDB_BASE, mainnet_base=DEFAULT_MAINNET_FDB_BASE)}",
         "fdb_host_port": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_FDB_BASE, mainnet_base=DEFAULT_MAINNET_FDB_BASE),
+        "p2p_endpoint": f"{head.guard_publish_host}:{super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_P2P_BASE, mainnet_base=DEFAULT_MAINNET_P2P_BASE)}",
+        "p2p_host_port": super_host_port(network_key, head, ordinal, testnet_base=DEFAULT_TESTNET_P2P_BASE, mainnet_base=DEFAULT_MAINNET_P2P_BASE),
     }
 
 
@@ -3427,6 +3471,7 @@ import socket
 import subprocess
 import threading
 import time
+import textwrap
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -3747,12 +3792,80 @@ def local_enode() -> str:
     except Exception:
         return ""
 
+def advertised_p2p_host() -> str:
+    return str(vpn_ip or "127.0.0.1").strip() or "127.0.0.1"
+
+def advertised_p2p_port() -> int:
+    for value in (ports.get("p2p_host"), ports.get("p2p_container")):
+        try:
+            port_value = int(value)
+        except Exception:
+            continue
+        if port_value > 0:
+            return port_value
+    return 30303
+
+def split_host_port(endpoint: str) -> tuple[str, int | None]:
+    clean = str(endpoint or "").strip()
+    if not clean:
+        return "", None
+    if clean.startswith("[") and "]:" in clean:
+        host, _, port_text = clean[1:].partition("]:")
+        try:
+            return host, int(port_text)
+        except Exception:
+            return host, None
+    if ":" not in clean:
+        return clean, None
+    host, port_text = clean.rsplit(":", 1)
+    try:
+        return host, int(port_text)
+    except Exception:
+        return host, None
+
+def rewrite_enode_endpoint(enode: str, host: str | None = None, port: int | None = None) -> str:
+    clean = str(enode or "").strip()
+    if not clean or "@" not in clean:
+        return clean
+    target_host = str(host or advertised_p2p_host()).strip()
+    try:
+        target_port = int(port if port is not None else advertised_p2p_port())
+    except Exception:
+        target_port = advertised_p2p_port()
+    if not target_host or target_port <= 0:
+        return clean
+    suffix = ""
+    base = clean
+    if "?" in clean:
+        base, suffix = clean.split("?", 1)
+        suffix = "?" + suffix
+    prefix, _, _endpoint = base.partition("@")
+    return f"{prefix}@{target_host}:{target_port}{suffix}"
+
+def normalize_bootnodes_for_inventory_node(bootnodes: list[str], node: dict) -> list[str]:
+    endpoint = str(node.get("p2p_endpoint") or "").strip() if isinstance(node, dict) else ""
+    host, port = split_host_port(endpoint)
+    if not host and isinstance(node, dict):
+        host = str(node.get("vpn_ip") or "").strip()
+    if port is None and isinstance(node, dict):
+        try:
+            port = int(node.get("p2p_host_port"))
+        except Exception:
+            port = None
+    normalized = []
+    for item in bootnodes:
+        clean = str(item or "").strip()
+        if not clean:
+            continue
+        normalized.append(rewrite_enode_endpoint(clean, host or None, port))
+    return normalized
+
 def qbft_bootstrap_payload() -> dict:
     genesis = state_root / "qbft" / "config" / "genesis.json"
     bootnodes = []
     enode = local_enode()
     if enode:
-        bootnodes.append(enode)
+        bootnodes.append(rewrite_enode_endpoint(enode))
     genesis_payload = {}
     try:
         genesis_payload = json.loads(genesis.read_text(encoding="utf-8"))
@@ -3766,7 +3879,8 @@ def qbft_bootstrap_payload() -> dict:
             "genesis": genesis_payload,
             "bootnodes": bootnodes,
             "rpc_port": int(ports.get("rpc_container") or 8545),
-            "p2p_port": int(ports.get("p2p_container") or 30303),
+            "p2p_port": advertised_p2p_port(),
+            "p2p_host": advertised_p2p_host(),
         },
     }
 
@@ -3785,10 +3899,19 @@ def fetch_shared_qbft_config() -> tuple[bool, str, dict, list[str]]:
             genesis = qbft.get("genesis") if isinstance(qbft, dict) else {}
             bootnodes = qbft.get("bootnodes") if isinstance(qbft, dict) else []
             if isinstance(genesis, dict) and genesis:
-                return True, f"shared-qbft-config-from-{node.get('service_name') or guard_url}", genesis, [str(item) for item in bootnodes if str(item).strip()]
+                normalized_bootnodes = normalize_bootnodes_for_inventory_node([str(item) for item in bootnodes if str(item).strip()], node)
+                return True, f"shared-qbft-config-from-{node.get('service_name') or guard_url}", genesis, normalized_bootnodes
         except Exception:
             continue
     return False, "blocked-awaiting-shared-qbft-genesis", {}, []
+
+def refresh_existing_joiner_bootnodes(config_dir: Path) -> None:
+    if ordinal == 1 or str(fdb_plan.get("action") or "") == "initialize-new-cluster":
+        return
+    ok, _reason, _shared_genesis, bootnodes = fetch_shared_qbft_config()
+    if not ok or not bootnodes:
+        return
+    (config_dir / "bootnodes.json").write_text(json.dumps({"bootnodes": bootnodes}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 def write_node_key(key_file: Path, *, label: str = "validator") -> None:
     if key_file.exists():
@@ -4018,6 +4141,7 @@ def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
     genesis = config_dir / "genesis.json"
     key_file = config_dir / "key"
     if genesis.exists() and key_file.exists():
+        refresh_existing_joiner_bootnodes(config_dir)
         return True, "existing-qbft-config", genesis, key_file
     if ordinal != 1 and str(fdb_plan.get("action") or "") != "initialize-new-cluster":
         ok, reason, shared_genesis, bootnodes = fetch_shared_qbft_config()
@@ -4083,7 +4207,8 @@ def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
 
 def ensure_validator_rpc(fdb_ready: bool) -> bool:
     rpc_port = int(ports.get("rpc_container") or 8545)
-    p2p_port = int(ports.get("p2p_container") or 30303)
+    p2p_container_port = int(ports.get("p2p_container") or 30303)
+    p2p_port = advertised_p2p_port()
     if not fdb_ready:
         state("validator_rpc", name=components.get("validator_rpc"), desired=True, running=False, status="waiting-foundationdb", rpc_port=rpc_port, p2p_port=p2p_port, besu_binary_present=command_exists("besu"))
         return False
@@ -4093,7 +4218,7 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         return False
     data_path = state_root / "qbft" / "data"
     data_path.mkdir(parents=True, exist_ok=True)
-    p2p_host = vpn_ip or "127.0.0.1"
+    p2p_host = advertised_p2p_host()
     bootnodes = []
     bootnodes_file = state_root / "qbft" / "config" / "bootnodes.json"
     if bootnodes_file.exists():
@@ -4151,6 +4276,8 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         status=status,
         rpc_port=rpc_port,
         p2p_port=p2p_port,
+        p2p_host=p2p_host,
+        p2p_container_port=p2p_container_port,
         besu_binary_present=command_exists("besu"),
         qbft_config=reason,
         genesis_file_present=genesis.exists(),
@@ -4397,6 +4524,7 @@ import subprocess
 import sys
 import threading
 import time
+import textwrap
 import zlib
 import urllib.error
 import urllib.request
@@ -4658,30 +4786,15 @@ def dockerfile_payload_install_run(payloads: Mapping[str, str]) -> str:
     return "\n".join(lines)
 
 
-def super_node_dockerfile_inline(base_image: str, guard_script: str | None = None) -> str:
-    """Return a Dockerfile for the all-father super-node image.
+def super_base_dockerfile_inline(source_image: str = DEFAULT_SUPER_BASE_SOURCE_IMAGE) -> str:
+    """Return the heavy dependency base Dockerfile.
 
-    The generated Coolify stack uses ``dockerfile_inline`` with no repository
-    checkout in the build context, so this image must be self-contained.  It
-    keeps the Besu/QBFT base and installs FoundationDB server/client plus Python
-    runtime tools, then bakes in the private guard/supervisor script.  The guard
-    starts first and supervises FDB -> Besu validator-RPC -> Hub bootstrap.
-
-    FoundationDB's Debian package installs ``fdbserver`` under ``/usr/sbin`` on
-    common platforms, not ``/usr/bin``.  The image therefore validates both
-    locations and creates stable ``/usr/local/bin`` symlinks instead of assuming
-    one package layout.
+    This is built by a managed Coolify service through the host Docker socket.
+    Normal super-node deployments must not reinstall apt/FDB/Python/web3/solc on
+    every deploy; they should inherit from the resulting local image tag.
     """
 
-    base = str(base_image or DEFAULT_SUPER_BASE_IMAGE).strip() or DEFAULT_SUPER_BASE_IMAGE
-    guard_script_b64 = base64.b64encode(zlib.compress((guard_script or super_server_command_script()).encode("utf-8"))).decode("ascii")
-    wrapper_script_b64 = base64.b64encode(zlib.compress(super_node_entrypoint_wrapper_script().encode("utf-8"))).decode("ascii")
-    payload_install = dockerfile_payload_install_run(
-        {
-            "/usr/local/bin/allfather-super-guard.py": guard_script_b64,
-            "/usr/local/bin/allfather-super-entrypoint.py": wrapper_script_b64,
-        }
-    )
+    base = str(source_image or DEFAULT_SUPER_BASE_SOURCE_IMAGE).strip() or DEFAULT_SUPER_BASE_SOURCE_IMAGE
     return f"""
 FROM {base}
 
@@ -4689,7 +4802,7 @@ USER root
 
 RUN set -eux; \\
     if ! command -v apt-get >/dev/null 2>&1; then \\
-        echo "The all-father super-node inline image currently requires a Debian/Ubuntu Besu base so FoundationDB server .deb packages can be installed." >&2; \\
+        echo "The all-father super-node base image currently requires a Debian/Ubuntu Besu base so FoundationDB server .deb packages can be installed." >&2; \\
         exit 1; \\
     fi; \\
     apt-get update; \\
@@ -4746,6 +4859,38 @@ RUN set -eux; \\
     fdbserver --version; \\
     fdbcli --version
 
+ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super-base \\
+    MC_ALLFATHER_IMAGE_CAPABILITIES=python-venv,web3,fdb,solc,besu,qbft
+
+EXPOSE {DEFAULT_SUPER_GUARD_CONTAINER_PORT} {DEFAULT_SUPER_HUB_CONTAINER_PORT} {DEFAULT_SUPER_RPC_CONTAINER_PORT} {DEFAULT_SUPER_FDB_CONTAINER_PORT} {DEFAULT_SUPER_P2P_CONTAINER_PORT}
+
+ENV PATH="/opt/allfather-super-venv/bin:$PATH"
+""".strip()
+
+
+def super_node_dockerfile_inline(base_image: str, guard_script: str | None = None) -> str:
+    """Return the small per-node Dockerfile for the all-father super-node image.
+
+    The heavy dependency layer is built by the managed
+    allfather-super-base-builder Coolify service.  Per-node deployments only bake
+    in the current generated guard/supervisor payload, which keeps deploy jobs
+    below Coolify worker timeouts and avoids manual host-side image builds.
+    """
+
+    base = str(base_image or DEFAULT_SUPER_BASE_IMAGE).strip() or DEFAULT_SUPER_BASE_IMAGE
+    guard_script_b64 = base64.b64encode(zlib.compress((guard_script or super_server_command_script()).encode("utf-8"))).decode("ascii")
+    wrapper_script_b64 = base64.b64encode(zlib.compress(super_node_entrypoint_wrapper_script().encode("utf-8"))).decode("ascii")
+    payload_install = dockerfile_payload_install_run(
+        {
+            "/usr/local/bin/allfather-super-guard.py": guard_script_b64,
+            "/usr/local/bin/allfather-super-entrypoint.py": wrapper_script_b64,
+        }
+    )
+    return f"""
+FROM {base}
+
+USER root
+
 {payload_install}
 
 ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super \\
@@ -4780,6 +4925,431 @@ def yaml_block_scalar(text: str, indent: int) -> list[str]:
     return [f"{prefix}{line}" if line else prefix for line in text.splitlines()]
 
 
+def shell_write_text_file_command(path: str, text: str) -> list[str]:
+    encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    wrapped = textwrap.wrap(encoded, 76)
+    lines = [f"cat > {shell_single_quote(path)}.b64 <<'ALLFATHER_B64'"]
+    lines.extend(wrapped)
+    lines.append("ALLFATHER_B64")
+    lines.append(f"base64 -d {shell_single_quote(path)}.b64 > {shell_single_quote(path)}")
+    lines.append(f"rm -f {shell_single_quote(path)}.b64")
+    return lines
+
+
+def super_base_builder_command_script(
+    *,
+    target_image: str = DEFAULT_SUPER_BASE_IMAGE,
+    source_image: str = DEFAULT_SUPER_BASE_SOURCE_IMAGE,
+    force_rebuild: bool = False,
+) -> str:
+    dockerfile = super_base_dockerfile_inline(source_image)
+    write_dockerfile = "\n".join(shell_write_text_file_command("/work/allfather-super-base.Dockerfile", dockerfile))
+    force = "1" if force_rebuild else "0"
+    return f"""set -eu
+TARGET_IMAGE={shell_single_quote(target_image)}
+SOURCE_IMAGE={shell_single_quote(source_image)}
+FORCE_REBUILD={shell_single_quote(force)}
+STATUS_PORT={shell_single_quote(str(DEFAULT_SUPER_BASE_BUILDER_CONTAINER_PORT))}
+mkdir -p /work/www
+log() {{
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+    printf '%s allfather-super-base-builder: %s\\n' "$ts" "$*"
+}}
+write_status() {{
+    phase="$1"
+    ok="$2"
+    error="${{3:-}}"
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+    health_ok=true
+    if [ "$phase" = "failed" ]; then
+        health_ok=false
+    fi
+    cat > /work/www/status <<EOF
+{{"ok": $ok, "service": "main-computer-allfather-super-base-builder", "status": "$phase", "phase": "$phase", "image": "$TARGET_IMAGE", "source_image": "$SOURCE_IMAGE", "error": "$error", "updated_at": "$ts", "public_guard_routes": false, "ssh_used": false, "direct_vpn_used": false}}
+EOF
+    cat > /work/www/healthz <<EOF
+{{"ok": $health_ok, "service": "main-computer-allfather-super-base-builder", "status": "$phase", "phase": "$phase", "image": "$TARGET_IMAGE", "source_image": "$SOURCE_IMAGE", "error": "$error", "updated_at": "$ts", "public_guard_routes": false, "ssh_used": false, "direct_vpn_used": false}}
+EOF
+    cp /work/www/status /work/www/identity
+    cp /work/www/status /work/www/topology
+}}
+start_status_server() {{
+    if command -v httpd >/dev/null 2>&1; then
+        (httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www >>/work/httpd.log 2>&1 || true) &
+        return 0
+    fi
+    if command -v busybox >/dev/null 2>&1; then
+        (busybox httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www >>/work/httpd.log 2>&1 || true) &
+        return 0
+    fi
+    if command -v apk >/dev/null 2>&1; then
+        apk add --no-cache busybox-extras >>/work/httpd.log 2>&1 || true
+        if command -v httpd >/dev/null 2>&1; then
+            (httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www >>/work/httpd.log 2>&1 || true) &
+            return 0
+        fi
+        if command -v busybox >/dev/null 2>&1; then
+            (busybox httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www >>/work/httpd.log 2>&1 || true) &
+            return 0
+        fi
+    fi
+    echo "no status HTTP server available in builder image" >>/work/httpd.log
+    return 1
+}}
+write_status starting false ""
+log "phase=starting target=$TARGET_IMAGE"
+start_status_server || true
+{write_dockerfile}
+if [ "$FORCE_REBUILD" != "1" ] && docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
+    echo "Base image already exists: $TARGET_IMAGE" > /work/build.log
+    log "phase=ready target=$TARGET_IMAGE already_exists=true"
+    write_status ready true ""
+else
+    log "phase=building target=$TARGET_IMAGE source=$SOURCE_IMAGE"
+    write_status building false ""
+    set +e
+    docker build -t "$TARGET_IMAGE" -f /work/allfather-super-base.Dockerfile /work > /work/build.log 2>&1
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then
+        log "phase=ready target=$TARGET_IMAGE built=true"
+        write_status ready true ""
+    else
+        tail -120 /work/build.log > /work/build-tail.log 2>/dev/null || true
+        error="$(tr '\\n"' '  ' < /work/build-tail.log | cut -c1-1200)"
+        log "phase=failed target=$TARGET_IMAGE rc=$rc"
+        write_status failed false "$error"
+    fi
+fi
+touch /work/build.log
+tail -f /work/build.log /dev/null
+""".strip()
+
+
+def render_super_base_builder_compose(
+    head: HeadNode,
+    *,
+    target_image: str = DEFAULT_SUPER_BASE_IMAGE,
+    source_image: str = DEFAULT_SUPER_BASE_SOURCE_IMAGE,
+    builder_image: str = DEFAULT_SUPER_BASE_BUILDER_IMAGE,
+    force_rebuild: bool = False,
+) -> str:
+    service_name = super_base_builder_service_name(head)
+    private_bind_host = str(head.guard_publish_host or "").strip()
+    host_port = super_base_builder_host_port(head)
+    container_port = DEFAULT_SUPER_BASE_BUILDER_CONTAINER_PORT
+    state_dir = f"{head.state_root.rstrip('/')}/super-base-builder"
+    healthcheck_command = (
+        f"wget -qO- http://127.0.0.1:{container_port}/healthz 2>/dev/null "
+        "| grep -q '\"ok\": true'"
+    )
+    command_script = super_base_builder_command_script(
+        target_image=target_image,
+        source_image=source_image,
+        force_rebuild=force_rebuild,
+    )
+    def private_port_mapping() -> str:
+        if private_bind_host:
+            return f"{private_bind_host}:{host_port}:{container_port}/tcp"
+        return f"{host_port}:{container_port}/tcp"
+    lines = [
+        f"name: {service_name}",
+        "",
+        "services:",
+        f"  {service_name}:",
+        f"    image: {yaml_quote(builder_image)}",
+        "    restart: unless-stopped",
+        "    command:",
+        "      - /bin/sh",
+        "      - -lc",
+        "      - |",
+    ]
+    compose_command_script = command_script.replace("$", "$$")
+    lines.extend(f"        {line}" for line in compose_command_script.splitlines())
+    lines.extend(
+        [
+            "    environment:",
+            f"      MC_ALLFATHER_SUPER_BASE_BUILDER: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_SUPER_BASE_TARGET_IMAGE: {yaml_quote(target_image)}",
+            f"      MC_ALLFATHER_SUPER_BASE_SOURCE_IMAGE: {yaml_quote(source_image)}",
+            f"      MC_ALLFATHER_SUPER_BASE_FORCE_REBUILD: {yaml_quote('1' if force_rebuild else '0')}",
+            "    expose:",
+            f"      - {yaml_quote(container_port)}",
+            "    ports:",
+            f"      - {yaml_quote(private_port_mapping())}",
+            "    volumes:",
+            f"      - {yaml_quote('/var/run/docker.sock:/var/run/docker.sock')}",
+            f"      - {yaml_quote(f'{state_dir}:/work')}",
+            "    healthcheck:",
+            "      test:",
+            "        - CMD-SHELL",
+            f"        - {yaml_quote(healthcheck_command)}",
+            "      interval: 10s",
+            "      timeout: 5s",
+            "      start_period: 5s",
+            "      retries: 6",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def super_base_builder_service_payload(
+    head: HeadNode,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    service_name = super_base_builder_service_name(head)
+    compose = render_super_base_builder_compose(
+        head,
+        target_image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+        source_image=getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
+        builder_image=getattr(args, "super_base_builder_image", DEFAULT_SUPER_BASE_BUILDER_IMAGE),
+        force_rebuild=bool(getattr(args, "force_super_base_rebuild", False)),
+    )
+    payload = {
+        "server_uuid": (context or {}).get("server_uuid") or "",
+        "project_uuid": (context or {}).get("project_uuid") or "",
+        "environment_name": (context or {}).get("environment_name") or getattr(args, "coolify_environment_name", "") or DEFAULT_SUPER_ENVIRONMENT,
+        "environment_uuid": (context or {}).get("environment_uuid") or "",
+        "name": service_name,
+        "description": (
+            "Main Computer managed all-father super-node base-image builder. "
+            "Runs through Coolify and the host Docker socket; no SSH or manual host build is required."
+        ),
+        "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        "instant_deploy": False,
+    }
+    destination_uuid = destination_uuid_for_host(head, args)
+    if destination_uuid:
+        payload["destination_uuid"] = destination_uuid
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def sync_super_base_builder_service(
+    client: Any,
+    head: HeadNode,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+) -> tuple[str, str, dict[str, Any]]:
+    service_name = super_base_builder_service_name(head)
+    service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
+    compose = render_super_base_builder_compose(
+        head,
+        target_image=getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+        source_image=getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
+        builder_image=getattr(args, "super_base_builder_image", DEFAULT_SUPER_BASE_BUILDER_IMAGE),
+        force_rebuild=bool(getattr(args, "force_super_base_rebuild", False)),
+    )
+    if service_uuid:
+        fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
+        return service_uuid, "updated", existing
+    service_uuid = fdb_tool().create_service(client, super_base_builder_service_payload(head, args, context), tried)
+    return service_uuid, "created", existing
+
+
+def probe_target_for_super_base_builder(head: HeadNode) -> dict[str, Any]:
+    return {
+        "kind": "super-base-builder",
+        "guard_url": super_base_builder_url(head),
+        "service_name": super_base_builder_service_name(head),
+        "coolify_server": head.coolify_server,
+        "host_slot": head.slot,
+        "scope": "remote-vpn-super-base-builder-only",
+    }
+
+
+def probe_result_target_by_service(probe_result: Mapping[str, Any], service_name: str) -> dict[str, Any]:
+    for item in probe_result.get("targets") or []:
+        if isinstance(item, Mapping) and str(item.get("service_name") or "") == service_name:
+            return dict(item)
+    return {}
+
+
+def operator_log(args: argparse.Namespace, message: str) -> None:
+    """Emit concise operator progress to stderr without corrupting JSON stdout."""
+
+    if bool(getattr(args, "quiet", False)):
+        return
+    command = str(getattr(args, "command", "") or "allfather").strip()
+    prefix = f"[allfather {command}]"
+    print(f"{prefix} {message}", file=sys.stderr, flush=True)
+
+
+def operator_log_interval_s(args: argparse.Namespace) -> float:
+    try:
+        value = float(getattr(args, "operator_log_interval_s", 15.0))
+    except (TypeError, ValueError):
+        return 15.0
+    return max(5.0, value)
+
+
+def compact_wait_target_status(target: Mapping[str, Any]) -> str:
+    if not isinstance(target, Mapping) or not target:
+        return "not-observed"
+    phase = str(target.get("phase") or target.get("status_text") or "").strip() or "unknown"
+    status_ok = "ok" if bool(target.get("status_ok")) else "not-ready"
+    healthz_ok = "ok" if bool(target.get("healthz_ok")) else "not-healthy"
+    error = str(target.get("error") or "").strip()
+    pieces = [f"phase={phase}", f"status={status_ok}", f"healthz={healthz_ok}"]
+    if error:
+        pieces.append(f"error={error[:180]}")
+    return " ".join(pieces)
+
+
+def wait_for_super_base_builder_ready(
+    plan: HeadPlan,
+    head: HeadNode,
+    client: Any,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+) -> dict[str, Any]:
+    service_name = super_base_builder_service_name(head)
+    target = probe_target_for_super_base_builder(head)
+    if not target.get("guard_url"):
+        return {
+            "enabled": True,
+            "ready": False,
+            "reason": "super base builder has no private probe URL for this host",
+            "service_name": service_name,
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+    probe_service_uuid, probe_action, _probe_existing = sync_probe_service(
+        client,
+        plan,
+        head,
+        args,
+        context,
+        tried,
+        super_inventory=[target],
+    )
+    operator_log(
+        args,
+        f"base-image: using private probe service {probe_service_uuid or '<unknown>'} ({probe_action or 'synced'}); waiting up to {float(wait_s or 0.0):.0f}s",
+    )
+    hub_service_tool().trigger_deploy_service(
+        client,
+        service_uuid=probe_service_uuid,
+        force=True,
+        tried=tried,
+    )
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_probe_result: dict[str, Any] = {}
+    last_target: dict[str, Any] = {}
+    last_log_signature = ""
+    last_log_at = 0.0
+    log_interval = operator_log_interval_s(args)
+    first = True
+    while first or time.time() < deadline:
+        first = False
+        detail = fetch_service_detail(client, probe_service_uuid, tried)
+        last_probe_result = probe_result_from_service_metadata(detail)
+        last_target = probe_result_target_by_service(last_probe_result, service_name)
+        signature = compact_wait_target_status(last_target)
+        now = time.time()
+        if signature != last_log_signature or (now - last_log_at) >= log_interval:
+            remaining = max(0.0, deadline - now)
+            operator_log(args, f"base-image: {signature}; remaining={remaining:.0f}s")
+            last_log_signature = signature
+            last_log_at = now
+        if last_target and bool(last_target.get("status_ok")) and bool(last_target.get("healthz_ok")):
+            operator_log(args, f"base-image: ready ({getattr(args, 'super_image', DEFAULT_SUPER_IMAGE)})")
+            return {
+                "enabled": True,
+                "ready": True,
+                "reason": "managed super base image is ready",
+                "service_name": service_name,
+                "service_uuid": "",
+                "probe_service_uuid": probe_service_uuid,
+                "probe_action": probe_action,
+                "target_image": getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+                "source_image": getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
+                "status_url": target.get("guard_url"),
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
+        if time.time() >= deadline:
+            break
+        time.sleep(min(2.0, max(0.25, deadline - time.time())))
+    error = str(last_target.get("error") or "")
+    operator_log(args, f"base-image: not ready before timeout; last={compact_wait_target_status(last_target)}")
+    return {
+        "enabled": True,
+        "ready": False,
+        "reason": error or "managed super base image was not ready before timeout",
+        "service_name": service_name,
+        "probe_service_uuid": probe_service_uuid,
+        "probe_action": probe_action,
+        "target_image": getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+        "source_image": getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
+        "status_url": target.get("guard_url"),
+        "observed_target": last_target,
+        "wait_s": float(wait_s or 0.0),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
+def ensure_super_base_image(
+    plan: HeadPlan,
+    head: HeadNode,
+    client: Any,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if bool(getattr(args, "no_super_base_ensure", False)):
+        return {
+            "enabled": False,
+            "ready": None,
+            "reason": "disabled by --no-super-base-ensure",
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+    target_image = getattr(args, "super_image", DEFAULT_SUPER_IMAGE)
+    operator_log(args, f"base-image: ensuring {target_image} via managed Coolify builder on {head.coolify_server}")
+    service_uuid, action, existing = sync_super_base_builder_service(client, head, args, context, tried)
+    operator_log(args, f"base-image: builder service {action} uuid={service_uuid or '<unknown>'}")
+    deploy_response = None
+    if not bool(getattr(args, "no_deploy", False)):
+        force_base = bool(getattr(args, "force_super_base_rebuild", False))
+        operator_log(args, f"base-image: triggering builder deploy force={str(force_base).lower()}")
+        deploy_response = hub_service_tool().trigger_deploy_service(
+            client,
+            service_uuid=service_uuid,
+            force=force_base,
+            tried=tried,
+        )
+    wait_result = wait_for_super_base_builder_ready(
+        plan,
+        head,
+        client,
+        args,
+        context,
+        tried,
+        wait_s=float(getattr(args, "super_base_wait_s", DEFAULT_ADD_NODE_READY_WAIT_S)),
+    )
+    wait_result.update(
+        {
+            "service_uuid": service_uuid,
+            "service_action": action,
+            "existing": existing if bool(getattr(args, "verbose", False)) else "<hidden; pass --verbose>",
+            "deploy_response": deploy_response if bool(getattr(args, "verbose", False)) else ("<hidden; pass --verbose>" if deploy_response else None),
+        }
+    )
+    return wait_result
+
+
+
 def render_super_node_compose(
     manifest: Mapping[str, Any],
     *,
@@ -4801,10 +5371,12 @@ def render_super_node_compose(
     guard_host = ports.get("guard_host")
     fdb_host = ports.get("fdb_host")
     p2p_host = ports.get("p2p_host")
-    def private_port_mapping(host_port: Any, container_port: Any) -> str:
+    p2p_container_bind = ports.get("p2p_host") or ports.get("p2p_container")
+    def private_port_mapping(host_port: Any, container_port: Any, protocol: str = "tcp") -> str:
+        clean_protocol = str(protocol or "tcp").strip().lower()
         if private_bind_host:
-            return f"{private_bind_host}:{host_port}:{container_port}/tcp"
-        return f"{host_port}:{container_port}/tcp"
+            return f"{private_bind_host}:{host_port}:{container_port}/{clean_protocol}"
+        return f"{host_port}:{container_port}/{clean_protocol}"
     dockerfile_inline = escape_compose_interpolation(super_node_dockerfile_inline(image, guard_script=command_script))
     lines = [
         f"name: {service_name}",
@@ -4859,7 +5431,8 @@ def render_super_node_compose(
             "    ports:",
             f"      - {yaml_quote(private_port_mapping(guard_host, ports.get('guard_container')))}",
             f"      - {yaml_quote(private_port_mapping(fdb_host, ports.get('fdb_container')))}",
-            f"      - {yaml_quote(private_port_mapping(p2p_host, ports.get('p2p_container')))}",
+            f"      - {yaml_quote(private_port_mapping(p2p_host, p2p_container_bind, 'tcp'))}",
+            f"      - {yaml_quote(private_port_mapping(p2p_host, p2p_container_bind, 'udp'))}",
             "    volumes:",
             f"      - {yaml_quote(f'{state_root}:{state_root}')}",
             "    healthcheck:",
@@ -5374,6 +5947,9 @@ def wait_for_add_node_ready(
     last_probe_result: dict[str, Any] = {}
     last_probe_logs: dict[str, Any] = {}
     last_service_uuid = service_uuid
+    last_log_signature = ""
+    last_log_at = 0.0
+    log_interval = operator_log_interval_s(args)
 
     while True:
         attempts += 1
@@ -5423,7 +5999,17 @@ def wait_for_add_node_ready(
         statuses = super_statuses_from_probe_result(last_probe_result)
         last_internal_status = statuses.get(service_name, {})
         last_ready_check = add_node_super_ready_check(last_internal_status, manifest)
+        components = last_ready_check.get("components") if isinstance(last_ready_check.get("components"), Mapping) else {}
+        component_summary = ",".join(f"{key}={value or '-'}" for key, value in components.items()) if components else "components=not-observed"
+        signature = f"coolify={last_status or 'unknown'} reason={last_ready_check.get('reason') or 'not-ready'} {component_summary}"
+        now = time.monotonic()
+        if signature != last_log_signature or (now - last_log_at) >= log_interval:
+            remaining_log = max(0.0, deadline - now)
+            operator_log(args, f"node-wait: {signature}; remaining={remaining_log:.0f}s")
+            last_log_signature = signature
+            last_log_at = now
         if bool(last_ready_check.get("ready")):
+            operator_log(args, f"node-wait: ready {service_name}")
             return {
                 "enabled": True,
                 "ready": True,
@@ -5453,6 +6039,7 @@ def wait_for_add_node_ready(
         # deploy does not return a false blocker while Docker is still working.
         terminal_service_state = any(token in status_lower for token in ("dead", "failed"))
         if bool(last_ready_check.get("terminal")) or terminal_service_state:
+            operator_log(args, f"node-wait: terminal for {service_name}: {last_ready_check.get('reason') or last_status}")
             return {
                 "enabled": True,
                 "ready": False,
@@ -5478,6 +6065,7 @@ def wait_for_add_node_ready(
         if remaining <= 0:
             break
 
+    operator_log(args, f"node-wait: timed out for {service_name}: {last_ready_check.get('reason') or 'not ready'}")
     return {
         "enabled": True,
         "ready": False,
@@ -5507,6 +6095,7 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
         raise AllfatherControlError("Refusing to remove a mainnet node without --allow-mainnet.")
     head = choose_head_for_host(plan, args.host)
+    operator_log(args, f"start: network={network_key} host={head.coolify_server} slot={head.slot}")
     private_state_path = repo_relative_path(args.private_state)
     state = load_yaml_mapping(private_state_path)
 
@@ -5651,6 +6240,14 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "ssh_used": False,
         "direct_vpn_used": False,
     }
+    super_base: dict[str, Any] = {
+        "enabled": False,
+        "ready": None,
+        "reason": "dry-run" if getattr(args, "dry_run", False) else "not run yet",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
     if getattr(args, "dry_run", False) and getattr(args, "existing_count", None) is not None:
         existing_count = max(0, int(args.existing_count))
         ordinal = existing_count + 1
@@ -5671,6 +6268,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
         ordinal = (max(ordinals) + 1) if ordinals else 1
         planned_cell_id = super_service_name(network_key, head, ordinal)
+        operator_log(args, f"preflight: waiting for clean slot {planned_cell_id}; existing_ordinals={ordinals or []}")
         preflight = wait_for_add_node_slot_preflight(
             client,
             network_key=network_key,
@@ -5683,9 +6281,11 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             stable_s=float(getattr(args, "preflight_stable_s", DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S)),
         )
         if not bool(preflight.get("ready")):
+            operator_log(args, f"preflight: blocked for {planned_cell_id}: {preflight.get('reason')}")
             raise AllfatherControlError(
                 f"Host {head.coolify_server} is not ready to add {planned_cell_id}: {preflight.get('reason')}"
             )
+        operator_log(args, f"preflight: clean slot confirmed for {planned_cell_id}")
         services = list(preflight.get("services") or services)
         ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
         existing_nodes = existing_super_inventory_from_services(services, network_key, head)
@@ -5734,6 +6334,22 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     )
 
     if not getattr(args, "dry_run", False):
+        operator_log(args, f"plan: next node {cell_id}; base_image={getattr(args, 'super_image', DEFAULT_SUPER_IMAGE)}")
+        if not getattr(args, "no_deploy", False):
+            super_base = ensure_super_base_image(
+                plan,
+                head,
+                client,
+                args,
+                context,
+                tried,
+            )
+            if not bool(super_base.get("ready")):
+                operator_log(args, f"base-image: blocked: {super_base.get('reason')}")
+                raise AllfatherControlError(
+                    f"Managed super base image is not ready on {head.coolify_server}: {super_base.get('reason')}"
+                )
+        operator_log(args, f"node-service: syncing Coolify service {cell_id}")
         service_uuid, service_action, _existing = sync_super_node_service(
             client,
             manifest,
@@ -5743,6 +6359,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             hub_admin_private_key=hub_admin_key,
             deployer_private_key=deployer_key,
         )
+        operator_log(args, f"node-service: {service_action} uuid={service_uuid or '<unknown>'}")
         synced_service_predeploy = require_synced_super_service_ready_for_deploy(
             client,
             service_name=manifest["cell_id"],
@@ -5761,10 +6378,12 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             "direct_vpn_used": False,
         }
         if not getattr(args, "no_deploy", False):
+            force_node = bool(getattr(args, "force_deploy", False))
+            operator_log(args, f"node-deploy: triggering deploy force={str(force_node).lower()}; waiting up to {float(getattr(args, 'deploy_wait_s', DEFAULT_ADD_NODE_READY_WAIT_S) or 0.0):.0f}s")
             hub_service_tool().trigger_deploy_service(
                 client,
                 service_uuid=service_uuid,
-                force=getattr(args, "force_deploy", False),
+                force=force_node,
                 tried=tried,
             )
             deployed = True
@@ -5823,6 +6442,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "ready": add_node_ready,
         "reason": "" if add_node_ready else str(deploy_wait.get("reason") or "add-node deploy wait did not reach readiness"),
         "preflight": {key: value for key, value in preflight.items() if key != "services"},
+        "super_base": super_base,
         "predeploy_service_check": synced_service_predeploy,
         "deploy_wait": deploy_wait,
         "token_source": token_source,
@@ -5950,7 +6570,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--no-contracts", action="store_true", help="Do not request first-node contract bootstrap.")
     add_node_parser.add_argument("--publish-routes", action="store_true", help="Publish Hub/RPC Traefik routes immediately. Default defers public cutover.")
     add_node_parser.add_argument("--include-compose", action="store_true", help="Include rendered compose with private keys redacted.")
-    add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Besu/QBFT-capable base image used to build the all-father super-node container.")
+    add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Managed all-father super-node dependency base image used by the generated per-node image.")
+    add_node_parser.add_argument("--super-base-source-image", default=DEFAULT_SUPER_BASE_SOURCE_IMAGE, help="Besu/QBFT source image used by the managed Coolify super-base-builder service.")
+    add_node_parser.add_argument("--super-base-builder-image", default=DEFAULT_SUPER_BASE_BUILDER_IMAGE, help=argparse.SUPPRESS)
+    add_node_parser.add_argument("--super-base-wait-s", type=float, default=DEFAULT_ADD_NODE_READY_WAIT_S, help="Seconds to wait for the managed Coolify super-base-builder service to make the dependency image available.")
+    add_node_parser.add_argument("--force-super-base-rebuild", action="store_true", help="Force the managed super-base-builder service to rebuild the dependency base image.")
+    add_node_parser.add_argument("--no-super-base-ensure", action="store_true", help="Skip the managed super-base-builder check. Use only when the dependency image is already guaranteed on the host.")
     add_node_parser.add_argument("--no-deploy", action="store_true", help="Create/update service but do not trigger deploy.")
     add_node_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after service sync.")
     add_node_parser.add_argument("--preflight-wait-s", type=float, default=DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S, help="Seconds to wait for Coolify inventory to show the target super-node service slot is stably clean before add-node creates or deploys.")
@@ -5974,6 +6599,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     for subparser in (plan_parser, write_parser, boot_parser, discover_parser, add_node_parser, remove_node_parser):
         subparser.add_argument("--json", action="store_true", help="Print detailed compact JSON. Default discover output is an operator summary.")
         subparser.add_argument("--verbose", action="store_true", help="Include raw Coolify diagnostics and large API records in JSON output.")
+        subparser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs on stderr.")
+        subparser.add_argument("--operator-log-interval-s", type=float, default=15.0, help=argparse.SUPPRESS)
 
     return parser.parse_args(argv)
 

@@ -4,8 +4,8 @@
       function fallbackScene(sceneId = "default-empty-scene") {
         const scene = {
           "id": "default-empty-scene",
-          "name": "Shuttlecraft Lookaround",
-          "version": 7,
+          "name": "Shuttlecraft Walkaround",
+          "version": 9,
           "background": "radial-gradient(circle at 50% 18%, rgba(59, 130, 246, 0.18), rgba(2, 6, 23, 0.98) 58%, #000 100%)",
           "objects": [
                     {
@@ -23,7 +23,7 @@
                                         "z": 26,
                                         "bob": 5,
                                         "motion": "idle",
-                                        "spellState": "looking-around",
+                                        "spellState": "exploring-cabin",
                                         "spriteSeries": [
                                                   "stand",
                                                   "scan",
@@ -420,13 +420,13 @@
                               "width": 0,
                               "height": 0,
                               "props": {
-                                        "label": "Look-around Camera",
-                                        "role": "camera",
+                                        "label": "First-person Camera",
+                                        "role": "player-camera",
                                         "yaw": 0,
                                         "pitch": -2,
-                                        "yawLimit": 34,
-                                        "pitchLimit": 18,
-                                        "instructions": "Drag or use arrow keys to look around the shuttle interior."
+                                        "yawLimit": 180,
+                                        "pitchLimit": 28,
+                                        "instructions": "Drag or use arrow keys to look. Use W/A/S/D to walk and Shift to sprint."
                               }
                     }
           ],
@@ -440,9 +440,9 @@
                     "particleOnly": false,
                     "includesDefaultPlayer": true,
                     "isometric": false,
-                    "rolloutPhase": "phase-2-shuttle-3d-lookaround",
+                    "rolloutPhase": "phase-4-shuttle-first-person-movement",
                     "setting": "federation-like shuttle craft interior with stars and mother ship visible through the forward viewport",
-                    "starterScene": "shuttlecraft-lookaround-spawn",
+                    "starterScene": "shuttlecraft-walkaround-spawn",
                     "characterModel": "first-person-cadet-presence",
                     "meshActorsEnabled": false,
                     "parentedParticles": true,
@@ -451,7 +451,7 @@
                     "targetedParticles": true,
                     "shuttleInterior": true,
                     "choreography": {
-                              "title": "Shuttle Look-Around Boot",
+                              "title": "Shuttle Walk-Around Boot",
                               "durationMs": 7600,
                               "cameraPulse": true,
                               "beats": [
@@ -476,17 +476,18 @@
                                                   "cue": "mother-ship"
                                         },
                                         {
-                                                  "label": "Ready to look",
+                                                  "label": "Ready to explore",
                                                   "timeMs": 6200,
                                                   "cue": "lookaround-camera"
                                         }
                               ]
                     },
                     "controls": {
-                              "mode": "lookaround",
+                              "mode": "first-person",
                               "pointerDrag": true,
-                              "keyboard": "arrow-keys",
-                              "movement": "stationary-inside-shuttle"
+                              "keyboard": "wasd-and-arrow-keys",
+                              "movement": "bounded-first-person-walk",
+                              "sprint": "shift"
                     },
                     "movementBounds": {
                               "minX": 1.1,
@@ -505,27 +506,173 @@
                     "viewportShowsStars": true,
                     "viewportShowsMotherShip": true,
                     "camera": {
-                              "mode": "lookaround",
+                              "mode": "first-person",
+                              "position": [0.0, 0.75, 3.35],
                               "yaw": 0,
                               "pitch": -2,
-                              "yawLimit": 34,
-                              "pitchLimit": 18,
-                              "hint": "Drag inside the Game Surface or use arrow keys to look around."
+                              "yawLimit": 180,
+                              "pitchLimit": 28,
+                              "hint": "Drag or use arrow keys to look. Use W/A/S/D to walk, and hold Shift to sprint inside the shuttle."
                     },
                     "shuttle3d": {
-                              "mode": "simple-css-3d",
+                              "mode": "webgl-vertex-mesh",
                               "lookAround": true,
                               "viewport": "forward-viewer",
                               "starfield": "viewport-starfield",
                               "motherShip": "mother-ship",
                               "motherShipLabel": "Mother Ship",
                               "playerAnchor": "hero-sprite",
-                              "controlsHint": "Drag to look around the shuttle. The forward viewport shows stars and the mother ship."
+                              "controlsHint": "Click to focus • Drag or arrows to look • W/A/S/D to walk • Shift to sprint",
+                              "movement": {
+                                "enabled": true,
+                                "scheme": "wasd",
+                                "walkSpeed": 2.65,
+                                "sprintMultiplier": 1.7,
+                                "radius": 0.28,
+                                "eyeHeight": 0.75,
+                                "start": [
+                                  0.0,
+                                  0.75,
+                                  3.35
+                                ],
+                                "bounds": {
+                                  "minX": -3.92,
+                                  "maxX": 3.92,
+                                  "minZ": -7.72,
+                                  "maxZ": 5.82
+                                },
+                                "colliders": [
+                                  {
+                                    "id": "helm-console",
+                                    "minX": -3.0,
+                                    "maxX": -0.3,
+                                    "minZ": -5.55,
+                                    "maxZ": -3.55
+                                  },
+                                  {
+                                    "id": "science-console",
+                                    "minX": 0.3,
+                                    "maxX": 3.0,
+                                    "minZ": -5.55,
+                                    "maxZ": -3.55
+                                  },
+                                  {
+                                    "id": "port-console",
+                                    "minX": -4.25,
+                                    "maxX": -3.45,
+                                    "minZ": -4.05,
+                                    "maxZ": -0.95
+                                  },
+                                  {
+                                    "id": "starboard-console",
+                                    "minX": 3.45,
+                                    "maxX": 4.25,
+                                    "minZ": -4.05,
+                                    "maxZ": -0.95
+                                  },
+                                  {
+                                    "id": "port-seat",
+                                    "minX": -2.15,
+                                    "maxX": -0.7,
+                                    "minZ": -3.0,
+                                    "maxZ": -1.05
+                                  },
+                                  {
+                                    "id": "starboard-seat",
+                                    "minX": 0.7,
+                                    "maxX": 2.15,
+                                    "minZ": -3.0,
+                                    "maxZ": -1.05
+                                  },
+                                  {
+                                    "id": "aft-hatch",
+                                    "minX": -1.45,
+                                    "maxX": 1.45,
+                                    "minZ": 5.7,
+                                    "maxZ": 6.45
+                                  }
+                                ]
+                              },
+                              "geometry": {
+                                  "renderer": "raw-webgl",
+                                  "primitive": "triangles",
+                                  "boundsVertexCount": 12,
+                                  "boundsVertices": [
+                                    [
+                                      -4.5,
+                                      -1.45,
+                                      -8.8
+                                    ],
+                                    [
+                                      -4.5,
+                                      2.05,
+                                      -8.8
+                                    ],
+                                    [
+                                      -3.55,
+                                      3.15,
+                                      -8.8
+                                    ],
+                                    [
+                                      3.55,
+                                      3.15,
+                                      -8.8
+                                    ],
+                                    [
+                                      4.5,
+                                      2.05,
+                                      -8.8
+                                    ],
+                                    [
+                                      4.5,
+                                      -1.45,
+                                      -8.8
+                                    ],
+                                    [
+                                      -4.5,
+                                      -1.45,
+                                      6.8
+                                    ],
+                                    [
+                                      -4.5,
+                                      2.05,
+                                      6.8
+                                    ],
+                                    [
+                                      -3.55,
+                                      3.15,
+                                      6.8
+                                    ],
+                                    [
+                                      3.55,
+                                      3.15,
+                                      6.8
+                                    ],
+                                    [
+                                      4.5,
+                                      2.05,
+                                      6.8
+                                    ],
+                                    [
+                                      4.5,
+                                      -1.45,
+                                      6.8
+                                    ]
+                                  ],
+                                  "viewportOpening": {
+                                    "left": -2.92,
+                                    "right": 2.92,
+                                    "bottom": 0.0,
+                                    "top": 2.32,
+                                    "z": -8.8
+                                  },
+                                  "actualHullBounds": true
+                              }
                     }
           }
 };
         if (sceneId && sceneId !== scene.id) {
-          return {...scene, id: sceneId, name: scene.name || "Shuttlecraft Lookaround"};
+          return {...scene, id: sceneId, name: scene.name || "Shuttlecraft Walkaround"};
         }
         return scene;
       }
@@ -1615,11 +1762,18 @@
 
       function shuttle3dCameraConfig(scene) {
         const camera = scene?.metadata?.camera && typeof scene.metadata.camera === "object" ? scene.metadata.camera : {};
+        const suppliedPosition = camera.position;
+        const position = Array.isArray(suppliedPosition)
+          && suppliedPosition.length === 3
+          && suppliedPosition.every((value) => Number.isFinite(Number(value)))
+          ? suppliedPosition.map(Number)
+          : [0, 0.75, 3.35];
         return {
+          position,
           yaw: numericSceneProp(camera.yaw, 0, -180, 180),
           pitch: numericSceneProp(camera.pitch, -2, -45, 45),
-          yawLimit: numericSceneProp(camera.yawLimit, 34, 8, 90),
-          pitchLimit: numericSceneProp(camera.pitchLimit, 18, 4, 45)
+          yawLimit: numericSceneProp(camera.yawLimit, 180, 8, 180),
+          pitchLimit: numericSceneProp(camera.pitchLimit, 28, 4, 60)
         };
       }
 
@@ -1629,12 +1783,598 @@
         return Math.min(limit, Math.max(-limit, number));
       }
 
+      function normalizeShuttle3dYaw(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return 0;
+        return ((number + 180) % 360 + 360) % 360 - 180;
+      }
+
+      function shuttle3dNormalizeVector(vector) {
+        const length = Math.hypot(vector[0], vector[1], vector[2]) || 1;
+        return [vector[0] / length, vector[1] / length, vector[2] / length];
+      }
+
+      function shuttle3dCross(a, b) {
+        return [
+          a[1] * b[2] - a[2] * b[1],
+          a[2] * b[0] - a[0] * b[2],
+          a[0] * b[1] - a[1] * b[0]
+        ];
+      }
+
+      function shuttle3dSubtract(a, b) {
+        return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+      }
+
+      function shuttle3dDot(a, b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      }
+
+      function shuttle3dPerspectiveMatrix(fieldOfViewRadians, aspect, near, far) {
+        const f = 1 / Math.tan(fieldOfViewRadians / 2);
+        const range = 1 / (near - far);
+        return new Float32Array([
+          f / Math.max(0.01, aspect), 0, 0, 0,
+          0, f, 0, 0,
+          0, 0, (far + near) * range, -1,
+          0, 0, 2 * far * near * range, 0
+        ]);
+      }
+
+      function shuttle3dLookAtMatrix(eye, center, up) {
+        const zAxis = shuttle3dNormalizeVector(shuttle3dSubtract(eye, center));
+        const xAxis = shuttle3dNormalizeVector(shuttle3dCross(up, zAxis));
+        const yAxis = shuttle3dCross(zAxis, xAxis);
+        return new Float32Array([
+          xAxis[0], yAxis[0], zAxis[0], 0,
+          xAxis[1], yAxis[1], zAxis[1], 0,
+          xAxis[2], yAxis[2], zAxis[2], 0,
+          -shuttle3dDot(xAxis, eye), -shuttle3dDot(yAxis, eye), -shuttle3dDot(zAxis, eye), 1
+        ]);
+      }
+
+      function shuttle3dBoundsVertices(scene) {
+        const supplied = scene?.metadata?.shuttle3d?.geometry?.boundsVertices;
+        const valid = Array.isArray(supplied)
+          && supplied.length === 12
+          && supplied.every((vertex) => Array.isArray(vertex) && vertex.length === 3 && vertex.every(Number.isFinite));
+        if (valid) return supplied.map((vertex) => vertex.map(Number));
+        return [
+          [-4.5, -1.45, -8.8],
+          [-4.5, 2.05, -8.8],
+          [-3.55, 3.15, -8.8],
+          [3.55, 3.15, -8.8],
+          [4.5, 2.05, -8.8],
+          [4.5, -1.45, -8.8],
+          [-4.5, -1.45, 6.8],
+          [-4.5, 2.05, 6.8],
+          [-3.55, 3.15, 6.8],
+          [3.55, 3.15, 6.8],
+          [4.5, 2.05, 6.8],
+          [4.5, -1.45, 6.8]
+        ];
+      }
+
+      function shuttle3dMovementConfig(scene) {
+        const supplied = scene?.metadata?.shuttle3d?.movement;
+        const movement = supplied && typeof supplied === "object" ? supplied : {};
+        const camera = shuttle3dCameraConfig(scene);
+        const suppliedStart = movement.start;
+        const start = Array.isArray(suppliedStart)
+          && suppliedStart.length === 3
+          && suppliedStart.every((value) => Number.isFinite(Number(value)))
+          ? suppliedStart.map(Number)
+          : camera.position.slice();
+        const suppliedBounds = movement.bounds && typeof movement.bounds === "object" ? movement.bounds : {};
+        const number = (value, fallback, minimum, maximum) => {
+          const parsed = Number(value);
+          if (!Number.isFinite(parsed)) return fallback;
+          return Math.min(maximum, Math.max(minimum, parsed));
+        };
+        const bounds = {
+          minX: number(suppliedBounds.minX, -3.92, -20, 20),
+          maxX: number(suppliedBounds.maxX, 3.92, -20, 20),
+          minZ: number(suppliedBounds.minZ, -7.72, -40, 40),
+          maxZ: number(suppliedBounds.maxZ, 5.82, -40, 40)
+        };
+        if (bounds.minX > bounds.maxX) [bounds.minX, bounds.maxX] = [bounds.maxX, bounds.minX];
+        if (bounds.minZ > bounds.maxZ) [bounds.minZ, bounds.maxZ] = [bounds.maxZ, bounds.minZ];
+        const colliders = Array.isArray(movement.colliders)
+          ? movement.colliders
+              .filter((collider) => collider && typeof collider === "object")
+              .map((collider, index) => ({
+                id: String(collider.id || `fixture-${index + 1}`),
+                minX: number(collider.minX, 0, -20, 20),
+                maxX: number(collider.maxX, 0, -20, 20),
+                minZ: number(collider.minZ, 0, -40, 40),
+                maxZ: number(collider.maxZ, 0, -40, 40)
+              }))
+              .map((collider) => ({
+                ...collider,
+                minX: Math.min(collider.minX, collider.maxX),
+                maxX: Math.max(collider.minX, collider.maxX),
+                minZ: Math.min(collider.minZ, collider.maxZ),
+                maxZ: Math.max(collider.minZ, collider.maxZ)
+              }))
+          : [];
+        return {
+          enabled: movement.enabled !== false,
+          start,
+          eyeHeight: number(movement.eyeHeight, start[1], -1.2, 2.8),
+          walkSpeed: number(movement.walkSpeed, 2.65, 0.25, 12),
+          sprintMultiplier: number(movement.sprintMultiplier, 1.7, 1, 4),
+          radius: number(movement.radius, 0.28, 0.08, 1.2),
+          bounds,
+          colliders
+        };
+      }
+
+      class Shuttle3dGeometryWriter {
+        constructor() {
+          this.values = [];
+        }
+
+        color(value, emissive = false) {
+          const rgb = sceneColorRgb(value);
+          return [rgb.r, rgb.g, rgb.b, emissive ? 1 : 0];
+        }
+
+        normal(a, b, c) {
+          return shuttle3dNormalizeVector(shuttle3dCross(shuttle3dSubtract(b, a), shuttle3dSubtract(c, a)));
+        }
+
+        vertex(position, normal, color) {
+          this.values.push(
+            position[0], position[1], position[2],
+            normal[0], normal[1], normal[2],
+            color[0], color[1], color[2], color[3]
+          );
+        }
+
+        triangle(a, b, c, color, normal = null) {
+          const faceNormal = normal || this.normal(a, b, c);
+          this.vertex(a, faceNormal, color);
+          this.vertex(b, faceNormal, color);
+          this.vertex(c, faceNormal, color);
+        }
+
+        quad(a, b, c, d, color, normal = null) {
+          const faceNormal = normal || this.normal(a, b, c);
+          this.triangle(a, b, c, color, faceNormal);
+          this.triangle(a, c, d, color, faceNormal);
+        }
+
+        box(minimum, maximum, color) {
+          const [x0, y0, z0] = minimum;
+          const [x1, y1, z1] = maximum;
+          const p000 = [x0, y0, z0];
+          const p100 = [x1, y0, z0];
+          const p010 = [x0, y1, z0];
+          const p110 = [x1, y1, z0];
+          const p001 = [x0, y0, z1];
+          const p101 = [x1, y0, z1];
+          const p011 = [x0, y1, z1];
+          const p111 = [x1, y1, z1];
+          this.quad(p001, p101, p111, p011, color);
+          this.quad(p100, p000, p010, p110, color);
+          this.quad(p000, p001, p011, p010, color);
+          this.quad(p101, p100, p110, p111, color);
+          this.quad(p010, p011, p111, p110, color);
+          this.quad(p000, p100, p101, p001, color);
+        }
+
+        consoleWedge(centerX, centerZ, width, depth, baseY, frontY, backY, color) {
+          const left = centerX - width / 2;
+          const right = centerX + width / 2;
+          const front = centerZ + depth / 2;
+          const back = centerZ - depth / 2;
+          const a = [left, baseY, front];
+          const b = [right, baseY, front];
+          const c = [right, baseY, back];
+          const d = [left, baseY, back];
+          const e = [left, frontY, front];
+          const f = [right, frontY, front];
+          const g = [right, backY, back];
+          const h = [left, backY, back];
+          this.quad(a, b, f, e, color);
+          this.quad(b, c, g, f, color);
+          this.quad(c, d, h, g, color);
+          this.quad(d, a, e, h, color);
+          this.quad(e, f, g, h, color);
+          this.quad(d, c, b, a, color);
+        }
+
+        ellipsoid(center, radii, segments, rings, color) {
+          for (let ring = 0; ring < rings; ring += 1) {
+            const v0 = ring / rings;
+            const v1 = (ring + 1) / rings;
+            const phi0 = -Math.PI / 2 + v0 * Math.PI;
+            const phi1 = -Math.PI / 2 + v1 * Math.PI;
+            for (let segment = 0; segment < segments; segment += 1) {
+              const u0 = segment / segments;
+              const u1 = (segment + 1) / segments;
+              const theta0 = u0 * Math.PI * 2;
+              const theta1 = u1 * Math.PI * 2;
+              const point = (theta, phi) => [
+                center[0] + Math.cos(phi) * Math.cos(theta) * radii[0],
+                center[1] + Math.sin(phi) * radii[1],
+                center[2] + Math.cos(phi) * Math.sin(theta) * radii[2]
+              ];
+              const p00 = point(theta0, phi0);
+              const p10 = point(theta1, phi0);
+              const p11 = point(theta1, phi1);
+              const p01 = point(theta0, phi1);
+              this.quad(p00, p10, p11, p01, color);
+            }
+          }
+        }
+
+        toFloat32Array() {
+          return new Float32Array(this.values);
+        }
+      }
+
+      class Shuttle3dVertexRenderer {
+        constructor(canvas, scene) {
+          this.canvas = canvas;
+          this.scene = scene;
+          this.gl = canvas.getContext("webgl", {
+            alpha: false,
+            antialias: true,
+            depth: true,
+            preserveDrawingBuffer: false,
+            premultipliedAlpha: false
+          }) || canvas.getContext("experimental-webgl", {
+            alpha: false,
+            antialias: true,
+            depth: true,
+            preserveDrawingBuffer: false,
+            premultipliedAlpha: false
+          });
+          if (!this.gl) throw new Error("WebGL is unavailable for the shuttle vertex renderer.");
+          this.disposed = false;
+          this.animationFrame = 0;
+          this.look = {yaw: 0, pitch: -2};
+          this.movement = shuttle3dMovementConfig(scene);
+          this.camera = this.movement.start.slice();
+          this.camera[1] = this.movement.eyeHeight;
+          this.movementKeys = new Set();
+          this.lastFrameTime = null;
+          this.onCameraMoved = null;
+          this.maxDpr = 2;
+          this.compile();
+          this.geometry = this.buildGeometry();
+          this.vertexCount = this.geometry.length / 10;
+          this.buffer = this.gl.createBuffer();
+          this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
+          this.gl.bufferData(this.gl.ARRAY_BUFFER, this.geometry, this.gl.STATIC_DRAW);
+          this.resizeObserver = typeof ResizeObserver === "function"
+            ? new ResizeObserver(() => this.resize())
+            : null;
+          this.resizeObserver?.observe?.(canvas);
+          canvas.addEventListener("webglcontextlost", this.handleContextLost = (event) => {
+            event.preventDefault();
+            this.dispose();
+          });
+          this.resize();
+          this.draw = this.draw.bind(this);
+          this.animationFrame = requestAnimationFrame(this.draw);
+        }
+
+        compile() {
+          const vertexSource = `
+            precision mediump float;
+            attribute vec3 a_position;
+            attribute vec3 a_normal;
+            attribute vec4 a_color;
+            uniform mat4 u_projection;
+            uniform mat4 u_view;
+            uniform vec3 u_camera;
+            uniform float u_time;
+            varying vec3 v_color;
+            varying float v_emissive;
+            varying float v_depth;
+
+            void main() {
+              vec3 lightDirection = normalize(vec3(-0.35, 0.82, 0.46));
+              float diffuse = 0.34 + 0.66 * abs(dot(normalize(a_normal), lightDirection));
+              float pulse = 0.88 + 0.12 * sin(u_time * 1.8 + a_position.x * 0.7 + a_position.z * 0.15);
+              float light = mix(diffuse, pulse, a_color.a);
+              v_color = a_color.rgb * light;
+              v_emissive = a_color.a;
+              v_depth = length(a_position - u_camera);
+              gl_Position = u_projection * u_view * vec4(a_position, 1.0);
+            }`;
+
+          const fragmentSource = `
+            precision mediump float;
+            varying vec3 v_color;
+            varying float v_emissive;
+            varying float v_depth;
+
+            void main() {
+              float fog = smoothstep(34.0, 105.0, v_depth) * (1.0 - v_emissive * 0.72);
+              vec3 fogColor = vec3(0.003, 0.008, 0.025);
+              vec3 color = mix(v_color, fogColor, fog * 0.78);
+              gl_FragColor = vec4(color, 1.0);
+            }`;
+
+          this.program = sceneWebglProgram(this.gl, vertexSource, fragmentSource);
+          this.locations = {
+            position: this.gl.getAttribLocation(this.program, "a_position"),
+            normal: this.gl.getAttribLocation(this.program, "a_normal"),
+            color: this.gl.getAttribLocation(this.program, "a_color"),
+            projection: this.gl.getUniformLocation(this.program, "u_projection"),
+            view: this.gl.getUniformLocation(this.program, "u_view"),
+            camera: this.gl.getUniformLocation(this.program, "u_camera"),
+            time: this.gl.getUniformLocation(this.program, "u_time")
+          };
+        }
+
+        buildGeometry() {
+          const builder = new Shuttle3dGeometryWriter();
+          const hull = shuttle3dBoundsVertices(this.scene);
+          const forward = hull.slice(0, 6);
+          const aft = hull.slice(6, 12);
+          const hullColors = [
+            builder.color("#243b55"),
+            builder.color("#172a46"),
+            builder.color("#1d3553"),
+            builder.color("#172a46"),
+            builder.color("#243b55"),
+            builder.color("#263f5b")
+          ];
+
+          for (let index = 0; index < 6; index += 1) {
+            const next = (index + 1) % 6;
+            builder.quad(forward[index], forward[next], aft[next], aft[index], hullColors[index]);
+          }
+
+          const frontZ = forward[0][2] + 0.02;
+          const frameZ0 = frontZ + 0.06;
+          const frameZ1 = frontZ + 0.26;
+          const bulkhead = builder.color("#33465f");
+          const trim = builder.color("#4f6f8f");
+          const glow = builder.color("#55c8ff", true);
+          builder.quad([-4.48, -1.44, frontZ], [4.48, -1.44, frontZ], [4.48, 0.0, frontZ], [-4.48, 0.0, frontZ], bulkhead);
+          builder.quad([-3.58, 2.32, frontZ], [3.58, 2.32, frontZ], [3.54, 3.12, frontZ], [-3.54, 3.12, frontZ], bulkhead);
+          builder.quad([-4.48, 0.0, frontZ], [-2.92, 0.0, frontZ], [-2.92, 2.32, frontZ], [-4.12, 2.32, frontZ], bulkhead);
+          builder.quad([2.92, 0.0, frontZ], [4.48, 0.0, frontZ], [4.12, 2.32, frontZ], [2.92, 2.32, frontZ], bulkhead);
+          builder.box([-3.08, -0.08, frameZ0], [-2.9, 2.4, frameZ1], trim);
+          builder.box([2.9, -0.08, frameZ0], [3.08, 2.4, frameZ1], trim);
+          builder.box([-3.08, 2.28, frameZ0], [3.08, 2.46, frameZ1], trim);
+          builder.box([-3.08, -0.14, frameZ0], [3.08, 0.04, frameZ1], trim);
+          builder.box([-2.82, 2.23, frameZ1], [2.82, 2.28, frameZ1 + 0.04], glow);
+
+          const aftZ = aft[0][2] - 0.02;
+          builder.quad(
+            [-4.48, -1.44, aftZ],
+            [4.48, -1.44, aftZ],
+            [3.54, 3.12, aftZ],
+            [-3.54, 3.12, aftZ],
+            builder.color("#27384f")
+          );
+          builder.box([-1.2, -1.28, aftZ - 0.24], [1.2, 1.55, aftZ - 0.04], builder.color("#43536a"));
+          builder.box([-0.05, -1.2, aftZ - 0.27], [0.05, 1.48, aftZ - 0.01], glow);
+          builder.box([-1.0, 1.28, aftZ - 0.28], [1.0, 1.42, aftZ - 0.01], builder.color("#70849b"));
+
+          [-7.0, -4.5, -2.0, 0.5, 3.0, 5.4].forEach((z) => {
+            builder.box([-4.44, -1.34, z - 0.08], [-4.25, 2.1, z + 0.08], trim);
+            builder.box([4.25, -1.34, z - 0.08], [4.44, 2.1, z + 0.08], trim);
+            builder.box([-3.48, 3.0, z - 0.08], [3.48, 3.14, z + 0.08], trim);
+          });
+
+          [-2.55, -1.28, 0, 1.28, 2.55].forEach((x) => {
+            builder.box([x - 0.025, -1.405, -8.15], [x + 0.025, -1.365, 6.1], builder.color("#52708c"));
+          });
+          builder.box([-0.42, -1.39, -8.15], [0.42, -1.34, 6.1], builder.color("#315875"));
+
+          const consoleColor = builder.color("#213a52");
+          const consoleGlow = builder.color("#24b7ef", true);
+          builder.consoleWedge(-1.65, -4.55, 2.55, 1.65, -1.25, -0.35, 0.55, consoleColor);
+          builder.consoleWedge(1.65, -4.55, 2.55, 1.65, -1.25, -0.35, 0.55, consoleColor);
+          builder.box([-2.6, 0.5, -5.45], [-0.7, 0.58, -5.15], consoleGlow);
+          builder.box([0.7, 0.5, -5.45], [2.6, 0.58, -5.15], consoleGlow);
+          builder.box([-4.22, -0.55, -3.8], [-3.75, 1.0, -1.2], consoleColor);
+          builder.box([3.75, -0.55, -3.8], [4.22, 1.0, -1.2], consoleColor);
+          builder.box([-4.18, 0.82, -3.65], [-3.72, 0.9, -1.35], consoleGlow);
+          builder.box([3.72, 0.82, -3.65], [4.18, 0.9, -1.35], consoleGlow);
+
+          const seatColor = builder.color("#35445b");
+          [-1.45, 1.45].forEach((x) => {
+            builder.box([x - 0.52, -1.25, -2.72], [x + 0.52, -0.82, -1.68], seatColor);
+            builder.box([x - 0.52, -0.82, -1.55], [x + 0.52, 0.6, -1.28], seatColor);
+            builder.box([x - 0.11, -1.38, -2.25], [x + 0.11, -1.05, -1.9], trim);
+          });
+
+          const starColor = builder.color("#d9f4ff", true);
+          let seed = 73129;
+          const random = () => {
+            seed = (seed * 1664525 + 1013904223) >>> 0;
+            return seed / 4294967296;
+          };
+          for (let index = 0; index < 220; index += 1) {
+            const z = -22 - random() * 88;
+            const spread = Math.abs(z) * 0.43;
+            const x = (random() - 0.5) * spread;
+            const y = (random() - 0.5) * spread * 0.55 + 0.8;
+            const size = 0.018 + random() * 0.055;
+            builder.quad(
+              [x - size, y - size, z],
+              [x + size, y - size, z],
+              [x + size, y + size, z],
+              [x - size, y + size, z],
+              starColor,
+              [0, 0, 1]
+            );
+          }
+
+          const shipHull = builder.color("#aebdca");
+          const shipDark = builder.color("#66798e");
+          const shipGlow = builder.color("#4da6ff", true);
+          builder.ellipsoid([0.85, 1.0, -36.5], [3.35, 0.48, 1.75], 18, 8, shipHull);
+          builder.ellipsoid([0.85, 0.08, -35.2], [1.15, 0.62, 1.65], 14, 7, shipDark);
+          builder.box([0.55, 0.35, -36.0], [1.15, 0.9, -34.7], shipHull);
+          builder.box([-2.25, -0.5, -35.2], [-1.78, -0.12, -31.7], shipDark);
+          builder.box([3.48, -0.5, -35.2], [3.95, -0.12, -31.7], shipDark);
+          builder.box([-2.3, -0.46, -32.0], [-1.73, -0.14, -31.55], shipGlow);
+          builder.box([3.43, -0.46, -32.0], [4.0, -0.14, -31.55], shipGlow);
+          builder.box([-1.88, -0.34, -34.7], [3.58, -0.22, -34.45], shipHull);
+
+          return builder.toFloat32Array();
+        }
+
+        resize() {
+          if (this.disposed) return;
+          const width = Math.max(1, this.canvas.clientWidth || this.canvas.parentElement?.clientWidth || 960);
+          const height = Math.max(1, this.canvas.clientHeight || this.canvas.parentElement?.clientHeight || 540);
+          const dpr = Math.min(this.maxDpr, Math.max(1, window.devicePixelRatio || 1));
+          const pixelWidth = Math.round(width * dpr);
+          const pixelHeight = Math.round(height * dpr);
+          if (this.canvas.width !== pixelWidth || this.canvas.height !== pixelHeight) {
+            this.canvas.width = pixelWidth;
+            this.canvas.height = pixelHeight;
+          }
+          this.gl.viewport(0, 0, pixelWidth, pixelHeight);
+          this.aspect = pixelWidth / Math.max(1, pixelHeight);
+        }
+
+        setLook(yaw, pitch) {
+          this.look = {yaw, pitch};
+        }
+
+        setMovementKey(code, active) {
+          if (!this.movement.enabled) return;
+          if (active) this.movementKeys.add(code);
+          else this.movementKeys.delete(code);
+        }
+
+        clearMovementKeys() {
+          this.movementKeys.clear();
+        }
+
+        canOccupy(x, z) {
+          const {bounds, radius, colliders} = this.movement;
+          if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
+          return !colliders.some((collider) => (
+            x > collider.minX - radius
+            && x < collider.maxX + radius
+            && z > collider.minZ - radius
+            && z < collider.maxZ + radius
+          ));
+        }
+
+        moveCamera(deltaX, deltaZ) {
+          if (!this.movement.enabled) return;
+          const nextX = this.camera[0] + deltaX;
+          const nextZ = this.camera[2] + deltaZ;
+          let changed = false;
+          if (this.canOccupy(nextX, this.camera[2])) {
+            this.camera[0] = nextX;
+            changed = true;
+          }
+          if (this.canOccupy(this.camera[0], nextZ)) {
+            this.camera[2] = nextZ;
+            changed = true;
+          }
+          if (changed && typeof this.onCameraMoved === "function") {
+            this.onCameraMoved(this.camera.slice());
+          }
+        }
+
+        updateMovement(deltaSeconds) {
+          if (!this.movement.enabled || !this.movementKeys.size || deltaSeconds <= 0) return;
+          let forwardInput = 0;
+          let strafeInput = 0;
+          if (this.movementKeys.has("KeyW")) forwardInput += 1;
+          if (this.movementKeys.has("KeyS")) forwardInput -= 1;
+          if (this.movementKeys.has("KeyD")) strafeInput += 1;
+          if (this.movementKeys.has("KeyA")) strafeInput -= 1;
+          if (!forwardInput && !strafeInput) return;
+          const inputLength = Math.hypot(forwardInput, strafeInput) || 1;
+          forwardInput /= inputLength;
+          strafeInput /= inputLength;
+          const yaw = this.look.yaw * Math.PI / 180;
+          const forwardX = Math.sin(yaw);
+          const forwardZ = -Math.cos(yaw);
+          const rightX = Math.cos(yaw);
+          const rightZ = Math.sin(yaw);
+          const sprinting = this.movementKeys.has("ShiftLeft") || this.movementKeys.has("ShiftRight");
+          const speed = this.movement.walkSpeed * (sprinting ? this.movement.sprintMultiplier : 1);
+          const distance = speed * Math.min(0.05, deltaSeconds);
+          this.moveCamera(
+            (forwardX * forwardInput + rightX * strafeInput) * distance,
+            (forwardZ * forwardInput + rightZ * strafeInput) * distance
+          );
+        }
+
+        draw(now = 0) {
+          if (this.disposed) return;
+          const frameTime = Number.isFinite(now) ? now : 0;
+          const deltaSeconds = this.lastFrameTime === null ? 0 : Math.max(0, (frameTime - this.lastFrameTime) / 1000);
+          this.lastFrameTime = frameTime;
+          this.updateMovement(deltaSeconds);
+          this.resize();
+          const gl = this.gl;
+          const yaw = this.look.yaw * Math.PI / 180;
+          const pitch = this.look.pitch * Math.PI / 180;
+          const direction = [
+            Math.sin(yaw) * Math.cos(pitch),
+            Math.sin(pitch),
+            -Math.cos(yaw) * Math.cos(pitch)
+          ];
+          const target = [
+            this.camera[0] + direction[0],
+            this.camera[1] + direction[1],
+            this.camera[2] + direction[2]
+          ];
+          const projection = shuttle3dPerspectiveMatrix(66 * Math.PI / 180, this.aspect || 16 / 9, 0.08, 140);
+          const view = shuttle3dLookAtMatrix(this.camera, target, [0, 1, 0]);
+
+          gl.clearColor(0.002, 0.006, 0.02, 1);
+          gl.clearDepth(1);
+          gl.enable(gl.DEPTH_TEST);
+          gl.depthFunc(gl.LEQUAL);
+          gl.disable(gl.CULL_FACE);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          gl.useProgram(this.program);
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+
+          const stride = 10 * Float32Array.BYTES_PER_ELEMENT;
+          gl.enableVertexAttribArray(this.locations.position);
+          gl.vertexAttribPointer(this.locations.position, 3, gl.FLOAT, false, stride, 0);
+          gl.enableVertexAttribArray(this.locations.normal);
+          gl.vertexAttribPointer(this.locations.normal, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
+          gl.enableVertexAttribArray(this.locations.color);
+          gl.vertexAttribPointer(this.locations.color, 4, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT);
+          gl.uniformMatrix4fv(this.locations.projection, false, projection);
+          gl.uniformMatrix4fv(this.locations.view, false, view);
+          gl.uniform3fv(this.locations.camera, new Float32Array(this.camera));
+          gl.uniform1f(this.locations.time, now / 1000);
+          gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+          this.animationFrame = requestAnimationFrame(this.draw);
+        }
+
+        dispose() {
+          if (this.disposed) return;
+          this.disposed = true;
+          cancelAnimationFrame(this.animationFrame);
+          this.resizeObserver?.disconnect?.();
+          this.clearMovementKeys();
+          this.canvas.removeEventListener("webglcontextlost", this.handleContextLost);
+          if (this.buffer) this.gl.deleteBuffer(this.buffer);
+          if (this.program) this.gl.deleteProgram(this.program);
+        }
+      }
+
       function setShuttle3dLook(container, yaw, pitch, config = shuttle3dCameraConfig(null)) {
-        const nextYaw = clampShuttle3dLook(yaw, config.yawLimit || 34);
-        const nextPitch = clampShuttle3dLook(pitch, config.pitchLimit || 18);
+        const yawLimit = config.yawLimit || 180;
+        const nextYaw = yawLimit >= 179 ? normalizeShuttle3dYaw(yaw) : clampShuttle3dLook(yaw, yawLimit);
+        const nextPitch = clampShuttle3dLook(pitch, config.pitchLimit || 28);
         container.__mainComputerShuttle3dLook = {yaw: nextYaw, pitch: nextPitch};
         container.style.setProperty("--shuttle-look-yaw", `${nextYaw.toFixed(2)}deg`);
         container.style.setProperty("--shuttle-look-pitch", `${nextPitch.toFixed(2)}deg`);
+        container.__mainComputerShuttle3dRenderer?.setLook?.(nextYaw, nextPitch);
         const shell = container.querySelector(".scene-shuttle3d");
         if (shell) {
           shell.dataset.lookYaw = nextYaw.toFixed(1);
@@ -1644,20 +2384,34 @@
 
       function disposeShuttle3dLookaround(container) {
         const handler = container?.__mainComputerShuttle3dLookHandler;
-        if (!handler) return;
-        container.removeEventListener("pointerdown", handler.pointerDown);
-        container.removeEventListener("keydown", handler.keyDown);
-        window.removeEventListener("pointermove", handler.pointerMove);
-        window.removeEventListener("pointerup", handler.pointerUp);
-        container.__mainComputerShuttle3dLookHandler = null;
-        delete container.dataset.shuttle3dLookaround;
+        if (handler) {
+          container.removeEventListener("pointerdown", handler.pointerDown);
+          container.removeEventListener("keydown", handler.keyDown);
+          container.removeEventListener("keyup", handler.keyUp);
+          container.removeEventListener("blur", handler.blur);
+          window.removeEventListener("pointermove", handler.pointerMove);
+          window.removeEventListener("pointerup", handler.pointerUp);
+          window.removeEventListener("blur", handler.blur);
+          container.__mainComputerShuttle3dLookHandler = null;
+        }
+        if (container?.__mainComputerShuttle3dRenderer) {
+          container.__mainComputerShuttle3dRenderer.dispose();
+          container.__mainComputerShuttle3dRenderer = null;
+        }
+        if (container?.dataset) {
+          delete container.dataset.shuttle3dLookaround;
+          delete container.dataset.shuttle3dMovement;
+          delete container.dataset.shuttle3dDragging;
+        }
       }
 
       function bindShuttle3dLookaround(container, scene) {
         disposeShuttle3dLookaround(container);
         const config = shuttle3dCameraConfig(scene);
+        const movementCodes = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight"]);
         setShuttle3dLook(container, config.yaw, config.pitch, config);
         container.dataset.shuttle3dLookaround = "enabled";
+        container.dataset.shuttle3dMovement = "wasd";
         container.tabIndex = container.tabIndex >= 0 ? container.tabIndex : 0;
         let dragging = false;
         let startX = 0;
@@ -1665,8 +2419,8 @@
         let startYaw = config.yaw;
         let startPitch = config.pitch;
         const applyDelta = (dx, dy) => {
-          const nextYaw = startYaw + dx * 0.12;
-          const nextPitch = startPitch - dy * 0.1;
+          const nextYaw = startYaw + dx * 0.14;
+          const nextPitch = startPitch - dy * 0.11;
           setShuttle3dLook(container, nextYaw, nextPitch, config);
         };
         const pointerDown = (event) => {
@@ -1693,6 +2447,11 @@
           delete container.dataset.shuttle3dDragging;
         };
         const keyDown = (event) => {
+          if (movementCodes.has(event.code)) {
+            event.preventDefault();
+            container.__mainComputerShuttle3dRenderer?.setMovementKey?.(event.code, true);
+            return;
+          }
           const current = container.__mainComputerShuttle3dLook || {yaw: config.yaw, pitch: config.pitch};
           let yaw = current.yaw;
           let pitch = current.pitch;
@@ -1704,12 +2463,25 @@
           event.preventDefault();
           setShuttle3dLook(container, yaw, pitch, config);
         };
-        const handler = {pointerDown, pointerMove, pointerUp, keyDown};
+        const keyUp = (event) => {
+          if (!movementCodes.has(event.code)) return;
+          event.preventDefault();
+          container.__mainComputerShuttle3dRenderer?.setMovementKey?.(event.code, false);
+        };
+        const blur = () => {
+          dragging = false;
+          delete container.dataset.shuttle3dDragging;
+          container.__mainComputerShuttle3dRenderer?.clearMovementKeys?.();
+        };
+        const handler = {pointerDown, pointerMove, pointerUp, keyDown, keyUp, blur};
         container.__mainComputerShuttle3dLookHandler = handler;
         container.addEventListener("pointerdown", pointerDown);
         container.addEventListener("keydown", keyDown);
+        container.addEventListener("keyup", keyUp);
+        container.addEventListener("blur", blur);
         window.addEventListener("pointermove", pointerMove);
         window.addEventListener("pointerup", pointerUp);
+        window.addEventListener("blur", blur);
       }
 
       function shuttle3dObjectLabel(scene, objectId, fallback) {
@@ -1717,104 +2489,60 @@
         return sceneObjectLabel(object) || fallback;
       }
 
-      function shuttle3dPanel(parent, className, label, hidden = false) {
-        const panel = document.createElement("div");
-        panel.className = className;
-        if (label) {
-          panel.setAttribute("aria-label", label);
-          if (!hidden) {
-            const caption = document.createElement("span");
-            caption.className = "scene-shuttle3d-label";
-            caption.textContent = label;
-            panel.append(caption);
-          }
-        }
-        parent.append(panel);
-        return panel;
-      }
-
       function renderShuttle3dScene(container, scene, options = {}) {
         const shuttle = scene?.metadata?.shuttle3d && typeof scene.metadata.shuttle3d === "object" ? scene.metadata.shuttle3d : {};
-        container.dataset.sceneState = "shuttle3d-lookaround";
-        container.dataset.shuttle3d = "simple-css-3d";
+        container.dataset.sceneState = "shuttle3d-first-person";
+        container.dataset.shuttle3d = "webgl-vertex-mesh";
         container.dataset.sceneLookaround = "enabled";
 
         const shell = document.createElement("div");
         shell.className = "scene-shuttle3d";
         shell.setAttribute("role", "application");
-        shell.setAttribute("aria-label", shuttle.controlsHint || "3D shuttlecraft interior. Drag or use arrow keys to look around.");
+        shell.setAttribute("aria-label", shuttle.controlsHint || "Vertex-built 3D shuttlecraft interior. Click to focus, use W A S D to walk, and drag or use arrow keys to look.");
         shell.tabIndex = 0;
 
-        const camera = document.createElement("div");
-        camera.className = "scene-shuttle3d-camera";
-
-        const space = document.createElement("div");
-        space.className = "scene-shuttle3d-space";
-        space.setAttribute("aria-hidden", "true");
-
-        const viewport = document.createElement("div");
-        viewport.className = "scene-shuttle3d-viewport";
-        viewport.dataset.sceneObjectId = String(shuttle.viewport || "forward-viewer");
-        viewport.setAttribute("role", "img");
-        viewport.setAttribute("aria-label", `${shuttle3dObjectLabel(scene, String(shuttle.viewport || "forward-viewer"), "Forward viewport")} showing stars and the mother ship`);
-
-        const stars = document.createElement("div");
-        stars.className = "scene-shuttle3d-starfield";
-        stars.dataset.sceneObjectId = String(shuttle.starfield || "viewport-starfield");
-        stars.setAttribute("aria-hidden", "true");
-
-        const motherShip = document.createElement("div");
-        motherShip.className = "scene-shuttle3d-mother-ship";
-        motherShip.dataset.sceneObjectId = String(shuttle.motherShip || "mother-ship");
-        motherShip.setAttribute("aria-label", shuttle3dObjectLabel(scene, String(shuttle.motherShip || "mother-ship"), "Mother Ship"));
-        motherShip.innerHTML = `
-          <span class="scene-shuttle3d-ship-saucer"></span>
-          <span class="scene-shuttle3d-ship-neck"></span>
-          <span class="scene-shuttle3d-ship-body"></span>
-          <span class="scene-shuttle3d-ship-nacelle scene-shuttle3d-ship-nacelle--port"></span>
-          <span class="scene-shuttle3d-ship-nacelle scene-shuttle3d-ship-nacelle--starboard"></span>
-        `;
-
-        const viewportFrame = document.createElement("div");
-        viewportFrame.className = "scene-shuttle3d-viewport-frame";
-        viewportFrame.setAttribute("aria-hidden", "true");
-        viewport.append(stars, motherShip, viewportFrame);
-
-        const forwardWall = shuttle3dPanel(camera, "scene-shuttle3d-wall scene-shuttle3d-wall--forward", "Forward bulkhead", true);
-        forwardWall.append(viewport);
-        shuttle3dPanel(camera, "scene-shuttle3d-wall scene-shuttle3d-wall--port", "Port cabin wall", true);
-        shuttle3dPanel(camera, "scene-shuttle3d-wall scene-shuttle3d-wall--starboard", "Starboard cabin wall", true);
-        shuttle3dPanel(camera, "scene-shuttle3d-ceiling", "Overhead hull ribs", true);
-        shuttle3dPanel(camera, "scene-shuttle3d-floor", shuttle3dObjectLabel(scene, "shuttle-floor", "3D Shuttle Deck"));
-
-        const helm = shuttle3dPanel(camera, "scene-shuttle3d-console scene-shuttle3d-console--helm", shuttle3dObjectLabel(scene, "nav-console", "Helm Console"));
-        const science = shuttle3dPanel(camera, "scene-shuttle3d-console scene-shuttle3d-console--science", shuttle3dObjectLabel(scene, "science-console", "Science Console"));
-        const port = shuttle3dPanel(camera, "scene-shuttle3d-console scene-shuttle3d-console--port", shuttle3dObjectLabel(scene, "port-side-console", "Port Systems"));
-        const starboard = shuttle3dPanel(camera, "scene-shuttle3d-console scene-shuttle3d-console--starboard", shuttle3dObjectLabel(scene, "starboard-side-console", "Starboard Ops"));
-        [helm, science, port, starboard].forEach((consolePanel) => {
-          const glow = document.createElement("span");
-          glow.className = "scene-shuttle3d-console-glow";
-          consolePanel.append(glow);
-        });
-
-        shuttle3dPanel(camera, "scene-shuttle3d-seat scene-shuttle3d-seat--helm", shuttle3dObjectLabel(scene, "helm-seat", "Helm Seat"), true);
-        shuttle3dPanel(camera, "scene-shuttle3d-seat scene-shuttle3d-seat--ops", shuttle3dObjectLabel(scene, "ops-seat", "Ops Seat"), true);
-        shuttle3dPanel(camera, "scene-shuttle3d-hatch", shuttle3dObjectLabel(scene, "aft-hatch", "Aft Hatch"));
-
-        const player = document.createElement("div");
-        player.className = "scene-shuttle3d-player-anchor";
-        player.dataset.sceneObjectId = String(shuttle.playerAnchor || "hero-sprite");
-        player.setAttribute("aria-label", shuttle3dObjectLabel(scene, String(shuttle.playerAnchor || "hero-sprite"), "Player Cadet"));
-        player.textContent = "Player Cadet";
-        camera.append(player);
+        const canvas = document.createElement("canvas");
+        canvas.className = "scene-shuttle3d-canvas";
+        canvas.dataset.sceneObjectId = String(shuttle.viewport || "forward-viewer");
+        canvas.setAttribute("role", "img");
+        canvas.setAttribute(
+          "aria-label",
+          `${shuttle3dObjectLabel(scene, "shuttle-floor", "Shuttle interior")} rendered from real hull vertices, with stars and ${shuttle3dObjectLabel(scene, String(shuttle.motherShip || "mother-ship"), "the mother ship")} beyond the forward viewport.`
+        );
 
         const hint = document.createElement("div");
         hint.className = "scene-shuttle3d-look-hint";
-        hint.textContent = shuttle.controlsHint || "Drag to look around. The viewport shows stars and the mother ship.";
+        hint.textContent = shuttle.controlsHint || "Click to focus • Drag or arrows to look • W/A/S/D to walk • Shift to sprint";
 
-        shell.append(space, camera, hint);
+        const status = document.createElement("div");
+        status.className = "scene-shuttle3d-mesh-status";
+        status.textContent = "Building shuttle hull vertices…";
+
+        shell.append(canvas, hint, status);
         container.append(shell);
         bindShuttle3dLookaround(container, scene);
+
+        try {
+          const renderer = new Shuttle3dVertexRenderer(canvas, scene);
+          container.__mainComputerShuttle3dRenderer = renderer;
+          const current = container.__mainComputerShuttle3dLook || shuttle3dCameraConfig(scene);
+          renderer.setLook(current.yaw, current.pitch);
+          canvas.dataset.shuttleVertexCount = String(renderer.vertexCount);
+          const updateMovementStatus = (camera) => {
+            status.textContent = `${renderer.vertexCount.toLocaleString()} vertices • x ${camera[0].toFixed(1)} • z ${camera[2].toFixed(1)} • WASD`;
+            canvas.dataset.cameraX = camera[0].toFixed(3);
+            canvas.dataset.cameraZ = camera[2].toFixed(3);
+          };
+          renderer.onCameraMoved = updateMovementStatus;
+          updateMovementStatus(renderer.camera);
+        } catch (error) {
+          shell.dataset.rendererError = "true";
+          status.textContent = "WebGL shuttle renderer unavailable";
+          const fallback = document.createElement("div");
+          fallback.className = "scene-shuttle3d-renderer-error";
+          fallback.textContent = error instanceof Error ? error.message : "Unable to initialize the shuttle vertex renderer.";
+          shell.append(fallback);
+        }
         return shell;
       }
 

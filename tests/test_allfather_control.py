@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -145,6 +146,7 @@ def test_cli_bootstrap_heads_dry_run_uses_private_state_without_topology(tmp_pat
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
+    assert "[allfather add-node] start: network=testnet host=coolify-a slot=A" in result.stderr
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["operation"] == "bootstrap-heads"
@@ -365,6 +367,7 @@ def test_discover_dry_run_renders_private_probe_payloads(tmp_path: Path) -> None
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
+    assert "[allfather add-node] start: network=testnet host=coolify-a slot=A" in result.stderr
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["operator_transport"] == "coolify-patch-probe"
@@ -809,19 +812,19 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "entrypoint: []" not in payload["compose"]
     assert "image: \"main-computer-allfather-super-testneta-super1:latest\"" not in payload["compose"]
     assert "pull access denied" not in payload["compose"]
-    assert "FROM hyperledger/besu:latest" in payload["compose"]
+    assert f"FROM {control.DEFAULT_SUPER_IMAGE}" in payload["compose"]
     assert "$$arch" not in payload["compose"]
     assert "$${FDB_VERSION}" not in payload["compose"]
     assert "$${deb_arch}" not in payload["compose"]
     assert "$${FDB_PYTHON_VERSION}" not in payload["compose"]
-    assert "foundationdb-server_7.4.6-1_amd64.deb" in payload["compose"]
-    assert "foundationdb-server_7.4.6-1_arm64.deb" in payload["compose"]
-    assert "web3==6.20.4" in payload["compose"]
+    assert "foundationdb-server_7.4.6-1_amd64.deb" not in payload["compose"]
+    assert "foundationdb-server_7.4.6-1_arm64.deb" not in payload["compose"]
+    assert "web3==6.20.4" not in payload["compose"]
     assert "py-solc-x" not in payload["compose"]
     assert "solcx.install_solc" not in payload["compose"]
-    assert "github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux" in payload["compose"]
-    assert "solc --version" in payload["compose"]
-    assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" in payload["compose"]
+    assert "github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux" not in payload["compose"]
+    assert "solc --version" not in payload["compose"]
+    assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" not in payload["compose"]
     assert "test -x /usr/bin/fdbserver" not in payload["compose"]
     assert "MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super" in payload["compose"]
     assert "MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets" in payload["compose"]
@@ -834,6 +837,37 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "MC_ALLFATHER_COMPONENTS" in payload["compose"]
     assert "MC_ALLFATHER_IMAGE_ENTRYPOINT" in payload["compose"]
     assert "traefik.http.routers" not in payload["compose"]
+
+
+def test_add_node_quiet_suppresses_operator_progress_logs(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/allfather_control.py",
+            "add-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "0",
+            "--quiet",
+        ],
+        cwd=control.REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "[allfather add-node]" not in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["service_name"] == "testneta-super1"
 
 
 def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
@@ -895,12 +929,12 @@ def test_super_dockerfile_uses_diagnostic_wrapper_entrypoint() -> None:
     assert "<<'PY'" not in dockerfile
     assert "allfather-super-entrypoint" in dockerfile
     assert "MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint" in dockerfile
-    assert "python3-venv" in dockerfile
-    assert "build-essential" in dockerfile
-    assert "python3-dev" in dockerfile
+    assert "python3-venv" not in dockerfile
+    assert "build-essential" not in dockerfile
+    assert "python3-dev" not in dockerfile
     assert "python -m pip install --no-cache-dir --break-system-packages" not in dockerfile
-    assert "python3 -m venv /opt/allfather-super-venv" in dockerfile
-    assert "/opt/allfather-super-venv/bin/python -m pip install --no-cache-dir" in dockerfile
+    assert "python3 -m venv /opt/allfather-super-venv" not in dockerfile
+    assert "/opt/allfather-super-venv/bin/python -m pip install --no-cache-dir" not in dockerfile
     assert 'ENTRYPOINT ["/opt/allfather-super-venv/bin/python", "-u", "/usr/local/bin/allfather-super-entrypoint.py"]' in dockerfile
     assert 'ENTRYPOINT ["python", "-u", "/usr/local/bin/allfather-super-guard.py"]' not in dockerfile
 
@@ -914,6 +948,54 @@ def test_super_dockerfile_payload_writer_avoids_long_heredoc_lines() -> None:
     assert "rm -f /tmp/allfather-payload-0.b64; \\" in dockerfile
     assert "rm -f /tmp/allfather-payload-0.b64 \\\n    {" not in dockerfile
     assert max(len(line) for line in dockerfile.splitlines()) < 300
+
+
+def test_super_base_dockerfile_contains_heavy_dependency_layer() -> None:
+    dockerfile = control.super_base_dockerfile_inline()
+
+    assert "FROM hyperledger/besu:latest" in dockerfile
+    assert "build-essential" in dockerfile
+    assert "python3-dev" in dockerfile
+    assert "foundationdb-server_7.4.6-1_amd64.deb" in dockerfile
+    assert "web3==6.20.4" in dockerfile
+    assert "solc-static-linux" in dockerfile
+    assert "py-solc-x" not in dockerfile
+    assert "solcx.install_solc" not in dockerfile
+
+
+def test_super_base_builder_compose_is_managed_coolify_service() -> None:
+    head = control.HeadNode(
+        head_id="allfather-head-coolify-a",
+        service_name="allfather-head-coolify-a",
+        coolify_server="coolify-a",
+        slot="A",
+        guard_container_port=41414,
+        guard_host_port=41400,
+        guard_publish_host="10.116.0.3",
+        guard_url="http://10.116.0.3:41400",
+        state_root="/data/main-computer/allfather/control-plane/coolify-a",
+        peers=(),
+    )
+
+    compose = control.render_super_base_builder_compose(head)
+
+    assert "allfather-super-base-builder-coolify-a" in compose
+    assert "image: \"docker:27-cli\"" in compose
+    assert "/var/run/docker.sock:/var/run/docker.sock" in compose
+    assert "docker build -t \"$$TARGET_IMAGE\"" in compose
+    assert "10.116.0.3:41700:41616/tcp" in compose
+    assert "phase=building target=$$TARGET_IMAGE" in compose
+    assert "health_ok=true" in compose
+    assert "if [ \"$$phase\" = \"failed\" ]; then" in compose
+    assert "apk add --no-cache busybox-extras" in compose
+    assert "httpd -f -p \"0.0.0.0:$$STATUS_PORT\"" in compose
+    assert 'grep -q \'\\"ok\\": true\'' in compose
+    assert "$$ok" in compose
+    assert "$${3:-}" in compose
+    assert "$$(date -u" in compose
+    assert not re.search(r"(?<!\\$)\\$(?!\\$)", compose)
+    assert "ssh root@" not in compose.lower()
+    assert "scp " not in compose.lower()
 
 
 def test_super_guard_status_helper_accepts_component_name_field(
@@ -970,17 +1052,18 @@ def test_super_compose_is_build_only_and_escapes_inline_dockerfile(tmp_path: Pat
     assert "$$arch" not in compose
     assert "$${deb_arch}" not in compose
     assert "$${FDB_PYTHON_VERSION}" not in compose
-    assert "foundationdb-clients_7.4.6-1_amd64.deb" in compose
-    assert "foundationdb-server_7.4.6-1_arm64.deb" in compose
-    assert "web3==6.20.4" in compose
+    assert f"FROM {control.DEFAULT_SUPER_IMAGE}" in compose
+    assert "foundationdb-clients_7.4.6-1_amd64.deb" not in compose
+    assert "foundationdb-server_7.4.6-1_arm64.deb" not in compose
+    assert "web3==6.20.4" not in compose
     assert "py-solc-x" not in compose
     assert "solcx.install_solc" not in compose
-    assert "github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux" in compose
-    assert "solc --version" in compose
-    assert "python3-venv" in compose
-    assert "python3 -m venv /opt/allfather-super-venv" in compose
+    assert "github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux" not in compose
+    assert "solc --version" not in compose
+    assert "python3-venv" not in compose
+    assert "python3 -m venv /opt/allfather-super-venv" not in compose
     assert "python -m pip install --no-cache-dir --break-system-packages" not in compose
-    assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" in compose
+    assert "ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver" not in compose
     assert "allfather-super-entrypoint.py" in compose
     assert "MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint" in compose
 
@@ -993,6 +1076,51 @@ def test_super_guard_uses_static_solc_standard_json() -> None:
     assert "[\"solc\", \"--standard-json\"]" in script
     assert "capture_output=True" in script
     assert "solc binary is missing" in script
+
+
+def test_super_compose_maps_besu_p2p_to_advertised_host_port_for_joiners(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "add-node",
+            "testnet",
+            "--host",
+            "A",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+            "--include-compose",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.add_node(plan, args)
+    manifest = payload["manifest"]
+    compose = payload["compose"]
+
+    assert payload["ordinal"] == 2
+    assert manifest["ports"]["p2p_host"] == 45301
+    assert manifest["foundationdb"]["existing_nodes"][0]["p2p_endpoint"] == "10.116.0.3:45300"
+    assert manifest["foundationdb"]["existing_nodes"][0]["p2p_host_port"] == 45300
+    assert '10.116.0.3:45301:45301/tcp' in compose
+    assert '10.116.0.3:45301:45301/udp' in compose
+    assert '10.116.0.3:45301:30303/tcp' not in compose
+
+
+def test_super_guard_rewrites_qbft_bootnodes_to_inventory_p2p_port() -> None:
+    script = control.super_server_command_script()
+
+    assert "def advertised_p2p_port" in script
+    assert "def rewrite_enode_endpoint" in script
+    assert "normalize_bootnodes_for_inventory_node" in script
+    assert "refresh_existing_joiner_bootnodes" in script
+    assert 'bootnodes.append(rewrite_enode_endpoint(enode))' in script
+    assert 'normalized_bootnodes = normalize_bootnodes_for_inventory_node' in script
+    assert 'refresh_existing_joiner_bootnodes(config_dir)' in script
+    assert '"p2p_host": advertised_p2p_host()' in script
+    assert 'f"--p2p-port={p2p_port}"' in script
 
 
 def test_add_node_publish_routes_labels_only_hub_and_rpc(tmp_path: Path) -> None:
@@ -1774,6 +1902,10 @@ def test_add_node_parse_defaults_wait_for_remote_readiness(tmp_path: Path) -> No
     assert args.preflight_stable_s == control.DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S
     assert args.deploy_wait_s == control.DEFAULT_ADD_NODE_READY_WAIT_S
     assert args.deploy_poll_s == control.DEFAULT_ADD_NODE_READY_POLL_S
+    assert args.super_image == control.DEFAULT_SUPER_IMAGE
+    assert args.super_base_source_image == control.DEFAULT_SUPER_BASE_SOURCE_IMAGE
+    assert args.super_base_wait_s == control.DEFAULT_ADD_NODE_READY_WAIT_S
+    assert args.no_super_base_ensure is False
 
 
 def test_add_node_wait_uses_private_probe_ready_signal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

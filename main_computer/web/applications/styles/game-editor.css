@@ -1484,11 +1484,7 @@
 
 .scene-surface[data-scene-projection="shuttle-3d"],
 #webgl-demo.project-game-surface[data-scene-projection="shuttle-3d"] {
-  background:
-    radial-gradient(circle at 50% 18%, rgba(37, 99, 235, 0.18), transparent 34%),
-    linear-gradient(180deg, #020617, #000);
-  perspective: 720px;
-  transform-style: preserve-3d;
+  background: #020617;
   cursor: grab;
 }
 
@@ -1502,382 +1498,70 @@
   overflow: hidden;
   color: #dbeafe;
   outline: none;
-  transform-style: preserve-3d;
   user-select: none;
+  background: #020617;
+  contain: layout paint;
 }
 
-.scene-shuttle3d-space {
-  position: absolute;
-  inset: -12%;
-  background:
-    radial-gradient(circle at 20% 26%, rgba(255, 255, 255, 0.9) 0 1px, transparent 2px),
-    radial-gradient(circle at 74% 18%, rgba(219, 234, 254, 0.82) 0 1px, transparent 2px),
-    radial-gradient(circle at 62% 66%, rgba(191, 219, 254, 0.72) 0 1px, transparent 2px),
-    radial-gradient(circle at 34% 72%, rgba(255, 255, 255, 0.75) 0 1px, transparent 2px),
-    radial-gradient(circle at 84% 52%, rgba(125, 211, 252, 0.58) 0 1px, transparent 2px),
-    linear-gradient(180deg, rgba(2, 6, 23, 0.22), rgba(2, 6, 23, 0.96));
-  background-size: 260px 180px, 340px 220px, 300px 240px, 420px 260px, 280px 220px, auto;
-  opacity: 0.62;
-  animation: scene-shuttle3d-star-drift 28s linear infinite;
-}
-
-.scene-shuttle3d-camera {
+.scene-shuttle3d-canvas {
   position: absolute;
   inset: 0;
-  transform-style: preserve-3d;
-  transform:
-    rotateX(var(--shuttle-look-pitch, -2deg))
-    rotateY(var(--shuttle-look-yaw, 0deg));
-  transform-origin: 50% 58%;
-  transition: transform 90ms linear;
-}
-
-.scene-shuttle3d-wall,
-.scene-shuttle3d-floor,
-.scene-shuttle3d-ceiling,
-.scene-shuttle3d-console,
-.scene-shuttle3d-seat,
-.scene-shuttle3d-hatch,
-.scene-shuttle3d-player-anchor {
-  position: absolute;
-  box-sizing: border-box;
-  transform-style: preserve-3d;
-}
-
-.scene-shuttle3d-wall--forward {
-  left: 8%;
-  top: 4%;
-  width: 84%;
-  height: 52%;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 28px;
-  background:
-    linear-gradient(90deg, rgba(15, 23, 42, 0.9), rgba(51, 65, 85, 0.56), rgba(15, 23, 42, 0.9)),
-    repeating-linear-gradient(90deg, rgba(148, 163, 184, 0.18) 0 2px, transparent 2px 68px);
-  transform: translateZ(-180px) rotateX(1deg);
-  box-shadow:
-    inset 0 0 70px rgba(56, 189, 248, 0.12),
-    0 18px 60px rgba(0, 0, 0, 0.45);
-}
-
-.scene-shuttle3d-wall--port,
-.scene-shuttle3d-wall--starboard {
-  top: 15%;
-  width: 26%;
-  height: 68%;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background:
-    linear-gradient(180deg, rgba(30, 41, 59, 0.84), rgba(15, 23, 42, 0.98)),
-    repeating-linear-gradient(0deg, rgba(125, 211, 252, 0.12) 0 1px, transparent 1px 38px);
-  box-shadow: inset 0 0 42px rgba(14, 165, 233, 0.08);
-}
-
-.scene-shuttle3d-wall--port {
-  left: -9%;
-  transform: rotateY(58deg) translateZ(-40px);
-  transform-origin: right center;
-}
-
-.scene-shuttle3d-wall--starboard {
-  right: -9%;
-  transform: rotateY(-58deg) translateZ(-40px);
-  transform-origin: left center;
-}
-
-.scene-shuttle3d-ceiling {
-  left: 10%;
-  top: -18%;
-  width: 80%;
-  height: 34%;
-  border-radius: 0 0 48% 48%;
-  background:
-    repeating-linear-gradient(90deg, rgba(148, 163, 184, 0.22) 0 3px, transparent 3px 62px),
-    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.56));
-  transform: rotateX(-64deg) translateZ(55px);
-  box-shadow: inset 0 -20px 50px rgba(14, 165, 233, 0.1);
-}
-
-.scene-shuttle3d-floor {
-  left: 7%;
-  bottom: -16%;
-  width: 86%;
-  height: 54%;
-  border: 1px solid rgba(125, 211, 252, 0.18);
-  border-radius: 48% 48% 18px 18px;
-  background:
-    radial-gradient(ellipse at 50% 35%, rgba(56, 189, 248, 0.22), transparent 42%),
-    repeating-linear-gradient(90deg, rgba(148, 163, 184, 0.12) 0 2px, transparent 2px 46px),
-    linear-gradient(180deg, rgba(51, 65, 85, 0.92), rgba(2, 6, 23, 0.98));
-  transform: rotateX(68deg) translateZ(8px);
-  transform-origin: center bottom;
-  box-shadow:
-    inset 0 0 52px rgba(14, 165, 233, 0.12),
-    0 -28px 64px rgba(0, 0, 0, 0.42);
-}
-
-.scene-shuttle3d-viewport {
-  position: absolute;
-  left: 11%;
-  top: 8%;
-  width: 78%;
-  height: 42%;
-  overflow: hidden;
-  border: 3px solid rgba(125, 211, 252, 0.4);
-  border-radius: 48px 48px 22px 22px;
-  background: #020617;
-  box-shadow:
-    inset 0 0 52px rgba(56, 189, 248, 0.18),
-    0 0 28px rgba(56, 189, 248, 0.24);
-}
-
-.scene-shuttle3d-starfield {
-  position: absolute;
-  inset: -10%;
-  background:
-    radial-gradient(circle at 16% 26%, white 0 1px, transparent 2px),
-    radial-gradient(circle at 38% 44%, rgba(219, 234, 254, 0.9) 0 1px, transparent 2px),
-    radial-gradient(circle at 74% 24%, rgba(191, 219, 254, 0.86) 0 1px, transparent 2px),
-    radial-gradient(circle at 82% 68%, rgba(125, 211, 252, 0.72) 0 1px, transparent 2px),
-    radial-gradient(circle at 54% 72%, rgba(255, 255, 255, 0.68) 0 1px, transparent 2px),
-    linear-gradient(180deg, rgba(15, 23, 42, 0.34), rgba(2, 6, 23, 0.98));
-  background-size: 190px 130px, 260px 170px, 330px 210px, 280px 190px, 230px 150px, auto;
-  animation: scene-shuttle3d-star-drift 18s linear infinite;
-}
-
-.scene-shuttle3d-mother-ship {
-  position: absolute;
-  left: 53%;
-  top: 44%;
-  width: 238px;
-  height: 74px;
-  transform: translate(-50%, -50%) scale(0.95);
-  filter:
-    drop-shadow(0 0 12px rgba(219, 234, 254, 0.34))
-    drop-shadow(0 18px 22px rgba(0, 0, 0, 0.46));
-  animation: scene-shuttle3d-mother-ship-hold 7s ease-in-out infinite alternate;
-}
-
-.scene-shuttle3d-ship-saucer,
-.scene-shuttle3d-ship-neck,
-.scene-shuttle3d-ship-body,
-.scene-shuttle3d-ship-nacelle {
-  position: absolute;
   display: block;
-  background:
-    linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(148, 163, 184, 0.62) 58%, rgba(51, 65, 85, 0.96));
-  border: 1px solid rgba(219, 234, 254, 0.48);
+  width: 100%;
+  height: 100%;
+  background: #020617;
+  touch-action: none;
 }
 
-.scene-shuttle3d-ship-saucer {
-  left: 6%;
-  top: 11%;
-  width: 50%;
-  height: 54%;
-  border-radius: 50%;
-  box-shadow: inset -20px -10px 28px rgba(15, 23, 42, 0.24);
-}
-
-.scene-shuttle3d-ship-neck {
-  left: 50%;
-  top: 34%;
-  width: 17%;
-  height: 16%;
-  border-radius: 999px;
-}
-
-.scene-shuttle3d-ship-body {
-  left: 60%;
-  top: 28%;
-  width: 25%;
-  height: 30%;
-  border-radius: 999px 40px 40px 999px;
-}
-
-.scene-shuttle3d-ship-nacelle {
-  left: 54%;
-  width: 38%;
-  height: 12%;
-  border-radius: 999px;
-  background:
-    linear-gradient(90deg, rgba(59, 130, 246, 0.96), rgba(248, 250, 252, 0.86), rgba(59, 130, 246, 0.76));
-  box-shadow: 0 0 16px rgba(59, 130, 246, 0.36);
-}
-
-.scene-shuttle3d-ship-nacelle--port {
-  top: 7%;
-}
-
-.scene-shuttle3d-ship-nacelle--starboard {
-  bottom: 8%;
-}
-
-.scene-shuttle3d-viewport-frame {
+.scene-shuttle3d-look-hint,
+.scene-shuttle3d-mesh-status {
   position: absolute;
-  inset: 10px 16px;
-  border: 1px solid rgba(125, 211, 252, 0.34);
-  border-radius: 38px 38px 16px 16px;
-  background:
-    linear-gradient(90deg, transparent 49.5%, rgba(125, 211, 252, 0.2) 50%, transparent 50.5%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 42%);
-  pointer-events: none;
-}
-
-.scene-shuttle3d-console {
-  width: 24%;
-  height: 12%;
-  border: 1px solid rgba(125, 211, 252, 0.28);
-  border-radius: 18px 18px 10px 10px;
-  background:
-    repeating-linear-gradient(90deg, rgba(56, 189, 248, 0.24) 0 15px, transparent 15px 30px),
-    linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(51, 65, 85, 0.92));
-  box-shadow:
-    inset 0 0 20px rgba(56, 189, 248, 0.16),
-    0 15px 28px rgba(0, 0, 0, 0.38);
-}
-
-.scene-shuttle3d-console--helm {
-  left: 24%;
-  bottom: 20%;
-  transform: rotateX(58deg) rotateY(-8deg) translateZ(70px);
-}
-
-.scene-shuttle3d-console--science {
-  right: 24%;
-  bottom: 20%;
-  transform: rotateX(58deg) rotateY(8deg) translateZ(70px);
-}
-
-.scene-shuttle3d-console--port {
-  left: 1%;
-  top: 47%;
-  width: 22%;
-  transform: rotateY(54deg) rotateX(10deg);
-}
-
-.scene-shuttle3d-console--starboard {
-  right: 1%;
-  top: 47%;
-  width: 22%;
-  transform: rotateY(-54deg) rotateX(10deg);
-}
-
-.scene-shuttle3d-console-glow {
-  position: absolute;
-  left: 12%;
-  right: 12%;
-  top: 19%;
-  height: 18px;
-  border-radius: 999px;
-  background:
-    linear-gradient(90deg, #f97316 0 24%, #facc15 24% 42%, #38bdf8 42% 72%, #fb7185 72% 100%);
-  box-shadow: 0 0 22px rgba(56, 189, 248, 0.42);
-}
-
-.scene-shuttle3d-seat {
-  width: 8%;
-  height: 14%;
-  bottom: 17%;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 16px 16px 28px 28px;
-  background:
-    radial-gradient(ellipse at 50% 24%, rgba(226, 232, 240, 0.18), transparent 42%),
-    linear-gradient(180deg, rgba(71, 85, 105, 0.98), rgba(15, 23, 42, 0.98));
-  box-shadow: 0 14px 24px rgba(0, 0, 0, 0.32);
-}
-
-.scene-shuttle3d-seat--helm {
-  left: 38%;
-  transform: rotateX(36deg) translateZ(42px);
-}
-
-.scene-shuttle3d-seat--ops {
-  right: 38%;
-  transform: rotateX(36deg) translateZ(42px);
-}
-
-.scene-shuttle3d-hatch {
-  left: 42%;
-  bottom: 3%;
-  width: 16%;
-  height: 20%;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 28px 28px 14px 14px;
-  background:
-    linear-gradient(90deg, transparent 48%, rgba(226, 232, 240, 0.18) 49% 51%, transparent 52%),
-    repeating-linear-gradient(180deg, rgba(148, 163, 184, 0.16) 0 2px, transparent 2px 20px),
-    linear-gradient(180deg, rgba(51, 65, 85, 0.96), rgba(15, 23, 42, 0.98));
-  transform: translateZ(34px);
-}
-
-.scene-shuttle3d-player-anchor {
-  left: 50%;
-  bottom: 10%;
-  min-width: 116px;
-  padding: 6px 10px;
-  border: 1px solid rgba(147, 197, 253, 0.42);
-  border-radius: 999px;
-  background: rgba(2, 6, 23, 0.72);
-  color: #bfdbfe;
-  font-size: 0.72rem;
-  font-weight: 900;
-  letter-spacing: 0.04em;
-  text-align: center;
-  transform: translateX(-50%) translateZ(90px);
-  box-shadow: 0 0 24px rgba(147, 197, 253, 0.18);
-}
-
-.scene-shuttle3d-label {
-  position: relative;
-  z-index: 2;
-  display: inline-block;
-  margin: 8px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: rgba(2, 6, 23, 0.66);
-  color: #e0f2fe;
-  font-size: 0.68rem;
-  font-weight: 900;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.82);
-}
-
-.scene-shuttle3d-look-hint {
-  position: absolute;
-  left: 16px;
-  bottom: 14px;
-  z-index: 60;
-  max-width: min(560px, calc(100% - 32px));
+  z-index: 4;
   padding: 7px 10px;
   border: 1px solid rgba(125, 211, 252, 0.36);
   border-radius: 999px;
-  background: rgba(2, 6, 23, 0.72);
+  background: rgba(2, 6, 23, 0.78);
   color: #dbeafe;
   font-size: 0.73rem;
   font-weight: 850;
   pointer-events: none;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(6px);
 }
 
-@keyframes scene-shuttle3d-star-drift {
-  from {
-    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
-  }
-
-  to {
-    background-position: 180px 120px, -260px 180px, 220px -160px, -160px -120px, 140px 110px, 0 0;
-  }
+.scene-shuttle3d-look-hint {
+  left: 16px;
+  bottom: 14px;
+  max-width: min(620px, calc(100% - 32px));
 }
 
-@keyframes scene-shuttle3d-mother-ship-hold {
-  from {
-    transform: translate(-50%, -50%) scale(0.92) rotate(-1deg);
-  }
-
-  to {
-    transform: translate(-49%, -52%) scale(1.02) rotate(1deg);
-  }
+.scene-shuttle3d-mesh-status {
+  top: 14px;
+  right: 14px;
+  color: #9ee7ff;
+  border-color: rgba(56, 189, 248, 0.28);
+  font-size: 0.68rem;
+  letter-spacing: 0.025em;
 }
 
+.scene-shuttle3d-renderer-error {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  z-index: 5;
+  width: min(520px, calc(100% - 48px));
+  padding: 18px 20px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 16px;
+  background: rgba(30, 41, 59, 0.94);
+  color: #fecaca;
+  font-weight: 800;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
 
+.scene-shuttle3d[data-renderer-error="true"] .scene-shuttle3d-canvas {
+  opacity: 0.24;
+}
 
 .scene-surface[data-rollout-phase="phase-1-shuttle-interior"] {
   box-shadow:

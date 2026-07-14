@@ -67,10 +67,14 @@ def test_phase_three_blueprints_define_hint_driven_mount_policies() -> None:
     assert result["doc"]["sourceMutationAllowed"] is False
     assert result["doc"]["stripDuplicateIds"] is True
     assert result["doc"]["preserveDataMcelAttributes"] is True
+    assert result["doc"]["autoMountOnActivate"] is True
+    assert result["doc"]["autoMountOnSelect"] is True
 
     assert result["lab"]["rootSelector"] == "#mcel-lab-app"
     assert result["lab"]["selfMountRecursionGuard"] is True
     assert result["lab"]["sourceMutationAllowed"] is False
+    assert result["lab"]["autoMountOnActivate"] is True
+    assert result["lab"]["autoMountOnSelect"] is True
 
     for field in REQUIRED_CAPTURE_FIELDS:
         assert field in result["required"]
@@ -93,7 +97,7 @@ def test_phase_three_lab_shell_has_contained_mount_surface_and_evidence_panel() 
     assert 'id="mcel-blueprint-mount-action"' in source
     assert 'data-mcel-mount-action="same-page-contained-clone"' in source
     assert 'id="mcel-blueprint-work-surface"' in primary
-    assert "Use Mount to clone the selected app into a contained" in primary
+    assert "Selecting an app mounts it automatically" in primary
     assert 'id="mcel-blueprint-mount-status"' in right_rail
     assert 'id="mcel-blueprint-mount-report"' in right_rail
     assert 'data-mcel-mount-report-field="dataMcelAttributes"' in right_rail
@@ -142,3 +146,35 @@ def test_phase_three_styles_keep_preview_contained_and_non_mutating() -> None:
     assert "pointer-events: none" in source
     assert ".mcel-lab-mount-evidence-card" in source
     assert ".mcel-lab-mount-snapshot" in source
+
+
+def test_phase_three_blueprint_shell_initializes_before_legacy_dependency_gate() -> None:
+    source = MCEL_LAB_JS.read_text(encoding="utf-8")
+    init_start = source.index("function initMcelLabApp")
+    init_end = source.index("function mcelBlueprintShellState", init_start)
+    init_block = source[init_start:init_end]
+
+    assert "initMcelBlueprintShell({mountSelected: true});" in init_block
+    assert init_block.index("initMcelBlueprintShell({mountSelected: true});") < init_block.index(
+        "if (!mcelLabDependenciesReady())"
+    )
+    assert "window.setTimeout(initMcelLabApp, 0);" in init_block
+    assert "blueprintShellInitialized" in source
+
+
+def test_phase_three_app_selection_uses_hint_driven_automatic_mounting() -> None:
+    source = MCEL_LAB_JS.read_text(encoding="utf-8")
+    helper_start = source.index("function mcelBlueprintShellSelectApp")
+    helper_end = source.index("function renderMcelBlueprintShell", helper_start)
+    helper = source[helper_start:helper_end]
+    render_start = helper_end
+    render_end = source.index("function validateMcelBlueprintShell", render_start)
+    render = source[render_start:render_end]
+    html = MCEL_LAB_HTML.read_text(encoding="utf-8")
+
+    assert "policy.autoMountOnSelect !== false" in helper
+    assert "mcelBlueprintShellMountSelectedApp()" in helper
+    assert "mcelBlueprintShellSelectApp(appSelect.value)" in render
+    assert "mcelBlueprintShellSelectApp(candidate.appId)" in render
+    assert 'mountAction.textContent = mountReport ? "Remount" : "Mount";' in render
+    assert "Selecting an app mounts it automatically" in html

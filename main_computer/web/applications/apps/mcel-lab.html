@@ -25,8 +25,8 @@
       <p class="eyebrow">MCEL Lab</p>
       <h3>App Blueprint / Aspect Inspector</h3>
       <p>
-        Select an app and aspect, mount it into the center work surface, then drill into MCEL
-        evidence, source hints, or export contracts only when needed.
+        Select an app and aspect, inspect the mounted interface, and drill into supporting
+        evidence only when it is useful.
       </p>
     </div>
 
@@ -54,9 +54,20 @@
       data-mcel-element="element.layout.actions-zone"
     >
       <button type="button" id="mcel-blueprint-mount-action" data-mcel-mount-action="same-page-contained-clone">Mount</button>
-      <button type="button" id="mcel-blueprint-inspect-action" data-phase="future">Inspect</button>
+      <button
+        type="button"
+        id="mcel-blueprint-inspect-action"
+        data-mcel-inspect-action="point-and-inspect"
+        aria-pressed="false"
+      >Inspect</button>
       <button type="button" id="mcel-blueprint-validate-action">Validate</button>
-      <button type="button" id="mcel-blueprint-export-action" data-phase="future">Export</button>
+      <button
+        type="button"
+        id="mcel-blueprint-export-action"
+        disabled
+        aria-disabled="true"
+        title="Export packet generation is not available yet."
+      >Export</button>
     </div>
   </header>
 
@@ -106,11 +117,11 @@
         </div>
       </section>
 
-      <section class="mcel-lab-shell-card" aria-label="Blueprint outline">
-        <div class="mcel-lab-shell-card-heading">
-          <p class="eyebrow">Outline</p>
-          <h4>Blueprint outline</h4>
-        </div>
+      <details class="mcel-lab-shell-card mcel-lab-navigation-disclosure" aria-label="Blueprint outline">
+        <summary>
+          <span class="eyebrow">Outline</span>
+          <strong>Blueprint outline</strong>
+        </summary>
         <ol id="mcel-blueprint-outline" class="mcel-lab-blueprint-outline">
           <li data-mcel-blueprint-outline-item="overview"><span>Overview</span></li>
           <li data-mcel-blueprint-outline-item="objects"><span>Objects</span></li>
@@ -125,7 +136,7 @@
           <li data-mcel-blueprint-outline-item="findings"><span>Findings</span></li>
           <li data-mcel-blueprint-outline-item="repair"><span>Repair</span></li>
         </ol>
-      </section>
+      </details>
     </aside>
 
     <main
@@ -149,62 +160,69 @@
             <span>Mount target</span>
             <strong id="mcel-blueprint-mount-route">/applications/document</strong>
             <p>
-              This is the primary work area. Use Mount to clone the selected app into a contained
-              preview. Later phases will add point inspection, annotations, and export.
+              This is the primary work area. Selecting an app mounts it automatically. Enable
+              Inspect, then click any rendered element to examine it without triggering app actions.
             </p>
           </div>
         </div>
 
-        <div class="mcel-lab-work-brief" aria-label="Selected aspect brief">
-          <section>
-            <p class="eyebrow">Aspect summary</p>
-            <p id="mcel-blueprint-aspect-summary">
+        <details class="mcel-lab-work-context" aria-label="Selected aspect context">
+          <summary>
+            <span class="eyebrow">Aspect context</span>
+            <strong id="mcel-blueprint-aspect-summary">
               Overview expects app identity, dominant object, route, and purpose.
-            </p>
-          </section>
-          <section>
-            <p class="eyebrow">Needs attention</p>
-            <ul id="mcel-blueprint-required-evidence" class="mcel-lab-plain-list">
-              <li>Runtime evidence appears after mounting exists.</li>
-            </ul>
-          </section>
-          <section>
-            <p class="eyebrow">Next actions</p>
-            <ul id="mcel-blueprint-next-actions" class="mcel-lab-plain-list">
-              <li>Mount selected app into the contained preview.</li>
-            </ul>
-          </section>
-        </div>
+            </strong>
+          </summary>
+          <div class="mcel-lab-work-context-body">
+            <section>
+              <p class="eyebrow">Needs attention</p>
+              <ul id="mcel-blueprint-required-evidence" class="mcel-lab-plain-list">
+                <li>Runtime evidence appears after mounting exists.</li>
+              </ul>
+            </section>
+            <section>
+              <p class="eyebrow">Next actions</p>
+              <ul id="mcel-blueprint-next-actions" class="mcel-lab-plain-list">
+                <li>Enable Inspect and click an element in the mounted preview.</li>
+              </ul>
+            </section>
+            <dl class="mcel-lab-blueprint-facts" id="mcel-blueprint-facts">
+              <div><dt>App</dt><dd id="mcel-blueprint-current-app">Document Editor</dd></div>
+              <div><dt>Route</dt><dd id="mcel-blueprint-current-route">/applications/document</dd></div>
+              <div><dt>Root</dt><dd id="mcel-blueprint-current-root">#document-app</dd></div>
+              <div><dt>Dominant object</dt><dd id="mcel-blueprint-current-object">Document</dd></div>
+            </dl>
+          </div>
+        </details>
 
-        <dl class="mcel-lab-blueprint-facts" id="mcel-blueprint-facts">
-          <div><dt>App</dt><dd id="mcel-blueprint-current-app">Document Editor</dd></div>
-          <div><dt>Route</dt><dd id="mcel-blueprint-current-route">/applications/document</dd></div>
-          <div><dt>Root</dt><dd id="mcel-blueprint-current-root">#document-app</dd></div>
-          <div><dt>Dominant object</dt><dd id="mcel-blueprint-current-object">Document</dd></div>
-        </dl>
       </section>
 
     </main>
 
     <aside class="mcel-lab-blueprint-right-rail" aria-label="Inspector and evidence rail">
       <section
-        class="mcel-lab-shell-card"
+        class="mcel-lab-shell-card mcel-lab-selected-element-card"
         data-mcel-zone="inspector"
         data-mcel-layout-zone="inspector"
         data-mcel-element="element.layout.inspector-zone"
         aria-label="Selected element inspector"
       >
-        <div class="mcel-lab-shell-card-heading">
-          <p class="eyebrow">Inspector</p>
-          <h4>Selected element</h4>
+        <div class="mcel-lab-shell-card-heading mcel-lab-inspector-heading">
+          <div>
+            <p class="eyebrow">Inspector</p>
+            <h4>Selected element</h4>
+          </div>
+          <span id="mcel-blueprint-inspect-mode-status" class="mcel-lab-inspect-mode-status">Inspect off</span>
         </div>
-        <p id="mcel-blueprint-selected-element">
-          Nothing selected yet. Point-and-inspect will populate this panel in Phase 4.
-        </p>
-        <div class="mcel-lab-placeholder-stack" aria-label="Annotation placeholders">
+        <div id="mcel-blueprint-selected-element" class="mcel-lab-selected-element">
+          <p class="mcel-lab-muted-note">
+            Enable Inspect, then click an element in the mounted preview.
+          </p>
+        </div>
+        <div class="mcel-lab-placeholder-stack mcel-lab-annotation-preview" aria-label="Annotation placeholders">
           <article>
-            <strong>Annotation editor</strong>
-            <span>Future keep / remove / rework decisions.</span>
+            <strong>Annotation</strong>
+            <span>Selection works now. Keep/remove/rework persistence comes next.</span>
           </article>
           <article>
             <strong>Dependency checks</strong>
@@ -213,75 +231,81 @@
         </div>
       </section>
 
-      <section
-        class="mcel-lab-shell-card mcel-lab-mount-evidence-card"
+      <details
+        class="mcel-lab-shell-card mcel-lab-rail-disclosure mcel-lab-mount-evidence-card"
         data-mcel-zone="evidence"
         data-mcel-layout-zone="evidence"
         data-mcel-element="element.inspection.implementation-delta"
         aria-label="Mounted app evidence"
       >
-        <div class="mcel-lab-shell-card-heading">
-          <p class="eyebrow">Mount evidence</p>
-          <h4>Mounted app snapshot</h4>
+        <summary>
+          <span class="eyebrow">Evidence</span>
+          <strong>Mount snapshot</strong>
+        </summary>
+        <div class="mcel-lab-rail-disclosure-body">
+          <p id="mcel-blueprint-mount-status" class="mcel-lab-muted-note">
+            No app mounted yet. Mounting creates a contained preview and records DOM evidence.
+          </p>
+          <dl id="mcel-blueprint-mount-report" class="mcel-lab-blueprint-facts mcel-lab-mount-report">
+            <div><dt>App</dt><dd data-mcel-mount-report-field="appId">not mounted</dd></div>
+            <div><dt>Route</dt><dd data-mcel-mount-report-field="route">not mounted</dd></div>
+            <div><dt>MCEL attrs</dt><dd data-mcel-mount-report-field="dataMcelAttributes">0</dd></div>
+            <div><dt>Layout zones</dt><dd data-mcel-mount-report-field="layoutZones">0</dd></div>
+            <div><dt>Visible text</dt><dd data-mcel-mount-report-field="visibleText">not captured</dd></div>
+            <div><dt>Bounding boxes</dt><dd data-mcel-mount-report-field="boundingBoxes">pending</dd></div>
+          </dl>
+          <details class="mcel-lab-mount-snapshot">
+            <summary>DOM snapshot</summary>
+            <pre id="mcel-blueprint-dom-snapshot" aria-label="Mounted app DOM snapshot">Mount an app to capture its DOM snapshot.</pre>
+          </details>
         </div>
-        <p id="mcel-blueprint-mount-status" class="mcel-lab-muted-note">
-          No app mounted yet. The mount action creates an inert contained preview and records DOM evidence.
-        </p>
-        <dl id="mcel-blueprint-mount-report" class="mcel-lab-blueprint-facts mcel-lab-mount-report">
-          <div><dt>App</dt><dd data-mcel-mount-report-field="appId">not mounted</dd></div>
-          <div><dt>Route</dt><dd data-mcel-mount-report-field="route">not mounted</dd></div>
-          <div><dt>MCEL attrs</dt><dd data-mcel-mount-report-field="dataMcelAttributes">0</dd></div>
-          <div><dt>Layout zones</dt><dd data-mcel-mount-report-field="layoutZones">0</dd></div>
-          <div><dt>Visible text</dt><dd data-mcel-mount-report-field="visibleText">not captured</dd></div>
-          <div><dt>Bounding boxes</dt><dd data-mcel-mount-report-field="boundingBoxes">pending</dd></div>
-        </dl>
-        <details class="mcel-lab-mount-snapshot">
-          <summary>DOM snapshot</summary>
-          <pre id="mcel-blueprint-dom-snapshot" aria-label="Mounted app DOM snapshot">Mount an app to capture its DOM snapshot.</pre>
-        </details>
-      </section>
+      </details>
 
-      <section
-        class="mcel-lab-shell-card mcel-lab-blueprint-details-card"
+      <details
+        class="mcel-lab-shell-card mcel-lab-rail-disclosure mcel-lab-blueprint-details-card"
         data-mcel-zone="evidence"
         data-mcel-layout-zone="evidence"
         data-mcel-element="element.layout.evidence-zone"
         aria-label="Blueprint details drill-downs"
       >
-        <div class="mcel-lab-shell-card-heading">
-          <p class="eyebrow">Drill down</p>
-          <h4>Blueprint details</h4>
+        <summary>
+          <span class="eyebrow">Drill down</span>
+          <strong>Blueprint details</strong>
+        </summary>
+        <div class="mcel-lab-rail-disclosure-body">
+          <p class="mcel-lab-muted-note">
+            Contract internals stay here in the inspector rail so the center remains the work area.
+          </p>
+          <div
+            id="mcel-blueprint-detail-stack"
+            class="mcel-lab-drilldowns"
+            data-mcel-detail-source="blueprint-detail-groups"
+            aria-label="Blueprint detail drill-downs"
+          ></div>
         </div>
-        <p class="mcel-lab-muted-note">
-          Contract internals stay here in the inspector rail so the center remains the work area.
-        </p>
-        <div
-          id="mcel-blueprint-detail-stack"
-          class="mcel-lab-drilldowns"
-          data-mcel-detail-source="blueprint-detail-groups"
-          aria-label="Blueprint detail drill-downs"
-        ></div>
-      </section>
+      </details>
 
-      <section
-        class="mcel-lab-shell-card"
+      <details
+        class="mcel-lab-shell-card mcel-lab-rail-disclosure"
         data-mcel-zone="evidence"
         data-mcel-layout-zone="evidence"
         data-mcel-element="element.layout.evidence-zone"
         aria-label="Findings and repair evidence"
       >
-        <div class="mcel-lab-shell-card-heading">
-          <p class="eyebrow">Evidence</p>
-          <h4>Findings and repair</h4>
+        <summary>
+          <span class="eyebrow">Evidence</span>
+          <strong>Findings and repair</strong>
+        </summary>
+        <div class="mcel-lab-rail-disclosure-body">
+          <ul id="mcel-blueprint-findings" class="mcel-lab-findings">
+            <li>Runtime evidence appears after mounting exists.</li>
+          </ul>
+          <section class="mcel-lab-repair-placeholder" aria-label="Repair plan placeholder">
+            <strong>Repair plan</strong>
+            <p>Patch-ready guidance will appear after annotations and acid checks exist.</p>
+          </section>
         </div>
-        <ul id="mcel-blueprint-findings" class="mcel-lab-findings">
-          <li>Runtime evidence appears after mounting exists.</li>
-        </ul>
-        <section class="mcel-lab-repair-placeholder" aria-label="Repair plan placeholder">
-          <strong>Repair plan</strong>
-          <p>Patch-ready guidance will appear after annotations and acid checks exist.</p>
-        </section>
-      </section>
+      </details>
     </aside>
   </div>
 
@@ -292,9 +316,10 @@
     data-mcel-element="element.layout.status-zone"
     aria-label="MCEL Lab status"
   >
-    <output id="mcel-blueprint-validity-status">Blueprint contract pending; mount idle.</output>
-    <output id="mcel-blueprint-saved-status">Saved annotations: not implemented in Phase 3.</output>
-    <output id="mcel-blueprint-export-status">Export packet: contract only.</output>
+    <output id="mcel-blueprint-validity-status">Blueprint ready; mount idle.</output>
+    <output id="mcel-blueprint-selection-status">Selection: inspect mode is off.</output>
+    <output id="mcel-blueprint-saved-status">Annotations: not saved.</output>
+    <output id="mcel-blueprint-export-status">Export: not available.</output>
   </footer>
 
   <details
