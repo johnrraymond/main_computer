@@ -26,6 +26,7 @@ from main_computer.viewport_routes_executor import ViewportExecutorRoutesMixin
 from main_computer.viewport_routes_file_explorer import ViewportFileExplorerRoutesMixin
 from main_computer.viewport_routes_game import ViewportGameRoutesMixin
 from main_computer.viewport_routes_git import ViewportGitRoutesMixin
+from main_computer.viewport_routes_mcel import ViewportMcelRoutesMixin
 from main_computer.viewport_routes_onlyoffice import ViewportOnlyOfficeRoutesMixin
 from main_computer.viewport_routes_rag_assisted_thinking import ViewportRagAssistedThinkingRoutesMixin
 from main_computer.viewport_routes_spreadsheet import ViewportSpreadsheetRoutesMixin
@@ -174,6 +175,7 @@ class ViewportHandler(
     ViewportFileExplorerRoutesMixin,
     ViewportGameRoutesMixin,
     ViewportGitRoutesMixin,
+    ViewportMcelRoutesMixin,
     ViewportOnlyOfficeRoutesMixin,
     ViewportRagAssistedThinkingRoutesMixin,
     ViewportSpreadsheetRoutesMixin,

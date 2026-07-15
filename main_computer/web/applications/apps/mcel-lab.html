@@ -237,16 +237,88 @@
             Enable Inspect, then click an element in the mounted preview.
           </p>
         </div>
-        <div class="mcel-lab-placeholder-stack mcel-lab-annotation-preview" aria-label="Annotation placeholders">
-          <article>
-            <strong>Annotation</strong>
-            <span>Selection works now. Keep/remove/rework persistence comes next.</span>
-          </article>
-          <article>
-            <strong>Dependency checks</strong>
-            <span>Required before removal or rework.</span>
-          </article>
-        </div>
+        <section
+          class="mcel-lab-annotation-editor"
+          data-mcel-element="element.refactor.element-annotation"
+          aria-label="Selected element annotation editor"
+        >
+          <div class="mcel-lab-annotation-heading">
+            <div>
+              <p class="eyebrow">Annotation</p>
+              <h5>Refactor intent</h5>
+            </div>
+            <span id="mcel-blueprint-annotation-state">Select an element</span>
+          </div>
+          <p id="mcel-blueprint-annotation-empty" class="mcel-lab-muted-note">
+            Select a rendered element to create or edit its annotation.
+          </p>
+          <form id="mcel-blueprint-annotation-form" hidden>
+            <div class="mcel-lab-annotation-grid">
+              <label>
+                Intent
+                <select id="mcel-blueprint-annotation-intent" name="intent">
+                  <option value="keep">Keep</option>
+                  <option value="remove">Remove</option>
+                  <option value="rework">Rework</option>
+                  <option value="move">Move</option>
+                  <option value="hide">Hide</option>
+                  <option value="merge">Merge</option>
+                  <option value="investigate">Investigate</option>
+                </select>
+              </label>
+              <label>
+                Priority
+                <select id="mcel-blueprint-annotation-priority" name="priority">
+                  <option value="low">Low</option>
+                  <option value="normal" selected>Normal</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              Purpose
+              <textarea id="mcel-blueprint-annotation-purpose" name="purpose" rows="2" placeholder="What is this element for?"></textarea>
+            </label>
+            <label>
+              Current problem
+              <textarea id="mcel-blueprint-annotation-problem" name="currentProblem" rows="3" placeholder="What is wrong or unclear?"></textarea>
+            </label>
+            <label>
+              Desired behavior
+              <textarea id="mcel-blueprint-annotation-desired" name="desiredBehavior" rows="3" placeholder="What should happen instead?"></textarea>
+            </label>
+            <fieldset id="mcel-blueprint-annotation-dependency-checks">
+              <legend>Required dependency checks</legend>
+              <p class="mcel-lab-muted-note">
+                Remove and rework annotations must carry every required check. Saving a check means it is required, not completed.
+              </p>
+              <div id="mcel-blueprint-annotation-dependency-list" class="mcel-lab-annotation-checks"></div>
+              <label>
+                Dependency notes
+                <textarea id="mcel-blueprint-annotation-dependency-notes" name="dependencyCheckNotes" rows="2" placeholder="Known handlers, replacement paths, or unresolved dependencies"></textarea>
+              </label>
+            </fieldset>
+            <details class="mcel-lab-annotation-details">
+              <summary>More annotation fields</summary>
+              <div class="mcel-lab-annotation-details-body">
+                <label>Layout role<input id="mcel-blueprint-annotation-layout-role" name="layoutRole" type="text"></label>
+                <label>Workflow role<input id="mcel-blueprint-annotation-workflow-role" name="workflowRole" type="text"></label>
+                <label>Risk policy<textarea id="mcel-blueprint-annotation-risk" name="riskPolicy" rows="2"></textarea></label>
+                <label>Do not change <span>one item per line</span><textarea id="mcel-blueprint-annotation-do-not-change" name="doNotChange" rows="3"></textarea></label>
+                <label>Allowed fixes <span>one item per line</span><textarea id="mcel-blueprint-annotation-allowed" name="allowedFixes" rows="3"></textarea></label>
+                <label>Forbidden fixes <span>one item per line</span><textarea id="mcel-blueprint-annotation-forbidden" name="forbiddenFixes" rows="3"></textarea></label>
+                <label>Source hints <span>one path per line</span><textarea id="mcel-blueprint-annotation-source-hints" name="sourceHints" rows="3"></textarea></label>
+                <label>Test expectations <span>one expectation per line</span><textarea id="mcel-blueprint-annotation-test-expectations" name="testExpectations" rows="3"></textarea></label>
+              </div>
+            </details>
+            <div class="mcel-lab-annotation-actions">
+              <button type="submit" id="mcel-blueprint-annotation-save">Save annotation</button>
+              <button type="button" id="mcel-blueprint-annotation-delete">Delete</button>
+            </div>
+            <output id="mcel-blueprint-annotation-status" aria-live="polite">Not saved.</output>
+          </form>
+        </section>
       </section>
 
       <details

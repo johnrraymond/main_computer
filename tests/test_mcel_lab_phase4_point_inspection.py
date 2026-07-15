@@ -139,7 +139,11 @@ def test_phase_four_script_selects_preview_elements_and_blocks_app_actions() -> 
     assert "window.McelLabPointInspect" in source
 
     assert "localStorage.setItem" not in phase
-    assert "fetch(" not in phase
+    point_inspection_core = phase.split(
+        "function mcelBlueprintShellAnnotationPolicy",
+        1,
+    )[0]
+    assert "fetch(" not in point_inspection_core
     assert "sourceMutationAllowed: false" in phase
 
 

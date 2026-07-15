@@ -1108,6 +1108,8 @@ def test_super_base_builder_compose_is_managed_coolify_service() -> None:
     assert "phase=building target=$$TARGET_IMAGE" in compose
     assert "health_ok=true" in compose
     assert "if [ \"$$phase\" = \"failed\" ]; then" in compose
+    assert "start_httpd_candidate" in compose
+    assert "status_http=failed method=$$label" in compose
     assert "apk add --no-cache busybox-extras" in compose
     assert "httpd -f -p \"0.0.0.0:$$STATUS_PORT\"" in compose
     assert "test -f /work/www/healthz" in compose

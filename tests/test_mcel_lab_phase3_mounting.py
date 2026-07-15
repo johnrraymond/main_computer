@@ -133,8 +133,12 @@ def test_phase_three_mount_script_uses_same_page_clone_not_iframe_or_fetch() -> 
     assert "selfMountRecursionGuard" in phase_block
     assert "sourceMutationAllowed" in phase_block
     assert "localStorage.setItem" not in phase_block
-    assert "fetch(" not in phase_block
-    assert "iframe" not in phase_block.lower()
+    mount_runtime = source[
+        source.index("function mcelBlueprintShellSanitizeToken"):
+        source.index("function renderMcelBlueprintShell")
+    ]
+    assert "fetch(" not in mount_runtime
+    assert "iframe" not in mount_runtime.lower()
 
 
 def test_phase_three_styles_keep_preview_contained_and_non_mutating() -> None:

@@ -2442,6 +2442,15 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/docs/export/pdf-vector-fit-smoke":
         self._handle_docs_export_pdf_vector_fit_smoke()
         return
+    if route_path == "/api/applications/mcel/annotations/read":
+        self._handle_mcel_annotations_read()
+        return
+    if route_path == "/api/applications/mcel/annotations/save":
+        self._handle_mcel_annotations_save()
+        return
+    if route_path == "/api/applications/mcel/annotations/delete":
+        self._handle_mcel_annotations_delete()
+        return
     if self.path == "/api/applications/component-docs/manifest":
         self._handle_component_docs_manifest()
         return

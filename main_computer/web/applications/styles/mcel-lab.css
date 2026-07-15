@@ -7754,3 +7754,186 @@ body.mcel-modal-open {
   }
 }
 
+
+
+/* Phase 5: durable selected-element annotation editor. */
+.mcel-lab-annotation-editor {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(115, 214, 255, 0.16);
+}
+
+.mcel-lab-annotation-heading,
+.mcel-lab-annotation-actions,
+.mcel-lab-annotation-grid {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mcel-lab-annotation-heading h5 {
+  margin: 0;
+  font-size: 14px;
+}
+
+#mcel-blueprint-annotation-state {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+#mcel-blueprint-annotation-form {
+  display: grid;
+  gap: 10px;
+}
+
+#mcel-blueprint-annotation-form[hidden] {
+  display: none;
+}
+
+#mcel-blueprint-annotation-form label,
+#mcel-blueprint-annotation-dependency-checks {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+#mcel-blueprint-annotation-form label > span {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+#mcel-blueprint-annotation-form input,
+#mcel-blueprint-annotation-form select,
+#mcel-blueprint-annotation-form textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid rgba(115, 214, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(4, 9, 18, 0.72);
+  color: var(--text);
+  font: inherit;
+  letter-spacing: 0;
+}
+
+#mcel-blueprint-annotation-form input,
+#mcel-blueprint-annotation-form select {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+#mcel-blueprint-annotation-form textarea {
+  resize: vertical;
+  padding: 8px;
+  line-height: 1.35;
+}
+
+.mcel-lab-annotation-grid > label {
+  flex: 1 1 0;
+}
+
+#mcel-blueprint-annotation-dependency-checks {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid rgba(246, 199, 91, 0.2);
+  border-radius: 9px;
+}
+
+#mcel-blueprint-annotation-dependency-checks legend {
+  padding: 0 5px;
+  color: var(--gold);
+}
+
+.mcel-lab-annotation-checks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mcel-lab-annotation-checks label {
+  display: flex !important;
+  align-items: center;
+  gap: 6px !important;
+  padding: 6px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.mcel-lab-annotation-checks input {
+  width: auto !important;
+  min-height: 0 !important;
+}
+
+.mcel-lab-annotation-details {
+  border: 1px solid rgba(115, 214, 255, 0.14);
+  border-radius: 9px;
+}
+
+.mcel-lab-annotation-details > summary {
+  cursor: pointer;
+  padding: 9px 10px;
+  font-weight: 800;
+}
+
+.mcel-lab-annotation-details-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 10px 10px;
+}
+
+.mcel-lab-annotation-actions {
+  align-items: center;
+}
+
+.mcel-lab-annotation-actions button {
+  min-height: 34px;
+}
+
+#mcel-blueprint-annotation-delete {
+  margin-left: auto;
+}
+
+#mcel-blueprint-annotation-status {
+  display: block;
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#mcel-blueprint-annotation-status[data-state="saved"] {
+  color: #9fe6b8;
+}
+
+#mcel-blueprint-annotation-status[data-state="error"] {
+  color: #ff9b9b;
+}
+
+.mcel-preview-inspect-annotated {
+  box-shadow:
+    0 0 0 3px rgba(167, 139, 250, 0.55),
+    0 0 0 6px rgba(167, 139, 250, 0.16) !important;
+}
+
+@media (max-width: 900px) {
+  .mcel-lab-annotation-grid,
+  .mcel-lab-annotation-actions {
+    flex-direction: column;
+  }
+
+  .mcel-lab-annotation-checks {
+    grid-template-columns: 1fr;
+  }
+
+  #mcel-blueprint-annotation-delete {
+    margin-left: 0;
+  }
+}

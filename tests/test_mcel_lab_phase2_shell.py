@@ -158,9 +158,12 @@ def test_mcel_lab_shell_script_consumes_blueprint_core_with_contained_mounting_b
         source.index("function renderMcelElementLibraryAcidTest")
     ]
     assert "localStorage.setItem" not in phase_two_block
-    assert "fetch(" not in phase_two_block
+    phase_two_contract_core = phase_two_block.split(
+        "function mcelBlueprintShellAnnotationPolicy",
+        1,
+    )[0]
+    assert "fetch(" not in phase_two_contract_core
     assert "iframe" not in phase_two_block.lower()
-    assert "fetch(" not in phase_two_block
 
 
 def test_mcel_lab_phase_two_styles_define_generic_workbench_regions() -> None:

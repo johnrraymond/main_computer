@@ -5017,27 +5017,38 @@ EOF
     cp /work/www/status /work/www/identity
     cp /work/www/status /work/www/topology
 }}
-start_status_server() {{
-    if command -v httpd >/dev/null 2>&1; then
-        (httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www >>/work/httpd.log 2>&1 || true) &
+start_httpd_candidate() {{
+    label="$1"
+    shift
+    "$@" >>/work/httpd.log 2>&1 &
+    server_pid="$!"
+    sleep 1
+    if kill -0 "$server_pid" >/dev/null 2>&1; then
+        log "status_http=running method=$label pid=$server_pid port=$STATUS_PORT"
         return 0
     fi
+    log "status_http=failed method=$label port=$STATUS_PORT"
+    return 1
+}}
+start_status_server() {{
+    : > /work/httpd.log
+    if command -v httpd >/dev/null 2>&1; then
+        start_httpd_candidate httpd httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www && return 0
+    fi
     if command -v busybox >/dev/null 2>&1; then
-        (busybox httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www >>/work/httpd.log 2>&1 || true) &
-        return 0
+        start_httpd_candidate busybox-httpd busybox httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www && return 0
     fi
     if command -v apk >/dev/null 2>&1; then
         apk add --no-cache busybox-extras >>/work/httpd.log 2>&1 || true
         if command -v httpd >/dev/null 2>&1; then
-            (httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www >>/work/httpd.log 2>&1 || true) &
-            return 0
+            start_httpd_candidate apk-httpd httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www && return 0
         fi
         if command -v busybox >/dev/null 2>&1; then
-            (busybox httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www >>/work/httpd.log 2>&1 || true) &
-            return 0
+            start_httpd_candidate apk-busybox-httpd busybox httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www && return 0
         fi
     fi
     echo "no status HTTP server available in builder image" >>/work/httpd.log
+    log "status_http=unavailable port=$STATUS_PORT"
     return 1
 }}
 write_status starting false ""

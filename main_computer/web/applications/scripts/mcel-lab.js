@@ -106,6 +106,15 @@
       if (!shellState.selectedElements || typeof shellState.selectedElements !== "object") {
         shellState.selectedElements = {};
       }
+      if (!shellState.annotationsByApp || typeof shellState.annotationsByApp !== "object") {
+        shellState.annotationsByApp = {};
+      }
+      if (!shellState.annotationLoadState || typeof shellState.annotationLoadState !== "object") {
+        shellState.annotationLoadState = {};
+      }
+      if (!shellState.annotationStoragePaths || typeof shellState.annotationStoragePaths !== "object") {
+        shellState.annotationStoragePaths = {};
+      }
 
       return shellState;
     }
@@ -584,16 +593,471 @@
       return shellState.selectedElements?.[blueprint?.appId] || null;
     }
 
+
+    function mcelBlueprintShellAnnotationPolicy(blueprint) {
+      return blueprint?.annotationPolicy || {
+        allowedKinds: ["keep", "remove", "rework", "move", "hide", "merge", "investigate"],
+        requiredDependencyChecks: ["handlers", "tests", "docs", "sourceOwners", "replacementPath"],
+        removalOrReworkRequiresDependencyChecks: true
+      };
+    }
+
+    function mcelBlueprintShellAnnotationLines(value) {
+      if (Array.isArray(value)) {
+        return value.map((item) => String(item || "").trim()).filter(Boolean);
+      }
+      return String(value || "")
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
+    function mcelBlueprintShellAnnotationsFor(blueprint) {
+      const shellState = mcelBlueprintShellState();
+      const annotations = shellState.annotationsByApp?.[blueprint?.appId];
+      return Array.isArray(annotations) ? annotations : [];
+    }
+
+    function mcelBlueprintShellAnnotationForRecord(blueprint, record) {
+      if (!blueprint || !record) return null;
+      return mcelBlueprintShellAnnotationsFor(blueprint).find((annotation) => {
+        return annotation?.annotationId === record.recordId ||
+          annotation?.recordId === record.recordId ||
+          annotation?.targetSelector === record.selector;
+      }) || null;
+    }
+
+    function mcelBlueprintShellSetAnnotationStatus(message, state = "") {
+      const output = document.getElementById("mcel-blueprint-annotation-status");
+      if (output) {
+        output.textContent = message;
+        output.dataset.state = state;
+      }
+    }
+
+    async function mcelBlueprintShellLoadAnnotations(blueprint, {force = false} = {}) {
+      if (!blueprint?.appId || typeof window.fetch !== "function") return [];
+      const shellState = mcelBlueprintShellState();
+      const currentState = shellState.annotationLoadState[blueprint.appId];
+      if (!force && currentState === "loaded") {
+        return mcelBlueprintShellAnnotationsFor(blueprint);
+      }
+      if (!force && currentState === "loading") {
+        return mcelBlueprintShellAnnotationsFor(blueprint);
+      }
+
+      shellState.annotationLoadState[blueprint.appId] = "loading";
+      mcelBlueprintShellSetAnnotationStatus("Loading annotations…", "loading");
+      try {
+        const response = await fetch("/api/applications/mcel/annotations/read", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({appId: blueprint.appId})
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error || `Annotation load failed (${response.status}).`);
+        }
+        shellState.annotationsByApp[blueprint.appId] = Array.isArray(payload.annotations)
+          ? payload.annotations
+          : [];
+        shellState.annotationStoragePaths[blueprint.appId] = payload.path || "";
+        shellState.annotationLoadState[blueprint.appId] = "loaded";
+        if (mcelBlueprintShellState().appId === blueprint.appId) {
+          mcelBlueprintShellRenderAnnotationEditor(blueprint);
+          mcelBlueprintShellRenderSavedAnnotationStatus(blueprint);
+          const previewRoot = document.querySelector(
+            `[data-mcel-preview-clone][data-mcel-mounted-app="${mcelBlueprintShellEscapeAttributeValue(blueprint.appId)}"]`
+          );
+          if (previewRoot) mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
+        }
+        return shellState.annotationsByApp[blueprint.appId];
+      } catch (error) {
+        shellState.annotationLoadState[blueprint.appId] = "error";
+        mcelBlueprintShellSetAnnotationStatus(
+          `Could not load annotations: ${error?.message || error}`,
+          "error"
+        );
+        mcelBlueprintShellRenderSavedAnnotationStatus(blueprint, error);
+        return [];
+      }
+    }
+
+    function mcelBlueprintShellRenderSavedAnnotationStatus(blueprint, error = null) {
+      const output = document.getElementById("mcel-blueprint-saved-status");
+      if (!output || !blueprint) return;
+      const shellState = mcelBlueprintShellState();
+      const loadState = shellState.annotationLoadState[blueprint.appId] || "idle";
+      const count = mcelBlueprintShellAnnotationsFor(blueprint).length;
+      if (error || loadState === "error") {
+        output.textContent = "Annotations: storage unavailable.";
+        output.dataset.state = "error";
+        return;
+      }
+      if (loadState === "loading") {
+        output.textContent = "Annotations: loading…";
+        output.dataset.state = "loading";
+        return;
+      }
+      const path = shellState.annotationStoragePaths[blueprint.appId];
+      output.textContent = `Annotations: ${count} saved${path ? ` · ${path}` : ""}.`;
+      output.dataset.state = "ready";
+    }
+
+    function mcelBlueprintShellAnnotationInput(id) {
+      return document.getElementById(id);
+    }
+
+    function mcelBlueprintShellSetFieldValue(id, value) {
+      const field = mcelBlueprintShellAnnotationInput(id);
+      if (field) field.value = Array.isArray(value) ? value.join("\n") : String(value || "");
+    }
+
+    function mcelBlueprintShellDependencyCheckInputs() {
+      return Array.from(document.querySelectorAll(
+        "#mcel-blueprint-annotation-dependency-list input[type='checkbox'][data-mcel-dependency-check]"
+      ));
+    }
+
+    function mcelBlueprintShellRenderDependencyChecks(blueprint, annotation) {
+      const container = document.getElementById("mcel-blueprint-annotation-dependency-list");
+      if (!container) return;
+      container.replaceChildren();
+      const policy = mcelBlueprintShellAnnotationPolicy(blueprint);
+      const required = Array.isArray(policy.requiredDependencyChecks)
+        ? policy.requiredDependencyChecks
+        : [];
+      const selected = new Set(annotation?.dependencyChecks || []);
+      required.forEach((check) => {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = check;
+        input.dataset.mcelDependencyCheck = check;
+        input.checked = selected.has(check);
+        const text = document.createElement("span");
+        text.textContent = mcelBlueprintShellLabelForZone(check);
+        label.append(input, text);
+        container.appendChild(label);
+      });
+    }
+
+    function mcelBlueprintShellRequireDependencyChecksForIntent(blueprint, intent) {
+      if (!["remove", "rework"].includes(String(intent || ""))) return;
+      const required = new Set(
+        mcelBlueprintShellAnnotationPolicy(blueprint).requiredDependencyChecks || []
+      );
+      mcelBlueprintShellDependencyCheckInputs().forEach((input) => {
+        if (required.has(input.value)) input.checked = true;
+      });
+    }
+
+    function mcelBlueprintShellAnnotationPayloadFromForm(blueprint, record, existing) {
+      const value = (id) => String(mcelBlueprintShellAnnotationInput(id)?.value || "").trim();
+      const dependencyChecks = mcelBlueprintShellDependencyCheckInputs()
+        .filter((input) => input.checked)
+        .map((input) => input.value);
+      const intent = value("mcel-blueprint-annotation-intent") || "keep";
+      const policy = mcelBlueprintShellAnnotationPolicy(blueprint);
+      if (
+        ["remove", "rework"].includes(intent) &&
+        policy.removalOrReworkRequiresDependencyChecks !== false
+      ) {
+        const missing = (policy.requiredDependencyChecks || []).filter(
+          (check) => !dependencyChecks.includes(check)
+        );
+        if (missing.length) {
+          throw new Error(
+            `Remove/rework requires dependency checks: ${missing.join(", ")}.`
+          );
+        }
+      }
+      return {
+        annotationId: existing?.annotationId || record.recordId,
+        appId: blueprint.appId,
+        recordId: record.recordId,
+        targetSelector: record.selector,
+        visibleText: record.visibleText,
+        mcelRole: record.mcelElementGuess || record.role,
+        layoutZone: record.layoutZone,
+        parentRegion: record.parentRegion,
+        intent,
+        purpose: value("mcel-blueprint-annotation-purpose"),
+        currentProblem: value("mcel-blueprint-annotation-problem"),
+        desiredBehavior: value("mcel-blueprint-annotation-desired"),
+        layoutRole: value("mcel-blueprint-annotation-layout-role"),
+        workflowRole: value("mcel-blueprint-annotation-workflow-role"),
+        riskPolicy: value("mcel-blueprint-annotation-risk"),
+        doNotChange: mcelBlueprintShellAnnotationLines(
+          value("mcel-blueprint-annotation-do-not-change")
+        ),
+        allowedFixes: mcelBlueprintShellAnnotationLines(
+          value("mcel-blueprint-annotation-allowed")
+        ),
+        forbiddenFixes: mcelBlueprintShellAnnotationLines(
+          value("mcel-blueprint-annotation-forbidden")
+        ),
+        dependencyChecks,
+        dependencyCheckNotes: value("mcel-blueprint-annotation-dependency-notes"),
+        sourceHints: mcelBlueprintShellAnnotationLines(
+          value("mcel-blueprint-annotation-source-hints")
+        ),
+        testExpectations: mcelBlueprintShellAnnotationLines(
+          value("mcel-blueprint-annotation-test-expectations")
+        ),
+        priority: value("mcel-blueprint-annotation-priority") || "normal",
+        userReasoning: [
+          value("mcel-blueprint-annotation-problem"),
+          value("mcel-blueprint-annotation-desired")
+        ].filter(Boolean).join("\n"),
+        createdAt: existing?.createdAt || ""
+      };
+    }
+
+    async function mcelBlueprintShellSaveAnnotation(blueprint, record) {
+      if (!blueprint || !record) return null;
+      const existing = mcelBlueprintShellAnnotationForRecord(blueprint, record);
+      let annotation;
+      try {
+        annotation = mcelBlueprintShellAnnotationPayloadFromForm(
+          blueprint,
+          record,
+          existing
+        );
+      } catch (error) {
+        mcelBlueprintShellSetAnnotationStatus(error?.message || String(error), "error");
+        return null;
+      }
+
+      const saveButton = document.getElementById("mcel-blueprint-annotation-save");
+      if (saveButton) saveButton.disabled = true;
+      mcelBlueprintShellSetAnnotationStatus("Saving annotation…", "saving");
+      try {
+        const response = await fetch("/api/applications/mcel/annotations/save", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({appId: blueprint.appId, annotation})
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error || `Annotation save failed (${response.status}).`);
+        }
+        const shellState = mcelBlueprintShellState();
+        shellState.annotationsByApp[blueprint.appId] = Array.isArray(payload.annotations)
+          ? payload.annotations
+          : [];
+        shellState.annotationStoragePaths[blueprint.appId] = payload.path || "";
+        shellState.annotationLoadState[blueprint.appId] = "loaded";
+        mcelBlueprintShellRenderAnnotationEditor(blueprint);
+        mcelBlueprintShellRenderSavedAnnotationStatus(blueprint);
+        const previewRoot = document.querySelector(
+          `[data-mcel-preview-clone][data-mcel-mounted-app="${mcelBlueprintShellEscapeAttributeValue(blueprint.appId)}"]`
+        );
+        if (previewRoot) mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
+        window.dispatchEvent(new CustomEvent("mcel:annotation-saved", {
+          detail: {appId: blueprint.appId, annotation: payload.annotation}
+        }));
+        return payload.annotation;
+      } catch (error) {
+        mcelBlueprintShellSetAnnotationStatus(
+          `Save failed: ${error?.message || error}`,
+          "error"
+        );
+        return null;
+      } finally {
+        if (saveButton) saveButton.disabled = false;
+      }
+    }
+
+    async function mcelBlueprintShellDeleteAnnotation(blueprint, record) {
+      const existing = mcelBlueprintShellAnnotationForRecord(blueprint, record);
+      if (!blueprint || !record || !existing) return false;
+      const deleteButton = document.getElementById("mcel-blueprint-annotation-delete");
+      if (deleteButton) deleteButton.disabled = true;
+      mcelBlueprintShellSetAnnotationStatus("Deleting annotation…", "saving");
+      try {
+        const response = await fetch("/api/applications/mcel/annotations/delete", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            appId: blueprint.appId,
+            annotationId: existing.annotationId,
+            targetSelector: record.selector
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error || `Annotation delete failed (${response.status}).`);
+        }
+        const shellState = mcelBlueprintShellState();
+        shellState.annotationsByApp[blueprint.appId] = Array.isArray(payload.annotations)
+          ? payload.annotations
+          : [];
+        shellState.annotationStoragePaths[blueprint.appId] = payload.path || "";
+        shellState.annotationLoadState[blueprint.appId] = "loaded";
+        mcelBlueprintShellRenderAnnotationEditor(blueprint);
+        mcelBlueprintShellRenderSavedAnnotationStatus(blueprint);
+        window.dispatchEvent(new CustomEvent("mcel:annotation-deleted", {
+          detail: {appId: blueprint.appId, annotationId: existing.annotationId}
+        }));
+        return true;
+      } catch (error) {
+        mcelBlueprintShellSetAnnotationStatus(
+          `Delete failed: ${error?.message || error}`,
+          "error"
+        );
+        return false;
+      } finally {
+        if (deleteButton) deleteButton.disabled = false;
+      }
+    }
+
+    function mcelBlueprintShellRenderAnnotationEditor(blueprint) {
+      const form = document.getElementById("mcel-blueprint-annotation-form");
+      const empty = document.getElementById("mcel-blueprint-annotation-empty");
+      const stateLabel = document.getElementById("mcel-blueprint-annotation-state");
+      const deleteButton = document.getElementById("mcel-blueprint-annotation-delete");
+      if (!form || !blueprint) return false;
+
+      const record = mcelBlueprintShellSelectedElementFor(blueprint);
+      const annotation = mcelBlueprintShellAnnotationForRecord(blueprint, record);
+      form.hidden = !record;
+      if (empty) empty.hidden = Boolean(record);
+      if (stateLabel) {
+        stateLabel.textContent = !record
+          ? "Select an element"
+          : annotation
+            ? `${mcelBlueprintShellLabelForZone(annotation.intent)} · saved`
+            : "New annotation";
+      }
+      if (!record) {
+        mcelBlueprintShellSetAnnotationStatus("Select an element to annotate.", "idle");
+        return false;
+      }
+
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-intent",
+        annotation?.intent || "keep"
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-priority",
+        annotation?.priority || "normal"
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-purpose",
+        annotation?.purpose || ""
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-problem",
+        annotation?.currentProblem || ""
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-desired",
+        annotation?.desiredBehavior || ""
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-layout-role",
+        annotation?.layoutRole || record.layoutZone || ""
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-workflow-role",
+        annotation?.workflowRole || record.role || ""
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-risk",
+        annotation?.riskPolicy || ""
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-do-not-change",
+        annotation?.doNotChange || []
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-allowed",
+        annotation?.allowedFixes || []
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-forbidden",
+        annotation?.forbiddenFixes || []
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-dependency-notes",
+        annotation?.dependencyCheckNotes || ""
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-source-hints",
+        annotation?.sourceHints || record.sourceHints || []
+      );
+      mcelBlueprintShellSetFieldValue(
+        "mcel-blueprint-annotation-test-expectations",
+        annotation?.testExpectations || record.testHints || []
+      );
+      mcelBlueprintShellRenderDependencyChecks(blueprint, annotation);
+      mcelBlueprintShellRequireDependencyChecksForIntent(
+        blueprint,
+        annotation?.intent || "keep"
+      );
+
+      if (deleteButton) deleteButton.disabled = !annotation;
+      mcelBlueprintShellSetAnnotationStatus(
+        annotation
+          ? `Saved ${annotation.updatedAt || ""}`.trim()
+          : "Not saved.",
+        annotation ? "saved" : "idle"
+      );
+
+      const previousSubmit = form.__mcelAnnotationSubmitHandler;
+      if (typeof previousSubmit === "function") {
+        form.removeEventListener("submit", previousSubmit);
+      }
+      const submitHandler = (event) => {
+        event.preventDefault();
+        void mcelBlueprintShellSaveAnnotation(blueprint, record);
+      };
+      form.addEventListener("submit", submitHandler);
+      form.__mcelAnnotationSubmitHandler = submitHandler;
+
+      const intentField = document.getElementById("mcel-blueprint-annotation-intent");
+      const previousIntent = intentField?.__mcelAnnotationIntentHandler;
+      if (intentField && typeof previousIntent === "function") {
+        intentField.removeEventListener("change", previousIntent);
+      }
+      if (intentField) {
+        const intentHandler = () => {
+          mcelBlueprintShellRequireDependencyChecksForIntent(
+            blueprint,
+            intentField.value
+          );
+        };
+        intentField.addEventListener("change", intentHandler);
+        intentField.__mcelAnnotationIntentHandler = intentHandler;
+      }
+
+      const previousDelete = deleteButton?.__mcelAnnotationDeleteHandler;
+      if (deleteButton && typeof previousDelete === "function") {
+        deleteButton.removeEventListener("click", previousDelete);
+      }
+      if (deleteButton) {
+        const deleteHandler = () => {
+          void mcelBlueprintShellDeleteAnnotation(blueprint, record);
+        };
+        deleteButton.addEventListener("click", deleteHandler);
+        deleteButton.__mcelAnnotationDeleteHandler = deleteHandler;
+      }
+      return true;
+    }
+
     function mcelBlueprintShellClearInspectionHighlights(previewRoot) {
       if (!previewRoot) return;
       [previewRoot].concat(Array.from(previewRoot.querySelectorAll(
-        ".mcel-preview-inspect-hover, .mcel-preview-inspect-selected, .mcel-preview-inspect-owner"
+        ".mcel-preview-inspect-hover, .mcel-preview-inspect-selected, .mcel-preview-inspect-owner, .mcel-preview-inspect-annotated"
       ))).forEach((node) => {
         node.classList.remove(
           "mcel-preview-inspect-hover",
           "mcel-preview-inspect-selected",
-          "mcel-preview-inspect-owner"
+          "mcel-preview-inspect-owner",
+          "mcel-preview-inspect-annotated"
         );
+        node.removeAttribute("data-mcel-annotation-intent");
       });
     }
 
@@ -608,7 +1072,16 @@
         record.parentRegion?.previewPath
       );
       if (ownerNode) ownerNode.classList.add("mcel-preview-inspect-owner");
-      if (selectedNode) selectedNode.classList.add("mcel-preview-inspect-selected");
+      if (selectedNode) {
+        selectedNode.classList.add("mcel-preview-inspect-selected");
+        const annotation = mcelBlueprintShellAnnotationForRecord(blueprint, record);
+        selectedNode.classList.toggle("mcel-preview-inspect-annotated", Boolean(annotation));
+        if (annotation?.intent) {
+          selectedNode.dataset.mcelAnnotationIntent = annotation.intent;
+        } else {
+          selectedNode.removeAttribute("data-mcel-annotation-intent");
+        }
+      }
     }
 
     function mcelBlueprintShellAppendSelectedFact(list, label, value) {
@@ -688,6 +1161,7 @@
       const shellState = mcelBlueprintShellState();
       const report = mcelBlueprintShellReportFor(blueprint);
       const record = mcelBlueprintShellSelectedElementFor(blueprint);
+      mcelBlueprintShellRenderAnnotationEditor(blueprint);
 
       container.replaceChildren();
       container.dataset.mcelSelectionRender = "ready";
@@ -958,11 +1432,17 @@
     window.McelLabPointInspect = {
       stateModelVersion: "in-place-v5",
       selectionOutputVersion: "visible-receipt-v6",
+      annotationPersistenceVersion: "app-json-v1",
       toggle: mcelBlueprintShellToggleInspectMode,
       activate: () => mcelBlueprintShellSetInspectMode(true),
       deactivate: () => mcelBlueprintShellSetInspectMode(false),
       selectedElementFor: mcelBlueprintShellSelectedElementFor,
-      buildSelectedElementRecord: mcelBlueprintShellBuildSelectedElementRecord
+      buildSelectedElementRecord: mcelBlueprintShellBuildSelectedElementRecord,
+      annotationsFor: mcelBlueprintShellAnnotationsFor,
+      annotationForRecord: mcelBlueprintShellAnnotationForRecord,
+      loadAnnotations: mcelBlueprintShellLoadAnnotations,
+      saveAnnotation: mcelBlueprintShellSaveAnnotation,
+      deleteAnnotation: mcelBlueprintShellDeleteAnnotation
     };
 
     function mcelBlueprintShellSanitizeToken(value) {
@@ -1350,6 +1830,7 @@
       const blueprint = mcelBlueprintShellSelectedBlueprint(shellState.appId);
       if (!blueprint) return;
       shellState.appId = blueprint.appId;
+      void mcelBlueprintShellLoadAnnotations(blueprint);
 
       const aspects = Array.isArray(blueprint.aspects) && blueprint.aspects.length
         ? blueprint.aspects
@@ -1460,12 +1941,12 @@
         shellState.inspectionMode
           ? "Click any rendered element to select it."
           : "Enable Inspect to make rendered elements selectable.",
-        "Review the selected element in the right rail.",
-        "Annotation persistence and export remain unavailable."
+        "Review the selected element and save its refactor annotation in the right rail.",
+        "Export remains unavailable until the packet phase."
       ] : [
         "Mount the selected app into the contained preview.",
         "Enable Inspect, then click a rendered element.",
-        "Annotation persistence and export remain unavailable."
+        "Save app-specific annotations after selecting a target."
       ]);
       if (currentApp) currentApp.textContent = blueprint.label || blueprint.appId;
       if (currentRoute) currentRoute.textContent = blueprint.route || "route pending";
@@ -1494,7 +1975,7 @@
           : `Blueprint loaded: ${blueprint.appId} · ${aspects.length} aspects · ${(blueprint.layoutZones || []).length} zones.`;
       }
       if (savedStatus) {
-        savedStatus.textContent = "Annotations: not saved.";
+        mcelBlueprintShellRenderSavedAnnotationStatus(blueprint);
       }
       if (exportStatus) {
         const requiredFiles = blueprint.exportPolicy?.requiredFiles?.length || 0;
