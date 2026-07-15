@@ -441,7 +441,7 @@ def test_probe_result_target_by_service_accepts_metadata_wrapped_result() -> Non
 
 
 def test_super_base_builder_status_from_logs_detects_ready_and_failure() -> None:
-    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713"
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715"
 
     ready = control.super_base_builder_status_from_logs_body(
         {"logs": f"2026-07-14T00:38:32Z allfather-super-base-builder: phase=ready target={target} already_exists=true"},
@@ -473,7 +473,7 @@ def test_application_records_from_service_detail_reads_service_applications_shap
 
 
 def test_fetch_super_base_builder_status_reads_ready_from_service_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713"
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715"
 
     def fake_fetch_service_detail(client: object, service_uuid: str, tried: list[dict[str, object]]) -> dict[str, object]:
         return {
@@ -501,7 +501,7 @@ def test_wait_for_super_base_builder_ready_uses_builder_logs_before_http_probe(
     path = write_private_state(tmp_path)
     plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
     head = plan.heads[0]
-    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713"
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715"
 
     def fake_fetch_super_base_builder_log_status(*args: object, **kwargs: object) -> dict[str, object]:
         return {
@@ -577,7 +577,7 @@ def test_ensure_super_base_image_skips_builder_deploy_when_existing_ready(
         {
             "quiet": True,
             "command": "add-node",
-            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713",
+            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715",
             "super_base_source_image": "hyperledger/besu:latest",
             "force_super_base_rebuild": False,
             "no_super_base_ensure": False,
@@ -635,7 +635,7 @@ def test_ensure_super_base_image_waits_existing_live_builder_without_restart(
         {
             "quiet": True,
             "command": "add-node",
-            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713",
+            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715",
             "super_base_source_image": "hyperledger/besu:latest",
             "force_super_base_rebuild": False,
             "no_super_base_ensure": False,
@@ -1215,6 +1215,9 @@ def test_super_base_dockerfile_contains_heavy_dependency_layer() -> None:
     assert "foundationdb-server_7.4.6-1_amd64.deb" in dockerfile
     assert "web3==6.20.4" in dockerfile
     assert "solc-static-linux" in dockerfile
+    assert "allfather-contract-sources-b64.json" in dockerfile
+    assert "build-allfather-contract-artifacts.py" in dockerfile
+    assert "contracts-artifacts.json" in dockerfile
     assert "py-solc-x" not in dockerfile
     assert "solcx.install_solc" not in dockerfile
 
@@ -1336,7 +1339,7 @@ def test_super_guard_uses_static_solc_standard_json() -> None:
     assert "capture_output=True" in script
     assert "solc binary is missing" in script
 
-def test_super_guard_contract_deploy_is_resumable_and_uses_nonzero_gas() -> None:
+def test_super_guard_contract_deploy_is_resumable_and_allows_zero_gas_private_chain() -> None:
     script = control.super_server_command_script()
 
     assert "contracts-progress" in script
@@ -1346,7 +1349,13 @@ def test_super_guard_contract_deploy_is_resumable_and_uses_nonzero_gas() -> None
     assert "Known transaction" in script
     assert "MC_ALLFATHER_MIN_CONTRACT_GAS_PRICE_WEI" in script
     assert '"gasPrice": gas_price' in script
-    assert '"gasPrice": 0' not in script
+    assert "deployer balance insufficient" in script
+    assert "balanceShortfall=" in script
+    assert "contract_transaction_has_unpayable_upfront_cost" in script
+    assert "contract_progress_recovery_deployer_label" in script
+    assert "unmineable-tx-recovery" in script
+    assert "contracts: rotating deployer" in script
+    assert "deployerKeySource=" in script
     assert "w3.eth.get_block(\"latest\")" in script
     assert "install_web3_poa_middleware(w3)" in script
     assert "geth_poa_middleware" in script or "ExtraDataToPOAMiddleware" in script
@@ -1380,6 +1389,21 @@ def test_super_guard_besu_single_node_qbft_does_not_wait_for_sync_peers() -> Non
 
     assert '"--sync-min-peers=0"' in script
     assert '"--min-gas-price=0"' in script
+
+
+def test_super_contract_artifacts_are_prebuilt_in_base_image_and_loaded_at_runtime() -> None:
+    dockerfile = control.super_base_dockerfile_inline()
+    builder_script = control.super_base_builder_command_script()
+    super_script = control.super_server_command_script()
+
+    assert "COPY allfather-contract-sources-b64.json" in dockerfile
+    assert "COPY build-allfather-contract-artifacts.py" in dockerfile
+    assert "/opt/allfather-contracts/contracts-artifacts.json" in dockerfile
+    assert "build-allfather-contract-artifacts.py" in builder_script
+    assert "allfather-contract-sources-b64.json" in builder_script
+    assert "contracts: using prebuilt artifacts" in super_script
+    assert "MC_ALLFATHER_CONTRACT_ARTIFACTS_PATH" in super_script
+    assert "prebuilt artifacts unavailable; compiling contracts with solc fallback" in super_script
 
 
 def test_super_compose_maps_besu_p2p_to_advertised_host_port_for_joiners(tmp_path: Path) -> None:
@@ -2531,3 +2555,17 @@ def test_super_compose_uses_unique_container_name_from_deployment_id(tmp_path: P
     assert payload["manifest"]["deployment_id"] == "dry-run"
     assert 'container_name: "testneta-super1-dry-run"' in payload["compose"]
     assert "MC_ALLFATHER_DEPLOYMENT_ID:" in payload["compose"]
+
+def test_super_contract_fee_cap_and_gas_limit_are_bounded_at_runtime() -> None:
+    super_script = control.super_server_command_script()
+
+    assert "MC_ALLFATHER_CONTRACT_GAS_LIMIT" in super_script
+    assert "MC_ALLFATHER_MAX_CONTRACT_GAS_PRICE_WEI" in super_script
+    assert "transaction fee cap exceeded" in super_script
+    assert "max_gas_price_wei" in super_script
+    assert '"gas": gas_limit' in super_script
+    assert "return cap_contract_gas_price(" in super_script
+    assert "MC_ALLFATHER_MIN_CONTRACT_GAS_PRICE_WEI" in super_script
+    assert "deployer_balance" in super_script
+    assert "upfront_cost" in super_script
+

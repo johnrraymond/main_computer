@@ -64,7 +64,7 @@ DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
 DEFAULT_SUPER_BASE_SOURCE_IMAGE = "hyperledger/besu:latest"
-DEFAULT_SUPER_BASE_IMAGE = "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713"
+DEFAULT_SUPER_BASE_IMAGE = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715"
 DEFAULT_SUPER_IMAGE = DEFAULT_SUPER_BASE_IMAGE
 DEFAULT_SUPER_BASE_BUILDER_IMAGE = "docker:27-cli"
 DEFAULT_SUPER_BASE_BUILDER_PREFIX = "allfather-super-base-builder"
@@ -103,6 +103,89 @@ def allfather_contract_sources_b64() -> dict[str, str]:
     for contract_path, source_path in ALLFATHER_CONTRACT_SOURCE_FILES.items():
         payload[contract_path] = base64.b64encode(source_path.read_text(encoding="utf-8").encode("utf-8")).decode("ascii")
     return payload
+
+
+def allfather_contract_artifact_builder_script() -> str:
+    """Return the build-context script that compiles all-father Solidity artifacts once.
+
+    The managed super-base builder writes this script into the Docker build context.
+    The resulting base image contains /opt/allfather-contracts/contracts-artifacts.json,
+    so runtime add-node resumes do not keep invoking solc inside the live super-node.
+    """
+
+    return r"""
+from __future__ import annotations
+import base64
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+REQUIRED_TARGETS = (
+    ("AlphaBetaLockout.sol", "AlphaBetaLockout"),
+    ("src/XLagBridgeReserve.sol", "XLagBridgeReserve"),
+    ("src/HubCreditBridgeEscrow.sol", "HubCreditBridgeEscrow"),
+)
+
+def artifact_is_valid(compiled: dict) -> bool:
+    contracts = compiled.get("contracts")
+    if not isinstance(contracts, dict):
+        return False
+    for source_name, contract_name in REQUIRED_TARGETS:
+        contract = ((contracts.get(source_name) or {}).get(contract_name) or {})
+        bytecode = (((contract.get("evm") or {}).get("bytecode") or {}).get("object") or "")
+        abi = contract.get("abi")
+        if not isinstance(abi, list) or not str(bytecode).strip():
+            return False
+    return True
+
+def main() -> int:
+    source_path = Path(sys.argv[1])
+    output_path = Path(sys.argv[2])
+    sources_b64 = json.loads(source_path.read_text(encoding="utf-8"))
+    sources = {
+        name: {"content": base64.b64decode(encoded).decode("utf-8")}
+        for name, encoded in sources_b64.items()
+    }
+    standard_input = {
+        "language": "Solidity",
+        "sources": sources,
+        "settings": {
+            "optimizer": {"enabled": True, "runs": 200},
+            "outputSelection": {"*": {"*": ["abi", "evm.bytecode.object"]}},
+        },
+    }
+    proc = subprocess.run(
+        ["solc", "--standard-json"],
+        input=json.dumps(standard_input),
+        text=True,
+        capture_output=True,
+        timeout=180,
+        check=False,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write((proc.stderr or proc.stdout or "solc --standard-json failed").strip() + "\n")
+        return proc.returncode or 1
+    compiled = json.loads(proc.stdout or "{}")
+    errors = [
+        item
+        for item in compiled.get("errors", [])
+        if isinstance(item, dict) and item.get("severity") == "error"
+    ]
+    if errors:
+        sys.stderr.write("; ".join(str(item.get("formattedMessage") or item.get("message") or item) for item in errors) + "\n")
+        return 1
+    if not artifact_is_valid(compiled):
+        sys.stderr.write("compiled all-father contract artifact set is incomplete\n")
+        return 1
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(compiled, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"compiled all-father contract artifacts: {output_path}")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""".lstrip()
 
 
 
@@ -4091,12 +4174,18 @@ def ensure_hub_admin(validator_ready: bool) -> bool:
     state("hub_admin", desired=True, running=True, status="bootstrapped", private_key_present=True, address=address, scope="node", completed=True)
     return True
 
-def compile_contracts() -> dict:
+REQUIRED_CONTRACT_ARTIFACT_TARGETS = (
+    ("AlphaBetaLockout.sol", "AlphaBetaLockout"),
+    ("src/XLagBridgeReserve.sol", "XLagBridgeReserve"),
+    ("src/HubCreditBridgeEscrow.sol", "HubCreditBridgeEscrow"),
+)
+
+def contract_standard_input() -> dict:
     sources = {
         name: {"content": base64.b64decode(encoded).decode("utf-8")}
         for name, encoded in CONTRACT_SOURCES_B64.items()
     }
-    standard_input = {
+    return {
         "language": "Solidity",
         "sources": sources,
         "settings": {
@@ -4104,6 +4193,36 @@ def compile_contracts() -> dict:
             "outputSelection": {"*": {"*": ["abi", "evm.bytecode.object"]}},
         },
     }
+
+def compiled_contract_artifacts_valid(compiled: object) -> bool:
+    if not isinstance(compiled, dict):
+        return False
+    contracts = compiled.get("contracts")
+    if not isinstance(contracts, dict):
+        return False
+    for source_name, contract_name in REQUIRED_CONTRACT_ARTIFACT_TARGETS:
+        contract_data = ((contracts.get(source_name) or {}).get(contract_name) or {})
+        abi = contract_data.get("abi")
+        bytecode = (((contract_data.get("evm") or {}).get("bytecode") or {}).get("object") or "")
+        if not isinstance(abi, list) or not str(bytecode).strip():
+            return False
+    return True
+
+def load_contract_artifacts_from(path: Path) -> dict | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        super_log(f"contracts: prebuilt artifact unreadable path={path} error={type(exc).__name__}: {exc}")
+        return None
+    if not compiled_contract_artifacts_valid(payload):
+        super_log(f"contracts: prebuilt artifact invalid path={path}")
+        return None
+    return payload
+
+def compile_contracts_with_solc() -> dict:
+    standard_input = contract_standard_input()
     try:
         proc = subprocess.run(
             ["solc", "--standard-json"],
@@ -4129,6 +4248,33 @@ def compile_contracts() -> dict:
     if errors:
         message = "; ".join(str(item.get("formattedMessage") or item.get("message") or item) for item in errors)
         raise RuntimeError(message)
+    if not compiled_contract_artifacts_valid(compiled):
+        raise RuntimeError("solc returned incomplete all-father contract artifacts")
+    return compiled
+
+def compile_contracts() -> dict:
+    artifact_candidates: list[Path] = []
+    configured = str(os.environ.get("MC_ALLFATHER_CONTRACT_ARTIFACTS_PATH") or "").strip()
+    if configured:
+        artifact_candidates.append(Path(configured))
+    artifact_candidates.append(Path("/opt/allfather-contracts/contracts-artifacts.json"))
+    artifact_candidates.append(deployment_state_path("contracts-artifacts-cache"))
+    for artifact_path in artifact_candidates:
+        compiled = load_contract_artifacts_from(artifact_path)
+        if compiled is not None:
+            rate_limited_super_log(
+                "contracts:artifact-source",
+                f"contracts: using prebuilt artifacts path={artifact_path}",
+                interval_s=300.0,
+            )
+            return compiled
+    super_log("contracts: prebuilt artifacts unavailable; compiling contracts with solc fallback")
+    compiled = compile_contracts_with_solc()
+    cache_path = deployment_state_path("contracts-artifacts-cache")
+    try:
+        cache_path.write_text(json.dumps(compiled, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except Exception as exc:
+        super_log(f"contracts: artifact cache write failed path={cache_path} error={type(exc).__name__}: {exc}")
     return compiled
 
 class PendingContractDeployment(Exception):
@@ -4168,6 +4314,32 @@ def write_contract_progress(payload: dict) -> None:
     path = deployment_state_path("contracts-progress")
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+def contract_gas_limit() -> int:
+    try:
+        return max(21000, int(os.environ.get("MC_ALLFATHER_CONTRACT_GAS_LIMIT", "8000000")))
+    except Exception:
+        return 8000000
+
+def contract_max_gas_price_wei() -> int:
+    # Besu's JSON-RPC tx fee cap is based on gas_limit * gas_price.  The private
+    # all-father bootstrap chain reports eth_gasPrice=0 and allows zero-price
+    # transactions, so the default must not invent a non-zero deploy cost for
+    # freshly generated zero-balance bootstrap wallets.
+    try:
+        return max(0, int(os.environ.get("MC_ALLFATHER_MAX_CONTRACT_GAS_PRICE_WEI", "1000000000")))
+    except Exception:
+        return 1000000000
+
+def cap_contract_gas_price(gas_price: object) -> int:
+    try:
+        value = max(0, int(gas_price or 0))
+    except Exception:
+        value = 0
+    cap = contract_max_gas_price_wei()
+    if cap >= 0:
+        value = min(value, cap)
+    return max(value, 0)
+
 def contract_gas_price(w3) -> int:
     values = []
     try:
@@ -4185,10 +4357,10 @@ def contract_gas_price(w3) -> int:
     except Exception:
         pass
     try:
-        values.append(int(os.environ.get("MC_ALLFATHER_MIN_CONTRACT_GAS_PRICE_WEI", "1")))
+        values.append(int(os.environ.get("MC_ALLFATHER_MIN_CONTRACT_GAS_PRICE_WEI", "0")))
     except Exception:
-        values.append(1)
-    return max([value for value in values if value >= 0] or [1])
+        values.append(0)
+    return cap_contract_gas_price(max([value for value in values if value >= 0] or [0]))
 
 def bumped_contract_gas_price(w3, previous_gas_price: object = None) -> int:
     gas_price = contract_gas_price(w3)
@@ -4196,9 +4368,107 @@ def bumped_contract_gas_price(w3, previous_gas_price: object = None) -> int:
         previous = int(previous_gas_price or 0)
     except Exception:
         previous = 0
-    if previous > 0:
+    # On the private bootstrap chain a zero-price transaction is valid and is the
+    # only viable choice for zero-balance bootstrap wallets.  Do not "replace" a
+    # zero-price retry by reintroducing the old non-zero gas price from stale
+    # progress; that recreates the unmineable pending transaction.
+    if gas_price > 0 and previous > 0:
         gas_price = max(gas_price, int(previous * 125 // 100) + 1)
-    return max(gas_price, 1)
+    return cap_contract_gas_price(gas_price)
+
+def contract_deployer_balance(w3, address: str) -> int | None:
+    try:
+        return int(w3.eth.get_balance(address, "latest"))
+    except TypeError:
+        try:
+            return int(w3.eth.get_balance(address))
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+def contract_upfront_cost(gas_limit: object, gas_price: object) -> int | None:
+    try:
+        gas = max(0, int(gas_limit or 0))
+        price = max(0, int(gas_price or 0))
+    except Exception:
+        return None
+    return gas * price
+
+def contract_balance_shortfall(balance: object, upfront_cost: object) -> int | None:
+    try:
+        return max(0, int(upfront_cost or 0) - int(balance or 0))
+    except Exception:
+        return None
+
+def contract_transaction_has_unpayable_upfront_cost(tx_lookup: dict) -> bool:
+    if not isinstance(tx_lookup, dict) or not tx_lookup.get("observed") or not tx_lookup.get("pending"):
+        return False
+    gas_price = contract_int(tx_lookup.get("gas_price"))
+    if gas_price is None or gas_price <= 0:
+        return False
+    shortfall = contract_int(tx_lookup.get("balance_shortfall"))
+    if shortfall is not None and shortfall > 0:
+        return True
+    upfront_cost = contract_int(tx_lookup.get("upfront_cost"))
+    balance = contract_int(tx_lookup.get("balance"))
+    return upfront_cost is not None and upfront_cost > 0 and balance is not None and balance < upfront_cost
+
+def contract_progress_stale_transactions(record: object) -> list:
+    if not isinstance(record, dict):
+        return []
+    items = record.get("stale_transactions")
+    return list(items) if isinstance(items, list) else []
+
+def contract_progress_has_unmineable_transaction(record: object) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if str(record.get("last_stale_reason") or "") == "receipt-missing-and-transaction-upfront-cost-exceeds-balance":
+        return True
+    if str(record.get("status") or "") == "insufficient-balance":
+        return True
+    candidates = []
+    last_tx_lookup = record.get("last_tx_lookup")
+    if isinstance(last_tx_lookup, dict):
+        candidates.append(last_tx_lookup)
+    for stale in contract_progress_stale_transactions(record):
+        if isinstance(stale, dict):
+            tx_lookup = stale.get("tx_lookup")
+            if isinstance(tx_lookup, dict):
+                candidates.append(tx_lookup)
+            if str(stale.get("reason") or "") == "receipt-missing-and-transaction-upfront-cost-exceeds-balance":
+                return True
+    return any(contract_transaction_has_unpayable_upfront_cost(candidate) for candidate in candidates)
+
+def contract_progress_recovery_deployer_label(progress_key: str, record: object) -> str:
+    if not isinstance(record, dict):
+        return ""
+    existing = str(record.get("recovery_deployer_label") or "").strip()
+    if existing:
+        return existing
+    if not contract_progress_has_unmineable_transaction(record):
+        return ""
+    # A lower-fee zero-gas transaction cannot reliably replace an already-known
+    # higher-fee nonce-0 tx from the same sender.  Recover by changing sender
+    # identity for not-yet-deployed bootstrap contracts; this avoids the poisoned
+    # account/nonce while keeping deterministic, non-secret runtime material.
+    stale_count = len(contract_progress_stale_transactions(record))
+    return f"contract-deployer-recovery:{progress_key}:{stale_count}"
+
+def contract_progress_recovery_reason(record: object) -> str:
+    if not isinstance(record, dict):
+        return ""
+    if str(record.get("last_stale_reason") or "") == "receipt-missing-and-transaction-upfront-cost-exceeds-balance":
+        return "unmineable-pending-transaction"
+    if str(record.get("status") or "") == "insufficient-balance":
+        return "insufficient-deployer-balance"
+    if contract_progress_has_unmineable_transaction(record):
+        return "unmineable-transaction-history"
+    return ""
+
+def transaction_fee_cap_exceeded_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "transaction fee cap exceeded" in message
 
 def contract_stale_pending_s() -> float:
     try:
@@ -4359,15 +4629,25 @@ def inspect_contract_transaction(w3, tx_hash: str) -> dict:
         nonce = int(nonce) if nonce is not None else None
     except Exception:
         pass
+    sender = str(transaction_field(tx, "from") or "")
+    gas = contract_int(transaction_field(tx, "gas"))
+    gas_price = contract_int(transaction_field(tx, "gasPrice"))
+    balance = contract_deployer_balance(w3, sender) if sender else None
+    upfront_cost = contract_upfront_cost(gas, gas_price)
     return {
         "observed": True,
         "not_found": False,
         "pending": block_number in (None, "", "0x0") and not block_hash,
         "block_number": contract_int(block_number),
         "nonce": nonce,
-        "gas_price": contract_int(transaction_field(tx, "gasPrice")),
+        "from": sender,
+        "gas": gas,
+        "gas_price": gas_price,
         "max_fee_per_gas": contract_int(transaction_field(tx, "maxFeePerGas")),
         "max_priority_fee_per_gas": contract_int(transaction_field(tx, "maxPriorityFeePerGas")),
+        "balance": balance,
+        "upfront_cost": upfront_cost,
+        "balance_shortfall": contract_balance_shortfall(balance, upfront_cost),
         "error": "",
     }
 
@@ -4448,6 +4728,8 @@ def mark_contract_transaction_stale(existing: dict, progress_key: str, tx_hash: 
     existing.pop("pending_transaction_hash", None)
     if reason == "receipt-missing-and-transaction-visible-pending-too-long":
         super_log(f"contracts: visible pending transaction stuck contract={progress_key} tx={tx_hash} pending_age_s={pending_age_s} pending_block_delta={pending_block_delta}; replacing nonce={nonce}")
+    elif reason == "receipt-missing-and-transaction-upfront-cost-exceeds-balance":
+        super_log(f"contracts: pending transaction cannot be mined contract={progress_key} tx={tx_hash} balance={tx_lookup.get('balance')} upfront_cost={tx_lookup.get('upfront_cost')} shortfall={tx_lookup.get('balance_shortfall')}; resubmitting nonce={nonce}")
     else:
         super_log(f"contracts: stale pending transaction contract={progress_key} tx={tx_hash} pending_age_s={pending_age_s}; resubmitting")
 
@@ -4546,6 +4828,21 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     chain_info=chain_info,
                 )
                 write_contract_progress(progress)
+            elif contract_transaction_has_unpayable_upfront_cost(tx_lookup):
+                mark_contract_transaction_stale(
+                    existing,
+                    progress_key,
+                    tx_hash,
+                    pending_age_s,
+                    receipt_check_count,
+                    tx_lookup,
+                    reason="receipt-missing-and-transaction-upfront-cost-exceeds-balance",
+                    pending_block_delta=pending_block_delta,
+                    submitted_block_delta=submitted_block_delta,
+                    age_source=pending_age_source,
+                    chain_info=chain_info,
+                )
+                write_contract_progress(progress)
             elif contract_transaction_is_visible_pending_replaceable(tx_lookup, pending_age_s, pending_block_delta, pending_age_source):
                 mark_contract_transaction_stale(
                     existing,
@@ -4564,7 +4861,7 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
             else:
                 rate_limited_super_log(
                     f"contracts:{progress_key}:pending",
-                    f"contracts: waiting receipt contract={progress_key} tx={tx_hash} checks={receipt_check_count} pending_age_s={pending_age_s} age_source={pending_age_source} tx_observed={str(bool(tx_lookup.get('observed'))).lower()} tx_pending={str(bool(tx_lookup.get('pending'))).lower()} submitted_block_delta={submitted_block_delta} pending_block_delta={pending_block_delta} block={chain_info.get('block_number')} gasPrice={tx_lookup.get('gas_price')} chainGasPrice={chain_info.get('gas_price')} baseFee={chain_info.get('latest_base_fee_per_gas')}",
+                    f"contracts: waiting receipt contract={progress_key} tx={tx_hash} checks={receipt_check_count} pending_age_s={pending_age_s} age_source={pending_age_source} tx_observed={str(bool(tx_lookup.get('observed'))).lower()} tx_pending={str(bool(tx_lookup.get('pending'))).lower()} submitted_block_delta={submitted_block_delta} pending_block_delta={pending_block_delta} block={chain_info.get('block_number')} gasPrice={tx_lookup.get('gas_price')} chainGasPrice={chain_info.get('gas_price')} baseFee={chain_info.get('latest_base_fee_per_gas')} deployerBalance={tx_lookup.get('balance')} upfrontCost={tx_lookup.get('upfront_cost')} balanceShortfall={tx_lookup.get('balance_shortfall')}",
                     interval_s=float(os.environ.get("MC_ALLFATHER_CONTRACT_LOG_INTERVAL_S", "30")),
                 )
                 state(
@@ -4581,9 +4878,13 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     tx_observed=bool(tx_lookup.get("observed")),
                     tx_pending=bool(tx_lookup.get("pending")),
                     tx_lookup_error=str(tx_lookup.get("error") or ""),
+                    tx_gas=tx_lookup.get("gas"),
                     tx_gas_price=tx_lookup.get("gas_price"),
                     tx_max_fee_per_gas=tx_lookup.get("max_fee_per_gas"),
                     tx_max_priority_fee_per_gas=tx_lookup.get("max_priority_fee_per_gas"),
+                    deployer_balance=tx_lookup.get("balance"),
+                    tx_upfront_cost=tx_lookup.get("upfront_cost"),
+                    tx_balance_shortfall=tx_lookup.get("balance_shortfall"),
                     chain_block_number=chain_info.get("block_number"),
                     chain_gas_price=chain_info.get("gas_price"),
                     latest_base_fee_per_gas=chain_info.get("latest_base_fee_per_gas"),
@@ -4647,7 +4948,52 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
         stale_transactions = []
         previous_gas_price = None
         attempt = 1
+    recovery_deployer_label = contract_progress_recovery_deployer_label(progress_key, previous_record)
+    recovery_deployer_reason = contract_progress_recovery_reason(previous_record)
+    deployer_account = account
+    deployer_key_source = "configured-deployer"
+    if recovery_deployer_label:
+        try:
+            from eth_account import Account as EthAccount
+            deployer_account = EthAccount.from_key(deterministic_private_key(recovery_deployer_label))
+            deployer_key_source = "unmineable-tx-recovery"
+            previous_gas_price = None
+            if not isinstance(previous_record, dict) or previous_record.get("recovery_deployer_label") != recovery_deployer_label:
+                super_log(f"contracts: rotating deployer contract={progress_key} old_deployer={account.address} new_deployer={deployer_account.address} reason={recovery_deployer_reason or 'unmineable-transaction'} label={recovery_deployer_label}")
+        except Exception as exc:
+            super_log(f"contracts: failed to rotate deployer contract={progress_key} label={recovery_deployer_label} error={type(exc).__name__}: {exc}")
+            deployer_account = account
+            deployer_key_source = "configured-deployer"
+            recovery_deployer_label = ""
+            recovery_deployer_reason = ""
     gas_price = bumped_contract_gas_price(w3, previous_gas_price)
+    if deployer_key_source == "unmineable-tx-recovery":
+        gas_price = contract_gas_price(w3)
+    gas_limit = contract_gas_limit()
+    deployer_balance = contract_deployer_balance(w3, deployer_account.address)
+    upfront_cost = contract_upfront_cost(gas_limit, gas_price)
+    balance_shortfall = contract_balance_shortfall(deployer_balance, upfront_cost)
+    if gas_price > 0 and balance_shortfall is not None and balance_shortfall > 0:
+        contracts_progress[progress_key] = {
+            "target": f"{source_name}:{contract_name}",
+            "status": "insufficient-balance",
+            "deployer": deployer_account.address,
+            "configured_deployer": account.address,
+            "deployer_key_source": deployer_key_source,
+            "recovery_deployer_label": recovery_deployer_label,
+            "recovery_deployer_reason": recovery_deployer_reason,
+            "deployer_balance": deployer_balance,
+            "gas": gas_limit,
+            "gasPrice": gas_price,
+            "upfront_cost": upfront_cost,
+            "balance_shortfall": balance_shortfall,
+            "attempt": attempt,
+            "stale_transactions": stale_transactions,
+            "updated_at_unix_s": time.time(),
+        }
+        write_contract_progress(progress)
+        super_log(f"contracts: deployer balance insufficient contract={progress_key} deployer={deployer_account.address} balance={deployer_balance} upfront_cost={upfront_cost} shortfall={balance_shortfall} gas={gas_limit} gasPrice={gas_price}; retry with zero gas price or fund deployer")
+        raise RuntimeError(f"{progress_key} deployer balance {deployer_balance} is below upfront cost {upfront_cost} at gasPrice {gas_price}")
     submission_chain_info = contract_chain_diagnostics(w3)
     submitted_at_block_number = submission_chain_info.get("block_number")
     replacement_nonce = None
@@ -4657,24 +5003,34 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
         nonce = replacement_nonce
     else:
         try:
-            nonce = w3.eth.get_transaction_count(account.address, "pending")
+            nonce = w3.eth.get_transaction_count(deployer_account.address, "pending")
         except TypeError:
-            nonce = w3.eth.get_transaction_count(account.address)
+            nonce = w3.eth.get_transaction_count(deployer_account.address)
     tx = contract.constructor(*args).build_transaction(
         {
-            "from": account.address,
+            "from": deployer_account.address,
             "nonce": nonce,
-            "gas": 8000000,
+            "gas": gas_limit,
             "gasPrice": gas_price,
             "chainId": int(w3.eth.chain_id),
         }
     )
-    raw, tx_hash = signed_transaction_raw_and_hash(w3, account, tx)
+    raw, tx_hash = signed_transaction_raw_and_hash(w3, deployer_account, tx)
     contracts_progress[progress_key] = {
         "target": f"{source_name}:{contract_name}",
         "transaction_hash": tx_hash,
         "nonce": nonce,
         "gasPrice": gas_price,
+        "max_gas_price_wei": contract_max_gas_price_wei(),
+        "gas": gas_limit,
+        "deployer": deployer_account.address,
+        "configured_deployer": account.address,
+        "deployer_key_source": deployer_key_source,
+        "recovery_deployer_label": recovery_deployer_label,
+        "recovery_deployer_reason": recovery_deployer_reason,
+        "deployer_balance": deployer_balance,
+        "upfront_cost": upfront_cost,
+        "balance_shortfall": balance_shortfall,
         "status": "submitted",
         "submitted_at_uptime_s": now_s(),
         "submitted_at_unix_s": time.time(),
@@ -4684,7 +5040,7 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
         "stale_transactions": stale_transactions,
     }
     write_contract_progress(progress)
-    super_log(f"contracts: submitted contract={progress_key} tx={tx_hash} nonce={nonce} gasPrice={gas_price}")
+    super_log(f"contracts: submitted contract={progress_key} tx={tx_hash} nonce={nonce} gasPrice={gas_price} deployer={deployer_account.address} deployerKeySource={deployer_key_source}")
     try:
         sent_hash = w3.eth.send_raw_transaction(raw)
         tx_hash = w3.to_hex(sent_hash)
@@ -4693,6 +5049,15 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
         super_log(f"contracts: accepted contract={progress_key} tx={tx_hash}")
     except ValueError as exc:
         message = str(exc)
+        if transaction_fee_cap_exceeded_error(exc):
+            contracts_progress[progress_key]["status"] = "fee-cap-exceeded"
+            contracts_progress[progress_key]["last_error"] = f"{type(exc).__name__}: {exc}"
+            contracts_progress[progress_key]["gasPrice"] = contract_gas_price(w3)
+            contracts_progress[progress_key].pop("transaction_hash", None)
+            contracts_progress[progress_key].pop("pending_transaction_hash", None)
+            write_contract_progress(progress)
+            super_log(f"contracts: transaction fee cap exceeded contract={progress_key} attempted_gasPrice={gas_price} maxGasPrice={contract_max_gas_price_wei()}; retrying with capped gas price")
+            raise PendingContractDeployment(f"{progress_key} transaction fee cap exceeded; retrying with capped gas price") from exc
         if "Known transaction" not in message and "already known" not in message:
             raise
         super_log(f"contracts: transaction already known contract={progress_key} tx={tx_hash}")
@@ -5562,6 +5927,7 @@ RUN set -eux; \\
         "https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux"; \\
     chmod 0755 /usr/local/bin/solc; \\
     solc --version; \\
+    mkdir -p /opt/allfather-contracts; \\
     ln -sf /opt/allfather-super-venv/bin/python /usr/local/bin/python; \\
     ln -sf /opt/allfather-super-venv/bin/pip /usr/local/bin/pip; \\
     if [ -x /usr/sbin/fdbserver ]; then \\
@@ -5587,6 +5953,15 @@ RUN set -eux; \\
     besu --version; \\
     fdbserver --version; \\
     fdbcli --version
+
+COPY allfather-contract-sources-b64.json /opt/allfather-contracts/contract-sources-b64.json
+COPY build-allfather-contract-artifacts.py /opt/allfather-contracts/build-contract-artifacts.py
+
+RUN set -eux; \\
+    python3 /opt/allfather-contracts/build-contract-artifacts.py \\
+        /opt/allfather-contracts/contract-sources-b64.json \\
+        /opt/allfather-contracts/contracts-artifacts.json; \\
+    test -s /opt/allfather-contracts/contracts-artifacts.json
 
 ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super-base \\
     MC_ALLFATHER_IMAGE_CAPABILITIES=python-venv,web3,fdb,solc,besu,qbft
@@ -5672,7 +6047,11 @@ def super_base_builder_command_script(
     force_rebuild: bool = False,
 ) -> str:
     dockerfile = super_base_dockerfile_inline(source_image)
+    contract_sources_json = json.dumps(allfather_contract_sources_b64(), sort_keys=True)
+    contract_builder_script = allfather_contract_artifact_builder_script()
     write_dockerfile = "\n".join(shell_write_text_file_command("/work/allfather-super-base.Dockerfile", dockerfile))
+    write_contract_sources = "\n".join(shell_write_text_file_command("/work/allfather-contract-sources-b64.json", contract_sources_json + "\n"))
+    write_contract_builder = "\n".join(shell_write_text_file_command("/work/build-allfather-contract-artifacts.py", contract_builder_script))
     force = "1" if force_rebuild else "0"
     return f"""set -eu
 TARGET_IMAGE={shell_single_quote(target_image)}
@@ -5740,6 +6119,8 @@ write_status starting false ""
 log "phase=starting target=$TARGET_IMAGE"
 start_status_server || true
 {write_dockerfile}
+{write_contract_sources}
+{write_contract_builder}
 if [ "$FORCE_REBUILD" != "1" ] && docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
     echo "Base image already exists: $TARGET_IMAGE" > /work/build.log
     log "phase=ready target=$TARGET_IMAGE already_exists=true"

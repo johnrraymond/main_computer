@@ -3331,6 +3331,37 @@ def _stage_d_rendered_measurement(
     }
 
 
+def _attach_edge_rounded_pixel_rects(measurement):
+    measurement = copy.deepcopy(measurement)
+
+    def attach(rect):
+        left = round(float(rect["left"]))
+        top = round(float(rect["top"]))
+        right = round(float(rect["right"]))
+        bottom = round(float(rect["bottom"]))
+        rect["pixelRect"] = {
+            "x": left,
+            "y": top,
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "width": max(0, right - left),
+            "height": max(0, bottom - top),
+            "area": max(0, right - left) * max(0, bottom - top),
+        }
+
+    measurement["pixelGeometry"] = "css-edge-rounded-device-pixels-v1"
+    root = measurement["geometryFacts"]["root"]["clipped"]
+    attach(root)
+    for phase in measurement["phaseMeasurements"]:
+        attach(phase["geometryFacts"]["root"]["clipped"])
+        for section in ("nodes", "units"):
+            for record in phase["examples"][section]:
+                attach(record["rect"])
+    return measurement
+
+
 def test_stage_d_fingerprint_ignores_policy_names_and_tolerates_subpixel_jitter():
     module = load_module()
     first = _stage_d_rendered_measurement(
@@ -3356,6 +3387,49 @@ def test_stage_d_fingerprint_ignores_policy_names_and_tolerates_subpixel_jitter(
     assert first_fingerprint
     assert first_fingerprint == alias_fingerprint
     assert distinct_fingerprint != first_fingerprint
+
+
+def test_stage_d_fingerprint_uses_authoritative_pixel_rect_not_fractional_css_rect():
+    module = load_module()
+    first = _attach_edge_rounded_pixel_rects(
+        _stage_d_rendered_measurement("compose--support-side", support_left=760.0)
+    )
+    css_drift = copy.deepcopy(first)
+    server = css_drift["phaseMeasurements"][0]["examples"]["nodes"][1]["rect"]
+    server["left"] += 14.25
+    server["right"] += 14.25
+    server["x"] = server["left"]
+    server["width"] = server["right"] - server["left"]
+    unit = css_drift["phaseMeasurements"][0]["examples"]["units"][1]["rect"]
+    unit["left"] += 14.25
+    unit["right"] += 14.25
+    unit["x"] = unit["left"]
+    unit["width"] = unit["right"] - unit["left"]
+
+    assert module.measurement_rendered_policy_fingerprint(first)
+    assert module.measurement_rendered_policy_fingerprint(css_drift) == module.measurement_rendered_policy_fingerprint(first)
+
+    payload = module.rendered_policy_fingerprint_payload(first)
+    assert payload["coordinateSystem"] == "device-pixel-rect"
+
+    audit = module.audit_authoritative_pixel_rect_coordinate_system(first)
+    assert audit["ok"] is True
+    assert audit["pixelRectRecordCount"] > 0
+    assert audit["cssFallbackRecordCount"] == 0
+    assert audit["verdict"] == "authoritative-pixelRect"
+
+
+def test_stage_d_pixel_rect_audit_reports_css_fallback_records():
+    module = load_module()
+    fallback = _stage_d_rendered_measurement("compose--support-side", support_left=760.0)
+    fallback["pixelGeometry"] = "css-edge-rounded-device-pixels-v1"
+
+    audit = module.audit_authoritative_pixel_rect_coordinate_system(fallback)
+
+    assert audit["ok"] is False
+    assert audit["pixelRectRecordCount"] == 0
+    assert audit["cssFallbackRecordCount"] > 0
+    assert audit["verdict"] == "css-fallback-present"
 
 
 def test_stage_d_deduplicates_equivalent_compositions_before_ranking():
@@ -6848,88 +6922,8 @@ def test_flog_layout_browser_geometry_uses_edge_rounded_device_pixels():
     assert "Math.round(rightCss * devicePixelRatio)" in js
     assert "width = Math.max(0, right - left)" in js
     assert "cssRectFromPixelRect(rect.pixelRect)" in js
-    assert "devicePixelLineWidth = 1 / Math.max(1, devicePixelRatio)" in js
-    assert "box.style.border = `${devicePixelLineWidth}px solid ${color}`" in js
+    assert "box.style.border = `1px solid ${color}`" in js
     assert "box.style.borderRadius = \"0\"" in js
-
-
-
-def test_flog_layout_python_scoring_prefers_device_pixel_rects():
-    module = load_module()
-    rect = module._record_rect(
-        {
-            "rect": {
-                "left": 10.4,
-                "top": 20.4,
-                "right": 30.6,
-                "bottom": 40.6,
-                "width": 20.2,
-                "height": 20.2,
-                "area": 408.04,
-                "pixelRect": {
-                    "left": 10,
-                    "top": 20,
-                    "right": 31,
-                    "bottom": 41,
-                    "width": 21,
-                    "height": 21,
-                    "area": 441,
-                },
-            }
-        }
-    )
-
-    assert rect == {
-        "left": 10.0,
-        "right": 31.0,
-        "top": 20.0,
-        "bottom": 41.0,
-        "width": 21.0,
-        "height": 21.0,
-        "area": 441.0,
-    }
-
-
-def test_flog_rendered_policy_fingerprint_uses_device_pixel_rects():
-    module = load_module()
-    root = {
-        "left": 0.4,
-        "top": 0.4,
-        "right": 99.6,
-        "bottom": 99.6,
-        "width": 99.2,
-        "height": 99.2,
-        "area": 9840.64,
-        "pixelRect": {
-            "left": 0,
-            "top": 0,
-            "right": 100,
-            "bottom": 100,
-            "width": 100,
-            "height": 100,
-            "area": 10000,
-        },
-    }
-    record = {
-        "rect": {
-            "left": 10.4,
-            "top": 20.4,
-            "right": 59.6,
-            "bottom": 69.6,
-            "width": 49.2,
-            "height": 49.2,
-            "area": 2420.64,
-            "pixelRect": {
-                "left": 10,
-                "top": 20,
-                "right": 60,
-                "bottom": 70,
-                "width": 50,
-                "height": 50,
-                "area": 2500,
-            },
-        }
-    }
-
-    assert module._fingerprint_root_rect({"geometryFacts": {"root": {"clipped": root}}})["width"] == 100.0
-    assert module._quantized_relative_rect(record, root, bins=100) == (10, 20, 50, 50)
+    assert module.RENDERED_POLICY_FINGERPRINT_VERSION == "cross-phase-painted-device-pixel-geometry-v2"
+    assert module.PIXEL_RECT_AUDIT_VERSION == "authoritative-pixel-rect-audit-v1"
+    assert module.AUTHORITATIVE_PIXEL_COORDINATE_SYSTEM == "device-pixel-rect"

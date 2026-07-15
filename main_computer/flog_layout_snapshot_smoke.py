@@ -32,7 +32,7 @@ import json
 import math
 import re
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1182,29 +1182,10 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
     return pressures
 
 
-def _pixel_authoritative_rect(rect: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Return the browser-rasterized rectangle when the JS measurement provided it.
-
-    The browser measurement stores CSS rectangles for readability and nested
-    ``pixelRect`` rectangles for exact screenshot comparison.  Python-side
-    geometry helpers and rendered-policy fingerprints must use ``pixelRect``
-    when present; otherwise fractional CSS widths can still differ from the PNG
-    by a pixel even though the measurement payload contains the exact
-    device-pixel answer.
-    """
-
-    if not isinstance(rect, dict):
-        return None
-    pixel_rect = rect.get("pixelRect")
-    if isinstance(pixel_rect, dict):
-        return pixel_rect
-    return rect
-
-
 def _record_rect(record: dict[str, Any] | None) -> dict[str, float] | None:
     if not record:
         return None
-    rect = _pixel_authoritative_rect(record.get("rect") or record.get("documentRect"))
+    rect = record.get("rect") or record.get("documentRect")
     if not rect:
         return None
     left = float(rect.get("left", rect.get("x", 0)) or 0)
@@ -11007,7 +10988,6 @@ MEASURE_AND_OVERLAY_JS = r"""
     devicePixelRatio: Number(win.devicePixelRatio || 1) || 1,
   };
   const devicePixelRatio = viewport.devicePixelRatio;
-  const devicePixelLineWidth = 1 / Math.max(1, devicePixelRatio);
 
   function pixelRectFromCssRect(rect) {
     const leftCss = Number(rect.left ?? rect.x ?? 0);
@@ -11142,25 +11122,23 @@ MEASURE_AND_OVERLAY_JS = r"""
   function unionBounds(rects) {
     const visible = rects.filter((rect) => rect && rect.area > 4);
     if (!visible.length) {
-      return withPixelRect({x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, area: 0});
+      return {x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, area: 0};
     }
     const left = Math.min(...visible.map((rect) => rect.left));
     const top = Math.min(...visible.map((rect) => rect.top));
     const right = Math.max(...visible.map((rect) => rect.right));
     const bottom = Math.max(...visible.map((rect) => rect.bottom));
-    const width = Math.max(0, right - left);
-    const height = Math.max(0, bottom - top);
-    return withPixelRect({
+    return {
       x: left,
       y: top,
       left,
       top,
       right,
       bottom,
-      width,
-      height,
-      area: width * height,
-    });
+      width: Math.max(0, right - left),
+      height: Math.max(0, bottom - top),
+      area: Math.max(0, right - left) * Math.max(0, bottom - top),
+    };
   }
 
   function unitRecordFor(el) {
@@ -12515,7 +12493,7 @@ MEASURE_AND_OVERLAY_JS = r"""
     box.style.top = `${pixelAlignedRect.top}px`;
     box.style.width = `${pixelAlignedRect.width}px`;
     box.style.height = `${pixelAlignedRect.height}px`;
-    box.style.border = `${devicePixelLineWidth}px solid ${color}`;
+    box.style.border = `1px solid ${color}`;
     box.style.background = fill;
     box.style.boxSizing = "border-box";
     box.style.borderRadius = "0";
@@ -12813,18 +12791,96 @@ def capture_png(page: Any, path: Path, *, full_page: bool) -> str:
 
 
 
-RENDERED_POLICY_FINGERPRINT_VERSION = "cross-phase-painted-geometry-v1"
+RENDERED_POLICY_FINGERPRINT_VERSION = "cross-phase-painted-device-pixel-geometry-v2"
 RENDERED_POLICY_FINGERPRINT_BINS = 500
+PIXEL_RECT_AUDIT_VERSION = "authoritative-pixel-rect-audit-v1"
+AUTHORITATIVE_PIXEL_COORDINATE_SYSTEM = "device-pixel-rect"
 
 
-def _fingerprint_root_rect(phase_measurement: dict[str, Any]) -> dict[str, float] | None:
+def _normalized_rect(
+    rect: dict[str, Any],
+    *,
+    coordinate_system: str,
+    source: str,
+) -> dict[str, float | str] | None:
+    if not isinstance(rect, dict):
+        return None
+    left = float(rect.get("left", rect.get("x", 0)) or 0)
+    top = float(rect.get("top", rect.get("y", 0)) or 0)
+    width = float(rect.get("width", 0) or 0)
+    height = float(rect.get("height", 0) or 0)
+    right = float(rect.get("right", left + width) or 0)
+    bottom = float(rect.get("bottom", top + height) or 0)
+    if width <= 0 and right >= left:
+        width = right - left
+    if height <= 0 and bottom >= top:
+        height = bottom - top
+    if width <= 0 or height <= 0:
+        return None
+    return {
+        "x": left,
+        "y": top,
+        "left": left,
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "width": width,
+        "height": height,
+        "area": width * height,
+        "coordinateSystem": coordinate_system,
+        "source": source,
+    }
+
+
+def authoritative_pixel_rect(
+    rect: dict[str, Any] | None,
+    *,
+    allow_css_fallback: bool = True,
+) -> dict[str, float | str] | None:
+    """Return the one rect FLOG is allowed to use for rendered proof geometry.
+
+    Browser measurements carry fractional CSS rectangles and an edge-rounded
+    ``pixelRect`` generated from those CSS edges.  Fingerprints, rollups, and
+    audits must prefer ``pixelRect`` so they stay on the same integer device
+    pixel grid as screenshots and overlays.
+    """
+
+    if not isinstance(rect, dict):
+        return None
+    pixel_rect = rect.get("pixelRect")
+    if isinstance(pixel_rect, dict):
+        normalized = _normalized_rect(
+            pixel_rect,
+            coordinate_system=AUTHORITATIVE_PIXEL_COORDINATE_SYSTEM,
+            source="pixelRect",
+        )
+        if normalized is not None:
+            return normalized
+    if not allow_css_fallback:
+        return None
+    return _normalized_rect(
+        rect,
+        coordinate_system="css-fallback",
+        source="cssRect",
+    )
+
+
+def _record_authoritative_rect(record: dict[str, Any]) -> dict[str, float | str] | None:
+    if not isinstance(record, dict):
+        return None
+    rect = record.get("rect") or record.get("documentRect")
+    if isinstance(rect, dict):
+        return authoritative_pixel_rect(rect)
+    return authoritative_pixel_rect(record)
+
+
+def _fingerprint_root_rect(phase_measurement: dict[str, Any]) -> dict[str, float | str] | None:
     root = ((phase_measurement.get("geometryFacts") or {}).get("root") or {})
-    rect = _record_rect({"rect": root.get("clipped") or root.get("documentRect") or root.get("raw")})
-    if not rect:
-        return None
-    if float(rect.get("width", 0) or 0) <= 0 or float(rect.get("height", 0) or 0) <= 0:
-        return None
-    return rect
+    for key in ("clipped", "documentRect", "raw"):
+        rect = authoritative_pixel_rect(root.get(key))
+        if rect is not None:
+            return rect
+    return None
 
 
 def _quantized_relative_rect(
@@ -12833,15 +12889,28 @@ def _quantized_relative_rect(
     *,
     bins: int = RENDERED_POLICY_FINGERPRINT_BINS,
 ) -> tuple[int, int, int, int] | None:
-    rect = _record_rect(record)
-    root = _record_rect({"rect": root_rect}) if root_rect else None
-    if not rect or not root:
+    rect = _record_authoritative_rect(record)
+    if not isinstance(rect, dict) or not root_rect:
         return None
-    root_width = max(1.0, float(root.get("width", 0) or 0))
-    root_height = max(1.0, float(root.get("height", 0) or 0))
+    root_width = max(1.0, float(root_rect.get("width", 0) or 0))
+    root_height = max(1.0, float(root_rect.get("height", 0) or 0))
     return (
-        round((float(rect.get("left", 0) or 0) - float(root.get("left", 0) or 0)) / root_width * bins),
-        round((float(rect.get("top", 0) or 0) - float(root.get("top", 0) or 0)) / root_height * bins),
+        round(
+            (
+                float(rect.get("left", rect.get("x", 0)) or 0)
+                - float(root_rect.get("left", root_rect.get("x", 0)) or 0)
+            )
+            / root_width
+            * bins
+        ),
+        round(
+            (
+                float(rect.get("top", rect.get("y", 0)) or 0)
+                - float(root_rect.get("top", root_rect.get("y", 0)) or 0)
+            )
+            / root_height
+            * bins
+        ),
         round(float(rect.get("width", 0) or 0) / root_width * bins),
         round(float(rect.get("height", 0) or 0) / root_height * bins),
     )
@@ -12934,7 +13003,86 @@ def rendered_policy_fingerprint_payload(
     return {
         "version": RENDERED_POLICY_FINGERPRINT_VERSION,
         "bins": int(bins),
+        "coordinateSystem": AUTHORITATIVE_PIXEL_COORDINATE_SYSTEM,
         "phases": payload_phases,
+    }
+
+
+def _iter_pixel_audit_records(measurement: dict[str, Any]):
+    phase_measurements = list(measurement.get("phaseMeasurements") or [measurement])
+    for phase_index, phase_measurement in enumerate(phase_measurements):
+        root = ((phase_measurement.get("geometryFacts") or {}).get("root") or {})
+        for key in ("clipped", "documentRect", "raw"):
+            rect = root.get(key)
+            if isinstance(rect, dict):
+                yield f"phase[{phase_index}].geometryFacts.root.{key}", rect
+        examples = phase_measurement.get("examples") or {}
+        for section in ("nodes", "units", "focusContent", "clippedCriticalControls", "scrollOwners"):
+            records = examples.get(section) or []
+            if isinstance(records, dict):
+                records = [records]
+            for record_index, record in enumerate(records):
+                if not isinstance(record, dict):
+                    continue
+                for key in ("rect", "documentRect"):
+                    rect = record.get(key)
+                    if isinstance(rect, dict):
+                        yield f"phase[{phase_index}].examples.{section}[{record_index}].{key}", rect
+        focus = examples.get("focus")
+        if isinstance(focus, dict):
+            for key in ("rect", "documentRect"):
+                rect = focus.get(key)
+                if isinstance(rect, dict):
+                    yield f"phase[{phase_index}].examples.focus.{key}", rect
+
+
+def audit_authoritative_pixel_rect_coordinate_system(
+    measurement: dict[str, Any],
+) -> dict[str, Any]:
+    pixel_rect_records = 0
+    css_fallback_records = 0
+    missing_records: list[str] = []
+    for path, rect in _iter_pixel_audit_records(measurement):
+        chosen = authoritative_pixel_rect(rect, allow_css_fallback=True)
+        if chosen is None:
+            missing_records.append(path)
+        elif chosen.get("source") == "pixelRect":
+            pixel_rect_records += 1
+        else:
+            css_fallback_records += 1
+    pixel_geometry = str(measurement.get("pixelGeometry") or "")
+    browser_pixel_geometry = pixel_geometry == "css-edge-rounded-device-pixels-v1"
+    return {
+        "version": PIXEL_RECT_AUDIT_VERSION,
+        "coordinateSystem": AUTHORITATIVE_PIXEL_COORDINATE_SYSTEM,
+        "pixelGeometry": pixel_geometry,
+        "browserPixelGeometry": browser_pixel_geometry,
+        "ok": bool(pixel_rect_records and not missing_records and (not browser_pixel_geometry or css_fallback_records == 0)),
+        "pixelRectRecordCount": pixel_rect_records,
+        "cssFallbackRecordCount": css_fallback_records,
+        "missingRecordCount": len(missing_records),
+        "missingRecordExamples": missing_records[:12],
+        "verdict": (
+            "authoritative-pixelRect"
+            if pixel_rect_records and not css_fallback_records and not missing_records
+            else "css-fallback-present"
+            if css_fallback_records
+            else "missing-rendered-geometry"
+        ),
+    }
+
+
+def pixel_rect_audit_summary(measurements: list[dict[str, Any]]) -> dict[str, Any]:
+    audits = [audit_authoritative_pixel_rect_coordinate_system(item) for item in measurements]
+    return {
+        "version": PIXEL_RECT_AUDIT_VERSION,
+        "coordinateSystem": AUTHORITATIVE_PIXEL_COORDINATE_SYSTEM,
+        "measurementCount": len(audits),
+        "okCount": sum(1 for item in audits if item.get("ok")),
+        "cssFallbackRecordCount": sum(int(item.get("cssFallbackRecordCount", 0) or 0) for item in audits),
+        "missingRecordCount": sum(int(item.get("missingRecordCount", 0) or 0) for item in audits),
+        "pixelRectRecordCount": sum(int(item.get("pixelRectRecordCount", 0) or 0) for item in audits),
+        "verdictCounts": dict(sorted(Counter(str(item.get("verdict") or "unknown") for item in audits).items())),
     }
 
 
@@ -12986,6 +13134,7 @@ def annotate_rendered_policy_equivalence(
         item["renderedPolicyFingerprintVersion"] = (
             RENDERED_POLICY_FINGERPRINT_VERSION if fingerprint else ""
         )
+        item["pixelRectAudit"] = audit_authoritative_pixel_rect_coordinate_system(item)
         item["renderedEquivalenceExcludedFromRanking"] = bool(
             item.get("shadowOnly")
             and not item.get("responsiveEligible")
@@ -15550,6 +15699,7 @@ def run_synthetic_trials(
         measurements,
         responsive_policies=responsive_policies,
     )
+    pixel_rect_audit = pixel_rect_audit_summary(measurements)
     layout_hint_contracts = [
         compile_layout_hint_default(item)
         for item in hierarchies
@@ -15594,6 +15744,9 @@ def run_synthetic_trials(
         "responsivePolicies": responsive_policies,
         "renderedPolicyFingerprintVersion": RENDERED_POLICY_FINGERPRINT_VERSION,
         "renderedPolicyFingerprintBins": RENDERED_POLICY_FINGERPRINT_BINS,
+        "renderedPolicyCoordinateSystem": AUTHORITATIVE_PIXEL_COORDINATE_SYSTEM,
+        "pixelRectAuditVersion": PIXEL_RECT_AUDIT_VERSION,
+        "pixelRectAudit": pixel_rect_audit,
         "renderedPolicyEquivalenceGroups": rendered_equivalence_groups,
         "hierarchySource": "generated-mcel-like-html",
         "chrome": chrome,
@@ -16231,6 +16384,14 @@ def write_reports(
         f"`{report.get('renderedPolicyFingerprintVersion', 'unavailable')}` "
         f"bins=`{report.get('renderedPolicyFingerprintBins', 0)}`"
     )
+    pixel_rect_audit = report.get("pixelRectAudit") or {}
+    lines.append(
+        f"- Pixel-rect coordinate audit: "
+        f"`{report.get('pixelRectAuditVersion', 'unavailable')}` "
+        f"coordinateSystem=`{report.get('renderedPolicyCoordinateSystem', 'unknown')}` "
+        f"ok=`{pixel_rect_audit.get('okCount', 0)}/{pixel_rect_audit.get('measurementCount', 0)}` "
+        f"cssFallbackRecords=`{pixel_rect_audit.get('cssFallbackRecordCount', 0)}`"
+    )
     lines.append(
         f"- Rendered-equivalence groups removed from ranking: "
         f"`{len(report.get('renderedPolicyEquivalenceGroups') or [])}`"
@@ -16265,7 +16426,7 @@ def write_reports(
     lines.append("It proves rectangles, focus share, unclaimed node area, clipping, hidden controls, and scroll pressure for the synthetic cases.")
     lines.append("Stage B enforces exclusive painted ownership, effective focus/companion shares, partition isolation, overlay budgets, and foreign-owner critical-control interception from Chromium hit testing.")
     lines.append("Stage C scores density inside the active focus layout unit (or a semantic presentation envelope when no recursive unit exists), reports intentional inactive root space separately, and resolves integer-score ties with phase margin evidence.")
-    lines.append("Stage D fingerprints cross-phase painted geometry without policy names, removes rendered-equivalent recursive aliases before ranking, and reports which declared local policies collapsed to the same browser realization.")
+    lines.append("Stage D fingerprints cross-phase painted geometry from authoritative device-pixel rectangles, without policy names, removes rendered-equivalent recursive aliases before ranking, and reports which declared local policies collapsed to the same browser realization.")
     lines.append("Stage E applies one absolute effective-share phase-floor gate in browser classification and aggregate phase scoring, with a shared subpixel tolerance; any real floor miss remains a hard failure.")
     lines.append("Stage F ranks a responsive policy across capacity bands, permits stronger remediation only when the viewport contract allows it, requires remediation to be monotonic as space shrinks, and derives separate shrink/grow thresholds to prevent resize oscillation.")
     lines.append("Milestone 1E compares the deterministic authored hint result with already-rendered one-policy alternatives, reports the smallest browser-verified hint correction, and prepares the authored fallback chain without editing live application files.")

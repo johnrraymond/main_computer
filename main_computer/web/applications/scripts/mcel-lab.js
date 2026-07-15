@@ -20314,6 +20314,8 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
       const evidence = plan.mountedEvidence || {};
       const summary = planner?.summaryFor?.(plan) || `${plan.label || plan.app}: ${plan.point || "purpose unknown"}`;
       const workbenchSpec = planner?.normalizeWorkbenchSpec?.(plan) || plan.workbenchSpec || {};
+      const semanticReadiness = planner?.semanticReadinessForPlan?.(plan) || plan.semanticReadiness || {};
+      const semanticRuntimeStatus = semanticReadiness.semanticRuntimeStatus || plan.semanticRuntimeStatus || "structural-only";
       const workbenchLayout = planner?.workbenchLayoutSlotSummary?.(plan) || "";
       const workbenchCapabilityProjection = planner?.workbenchCapabilitySummary?.(plan) || "";
       const workbenchFindings = planner?.workbenchFindingsFor?.(plan) || [];
@@ -20339,6 +20341,7 @@ function mcelWalletToolCommitBoundary({source = {}, state = {}, runtime = {}, re
           ["Never execute", (plan.neverExecute || []).join(", ") || "unknown destructive actions"],
           ["Decode hints", (plan.decodeHints || []).join(", ") || "app id and root selector"],
           ["MWSL workbench", `${workbenchSpec.language || "MWSL"} · object: ${workbenchSpec.dominantObject || "unknown"} · primary: ${(workbenchSpec.workflows?.primary || []).join(" → ") || "not declared"}`],
+          ["Semantic runtime", `${semanticRuntimeStatus} · adapterExecutable=${Boolean(semanticReadiness.adapterExecutable)} · stateMachine=${Boolean(semanticReadiness.stateMachineReady)} · actionPlanner=${Boolean(semanticReadiness.actionPlannerReady)}`],
           ["Layout projection", workbenchLayout || "identity, primary, actions, inspector, evidence, advanced, status slots not normalized"],
           ["Capability projections", workbenchCapabilityProjection || "none declared"],
           ["Workbench findings", workbenchFindings.join("; ") || "composition contract passes static planner checks"],

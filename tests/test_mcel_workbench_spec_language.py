@@ -145,6 +145,15 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
           docWorkbenchFindings: planner.documentWorkbenchFindingsFor(documentPlan),
           documentWorkbenchReady: snapshot.documentWorkbenchReady,
           workbenchSpecReady: snapshot.workbenchSpecReady,
+          semanticTruthGateVersion: snapshot.semanticTruthGateVersion,
+          semanticRuntimeReady: snapshot.semanticRuntimeReady,
+          structuralOnly: snapshot.structuralOnly,
+          domainEnrichmentOnly: snapshot.domainEnrichmentOnly,
+          gitRuntimeStatus: git.semanticRuntimeStatus,
+          codeRuntimeStatus: code.semanticRuntimeStatus,
+          docRuntimeStatus: documentPlan.semanticRuntimeStatus,
+          docReadiness: planner.semanticReadinessForPlan(documentPlan),
+          readinessFields: planner.SEMANTIC_READINESS_FIELDS,
           capabilitySummary: planner.workbenchCapabilitySummary(documentPlan),
           layoutSummary: planner.workbenchLayoutSlotSummary(documentPlan),
         }}));
@@ -152,7 +161,7 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
     )
     result = run_node_json(script)
 
-    assert result["version"] == "0.3.1"
+    assert result["version"] == "0.3.2"
     assert result["slots"] == ["identity", "primary", "actions", "inspector", "evidence", "advanced", "status"]
     assert result["documentZones"] == ["menu", "toolbar", "navigation", "primary", "companion", "evidence", "status", "advanced"]
     assert result["gitObject"] == "Repository"
@@ -178,6 +187,18 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
     assert result["docFindings"] == []
     assert result["docWorkbenchFindings"] == []
     assert result["documentWorkbenchReady"] is True
+    assert result["semanticTruthGateVersion"] == "mcel-semantic-truth-gate-v1"
+    assert result["semanticRuntimeReady"] == 0
+    assert result["structuralOnly"] >= 1
+    assert result["domainEnrichmentOnly"] >= 1
+    assert result["gitRuntimeStatus"] == "domain-enrichment-only"
+    assert result["codeRuntimeStatus"] == "structural-only"
+    assert result["docRuntimeStatus"] == "structural-only"
+    assert result["docReadiness"]["structuralSpecReady"] is True
+    assert result["docReadiness"]["semanticRuntimeReady"] is False
+    assert result["docReadiness"]["adapterExecutable"] is False
+    assert "actionPlannerReady" in result["docReadiness"]["missingSemantics"]
+    assert "semanticRuntimeReady" in result["readinessFields"]
     assert "companion:" in result["docLayoutSummary"]
     assert "aiAssistant->companion" in result["docPlacementSummary"]
     assert result["workbenchSpecReady"] >= 3
@@ -194,6 +215,8 @@ def test_mcel_lab_surfaces_mwsl_workbench_projection_in_planner_panel() -> None:
     assert "Layout projection" in lab
     assert "Capability projections" in lab
     assert "Workbench findings" in lab
+    assert "Semantic runtime" in lab
+    assert "semanticReadinessForPlan" in lab
     assert "normalizeWorkbenchSpec" in lab
     assert "workbenchLayoutSlotSummary" in lab
     assert "workbenchCapabilitySummary" in lab

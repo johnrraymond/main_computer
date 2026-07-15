@@ -1,7 +1,7 @@
     (function (global) {
       "use strict";
 
-      const PLANNER_VERSION = "0.3.1";
+      const PLANNER_VERSION = "0.3.2";
 
 
       const MWSL_LANGUAGE_ID = "MWSL";
@@ -17,6 +17,17 @@
         noRawProviderDumping: true,
         noCompetingToolClusters: true
       });
+
+      const SEMANTIC_TRUTH_GATE_VERSION = "mcel-semantic-truth-gate-v1";
+      const SEMANTIC_READINESS_FIELDS = Object.freeze([
+        "structuralSpecReady",
+        "semanticRuntimeReady",
+        "adapterExecutable",
+        "stateMachineReady",
+        "actionPlannerReady",
+        "capabilityProviderReady",
+        "recoveryReady"
+      ]);
 
       const APP_PLANS = Object.freeze({
         "task-manager": Object.freeze({
@@ -768,6 +779,8 @@
           app: key
         };
         merged.workbenchSpec = normalizeWorkbenchSpec(merged);
+        merged.semanticReadiness = semanticReadinessForPlan(merged);
+        merged.semanticRuntimeStatus = merged.semanticReadiness.semanticRuntimeStatus;
         return merged;
       }
 
@@ -847,6 +860,70 @@
           visualPolicy: {...DEFAULT_VISUAL_POLICY, ...(authored.visualPolicy || {})}
         };
       }
+
+      function semanticReadinessForPlan(plan = {}) {
+        const spec = plan.workbenchSpec || normalizeWorkbenchSpec(plan);
+        const adapter = String(plan.adapter || "").trim();
+        const genericAdapter = !adapter || adapter === "planner-generic-adapter" || adapter === "needs-adapter";
+        const explicit = plan.semanticRuntime || {};
+        const structuralSpecReady = spec.language === MWSL_LANGUAGE_ID &&
+          Boolean(spec.dominantObject) &&
+          Boolean((spec.workflows?.primary || []).length) &&
+          Boolean((spec.layout?.primary || []).length);
+
+        const adapterExecutable = Boolean(
+          explicit.adapterExecutable === true ||
+          explicit.executable === true
+        );
+        const stateMachineReady = Boolean(explicit.stateMachineReady === true);
+        const actionPlannerReady = Boolean(explicit.actionPlannerReady === true);
+        const capabilityProviderReady = Boolean(explicit.capabilityProviderReady === true);
+        const recoveryReady = Boolean(explicit.recoveryReady === true);
+        const semanticRuntimeReady = Boolean(
+          structuralSpecReady &&
+          adapterExecutable &&
+          stateMachineReady &&
+          actionPlannerReady &&
+          capabilityProviderReady &&
+          recoveryReady
+        );
+        const adapterKind = genericAdapter
+          ? "structural-intake"
+          : (explicit.adapterKind || "domain-enrichment");
+        const semanticRuntimeStatus = semanticRuntimeReady
+          ? "executable-semantic-workbench"
+          : (genericAdapter ? "structural-only" : "domain-enrichment-only");
+        const missingSemantics = [
+          ["adapterExecutable", adapterExecutable],
+          ["stateMachineReady", stateMachineReady],
+          ["actionPlannerReady", actionPlannerReady],
+          ["capabilityProviderReady", capabilityProviderReady],
+          ["recoveryReady", recoveryReady]
+        ]
+          .filter(([, ready]) => !ready)
+          .map(([field]) => field);
+
+        return {
+          version: SEMANTIC_TRUTH_GATE_VERSION,
+          adapter,
+          adapterKind,
+          genericAdapter,
+          structuralSpecReady,
+          semanticRuntimeReady,
+          adapterExecutable,
+          stateMachineReady,
+          actionPlannerReady,
+          capabilityProviderReady,
+          recoveryReady,
+          semanticRuntimeStatus,
+          missingSemantics,
+          fields: SEMANTIC_READINESS_FIELDS.slice(),
+          claim: semanticRuntimeReady
+            ? "MCEL spec is backed by an explicit executable semantic runtime contract."
+            : "MCEL is structurally classified only; labels and generic adapters are not semantic intelligence."
+        };
+      }
+
 
       function workbenchLayoutSlotSummary(plan = {}) {
         const spec = normalizeWorkbenchSpec(plan);
@@ -965,7 +1042,8 @@
           route: plan.route,
           rootSelector: plan.rootSelector,
           point: plan.point,
-          status: plan.status
+          status: plan.status,
+          semanticRuntimeStatus: plan.semanticRuntimeStatus || semanticReadinessForPlan(plan).semanticRuntimeStatus
         };
       }
 
@@ -979,6 +1057,10 @@
           domainProven: plans.filter((plan) => plan.status === "domain-proven").length,
           plannerReady: plans.filter((plan) => plan.status === "planner-ready").length,
           highRisk: plans.filter((plan) => riskLevel(plan) === "high").length,
+          semanticTruthGateVersion: SEMANTIC_TRUTH_GATE_VERSION,
+          semanticRuntimeReady: plans.filter((plan) => semanticReadinessForPlan(plan).semanticRuntimeReady).length,
+          structuralOnly: plans.filter((plan) => semanticReadinessForPlan(plan).semanticRuntimeStatus === "structural-only").length,
+          domainEnrichmentOnly: plans.filter((plan) => semanticReadinessForPlan(plan).semanticRuntimeStatus === "domain-enrichment-only").length,
           workbenchSpecReady: plans.filter((plan) => normalizeWorkbenchSpec(plan).language === MWSL_LANGUAGE_ID).length,
           documentWorkbenchReady: documentWorkbenchFindingsFor(planFor("document")).length === 0,
           documentWorkbenchLayout: documentWorkbenchLayoutSummary(planFor("document")),
@@ -1047,6 +1129,7 @@
 
       function createUnavailableReport(options = {}) {
         const plan = planFor(options.app || "", options);
+        const readiness = plan.semanticReadiness || semanticReadinessForPlan(plan);
         return {
           app: plan.app || options.app || "",
           rootSelector: options.rootSelector || plan.rootSelector || "",
@@ -1059,6 +1142,12 @@
           actionControlCount: 0,
           fitLawCount: 0,
           layoutLawStatus: "unavailable",
+          semanticTruthGateVersion: SEMANTIC_TRUTH_GATE_VERSION,
+          semanticRuntimeStatus: readiness.semanticRuntimeStatus,
+          semanticRuntimeReady: readiness.semanticRuntimeReady,
+          adapterKind: readiness.adapterKind,
+          adapterExecutable: readiness.adapterExecutable,
+          semanticReadiness: readiness,
           violations: [{law: options.law || "planner-generic-adapter", status: "failed", message: options.message || "generic specimen adapter unavailable"}],
           destructiveActionsExecuted: false,
           safetyClaim: `planner adapter reads ${plan.label || plan.app || "specimen"} DOM and never executes controls`,
@@ -1126,9 +1215,13 @@
             root.setAttribute("data-mcel-fit", "purpose-aware");
             root.setAttribute("data-mcel-proof-surface", "planner-read-only");
             const workbenchSpec = normalizeWorkbenchSpec(plan);
+            const readiness = plan.semanticReadiness || semanticReadinessForPlan(plan);
             root.setAttribute("data-mcel-workbench-language", workbenchSpec.language || MWSL_LANGUAGE_ID);
             root.setAttribute("data-mcel-workbench-dominant-object", workbenchSpec.dominantObject || "unknown");
             root.setAttribute("data-mcel-workbench-primary-focus", workbenchSpec.visualPolicy?.primaryFocus || "dominant-object");
+            root.setAttribute("data-mcel-semantic-truth-gate", SEMANTIC_TRUTH_GATE_VERSION);
+            root.setAttribute("data-mcel-semantic-runtime-status", readiness.semanticRuntimeStatus);
+            root.setAttribute("data-mcel-adapter-kind", readiness.adapterKind);
 
             const components = Array.from(root.querySelectorAll?.("section, article, aside, main, header, footer, nav, form, details, [data-mc-component-id], [role], [id], [class]") || []);
             const fields = Array.from(root.querySelectorAll?.("input, select, textarea, label") || []);
@@ -1194,6 +1287,16 @@
               workbenchCapabilityProjectionCount: (workbenchSpec.capabilityProjections || []).length,
               workbenchFindings: workbenchFindingsFor(plan),
               workbenchFindingCount: workbenchFindingsFor(plan).length,
+              semanticTruthGateVersion: SEMANTIC_TRUTH_GATE_VERSION,
+              semanticRuntimeStatus: readiness.semanticRuntimeStatus,
+              semanticRuntimeReady: readiness.semanticRuntimeReady,
+              adapterKind: readiness.adapterKind,
+              adapterExecutable: readiness.adapterExecutable,
+              stateMachineReady: readiness.stateMachineReady,
+              actionPlannerReady: readiness.actionPlannerReady,
+              capabilityProviderReady: readiness.capabilityProviderReady,
+              recoveryReady: readiness.recoveryReady,
+              semanticReadiness: clone(readiness),
               regions: planRegionsFor(plan).map((region, index) => ({
                 ...region,
                 present: index === 0 || Boolean(root.querySelector?.(region.selector.replace(`${rootSelector} `, ""))),
@@ -1229,11 +1332,14 @@
             doc.documentElement?.removeAttribute?.(this.BODY_ENRICHMENT_ATTRIBUTE);
             doc.body.removeAttribute(this.BODY_ENRICHMENT_ATTRIBUTE);
             doc.body.classList.remove(this.ENRICHMENT_CLASS);
-            Array.from(doc.querySelectorAll?.("[data-mcel-enrichment-source='planner-purpose-aware-intake'], [data-mcel-action-risk], [data-mcel-mutates], [data-mcel-proof-surface]") || []).forEach((element) => {
+            Array.from(doc.querySelectorAll?.("[data-mcel-enrichment-source='planner-purpose-aware-intake'], [data-mcel-action-risk], [data-mcel-mutates], [data-mcel-proof-surface], [data-mcel-semantic-runtime-status], [data-mcel-adapter-kind], [data-mcel-semantic-truth-gate]") || []).forEach((element) => {
               element.removeAttribute("data-mcel-enrichment-source");
               element.removeAttribute("data-mcel-action-risk");
               element.removeAttribute("data-mcel-mutates");
               element.removeAttribute("data-mcel-proof-surface");
+              element.removeAttribute("data-mcel-semantic-runtime-status");
+              element.removeAttribute("data-mcel-adapter-kind");
+              element.removeAttribute("data-mcel-semantic-truth-gate");
             });
             global.McelSupercut?.clearRuntime?.({document: doc, rootSelector: options.rootSelector || rootSelector});
             return true;
@@ -1259,6 +1365,9 @@
         toCanonicalOption,
         plannerSnapshot,
         normalizeWorkbenchSpec,
+        semanticReadinessForPlan,
+        SEMANTIC_TRUTH_GATE_VERSION,
+        SEMANTIC_READINESS_FIELDS,
         workbenchLayoutSlotSummary,
         workbenchCapabilitySummary,
         documentWorkbenchLayoutSummary,
