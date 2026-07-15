@@ -544,6 +544,115 @@ def test_wait_for_super_base_builder_ready_uses_builder_logs_before_http_probe(
     assert result["observed_by"] == "builder-logs"
 
 
+def test_ensure_super_base_image_skips_builder_deploy_when_existing_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+
+    monkeypatch.setattr(
+        control,
+        "sync_super_base_builder_service",
+        lambda *args, **kwargs: ("builder-service-uuid", "updated", {"name": "allfather-super-base-builder-coolify-a"}),
+    )
+
+    wait_calls: list[float] = []
+
+    def fake_wait_for_super_base_builder_ready(*args: object, **kwargs: object) -> dict[str, object]:
+        wait_calls.append(float(kwargs.get("wait_s", 0)))
+        return {"ready": True, "reason": "managed super base image is ready", "observed_by": "private-probe"}
+
+    class FailingHubTool:
+        def trigger_deploy_service(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("ready existing base builder should not be redeployed")
+
+    monkeypatch.setattr(control, "wait_for_super_base_builder_ready", fake_wait_for_super_base_builder_ready)
+    monkeypatch.setattr(control, "hub_service_tool", lambda: FailingHubTool())
+
+    args = type(
+        "Args",
+        (),
+        {
+            "quiet": True,
+            "command": "add-node",
+            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713",
+            "super_base_source_image": "hyperledger/besu:latest",
+            "force_super_base_rebuild": False,
+            "no_super_base_ensure": False,
+            "no_deploy": False,
+            "super_base_wait_s": 1800.0,
+            "super_base_predeploy_wait_s": 20.0,
+            "verbose": False,
+        },
+    )()
+
+    result = control.ensure_super_base_image(plan, head, object(), args, {}, [])
+
+    assert result["ready"] is True
+    assert result["deploy_response"] is None
+    assert wait_calls == [20.0]
+
+
+def test_ensure_super_base_image_waits_existing_live_builder_without_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+
+    monkeypatch.setattr(
+        control,
+        "sync_super_base_builder_service",
+        lambda *args, **kwargs: ("builder-service-uuid", "updated", {"name": "allfather-super-base-builder-coolify-a"}),
+    )
+
+    wait_calls: list[float] = []
+
+    def fake_wait_for_super_base_builder_ready(*args: object, **kwargs: object) -> dict[str, object]:
+        wait_s = float(kwargs.get("wait_s", 0))
+        wait_calls.append(wait_s)
+        if len(wait_calls) == 1:
+            return {
+                "ready": False,
+                "reason": "building",
+                "observed_target": {"phase": "building", "healthz_ok": True, "status_ok": False},
+            }
+        return {"ready": True, "reason": "managed super base image is ready", "observed_by": "private-probe"}
+
+    class FailingHubTool:
+        def trigger_deploy_service(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("already-running base build should not be restarted")
+
+    monkeypatch.setattr(control, "wait_for_super_base_builder_ready", fake_wait_for_super_base_builder_ready)
+    monkeypatch.setattr(control, "hub_service_tool", lambda: FailingHubTool())
+
+    args = type(
+        "Args",
+        (),
+        {
+            "quiet": True,
+            "command": "add-node",
+            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713",
+            "super_base_source_image": "hyperledger/besu:latest",
+            "force_super_base_rebuild": False,
+            "no_super_base_ensure": False,
+            "no_deploy": False,
+            "super_base_wait_s": 1800.0,
+            "super_base_predeploy_wait_s": 20.0,
+            "verbose": False,
+        },
+    )()
+
+    result = control.ensure_super_base_image(plan, head, object(), args, {}, [])
+
+    assert result["ready"] is True
+    assert result["deploy_response"] is None
+    assert wait_calls == [20.0, 1800.0]
+
+
 def test_probe_compose_can_publish_result_back_to_coolify_metadata(tmp_path: Path) -> None:
     path = write_private_state(tmp_path)
     plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
@@ -960,6 +1069,17 @@ def test_add_node_dry_run_creates_first_host_local_super_node_with_contracts(tmp
     assert "traefik.http.routers" not in payload["compose"]
 
 
+
+
+def test_add_node_contains_resume_path_for_incomplete_existing_node() -> None:
+    source = (control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+
+    assert "resume: existing" in source
+    assert "resuming existing incomplete service" in source
+    assert "resume-existing-lower-ordinal" in source
+    assert "add_node_super_ready_check(resume_status, resume_manifest)" in source
+
+
 def test_add_node_quiet_suppresses_operator_progress_logs(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     result = subprocess.run(
@@ -1005,7 +1125,9 @@ def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
     assert "waiting-qbft-block-production" in script
     assert "waiting-validator-json-rpc-after-block-production" in script
     assert "latest_besu_log_block_number" in script
-    assert "open_child_log" in script
+    assert "pipe_child_output" in script
+    assert "allfather-child:{name}" in script
+    assert "MC_ALLFATHER_STDOUT_CHILD_LOGS" in script
     assert "previous.log" in script
     assert "log_block_production_ok" in script
     assert "emptyblockperiodseconds" in script
@@ -1015,6 +1137,9 @@ def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
     assert "def ensure_contracts" in script
     assert "bootstrapped" in script
     assert "deployed" in script
+    assert "contracts: submitted contract=" in script
+    assert "contracts: waiting receipt" in script
+    assert "pending_age_s" in script
     assert "/qbft/bootstrap" in script
     assert "fetch_shared_qbft_config" in script
     assert "ready-for-bootstrap-command" not in script
@@ -1026,6 +1151,16 @@ def test_super_guard_script_compiles_with_future_annotations() -> None:
 
     assert script.startswith("from __future__ import annotations")
     compile(script, "<allfather-super-guard>", "exec")
+
+
+def test_super_guard_script_streams_selected_child_logs_without_http_probe_spam() -> None:
+    script = control.super_server_command_script()
+
+    assert "def echo_child_log_line" in script
+    assert "produced empty block" in script
+    assert "MC_ALLFATHER_BESU_BLOCK_LOG_INTERVAL_S" in script
+    assert "get /healthz" in script
+    assert "allfather-child:{name}" in script
 
 
 def test_super_entrypoint_wrapper_binds_public_port_and_proxies_child_guard() -> None:
@@ -1200,6 +1335,46 @@ def test_super_guard_uses_static_solc_standard_json() -> None:
     assert "[\"solc\", \"--standard-json\"]" in script
     assert "capture_output=True" in script
     assert "solc binary is missing" in script
+
+def test_super_guard_contract_deploy_is_resumable_and_uses_nonzero_gas() -> None:
+    script = control.super_server_command_script()
+
+    assert "contracts-progress" in script
+    assert "class PendingContractDeployment" in script
+    assert "class ContractReceiptPending" in script
+    assert "deployment-pending" in script
+    assert "Known transaction" in script
+    assert "MC_ALLFATHER_MIN_CONTRACT_GAS_PRICE_WEI" in script
+    assert '"gasPrice": gas_price' in script
+    assert '"gasPrice": 0' not in script
+    assert "w3.eth.get_block(\"latest\")" in script
+    assert "install_web3_poa_middleware(w3)" in script
+    assert "geth_poa_middleware" in script or "ExtraDataToPOAMiddleware" in script
+    assert "ExtraDataLengthError" in script
+    assert "wait_for_contract_deployment_receipt" in script
+    assert "w3.eth.get_transaction_receipt" in script
+    assert "inspect_contract_transaction" in script
+    assert "w3.eth.get_transaction" in script
+    assert "MC_ALLFATHER_CONTRACT_STALE_PENDING_S" in script
+    assert "MC_ALLFATHER_CONTRACT_VISIBLE_PENDING_REPLACE_S" in script
+    assert "MC_ALLFATHER_CONTRACT_VISIBLE_PENDING_REPLACE_BLOCKS" in script
+    assert "stale pending transaction" in script
+    assert "visible pending transaction stuck" in script
+    assert "replacement_nonce" in script
+    assert "pending_block_delta" in script
+    assert "stale_transactions" in script
+    assert "tx_observed=" in script
+    assert "tx_pending=" in script
+    assert "chainGasPrice=" in script
+    assert "wait_for_transaction_receipt" not in script
+
+
+
+def test_super_guard_besu_single_node_qbft_does_not_wait_for_sync_peers() -> None:
+    script = control.super_server_command_script()
+
+    assert '"--sync-min-peers=0"' in script
+    assert '"--min-gas-price=0"' in script
 
 
 def test_super_compose_maps_besu_p2p_to_advertised_host_port_for_joiners(tmp_path: Path) -> None:
@@ -1951,6 +2126,12 @@ def test_add_node_ready_check_requires_first_node_contract_deployment() -> None:
     not_ready = control.add_node_super_ready_check(pending, manifest)
     assert not_ready["ready"] is False
     assert "contracts not deployed" in not_ready["reason"]
+
+    pending_tx = ready_internal_status_for_add_node(contracts_status="deployment-pending")
+    pending_ready = control.add_node_super_ready_check(pending_tx, manifest)
+    assert pending_ready["ready"] is False
+    assert pending_ready["terminal"] is False
+    assert "deployment-pending" in pending_ready["reason"]
 
 
 def test_add_node_ready_check_requires_validator_block_production() -> None:

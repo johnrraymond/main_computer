@@ -3545,6 +3545,72 @@ children = {}
 children_started_at = {}
 component_state = {}
 
+child_log_echo_last = {}
+
+def super_log(message: str) -> None:
+    try:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        print(f"{ts} [allfather-super] {message}", flush=True)
+    except Exception:
+        pass
+
+def rate_limited_super_log(key: str, message: str, interval_s: float = 30.0) -> None:
+    now = time.time()
+    with lock:
+        last = float(child_log_echo_last.get(key) or 0.0)
+        if now - last < float(interval_s):
+            return
+        child_log_echo_last[key] = now
+    super_log(message)
+
+def child_log_echo_names() -> set[str]:
+    raw = os.environ.get("MC_ALLFATHER_STDOUT_CHILD_LOGS", "validator_rpc,hub")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+def child_log_line_should_echo(name: str, line: str) -> bool:
+    lower = str(line or "").lower()
+    if not lower.strip():
+        return False
+    if name == "validator_rpc":
+        return any(
+            marker in lower
+            for marker in (
+                "qbft",
+                "bft",
+                "produced empty block",
+                "imported #",
+                "blockchain sync",
+                "json-rpc",
+                "json rpc",
+                "rpc-http",
+                "p2p",
+                "peer",
+                "enode",
+                "mining",
+                "validator",
+                "error",
+                "exception",
+                "warn",
+            )
+        )
+    if name == "hub":
+        return any(marker in lower for marker in ("bootstrap", "listening", "health", "error", "exception", "warn"))
+    return any(marker in lower for marker in ("error", "exception", "warn"))
+
+def echo_child_log_line(name: str, line: str) -> None:
+    if name not in child_log_echo_names():
+        return
+    if not child_log_line_should_echo(name, line):
+        return
+    lower = line.lower()
+    if "produced empty block" in lower:
+        rate_limited_super_log(f"child-log:{name}:produced-empty-block", f"[{name}] {line.rstrip()}", interval_s=float(os.environ.get("MC_ALLFATHER_BESU_BLOCK_LOG_INTERVAL_S", "30")))
+        return
+    if "get /healthz" in lower or "get /status" in lower or "get /identity" in lower or "get /topology" in lower:
+        return
+    print(f"[allfather-child:{name}] {line.rstrip()}", flush=True)
+
+
 def now_s() -> float:
     return round(time.time() - started_at, 3)
 
@@ -3671,11 +3737,14 @@ def child_uptime_s(name: str) -> float | None:
         return None
     return round(max(0.0, time.time() - float(started)), 3)
 
-def open_child_log(name: str):
+def child_log_path_for(name: str) -> Path:
     log_dir = state_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{name}.log"
-    previous_path = log_dir / f"{name}.previous.log"
+    return log_dir / f"{name}.log"
+
+def rotate_child_log(name: str) -> Path:
+    log_path = child_log_path_for(name)
+    previous_path = log_path.with_name(f"{name}.previous.log")
     try:
         if log_path.exists():
             if previous_path.exists():
@@ -3683,7 +3752,23 @@ def open_child_log(name: str):
             log_path.replace(previous_path)
     except Exception:
         pass
-    return open(log_path, "ab", buffering=0)
+    return log_path
+
+def pipe_child_output(name: str, pipe, log_path: Path) -> None:
+    try:
+        with open(log_path, "ab", buffering=0) as handle:
+            while True:
+                chunk = pipe.readline()
+                if not chunk:
+                    break
+                handle.write(chunk)
+                try:
+                    line = chunk.decode("utf-8", "replace")
+                except Exception:
+                    line = repr(chunk)
+                echo_child_log_line(name, line)
+    except Exception as exc:
+        super_log(f"child_log_pipe_error name={name} error={type(exc).__name__}: {exc}")
 
 def start_child(name: str, command: list[str], *, cwd: str | None = None, env_extra: dict | None = None) -> bool:
     if child_running(name):
@@ -3695,20 +3780,24 @@ def start_child(name: str, command: list[str], *, cwd: str | None = None, env_ex
     if env_extra:
         env.update({str(k): str(v) for k, v in env_extra.items()})
     try:
-        log = open_child_log(name)
-        children[name] = subprocess.Popen(
+        log_path = rotate_child_log(name)
+        super_log("child_start name=" + name + " command=" + " ".join(str(part) for part in command[:4]))
+        proc = subprocess.Popen(
             command,
             cwd=cwd or str(state_root),
             env=env,
-            stdout=log,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             close_fds=True,
         )
+        children[name] = proc
         children_started_at[name] = time.time()
+        threading.Thread(target=pipe_child_output, args=(name, proc.stdout, log_path), daemon=True).start()
         return True
     except Exception as exc:
         state(name, desired=True, running=False, status="start-failed", last_error=f"{type(exc).__name__}: {exc}", command=command)
+        super_log(f"child_start_failed name={name} error={type(exc).__name__}: {exc}")
         return False
 
 def run_once(name: str, command: list[str], timeout: int = 30) -> tuple[bool, str]:
@@ -4042,28 +4131,529 @@ def compile_contracts() -> dict:
         raise RuntimeError(message)
     return compiled
 
-def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name: str, args: list) -> dict:
+class PendingContractDeployment(Exception):
+    pass
+
+class ContractReceiptPending(Exception):
+    pass
+
+def is_contract_receipt_pending_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    name = type(exc).__name__.lower()
+    return (
+        "transactionnotfound" in name
+        or "not found" in message
+        or "not in the chain" in message
+        or "transaction receipt" in message and "not" in message
+    )
+
+def read_contract_progress() -> dict:
+    path = deployment_state_path("contracts-progress")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.setdefault("schema", "main-computer.allfather.contract-deployment-progress.v1")
+    payload.setdefault("network_key", network_key)
+    payload.setdefault("cell_id", cell_id)
+    contracts = payload.get("contracts")
+    if not isinstance(contracts, dict):
+        contracts = {}
+        payload["contracts"] = contracts
+    return payload
+
+def write_contract_progress(payload: dict) -> None:
+    path = deployment_state_path("contracts-progress")
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+def contract_gas_price(w3) -> int:
+    values = []
+    try:
+        values.append(int(w3.eth.gas_price or 0))
+    except Exception:
+        pass
+    try:
+        latest = w3.eth.get_block("latest")
+        if isinstance(latest, dict):
+            base_fee = latest.get("baseFeePerGas")
+        else:
+            base_fee = getattr(latest, "baseFeePerGas", None)
+        if base_fee is not None:
+            values.append(int(base_fee) + 1)
+    except Exception:
+        pass
+    try:
+        values.append(int(os.environ.get("MC_ALLFATHER_MIN_CONTRACT_GAS_PRICE_WEI", "1")))
+    except Exception:
+        values.append(1)
+    return max([value for value in values if value >= 0] or [1])
+
+def bumped_contract_gas_price(w3, previous_gas_price: object = None) -> int:
+    gas_price = contract_gas_price(w3)
+    try:
+        previous = int(previous_gas_price or 0)
+    except Exception:
+        previous = 0
+    if previous > 0:
+        gas_price = max(gas_price, int(previous * 125 // 100) + 1)
+    return max(gas_price, 1)
+
+def contract_stale_pending_s() -> float:
+    try:
+        return max(1.0, float(os.environ.get("MC_ALLFATHER_CONTRACT_STALE_PENDING_S", "120")))
+    except Exception:
+        return 120.0
+
+def contract_visible_pending_replace_s() -> float:
+    try:
+        return max(1.0, float(os.environ.get("MC_ALLFATHER_CONTRACT_VISIBLE_PENDING_REPLACE_S", "120")))
+    except Exception:
+        return 120.0
+
+def contract_visible_pending_replace_blocks() -> int:
+    try:
+        return max(1, int(os.environ.get("MC_ALLFATHER_CONTRACT_VISIBLE_PENDING_REPLACE_BLOCKS", "10")))
+    except Exception:
+        return 10
+
+def contract_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith(("0x", "0X")):
+                return int(stripped, 16)
+            return int(stripped)
+        return int(value)
+    except Exception:
+        return None
+
+def install_web3_poa_middleware(w3) -> bool:
+    # Besu QBFT blocks have >32-byte extraData.  Web3.py's default block
+    # formatter treats that like a pre-merge mainnet block and raises
+    # ExtraDataLengthError unless the proof-of-authority middleware is installed.
+    # Keep this best-effort and version-tolerant so the supervisor works across
+    # web3.py 6.x/7.x package layouts.
+    candidates = (
+        ("web3.middleware", "geth_poa_middleware"),
+        ("web3.middleware", "ExtraDataToPOAMiddleware"),
+        ("web3.middleware.geth_poa", "geth_poa_middleware"),
+        ("web3.middleware.proof_of_authority", "ExtraDataToPOAMiddleware"),
+    )
+    for module_name, attr_name in candidates:
+        try:
+            module = __import__(module_name, fromlist=[attr_name])
+            middleware = getattr(module, attr_name)
+        except Exception:
+            continue
+        try:
+            w3.middleware_onion.inject(middleware, layer=0)
+            return True
+        except ValueError:
+            return True
+        except TypeError:
+            try:
+                w3.middleware_onion.inject(middleware(), layer=0)
+                return True
+            except ValueError:
+                return True
+            except Exception:
+                pass
+        except Exception:
+            try:
+                w3.middleware_onion.add(middleware)
+                return True
+            except Exception:
+                try:
+                    w3.middleware_onion.add(middleware())
+                    return True
+                except Exception:
+                    pass
+    return False
+
+def contract_chain_diagnostics(w3) -> dict:
+    info: dict = {"error": ""}
+    try:
+        info["block_number"] = contract_int(w3.eth.block_number)
+    except Exception as exc:
+        info["block_number_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        gas_price = w3.eth.gas_price
+        info["gas_price"] = contract_int(gas_price)
+    except Exception as exc:
+        info["gas_price_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        latest = w3.eth.get_block("latest")
+        if isinstance(latest, dict):
+            base_fee = latest.get("baseFeePerGas")
+        else:
+            base_fee = getattr(latest, "baseFeePerGas", None)
+        info["latest_base_fee_per_gas"] = contract_int(base_fee)
+    except Exception as exc:
+        info["latest_block_error"] = f"{type(exc).__name__}: {exc}"
+    return info
+
+def transaction_field(tx: object, name: str) -> object:
+    if isinstance(tx, dict):
+        return tx.get(name)
+    return getattr(tx, name, None)
+
+def inspect_contract_transaction(w3, tx_hash: str) -> dict:
+    try:
+        tx = w3.eth.get_transaction(tx_hash)
+    except Exception as exc:
+        if is_contract_receipt_pending_error(exc):
+            return {"observed": False, "not_found": True, "error": ""}
+        return {"observed": False, "not_found": False, "error": f"{type(exc).__name__}: {exc}"}
+    if not tx:
+        return {"observed": False, "not_found": True, "error": ""}
+    block_number = transaction_field(tx, "blockNumber")
+    block_hash = transaction_field(tx, "blockHash")
+    nonce = transaction_field(tx, "nonce")
+    try:
+        nonce = int(nonce) if nonce is not None else None
+    except Exception:
+        pass
+    return {
+        "observed": True,
+        "not_found": False,
+        "pending": block_number in (None, "", "0x0") and not block_hash,
+        "block_number": contract_int(block_number),
+        "nonce": nonce,
+        "gas_price": contract_int(transaction_field(tx, "gasPrice")),
+        "max_fee_per_gas": contract_int(transaction_field(tx, "maxFeePerGas")),
+        "max_priority_fee_per_gas": contract_int(transaction_field(tx, "maxPriorityFeePerGas")),
+        "error": "",
+    }
+
+def contract_transaction_is_stale(tx_lookup: dict, pending_age_s: object) -> bool:
+    if tx_lookup.get("observed") or tx_lookup.get("error") or not tx_lookup.get("not_found"):
+        return False
+    try:
+        age = float(pending_age_s)
+    except Exception:
+        return False
+    return age >= contract_stale_pending_s()
+
+def contract_transaction_is_visible_pending_replaceable(tx_lookup: dict, pending_age_s: object, pending_block_delta: object) -> bool:
+    if not tx_lookup.get("observed") or not tx_lookup.get("pending") or tx_lookup.get("error"):
+        return False
+    try:
+        age = float(pending_age_s)
+    except Exception:
+        return False
+    try:
+        block_delta = int(pending_block_delta)
+    except Exception:
+        block_delta = 0
+    return age >= contract_visible_pending_replace_s() and block_delta >= contract_visible_pending_replace_blocks()
+
+def mark_contract_transaction_stale(existing: dict, progress_key: str, tx_hash: str, pending_age_s: object, receipt_check_count: int, tx_lookup: dict, *, reason: str, pending_block_delta: object = None, chain_info: dict | None = None) -> None:
+    stale_transactions = existing.setdefault("stale_transactions", [])
+    if not isinstance(stale_transactions, list):
+        stale_transactions = []
+        existing["stale_transactions"] = stale_transactions
+    stale_record = {
+        "transaction_hash": tx_hash,
+        "stale_at_uptime_s": now_s(),
+        "pending_age_s": pending_age_s,
+        "receipt_check_count": receipt_check_count,
+        "reason": reason,
+        "tx_lookup": tx_lookup,
+    }
+    if pending_block_delta is not None:
+        stale_record["pending_block_delta"] = pending_block_delta
+    if chain_info:
+        stale_record["chain"] = chain_info
+    stale_transactions.append(stale_record)
+    existing["last_stale_transaction_hash"] = tx_hash
+    existing["last_stale_pending_age_s"] = pending_age_s
+    existing["last_stale_reason"] = reason
+    existing["status"] = "stale-resubmit-required"
+    nonce = tx_lookup.get("nonce")
+    if nonce is None:
+        nonce = existing.get("nonce")
+    if nonce is not None:
+        existing["replacement_nonce"] = nonce
+    existing.pop("transaction_hash", None)
+    existing.pop("pending_transaction_hash", None)
+    if reason == "receipt-missing-and-transaction-visible-pending-too-long":
+        super_log(f"contracts: visible pending transaction stuck contract={progress_key} tx={tx_hash} pending_age_s={pending_age_s} pending_block_delta={pending_block_delta}; replacing nonce={nonce}")
+    else:
+        super_log(f"contracts: stale pending transaction contract={progress_key} tx={tx_hash} pending_age_s={pending_age_s}; resubmitting")
+
+def signed_transaction_raw_and_hash(w3, account, tx: dict) -> tuple[bytes, str]:
+    signed = account.sign_transaction(tx)
+    raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
+    tx_hash = getattr(signed, "hash", None)
+    if not tx_hash:
+        tx_hash = w3.keccak(raw)
+    return raw, w3.to_hex(tx_hash)
+
+def receipt_contract_address(receipt) -> str:
+    if isinstance(receipt, dict):
+        value = receipt.get("contractAddress")
+    else:
+        value = getattr(receipt, "contractAddress", None)
+    return str(value or "")
+
+def receipt_status_value(receipt) -> object:
+    if isinstance(receipt, dict):
+        return receipt.get("status")
+    return getattr(receipt, "status", None)
+
+def wait_for_contract_deployment_receipt(w3, tx_hash: str, contract_name: str, timeout_s: int) -> dict:
+    # Keep the supervisor loop responsive.  A long blocking receipt wait
+    # freezes hub/guard status updates and makes add-node look hung while contracts
+    # are merely waiting to be mined.  Poll once per supervisor tick instead.
+    try:
+        receipt = w3.eth.get_transaction_receipt(tx_hash)
+    except Exception as exc:
+        if is_contract_receipt_pending_error(exc):
+            raise ContractReceiptPending(f"{contract_name} transaction receipt not available yet for {tx_hash}") from exc
+        raise
+    if not receipt:
+        raise ContractReceiptPending(f"{contract_name} transaction receipt not available yet for {tx_hash}")
+    status = receipt_status_value(receipt)
+    if status is not None:
+        try:
+            failed = int(status) == 0
+        except Exception:
+            failed = str(status).lower() in {"0x0", "false", "failed"}
+        if failed:
+            raise RuntimeError(f"{contract_name} deployment transaction failed for {tx_hash}")
+    address = receipt_contract_address(receipt)
+    if not address:
+        raise RuntimeError(f"{contract_name} deployment did not return a contract address")
+    return {"address": address, "transaction_hash": w3.to_hex(tx_hash), "target": contract_name}
+
+def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name: str, args: list, progress: dict, progress_key: str) -> dict:
+    contracts_progress = progress.setdefault("contracts", {})
+    existing = contracts_progress.get(progress_key)
+    if isinstance(existing, dict):
+        if existing.get("address"):
+            return dict(existing)
+        if existing.get("transaction_hash"):
+            tx_hash = str(existing.get("transaction_hash"))
+            try:
+                receipt_check_count = int(existing.get("receipt_check_count") or 0) + 1
+            except Exception:
+                receipt_check_count = 1
+            existing["receipt_check_count"] = receipt_check_count
+            existing["last_receipt_check_uptime_s"] = now_s()
+            submitted_at = existing.get("submitted_at_uptime_s")
+            pending_age_s = None
+            try:
+                if submitted_at is not None:
+                    pending_age_s = round(max(0.0, now_s() - float(submitted_at)), 3)
+            except Exception:
+                pending_age_s = None
+            tx_lookup = inspect_contract_transaction(w3, tx_hash)
+            chain_info = contract_chain_diagnostics(w3)
+            current_block = chain_info.get("block_number")
+            pending_block_delta = None
+            if tx_lookup.get("observed") and tx_lookup.get("pending"):
+                if current_block is not None and existing.get("first_pending_block_number") is None:
+                    existing["first_pending_block_number"] = current_block
+                if current_block is not None:
+                    existing["last_pending_block_number"] = current_block
+                first_pending_block = contract_int(existing.get("first_pending_block_number"))
+                if current_block is not None and first_pending_block is not None:
+                    pending_block_delta = max(0, int(current_block) - int(first_pending_block))
+                    existing["pending_block_delta"] = pending_block_delta
+            existing["last_tx_lookup"] = tx_lookup
+            existing["last_chain_diagnostics"] = chain_info
+            write_contract_progress(progress)
+            if contract_transaction_is_stale(tx_lookup, pending_age_s):
+                mark_contract_transaction_stale(
+                    existing,
+                    progress_key,
+                    tx_hash,
+                    pending_age_s,
+                    receipt_check_count,
+                    tx_lookup,
+                    reason="receipt-missing-and-transaction-not-observed",
+                    pending_block_delta=pending_block_delta,
+                    chain_info=chain_info,
+                )
+                write_contract_progress(progress)
+            elif contract_transaction_is_visible_pending_replaceable(tx_lookup, pending_age_s, pending_block_delta):
+                mark_contract_transaction_stale(
+                    existing,
+                    progress_key,
+                    tx_hash,
+                    pending_age_s,
+                    receipt_check_count,
+                    tx_lookup,
+                    reason="receipt-missing-and-transaction-visible-pending-too-long",
+                    pending_block_delta=pending_block_delta,
+                    chain_info=chain_info,
+                )
+                write_contract_progress(progress)
+            else:
+                rate_limited_super_log(
+                    f"contracts:{progress_key}:pending",
+                    f"contracts: waiting receipt contract={progress_key} tx={tx_hash} checks={receipt_check_count} pending_age_s={pending_age_s} tx_observed={str(bool(tx_lookup.get('observed'))).lower()} tx_pending={str(bool(tx_lookup.get('pending'))).lower()} pending_block_delta={pending_block_delta} block={chain_info.get('block_number')} gasPrice={tx_lookup.get('gas_price')} chainGasPrice={chain_info.get('gas_price')} baseFee={chain_info.get('latest_base_fee_per_gas')}",
+                    interval_s=float(os.environ.get("MC_ALLFATHER_CONTRACT_LOG_INTERVAL_S", "30")),
+                )
+                state(
+                    "contracts",
+                    desired=True,
+                    running=False,
+                    status="waiting-contract-receipt",
+                    pending_contract=progress_key,
+                    pending_transaction_hash=tx_hash,
+                    pending_age_s=pending_age_s,
+                    receipt_check_count=receipt_check_count,
+                    tx_observed=bool(tx_lookup.get("observed")),
+                    tx_pending=bool(tx_lookup.get("pending")),
+                    tx_lookup_error=str(tx_lookup.get("error") or ""),
+                    tx_gas_price=tx_lookup.get("gas_price"),
+                    tx_max_fee_per_gas=tx_lookup.get("max_fee_per_gas"),
+                    tx_max_priority_fee_per_gas=tx_lookup.get("max_priority_fee_per_gas"),
+                    chain_block_number=chain_info.get("block_number"),
+                    chain_gas_price=chain_info.get("gas_price"),
+                    latest_base_fee_per_gas=chain_info.get("latest_base_fee_per_gas"),
+                    pending_block_delta=pending_block_delta,
+                    visible_pending_replace_s=contract_visible_pending_replace_s(),
+                    visible_pending_replace_blocks=contract_visible_pending_replace_blocks(),
+                    stale_pending_s=contract_stale_pending_s(),
+                    deployed_contract_count=len([item for item in contracts_progress.values() if isinstance(item, dict) and item.get("address")]),
+                )
+                try:
+                    deployed = wait_for_contract_deployment_receipt(w3, tx_hash, contract_name, int(os.environ.get("MC_ALLFATHER_CONTRACT_RECEIPT_TIMEOUT_S", "300")))
+                except ContractReceiptPending as exc:
+                    state(
+                        "contracts",
+                        desired=True,
+                        running=False,
+                        status="deployment-pending",
+                        pending_contract=progress_key,
+                        pending_transaction_hash=tx_hash,
+                        pending_age_s=pending_age_s,
+                        receipt_check_count=receipt_check_count,
+                        tx_observed=bool(tx_lookup.get("observed")),
+                        tx_pending=bool(tx_lookup.get("pending")),
+                        tx_lookup_error=str(tx_lookup.get("error") or ""),
+                        tx_gas_price=tx_lookup.get("gas_price"),
+                        tx_max_fee_per_gas=tx_lookup.get("max_fee_per_gas"),
+                        tx_max_priority_fee_per_gas=tx_lookup.get("max_priority_fee_per_gas"),
+                        chain_block_number=chain_info.get("block_number"),
+                        chain_gas_price=chain_info.get("gas_price"),
+                        latest_base_fee_per_gas=chain_info.get("latest_base_fee_per_gas"),
+                        pending_block_delta=pending_block_delta,
+                        visible_pending_replace_s=contract_visible_pending_replace_s(),
+                        visible_pending_replace_blocks=contract_visible_pending_replace_blocks(),
+                        stale_pending_s=contract_stale_pending_s(),
+                        last_error=f"{type(exc).__name__}: {exc}",
+                    )
+                    raise PendingContractDeployment(f"{progress_key} transaction is still pending: {tx_hash}") from exc
+                deployed["target"] = f"{source_name}:{contract_name}"
+                contracts_progress[progress_key] = deployed
+                write_contract_progress(progress)
+                super_log(f"contracts: deployed contract={progress_key} address={deployed.get('address')} tx={tx_hash}")
+                return deployed
+
     contract_data = compiled["contracts"][source_name][contract_name]
     abi = contract_data["abi"]
     bytecode = "0x" + contract_data["evm"]["bytecode"]["object"]
     contract = w3.eth.contract(abi=abi, bytecode=bytecode)
+    previous_record = contracts_progress.get(progress_key)
+    if isinstance(previous_record, dict):
+        stale_transactions = list(previous_record.get("stale_transactions") or [])
+        previous_gas_price = previous_record.get("gasPrice")
+        try:
+            attempt = int(previous_record.get("attempt") or 1) + 1
+        except Exception:
+            attempt = len(stale_transactions) + 1
+    else:
+        stale_transactions = []
+        previous_gas_price = None
+        attempt = 1
+    gas_price = bumped_contract_gas_price(w3, previous_gas_price)
+    replacement_nonce = None
+    if isinstance(previous_record, dict):
+        replacement_nonce = contract_int(previous_record.get("replacement_nonce"))
+    if replacement_nonce is not None:
+        nonce = replacement_nonce
+    else:
+        try:
+            nonce = w3.eth.get_transaction_count(account.address, "pending")
+        except TypeError:
+            nonce = w3.eth.get_transaction_count(account.address)
     tx = contract.constructor(*args).build_transaction(
         {
             "from": account.address,
-            "nonce": w3.eth.get_transaction_count(account.address),
+            "nonce": nonce,
             "gas": 8000000,
-            "gasPrice": 0,
+            "gasPrice": gas_price,
             "chainId": int(w3.eth.chain_id),
         }
     )
-    signed = account.sign_transaction(tx)
-    raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
-    tx_hash = w3.eth.send_raw_transaction(raw)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=90)
-    address = str(receipt.contractAddress or "")
-    if not address:
-        raise RuntimeError(f"{contract_name} deployment did not return a contract address")
-    return {"address": address, "transaction_hash": w3.to_hex(tx_hash), "target": f"{source_name}:{contract_name}"}
+    raw, tx_hash = signed_transaction_raw_and_hash(w3, account, tx)
+    contracts_progress[progress_key] = {
+        "target": f"{source_name}:{contract_name}",
+        "transaction_hash": tx_hash,
+        "nonce": nonce,
+        "gasPrice": gas_price,
+        "status": "submitted",
+        "submitted_at_uptime_s": now_s(),
+        "attempt": attempt,
+        "replaces_nonce": replacement_nonce,
+        "stale_transactions": stale_transactions,
+    }
+    write_contract_progress(progress)
+    super_log(f"contracts: submitted contract={progress_key} tx={tx_hash} nonce={nonce} gasPrice={gas_price}")
+    try:
+        sent_hash = w3.eth.send_raw_transaction(raw)
+        tx_hash = w3.to_hex(sent_hash)
+        contracts_progress[progress_key]["transaction_hash"] = tx_hash
+        write_contract_progress(progress)
+        super_log(f"contracts: accepted contract={progress_key} tx={tx_hash}")
+    except ValueError as exc:
+        message = str(exc)
+        if "Known transaction" not in message and "already known" not in message:
+            raise
+        super_log(f"contracts: transaction already known contract={progress_key} tx={tx_hash}")
+    state(
+        "contracts",
+        desired=True,
+        running=False,
+        status="waiting-contract-receipt",
+        pending_contract=progress_key,
+        pending_transaction_hash=tx_hash,
+        pending_age_s=0.0,
+        receipt_check_count=1,
+        deployed_contract_count=len([item for item in contracts_progress.values() if isinstance(item, dict) and item.get("address")]),
+    )
+    try:
+        deployed = wait_for_contract_deployment_receipt(w3, tx_hash, contract_name, int(os.environ.get("MC_ALLFATHER_CONTRACT_RECEIPT_TIMEOUT_S", "300")))
+    except ContractReceiptPending as exc:
+        state(
+            "contracts",
+            desired=True,
+            running=False,
+            status="deployment-pending",
+            pending_contract=progress_key,
+            pending_transaction_hash=tx_hash,
+            pending_age_s=0.0,
+            receipt_check_count=1,
+            last_error=f"{type(exc).__name__}: {exc}",
+        )
+        rate_limited_super_log(
+            f"contracts:{progress_key}:submitted-pending",
+            f"contracts: receipt pending contract={progress_key} tx={tx_hash}",
+            interval_s=float(os.environ.get("MC_ALLFATHER_CONTRACT_LOG_INTERVAL_S", "30")),
+        )
+        raise PendingContractDeployment(f"{progress_key} transaction is still pending: {tx_hash}") from exc
+    deployed["target"] = f"{source_name}:{contract_name}"
+    contracts_progress[progress_key] = deployed
+    write_contract_progress(progress)
+    super_log(f"contracts: deployed contract={progress_key} address={deployed.get('address')} tx={tx_hash}")
+    return deployed
 
 def ensure_contracts(validator_ready: bool, hub_admin_ready: bool) -> bool:
     desired = bool(bootstrap.get("contracts_requested"))
@@ -4092,6 +4682,7 @@ def ensure_contracts(validator_ready: bool, hub_admin_ready: bool) -> bool:
         from eth_account import Account
         from web3 import Web3
         w3 = Web3(Web3.HTTPProvider(f"http://127.0.0.1:{int(ports.get('rpc_container') or 8545)}", request_kwargs={"timeout": 10}))
+        install_web3_poa_middleware(w3)
         if not w3.is_connected():
             state("contracts", desired=True, running=False, status="waiting-validator-rpc-json-rpc")
             return False
@@ -4102,11 +4693,14 @@ def ensure_contracts(validator_ready: bool, hub_admin_ready: bool) -> bool:
         if len(set(offices)) < 4:
             offices = [account.address, hub_admin_address, derive_address(deterministic_private_key("governance-office-2")), derive_address(deterministic_private_key("governance-office-3"))]
         compiled = compile_contracts()
-        deployments = {
-            "alpha-beta-lockout": deploy_contract(w3, account, compiled, "AlphaBetaLockout.sol", "AlphaBetaLockout", [offices[:4]]),
-            "xlag-bridge-reserve": deploy_contract(w3, account, compiled, "src/XLagBridgeReserve.sol", "XLagBridgeReserve", [offices[:4], int(os.environ.get("MC_ALLFATHER_MAX_PAYOUT_WEI", "1000000000000000000")), 1, 1]),
-            "hub_credit_bridge_escrow": deploy_contract(w3, account, compiled, "src/HubCreditBridgeEscrow.sol", "HubCreditBridgeEscrow", [hub_admin_address]),
-        }
+        progress = read_contract_progress()
+        deployments = {}
+        for key, source_name, contract_name, constructor_args in [
+            ("alpha-beta-lockout", "AlphaBetaLockout.sol", "AlphaBetaLockout", [offices[:4]]),
+            ("xlag-bridge-reserve", "src/XLagBridgeReserve.sol", "XLagBridgeReserve", [offices[:4], int(os.environ.get("MC_ALLFATHER_MAX_PAYOUT_WEI", "1000000000000000000")), 1, 1]),
+            ("hub_credit_bridge_escrow", "src/HubCreditBridgeEscrow.sol", "HubCreditBridgeEscrow", [hub_admin_address]),
+        ]:
+            deployments[key] = deploy_contract(w3, account, compiled, source_name, contract_name, constructor_args, progress, key)
         payload = {
             "schema": "main-computer.allfather.contract-deployment.v1",
             "network_key": network_key,
@@ -4118,8 +4712,14 @@ def ensure_contracts(validator_ready: bool, hub_admin_ready: bool) -> bool:
             "created_at_uptime_s": now_s(),
         }
         marker.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            deployment_state_path("contracts-progress").unlink()
+        except FileNotFoundError:
+            pass
         state("contracts", desired=True, running=True, status="deployed", deployment=payload, contract_count=len(deployments), completed=True)
         return True
+    except PendingContractDeployment:
+        return False
     except Exception as exc:
         state("contracts", desired=True, running=False, status="deployment-failed", last_error=f"{type(exc).__name__}: {exc}")
         return False
@@ -4284,6 +4884,7 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         "--host-allowlist=*",
         f"--p2p-port={p2p_port}",
         f"--p2p-host={p2p_host}",
+        "--sync-min-peers=0",
         "--min-gas-price=0",
         "--logging=INFO",
     ]
@@ -5262,6 +5863,15 @@ def compact_wait_target_status(target: Mapping[str, Any]) -> str:
     return " ".join(pieces)
 
 
+def super_base_builder_target_is_live_building(target: Mapping[str, Any]) -> bool:
+    if not isinstance(target, Mapping) or not target:
+        return False
+    phase = str(target.get("phase") or target.get("status_text") or target.get("status") or "").strip().lower()
+    if phase not in {"building", "starting"}:
+        return False
+    return bool(target.get("healthz_ok") or target.get("ok"))
+
+
 def super_base_builder_status_from_logs_body(body: Any, target_image: str) -> dict[str, Any]:
     """Extract ready/failed state from managed base-builder Coolify logs."""
 
@@ -5541,25 +6151,62 @@ def ensure_super_base_image(
     service_uuid, action, existing = sync_super_base_builder_service(client, head, args, context, tried)
     operator_log(args, f"base-image: builder service {action} uuid={service_uuid or '<unknown>'}")
     deploy_response = None
-    if not bool(getattr(args, "no_deploy", False)):
-        force_base = bool(getattr(args, "force_super_base_rebuild", False))
-        operator_log(args, f"base-image: triggering builder deploy force={str(force_base).lower()}")
-        deploy_response = hub_service_tool().trigger_deploy_service(
+    force_base = bool(getattr(args, "force_super_base_rebuild", False))
+    full_wait_s = float(getattr(args, "super_base_wait_s", DEFAULT_ADD_NODE_READY_WAIT_S))
+    wait_result: dict[str, Any] | None = None
+
+    # Do not blindly redeploy the managed builder every add-node invocation.
+    # If the previous builder is already ready, continue immediately.  If it is
+    # already live and building, wait on that build instead of restarting it and
+    # pushing node creation farther out.
+    if service_uuid and not force_base:
+        precheck_wait_s = float(getattr(args, "super_base_predeploy_wait_s", 20.0))
+        operator_log(args, f"base-image: checking existing builder before deploy; wait up to {precheck_wait_s:.0f}s")
+        precheck = wait_for_super_base_builder_ready(
+            plan,
+            head,
             client,
-            service_uuid=service_uuid,
-            force=force_base,
-            tried=tried,
+            args,
+            context,
+            tried,
+            wait_s=precheck_wait_s,
+            builder_service_uuid=service_uuid,
         )
-    wait_result = wait_for_super_base_builder_ready(
-        plan,
-        head,
-        client,
-        args,
-        context,
-        tried,
-        wait_s=float(getattr(args, "super_base_wait_s", DEFAULT_ADD_NODE_READY_WAIT_S)),
-        builder_service_uuid=service_uuid,
-    )
+        if bool(precheck.get("ready")):
+            operator_log(args, f"base-image: existing builder ready; skipping builder deploy")
+            wait_result = precheck
+        elif super_base_builder_target_is_live_building(precheck.get("observed_target") if isinstance(precheck.get("observed_target"), Mapping) else {}):
+            operator_log(args, "base-image: existing builder is already building; continuing without restart")
+            wait_result = wait_for_super_base_builder_ready(
+                plan,
+                head,
+                client,
+                args,
+                context,
+                tried,
+                wait_s=full_wait_s,
+                builder_service_uuid=service_uuid,
+            )
+
+    if wait_result is None:
+        if not bool(getattr(args, "no_deploy", False)):
+            operator_log(args, f"base-image: triggering builder deploy force={str(force_base).lower()}")
+            deploy_response = hub_service_tool().trigger_deploy_service(
+                client,
+                service_uuid=service_uuid,
+                force=force_base,
+                tried=tried,
+            )
+        wait_result = wait_for_super_base_builder_ready(
+            plan,
+            head,
+            client,
+            args,
+            context,
+            tried,
+            wait_s=full_wait_s,
+            builder_service_uuid=service_uuid,
+        )
     wait_result.update(
         {
             "service_uuid": service_uuid,
@@ -6488,37 +7135,116 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             raise AllfatherControlError(f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}")
         services = service_items_for_client(client, tried)
         ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
-        ordinal = (max(ordinals) + 1) if ordinals else 1
-        planned_cell_id = super_service_name(network_key, head, ordinal)
-        operator_log(args, f"preflight: waiting for clean slot {planned_cell_id}; existing_ordinals={ordinals or []}")
-        preflight = wait_for_add_node_slot_preflight(
-            client,
-            network_key=network_key,
-            head=head,
-            service_name=planned_cell_id,
-            expected_existing_ordinals=ordinals,
-            tried=tried,
-            wait_s=float(getattr(args, "preflight_wait_s", DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S)),
-            poll_s=float(getattr(args, "preflight_poll_s", DEFAULT_ADD_NODE_PREFLIGHT_POLL_S)),
-            stable_s=float(getattr(args, "preflight_stable_s", DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S)),
-        )
-        if not bool(preflight.get("ready")):
-            operator_log(args, f"preflight: blocked for {planned_cell_id}: {preflight.get('reason')}")
-            raise AllfatherControlError(
-                f"Host {head.coolify_server} is not ready to add {planned_cell_id}: {preflight.get('reason')}"
-            )
-        operator_log(args, f"preflight: clean slot confirmed for {planned_cell_id}")
-        services = list(preflight.get("services") or services)
-        ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
-        existing_nodes = existing_super_inventory_from_services(services, network_key, head)
-        require_fdb_seed_for_existing_super_nodes(state, private_state_path, network_key, head, existing_nodes)
-        ordinal = (max(ordinals) + 1) if ordinals else 1
-        if super_service_name(network_key, head, ordinal) != planned_cell_id:
-            raise AllfatherControlError(
-                f"Coolify inventory changed while preparing add-node on {head.coolify_server}: planned {planned_cell_id}, "
-                f"but the next service would now be {super_service_name(network_key, head, ordinal)}. Rerun discover/remove-node before add-node."
-            )
         context = resolve_super_context(client, args, head, tried)
+        resume_existing = False
+        resume_reason = ""
+        resume_probe: dict[str, Any] = {}
+        resume_ordinal = max(ordinals) if ordinals else 0
+        if resume_ordinal > 0:
+            resume_cell_id = super_service_name(network_key, head, resume_ordinal)
+            existing_nodes_for_probe = existing_super_inventory_from_services(services, network_key, head)
+            try:
+                resume_probe_uuid, _resume_probe_action, _resume_probe_existing = sync_probe_service(
+                    client,
+                    plan,
+                    head,
+                    args,
+                    context,
+                    tried,
+                    super_inventory=existing_nodes_for_probe,
+                )
+                if resume_probe_uuid:
+                    hub_service_tool().trigger_deploy_service(
+                        client,
+                        service_uuid=resume_probe_uuid,
+                        force=True,
+                        tried=tried,
+                    )
+                    _probe_detail, probe_result = wait_for_probe_metadata_result(
+                        client,
+                        resume_probe_uuid,
+                        tried,
+                        expected_targets=probe_target_records_for_plan(plan, super_inventory=existing_nodes_for_probe),
+                        wait_s=10.0,
+                    )
+                    statuses = super_statuses_from_probe_result(probe_result)
+                    resume_status = statuses.get(resume_cell_id, {})
+                    resume_manifest = {"bootstrap": {"contracts_requested": bool(resume_ordinal == 1 and not getattr(args, "no_contracts", False))}}
+                    resume_check = add_node_super_ready_check(resume_status, resume_manifest)
+                    resume_probe = {
+                        "service_name": resume_cell_id,
+                        "probe_service_uuid": resume_probe_uuid,
+                        "observed": bool(resume_status),
+                        "ready": bool(resume_check.get("ready")),
+                        "terminal": bool(resume_check.get("terminal")),
+                        "reason": resume_check.get("reason"),
+                        "components": resume_check.get("components"),
+                    }
+                    if resume_status and not bool(resume_check.get("ready")):
+                        resume_existing = True
+                        resume_reason = str(resume_check.get("reason") or "existing super-node is not ready")
+            except Exception as exc:
+                resume_probe = {
+                    "service_name": resume_cell_id,
+                    "observed": False,
+                    "ready": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+
+        if resume_existing:
+            ordinal = resume_ordinal
+            planned_cell_id = super_service_name(network_key, head, ordinal)
+            operator_log(args, f"resume: existing {planned_cell_id} is not ready ({resume_reason}); updating and redeploying it")
+            existing_nodes = [
+                super_inventory_entry(network_key, head, item, source="resume-existing-lower-ordinal")
+                for item in ordinals
+                if item < ordinal
+            ]
+            require_fdb_seed_for_existing_super_nodes(state, private_state_path, network_key, head, existing_nodes)
+            preflight = {
+                "enabled": True,
+                "ready": True,
+                "reason": f"resuming existing incomplete service {planned_cell_id}: {resume_reason}",
+                "service_name": planned_cell_id,
+                "expected_existing_ordinals": [item for item in ordinals if item < ordinal],
+                "observed_ordinals": ordinals,
+                "resume_probe": resume_probe,
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+                "terminal": False,
+            }
+        else:
+            ordinal = (max(ordinals) + 1) if ordinals else 1
+            planned_cell_id = super_service_name(network_key, head, ordinal)
+            operator_log(args, f"preflight: waiting for clean slot {planned_cell_id}; existing_ordinals={ordinals or []}")
+            preflight = wait_for_add_node_slot_preflight(
+                client,
+                network_key=network_key,
+                head=head,
+                service_name=planned_cell_id,
+                expected_existing_ordinals=ordinals,
+                tried=tried,
+                wait_s=float(getattr(args, "preflight_wait_s", DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S)),
+                poll_s=float(getattr(args, "preflight_poll_s", DEFAULT_ADD_NODE_PREFLIGHT_POLL_S)),
+                stable_s=float(getattr(args, "preflight_stable_s", DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S)),
+            )
+            if not bool(preflight.get("ready")):
+                operator_log(args, f"preflight: blocked for {planned_cell_id}: {preflight.get('reason')}")
+                raise AllfatherControlError(
+                    f"Host {head.coolify_server} is not ready to add {planned_cell_id}: {preflight.get('reason')}"
+                )
+            operator_log(args, f"preflight: clean slot confirmed for {planned_cell_id}")
+            services = list(preflight.get("services") or services)
+            ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
+            existing_nodes = existing_super_inventory_from_services(services, network_key, head)
+            require_fdb_seed_for_existing_super_nodes(state, private_state_path, network_key, head, existing_nodes)
+            ordinal = (max(ordinals) + 1) if ordinals else 1
+            if super_service_name(network_key, head, ordinal) != planned_cell_id:
+                raise AllfatherControlError(
+                    f"Coolify inventory changed while preparing add-node on {head.coolify_server}: planned {planned_cell_id}, "
+                    f"but the next service would now be {super_service_name(network_key, head, ordinal)}. Rerun discover/remove-node before add-node."
+                )
         service_uuid = ""
         service_action = "planned"
         deployed = False

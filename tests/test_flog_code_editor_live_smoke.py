@@ -511,3 +511,14 @@ def test_static_only_main_writes_reports(flog, tmp_path):
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["staticContract"]["state"] == "complete"
     assert payload["summary"]["status"] == "pass"
+
+def test_code_editor_live_overlay_uses_edge_rounded_device_pixels(flog):
+    measure_js = flog.MEASURE_JS
+    annotate_js = flog.ANNOTATE_JS
+
+    assert "pixelGeometry: \"css-edge-rounded-device-pixels-v1\"" in measure_js
+    assert "Math.round(leftCss * devicePixelRatio)" in measure_js
+    assert "Math.round(rightCss * devicePixelRatio)" in measure_js
+    assert "measuredRect?.pixelRect ? cssRectFromPixelRect(measuredRect.pixelRect)" in annotate_js
+    assert "border: `1px solid ${colors[key]}`" in annotate_js
+    assert "borderRadius: \"0\"" in annotate_js

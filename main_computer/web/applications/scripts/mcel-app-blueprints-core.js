@@ -86,6 +86,10 @@
       const REQUIRED_INSPECTION_FIELDS = Object.freeze([
         "recordId",
         "appId",
+        "owningAppId",
+        "selectedAppId",
+        "inspectionRootId",
+        "inspectionContext",
         "selector",
         "previewPath",
         "visibleText",
@@ -234,10 +238,30 @@
         });
       }
 
-      function inspectionPolicy(appId) {
+      function inspectionPolicy(appId, options = {}) {
+        const inspectionRoots = [
+          {
+            id: "mounted-app",
+            context: "mounted-app",
+            selector: "[data-mcel-preview-clone]",
+            eventRootSelector: ".mcel-lab-mounted-preview-frame",
+            owningAppId: appId,
+            excludeSelectors: []
+          }
+        ];
+        (options.hostSurfaceSelectors || []).forEach((selector, index) => {
+          inspectionRoots.push({
+            id: `host-surface-${index + 1}`,
+            context: "host-app",
+            selector,
+            eventRootSelector: selector,
+            owningAppId: "mcel-lab",
+            excludeSelectors: [".mcel-lab-mounted-preview-frame"]
+          });
+        });
         return Object.freeze({
           appId,
-          mode: "contained-clone-point-inspection",
+          mode: "multi-surface-point-inspection",
           enabled: true,
           patternId: "pattern.point-and-annotate",
           selectedElementId: "element.refactor.element-annotation",
@@ -245,6 +269,16 @@
           sourceMutationAllowed: false,
           hoverHighlight: true,
           selectionHighlight: true,
+          coordinateHitTesting: true,
+          proximityRadius: 18,
+          cycleModifier: "Alt",
+          revealSelectedElement: true,
+          inspectionRoots: Object.freeze(
+            inspectionRoots.map((root) => Object.freeze({
+              ...root,
+              excludeSelectors: Object.freeze(root.excludeSelectors.slice())
+            }))
+          ),
           selectorAttributes: Object.freeze([
             "data-mc-component-id",
             "data-mc-widget-id",
@@ -273,7 +307,9 @@
           route: "/applications/document",
           rootSelector: "#document-app",
           mountPolicy: mountPolicy("document-editor", "#document-app", "/applications/document"),
-          inspectionPolicy: inspectionPolicy("document-editor"),
+          inspectionPolicy: inspectionPolicy("document-editor", {
+            hostSurfaceSelectors: ["#mcel-lab-app [data-mcel-layout-zone='primary']"]
+          }),
           blueprintElementId: "element.workbench.specification",
           dominantObject: "Document",
           purpose: "Inspectable writing workbench with document page primary, navigation left, companion/history/AI context right, and visible save/status evidence.",
@@ -329,7 +365,9 @@
           route: "/applications/mcel-lab",
           rootSelector: "#mcel-lab-app",
           mountPolicy: mountPolicy("mcel-lab", "#mcel-lab-app", "/applications/mcel-lab", {selfMountRecursionGuard: true}),
-          inspectionPolicy: inspectionPolicy("mcel-lab"),
+          inspectionPolicy: inspectionPolicy("mcel-lab", {
+            hostSurfaceSelectors: ["#mcel-lab-app [data-mcel-layout-zone='primary']"]
+          }),
           blueprintElementId: "element.workbench.specification",
           dominantObject: "AppBlueprint",
           purpose: "Self-hosting app blueprint inspector and repair planner that can inspect itself through the same generic aspects used for product apps.",

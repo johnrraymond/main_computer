@@ -300,8 +300,28 @@ BROWSER_MEASURE_JS = r"""
 async ({app, rootSelector, chromeName}) => {
   const viewport = {
     width: window.innerWidth || document.documentElement.clientWidth || 0,
-    height: window.innerHeight || document.documentElement.clientHeight || 0
+    height: window.innerHeight || document.documentElement.clientHeight || 0,
+    devicePixelRatio: Number(window.devicePixelRatio || 1) || 1
   };
+  const devicePixelRatio = viewport.devicePixelRatio;
+
+  function pixelRectFromCssRect(rect) {
+    const leftCss = Number(rect.left ?? rect.x ?? 0);
+    const topCss = Number(rect.top ?? rect.y ?? 0);
+    const rightCss = Number(rect.right ?? (leftCss + Number(rect.width || 0)));
+    const bottomCss = Number(rect.bottom ?? (topCss + Number(rect.height || 0)));
+    const left = Math.round(leftCss * devicePixelRatio);
+    const top = Math.round(topCss * devicePixelRatio);
+    const right = Math.round(rightCss * devicePixelRatio);
+    const bottom = Math.round(bottomCss * devicePixelRatio);
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    return {x: left, y: top, left, top, right, bottom, width, height, area: width * height};
+  }
+
+  function withPixelRect(rect) {
+    return {...rect, pixelRect: pixelRectFromCssRect(rect)};
+  }
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -369,22 +389,26 @@ async ({app, rootSelector, chromeName}) => {
   }
   await sleep(80);
 
-  const viewportRect = {x: 0, y: 0, left: 0, top: 0, right: viewport.width, bottom: viewport.height, width: viewport.width, height: viewport.height};
+  const viewportRect = withPixelRect({x: 0, y: 0, left: 0, top: 0, right: viewport.width, bottom: viewport.height, width: viewport.width, height: viewport.height, area: viewport.width * viewport.height});
   const root = document.querySelector(rootSelector);
   const activationError = window.__flogActivationError || "";
 
   function rectObject(rect) {
-    return {
-      x: Number(rect.x) || 0,
-      y: Number(rect.y) || 0,
-      left: Number(rect.left) || 0,
-      top: Number(rect.top) || 0,
-      right: Number(rect.right) || 0,
-      bottom: Number(rect.bottom) || 0,
-      width: Number(rect.width) || 0,
-      height: Number(rect.height) || 0,
-      area: Math.max(0, (Number(rect.width) || 0) * (Number(rect.height) || 0))
-    };
+    const left = Number(rect.left ?? rect.x ?? 0) || 0;
+    const top = Number(rect.top ?? rect.y ?? 0) || 0;
+    const width = Math.max(0, Number(rect.width) || 0);
+    const height = Math.max(0, Number(rect.height) || 0);
+    return withPixelRect({
+      x: left,
+      y: top,
+      left,
+      top,
+      right: Number(rect.right ?? (left + width)) || 0,
+      bottom: Number(rect.bottom ?? (top + height)) || 0,
+      width,
+      height,
+      area: width * height
+    });
   }
 
   function intersect(a, b) {
@@ -394,7 +418,7 @@ async ({app, rootSelector, chromeName}) => {
     const bottom = Math.min(a.bottom, b.bottom);
     const width = Math.max(0, right - left);
     const height = Math.max(0, bottom - top);
-    return {x: left, y: top, left, top, right, bottom, width, height, area: width * height};
+    return withPixelRect({x: left, y: top, left, top, right, bottom, width, height, area: width * height});
   }
 
   function isVisible(element) {
@@ -510,6 +534,8 @@ async ({app, rootSelector, chromeName}) => {
     return {
       app,
       chrome: chromeName || "current",
+      pixelGeometry: "css-edge-rounded-device-pixels-v1",
+      devicePixelRatio,
       viewport,
       rootSelector,
       rootFound: false,
@@ -609,6 +635,8 @@ async ({app, rootSelector, chromeName}) => {
   return {
     app,
     chrome: chromeName || "current",
+    pixelGeometry: "css-edge-rounded-device-pixels-v1",
+    devicePixelRatio,
     viewport,
     rootSelector,
     rootFound: true,

@@ -137,12 +137,15 @@ def test_phase_five_seed_files_are_app_specific_json_documents() -> None:
     for app_id in ["document-editor", "mcel-lab"]:
         path = ANNOTATIONS_ROOT / f"{app_id}.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
-        assert payload == {
-            "annotations": [],
-            "appId": app_id,
-            "format": 1,
-            "updatedAt": "",
-        }
+
+        assert payload["appId"] == app_id
+        assert payload["format"] == 1
+        assert isinstance(payload["updatedAt"], str)
+        assert isinstance(payload["annotations"], list)
+        for annotation in payload["annotations"]:
+            assert annotation["appId"] == app_id
+            assert annotation["annotationId"]
+            assert annotation["targetSelector"]
 
 
 def test_annotation_route_persists_updates_reads_and_deletes(tmp_path: Path) -> None:
@@ -225,3 +228,38 @@ def test_phase_five_annotation_editor_styles_are_present() -> None:
     assert ".mcel-lab-annotation-checks" in source
     assert ".mcel-preview-inspect-annotated" in source
     assert '#mcel-blueprint-annotation-status[data-state="error"]' in source
+
+def _css_rule(source: str, selector: str) -> str:
+    start = source.index(f"{selector} {{")
+    body_start = source.index("{", start) + 1
+    body_end = source.index("\n}", body_start)
+    return source[body_start:body_end]
+
+
+def test_annotated_work_area_is_not_sized_by_the_annotation_rail() -> None:
+    source = MCEL_LAB_CSS.read_text(encoding="utf-8")
+    workbench = _css_rule(source, ".mcel-lab-blueprint-workbench")
+    primary = _css_rule(source, ".mcel-lab-blueprint-primary")
+    rail = _css_rule(source, ".mcel-lab-blueprint-right-rail")
+
+    assert "--mcel-lab-workbench-block-size:" in workbench
+    assert "block-size: var(--mcel-lab-workbench-block-size);" in workbench
+    assert "min-block-size: 0;" in workbench
+    assert "max-block-size: 100%;" in primary
+    assert "max-block-size: 100%;" in rail
+    assert "overflow: hidden auto;" in rail
+    assert "overscroll-behavior: contain;" in rail
+
+
+def test_annotated_work_area_scroll_contract_degrades_safely_when_stacked() -> None:
+    source = MCEL_LAB_CSS.read_text(encoding="utf-8")
+    responsive = source.split("@container (max-width: 1100px) {", 1)[1].split(
+        "@container (max-width: 680px)",
+        1,
+    )[0]
+
+    assert "block-size: auto;" in responsive
+    assert "max-block-size: none;" in responsive
+    assert "overflow: visible;" in responsive
+    assert "overscroll-behavior: auto;" in responsive
+

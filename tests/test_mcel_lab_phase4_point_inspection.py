@@ -18,6 +18,10 @@ NAVIGATION = WEB_APP / "scripts" / "dom-bindings" / "navigation.js"
 REQUIRED_SELECTED_ELEMENT_FIELDS = [
     "recordId",
     "appId",
+    "owningAppId",
+    "selectedAppId",
+    "inspectionRootId",
+    "inspectionContext",
     "selector",
     "previewPath",
     "visibleText",
@@ -65,19 +69,49 @@ def test_phase_four_blueprints_share_generic_point_inspection_policy() -> None:
     result = run_node_json(script)
 
     for policy in (result["doc"], result["lab"]):
-        assert policy["mode"] == "contained-clone-point-inspection"
+        assert policy["mode"] == "multi-surface-point-inspection"
         assert policy["enabled"] is True
         assert policy["patternId"] == "pattern.point-and-annotate"
         assert policy["preventDefaultActions"] is True
         assert policy["sourceMutationAllowed"] is False
         assert policy["hoverHighlight"] is True
         assert policy["selectionHighlight"] is True
+        assert policy["coordinateHitTesting"] is True
+        assert policy["proximityRadius"] >= 12
+        assert policy["cycleModifier"] == "Alt"
+        assert policy["revealSelectedElement"] is True
         assert policy["layoutZoneAttributes"] == [
             "data-mcel-layout-zone",
             "data-mcel-zone",
         ]
         for field in REQUIRED_SELECTED_ELEMENT_FIELDS:
             assert field in policy["requiredSelectedElementFields"]
+
+    assert result["doc"]["inspectionRoots"][0] == {
+        "id": "mounted-app",
+        "context": "mounted-app",
+        "selector": "[data-mcel-preview-clone]",
+        "eventRootSelector": ".mcel-lab-mounted-preview-frame",
+        "owningAppId": "document-editor",
+        "excludeSelectors": [],
+    }
+    assert result["doc"]["inspectionRoots"][1] == {
+        "id": "host-surface-1",
+        "context": "host-app",
+        "selector": "#mcel-lab-app [data-mcel-layout-zone='primary']",
+        "eventRootSelector": "#mcel-lab-app [data-mcel-layout-zone='primary']",
+        "owningAppId": "mcel-lab",
+        "excludeSelectors": [".mcel-lab-mounted-preview-frame"],
+    }
+    assert result["lab"]["inspectionRoots"][0]["context"] == "mounted-app"
+    assert result["lab"]["inspectionRoots"][1] == {
+        "id": "host-surface-1",
+        "context": "host-app",
+        "selector": "#mcel-lab-app [data-mcel-layout-zone='primary']",
+        "eventRootSelector": "#mcel-lab-app [data-mcel-layout-zone='primary']",
+        "owningAppId": "mcel-lab",
+        "excludeSelectors": [".mcel-lab-mounted-preview-frame"],
+    }
 
     assert result["doc"]["selectorAttributes"] == result["lab"]["selectorAttributes"]
     assert result["doc"]["roleAttributes"] == result["lab"]["roleAttributes"]
@@ -120,7 +154,14 @@ def test_phase_four_script_selects_preview_elements_and_blocks_app_actions() -> 
         "function mcelBlueprintShellLayoutZoneForNode",
         "function mcelBlueprintShellParentRegionForNode",
         "function mcelBlueprintShellNearbyElementsForNode",
+        "function mcelBlueprintShellInspectionSurfaces",
+        "function mcelBlueprintShellInspectionSurfaceForRecord",
+        "function mcelBlueprintShellInspectionCandidateEntries",
+        "function mcelBlueprintShellInspectionTargetFromEvent",
+        "function mcelBlueprintShellRevealSelectedNode",
+        "function mcelBlueprintShellBindInspectionSurface",
         "function mcelBlueprintShellBindInspectionFrame",
+        "function mcelBlueprintShellBindInspectionSurfaces",
         "function mcelBlueprintShellSelectPreviewElement",
         "function mcelBlueprintShellApplyInspectMode",
         "function mcelBlueprintShellToggleInspectMode",
@@ -128,8 +169,13 @@ def test_phase_four_script_selects_preview_elements_and_blocks_app_actions() -> 
     for function_name in required_functions:
         assert function_name in phase
 
-    assert 'frame.addEventListener("pointerover"' in phase
-    assert 'frame.addEventListener("pointerdown"' in phase
+    assert 'eventRoot.addEventListener("pointerover"' in phase
+    assert 'eventRoot.addEventListener("pointermove"' in phase
+    assert 'eventRoot.addEventListener("pointerdown"' in phase
+    assert "elementsFromPoint" in phase
+    assert "geometry-overlap" in phase
+    assert "geometry-proximity" in phase
+    assert "event.altKey" in phase
     assert '"click", "dblclick", "contextmenu", "submit", "change", "input"' in phase
     assert "event.preventDefault()" in phase
     assert "event.stopImmediatePropagation()" in phase
@@ -392,3 +438,312 @@ def test_phase_four_selection_output_is_visible_and_drills_into_the_inspector() 
     assert ".mcel-lab-selection-receipt" in styles
     assert '.mcel-lab-selection-receipt[data-mcel-selection-state="selected"]' in styles
     assert '.mcel-lab-selected-element-card[data-mcel-selection-state="selected"]' in styles
+
+
+def test_phase_four_coordinate_hit_testing_handles_scrollbar_obscured_targets() -> None:
+    source = MCEL_LAB_JS.read_text(encoding="utf-8")
+    candidate_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionCandidateEntries",
+    )
+    distance_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionRectDistance",
+    )
+    point_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionPointFromEvent",
+    )
+    depth_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionNodeDepth",
+    )
+    semantic_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionSemanticWeight",
+    )
+    eligible_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionEligibleNode",
+    )
+
+    script = textwrap.dedent(
+        f"""
+        global.window = {{
+          getComputedStyle() {{
+            return {{display: "block", visibility: "visible", opacity: "1"}};
+          }}
+        }};
+
+        function node(tag, rect, attrs = {{}}, parent = null) {{
+          const value = {{
+            nodeType: 1,
+            tagName: tag.toUpperCase(),
+            parentElement: parent,
+            children: [],
+            ownerDocument: null,
+            getBoundingClientRect() {{ return rect; }},
+            getAttribute(name) {{ return attrs[name] || null; }},
+            hasAttribute(name) {{ return Object.prototype.hasOwnProperty.call(attrs, name); }},
+            contains(candidate) {{
+              let current = candidate;
+              while (current) {{
+                if (current === this) return true;
+                current = current.parentElement;
+              }}
+              return false;
+            }},
+            querySelectorAll() {{
+              const found = [];
+              const visit = (current) => {{
+                for (const child of current.children) {{
+                  found.push(child);
+                  visit(child);
+                }}
+              }};
+              visit(this);
+              return found;
+            }}
+          }};
+          if (parent) parent.children.push(value);
+          return value;
+        }}
+
+        const root = node("main", {{left: 0, top: 0, right: 300, bottom: 200, width: 300, height: 200}});
+        const broad = node("div", {{left: 0, top: 0, right: 300, bottom: 200, width: 300, height: 200}}, {{}}, root);
+        const yellowButton = node(
+          "button",
+          {{left: 250, top: 160, right: 295, bottom: 195, width: 45, height: 35}},
+          {{"aria-label": "Yellow action"}},
+          broad
+        );
+
+        const ownerDocument = {{
+          // Native scrollbar chrome wins the browser hit test, so the app target
+          // is absent from the direct point stack.
+          elementsFromPoint() {{ return []; }}
+        }};
+        root.ownerDocument = ownerDocument;
+        broad.ownerDocument = ownerDocument;
+        yellowButton.ownerDocument = ownerDocument;
+
+        const frame = {{
+          querySelector(selector) {{
+            return selector === "[data-mcel-preview-clone]" ? root : null;
+          }}
+        }};
+        const event = {{
+          clientX: 290,
+          clientY: 190,
+          altKey: false,
+          composedPath() {{ return [frame]; }}
+        }};
+
+        function mcelBlueprintShellInspectionPolicy() {{
+          return {{
+            coordinateHitTesting: true,
+            proximityRadius: 18
+          }};
+        }}
+
+        {point_function}
+        {distance_function}
+        {depth_function}
+        {semantic_function}
+        {eligible_function}
+        {candidate_function}
+
+        const result = mcelBlueprintShellInspectionCandidateEntries(
+          frame,
+          event,
+          {{appId: "document-editor"}}
+        );
+
+        console.log(JSON.stringify({{
+          count: result.entries.length,
+          firstTag: result.entries[0]?.node?.tagName || null,
+          firstMode: result.entries[0]?.hitMode || null,
+          includesYellow: result.entries.some((entry) => entry.node === yellowButton)
+        }}));
+        """
+    )
+    result = run_node_json(script)
+
+    assert result["count"] >= 2
+    assert result["firstTag"] == "BUTTON"
+    assert result["firstMode"] == "geometry-overlap"
+    assert result["includesYellow"] is True
+
+
+def test_phase_four_overlap_selection_is_hint_driven_and_visible() -> None:
+    source = MCEL_LAB_JS.read_text(encoding="utf-8")
+    blueprint_source = BLUEPRINTS.read_text(encoding="utf-8")
+
+    assert 'hitTestingVersion: "multi-surface-v8"' in source
+    assert 'inspectionRootsVersion: "host-primary-v8"' in source
+    assert "record.hitTest = hitTest" in source
+    assert "Candidate ${record.hitTest.candidateIndex + 1}" in source
+    assert "mcelBlueprintShellRevealSelectedNode(target, previewRoot, frame, blueprint)" in source
+    assert "Alt-click cycles overlapping or scrollbar-obscured candidates" not in source
+    assert "cycleModifier" in source
+    assert "scrollbar-obscured candidates" in source
+
+    assert "coordinateHitTesting: true" in blueprint_source
+    assert 'cycleModifier: "Alt"' in blueprint_source
+    assert "revealSelectedElement: true" in blueprint_source
+
+
+def test_phase_four_self_hosting_primary_surface_is_inspectable_without_hardcoded_receipt_logic() -> None:
+    source = MCEL_LAB_JS.read_text(encoding="utf-8")
+    blueprint_source = BLUEPRINTS.read_text(encoding="utf-8")
+
+    assert "hostSurfaceSelectors" in blueprint_source
+    assert '"#mcel-lab-app [data-mcel-layout-zone=\'primary\']"' in blueprint_source
+    assert '"#mcel-blueprint-selection-receipt"' not in blueprint_source
+    assert "function mcelBlueprintShellBindInspectionSurface" in source
+    assert 'const bindingKey = `${blueprint?.appId || "app"}:${surface.id}`;' in source
+    assert "mcelBlueprintShellInspectionEventExcluded(event, surface)" in source
+    assert "inspectionSurface: surface" in source
+    assert "record.inspectionContext === \"host-app\"" in source
+    assert "record.owningAppId || blueprint.appId" in source
+    assert "function mcelBlueprintShellAnnotationBlueprintForRecord" in source
+    assert "body: JSON.stringify({appId: annotationBlueprint.appId, annotation})" in source
+    assert "appId: annotationBlueprint.appId" in source
+
+
+def test_phase_four_host_surface_candidate_resolution_can_select_the_selection_receipt() -> None:
+    source = MCEL_LAB_JS.read_text(encoding="utf-8")
+    candidate_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionCandidateEntries",
+    )
+    distance_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionRectDistance",
+    )
+    point_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionPointFromEvent",
+    )
+    depth_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionNodeDepth",
+    )
+    semantic_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionSemanticWeight",
+    )
+    eligible_function = _extract_js_function(
+        source,
+        "mcelBlueprintShellInspectionEligibleNode",
+    )
+
+    script = textwrap.dedent(
+        f"""
+        global.window = {{
+          getComputedStyle() {{
+            return {{display: "block", visibility: "visible", opacity: "1"}};
+          }}
+        }};
+
+        function node(tag, rect, attrs = {{}}, parent = null) {{
+          const value = {{
+            nodeType: 1,
+            tagName: tag.toUpperCase(),
+            parentElement: parent,
+            children: [],
+            ownerDocument: null,
+            getBoundingClientRect() {{ return rect; }},
+            getAttribute(name) {{ return attrs[name] || null; }},
+            hasAttribute(name) {{ return Object.prototype.hasOwnProperty.call(attrs, name); }},
+            contains(candidate) {{
+              let current = candidate;
+              while (current) {{
+                if (current === this) return true;
+                current = current.parentElement;
+              }}
+              return false;
+            }},
+            querySelectorAll() {{
+              const found = [];
+              const visit = (current) => {{
+                for (const child of current.children) {{
+                  found.push(child);
+                  visit(child);
+                }}
+              }};
+              visit(this);
+              return found;
+            }}
+          }};
+          if (parent) parent.children.push(value);
+          return value;
+        }}
+
+        const hostPrimary = node(
+          "main",
+          {{left: 0, top: 0, right: 500, bottom: 500, width: 500, height: 500}},
+          {{"data-mcel-layout-zone": "primary"}}
+        );
+        const receipt = node(
+          "div",
+          {{left: 20, top: 450, right: 480, bottom: 490, width: 460, height: 40}},
+          {{id: "mcel-blueprint-selection-receipt", "aria-label": "Selection receipt"}},
+          hostPrimary
+        );
+        const ownerDocument = {{
+          elementsFromPoint() {{ return [receipt, hostPrimary]; }}
+        }};
+        hostPrimary.ownerDocument = ownerDocument;
+        receipt.ownerDocument = ownerDocument;
+
+        const eventRoot = hostPrimary;
+        const event = {{
+          clientX: 100,
+          clientY: 470,
+          altKey: false,
+          type: "pointerdown",
+          target: receipt,
+          composedPath() {{ return [receipt, hostPrimary]; }}
+        }};
+        const surface = {{
+          id: "host-surface-1",
+          context: "host-app",
+          owningAppId: "mcel-lab",
+          root: hostPrimary,
+          eventRoot
+        }};
+
+        function mcelBlueprintShellInspectionPolicy() {{
+          return {{
+            coordinateHitTesting: true,
+            proximityRadius: 18
+          }};
+        }}
+
+        {point_function}
+        {distance_function}
+        {depth_function}
+        {semantic_function}
+        {eligible_function}
+        {candidate_function}
+
+        const result = mcelBlueprintShellInspectionCandidateEntries(
+          eventRoot,
+          event,
+          {{appId: "mcel-lab"}},
+          surface
+        );
+
+        console.log(JSON.stringify({{
+          count: result.entries.length,
+          firstIsReceipt: result.entries[0]?.node === receipt,
+          firstMode: result.entries[0]?.hitMode || null
+        }}));
+        """
+    )
+    result = run_node_json(script)
+
+    assert result["count"] >= 2
+    assert result["firstIsReceipt"] is True
+    assert result["firstMode"] == "coordinate-stack"

@@ -787,6 +787,27 @@ MEASURE_JS = r"""
     || ".code-studio-code-frame, .code-studio-runtime-preview, .code-studio-output, .code-studio-contract-report"
   );
 
+  const devicePixelRatio = Number(window.devicePixelRatio || 1) || 1;
+
+  const pixelRectFromCssRect = (value) => {
+    const leftCss = Number(value.left ?? value.x ?? 0);
+    const topCss = Number(value.top ?? value.y ?? 0);
+    const rightCss = Number(value.right ?? (leftCss + Number(value.width || 0)));
+    const bottomCss = Number(value.bottom ?? (topCss + Number(value.height || 0)));
+    const left = Math.round(leftCss * devicePixelRatio);
+    const top = Math.round(topCss * devicePixelRatio);
+    const right = Math.round(rightCss * devicePixelRatio);
+    const bottom = Math.round(bottomCss * devicePixelRatio);
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    return {left, top, right, bottom, width, height, area: width * height};
+  };
+
+  const withPixelRect = (value) => ({
+    ...value,
+    pixelRect: pixelRectFromCssRect(value),
+  });
+
   const isVisible = (element) => {
     if (!element) return false;
     const style = getComputedStyle(element);
@@ -800,23 +821,25 @@ MEASURE_JS = r"""
   };
 
   const rect = (element) => {
-    if (!element) return {
+    if (!element) return withPixelRect({
       left: 0, top: 0, right: 0, bottom: 0,
       width: 0, height: 0, area: 0
-    };
+    });
     const value = element.getBoundingClientRect();
-    return {
+    const width = Math.max(0, value.width);
+    const height = Math.max(0, value.height);
+    return withPixelRect({
       left: value.left,
       top: value.top,
       right: value.right,
       bottom: value.bottom,
-      width: Math.max(0, value.width),
-      height: Math.max(0, value.height),
-      area: Math.max(0, value.width * value.height),
-    };
+      width,
+      height,
+      area: width * height,
+    });
   };
 
-  const rectFromBounds = (left, top, right, bottom) => ({
+  const rectFromBounds = (left, top, right, bottom) => withPixelRect({
     left,
     top,
     right,
@@ -1168,6 +1191,8 @@ MEASURE_JS = r"""
   );
 
   return {
+    devicePixelRatio,
+    pixelGeometry: "css-edge-rounded-device-pixels-v1",
     visible: {
       root: isVisible(root),
       shell: isVisible(shell),
@@ -1289,6 +1314,17 @@ ANNOTATE_JS = r"""
     fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
   });
 
+  const devicePixelRatio = Number(window.devicePixelRatio || 1) || 1;
+  const cssRectFromPixelRect = (value) => {
+    const left = Number(value.left || 0) / devicePixelRatio;
+    const top = Number(value.top || 0) / devicePixelRatio;
+    const right = Number(value.right || 0) / devicePixelRatio;
+    const bottom = Number(value.bottom || 0) / devicePixelRatio;
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    return {left, top, right, bottom, width, height};
+  };
+
   const colors = {
     body: "#22d3ee",
     centerSlot: "#38bdf8",
@@ -1299,7 +1335,8 @@ ANNOTATE_JS = r"""
   };
 
   for (const key of ["body", "centerSlot", "editorGroup", "activePane", "primarySurface", "proofDock"]) {
-    const rect = measurement.rects?.[key];
+    const measuredRect = measurement.rects?.[key];
+    const rect = measuredRect?.pixelRect ? cssRectFromPixelRect(measuredRect.pixelRect) : measuredRect;
     if (!rect || rect.width <= 0 || rect.height <= 0) continue;
     const box = document.createElement("div");
     Object.assign(box.style, {
@@ -1308,7 +1345,8 @@ ANNOTATE_JS = r"""
       top: `${rect.top}px`,
       width: `${rect.width}px`,
       height: `${rect.height}px`,
-      border: `2px solid ${colors[key]}`,
+      border: `1px solid ${colors[key]}`,
+      borderRadius: "0",
       boxSizing: "border-box",
     });
     const label = document.createElement("span");

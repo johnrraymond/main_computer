@@ -10985,14 +10985,59 @@ MEASURE_AND_OVERLAY_JS = r"""
     top: 0,
     right: win.innerWidth,
     bottom: win.innerHeight,
+    devicePixelRatio: Number(win.devicePixelRatio || 1) || 1,
   };
+  const devicePixelRatio = viewport.devicePixelRatio;
+
+  function pixelRectFromCssRect(rect) {
+    const leftCss = Number(rect.left ?? rect.x ?? 0);
+    const topCss = Number(rect.top ?? rect.y ?? 0);
+    const rightCss = Number(rect.right ?? (leftCss + Number(rect.width || 0)));
+    const bottomCss = Number(rect.bottom ?? (topCss + Number(rect.height || 0)));
+    const left = Math.round(leftCss * devicePixelRatio);
+    const top = Math.round(topCss * devicePixelRatio);
+    const right = Math.round(rightCss * devicePixelRatio);
+    const bottom = Math.round(bottomCss * devicePixelRatio);
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    return {x: left, y: top, left, top, right, bottom, width, height, area: width * height};
+  }
+
+  function cssRectFromPixelRect(rect) {
+    const left = Number(rect.left || 0) / devicePixelRatio;
+    const top = Number(rect.top || 0) / devicePixelRatio;
+    const right = Number(rect.right || 0) / devicePixelRatio;
+    const bottom = Number(rect.bottom || 0) / devicePixelRatio;
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    return {x: left, y: top, left, top, right, bottom, width, height, area: width * height};
+  }
+
+  function withPixelRect(rect) {
+    return {...rect, pixelRect: pixelRectFromCssRect(rect)};
+  }
+
+  function documentRectFromViewportRect(rect) {
+    const documentRect = {
+      x: rect.left + win.scrollX,
+      y: rect.top + win.scrollY,
+      left: rect.left + win.scrollX,
+      top: rect.top + win.scrollY,
+      right: rect.right + win.scrollX,
+      bottom: rect.bottom + win.scrollY,
+      width: rect.width,
+      height: rect.height,
+      area: rect.area,
+    };
+    return withPixelRect(documentRect);
+  }
 
   function rectObj(rect) {
     const left = Number(rect.left);
     const top = Number(rect.top);
     const width = Math.max(0, Number(rect.width));
     const height = Math.max(0, Number(rect.height));
-    return {x: left, y: top, left, top, right: left + width, bottom: top + height, width, height, area: width * height};
+    return withPixelRect({x: left, y: top, left, top, right: left + width, bottom: top + height, width, height, area: width * height});
   }
 
   function intersect(a, b) {
@@ -11002,7 +11047,7 @@ MEASURE_AND_OVERLAY_JS = r"""
     const bottom = Math.min(a.bottom, b.bottom);
     const width = Math.max(0, right - left);
     const height = Math.max(0, bottom - top);
-    return {x: left, y: top, left, top, right, bottom, width, height, area: width * height};
+    return withPixelRect({x: left, y: top, left, top, right, bottom, width, height, area: width * height});
   }
 
   function containsMostly(container, child, tolerance = 2) {
@@ -11069,17 +11114,7 @@ MEASURE_AND_OVERLAY_JS = r"""
       tag: el.tagName.toLowerCase(),
       label: labelFor(el),
       rect: raw,
-      documentRect: {
-        x: raw.left + win.scrollX,
-        y: raw.top + win.scrollY,
-        left: raw.left + win.scrollX,
-        top: raw.top + win.scrollY,
-        right: raw.right + win.scrollX,
-        bottom: raw.bottom + win.scrollY,
-        width: raw.width,
-        height: raw.height,
-        area: raw.area,
-      },
+      documentRect: documentRectFromViewportRect(raw),
     };
   }
 
@@ -11129,17 +11164,7 @@ MEASURE_AND_OVERLAY_JS = r"""
       triggerSlots: String(el.getAttribute("data-flog-unit-trigger-slots") || "").split(/\s+/).filter(Boolean),
       activeSupportSlots: String(el.getAttribute("data-flog-unit-active-support-slots") || "").split(/\s+/).filter(Boolean),
       rect: raw,
-      documentRect: {
-        x: raw.left + win.scrollX,
-        y: raw.top + win.scrollY,
-        left: raw.left + win.scrollX,
-        top: raw.top + win.scrollY,
-        right: raw.right + win.scrollX,
-        bottom: raw.bottom + win.scrollY,
-        width: raw.width,
-        height: raw.height,
-        area: raw.area,
-      },
+      documentRect: documentRectFromViewportRect(raw),
     };
   }
 
@@ -11785,6 +11810,8 @@ MEASURE_AND_OVERLAY_JS = r"""
     return {
       hierarchyId,
       candidate,
+      pixelGeometry: "css-edge-rounded-device-pixels-v1",
+      devicePixelRatio,
       chrome,
       viewportProfile,
       rootFound: false,
@@ -11800,17 +11827,7 @@ MEASURE_AND_OVERLAY_JS = r"""
 
   const rootRaw = rectObj(root.getBoundingClientRect());
   const rootClipped = intersect(rootRaw, viewport);
-  const rootDocumentRect = {
-    x: rootRaw.left + win.scrollX,
-    y: rootRaw.top + win.scrollY,
-    left: rootRaw.left + win.scrollX,
-    top: rootRaw.top + win.scrollY,
-    right: rootRaw.right + win.scrollX,
-    bottom: rootRaw.bottom + win.scrollY,
-    width: rootRaw.width,
-    height: rootRaw.height,
-    area: rootRaw.area,
-  };
+  const rootDocumentRect = documentRectFromViewportRect(rootRaw);
 
   const nodes = Array.from(root.querySelectorAll(".flog-node, .flog-trigger")).filter((el) => isVisibleByStyle(el));
   const focus = root.querySelector("[data-flog-phase-dominant='true']") || root.querySelector("[data-flog-focus='true']");
@@ -12466,24 +12483,20 @@ MEASURE_AND_OVERLAY_JS = r"""
   doc.body.appendChild(overlay);
 
   function addBox(record, color, label, fill = "transparent") {
-    const rect = record.documentRect || {
-      left: record.left + win.scrollX,
-      top: record.top + win.scrollY,
-      width: record.width,
-      height: record.height,
-    };
-    if (!rect || rect.width <= 1 || rect.height <= 1) return;
+    const rect = record.documentRect || documentRectFromViewportRect(record);
+    const pixelAlignedRect = rect.pixelRect ? cssRectFromPixelRect(rect.pixelRect) : rect;
+    if (!pixelAlignedRect || pixelAlignedRect.width <= 1 || pixelAlignedRect.height <= 1) return;
     const box = doc.createElement("div");
     box.setAttribute("data-flog-snapshot-overlay", "box");
     box.style.position = "absolute";
-    box.style.left = `${rect.left}px`;
-    box.style.top = `${rect.top}px`;
-    box.style.width = `${rect.width}px`;
-    box.style.height = `${rect.height}px`;
-    box.style.border = `2px solid ${color}`;
+    box.style.left = `${pixelAlignedRect.left}px`;
+    box.style.top = `${pixelAlignedRect.top}px`;
+    box.style.width = `${pixelAlignedRect.width}px`;
+    box.style.height = `${pixelAlignedRect.height}px`;
+    box.style.border = `1px solid ${color}`;
     box.style.background = fill;
     box.style.boxSizing = "border-box";
-    box.style.borderRadius = "4px";
+    box.style.borderRadius = "0";
     const tag = doc.createElement("div");
     tag.textContent = label;
     tag.style.position = "absolute";
@@ -12521,11 +12534,30 @@ MEASURE_AND_OVERLAY_JS = r"""
     });
   scrollOwners.slice(0, 14).forEach((item) => {
     const rect = item.rect;
-    addBox({documentRect: {left: rect.left + win.scrollX, top: rect.top + win.scrollY, width: rect.width, height: rect.height}}, "#ffbf3f", `scroll ${item.slot || item.selector}`, "rgba(255,191,63,0.06)");
+    addBox(
+      {documentRect: documentRectFromViewportRect(rect)},
+      "#ffbf3f",
+      `scroll ${item.slot || item.selector}`,
+      "rgba(255,191,63,0.06)"
+    );
   });
   clippedCriticalControls.slice(0, 18).forEach((item) => addBox(item, "#ff4d4d", `clipped ${item.selector}`, "rgba(255,77,77,0.06)"));
   hiddenCriticalControls.slice(0, 12).forEach((item, index) => {
-    addBox({documentRect: {left: rootDocumentRect.left + 8, top: rootDocumentRect.top + 28 + index * 18, width: 220, height: 16}}, "#ff4d4d", `hidden ${item.selector}`, "rgba(255,77,77,0.16)");
+    const placeholderRect = {
+      left: rootDocumentRect.left + 8,
+      top: rootDocumentRect.top + 28 + index * 18,
+      right: rootDocumentRect.left + 228,
+      bottom: rootDocumentRect.top + 44 + index * 18,
+      width: 220,
+      height: 16,
+      area: 3520,
+    };
+    addBox(
+      {documentRect: withPixelRect(placeholderRect)},
+      "#ff4d4d",
+      `hidden ${item.selector}`,
+      "rgba(255,77,77,0.16)"
+    );
   });
   partiallyInterceptedCriticalControlsShadow.slice(0, 18).forEach((item) => {
     const label = item.fullyForeignIntercepted
@@ -12563,6 +12595,8 @@ MEASURE_AND_OVERLAY_JS = r"""
   return {
     hierarchyId,
     candidate,
+    pixelGeometry: "css-edge-rounded-device-pixels-v1",
+    devicePixelRatio,
     renderFamily: candidateFamily,
     candidateMode,
     chrome,

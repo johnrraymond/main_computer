@@ -329,9 +329,17 @@
 
     function mcelBlueprintShellInspectionPolicy(blueprint) {
       return blueprint?.inspectionPolicy || {
-        mode: "contained-clone-point-inspection",
+        mode: "multi-surface-point-inspection",
         enabled: true,
         preventDefaultActions: true,
+        inspectionRoots: [{
+          id: "mounted-app",
+          context: "mounted-app",
+          selector: "[data-mcel-preview-clone]",
+          eventRootSelector: ".mcel-lab-mounted-preview-frame",
+          owningAppId: blueprint?.appId || "",
+          excludeSelectors: []
+        }],
         selectorAttributes: [
           "data-mc-component-id",
           "data-mc-widget-id",
@@ -340,8 +348,77 @@
         ],
         layoutZoneAttributes: ["data-mcel-layout-zone", "data-mcel-zone"],
         roleAttributes: ["role", "data-mc-component-kind", "data-mc-widget-kind"],
+        coordinateHitTesting: true,
+        proximityRadius: 18,
+        cycleModifier: "Alt",
+        revealSelectedElement: true,
         sourceMutationAllowed: false
       };
+    }
+
+    function mcelBlueprintShellInspectionSurfaces(blueprint, frame = null) {
+      const policy = mcelBlueprintShellInspectionPolicy(blueprint);
+      const roots = Array.isArray(policy.inspectionRoots) && policy.inspectionRoots.length
+        ? policy.inspectionRoots
+        : [{
+            id: "mounted-app",
+            context: "mounted-app",
+            selector: "[data-mcel-preview-clone]",
+            eventRootSelector: ".mcel-lab-mounted-preview-frame",
+            owningAppId: blueprint?.appId || "",
+            excludeSelectors: []
+          }];
+      const mountedFrame = frame || document.querySelector(".mcel-lab-mounted-preview-frame");
+      return roots.map((rootHint) => {
+        const context = String(rootHint?.context || "mounted-app");
+        const root = context === "mounted-app"
+          ? mountedFrame?.querySelector?.(rootHint.selector || "[data-mcel-preview-clone]")
+          : document.querySelector(rootHint.selector || "");
+        const eventRoot = context === "mounted-app"
+          ? mountedFrame
+          : document.querySelector(rootHint.eventRootSelector || rootHint.selector || "");
+        return {
+          id: String(rootHint?.id || context),
+          context,
+          selector: String(rootHint?.selector || ""),
+          owningAppId: String(rootHint?.owningAppId || blueprint?.appId || ""),
+          excludeSelectors: Array.isArray(rootHint?.excludeSelectors)
+            ? rootHint.excludeSelectors.slice()
+            : [],
+          root,
+          eventRoot
+        };
+      }).filter((surface) => Boolean(surface.root && surface.eventRoot));
+    }
+
+    function mcelBlueprintShellInspectionSurfaceForRecord(blueprint, record, fallbackRoot = null) {
+      const surfaces = mcelBlueprintShellInspectionSurfaces(blueprint);
+      const matched = surfaces.find((surface) => surface.id === record?.inspectionRootId);
+      if (matched) return matched;
+      const fallback = surfaces.find((surface) => surface.root === fallbackRoot) ||
+        surfaces.find((surface) => surface.context === "mounted-app") ||
+        null;
+      return fallback || {
+        id: "mounted-app",
+        context: "mounted-app",
+        selector: "[data-mcel-preview-clone]",
+        owningAppId: blueprint?.appId || "",
+        excludeSelectors: [],
+        root: fallbackRoot,
+        eventRoot: fallbackRoot?.closest?.(".mcel-lab-mounted-preview-frame") || fallbackRoot
+      };
+    }
+
+    function mcelBlueprintShellInspectionEventExcluded(event, surface) {
+      const target = event?.target;
+      if (!target || target.nodeType !== 1) return false;
+      return (surface?.excludeSelectors || []).some((selector) => {
+        try {
+          return Boolean(target.closest?.(selector));
+        } catch (_error) {
+          return false;
+        }
+      });
     }
 
     function mcelBlueprintShellEscapeAttributeValue(value) {
@@ -560,33 +637,57 @@
       };
     }
 
-    function mcelBlueprintShellBuildSelectedElementRecord(node, previewRoot, frame, blueprint) {
+    function mcelBlueprintShellBuildSelectedElementRecord(
+      node,
+      previewRoot,
+      frame,
+      blueprint,
+      inspectionSurface = null
+    ) {
       if (!node || !previewRoot || !blueprint) return null;
       const selector = mcelBlueprintShellStableSelectorForNode(node, previewRoot, blueprint);
       const parentRegion = mcelBlueprintShellParentRegionForNode(node, previewRoot, blueprint);
-      const sourceHints = Array.isArray(blueprint.sourceHints) ? blueprint.sourceHints.slice() : [];
+      const owningAppId = String(
+        inspectionSurface?.owningAppId || blueprint.appId
+      );
+      const owningBlueprint = mcelBlueprintShellSelectedBlueprint(owningAppId) || blueprint;
+      const sourceHints = Array.isArray(owningBlueprint.sourceHints)
+        ? owningBlueprint.sourceHints.slice()
+        : [];
       return {
-        recordId: `${blueprint.appId}:${selector}`,
-        appId: blueprint.appId,
-        appLabel: blueprint.label || blueprint.appId,
+        recordId: `${owningAppId}:${selector}`,
+        appId: owningAppId,
+        owningAppId,
+        selectedAppId: blueprint.appId,
+        appLabel: owningBlueprint.label || owningAppId,
+        inspectionRootId: String(inspectionSurface?.id || "mounted-app"),
+        inspectionContext: String(inspectionSurface?.context || "mounted-app"),
+        inspectionRootSelector: String(inspectionSurface?.selector || ""),
         selector,
         previewPath: mcelBlueprintShellPreviewPathForNode(node, previewRoot),
         tagName: String(node.tagName || "").toLowerCase(),
         visibleText: mcelBlueprintShellVisibleTextForNode(node),
-        role: mcelBlueprintShellRoleForNode(node, blueprint),
-        mcelElementGuess: mcelBlueprintShellMcelElementForNode(node, blueprint),
-        layoutZone: mcelBlueprintShellLayoutZoneForNode(node, blueprint),
+        role: mcelBlueprintShellRoleForNode(node, owningBlueprint),
+        mcelElementGuess: mcelBlueprintShellMcelElementForNode(node, owningBlueprint),
+        layoutZone: mcelBlueprintShellLayoutZoneForNode(node, owningBlueprint),
         parentRegion,
         boundingBox: mcelBlueprintShellBoundingBoxForNode(node, frame),
         dataMcelAttributes: mcelBlueprintShellDataMcelForNode(node),
-        nearbyElements: mcelBlueprintShellNearbyElementsForNode(node, previewRoot, blueprint),
+        nearbyElements: mcelBlueprintShellNearbyElementsForNode(
+          node,
+          previewRoot,
+          owningBlueprint
+        ),
         sourceHints,
-        cssOwners: mcelBlueprintShellFileOwners(blueprint, ".css"),
-        jsOwners: mcelBlueprintShellFileOwners(blueprint, ".js"),
-        testHints: Array.isArray(blueprint.testHints) ? blueprint.testHints.slice() : [],
+        cssOwners: mcelBlueprintShellFileOwners(owningBlueprint, ".css"),
+        jsOwners: mcelBlueprintShellFileOwners(owningBlueprint, ".js"),
+        testHints: Array.isArray(owningBlueprint.testHints)
+          ? owningBlueprint.testHints.slice()
+          : [],
         selectedAt: new Date().toISOString()
       };
     }
+
 
     function mcelBlueprintShellSelectedElementFor(blueprint) {
       const shellState = mcelBlueprintShellState();
@@ -600,6 +701,13 @@
         requiredDependencyChecks: ["handlers", "tests", "docs", "sourceOwners", "replacementPath"],
         removalOrReworkRequiresDependencyChecks: true
       };
+    }
+
+    function mcelBlueprintShellAnnotationBlueprintForRecord(blueprint, record) {
+      const owningAppId = String(
+        record?.owningAppId || record?.appId || blueprint?.appId || ""
+      );
+      return mcelBlueprintShellSelectedBlueprint(owningAppId) || blueprint;
     }
 
     function mcelBlueprintShellAnnotationLines(value) {
@@ -620,7 +728,11 @@
 
     function mcelBlueprintShellAnnotationForRecord(blueprint, record) {
       if (!blueprint || !record) return null;
-      return mcelBlueprintShellAnnotationsFor(blueprint).find((annotation) => {
+      const annotationBlueprint = mcelBlueprintShellAnnotationBlueprintForRecord(
+        blueprint,
+        record
+      );
+      return mcelBlueprintShellAnnotationsFor(annotationBlueprint).find((annotation) => {
         return annotation?.annotationId === record.recordId ||
           annotation?.recordId === record.recordId ||
           annotation?.targetSelector === record.selector;
@@ -663,13 +775,27 @@
           : [];
         shellState.annotationStoragePaths[blueprint.appId] = payload.path || "";
         shellState.annotationLoadState[blueprint.appId] = "loaded";
-        if (mcelBlueprintShellState().appId === blueprint.appId) {
-          mcelBlueprintShellRenderAnnotationEditor(blueprint);
-          mcelBlueprintShellRenderSavedAnnotationStatus(blueprint);
+        const currentShellState = mcelBlueprintShellState();
+        const selectedBlueprint = mcelBlueprintShellSelectedBlueprint(
+          currentShellState.appId
+        );
+        const selectedRecord = selectedBlueprint
+          ? mcelBlueprintShellSelectedElementFor(selectedBlueprint)
+          : null;
+        const ownsCurrentSelection = Boolean(
+          selectedRecord &&
+          String(selectedRecord.owningAppId || selectedRecord.appId) === blueprint.appId
+        );
+        if (selectedBlueprint && (
+          currentShellState.appId === blueprint.appId ||
+          ownsCurrentSelection
+        )) {
+          mcelBlueprintShellRenderAnnotationEditor(selectedBlueprint);
+          mcelBlueprintShellRenderSavedAnnotationStatus(selectedBlueprint);
           const previewRoot = document.querySelector(
-            `[data-mcel-preview-clone][data-mcel-mounted-app="${mcelBlueprintShellEscapeAttributeValue(blueprint.appId)}"]`
+            `[data-mcel-preview-clone][data-mcel-mounted-app="${mcelBlueprintShellEscapeAttributeValue(selectedBlueprint.appId)}"]`
           );
-          if (previewRoot) mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
+          mcelBlueprintShellApplySelectionHighlight(previewRoot, selectedBlueprint);
         }
         return shellState.annotationsByApp[blueprint.appId];
       } catch (error) {
@@ -687,8 +813,13 @@
       const output = document.getElementById("mcel-blueprint-saved-status");
       if (!output || !blueprint) return;
       const shellState = mcelBlueprintShellState();
-      const loadState = shellState.annotationLoadState[blueprint.appId] || "idle";
-      const count = mcelBlueprintShellAnnotationsFor(blueprint).length;
+      const record = mcelBlueprintShellSelectedElementFor(blueprint);
+      const annotationBlueprint = mcelBlueprintShellAnnotationBlueprintForRecord(
+        blueprint,
+        record
+      );
+      const loadState = shellState.annotationLoadState[annotationBlueprint.appId] || "idle";
+      const count = mcelBlueprintShellAnnotationsFor(annotationBlueprint).length;
       if (error || loadState === "error") {
         output.textContent = "Annotations: storage unavailable.";
         output.dataset.state = "error";
@@ -699,8 +830,11 @@
         output.dataset.state = "loading";
         return;
       }
-      const path = shellState.annotationStoragePaths[blueprint.appId];
-      output.textContent = `Annotations: ${count} saved${path ? ` · ${path}` : ""}.`;
+      const path = shellState.annotationStoragePaths[annotationBlueprint.appId];
+      const ownerSuffix = annotationBlueprint.appId !== blueprint.appId
+        ? ` · owner ${annotationBlueprint.appId}`
+        : "";
+      output.textContent = `Annotations: ${count} saved${ownerSuffix}${path ? ` · ${path}` : ""}.`;
       output.dataset.state = "ready";
     }
 
@@ -816,11 +950,15 @@
 
     async function mcelBlueprintShellSaveAnnotation(blueprint, record) {
       if (!blueprint || !record) return null;
+      const annotationBlueprint = mcelBlueprintShellAnnotationBlueprintForRecord(
+        blueprint,
+        record
+      );
       const existing = mcelBlueprintShellAnnotationForRecord(blueprint, record);
       let annotation;
       try {
         annotation = mcelBlueprintShellAnnotationPayloadFromForm(
-          blueprint,
+          annotationBlueprint,
           record,
           existing
         );
@@ -836,26 +974,26 @@
         const response = await fetch("/api/applications/mcel/annotations/save", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({appId: blueprint.appId, annotation})
+          body: JSON.stringify({appId: annotationBlueprint.appId, annotation})
         });
         const payload = await response.json();
         if (!response.ok || !payload?.ok) {
           throw new Error(payload?.error || `Annotation save failed (${response.status}).`);
         }
         const shellState = mcelBlueprintShellState();
-        shellState.annotationsByApp[blueprint.appId] = Array.isArray(payload.annotations)
+        shellState.annotationsByApp[annotationBlueprint.appId] = Array.isArray(payload.annotations)
           ? payload.annotations
           : [];
-        shellState.annotationStoragePaths[blueprint.appId] = payload.path || "";
-        shellState.annotationLoadState[blueprint.appId] = "loaded";
+        shellState.annotationStoragePaths[annotationBlueprint.appId] = payload.path || "";
+        shellState.annotationLoadState[annotationBlueprint.appId] = "loaded";
         mcelBlueprintShellRenderAnnotationEditor(blueprint);
         mcelBlueprintShellRenderSavedAnnotationStatus(blueprint);
         const previewRoot = document.querySelector(
           `[data-mcel-preview-clone][data-mcel-mounted-app="${mcelBlueprintShellEscapeAttributeValue(blueprint.appId)}"]`
         );
-        if (previewRoot) mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
+        mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
         window.dispatchEvent(new CustomEvent("mcel:annotation-saved", {
-          detail: {appId: blueprint.appId, annotation: payload.annotation}
+          detail: {appId: annotationBlueprint.appId, annotation: payload.annotation}
         }));
         return payload.annotation;
       } catch (error) {
@@ -870,8 +1008,13 @@
     }
 
     async function mcelBlueprintShellDeleteAnnotation(blueprint, record) {
+      if (!blueprint || !record) return false;
+      const annotationBlueprint = mcelBlueprintShellAnnotationBlueprintForRecord(
+        blueprint,
+        record
+      );
       const existing = mcelBlueprintShellAnnotationForRecord(blueprint, record);
-      if (!blueprint || !record || !existing) return false;
+      if (!existing) return false;
       const deleteButton = document.getElementById("mcel-blueprint-annotation-delete");
       if (deleteButton) deleteButton.disabled = true;
       mcelBlueprintShellSetAnnotationStatus("Deleting annotation…", "saving");
@@ -880,7 +1023,7 @@
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
-            appId: blueprint.appId,
+            appId: annotationBlueprint.appId,
             annotationId: existing.annotationId,
             targetSelector: record.selector
           })
@@ -890,15 +1033,22 @@
           throw new Error(payload?.error || `Annotation delete failed (${response.status}).`);
         }
         const shellState = mcelBlueprintShellState();
-        shellState.annotationsByApp[blueprint.appId] = Array.isArray(payload.annotations)
+        shellState.annotationsByApp[annotationBlueprint.appId] = Array.isArray(payload.annotations)
           ? payload.annotations
           : [];
-        shellState.annotationStoragePaths[blueprint.appId] = payload.path || "";
-        shellState.annotationLoadState[blueprint.appId] = "loaded";
+        shellState.annotationStoragePaths[annotationBlueprint.appId] = payload.path || "";
+        shellState.annotationLoadState[annotationBlueprint.appId] = "loaded";
         mcelBlueprintShellRenderAnnotationEditor(blueprint);
         mcelBlueprintShellRenderSavedAnnotationStatus(blueprint);
+        const previewRoot = document.querySelector(
+          `[data-mcel-preview-clone][data-mcel-mounted-app="${mcelBlueprintShellEscapeAttributeValue(blueprint.appId)}"]`
+        );
+        mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
         window.dispatchEvent(new CustomEvent("mcel:annotation-deleted", {
-          detail: {appId: blueprint.appId, annotationId: existing.annotationId}
+          detail: {
+            appId: annotationBlueprint.appId,
+            annotationId: existing.annotationId
+          }
         }));
         return true;
       } catch (error) {
@@ -920,6 +1070,10 @@
       if (!form || !blueprint) return false;
 
       const record = mcelBlueprintShellSelectedElementFor(blueprint);
+      const annotationBlueprint = mcelBlueprintShellAnnotationBlueprintForRecord(
+        blueprint,
+        record
+      );
       const annotation = mcelBlueprintShellAnnotationForRecord(blueprint, record);
       form.hidden = !record;
       if (empty) empty.hidden = Boolean(record);
@@ -928,11 +1082,15 @@
           ? "Select an element"
           : annotation
             ? `${mcelBlueprintShellLabelForZone(annotation.intent)} · saved`
-            : "New annotation";
+            : `New annotation · ${annotationBlueprint.label || annotationBlueprint.appId}`;
       }
       if (!record) {
         mcelBlueprintShellSetAnnotationStatus("Select an element to annotate.", "idle");
         return false;
+      }
+      const shellState = mcelBlueprintShellState();
+      if (shellState.annotationLoadState[annotationBlueprint.appId] !== "loaded") {
+        void mcelBlueprintShellLoadAnnotations(annotationBlueprint);
       }
 
       mcelBlueprintShellSetFieldValue(
@@ -991,9 +1149,9 @@
         "mcel-blueprint-annotation-test-expectations",
         annotation?.testExpectations || record.testHints || []
       );
-      mcelBlueprintShellRenderDependencyChecks(blueprint, annotation);
+      mcelBlueprintShellRenderDependencyChecks(annotationBlueprint, annotation);
       mcelBlueprintShellRequireDependencyChecksForIntent(
-        blueprint,
+        annotationBlueprint,
         annotation?.intent || "keep"
       );
 
@@ -1024,7 +1182,7 @@
       if (intentField) {
         const intentHandler = () => {
           mcelBlueprintShellRequireDependencyChecksForIntent(
-            blueprint,
+            annotationBlueprint,
             intentField.value
           );
         };
@@ -1062,13 +1220,26 @@
     }
 
     function mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint) {
-      if (!previewRoot) return;
-      mcelBlueprintShellClearInspectionHighlights(previewRoot);
       const record = mcelBlueprintShellSelectedElementFor(blueprint);
+      const surfaces = mcelBlueprintShellInspectionSurfaces(blueprint);
+      const roots = surfaces.map((surface) => surface.root).filter(Boolean);
+      if (previewRoot && !roots.includes(previewRoot)) roots.push(previewRoot);
+      roots.forEach((root) => mcelBlueprintShellClearInspectionHighlights(root));
       if (!record) return;
-      const selectedNode = mcelBlueprintShellNodeFromPreviewPath(previewRoot, record.previewPath);
+
+      const surface = mcelBlueprintShellInspectionSurfaceForRecord(
+        blueprint,
+        record,
+        previewRoot
+      );
+      const selectionRoot = surface?.root || previewRoot;
+      if (!selectionRoot) return;
+      const selectedNode = mcelBlueprintShellNodeFromPreviewPath(
+        selectionRoot,
+        record.previewPath
+      );
       const ownerNode = mcelBlueprintShellNodeFromPreviewPath(
-        previewRoot,
+        selectionRoot,
         record.parentRegion?.previewPath
       );
       if (ownerNode) ownerNode.classList.add("mcel-preview-inspect-owner");
@@ -1172,8 +1343,8 @@
         empty.className = "mcel-lab-muted-note";
         empty.textContent = report
           ? (shellState.inspectionMode
-            ? "Inspect mode is active. Click any rendered element in the preview."
-            : "Enable Inspect, then click an element in the mounted preview.")
+            ? "Inspect mode is active. Click an element in the mounted preview or the Lab work area."
+            : "Enable Inspect, then click an element in the mounted preview or the Lab work area.")
           : "Mount the selected app before inspecting rendered elements.";
         container.appendChild(empty);
         if (selectionStatus) {
@@ -1208,6 +1379,11 @@
         );
         mcelBlueprintShellAppendSelectedFact(facts, "Element", `<${record.tagName}>`);
         mcelBlueprintShellAppendSelectedFact(facts, "App", record.appLabel);
+        mcelBlueprintShellAppendSelectedFact(
+          facts,
+          "Inspection surface",
+          record.inspectionContext === "host-app" ? "MCEL Lab chrome" : "Mounted app"
+        );
 
         const details = document.createElement("details");
         details.className = "mcel-lab-selection-details";
@@ -1218,6 +1394,10 @@
           boundingBox: record.boundingBox,
           dataMcelAttributes: record.dataMcelAttributes,
           nearbyElements: record.nearbyElements,
+          hitTest: record.hitTest || null,
+          inspectionRootId: record.inspectionRootId || null,
+          inspectionContext: record.inspectionContext || null,
+          owningAppId: record.owningAppId || record.appId,
           sourceHints: record.sourceHints,
           cssOwners: record.cssOwners,
           jsOwners: record.jsOwners,
@@ -1241,37 +1421,310 @@
       }
     }
 
-    function mcelBlueprintShellInspectionTargetFromEvent(frame, event) {
-      const previewRoot = frame?.querySelector?.("[data-mcel-preview-clone]");
-      const target = event?.target?.nodeType === 1 ? event.target : event?.target?.parentElement;
-      if (!previewRoot || !target || !previewRoot.contains(target)) return null;
-      return {previewRoot, target};
+    function mcelBlueprintShellInspectionPointFromEvent(event) {
+      const x = Number(event?.clientX);
+      const y = Number(event?.clientY);
+      return Number.isFinite(x) && Number.isFinite(y) ? {x, y} : null;
     }
 
-    function mcelBlueprintShellSelectPreviewElement(target, previewRoot, frame, blueprint) {
+    function mcelBlueprintShellInspectionRectDistance(rect, point) {
+      if (!rect || !point) return Number.POSITIVE_INFINITY;
+      const left = Number(rect.left ?? rect.x ?? 0);
+      const top = Number(rect.top ?? rect.y ?? 0);
+      const right = Number(rect.right ?? (left + Number(rect.width || 0)));
+      const bottom = Number(rect.bottom ?? (top + Number(rect.height || 0)));
+      const dx = point.x < left ? left - point.x : (point.x > right ? point.x - right : 0);
+      const dy = point.y < top ? top - point.y : (point.y > bottom ? point.y - bottom : 0);
+      return Math.hypot(dx, dy);
+    }
+
+    function mcelBlueprintShellInspectionNodeDepth(node, previewRoot) {
+      let depth = 0;
+      let current = node;
+      while (current && current !== previewRoot) {
+        depth += 1;
+        current = current.parentElement;
+      }
+      return current === previewRoot ? depth : -1;
+    }
+
+    function mcelBlueprintShellInspectionSemanticWeight(node) {
+      const tagName = String(node?.tagName || "").toLowerCase();
+      const role = String(node?.getAttribute?.("role") || "").toLowerCase();
+      const interactiveTags = new Set(["button", "a", "input", "select", "textarea", "summary", "label"]);
+      const interactiveRoles = new Set(["button", "link", "menuitem", "option", "tab", "checkbox", "radio", "switch"]);
+      let weight = 0;
+      if (interactiveTags.has(tagName)) weight += 8;
+      if (interactiveRoles.has(role)) weight += 8;
+      if (node?.hasAttribute?.("data-mcel-element")) weight += 5;
+      if (node?.hasAttribute?.("aria-label")) weight += 4;
+      if (node?.hasAttribute?.("data-mcel-layout-zone") || node?.hasAttribute?.("data-mcel-zone")) weight += 2;
+      if (role) weight += 2;
+      return weight;
+    }
+
+    function mcelBlueprintShellInspectionEligibleNode(node, previewRoot) {
+      if (!node || node.nodeType !== 1 || !previewRoot) return false;
+      if (node !== previewRoot && !previewRoot.contains(node)) return false;
+      const tagName = String(node.tagName || "").toLowerCase();
+      if (["script", "style", "template", "link", "meta"].includes(tagName)) return false;
+      const rect = node.getBoundingClientRect?.();
+      if (!rect || Number(rect.width || 0) < 1 || Number(rect.height || 0) < 1) return false;
+      const styles = typeof window.getComputedStyle === "function"
+        ? window.getComputedStyle(node)
+        : null;
+      if (styles?.display === "none" || styles?.visibility === "hidden" || Number(styles?.opacity) === 0) {
+        return false;
+      }
+      return true;
+    }
+
+    function mcelBlueprintShellInspectionCandidateEntries(
+      frame,
+      event,
+      blueprint,
+      inspectionSurface = null
+    ) {
+      const previewRoot = inspectionSurface?.root ||
+        frame?.querySelector?.("[data-mcel-preview-clone]");
+      const point = mcelBlueprintShellInspectionPointFromEvent(event);
+      if (!previewRoot || !point) return {previewRoot, point, entries: []};
+
+      const policy = mcelBlueprintShellInspectionPolicy(blueprint);
+      const proximityRadius = Math.max(0, Number(policy.proximityRadius ?? 18));
+      const entryMap = new Map();
+      const addCandidate = (node, sourceRank, hitMode) => {
+        if (!mcelBlueprintShellInspectionEligibleNode(node, previewRoot)) return;
+        const rect = node.getBoundingClientRect();
+        const distance = mcelBlueprintShellInspectionRectDistance(rect, point);
+        const existing = entryMap.get(node);
+        const entry = {
+          node,
+          sourceRank,
+          hitMode,
+          distance,
+          semanticWeight: mcelBlueprintShellInspectionSemanticWeight(node),
+          depth: mcelBlueprintShellInspectionNodeDepth(node, previewRoot),
+          area: Math.max(1, Number(rect.width || 0) * Number(rect.height || 0))
+        };
+        if (!existing || sourceRank < existing.sourceRank || distance < existing.distance) {
+          entryMap.set(node, entry);
+        }
+      };
+
+      const eventPath = typeof event?.composedPath === "function" ? event.composedPath() : [];
+      eventPath.forEach((node) => {
+        if (node?.nodeType === 1 && (node === previewRoot || previewRoot.contains(node))) {
+          addCandidate(node, 1, "event-path");
+        }
+      });
+
+      const pointDocument = previewRoot.ownerDocument || document;
+      let pointStack = [];
+      try {
+        pointStack = typeof pointDocument.elementsFromPoint === "function"
+          ? pointDocument.elementsFromPoint(point.x, point.y)
+          : [];
+      } catch (_error) {
+        pointStack = [];
+      }
+      pointStack.forEach((node) => {
+        if (node?.nodeType === 1 && (node === previewRoot || previewRoot.contains(node))) {
+          addCandidate(node, 0, "coordinate-stack");
+        }
+      });
+
+      const needsGeometryFallback = entryMap.size === 0 || Boolean(event?.altKey) || event?.type === "pointerdown";
+      if (policy.coordinateHitTesting !== false && needsGeometryFallback) {
+        const candidates = [previewRoot].concat(Array.from(previewRoot.querySelectorAll?.("*") || []));
+        candidates.forEach((node) => {
+          if (!mcelBlueprintShellInspectionEligibleNode(node, previewRoot)) return;
+          const distance = mcelBlueprintShellInspectionRectDistance(node.getBoundingClientRect(), point);
+          if (distance <= proximityRadius) {
+            addCandidate(
+              node,
+              distance === 0 ? 0 : 2,
+              distance === 0 ? "geometry-overlap" : "geometry-proximity"
+            );
+          }
+        });
+      }
+
+      const entries = Array.from(entryMap.values()).sort((left, right) => {
+        return left.sourceRank - right.sourceRank ||
+          left.distance - right.distance ||
+          right.semanticWeight - left.semanticWeight ||
+          right.depth - left.depth ||
+          left.area - right.area;
+      });
+      return {previewRoot, point, entries};
+    }
+
+    function mcelBlueprintShellInspectionCandidateIndex(entries, point, event, blueprint) {
+      if (!entries.length) return 0;
+      const shellState = mcelBlueprintShellState();
+      const policy = mcelBlueprintShellInspectionPolicy(blueprint);
+      const modifier = String(policy.cycleModifier || "Alt").toLowerCase();
+      const cycleRequested = modifier === "alt"
+        ? Boolean(event?.altKey)
+        : (modifier === "shift" ? Boolean(event?.shiftKey) : Boolean(event?.metaKey || event?.ctrlKey));
+      const pointKey = point
+        ? `${Math.round(point.x / 8)}:${Math.round(point.y / 8)}`
+        : "unknown";
+      const signature = entries
+        .slice(0, 12)
+        .map((entry) => mcelBlueprintShellPreviewPathForNode(entry.node, entry.node.closest?.("[data-mcel-preview-clone]") || entry.node))
+        .map((path) => path.join("."))
+        .join("|");
+      const key = `${blueprint?.appId || "app"}:${pointKey}:${signature}`;
+      const previous = shellState.inspectionHitCycle;
+      let index = 0;
+      if (cycleRequested && previous?.key === key) {
+        index = (Number(previous.index || 0) + 1) % entries.length;
+      }
+      shellState.inspectionHitCycle = {key, index};
+      return index;
+    }
+
+    function mcelBlueprintShellInspectionTargetFromEvent(
+      frame,
+      event,
+      blueprint,
+      {cycle = false, inspectionSurface = null} = {}
+    ) {
+      const resolved = mcelBlueprintShellInspectionCandidateEntries(
+        frame,
+        event,
+        blueprint,
+        inspectionSurface
+      );
+      if (!resolved.previewRoot || !resolved.entries.length) return null;
+      const index = cycle
+        ? mcelBlueprintShellInspectionCandidateIndex(resolved.entries, resolved.point, event, blueprint)
+        : 0;
+      const entry = resolved.entries[Math.min(index, resolved.entries.length - 1)];
+      return {
+        previewRoot: resolved.previewRoot,
+        target: entry.node,
+        hitTest: {
+          mode: entry.hitMode,
+          coordinates: resolved.point,
+          candidateCount: resolved.entries.length,
+          candidateIndex: index,
+          cycleModifier: mcelBlueprintShellInspectionPolicy(blueprint).cycleModifier || "Alt"
+        }
+      };
+    }
+
+    function mcelBlueprintShellRevealSelectedNode(target, previewRoot, frame, blueprint) {
+      if (!target || !previewRoot || !frame) return false;
+      const policy = mcelBlueprintShellInspectionPolicy(blueprint);
+      if (policy.revealSelectedElement === false) return false;
+
+      let changed = false;
+      let container = target.parentElement;
+      while (container && previewRoot.contains(container)) {
+        const styles = typeof window.getComputedStyle === "function"
+          ? window.getComputedStyle(container)
+          : null;
+        const canScrollX = /(auto|scroll|overlay)/.test(String(styles?.overflowX || styles?.overflow || ""));
+        const canScrollY = /(auto|scroll|overlay)/.test(String(styles?.overflowY || styles?.overflow || ""));
+        if ((canScrollX && container.scrollWidth > container.clientWidth) ||
+            (canScrollY && container.scrollHeight > container.clientHeight)) {
+          const targetRect = target.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          const visibleLeft = containerRect.left + Number(container.clientLeft || 0) + 8;
+          const visibleTop = containerRect.top + Number(container.clientTop || 0) + 8;
+          const visibleRight = visibleLeft + Number(container.clientWidth || 0) - 16;
+          const visibleBottom = visibleTop + Number(container.clientHeight || 0) - 16;
+          if (canScrollX && targetRect.right > visibleRight) {
+            container.scrollLeft += targetRect.right - visibleRight;
+            changed = true;
+          } else if (canScrollX && targetRect.left < visibleLeft) {
+            container.scrollLeft -= visibleLeft - targetRect.left;
+            changed = true;
+          }
+          if (canScrollY && targetRect.bottom > visibleBottom) {
+            container.scrollTop += targetRect.bottom - visibleBottom;
+            changed = true;
+          } else if (canScrollY && targetRect.top < visibleTop) {
+            container.scrollTop -= visibleTop - targetRect.top;
+            changed = true;
+          }
+        }
+        container = container.parentElement;
+      }
+
+      const frameRect = frame.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const frameRight = frameRect.left + Number(frame.clientWidth || frameRect.width || 0) - 8;
+      const frameBottom = frameRect.top + Number(frame.clientHeight || frameRect.height || 0) - 8;
+      if (targetRect.right > frameRight) {
+        frame.scrollLeft += targetRect.right - frameRight;
+        changed = true;
+      } else if (targetRect.left < frameRect.left + 8) {
+        frame.scrollLeft -= (frameRect.left + 8) - targetRect.left;
+        changed = true;
+      }
+      if (targetRect.bottom > frameBottom) {
+        frame.scrollTop += targetRect.bottom - frameBottom;
+        changed = true;
+      } else if (targetRect.top < frameRect.top + 8) {
+        frame.scrollTop -= (frameRect.top + 8) - targetRect.top;
+        changed = true;
+      }
+      return changed;
+    }
+
+    function mcelBlueprintShellSetInspectionHover(frame, target) {
+      const previous = frame?.__mcelInspectionHoverNode;
+      if (previous && previous !== target) previous.classList.remove("mcel-preview-inspect-hover");
+      frame.__mcelInspectionHoverNode = target || null;
+      if (target) target.classList.add("mcel-preview-inspect-hover");
+    }
+
+    function mcelBlueprintShellSelectPreviewElement(
+      target,
+      previewRoot,
+      frame,
+      blueprint,
+      hitTest = null,
+      inspectionSurface = null
+    ) {
       const record = mcelBlueprintShellBuildSelectedElementRecord(
         target,
         previewRoot,
         frame,
-        blueprint
+        blueprint,
+        inspectionSurface
       );
       if (!record) return null;
+      if (hitTest) record.hitTest = hitTest;
 
       const shellState = mcelBlueprintShellState();
       shellState.selectedElements[blueprint.appId] = record;
 
       mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
+      mcelBlueprintShellRevealSelectedNode(target, previewRoot, frame, blueprint);
       const inspectorRendered = mcelBlueprintShellRenderSelectedElement(blueprint);
       mcelBlueprintShellRenderSelectionReceipt(blueprint);
 
+      const overlapHint = record.hitTest?.candidateCount > 1
+        ? ` Candidate ${record.hitTest.candidateIndex + 1} of ${record.hitTest.candidateCount}; ${record.hitTest.cycleModifier}-click the same point to cycle.`
+        : "";
+      const surfaceLabel = record.inspectionContext === "host-app"
+        ? "MCEL Lab chrome"
+        : "mounted app";
       const status = document.getElementById("mcel-blueprint-validity-status");
       if (status) {
-        status.textContent = `Selected ${record.selector} in ${record.layoutZone || record.role}. Mounted app actions remained blocked.`;
+        status.textContent = `Selected ${record.selector} in ${surfaceLabel} · ${record.layoutZone || record.role}. Actions remained blocked.${overlapHint}`;
       }
 
       window.dispatchEvent(new CustomEvent("mcel:element-selected", {
         detail: {
-          appId: blueprint.appId,
+          appId: record.owningAppId || blueprint.appId,
+          selectedAppId: blueprint.appId,
+          inspectionContext: record.inspectionContext,
           record,
           inspectorRendered
         }
@@ -1280,51 +1733,93 @@
       return record;
     }
 
-    function mcelBlueprintShellBindInspectionFrame(frame, blueprint) {
-      if (!frame || frame.dataset.mcelInspectBound === "true") return;
-      frame.dataset.mcelInspectBound = "true";
+    function mcelBlueprintShellBindInspectionSurface(surface, blueprint) {
+      const eventRoot = surface?.eventRoot;
+      if (!eventRoot || !surface?.root) return false;
+      eventRoot.__mcelInspectionSurfaceBindings =
+        eventRoot.__mcelInspectionSurfaceBindings || {};
+      const bindingKey = `${blueprint?.appId || "app"}:${surface.id}`;
+      if (eventRoot.__mcelInspectionSurfaceBindings[bindingKey]) return true;
+      eventRoot.__mcelInspectionSurfaceBindings[bindingKey] = true;
 
-      frame.addEventListener("pointerover", (event) => {
+      const inspectionActive = () => {
         const shellState = mcelBlueprintShellState();
-        if (!shellState.inspectionMode) return;
-        const resolved = mcelBlueprintShellInspectionTargetFromEvent(frame, event);
-        if (!resolved) return;
-        frame.querySelectorAll(".mcel-preview-inspect-hover").forEach((node) => {
-          node.classList.remove("mcel-preview-inspect-hover");
-        });
-        resolved.target.classList.add("mcel-preview-inspect-hover");
+        return Boolean(
+          shellState.inspectionMode &&
+          shellState.appId === blueprint?.appId
+        );
+      };
+      const updateHover = (event) => {
+        if (!inspectionActive()) return;
+        if (mcelBlueprintShellInspectionEventExcluded(event, surface)) return;
+        const resolved = mcelBlueprintShellInspectionTargetFromEvent(
+          eventRoot,
+          event,
+          blueprint,
+          {inspectionSurface: surface}
+        );
+        mcelBlueprintShellSetInspectionHover(
+          eventRoot,
+          resolved?.target || null
+        );
+      };
+      eventRoot.addEventListener("pointerover", updateHover, true);
+      eventRoot.addEventListener("pointermove", updateHover, true);
+
+      eventRoot.addEventListener("pointerleave", () => {
+        mcelBlueprintShellSetInspectionHover(eventRoot, null);
       }, true);
 
-      frame.addEventListener("pointerout", (event) => {
-        if (!mcelBlueprintShellState().inspectionMode) return;
-        const target = event.target?.nodeType === 1 ? event.target : null;
-        const related = event.relatedTarget;
-        if (target && (!related || related.nodeType !== 1 || !target.contains(related))) {
-          target.classList.remove("mcel-preview-inspect-hover");
-        }
-      }, true);
-
-      frame.addEventListener("pointerdown", (event) => {
-        if (!mcelBlueprintShellState().inspectionMode) return;
-        const resolved = mcelBlueprintShellInspectionTargetFromEvent(frame, event);
+      eventRoot.addEventListener("pointerdown", (event) => {
+        if (!inspectionActive()) return;
+        if (mcelBlueprintShellInspectionEventExcluded(event, surface)) return;
+        const resolved = mcelBlueprintShellInspectionTargetFromEvent(
+          eventRoot,
+          event,
+          blueprint,
+          {
+            cycle: Boolean(event.altKey || event.shiftKey || event.metaKey || event.ctrlKey),
+            inspectionSurface: surface
+          }
+        );
         if (!resolved) return;
         event.preventDefault();
         event.stopImmediatePropagation();
         mcelBlueprintShellSelectPreviewElement(
           resolved.target,
           resolved.previewRoot,
-          frame,
-          blueprint
+          eventRoot,
+          blueprint,
+          resolved.hitTest,
+          surface
         );
       }, true);
 
       ["click", "dblclick", "contextmenu", "submit", "change", "input"].forEach((eventName) => {
-        frame.addEventListener(eventName, (event) => {
-          if (!mcelBlueprintShellState().inspectionMode) return;
+        eventRoot.addEventListener(eventName, (event) => {
+          if (!inspectionActive()) return;
+          if (mcelBlueprintShellInspectionEventExcluded(event, surface)) return;
           event.preventDefault();
           event.stopImmediatePropagation();
         }, true);
       });
+      return true;
+    }
+
+    function mcelBlueprintShellBindInspectionFrame(frame, blueprint) {
+      const surface = mcelBlueprintShellInspectionSurfaces(blueprint, frame)
+        .find((candidate) => candidate.context === "mounted-app");
+      return surface
+        ? mcelBlueprintShellBindInspectionSurface(surface, blueprint)
+        : false;
+    }
+
+    function mcelBlueprintShellBindInspectionSurfaces(frame, blueprint) {
+      const surfaces = mcelBlueprintShellInspectionSurfaces(blueprint, frame);
+      surfaces.forEach((surface) => {
+        mcelBlueprintShellBindInspectionSurface(surface, blueprint);
+      });
+      return surfaces;
     }
 
     function mcelBlueprintShellApplyInspectMode(blueprint) {
@@ -1338,10 +1833,13 @@
       const active = Boolean(shellState.inspectionMode && report && frame && previewRoot);
 
       if (shellState.inspectionMode && !active) shellState.inspectionMode = false;
+      const inspectionSurfaces = mcelBlueprintShellBindInspectionSurfaces(
+        frame,
+        blueprint
+      );
       if (frame) {
         frame.classList.toggle("is-inspecting", active);
         frame.dataset.mcelInspectMode = active ? "active" : "inactive";
-        mcelBlueprintShellBindInspectionFrame(frame, blueprint);
       }
       if (previewRoot) {
         if (active) {
@@ -1350,10 +1848,15 @@
         } else {
           previewRoot.setAttribute("inert", "");
           previewRoot.setAttribute("aria-hidden", "true");
-          previewRoot.querySelectorAll(".mcel-preview-inspect-hover").forEach((node) => {
-            node.classList.remove("mcel-preview-inspect-hover");
-          });
         }
+      }
+      if (!active) {
+        inspectionSurfaces.forEach((surface) => {
+          mcelBlueprintShellSetInspectionHover(surface.eventRoot, null);
+          mcelBlueprintShellClearInspectionHighlights(surface.root);
+        });
+      }
+      if (previewRoot) {
         mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
       }
       if (inspectButton) {
@@ -1389,7 +1892,7 @@
       const status = document.getElementById("mcel-blueprint-validity-status");
       if (status) {
         status.textContent = active
-          ? `Inspect mode active for ${blueprint.label || blueprint.appId}. Click any rendered element; app actions are blocked.`
+          ? `Inspect mode active for ${blueprint.label || blueprint.appId}. Click the mounted app or the Lab work area; actions are blocked.`
           : `Inspect mode off for ${blueprint.label || blueprint.appId}. The mounted preview remains inert.`;
       }
       return active;
@@ -1432,6 +1935,8 @@
     window.McelLabPointInspect = {
       stateModelVersion: "in-place-v5",
       selectionOutputVersion: "visible-receipt-v6",
+      hitTestingVersion: "multi-surface-v8",
+      inspectionRootsVersion: "host-primary-v8",
       annotationPersistenceVersion: "app-json-v1",
       toggle: mcelBlueprintShellToggleInspectMode,
       activate: () => mcelBlueprintShellSetInspectMode(true),
@@ -1676,7 +2181,9 @@
 
       const inspectHint = document.createElement("p");
       inspectHint.className = "mcel-lab-preview-inspect-hint";
-      inspectHint.textContent = "Enable Inspect, hover to identify an element, then click to select it. Mounted app actions stay blocked.";
+      const inspectionPolicy = mcelBlueprintShellInspectionPolicy(blueprint);
+      const cycleModifier = inspectionPolicy.cycleModifier || "Alt";
+      inspectHint.textContent = `Enable Inspect, hover to identify an element, then click to select it. ${cycleModifier}-click cycles overlapping or scrollbar-obscured candidates. Mounted app actions stay blocked.`;
 
       article.append(header, inspectHint, frame);
       workSurface.appendChild(article);

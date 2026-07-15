@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from main_computer.flog_mountables_browser_smoke import (
+    BROWSER_MEASURE_JS,
     classify_measurement,
     parse_mountables,
     parse_viewports,
@@ -95,3 +96,11 @@ def test_browser_smoke_markdown_reports_browser_geometry_summary() -> None:
     assert "FLOG Mountables Browser Geometry Smoke Report" in markdown
     assert "playwright-chromium" in markdown
     assert "unclaimedLeaf" in markdown
+
+def test_browser_smoke_reports_edge_rounded_device_pixel_rectangles() -> None:
+    js = BROWSER_MEASURE_JS
+
+    assert "pixelGeometry: \"css-edge-rounded-device-pixels-v1\"" in js
+    assert "Math.round(leftCss * devicePixelRatio)" in js
+    assert "Math.round(rightCss * devicePixelRatio)" in js
+    assert "return withPixelRect({x: left, y: top, left, top, right, bottom, width, height, area: width * height});" in js

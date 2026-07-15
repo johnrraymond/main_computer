@@ -6838,3 +6838,15 @@ def test_layout_hint_milestone33_reports_unclaimed_restoration_as_not_applicable
     assert profile["restorationFingerprintStatus"] == "not-applicable"
     assert profile["restorationFingerprintMatch"] is None
     assert evidence[0]["allRequiredRestorationsMatched"] is True
+
+def test_flog_layout_browser_geometry_uses_edge_rounded_device_pixels():
+    module = load_module()
+    js = module.MEASURE_AND_OVERLAY_JS
+
+    assert "pixelGeometry: \"css-edge-rounded-device-pixels-v1\"" in js
+    assert "Math.round(leftCss * devicePixelRatio)" in js
+    assert "Math.round(rightCss * devicePixelRatio)" in js
+    assert "width = Math.max(0, right - left)" in js
+    assert "cssRectFromPixelRect(rect.pixelRect)" in js
+    assert "box.style.border = `1px solid ${color}`" in js
+    assert "box.style.borderRadius = \"0\"" in js

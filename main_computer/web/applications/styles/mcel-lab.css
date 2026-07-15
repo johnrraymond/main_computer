@@ -7013,8 +7013,11 @@ body.mcel-modal-open {
 }
 
 .mcel-lab-blueprint-workbench {
+  --mcel-lab-workbench-block-size: clamp(620px, calc(100dvh - 250px), 780px);
   grid-template-columns: clamp(190px, 15vw, 230px) minmax(700px, 1fr) clamp(320px, 23vw, 370px);
   grid-template-areas: "navigation primary rail";
+  block-size: var(--mcel-lab-workbench-block-size);
+  min-block-size: 0;
   gap: 12px;
   overflow: hidden;
 }
@@ -7023,6 +7026,7 @@ body.mcel-modal-open {
   grid-area: navigation;
   gap: 12px;
   min-width: 0;
+  max-block-size: 100%;
 }
 
 .mcel-lab-blueprint-primary {
@@ -7032,6 +7036,7 @@ body.mcel-modal-open {
   gap: 12px;
   min-width: 0;
   min-height: 0;
+  max-block-size: 100%;
   overflow: hidden auto;
   scrollbar-gutter: stable;
 }
@@ -7043,7 +7048,9 @@ body.mcel-modal-open {
   gap: 12px;
   min-width: 0;
   min-height: 0;
+  max-block-size: 100%;
   overflow: hidden auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
@@ -7731,6 +7738,19 @@ body.mcel-modal-open {
       "navigation"
       "primary"
       "rail";
+    block-size: auto;
+    overflow: visible;
+  }
+
+  .mcel-lab-blueprint-navigation,
+  .mcel-lab-blueprint-primary,
+  .mcel-lab-blueprint-right-rail {
+    max-block-size: none;
+  }
+
+  .mcel-lab-blueprint-right-rail {
+    overflow: visible;
+    overscroll-behavior: auto;
   }
 
   .mcel-lab-zone-map,
