@@ -441,7 +441,7 @@ def test_probe_result_target_by_service_accepts_metadata_wrapped_result() -> Non
 
 
 def test_super_base_builder_status_from_logs_detects_ready_and_failure() -> None:
-    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715"
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715"
 
     ready = control.super_base_builder_status_from_logs_body(
         {"logs": f"2026-07-14T00:38:32Z allfather-super-base-builder: phase=ready target={target} already_exists=true"},
@@ -473,7 +473,7 @@ def test_application_records_from_service_detail_reads_service_applications_shap
 
 
 def test_fetch_super_base_builder_status_reads_ready_from_service_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715"
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715"
 
     def fake_fetch_service_detail(client: object, service_uuid: str, tried: list[dict[str, object]]) -> dict[str, object]:
         return {
@@ -501,7 +501,7 @@ def test_wait_for_super_base_builder_ready_uses_builder_logs_before_http_probe(
     path = write_private_state(tmp_path)
     plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
     head = plan.heads[0]
-    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715"
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715"
 
     def fake_fetch_super_base_builder_log_status(*args: object, **kwargs: object) -> dict[str, object]:
         return {
@@ -577,7 +577,7 @@ def test_ensure_super_base_image_skips_builder_deploy_when_existing_ready(
         {
             "quiet": True,
             "command": "add-node",
-            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715",
+            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715",
             "super_base_source_image": "hyperledger/besu:latest",
             "force_super_base_rebuild": False,
             "no_super_base_ensure": False,
@@ -635,7 +635,7 @@ def test_ensure_super_base_image_waits_existing_live_builder_without_restart(
         {
             "quiet": True,
             "command": "add-node",
-            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715",
+            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715",
             "super_base_source_image": "hyperledger/besu:latest",
             "force_super_base_rebuild": False,
             "no_super_base_ensure": False,
@@ -1339,7 +1339,7 @@ def test_super_guard_uses_static_solc_standard_json() -> None:
     assert "capture_output=True" in script
     assert "solc binary is missing" in script
 
-def test_super_guard_contract_deploy_is_resumable_and_allows_zero_gas_private_chain() -> None:
+def test_super_guard_contract_deploy_is_resumable_and_uses_positive_gas_private_chain() -> None:
     script = control.super_server_command_script()
 
     assert "contracts-progress" in script
@@ -1388,7 +1388,8 @@ def test_super_guard_besu_single_node_qbft_does_not_wait_for_sync_peers() -> Non
     script = control.super_server_command_script()
 
     assert '"--sync-min-peers=0"' in script
-    assert '"--min-gas-price=0"' in script
+    assert '"--min-gas-price=1"' in script
+    assert '"--api-gas-price-max=1000000000"' in script
 
 
 def test_super_contract_artifacts_are_prebuilt_in_base_image_and_loaded_at_runtime() -> None:
@@ -1404,6 +1405,12 @@ def test_super_contract_artifacts_are_prebuilt_in_base_image_and_loaded_at_runti
     assert "contracts: using prebuilt artifacts" in super_script
     assert "MC_ALLFATHER_CONTRACT_ARTIFACTS_PATH" in super_script
     assert "prebuilt artifacts unavailable; compiling contracts with solc fallback" in super_script
+    assert '"evmVersion": contract_evm_version()' in super_script
+    assert "bytecode_contains_push0" in super_script
+    assert "missing-required-artifact-or-push0-opcode" in super_script
+    assert "deployment-receipt-status-zero" in super_script
+    assert '"evmVersion": CONTRACT_EVM_VERSION' in control.allfather_contract_artifact_builder_script()
+    assert "compiled.setdefault(\"x-allfather\", {})[\"contractEvmVersion\"]" in control.allfather_contract_artifact_builder_script()
 
 
 def test_super_compose_maps_besu_p2p_to_advertised_host_port_for_joiners(tmp_path: Path) -> None:

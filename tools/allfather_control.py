@@ -64,7 +64,7 @@ DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
 DEFAULT_SUPER_BASE_SOURCE_IMAGE = "hyperledger/besu:latest"
-DEFAULT_SUPER_BASE_IMAGE = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-20260715"
+DEFAULT_SUPER_BASE_IMAGE = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715"
 DEFAULT_SUPER_IMAGE = DEFAULT_SUPER_BASE_IMAGE
 DEFAULT_SUPER_BASE_BUILDER_IMAGE = "docker:27-cli"
 DEFAULT_SUPER_BASE_BUILDER_PREFIX = "allfather-super-base-builder"
@@ -117,6 +117,7 @@ def allfather_contract_artifact_builder_script() -> str:
 from __future__ import annotations
 import base64
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -127,6 +128,32 @@ REQUIRED_TARGETS = (
     ("src/HubCreditBridgeEscrow.sol", "HubCreditBridgeEscrow"),
 )
 
+CONTRACT_EVM_VERSION = os.environ.get("MC_ALLFATHER_CONTRACT_EVM_VERSION", "paris").strip() or "paris"
+
+def bytecode_contains_opcode(bytecode: str, opcode: int) -> bool:
+    text = str(bytecode or "").strip()
+    if text.startswith("0x"):
+        text = text[2:]
+    if len(text) % 2:
+        return False
+    try:
+        data = bytes.fromhex(text)
+    except ValueError:
+        return False
+    i = 0
+    while i < len(data):
+        value = data[i]
+        if value == opcode:
+            return True
+        if 0x60 <= value <= 0x7f:
+            i += 1 + (value - 0x5f)
+        else:
+            i += 1
+    return False
+
+def bytecode_contains_push0(bytecode: str) -> bool:
+    return bytecode_contains_opcode(bytecode, 0x5f)
+
 def artifact_is_valid(compiled: dict) -> bool:
     contracts = compiled.get("contracts")
     if not isinstance(contracts, dict):
@@ -136,6 +163,8 @@ def artifact_is_valid(compiled: dict) -> bool:
         bytecode = (((contract.get("evm") or {}).get("bytecode") or {}).get("object") or "")
         abi = contract.get("abi")
         if not isinstance(abi, list) or not str(bytecode).strip():
+            return False
+        if bytecode_contains_push0(bytecode):
             return False
     return True
 
@@ -151,6 +180,7 @@ def main() -> int:
         "language": "Solidity",
         "sources": sources,
         "settings": {
+            "evmVersion": CONTRACT_EVM_VERSION,
             "optimizer": {"enabled": True, "runs": 200},
             "outputSelection": {"*": {"*": ["abi", "evm.bytecode.object"]}},
         },
@@ -176,8 +206,10 @@ def main() -> int:
         sys.stderr.write("; ".join(str(item.get("formattedMessage") or item.get("message") or item) for item in errors) + "\n")
         return 1
     if not artifact_is_valid(compiled):
-        sys.stderr.write("compiled all-father contract artifact set is incomplete\n")
+        sys.stderr.write("compiled all-father contract artifact set is incomplete or contains PUSH0 for a pre-Shanghai chain\n")
         return 1
+    compiled.setdefault("x-allfather", {})["contractEvmVersion"] = CONTRACT_EVM_VERSION
+    compiled.setdefault("x-allfather", {})["push0Forbidden"] = True
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(compiled, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"compiled all-father contract artifacts: {output_path}")
@@ -4180,6 +4212,33 @@ REQUIRED_CONTRACT_ARTIFACT_TARGETS = (
     ("src/HubCreditBridgeEscrow.sol", "HubCreditBridgeEscrow"),
 )
 
+def contract_evm_version() -> str:
+    return str(os.environ.get("MC_ALLFATHER_CONTRACT_EVM_VERSION") or "paris").strip() or "paris"
+
+def bytecode_contains_opcode(bytecode: str, opcode: int) -> bool:
+    text = str(bytecode or "").strip()
+    if text.startswith("0x"):
+        text = text[2:]
+    if len(text) % 2:
+        return False
+    try:
+        data = bytes.fromhex(text)
+    except ValueError:
+        return False
+    i = 0
+    while i < len(data):
+        value = data[i]
+        if value == opcode:
+            return True
+        if 0x60 <= value <= 0x7f:
+            i += 1 + (value - 0x5f)
+        else:
+            i += 1
+    return False
+
+def bytecode_contains_push0(bytecode: str) -> bool:
+    return bytecode_contains_opcode(bytecode, 0x5f)
+
 def contract_standard_input() -> dict:
     sources = {
         name: {"content": base64.b64decode(encoded).decode("utf-8")}
@@ -4189,6 +4248,7 @@ def contract_standard_input() -> dict:
         "language": "Solidity",
         "sources": sources,
         "settings": {
+            "evmVersion": contract_evm_version(),
             "optimizer": {"enabled": True, "runs": 200},
             "outputSelection": {"*": {"*": ["abi", "evm.bytecode.object"]}},
         },
@@ -4206,6 +4266,8 @@ def compiled_contract_artifacts_valid(compiled: object) -> bool:
         bytecode = (((contract_data.get("evm") or {}).get("bytecode") or {}).get("object") or "")
         if not isinstance(abi, list) or not str(bytecode).strip():
             return False
+        if bytecode_contains_push0(bytecode):
+            return False
     return True
 
 def load_contract_artifacts_from(path: Path) -> dict | None:
@@ -4217,8 +4279,11 @@ def load_contract_artifacts_from(path: Path) -> dict | None:
         super_log(f"contracts: prebuilt artifact unreadable path={path} error={type(exc).__name__}: {exc}")
         return None
     if not compiled_contract_artifacts_valid(payload):
-        super_log(f"contracts: prebuilt artifact invalid path={path}")
+        super_log(f"contracts: prebuilt artifact invalid path={path} reason=missing-required-artifact-or-push0-opcode evmVersion={contract_evm_version()}")
         return None
+    metadata = payload.setdefault("x-allfather", {})
+    if isinstance(metadata, dict):
+        metadata.setdefault("contractEvmVersion", contract_evm_version())
     return payload
 
 def compile_contracts_with_solc() -> dict:
@@ -4249,7 +4314,9 @@ def compile_contracts_with_solc() -> dict:
         message = "; ".join(str(item.get("formattedMessage") or item.get("message") or item) for item in errors)
         raise RuntimeError(message)
     if not compiled_contract_artifacts_valid(compiled):
-        raise RuntimeError("solc returned incomplete all-father contract artifacts")
+        raise RuntimeError("solc returned incomplete all-father contract artifacts or PUSH0 opcode for pre-Shanghai chain")
+    compiled.setdefault("x-allfather", {})["contractEvmVersion"] = contract_evm_version()
+    compiled.setdefault("x-allfather", {})["push0Forbidden"] = True
     return compiled
 
 def compile_contracts() -> dict:
@@ -4264,7 +4331,7 @@ def compile_contracts() -> dict:
         if compiled is not None:
             rate_limited_super_log(
                 "contracts:artifact-source",
-                f"contracts: using prebuilt artifacts path={artifact_path}",
+                f"contracts: using prebuilt artifacts path={artifact_path} evmVersion={(compiled.get('x-allfather') or {}).get('contractEvmVersion') or contract_evm_version()} push0=false",
                 interval_s=300.0,
             )
             return compiled
@@ -4282,6 +4349,11 @@ class PendingContractDeployment(Exception):
 
 class ContractReceiptPending(Exception):
     pass
+
+class ContractDeploymentFailed(Exception):
+    def __init__(self, message: str, receipt: object = None) -> None:
+        super().__init__(message)
+        self.receipt = receipt
 
 def is_contract_receipt_pending_error(exc: Exception) -> bool:
     message = str(exc).lower()
@@ -4316,15 +4388,15 @@ def write_contract_progress(payload: dict) -> None:
 
 def contract_gas_limit() -> int:
     try:
-        return max(21000, int(os.environ.get("MC_ALLFATHER_CONTRACT_GAS_LIMIT", "8000000")))
+        return max(21000, int(os.environ.get("MC_ALLFATHER_CONTRACT_GAS_LIMIT", "30000000")))
     except Exception:
-        return 8000000
+        return 30000000
 
 def contract_max_gas_price_wei() -> int:
-    # Besu's JSON-RPC tx fee cap is based on gas_limit * gas_price.  The private
-    # all-father bootstrap chain reports eth_gasPrice=0 and allows zero-price
-    # transactions, so the default must not invent a non-zero deploy cost for
-    # freshly generated zero-balance bootstrap wallets.
+    # Besu's JSON-RPC tx fee cap is based on gas_limit * gas_price.  Keep the
+    # default bounded while using a small positive gas price, because this private
+    # QBFT chain mines positive-fee transactions reliably and older zero-fee
+    # contract deployments could remain stuck in the txpool.
     try:
         return max(0, int(os.environ.get("MC_ALLFATHER_MAX_CONTRACT_GAS_PRICE_WEI", "1000000000")))
     except Exception:
@@ -4357,10 +4429,10 @@ def contract_gas_price(w3) -> int:
     except Exception:
         pass
     try:
-        values.append(int(os.environ.get("MC_ALLFATHER_MIN_CONTRACT_GAS_PRICE_WEI", "0")))
+        values.append(int(os.environ.get("MC_ALLFATHER_MIN_CONTRACT_GAS_PRICE_WEI", "1")))
     except Exception:
-        values.append(0)
-    return cap_contract_gas_price(max([value for value in values if value >= 0] or [0]))
+        values.append(1)
+    return cap_contract_gas_price(max([1] + [value for value in values if value >= 0]))
 
 def bumped_contract_gas_price(w3, previous_gas_price: object = None) -> int:
     gas_price = contract_gas_price(w3)
@@ -4368,10 +4440,8 @@ def bumped_contract_gas_price(w3, previous_gas_price: object = None) -> int:
         previous = int(previous_gas_price or 0)
     except Exception:
         previous = 0
-    # On the private bootstrap chain a zero-price transaction is valid and is the
-    # only viable choice for zero-balance bootstrap wallets.  Do not "replace" a
-    # zero-price retry by reintroducing the old non-zero gas price from stale
-    # progress; that recreates the unmineable pending transaction.
+    # Keep replacements monotonic.  This private bootstrap chain mines positive-fee
+    # transactions reliably once the deployer is funded in genesis.
     if gas_price > 0 and previous > 0:
         gas_price = max(gas_price, int(previous * 125 // 100) + 1)
     return cap_contract_gas_price(gas_price)
@@ -4748,6 +4818,35 @@ def receipt_contract_address(receipt) -> str:
         value = getattr(receipt, "contractAddress", None)
     return str(value or "")
 
+def contract_receipt_json_fallback(tx_hash: str) -> object | None:
+    try:
+        payload = json_rpc("eth_getTransactionReceipt", [tx_hash], timeout=3.0)
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        return payload.get("result")
+    return None
+
+def receipt_field_int(receipt: object, field: str) -> int | None:
+    if isinstance(receipt, dict):
+        value = receipt.get(field)
+    else:
+        value = getattr(receipt, field, None)
+    try:
+        if isinstance(value, str) and value.startswith("0x"):
+            return int(value, 16)
+        if value is not None:
+            return int(value)
+    except Exception:
+        return None
+    return None
+
+def receipt_failure_summary(receipt: object, tx_hash: str, contract_name: str) -> str:
+    status = receipt_status_value(receipt)
+    gas_used = receipt_field_int(receipt, "gasUsed")
+    contract_address = receipt_contract_address(receipt)
+    return f"{contract_name} deployment transaction failed tx={tx_hash} status={status} gasUsed={gas_used} contractAddress={contract_address}"
+
 def receipt_status_value(receipt) -> object:
     if isinstance(receipt, dict):
         return receipt.get("status")
@@ -4757,12 +4856,21 @@ def wait_for_contract_deployment_receipt(w3, tx_hash: str, contract_name: str, t
     # Keep the supervisor loop responsive.  A long blocking receipt wait
     # freezes hub/guard status updates and makes add-node look hung while contracts
     # are merely waiting to be mined.  Poll once per supervisor tick instead.
+    receipt = None
     try:
         receipt = w3.eth.get_transaction_receipt(tx_hash)
     except Exception as exc:
-        if is_contract_receipt_pending_error(exc):
+        fallback = contract_receipt_json_fallback(tx_hash)
+        if fallback:
+            receipt = fallback
+        elif is_contract_receipt_pending_error(exc):
             raise ContractReceiptPending(f"{contract_name} transaction receipt not available yet for {tx_hash}") from exc
-        raise
+        else:
+            raise
+    if not receipt:
+        fallback = contract_receipt_json_fallback(tx_hash)
+        if fallback:
+            receipt = fallback
     if not receipt:
         raise ContractReceiptPending(f"{contract_name} transaction receipt not available yet for {tx_hash}")
     status = receipt_status_value(receipt)
@@ -4772,11 +4880,12 @@ def wait_for_contract_deployment_receipt(w3, tx_hash: str, contract_name: str, t
         except Exception:
             failed = str(status).lower() in {"0x0", "false", "failed"}
         if failed:
-            raise RuntimeError(f"{contract_name} deployment transaction failed for {tx_hash}")
+            raise ContractDeploymentFailed(receipt_failure_summary(receipt, tx_hash, contract_name), receipt=receipt)
     address = receipt_contract_address(receipt)
     if not address:
         raise RuntimeError(f"{contract_name} deployment did not return a contract address")
     return {"address": address, "transaction_hash": w3.to_hex(tx_hash), "target": contract_name}
+
 
 def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name: str, args: list, progress: dict, progress_key: str) -> dict:
     contracts_progress = progress.setdefault("contracts", {})
@@ -4895,6 +5004,7 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     stale_pending_s=contract_stale_pending_s(),
                     deployed_contract_count=len([item for item in contracts_progress.values() if isinstance(item, dict) and item.get("address")]),
                 )
+                receipt_failed_and_retrying = False
                 try:
                     deployed = wait_for_contract_deployment_receipt(w3, tx_hash, contract_name, int(os.environ.get("MC_ALLFATHER_CONTRACT_RECEIPT_TIMEOUT_S", "300")))
                 except ContractReceiptPending as exc:
@@ -4926,15 +5036,38 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                         last_error=f"{type(exc).__name__}: {exc}",
                     )
                     raise PendingContractDeployment(f"{progress_key} transaction is still pending: {tx_hash}") from exc
-                deployed["target"] = f"{source_name}:{contract_name}"
-                contracts_progress[progress_key] = deployed
-                write_contract_progress(progress)
-                super_log(f"contracts: deployed contract={progress_key} address={deployed.get('address')} tx={tx_hash}")
-                return deployed
+                except ContractDeploymentFailed as exc:
+                    failed_receipt = getattr(exc, "receipt", None)
+                    stale_transactions = contract_progress_stale_transactions(existing)
+                    stale_transactions.append({
+                        "transaction_hash": tx_hash,
+                        "reason": "deployment-receipt-status-zero",
+                        "failed_receipt": failed_receipt,
+                        "recorded_at_unix_s": time.time(),
+                    })
+                    existing.pop("transaction_hash", None)
+                    existing.pop("pending_transaction_hash", None)
+                    existing["status"] = "deployment-failed-retrying"
+                    existing["last_error"] = f"{type(exc).__name__}: {exc}"
+                    existing["last_failed_receipt"] = failed_receipt
+                    existing["stale_transactions"] = stale_transactions
+                    contracts_progress[progress_key] = existing
+                    write_contract_progress(progress)
+                    super_log(f"contracts: deployment transaction failed; will resubmit with current artifacts contract={progress_key} tx={tx_hash} error={exc}")
+                    receipt_failed_and_retrying = True
+                if not receipt_failed_and_retrying:
+                    deployed["target"] = f"{source_name}:{contract_name}"
+                    contracts_progress[progress_key] = deployed
+                    write_contract_progress(progress)
+                    super_log(f"contracts: deployed contract={progress_key} address={deployed.get('address')} tx={tx_hash}")
+                    return deployed
 
     contract_data = compiled["contracts"][source_name][contract_name]
     abi = contract_data["abi"]
-    bytecode = "0x" + contract_data["evm"]["bytecode"]["object"]
+    bytecode_object = str(contract_data["evm"]["bytecode"]["object"] or "")
+    bytecode = "0x" + bytecode_object
+    if bytecode_contains_push0(bytecode_object):
+        raise RuntimeError(f"{progress_key} contract bytecode contains PUSH0 opcode 0x5f; compile with MC_ALLFATHER_CONTRACT_EVM_VERSION=paris for this pre-Shanghai Besu genesis")
     contract = w3.eth.contract(abi=abi, bytecode=bytecode)
     previous_record = contracts_progress.get(progress_key)
     if isinstance(previous_record, dict):
@@ -5098,6 +5231,25 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
             interval_s=float(os.environ.get("MC_ALLFATHER_CONTRACT_LOG_INTERVAL_S", "30")),
         )
         raise PendingContractDeployment(f"{progress_key} transaction is still pending: {tx_hash}") from exc
+    except ContractDeploymentFailed as exc:
+        failed_receipt = getattr(exc, "receipt", None)
+        contracts_progress[progress_key]["status"] = "deployment-failed"
+        contracts_progress[progress_key]["last_error"] = f"{type(exc).__name__}: {exc}"
+        contracts_progress[progress_key]["last_failed_receipt"] = failed_receipt
+        write_contract_progress(progress)
+        state(
+            "contracts",
+            desired=True,
+            running=False,
+            status="deployment-failed",
+            pending_contract=progress_key,
+            pending_transaction_hash=tx_hash,
+            receipt_check_count=1,
+            last_error=f"{type(exc).__name__}: {exc}",
+            failed_receipt=failed_receipt,
+        )
+        super_log(f"contracts: deployment failed contract={progress_key} tx={tx_hash} error={exc}")
+        raise RuntimeError(f"{progress_key} deployment failed: {exc}") from exc
     deployed["target"] = f"{source_name}:{contract_name}"
     contracts_progress[progress_key] = deployed
     write_contract_progress(progress)
@@ -5328,13 +5480,14 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         "--rpc-http-enabled=true",
         "--rpc-http-host=0.0.0.0",
         f"--rpc-http-port={rpc_port}",
-        "--rpc-http-api=ETH,NET,WEB3,QBFT,ADMIN,TXPOOL",
+        "--rpc-http-api=ETH,NET,WEB3,QBFT,ADMIN,MINER,TXPOOL,DEBUG",
         "--rpc-http-cors-origins=*",
         "--host-allowlist=*",
         f"--p2p-port={p2p_port}",
         f"--p2p-host={p2p_host}",
         "--sync-min-peers=0",
-        "--min-gas-price=0",
+        "--min-gas-price=1",
+        "--api-gas-price-max=1000000000",
         "--logging=INFO",
     ]
     if bootnodes:

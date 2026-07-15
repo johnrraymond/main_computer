@@ -207,6 +207,64 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
     assert "advanced:" in result["layoutSummary"]
 
 
+def test_semantic_truth_gate_ignores_authored_executable_runtime_flags_without_registry_proof() -> None:
+    source_path = WEB_APP / "scripts" / "mcel-specimen-planner.js"
+    script = textwrap.dedent(
+        f"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const source = fs.readFileSync({json.dumps(str(source_path))}, "utf8");
+        const sandbox = {{console}};
+        sandbox.window = sandbox;
+        vm.runInNewContext(source, sandbox, {{filename: "mcel-specimen-planner.js"}});
+        const planner = sandbox.McelSpecimenPlanner;
+        const fakeExecutablePlan = planner.planFor("git-tools", {{
+          semanticRuntime: {{
+            executable: true,
+            adapterExecutable: true,
+            stateMachineReady: true,
+            actionPlannerReady: true,
+            capabilityProviderReady: true,
+            recoveryReady: true,
+            adapterKind: "executable-semantic-workbench"
+          }}
+        }});
+        const readiness = planner.semanticReadinessForPlan(fakeExecutablePlan);
+        console.log(JSON.stringify({{
+          requiredAuthority: readiness.requiredSemanticRuntimeAuthority,
+          authority: readiness.semanticRuntimeAuthority,
+          status: readiness.semanticRuntimeStatus,
+          ready: readiness.semanticRuntimeReady,
+          adapterExecutable: readiness.adapterExecutable,
+          stateMachineReady: readiness.stateMachineReady,
+          actionPlannerReady: readiness.actionPlannerReady,
+          capabilityProviderReady: readiness.capabilityProviderReady,
+          recoveryReady: readiness.recoveryReady,
+          ignored: readiness.authoredRuntimeClaimsIgnored,
+          authoredClaims: readiness.authoredRuntimeClaims,
+          missing: readiness.missingSemantics,
+          claim: readiness.claim,
+          proofFields: planner.SEMANTIC_RUNTIME_PROOF_FIELDS
+        }}));
+        """
+    )
+    result = run_node_json(script)
+
+    assert result["requiredAuthority"] == "mcel-domain-adapter-registry"
+    assert result["authority"] == "none"
+    assert result["status"] == "domain-enrichment-only"
+    assert result["ready"] is False
+    assert result["adapterExecutable"] is False
+    assert result["stateMachineReady"] is False
+    assert result["actionPlannerReady"] is False
+    assert result["capabilityProviderReady"] is False
+    assert result["recoveryReady"] is False
+    assert result["ignored"] is True
+    assert result["authoredClaims"] == result["proofFields"]
+    assert result["missing"] == result["proofFields"]
+    assert "semanticRuntime flags are not semantic intelligence" in result["claim"]
+
+
 def test_mcel_lab_surfaces_mwsl_workbench_projection_in_planner_panel() -> None:
     lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
     planner = (WEB_APP / "scripts" / "mcel-specimen-planner.js").read_text(encoding="utf-8")

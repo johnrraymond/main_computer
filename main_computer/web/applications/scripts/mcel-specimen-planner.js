@@ -19,9 +19,17 @@
       });
 
       const SEMANTIC_TRUTH_GATE_VERSION = "mcel-semantic-truth-gate-v1";
+      const SEMANTIC_READINESS_AUTHORITY = "mcel-domain-adapter-registry";
       const SEMANTIC_READINESS_FIELDS = Object.freeze([
         "structuralSpecReady",
         "semanticRuntimeReady",
+        "adapterExecutable",
+        "stateMachineReady",
+        "actionPlannerReady",
+        "capabilityProviderReady",
+        "recoveryReady"
+      ]);
+      const SEMANTIC_RUNTIME_PROOF_FIELDS = Object.freeze([
         "adapterExecutable",
         "stateMachineReady",
         "actionPlannerReady",
@@ -861,24 +869,55 @@
         };
       }
 
+      function semanticRuntimeProofForPlan(plan = {}) {
+        const registry = global.McelDomainAdapterRegistry;
+        if (!registry) return null;
+
+        const candidates = [
+          () => registry.semanticReadinessForPlan?.(plan),
+          () => registry.evaluateAdapterReadiness?.(plan.app || plan.id || "", plan),
+          () => registry.snapshotSemanticRuntime?.(plan.app || plan.id || "", plan)
+        ];
+
+        for (const candidate of candidates) {
+          try {
+            const proof = candidate();
+            if (proof && typeof proof === "object") {
+              return proof;
+            }
+          } catch (error) {
+            // A failing future registry must not accidentally promote a semantic claim.
+          }
+        }
+        return null;
+      }
+
+      function authoredSemanticRuntimeClaims(explicit = {}) {
+        const claims = SEMANTIC_RUNTIME_PROOF_FIELDS.filter((field) => explicit[field] === true);
+        if (explicit.executable === true && !claims.includes("adapterExecutable")) {
+          claims.unshift("adapterExecutable");
+        }
+        return claims;
+      }
+
       function semanticReadinessForPlan(plan = {}) {
         const spec = plan.workbenchSpec || normalizeWorkbenchSpec(plan);
         const adapter = String(plan.adapter || "").trim();
         const genericAdapter = !adapter || adapter === "planner-generic-adapter" || adapter === "needs-adapter";
         const explicit = plan.semanticRuntime || {};
+        const proof = semanticRuntimeProofForPlan(plan);
+        const proofAuthority = proof?.authority || proof?.source || "";
+        const proofAuthorized = Boolean(proof && proofAuthority === SEMANTIC_READINESS_AUTHORITY);
         const structuralSpecReady = spec.language === MWSL_LANGUAGE_ID &&
           Boolean(spec.dominantObject) &&
           Boolean((spec.workflows?.primary || []).length) &&
           Boolean((spec.layout?.primary || []).length);
 
-        const adapterExecutable = Boolean(
-          explicit.adapterExecutable === true ||
-          explicit.executable === true
-        );
-        const stateMachineReady = Boolean(explicit.stateMachineReady === true);
-        const actionPlannerReady = Boolean(explicit.actionPlannerReady === true);
-        const capabilityProviderReady = Boolean(explicit.capabilityProviderReady === true);
-        const recoveryReady = Boolean(explicit.recoveryReady === true);
+        const adapterExecutable = Boolean(proofAuthorized && proof.adapterExecutable === true);
+        const stateMachineReady = Boolean(proofAuthorized && proof.stateMachineReady === true);
+        const actionPlannerReady = Boolean(proofAuthorized && proof.actionPlannerReady === true);
+        const capabilityProviderReady = Boolean(proofAuthorized && proof.capabilityProviderReady === true);
+        const recoveryReady = Boolean(proofAuthorized && proof.recoveryReady === true);
         const semanticRuntimeReady = Boolean(
           structuralSpecReady &&
           adapterExecutable &&
@@ -889,7 +928,7 @@
         );
         const adapterKind = genericAdapter
           ? "structural-intake"
-          : (explicit.adapterKind || "domain-enrichment");
+          : (proofAuthorized && proof.adapterKind ? proof.adapterKind : "domain-enrichment");
         const semanticRuntimeStatus = semanticRuntimeReady
           ? "executable-semantic-workbench"
           : (genericAdapter ? "structural-only" : "domain-enrichment-only");
@@ -902,6 +941,7 @@
         ]
           .filter(([, ready]) => !ready)
           .map(([field]) => field);
+        const authoredClaims = authoredSemanticRuntimeClaims(explicit);
 
         return {
           version: SEMANTIC_TRUTH_GATE_VERSION,
@@ -917,10 +957,16 @@
           recoveryReady,
           semanticRuntimeStatus,
           missingSemantics,
+          semanticRuntimeAuthority: proofAuthorized ? SEMANTIC_READINESS_AUTHORITY : "none",
+          requiredSemanticRuntimeAuthority: SEMANTIC_READINESS_AUTHORITY,
+          authoredRuntimeClaims: authoredClaims,
+          authoredRuntimeClaimsIgnored: Boolean(authoredClaims.length && !proofAuthorized),
+          registryProofPresent: Boolean(proof),
+          registryProofAuthorized: proofAuthorized,
           fields: SEMANTIC_READINESS_FIELDS.slice(),
           claim: semanticRuntimeReady
-            ? "MCEL spec is backed by an explicit executable semantic runtime contract."
-            : "MCEL is structurally classified only; labels and generic adapters are not semantic intelligence."
+            ? "MCEL spec is backed by adapter-registry executable semantic runtime proof."
+            : "MCEL is structurally classified only; authored labels, generic adapters, and semanticRuntime flags are not semantic intelligence."
         };
       }
 
@@ -1367,7 +1413,9 @@
         normalizeWorkbenchSpec,
         semanticReadinessForPlan,
         SEMANTIC_TRUTH_GATE_VERSION,
+        SEMANTIC_READINESS_AUTHORITY,
         SEMANTIC_READINESS_FIELDS,
+        SEMANTIC_RUNTIME_PROOF_FIELDS,
         workbenchLayoutSlotSummary,
         workbenchCapabilitySummary,
         documentWorkbenchLayoutSummary,
