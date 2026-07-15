@@ -1358,6 +1358,11 @@ def test_super_guard_contract_deploy_is_resumable_and_uses_nonzero_gas() -> None
     assert "MC_ALLFATHER_CONTRACT_STALE_PENDING_S" in script
     assert "MC_ALLFATHER_CONTRACT_VISIBLE_PENDING_REPLACE_S" in script
     assert "MC_ALLFATHER_CONTRACT_VISIBLE_PENDING_REPLACE_BLOCKS" in script
+    assert "MC_ALLFATHER_CONTRACT_DROPPED_PENDING_BLOCKS" in script
+    assert "submitted_at_unix_s" in script
+    assert "submitted_at_block_number" in script
+    assert "invalid-future-submitted-at-uptime" in script
+    assert "submitted_block_delta" in script
     assert "stale pending transaction" in script
     assert "visible pending transaction stuck" in script
     assert "replacement_nonce" in script

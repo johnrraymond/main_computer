@@ -520,5 +520,6 @@ def test_code_editor_live_overlay_uses_edge_rounded_device_pixels(flog):
     assert "Math.round(leftCss * devicePixelRatio)" in measure_js
     assert "Math.round(rightCss * devicePixelRatio)" in measure_js
     assert "measuredRect?.pixelRect ? cssRectFromPixelRect(measuredRect.pixelRect)" in annotate_js
-    assert "border: `1px solid ${colors[key]}`" in annotate_js
+    assert "devicePixelLineWidth = 1 / Math.max(1, devicePixelRatio)" in measure_js
+    assert "border: `${devicePixelLineWidth}px solid ${colors[key]}`" in annotate_js
     assert "borderRadius: \"0\"" in annotate_js

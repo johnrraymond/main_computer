@@ -1182,10 +1182,29 @@ def semantic_layout_pressures(hierarchy: dict[str, Any]) -> list[dict[str, Any]]
     return pressures
 
 
+def _pixel_authoritative_rect(rect: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return the browser-rasterized rectangle when the JS measurement provided it.
+
+    The browser measurement stores CSS rectangles for readability and nested
+    ``pixelRect`` rectangles for exact screenshot comparison.  Python-side
+    geometry helpers and rendered-policy fingerprints must use ``pixelRect``
+    when present; otherwise fractional CSS widths can still differ from the PNG
+    by a pixel even though the measurement payload contains the exact
+    device-pixel answer.
+    """
+
+    if not isinstance(rect, dict):
+        return None
+    pixel_rect = rect.get("pixelRect")
+    if isinstance(pixel_rect, dict):
+        return pixel_rect
+    return rect
+
+
 def _record_rect(record: dict[str, Any] | None) -> dict[str, float] | None:
     if not record:
         return None
-    rect = record.get("rect") or record.get("documentRect")
+    rect = _pixel_authoritative_rect(record.get("rect") or record.get("documentRect"))
     if not rect:
         return None
     left = float(rect.get("left", rect.get("x", 0)) or 0)
@@ -10988,6 +11007,7 @@ MEASURE_AND_OVERLAY_JS = r"""
     devicePixelRatio: Number(win.devicePixelRatio || 1) || 1,
   };
   const devicePixelRatio = viewport.devicePixelRatio;
+  const devicePixelLineWidth = 1 / Math.max(1, devicePixelRatio);
 
   function pixelRectFromCssRect(rect) {
     const leftCss = Number(rect.left ?? rect.x ?? 0);
@@ -11122,23 +11142,25 @@ MEASURE_AND_OVERLAY_JS = r"""
   function unionBounds(rects) {
     const visible = rects.filter((rect) => rect && rect.area > 4);
     if (!visible.length) {
-      return {x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, area: 0};
+      return withPixelRect({x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, area: 0});
     }
     const left = Math.min(...visible.map((rect) => rect.left));
     const top = Math.min(...visible.map((rect) => rect.top));
     const right = Math.max(...visible.map((rect) => rect.right));
     const bottom = Math.max(...visible.map((rect) => rect.bottom));
-    return {
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    return withPixelRect({
       x: left,
       y: top,
       left,
       top,
       right,
       bottom,
-      width: Math.max(0, right - left),
-      height: Math.max(0, bottom - top),
-      area: Math.max(0, right - left) * Math.max(0, bottom - top),
-    };
+      width,
+      height,
+      area: width * height,
+    });
   }
 
   function unitRecordFor(el) {
@@ -12493,7 +12515,7 @@ MEASURE_AND_OVERLAY_JS = r"""
     box.style.top = `${pixelAlignedRect.top}px`;
     box.style.width = `${pixelAlignedRect.width}px`;
     box.style.height = `${pixelAlignedRect.height}px`;
-    box.style.border = `1px solid ${color}`;
+    box.style.border = `${devicePixelLineWidth}px solid ${color}`;
     box.style.background = fill;
     box.style.boxSizing = "border-box";
     box.style.borderRadius = "0";
@@ -12797,8 +12819,8 @@ RENDERED_POLICY_FINGERPRINT_BINS = 500
 
 def _fingerprint_root_rect(phase_measurement: dict[str, Any]) -> dict[str, float] | None:
     root = ((phase_measurement.get("geometryFacts") or {}).get("root") or {})
-    rect = root.get("clipped") or root.get("documentRect") or root.get("raw")
-    if not isinstance(rect, dict):
+    rect = _record_rect({"rect": root.get("clipped") or root.get("documentRect") or root.get("raw")})
+    if not rect:
         return None
     if float(rect.get("width", 0) or 0) <= 0 or float(rect.get("height", 0) or 0) <= 0:
         return None
@@ -12811,28 +12833,15 @@ def _quantized_relative_rect(
     *,
     bins: int = RENDERED_POLICY_FINGERPRINT_BINS,
 ) -> tuple[int, int, int, int] | None:
-    rect = record.get("rect") or record.get("documentRect")
-    if not isinstance(rect, dict) or not root_rect:
+    rect = _record_rect(record)
+    root = _record_rect({"rect": root_rect}) if root_rect else None
+    if not rect or not root:
         return None
-    root_width = max(1.0, float(root_rect.get("width", 0) or 0))
-    root_height = max(1.0, float(root_rect.get("height", 0) or 0))
+    root_width = max(1.0, float(root.get("width", 0) or 0))
+    root_height = max(1.0, float(root.get("height", 0) or 0))
     return (
-        round(
-            (
-                float(rect.get("left", rect.get("x", 0)) or 0)
-                - float(root_rect.get("left", root_rect.get("x", 0)) or 0)
-            )
-            / root_width
-            * bins
-        ),
-        round(
-            (
-                float(rect.get("top", rect.get("y", 0)) or 0)
-                - float(root_rect.get("top", root_rect.get("y", 0)) or 0)
-            )
-            / root_height
-            * bins
-        ),
+        round((float(rect.get("left", 0) or 0) - float(root.get("left", 0) or 0)) / root_width * bins),
+        round((float(rect.get("top", 0) or 0) - float(root.get("top", 0) or 0)) / root_height * bins),
         round(float(rect.get("width", 0) or 0) / root_width * bins),
         round(float(rect.get("height", 0) or 0) / root_height * bins),
     )

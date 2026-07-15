@@ -6848,5 +6848,88 @@ def test_flog_layout_browser_geometry_uses_edge_rounded_device_pixels():
     assert "Math.round(rightCss * devicePixelRatio)" in js
     assert "width = Math.max(0, right - left)" in js
     assert "cssRectFromPixelRect(rect.pixelRect)" in js
-    assert "box.style.border = `1px solid ${color}`" in js
+    assert "devicePixelLineWidth = 1 / Math.max(1, devicePixelRatio)" in js
+    assert "box.style.border = `${devicePixelLineWidth}px solid ${color}`" in js
     assert "box.style.borderRadius = \"0\"" in js
+
+
+
+def test_flog_layout_python_scoring_prefers_device_pixel_rects():
+    module = load_module()
+    rect = module._record_rect(
+        {
+            "rect": {
+                "left": 10.4,
+                "top": 20.4,
+                "right": 30.6,
+                "bottom": 40.6,
+                "width": 20.2,
+                "height": 20.2,
+                "area": 408.04,
+                "pixelRect": {
+                    "left": 10,
+                    "top": 20,
+                    "right": 31,
+                    "bottom": 41,
+                    "width": 21,
+                    "height": 21,
+                    "area": 441,
+                },
+            }
+        }
+    )
+
+    assert rect == {
+        "left": 10.0,
+        "right": 31.0,
+        "top": 20.0,
+        "bottom": 41.0,
+        "width": 21.0,
+        "height": 21.0,
+        "area": 441.0,
+    }
+
+
+def test_flog_rendered_policy_fingerprint_uses_device_pixel_rects():
+    module = load_module()
+    root = {
+        "left": 0.4,
+        "top": 0.4,
+        "right": 99.6,
+        "bottom": 99.6,
+        "width": 99.2,
+        "height": 99.2,
+        "area": 9840.64,
+        "pixelRect": {
+            "left": 0,
+            "top": 0,
+            "right": 100,
+            "bottom": 100,
+            "width": 100,
+            "height": 100,
+            "area": 10000,
+        },
+    }
+    record = {
+        "rect": {
+            "left": 10.4,
+            "top": 20.4,
+            "right": 59.6,
+            "bottom": 69.6,
+            "width": 49.2,
+            "height": 49.2,
+            "area": 2420.64,
+            "pixelRect": {
+                "left": 10,
+                "top": 20,
+                "right": 60,
+                "bottom": 70,
+                "width": 50,
+                "height": 50,
+                "area": 2500,
+            },
+        }
+    }
+
+    assert module._fingerprint_root_rect({"geometryFacts": {"root": {"clipped": root}}})["width"] == 100.0
+    assert module._quantized_relative_rect(record, root, bins=100) == (10, 20, 50, 50)

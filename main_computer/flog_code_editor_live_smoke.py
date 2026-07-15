@@ -788,6 +788,7 @@ MEASURE_JS = r"""
   );
 
   const devicePixelRatio = Number(window.devicePixelRatio || 1) || 1;
+  const devicePixelLineWidth = 1 / Math.max(1, devicePixelRatio);
 
   const pixelRectFromCssRect = (value) => {
     const leftCss = Number(value.left ?? value.x ?? 0);
@@ -1345,7 +1346,7 @@ ANNOTATE_JS = r"""
       top: `${rect.top}px`,
       width: `${rect.width}px`,
       height: `${rect.height}px`,
-      border: `1px solid ${colors[key]}`,
+      border: `${devicePixelLineWidth}px solid ${colors[key]}`,
       borderRadius: "0",
       boxSizing: "border-box",
     });

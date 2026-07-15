@@ -4218,6 +4218,48 @@ def contract_visible_pending_replace_blocks() -> int:
     except Exception:
         return 10
 
+def contract_dropped_pending_blocks() -> int:
+    try:
+        return max(1, int(os.environ.get("MC_ALLFATHER_CONTRACT_DROPPED_PENDING_BLOCKS", "5")))
+    except Exception:
+        return 5
+
+def contract_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            return float(stripped)
+        return float(value)
+    except Exception:
+        return None
+
+def contract_submission_age_s(existing: dict) -> tuple[float | None, str]:
+    submitted_unix = contract_float(existing.get("submitted_at_unix_s"))
+    if submitted_unix is not None:
+        return round(max(0.0, time.time() - submitted_unix), 3), "submitted_at_unix_s"
+    submitted_uptime = contract_float(existing.get("submitted_at_uptime_s"))
+    if submitted_uptime is not None:
+        current_uptime = now_s()
+        # Progress files survive container restarts; process uptime does not.  Older
+        # records only stored submitted_at_uptime_s, so after a redeploy that value
+        # can be in the "future" relative to the new process.  Do not report age=0
+        # forever in that case.
+        if submitted_uptime <= current_uptime + 1.0:
+            return round(max(0.0, current_uptime - submitted_uptime), 3), "submitted_at_uptime_s"
+        return None, "invalid-future-submitted-at-uptime"
+    return None, "missing-submission-time"
+
+def contract_submitted_block_delta(existing: dict, current_block: object) -> int | None:
+    submitted_block = contract_int(existing.get("submitted_at_block_number"))
+    current = contract_int(current_block)
+    if submitted_block is None or current is None:
+        return None
+    return max(0, int(current) - int(submitted_block))
+
 def contract_int(value: object) -> int | None:
     if value is None:
         return None
@@ -4329,29 +4371,45 @@ def inspect_contract_transaction(w3, tx_hash: str) -> dict:
         "error": "",
     }
 
-def contract_transaction_is_stale(tx_lookup: dict, pending_age_s: object) -> bool:
+def contract_transaction_is_stale(tx_lookup: dict, pending_age_s: object, submitted_block_delta: object = None, age_source: str = "") -> bool:
     if tx_lookup.get("observed") or tx_lookup.get("error") or not tx_lookup.get("not_found"):
         return False
     try:
         age = float(pending_age_s)
     except Exception:
-        return False
-    return age >= contract_stale_pending_s()
-
-def contract_transaction_is_visible_pending_replaceable(tx_lookup: dict, pending_age_s: object, pending_block_delta: object) -> bool:
-    if not tx_lookup.get("observed") or not tx_lookup.get("pending") or tx_lookup.get("error"):
-        return False
+        age = None
+    if age is not None and age >= contract_stale_pending_s():
+        return True
     try:
-        age = float(pending_age_s)
+        block_delta = int(submitted_block_delta)
     except Exception:
+        block_delta = 0
+    if block_delta >= contract_dropped_pending_blocks():
+        return True
+    # A persisted uptime timestamp from a prior container process is unusable after
+    # redeploy.  If Besu also no longer knows about the tx, fail fast into
+    # same-nonce resubmission rather than waiting until the new process uptime
+    # catches the old process uptime.
+    return str(age_source or "") == "invalid-future-submitted-at-uptime"
+
+def contract_transaction_is_visible_pending_replaceable(tx_lookup: dict, pending_age_s: object, pending_block_delta: object, age_source: str = "") -> bool:
+    if not tx_lookup.get("observed") or not tx_lookup.get("pending") or tx_lookup.get("error"):
         return False
     try:
         block_delta = int(pending_block_delta)
     except Exception:
         block_delta = 0
-    return age >= contract_visible_pending_replace_s() and block_delta >= contract_visible_pending_replace_blocks()
+    if block_delta < contract_visible_pending_replace_blocks():
+        return False
+    try:
+        age = float(pending_age_s)
+    except Exception:
+        age = None
+    if age is not None:
+        return age >= contract_visible_pending_replace_s()
+    return str(age_source or "") == "invalid-future-submitted-at-uptime"
 
-def mark_contract_transaction_stale(existing: dict, progress_key: str, tx_hash: str, pending_age_s: object, receipt_check_count: int, tx_lookup: dict, *, reason: str, pending_block_delta: object = None, chain_info: dict | None = None) -> None:
+def mark_contract_transaction_stale(existing: dict, progress_key: str, tx_hash: str, pending_age_s: object, receipt_check_count: int, tx_lookup: dict, *, reason: str, pending_block_delta: object = None, submitted_block_delta: object = None, age_source: str = "", chain_info: dict | None = None) -> None:
     stale_transactions = existing.setdefault("stale_transactions", [])
     if not isinstance(stale_transactions, list):
         stale_transactions = []
@@ -4366,12 +4424,20 @@ def mark_contract_transaction_stale(existing: dict, progress_key: str, tx_hash: 
     }
     if pending_block_delta is not None:
         stale_record["pending_block_delta"] = pending_block_delta
+    if submitted_block_delta is not None:
+        stale_record["submitted_block_delta"] = submitted_block_delta
+    if age_source:
+        stale_record["pending_age_source"] = age_source
     if chain_info:
         stale_record["chain"] = chain_info
     stale_transactions.append(stale_record)
     existing["last_stale_transaction_hash"] = tx_hash
     existing["last_stale_pending_age_s"] = pending_age_s
     existing["last_stale_reason"] = reason
+    if submitted_block_delta is not None:
+        existing["last_stale_submitted_block_delta"] = submitted_block_delta
+    if age_source:
+        existing["last_stale_pending_age_source"] = age_source
     existing["status"] = "stale-resubmit-required"
     nonce = tx_lookup.get("nonce")
     if nonce is None:
@@ -4444,16 +4510,11 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                 receipt_check_count = 1
             existing["receipt_check_count"] = receipt_check_count
             existing["last_receipt_check_uptime_s"] = now_s()
-            submitted_at = existing.get("submitted_at_uptime_s")
-            pending_age_s = None
-            try:
-                if submitted_at is not None:
-                    pending_age_s = round(max(0.0, now_s() - float(submitted_at)), 3)
-            except Exception:
-                pending_age_s = None
+            pending_age_s, pending_age_source = contract_submission_age_s(existing)
             tx_lookup = inspect_contract_transaction(w3, tx_hash)
             chain_info = contract_chain_diagnostics(w3)
             current_block = chain_info.get("block_number")
+            submitted_block_delta = contract_submitted_block_delta(existing, current_block)
             pending_block_delta = None
             if tx_lookup.get("observed") and tx_lookup.get("pending"):
                 if current_block is not None and existing.get("first_pending_block_number") is None:
@@ -4466,8 +4527,11 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     existing["pending_block_delta"] = pending_block_delta
             existing["last_tx_lookup"] = tx_lookup
             existing["last_chain_diagnostics"] = chain_info
+            existing["pending_age_source"] = pending_age_source
+            if submitted_block_delta is not None:
+                existing["submitted_block_delta"] = submitted_block_delta
             write_contract_progress(progress)
-            if contract_transaction_is_stale(tx_lookup, pending_age_s):
+            if contract_transaction_is_stale(tx_lookup, pending_age_s, submitted_block_delta, pending_age_source):
                 mark_contract_transaction_stale(
                     existing,
                     progress_key,
@@ -4477,10 +4541,12 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     tx_lookup,
                     reason="receipt-missing-and-transaction-not-observed",
                     pending_block_delta=pending_block_delta,
+                    submitted_block_delta=submitted_block_delta,
+                    age_source=pending_age_source,
                     chain_info=chain_info,
                 )
                 write_contract_progress(progress)
-            elif contract_transaction_is_visible_pending_replaceable(tx_lookup, pending_age_s, pending_block_delta):
+            elif contract_transaction_is_visible_pending_replaceable(tx_lookup, pending_age_s, pending_block_delta, pending_age_source):
                 mark_contract_transaction_stale(
                     existing,
                     progress_key,
@@ -4490,13 +4556,15 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     tx_lookup,
                     reason="receipt-missing-and-transaction-visible-pending-too-long",
                     pending_block_delta=pending_block_delta,
+                    submitted_block_delta=submitted_block_delta,
+                    age_source=pending_age_source,
                     chain_info=chain_info,
                 )
                 write_contract_progress(progress)
             else:
                 rate_limited_super_log(
                     f"contracts:{progress_key}:pending",
-                    f"contracts: waiting receipt contract={progress_key} tx={tx_hash} checks={receipt_check_count} pending_age_s={pending_age_s} tx_observed={str(bool(tx_lookup.get('observed'))).lower()} tx_pending={str(bool(tx_lookup.get('pending'))).lower()} pending_block_delta={pending_block_delta} block={chain_info.get('block_number')} gasPrice={tx_lookup.get('gas_price')} chainGasPrice={chain_info.get('gas_price')} baseFee={chain_info.get('latest_base_fee_per_gas')}",
+                    f"contracts: waiting receipt contract={progress_key} tx={tx_hash} checks={receipt_check_count} pending_age_s={pending_age_s} age_source={pending_age_source} tx_observed={str(bool(tx_lookup.get('observed'))).lower()} tx_pending={str(bool(tx_lookup.get('pending'))).lower()} submitted_block_delta={submitted_block_delta} pending_block_delta={pending_block_delta} block={chain_info.get('block_number')} gasPrice={tx_lookup.get('gas_price')} chainGasPrice={chain_info.get('gas_price')} baseFee={chain_info.get('latest_base_fee_per_gas')}",
                     interval_s=float(os.environ.get("MC_ALLFATHER_CONTRACT_LOG_INTERVAL_S", "30")),
                 )
                 state(
@@ -4507,6 +4575,8 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     pending_contract=progress_key,
                     pending_transaction_hash=tx_hash,
                     pending_age_s=pending_age_s,
+                    pending_age_source=pending_age_source,
+                    submitted_block_delta=submitted_block_delta,
                     receipt_check_count=receipt_check_count,
                     tx_observed=bool(tx_lookup.get("observed")),
                     tx_pending=bool(tx_lookup.get("pending")),
@@ -4520,6 +4590,7 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     pending_block_delta=pending_block_delta,
                     visible_pending_replace_s=contract_visible_pending_replace_s(),
                     visible_pending_replace_blocks=contract_visible_pending_replace_blocks(),
+                    dropped_pending_blocks=contract_dropped_pending_blocks(),
                     stale_pending_s=contract_stale_pending_s(),
                     deployed_contract_count=len([item for item in contracts_progress.values() if isinstance(item, dict) and item.get("address")]),
                 )
@@ -4534,6 +4605,8 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                         pending_contract=progress_key,
                         pending_transaction_hash=tx_hash,
                         pending_age_s=pending_age_s,
+                        pending_age_source=pending_age_source,
+                        submitted_block_delta=submitted_block_delta,
                         receipt_check_count=receipt_check_count,
                         tx_observed=bool(tx_lookup.get("observed")),
                         tx_pending=bool(tx_lookup.get("pending")),
@@ -4547,6 +4620,7 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                         pending_block_delta=pending_block_delta,
                         visible_pending_replace_s=contract_visible_pending_replace_s(),
                         visible_pending_replace_blocks=contract_visible_pending_replace_blocks(),
+                        dropped_pending_blocks=contract_dropped_pending_blocks(),
                         stale_pending_s=contract_stale_pending_s(),
                         last_error=f"{type(exc).__name__}: {exc}",
                     )
@@ -4574,6 +4648,8 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
         previous_gas_price = None
         attempt = 1
     gas_price = bumped_contract_gas_price(w3, previous_gas_price)
+    submission_chain_info = contract_chain_diagnostics(w3)
+    submitted_at_block_number = submission_chain_info.get("block_number")
     replacement_nonce = None
     if isinstance(previous_record, dict):
         replacement_nonce = contract_int(previous_record.get("replacement_nonce"))
@@ -4601,6 +4677,8 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
         "gasPrice": gas_price,
         "status": "submitted",
         "submitted_at_uptime_s": now_s(),
+        "submitted_at_unix_s": time.time(),
+        "submitted_at_block_number": submitted_at_block_number,
         "attempt": attempt,
         "replaces_nonce": replacement_nonce,
         "stale_transactions": stale_transactions,
@@ -4626,6 +4704,9 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
         pending_contract=progress_key,
         pending_transaction_hash=tx_hash,
         pending_age_s=0.0,
+        pending_age_source="submitted_at_unix_s",
+        submitted_block_delta=0,
+        submitted_at_block_number=submitted_at_block_number,
         receipt_check_count=1,
         deployed_contract_count=len([item for item in contracts_progress.values() if isinstance(item, dict) and item.get("address")]),
     )
@@ -4640,6 +4721,9 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
             pending_contract=progress_key,
             pending_transaction_hash=tx_hash,
             pending_age_s=0.0,
+            pending_age_source="submitted_at_unix_s",
+            submitted_block_delta=0,
+            submitted_at_block_number=submitted_at_block_number,
             receipt_check_count=1,
             last_error=f"{type(exc).__name__}: {exc}",
         )
