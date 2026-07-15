@@ -166,6 +166,18 @@
           </div>
         </div>
 
+        <div
+          id="mcel-blueprint-selection-receipt"
+          class="mcel-lab-selection-receipt"
+          data-mcel-selection-state="empty"
+          aria-live="polite"
+        >
+          <span>No rendered element selected.</span>
+          <button id="mcel-blueprint-view-selection-action" type="button" hidden>
+            View inspector
+          </button>
+        </div>
+
         <details class="mcel-lab-work-context" aria-label="Selected aspect context">
           <summary>
             <span class="eyebrow">Aspect context</span>
@@ -201,7 +213,9 @@
 
     <aside class="mcel-lab-blueprint-right-rail" aria-label="Inspector and evidence rail">
       <section
+        id="mcel-blueprint-selected-element-card"
         class="mcel-lab-shell-card mcel-lab-selected-element-card"
+        tabindex="-1"
         data-mcel-zone="inspector"
         data-mcel-layout-zone="inspector"
         data-mcel-element="element.layout.inspector-zone"
@@ -214,7 +228,11 @@
           </div>
           <span id="mcel-blueprint-inspect-mode-status" class="mcel-lab-inspect-mode-status">Inspect off</span>
         </div>
-        <div id="mcel-blueprint-selected-element" class="mcel-lab-selected-element">
+        <div
+          id="mcel-blueprint-selected-element"
+          class="mcel-lab-selected-element"
+          aria-live="polite"
+        >
           <p class="mcel-lab-muted-note">
             Enable Inspect, then click an element in the mounted preview.
           </p>

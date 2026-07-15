@@ -356,3 +356,35 @@ def test_phase_four_app_switch_and_remount_leave_inspection_inert() -> None:
 
     assert "shellState.inspectionMode = false;" in mount_block
     assert "shellState.inspectionMode = false;" in select_block
+
+
+def test_phase_four_selection_output_is_visible_and_drills_into_the_inspector() -> None:
+    html = MCEL_LAB_HTML.read_text(encoding="utf-8")
+    source = MCEL_LAB_JS.read_text(encoding="utf-8")
+    styles = MCEL_LAB_CSS.read_text(encoding="utf-8")
+
+    assert 'id="mcel-blueprint-selection-receipt"' in html
+    assert 'data-mcel-selection-state="empty"' in html
+    assert 'id="mcel-blueprint-view-selection-action"' in html
+    assert 'id="mcel-blueprint-selected-element-card"' in html
+    assert 'aria-live="polite"' in html
+
+    assert "function mcelBlueprintShellRenderSelectionReceipt" in source
+    assert "function mcelBlueprintShellRenderSelectedElementFallback" in source
+    assert 'selectionOutputVersion: "visible-receipt-v6"' in source
+    assert 'new CustomEvent("mcel:element-selected"' in source
+    assert "inspectorRendered" in source
+    assert 'container.dataset.mcelSelectionRender = "complete"' in source
+    assert 'container.dataset.mcelSelectionRender = "fallback"' in source
+    assert 'card?.scrollIntoView?.({block: "nearest", inline: "nearest", behavior: "smooth"})' in source
+
+    select_start = source.index("function mcelBlueprintShellSelectPreviewElement")
+    select_end = source.index("function mcelBlueprintShellBindInspectionFrame", select_start)
+    select_block = source[select_start:select_end]
+    assert "shellState.selectedElements[blueprint.appId] = record;" in select_block
+    assert "mcelBlueprintShellRenderSelectedElement(blueprint)" in select_block
+    assert "mcelBlueprintShellRenderSelectionReceipt(blueprint)" in select_block
+
+    assert ".mcel-lab-selection-receipt" in styles
+    assert '.mcel-lab-selection-receipt[data-mcel-selection-state="selected"]' in styles
+    assert '.mcel-lab-selected-element-card[data-mcel-selection-state="selected"]' in styles

@@ -1270,22 +1270,49 @@ def sync_probe_service(
 
 
 def application_records_from_service_detail(detail: Mapping[str, Any]) -> list[dict[str, str]]:
-    """Return compact application records embedded in a Coolify service detail payload."""
+    """Return compact application records embedded in a Coolify service detail payload.
+
+    Coolify service payloads have changed shape across releases.  Some responses
+    expose service applications as ``applications`` while others use
+    ``service_applications`` or nest application-like records inside service
+    containers.  Keep this intentionally schema-tolerant so log polling does not
+    silently miss the real child application UUID.
+    """
 
     body = detail.get("body") if isinstance(detail, Mapping) else {}
     if not isinstance(body, Mapping):
         return []
-    applications = body.get("applications")
-    if not isinstance(applications, list):
-        return []
+
     records: list[dict[str, str]] = []
-    for app in applications:
-        if not isinstance(app, Mapping):
-            continue
-        uuid = str(app.get("uuid") or "").strip()
-        name = str(app.get("name") or "").strip()
-        if uuid:
+    seen: set[str] = set()
+
+    def add_record(value: Mapping[str, Any]) -> None:
+        uuid = str(value.get("uuid") or "").strip()
+        name = str(value.get("name") or value.get("service_name") or "").strip()
+        if uuid and uuid not in seen:
+            seen.add(uuid)
             records.append({"uuid": uuid, "name": name})
+
+    def walk(value: Any, *, under_application_key: bool = False) -> None:
+        if isinstance(value, Mapping):
+            if under_application_key:
+                add_record(value)
+            for key, nested in value.items():
+                clean_key = str(key or "").lower()
+                nested_under_application_key = under_application_key or clean_key in {
+                    "applications",
+                    "service_applications",
+                    "serviceapplications",
+                    "application",
+                    "service_application",
+                    "serviceapplication",
+                }
+                walk(nested, under_application_key=nested_under_application_key)
+        elif isinstance(value, list):
+            for nested in value:
+                walk(nested, under_application_key=under_application_key)
+
+    walk(body)
     return records
 
 
@@ -1309,16 +1336,33 @@ def fetch_probe_logs(
         paths.extend(
             [
                 ("get-allfather-probe-application-logs", f"/api/v1/applications/{quoted_app}/logs?lines=500"),
+                ("get-allfather-probe-application-logs", f"/api/v1/applications/{quoted_app}/logs?tail=500"),
                 ("get-allfather-probe-application-logs", f"/api/v1/applications/{quoted_app}/logs"),
             ]
         )
     if service_uuid:
         quoted_service = urllib.parse.quote(service_uuid)
+        if application_uuid:
+            quoted_app = urllib.parse.quote(application_uuid)
+            paths.extend(
+                [
+                    ("get-allfather-probe-service-application-logs", f"/api/v1/services/{quoted_service}/applications/{quoted_app}/logs?lines=500"),
+                    ("get-allfather-probe-service-application-logs", f"/api/v1/services/{quoted_service}/applications/{quoted_app}/logs?tail=500"),
+                    ("get-allfather-probe-service-application-logs", f"/api/v1/services/{quoted_service}/applications/{quoted_app}/logs"),
+                    ("get-allfather-probe-service-application-logs", f"/api/v1/services/{quoted_service}/application/{quoted_app}/logs?lines=500"),
+                    ("get-allfather-probe-service-application-logs", f"/api/v1/services/{quoted_service}/application/{quoted_app}/logs"),
+                ]
+            )
         paths.extend(
             [
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/logs?lines=500"),
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/logs?tail=500"),
                 ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/logs"),
-                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/logs?tail=300"),
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/application/logs?lines=500"),
                 ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/application/logs"),
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/applications/logs?lines=500"),
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/applications/logs"),
+                ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/docker/logs?lines=500"),
                 ("get-allfather-probe-service-logs-fallback", f"/api/v1/services/{quoted_service}/docker/logs"),
             ]
         )
@@ -5039,10 +5083,7 @@ def render_super_base_builder_compose(
     host_port = super_base_builder_host_port(head)
     container_port = DEFAULT_SUPER_BASE_BUILDER_CONTAINER_PORT
     state_dir = f"{head.state_root.rstrip('/')}/super-base-builder"
-    healthcheck_command = (
-        f"wget -qO- http://127.0.0.1:{container_port}/healthz 2>/dev/null "
-        "| grep -q '\"ok\": true'"
-    )
+    healthcheck_command = "test -f /work/www/healthz && grep -q '\"ok\": true' /work/www/healthz"
     command_script = super_base_builder_command_script(
         target_image=target_image,
         source_image=source_image,
@@ -5160,8 +5201,20 @@ def probe_target_for_super_base_builder(head: HeadNode) -> dict[str, Any]:
     }
 
 
+def probe_result_payload_mapping(probe_result: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the actual probe result payload, accepting raw and metadata-wrapped forms."""
+
+    if not isinstance(probe_result, Mapping):
+        return {}
+    nested = probe_result.get("result")
+    if isinstance(nested, Mapping):
+        return nested
+    return probe_result
+
+
 def probe_result_target_by_service(probe_result: Mapping[str, Any], service_name: str) -> dict[str, Any]:
-    for item in probe_result.get("targets") or []:
+    payload = probe_result_payload_mapping(probe_result)
+    for item in payload.get("targets") or []:
         if isinstance(item, Mapping) and str(item.get("service_name") or "") == service_name:
             return dict(item)
     return {}
@@ -5198,6 +5251,94 @@ def compact_wait_target_status(target: Mapping[str, Any]) -> str:
     return " ".join(pieces)
 
 
+def super_base_builder_status_from_logs_body(body: Any, target_image: str) -> dict[str, Any]:
+    """Extract ready/failed state from managed base-builder Coolify logs."""
+
+    target = str(target_image or "").strip()
+    found_ready = False
+    found_failed = False
+    failed_tail = ""
+    for text in _strings_from_nested(body):
+        lines = text.splitlines()
+        for line in lines:
+            clean = line.strip()
+            if not clean:
+                continue
+            if (
+                ("allfather-super-base-builder: phase=ready" in clean and (not target or f"target={target}" in clean))
+                or (target and f"Base image already exists: {target}" in clean)
+                or (target and f"naming to docker.io/{target} done" in clean)
+            ):
+                found_ready = True
+            if "allfather-super-base-builder: phase=failed" in clean and (not target or f"target={target}" in clean):
+                found_failed = True
+                failed_tail = clean[-1200:]
+    if found_failed:
+        return {"observed": True, "ready": False, "failed": True, "error": failed_tail or "base-builder reported failed"}
+    if found_ready:
+        return {"observed": True, "ready": True, "failed": False, "error": ""}
+    return {"observed": False, "ready": False, "failed": False, "error": ""}
+
+
+def fetch_super_base_builder_log_status(
+    client: Any,
+    service_uuid: str,
+    service_name: str,
+    target_image: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Poll Coolify service/application logs for the managed base-builder state."""
+
+    if not service_uuid:
+        return {"observed": False, "ready": False, "failed": False, "source": "missing-service-uuid"}
+    detail = fetch_service_detail(client, service_uuid, tried)
+
+    # Some Coolify versions embed recent service/application log fragments or
+    # status strings in the service detail.  Check that body first so a ready
+    # builder is not ignored merely because the logs endpoint shape changed.
+    detail_status = super_base_builder_status_from_logs_body(detail.get("body"), target_image)
+    if bool(detail_status.get("ready")) or bool(detail_status.get("failed")):
+        detail_status["source"] = "coolify-service-detail"
+        detail_status["application_uuid"] = ""
+        return detail_status
+
+    applications = application_records_from_service_detail(detail)
+    application_uuids: list[str] = []
+    for app in applications:
+        uuid = str(app.get("uuid") or "").strip()
+        name = str(app.get("name") or "")
+        if uuid and service_name and service_name in name:
+            application_uuids.insert(0, uuid)
+        elif uuid:
+            application_uuids.append(uuid)
+    # De-duplicate while preserving the service-name-preferred ordering.
+    application_uuids = list(dict.fromkeys(application_uuids))
+
+    log_errors: list[str] = []
+    candidates = application_uuids or [""]
+    for application_uuid in candidates:
+        logs = fetch_probe_logs(client, service_uuid, tried, application_uuid=application_uuid)
+        if not logs.get("ok"):
+            error = str(logs.get("error") or logs.get("source") or "").strip()
+            if error:
+                log_errors.append(error)
+            continue
+        status = super_base_builder_status_from_logs_body(logs.get("body"), target_image)
+        status["source"] = logs.get("source") or "coolify-logs"
+        status["application_uuid"] = application_uuid
+        if bool(status.get("ready")) or bool(status.get("failed")) or bool(status.get("observed")):
+            return status
+
+    return {
+        "observed": False,
+        "ready": False,
+        "failed": False,
+        "source": "coolify-logs",
+        "application_uuid": application_uuids[0] if application_uuids else "",
+        "error": "; ".join(log_errors[-3:]),
+    }
+
+
 def wait_for_super_base_builder_ready(
     plan: HeadPlan,
     head: HeadNode,
@@ -5207,90 +5348,159 @@ def wait_for_super_base_builder_ready(
     tried: list[dict[str, Any]],
     *,
     wait_s: float,
+    builder_service_uuid: str = "",
 ) -> dict[str, Any]:
     service_name = super_base_builder_service_name(head)
     target = probe_target_for_super_base_builder(head)
-    if not target.get("guard_url"):
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    log_interval = operator_log_interval_s(args)
+    builder_log_poll_interval = min(max(5.0, log_interval), 15.0)
+
+    probe_service_uuid = ""
+    probe_action = ""
+    probe_started = False
+    last_probe_result: dict[str, Any] = {}
+    last_target: dict[str, Any] = {}
+    last_builder_log_status: dict[str, Any] = {}
+    last_log_signature = ""
+    last_log_at = 0.0
+    last_builder_log_poll_at = 0.0
+    first = True
+
+    def ready_result(observed_by: str) -> dict[str, Any]:
         return {
             "enabled": True,
-            "ready": False,
-            "reason": "super base builder has no private probe URL for this host",
+            "ready": True,
+            "reason": "managed super base image is ready",
             "service_name": service_name,
+            "service_uuid": builder_service_uuid,
+            "probe_service_uuid": probe_service_uuid,
+            "probe_action": probe_action,
+            "target_image": getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+            "source_image": getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
+            "status_url": target.get("guard_url"),
+            "observed_by": observed_by,
+            "builder_log_status": last_builder_log_status,
+            "observed_target": last_target,
             "public_guard_routes": False,
             "ssh_used": False,
             "direct_vpn_used": False,
         }
-    probe_service_uuid, probe_action, _probe_existing = sync_probe_service(
-        client,
-        plan,
-        head,
-        args,
-        context,
-        tried,
-        super_inventory=[target],
-    )
-    operator_log(
-        args,
-        f"base-image: using private probe service {probe_service_uuid or '<unknown>'} ({probe_action or 'synced'}); waiting up to {float(wait_s or 0.0):.0f}s",
-    )
-    hub_service_tool().trigger_deploy_service(
-        client,
-        service_uuid=probe_service_uuid,
-        force=True,
-        tried=tried,
-    )
-    deadline = time.time() + max(0.0, float(wait_s or 0.0))
-    last_probe_result: dict[str, Any] = {}
-    last_target: dict[str, Any] = {}
-    last_log_signature = ""
-    last_log_at = 0.0
-    log_interval = operator_log_interval_s(args)
-    first = True
+
     while first or time.time() < deadline:
+        now = time.time()
         first = False
-        detail = fetch_service_detail(client, probe_service_uuid, tried)
-        last_probe_result = probe_result_from_service_metadata(detail)
-        last_target = probe_result_target_by_service(last_probe_result, service_name)
-        signature = compact_wait_target_status(last_target)
+
+        # Primary path: the managed builder is a Coolify service whose own logs
+        # say whether the host-local base image is ready.  Do not block this
+        # stage on an HTTP probe of the builder sidecar; the sidecar may have
+        # completed successfully even if its optional status listener is absent.
+        if builder_service_uuid and (now - last_builder_log_poll_at) >= builder_log_poll_interval:
+            last_builder_log_poll_at = now
+            last_builder_log_status = fetch_super_base_builder_log_status(
+                client,
+                builder_service_uuid,
+                service_name,
+                getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+                tried,
+            )
+            if bool(last_builder_log_status.get("ready")):
+                operator_log(args, f"base-image: ready ({getattr(args, 'super_image', DEFAULT_SUPER_IMAGE)}; observed={last_builder_log_status.get('source') or 'builder-logs'})")
+                return ready_result("builder-logs")
+            if bool(last_builder_log_status.get("failed")):
+                error = str(last_builder_log_status.get("error") or "managed super base image builder reported failed")
+                operator_log(args, f"base-image: failed in builder logs; {error[:240]}")
+                return {
+                    "enabled": True,
+                    "ready": False,
+                    "reason": error,
+                    "service_name": service_name,
+                    "service_uuid": builder_service_uuid,
+                    "probe_service_uuid": probe_service_uuid,
+                    "probe_action": probe_action,
+                    "target_image": getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
+                    "source_image": getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
+                    "status_url": target.get("guard_url"),
+                    "observed_by": "builder-logs",
+                    "builder_log_status": last_builder_log_status,
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                }
+
+        # Secondary path: if the builder exposes its private status listener, the
+        # normal probe can observe it.  This is useful but must not be the gate
+        # that makes a ready builder look stuck.
+        if target.get("guard_url"):
+            if not probe_started:
+                probe_service_uuid, probe_action, _probe_existing = sync_probe_service(
+                    client,
+                    plan,
+                    head,
+                    args,
+                    context,
+                    tried,
+                    super_inventory=[target],
+                )
+                operator_log(
+                    args,
+                    f"base-image: using private probe service {probe_service_uuid or '<unknown>'} ({probe_action or 'synced'}); waiting up to {float(wait_s or 0.0):.0f}s",
+                )
+                hub_service_tool().trigger_deploy_service(
+                    client,
+                    service_uuid=probe_service_uuid,
+                    force=True,
+                    tried=tried,
+                )
+                probe_started = True
+            detail = fetch_service_detail(client, probe_service_uuid, tried)
+            last_probe_result = probe_result_from_service_metadata(detail)
+            last_target = probe_result_target_by_service(last_probe_result, service_name)
+            if last_target and bool(last_target.get("status_ok")) and bool(last_target.get("healthz_ok")):
+                operator_log(args, f"base-image: ready ({getattr(args, 'super_image', DEFAULT_SUPER_IMAGE)}; observed=probe)")
+                return ready_result("private-probe")
+
+        signature_parts = []
+        if last_builder_log_status:
+            source = str(last_builder_log_status.get("source") or "builder-logs")
+            if bool(last_builder_log_status.get("observed")):
+                signature_parts.append(f"{source}: observed-not-ready")
+            else:
+                error = str(last_builder_log_status.get("error") or "").strip()
+                signature_parts.append(f"{source}: not-observed" + (f" ({error[:120]})" if error else ""))
+        else:
+            signature_parts.append("builder-logs: not-polled")
+        if last_target:
+            signature_parts.append(f"probe: {compact_wait_target_status(last_target)}")
+        elif probe_started:
+            signature_parts.append("probe: not-observed")
+        signature = "; ".join(signature_parts)
         now = time.time()
         if signature != last_log_signature or (now - last_log_at) >= log_interval:
             remaining = max(0.0, deadline - now)
             operator_log(args, f"base-image: {signature}; remaining={remaining:.0f}s")
             last_log_signature = signature
             last_log_at = now
-        if last_target and bool(last_target.get("status_ok")) and bool(last_target.get("healthz_ok")):
-            operator_log(args, f"base-image: ready ({getattr(args, 'super_image', DEFAULT_SUPER_IMAGE)})")
-            return {
-                "enabled": True,
-                "ready": True,
-                "reason": "managed super base image is ready",
-                "service_name": service_name,
-                "service_uuid": "",
-                "probe_service_uuid": probe_service_uuid,
-                "probe_action": probe_action,
-                "target_image": getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
-                "source_image": getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
-                "status_url": target.get("guard_url"),
-                "public_guard_routes": False,
-                "ssh_used": False,
-                "direct_vpn_used": False,
-            }
+
         if time.time() >= deadline:
             break
         time.sleep(min(2.0, max(0.25, deadline - time.time())))
-    error = str(last_target.get("error") or "")
-    operator_log(args, f"base-image: not ready before timeout; last={compact_wait_target_status(last_target)}")
+
+    error = str(last_builder_log_status.get("error") or last_target.get("error") or "")
+    operator_log(args, f"base-image: not ready before timeout; last={last_log_signature or compact_wait_target_status(last_target)}")
     return {
         "enabled": True,
         "ready": False,
         "reason": error or "managed super base image was not ready before timeout",
         "service_name": service_name,
+        "service_uuid": builder_service_uuid,
         "probe_service_uuid": probe_service_uuid,
         "probe_action": probe_action,
         "target_image": getattr(args, "super_image", DEFAULT_SUPER_IMAGE),
         "source_image": getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
         "status_url": target.get("guard_url"),
         "observed_target": last_target,
+        "builder_log_status": last_builder_log_status,
         "wait_s": float(wait_s or 0.0),
         "public_guard_routes": False,
         "ssh_used": False,
@@ -5337,6 +5547,7 @@ def ensure_super_base_image(
         context,
         tried,
         wait_s=float(getattr(args, "super_base_wait_s", DEFAULT_ADD_NODE_READY_WAIT_S)),
+        builder_service_uuid=service_uuid,
     )
     wait_result.update(
         {

@@ -423,6 +423,127 @@ def test_probe_metadata_parser_extracts_callback_result() -> None:
     assert parsed["result"] == result
 
 
+def test_probe_result_target_by_service_accepts_metadata_wrapped_result() -> None:
+    wrapped = {
+        "ok": True,
+        "source": "coolify-service-description",
+        "result": {
+            "targets": [
+                {"service_name": "allfather-super-base-builder-coolify-a", "status_ok": True, "healthz_ok": True}
+            ]
+        },
+    }
+
+    target = control.probe_result_target_by_service(wrapped, "allfather-super-base-builder-coolify-a")
+
+    assert target["status_ok"] is True
+    assert target["healthz_ok"] is True
+
+
+def test_super_base_builder_status_from_logs_detects_ready_and_failure() -> None:
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713"
+
+    ready = control.super_base_builder_status_from_logs_body(
+        {"logs": f"2026-07-14T00:38:32Z allfather-super-base-builder: phase=ready target={target} already_exists=true"},
+        target,
+    )
+    failed = control.super_base_builder_status_from_logs_body(
+        {"logs": f"2026-07-14T00:38:32Z allfather-super-base-builder: phase=failed target={target} rc=1"},
+        target,
+    )
+
+    assert ready["ready"] is True
+    assert ready["observed"] is True
+    assert failed["failed"] is True
+    assert failed["ready"] is False
+
+
+def test_application_records_from_service_detail_reads_service_applications_shape() -> None:
+    detail = {
+        "body": {
+            "service_applications": [
+                {"name": "allfather-super-base-builder-coolify-a", "uuid": "builder-app-uuid"}
+            ]
+        }
+    }
+
+    records = control.application_records_from_service_detail(detail)
+
+    assert records == [{"uuid": "builder-app-uuid", "name": "allfather-super-base-builder-coolify-a"}]
+
+
+def test_fetch_super_base_builder_status_reads_ready_from_service_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713"
+
+    def fake_fetch_service_detail(client: object, service_uuid: str, tried: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "body": {
+                "logs": f"2026-07-14T00:38:32Z allfather-super-base-builder: phase=ready target={target} already_exists=true"
+            }
+        }
+
+    def fail_fetch_probe_logs(*args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("logs endpoint should not be required when service detail already carries ready status")
+
+    monkeypatch.setattr(control, "fetch_service_detail", fake_fetch_service_detail)
+    monkeypatch.setattr(control, "fetch_probe_logs", fail_fetch_probe_logs)
+
+    status = control.fetch_super_base_builder_log_status(object(), "builder-service-uuid", "allfather-super-base-builder-coolify-a", target, [])
+
+    assert status["ready"] is True
+    assert status["source"] == "coolify-service-detail"
+
+
+def test_wait_for_super_base_builder_ready_uses_builder_logs_before_http_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    target = "main-computer/allfather-super-base:besu-fdb-web3-solc-20260713"
+
+    def fake_fetch_super_base_builder_log_status(*args: object, **kwargs: object) -> dict[str, object]:
+        return {
+            "observed": True,
+            "ready": True,
+            "failed": False,
+            "source": "coolify-service-detail",
+            "error": "",
+        }
+
+    def fail_sync_probe_service(*args: object, **kwargs: object) -> tuple[str, str, dict[str, object]]:
+        raise AssertionError("ready builder logs should return before deploying the HTTP probe")
+
+    monkeypatch.setattr(control, "fetch_super_base_builder_log_status", fake_fetch_super_base_builder_log_status)
+    monkeypatch.setattr(control, "sync_probe_service", fail_sync_probe_service)
+    args = type(
+        "Args",
+        (),
+        {
+            "quiet": True,
+            "command": "add-node",
+            "operator_log_interval_s": 5,
+            "super_image": target,
+            "super_base_source_image": "hyperledger/besu:latest",
+        },
+    )()
+
+    result = control.wait_for_super_base_builder_ready(
+        plan,
+        head,
+        object(),
+        args,
+        {},
+        [],
+        wait_s=30,
+        builder_service_uuid="builder-service-uuid",
+    )
+
+    assert result["ready"] is True
+    assert result["observed_by"] == "builder-logs"
+
+
 def test_probe_compose_can_publish_result_back_to_coolify_metadata(tmp_path: Path) -> None:
     path = write_private_state(tmp_path)
     plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
@@ -989,7 +1110,8 @@ def test_super_base_builder_compose_is_managed_coolify_service() -> None:
     assert "if [ \"$$phase\" = \"failed\" ]; then" in compose
     assert "apk add --no-cache busybox-extras" in compose
     assert "httpd -f -p \"0.0.0.0:$$STATUS_PORT\"" in compose
-    assert 'grep -q \'\\"ok\\": true\'' in compose
+    assert "test -f /work/www/healthz" in compose
+    assert 'grep -q \'\\"ok\\": true\' /work/www/healthz' in compose
     assert "$$ok" in compose
     assert "$${3:-}" in compose
     assert "$$(date -u" in compose

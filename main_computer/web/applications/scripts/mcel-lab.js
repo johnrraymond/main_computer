@@ -621,14 +621,77 @@
       list.appendChild(row);
     }
 
+    function mcelBlueprintShellSelectionLabel(record) {
+      if (!record) return "No rendered element selected.";
+      const label = record.visibleText || `<${record.tagName || "element"}>`;
+      const context = record.layoutZone || record.role || "unclassified";
+      return `Selected ${label} · ${context}`;
+    }
+
+    function mcelBlueprintShellRenderSelectionReceipt(blueprint) {
+      const receipt = document.getElementById("mcel-blueprint-selection-receipt");
+      const viewButton = document.getElementById("mcel-blueprint-view-selection-action");
+      if (!receipt) return false;
+
+      const record = mcelBlueprintShellSelectedElementFor(blueprint);
+      const message = receipt.querySelector("span") || document.createElement("span");
+      message.textContent = mcelBlueprintShellSelectionLabel(record);
+      if (!message.parentElement) receipt.prepend(message);
+
+      receipt.dataset.mcelSelectionState = record ? "selected" : "empty";
+      receipt.title = record?.selector || "";
+
+      if (viewButton) {
+        viewButton.hidden = !record;
+        const previousHandler = viewButton.__mcelSelectionReceiptHandler;
+        if (typeof previousHandler === "function") {
+          viewButton.removeEventListener("click", previousHandler);
+        }
+        const nextHandler = () => {
+          const card = document.getElementById("mcel-blueprint-selected-element-card");
+          card?.scrollIntoView?.({block: "nearest", inline: "nearest", behavior: "smooth"});
+          card?.focus?.({preventScroll: true});
+        };
+        viewButton.addEventListener("click", nextHandler);
+        viewButton.__mcelSelectionReceiptHandler = nextHandler;
+      }
+
+      return Boolean(record);
+    }
+
+    function mcelBlueprintShellRenderSelectedElementFallback(container, card, record, error) {
+      container.replaceChildren();
+      const title = document.createElement("strong");
+      title.textContent = record?.visibleText || `<${record?.tagName || "element"}>`;
+      const selector = document.createElement("code");
+      selector.textContent = record?.selector || "selector unavailable";
+      const context = document.createElement("p");
+      context.className = "mcel-lab-muted-note";
+      context.textContent = [
+        record?.role ? `Role: ${record.role}` : "",
+        record?.layoutZone ? `Zone: ${record.layoutZone}` : "",
+        "Full inspector details could not be rendered."
+      ].filter(Boolean).join(" · ");
+      container.append(title, selector, context);
+      container.dataset.mcelSelectionRender = "fallback";
+      if (card) card.dataset.mcelSelectionState = "selected";
+      console.error("MCEL Lab selected-element inspector render failed.", error);
+      return false;
+    }
+
     function mcelBlueprintShellRenderSelectedElement(blueprint) {
       const container = document.getElementById("mcel-blueprint-selected-element");
+      const card = document.getElementById("mcel-blueprint-selected-element-card");
       const selectionStatus = document.getElementById("mcel-blueprint-selection-status");
-      if (!container) return;
-      container.innerHTML = "";
+      if (!container) return false;
+
       const shellState = mcelBlueprintShellState();
       const report = mcelBlueprintShellReportFor(blueprint);
       const record = mcelBlueprintShellSelectedElementFor(blueprint);
+
+      container.replaceChildren();
+      container.dataset.mcelSelectionRender = "ready";
+      if (card) card.dataset.mcelSelectionState = record ? "selected" : "empty";
 
       if (!record) {
         const empty = document.createElement("p");
@@ -644,51 +707,63 @@
             ? "Selection: waiting for an element."
             : "Selection: inspect mode is off.";
         }
-        return;
+        mcelBlueprintShellRenderSelectionReceipt(blueprint);
+        return false;
       }
 
-      const heading = document.createElement("div");
-      heading.className = "mcel-lab-selected-element-summary";
-      const title = document.createElement("strong");
-      title.textContent = record.visibleText || `<${record.tagName}>`;
-      const selector = document.createElement("code");
-      selector.textContent = record.selector;
-      heading.append(title, selector);
+      try {
+        const heading = document.createElement("div");
+        heading.className = "mcel-lab-selected-element-summary";
+        const title = document.createElement("strong");
+        title.textContent = record.visibleText || `<${record.tagName}>`;
+        const selector = document.createElement("code");
+        selector.textContent = record.selector;
+        heading.append(title, selector);
 
-      const facts = document.createElement("dl");
-      facts.className = "mcel-lab-selected-element-facts";
-      mcelBlueprintShellAppendSelectedFact(facts, "Role", record.role);
-      mcelBlueprintShellAppendSelectedFact(facts, "MCEL", record.mcelElementGuess);
-      mcelBlueprintShellAppendSelectedFact(facts, "Layout zone", record.layoutZone);
-      mcelBlueprintShellAppendSelectedFact(
-        facts,
-        "Parent region",
-        record.parentRegion?.layoutZone ||
-          record.parentRegion?.role ||
-          record.parentRegion?.selector
-      );
-      mcelBlueprintShellAppendSelectedFact(facts, "Element", `<${record.tagName}>`);
-      mcelBlueprintShellAppendSelectedFact(facts, "App", record.appLabel);
+        const facts = document.createElement("dl");
+        facts.className = "mcel-lab-selected-element-facts";
+        mcelBlueprintShellAppendSelectedFact(facts, "Role", record.role);
+        mcelBlueprintShellAppendSelectedFact(facts, "MCEL", record.mcelElementGuess);
+        mcelBlueprintShellAppendSelectedFact(facts, "Layout zone", record.layoutZone);
+        mcelBlueprintShellAppendSelectedFact(
+          facts,
+          "Parent region",
+          record.parentRegion?.layoutZone ||
+            record.parentRegion?.role ||
+            record.parentRegion?.selector
+        );
+        mcelBlueprintShellAppendSelectedFact(facts, "Element", `<${record.tagName}>`);
+        mcelBlueprintShellAppendSelectedFact(facts, "App", record.appLabel);
 
-      const details = document.createElement("details");
-      details.className = "mcel-lab-selection-details";
-      const detailsSummary = document.createElement("summary");
-      detailsSummary.textContent = "Geometry, attributes, nearby elements, and source hints";
-      const raw = document.createElement("pre");
-      raw.textContent = JSON.stringify({
-        boundingBox: record.boundingBox,
-        dataMcelAttributes: record.dataMcelAttributes,
-        nearbyElements: record.nearbyElements,
-        sourceHints: record.sourceHints,
-        cssOwners: record.cssOwners,
-        jsOwners: record.jsOwners,
-        testHints: record.testHints
-      }, null, 2);
-      details.append(detailsSummary, raw);
-      container.append(heading, facts, details);
+        const details = document.createElement("details");
+        details.className = "mcel-lab-selection-details";
+        const detailsSummary = document.createElement("summary");
+        detailsSummary.textContent = "Geometry, attributes, nearby elements, and source hints";
+        const raw = document.createElement("pre");
+        raw.textContent = JSON.stringify({
+          boundingBox: record.boundingBox,
+          dataMcelAttributes: record.dataMcelAttributes,
+          nearbyElements: record.nearbyElements,
+          sourceHints: record.sourceHints,
+          cssOwners: record.cssOwners,
+          jsOwners: record.jsOwners,
+          testHints: record.testHints
+        }, null, 2);
+        details.append(detailsSummary, raw);
+        container.append(heading, facts, details);
+        container.dataset.mcelSelectionRender = "complete";
 
-      if (selectionStatus) {
-        selectionStatus.textContent = `Selected: ${record.selector} · ${record.layoutZone || record.role}.`;
+        if (selectionStatus) {
+          selectionStatus.textContent = `Selected: ${record.selector} · ${record.layoutZone || record.role}.`;
+        }
+        mcelBlueprintShellRenderSelectionReceipt(blueprint);
+        return true;
+      } catch (error) {
+        if (selectionStatus) {
+          selectionStatus.textContent = `Selected: ${record.selector} · inspector fallback active.`;
+        }
+        mcelBlueprintShellRenderSelectionReceipt(blueprint);
+        return mcelBlueprintShellRenderSelectedElementFallback(container, card, record, error);
       }
     }
 
@@ -707,14 +782,27 @@
         blueprint
       );
       if (!record) return null;
+
       const shellState = mcelBlueprintShellState();
       shellState.selectedElements[blueprint.appId] = record;
+
       mcelBlueprintShellApplySelectionHighlight(previewRoot, blueprint);
-      mcelBlueprintShellRenderSelectedElement(blueprint);
+      const inspectorRendered = mcelBlueprintShellRenderSelectedElement(blueprint);
+      mcelBlueprintShellRenderSelectionReceipt(blueprint);
+
       const status = document.getElementById("mcel-blueprint-validity-status");
       if (status) {
         status.textContent = `Selected ${record.selector} in ${record.layoutZone || record.role}. Mounted app actions remained blocked.`;
       }
+
+      window.dispatchEvent(new CustomEvent("mcel:element-selected", {
+        detail: {
+          appId: blueprint.appId,
+          record,
+          inspectorRendered
+        }
+      }));
+
       return record;
     }
 
@@ -869,6 +957,7 @@
 
     window.McelLabPointInspect = {
       stateModelVersion: "in-place-v5",
+      selectionOutputVersion: "visible-receipt-v6",
       toggle: mcelBlueprintShellToggleInspectMode,
       activate: () => mcelBlueprintShellSetInspectMode(true),
       deactivate: () => mcelBlueprintShellSetInspectMode(false),
