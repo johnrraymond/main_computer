@@ -3920,11 +3920,21 @@ body[data-active-app="git-tools"] .canvas-wrap {
 #git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="server"]
   [data-git-support-panel="evidence"],
 #git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="server"]
+  [data-git-support-panel="semantics"],
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="server"]
   [data-git-support-panel="advanced"],
 #git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="evidence"]
+  [data-git-support-panel="semantics"],
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="evidence"]
+  [data-git-support-panel="advanced"],
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="semantics"]
+  [data-git-support-panel="evidence"],
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="semantics"]
   [data-git-support-panel="advanced"],
 #git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="advanced"]
-  [data-git-support-panel="evidence"] {
+  [data-git-support-panel="evidence"],
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="advanced"]
+  [data-git-support-panel="semantics"] {
   display: none !important;
 }
 
@@ -3933,6 +3943,8 @@ body[data-active-app="git-tools"] .canvas-wrap {
   display: block;
 }
 
+#git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="semantics"]
+  [data-git-support-panel="semantics"],
 #git-tools-app[data-git-layout-live="true"][data-git-layout-support-view="advanced"]
   [data-git-support-panel="advanced"] {
   display: block;
@@ -4462,3 +4474,281 @@ body[data-active-app="git-tools"] .canvas-wrap {
   }
 }
 
+
+
+/* MCEL semantic runtime visibility panel. This surface exposes scoped
+   execution, preflight, receipt, recovery, and intent-coverage evidence. */
+.git-semantic-runtime-panel {
+  display: grid;
+  gap: 10px;
+  border-color: rgba(115, 214, 255, 0.34);
+  background:
+    linear-gradient(180deg, rgba(115, 214, 255, 0.06), transparent 42%),
+    #070806;
+}
+
+.git-semantic-runtime-heading {
+  min-width: 0;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.git-semantic-runtime-heading h3 {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.git-semantic-runtime-kicker {
+  color: var(--sky);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.git-semantic-runtime-badge {
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid rgba(246, 199, 91, 0.38);
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: var(--gold);
+  background: rgba(246, 199, 91, 0.08);
+  font-size: 10px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.git-semantic-runtime-copy,
+.git-semantic-runtime-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.git-semantic-runtime-message {
+  color: var(--sky);
+}
+
+.git-semantic-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+
+.git-semantic-runtime-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  border: 1px solid rgba(115, 214, 255, 0.16);
+  border-radius: 7px;
+  padding: 7px 8px;
+  background: rgba(3, 4, 2, 0.76);
+}
+
+.git-semantic-runtime-grid dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.git-semantic-runtime-grid dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.git-semantic-runtime-actions button {
+  min-height: 30px;
+  padding: 6px 9px;
+  font-size: 10px;
+}
+
+.git-semantic-receipt-output {
+  min-height: 112px;
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(115, 214, 255, 0.18);
+  border-radius: 7px;
+  padding: 9px;
+  background: #030402;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@container git-tools-workflow (max-width: 620px) {
+  .git-semantic-runtime-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .git-semantic-runtime-heading {
+    display: grid;
+  }
+
+  .git-semantic-runtime-badge {
+    justify-self: start;
+  }
+}
+
+
+/* MCEL Phase 6A recovery guidance. The classifier exposes receipt-linked
+   next steps but does not add a Git mutation binding. */
+.git-semantic-recovery-guidance {
+  display: grid;
+  gap: 9px;
+  border: 1px solid rgba(246, 199, 91, 0.2);
+  border-radius: 8px;
+  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(246, 199, 91, 0.05), transparent 58%),
+    rgba(3, 4, 2, 0.72);
+}
+
+.git-semantic-recovery-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.git-semantic-recovery-heading h4 {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.git-semantic-recovery-coverage {
+  max-width: 230px;
+  border: 1px solid rgba(246, 199, 91, 0.24);
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: var(--gold);
+  font-size: 9px;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.git-semantic-recovery-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.git-semantic-recovery-copy strong {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.git-semantic-recovery-copy p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.git-semantic-recovery-options {
+  min-height: 54px;
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(246, 199, 91, 0.16);
+  border-radius: 7px;
+  padding: 8px;
+  background: #030402;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@container git-tools-workflow (max-width: 620px) {
+  .git-semantic-recovery-heading {
+    display: grid;
+  }
+
+  .git-semantic-recovery-coverage {
+    max-width: none;
+    justify-self: start;
+  }
+}
+
+
+/* MCEL Phase 7A intent-level coverage. Runtime-core readiness is separated
+   from whole-application semantic coverage. */
+.git-semantic-intent-coverage {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(115, 214, 255, 0.2);
+  border-radius: 8px;
+  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(115, 214, 255, 0.04), transparent 62%),
+    rgba(3, 4, 2, 0.72);
+}
+
+.git-semantic-intent-coverage-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.git-semantic-intent-coverage-heading h4 {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.git-semantic-intent-coverage-summary {
+  max-width: 300px;
+  color: var(--sky);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.git-semantic-intent-coverage-matrix {
+  min-height: 132px;
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(115, 214, 255, 0.16);
+  border-radius: 7px;
+  padding: 8px;
+  background: #030402;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+@container git-tools-workflow (max-width: 620px) {
+  .git-semantic-intent-coverage-heading {
+    display: grid;
+  }
+
+  .git-semantic-intent-coverage-summary {
+    max-width: none;
+    text-align: left;
+  }
+}

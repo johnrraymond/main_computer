@@ -60,6 +60,7 @@ function gitServerDockerUnavailableText(status = gitServerLastStatus) {
     "Docker CLI is not available in the environment running Main Computer.",
     "",
     "Local Gitea actions need Docker in the backend process: Start, Restart, Stop, Logs, Create / verify repo + configure remote, Push to Local Gitea, and Set Up Server -> External Mirror.",
+    "The Push to Local Gitea control uses MCEL preflight, confirmation, revalidation, and the backend Git push operation.",
     "Opening http://localhost:3000 in your browser, or starting Gitea somewhere else, does not give this backend process Docker access.",
     "You can still use Reset suggested target and Run command to configure the local-gitea remote without starting Gitea.",
     "",
@@ -71,7 +72,7 @@ function applyGitServerDockerAvailability(status = gitServerLastStatus) {
   if (gitToolsOperationRunning) return;
   const dockerUnavailable = Boolean(gitServerLastStatus && gitServerLastStatus.docker_available === false);
   gitServerDockerDependentButtons().forEach((button) => {
-    if (button === gitServerRemoteApplyLocal || button === gitServerPushLocal) return;
+    if (button === gitServerRemoteApplyLocal) return;
     button.disabled = dockerUnavailable;
     button.setAttribute("aria-disabled", dockerUnavailable ? "true" : "false");
     button.title = dockerUnavailable ? "Docker CLI is not available where Main Computer is running." : "";
@@ -381,9 +382,29 @@ function gitServerSetLocalActionAvailability({configurable = true, pushable = tr
     gitServerRemoteApplyLocal.title = !configurable ? reason : (dockerUnavailable ? "Docker CLI is not available where Main Computer is running." : "");
   }
   if (gitServerPushLocal) {
-    gitServerPushLocal.disabled = dockerUnavailable || !pushable;
-    gitServerPushLocal.setAttribute("aria-disabled", gitServerPushLocal.disabled ? "true" : "false");
-    gitServerPushLocal.title = !pushable ? reason : (dockerUnavailable ? "Docker CLI is not available where Main Computer is running." : "");
+    const semanticGateAvailable =
+      typeof global.GitToolsSemanticPanel?.interceptPushControl === "function";
+    const pushUnavailable = dockerUnavailable || !pushable || !semanticGateAvailable;
+    gitServerPushLocal.disabled = pushUnavailable;
+    gitServerPushLocal.setAttribute("aria-disabled", pushUnavailable ? "true" : "false");
+    gitServerPushLocal.dataset.mcelSemanticGate = semanticGateAvailable
+      ? "governed-execution"
+      : "unavailable";
+    gitServerPushLocal.dataset.mcelBackendUnavailable = dockerUnavailable
+      ? "true"
+      : "false";
+    gitServerPushLocal.dataset.mcelPushable = pushable ? "true" : "false";
+    gitServerPushLocal.title = !semanticGateAvailable
+      ? "MCEL governed push execution is unavailable; push remains blocked."
+      : (
+        dockerUnavailable
+          ? "Docker is unavailable to the Main Computer backend; Local Gitea push is disabled."
+          : (
+            !pushable
+              ? (reason || "A publishable Git HEAD is required.")
+              : "Runs fresh-state MCEL preflight, explicit confirmation, execution-time revalidation, and governed Local Gitea push."
+          )
+      );
   }
 }
 function gitServerTargetNote() {
@@ -818,49 +839,106 @@ async function applyLocalGitServerRemote() {
   }
 }
 async function pushLocalGitServerRemote() {
+  const event = arguments[0];
   setGitServerPaneVisible(true, {persist: true});
-  expandGitWorkflowSection("git-server", "pushing to local git server");
-  if (!gitServerTargetPrefunk) await refreshGitServerTargetPrefunk({announce: false});
-  if (!gitServerEnsurePushable()) return;
-  if (!(await ensureGitServerDockerAvailable("Push to Local Gitea"))) return;
-  let payload;
-  try {
-    payload = gitServerRemoteConfigPayload();
-  } catch (error) {
-    if (gitServerOutput) gitServerOutput.textContent = `Local push is incomplete: ${error.message || error}`;
-    return;
+  expandGitWorkflowSection("git-server", "running governed Local Gitea push");
+  const semanticGate = global.GitToolsSemanticPanel?.interceptPushControl;
+  if (typeof semanticGate !== "function") {
+    const message = "Push blocked: the MCEL governed execution gate is unavailable. No Git mutation was executed.";
+    if (gitServerOutput) gitServerOutput.textContent = message;
+    updateGitWorkflowSectionSummary("git-server", "governed push unavailable");
+    return {
+      decision: "block",
+      status: "blocked",
+      executionAttempted: false,
+      blockers: [{
+        code: "semantic-preflight-unavailable",
+        message: "The MCEL governed execution gate is unavailable."
+      }]
+    };
   }
-  const url = gitServerCurrentTargetUrl();
-  const progress = startGitServerProgress(
-    "Preparing local Git server and pushing HEAD...",
-    [
-      "The push uses a temporary local Gitea token and does not save that token in the remote URL.",
-      "",
-      `Remote: ${payload.remote}`,
-      `URL: ${url}`,
-    ],
-    ["starting/verifying standalone Gitea", "creating/verifying repository", "creating temporary push token", "running git push -u HEAD"]
+
+  const payload = gitServerRemoteConfigPayload();
+  const result = await semanticGate(event, {
+    sourceControl: gitServerPushLocal,
+    sourceControlId: "git-server-push-local",
+    parameters: payload,
+    executePush: async (executionContext = {}) => {
+      if (!ensureGitServerDockerAvailable("Push to Local Gitea")) {
+        const error = new Error("Docker is unavailable to the Main Computer backend.");
+        error.code = "docker-unavailable";
+        throw error;
+      }
+      const governedParameters = executionContext.parameters || {};
+      const executionPayload = {
+        repo_dir: governedParameters.repoDir || payload.repo_dir,
+        remote: governedParameters.remote || payload.remote,
+        owner: governedParameters.owner || payload.owner,
+        repo: governedParameters.repo || payload.repo,
+        protocol: governedParameters.protocol || payload.protocol,
+        switch_origin:
+          governedParameters.switchOrigin === true ||
+          payload.switch_origin === true
+      };
+      return runGitServerOperationRequest(
+        gitToolsStatusApi().endpoints.serverPushLocal,
+        executionPayload,
+        [
+          "Executing governed Local Gitea push...",
+          `Repository: ${executionPayload.repo_dir}`,
+          `Remote: ${executionPayload.remote}`,
+          `Target: ${executionPayload.owner}/${executionPayload.repo}`,
+          `Preflight receipt: ${executionContext.preflightReceiptId || "not available"}`,
+          `Confirmation receipt: ${executionContext.confirmationReceiptId || "not available"}`
+        ]
+      );
+    }
+  });
+
+  const receiptId = result?.receipt?.receiptId || "not available";
+  const executionAttempted = result?.executionAttempted === true;
+  const status = result?.status || result?.decision || "blocked";
+  const backendResult = result?.backendResult || null;
+  if (gitServerOutput) {
+    gitServerOutput.textContent = [
+      "MCEL governed Local Gitea push result.",
+      `Status: ${status}`,
+      `Receipt: ${receiptId}`,
+      `Execution attempted: ${executionAttempted ? "yes" : "no"}`,
+      result?.preflight?.receipt?.receiptId
+        ? `Preflight receipt: ${result.preflight.receipt.receiptId}`
+        : "",
+      result?.confirmationReceipt?.receiptId
+        ? `Confirmation receipt: ${result.confirmationReceipt.receiptId}`
+        : "",
+      result?.error?.message
+        ? `Error: ${result.error.message}`
+        : "",
+      backendResult
+        ? `\nBackend result:\n${JSON.stringify(backendResult, null, 2)}`
+        : "",
+      executionAttempted
+        ? "Post-execution repository state was refreshed and receipt-linked."
+        : "No Git mutation was executed."
+    ].filter(Boolean).join("\n");
+  }
+  updateGitWorkflowSectionSummary(
+    "git-server",
+    status === "succeeded"
+      ? "governed push succeeded"
+      : (
+        status === "failed"
+          ? "governed push failed"
+          : (
+            status === "cancelled"
+              ? "push confirmation declined"
+              : "governed push blocked"
+          )
+      )
   );
-  try {
-    const data = await runGitServerOperationRequest(gitToolsStatusApi().endpoints.serverPushLocal, payload, [
-      "Preparing local Git server and pushing HEAD...",
-      `Remote: ${payload.remote}`,
-      `URL: ${url}`,
-    ]);
-    progress.stop();
-    if (!data) return;
-    gitServerTargetDirty = false;
-    if (gitServerOutput) gitServerOutput.textContent = JSON.stringify(data, null, 2);
-    await refreshGitServerTargetPrefunk({announce: false, preserveEdited: false});
-    await refreshGitStatus();
-    if (data.status) renderGitServerStatus(data.status);
-    updateGitWorkflowSectionSummary("git-server", data.ok ? "pushed to local server" : "local push failed");
-  } catch (error) {
-    progress.stop();
-    if (gitServerOutput) gitServerOutput.textContent = gitToolsOperationErrorText("Push to Local Gitea failed", error);
-    updateGitWorkflowSectionSummary("git-server", "local push failed");
-  }
+  return result;
 }
+
 function useExternalGitRemoteDirect() {
   setGitServerPaneVisible(true, {persist: true});
   expandGitWorkflowSection("git-server", "external direct remote ready");

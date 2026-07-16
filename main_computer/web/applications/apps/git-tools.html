@@ -8,6 +8,7 @@
                   <span class="git-tools-command-divider" aria-hidden="true"></span>
                   <button type="button" data-git-layout-support="server" aria-controls="gitea-workflow-layout" aria-pressed="true">Server</button>
                   <button type="button" data-git-layout-support="evidence" aria-controls="git-server-operation-panel" aria-pressed="false">Evidence</button>
+                  <button type="button" data-git-layout-support="semantics" aria-controls="git-semantic-runtime-panel" aria-pressed="false">Semantics</button>
                   <button type="button" data-git-layout-support="advanced" aria-controls="git-server-recovery-panel" aria-pressed="false">Recovery</button>
                 </div>
                 <div class="git-tools-command-layout" role="toolbar" aria-label="Git workbench layout">
@@ -180,10 +181,79 @@
 
                         <section class="gitea-workflow-step" data-mc-component-id="git-tools.git-server.step.push" data-mc-component-kind="panel" data-mc-component-label="Push To Local Gitea Step" data-mc-component-owner="git-tools.git-server.workflow-steps" data-mc-feature-id="git-tools.feature.git-server-remotes" data-mc-controls="git-tools.git-server.activity git-tools.outputs.git-server.content" data-mc-consumes="publish-target publish-strategy" data-mc-emits="git-operation-state command-output publish-result" data-mc-phase="execution proof-review" data-mc-layout-affordance="command-step" data-mc-relationship-strength="controls:hard">
                           <div class="gitea-step-title"><span class="gitea-step-number">3</span><strong>Push current HEAD</strong></div>
-                          <p class="git-tools-intro">Pushes committed work to the fixed <code>local-gitea</code> remote unless origin replacement is selected. Uncommitted files are not included in Git pushes.</p>
-                          <button type="button" id="git-server-push-local" class="gitea-primary-button" disabled aria-disabled="true" data-mc-component-id="git-tools.git-server.push-local" data-mc-component-kind="action" data-mc-component-label="Push HEAD To Local Git Server" data-mc-component-owner="git-tools.git-server.step.push" data-mc-feature-id="git-tools.feature.git-server-remotes">Push to Local Gitea</button>
+                          <p class="git-tools-intro">Refreshes repository state, runs MCEL push preflight, asks for explicit confirmation, revalidates immediately before execution, then pushes committed HEAD to Local Gitea. Force-push and arbitrary commands remain prohibited; uncommitted files are warnings and are never included.</p>
+                          <button type="button" id="git-server-push-local" class="gitea-primary-button" aria-disabled="false" data-mcel-intent="pushCurrentBranch" data-mcel-execution-policy="governed-confirmed-execution" data-mc-component-id="git-tools.git-server.push-local" data-mc-component-kind="action" data-mc-component-label="Push HEAD To Local Git Server" data-mc-component-owner="git-tools.git-server.step.push" data-mc-feature-id="git-tools.feature.git-server-remotes">Push to Local Gitea</button>
                         </section>
                       </div>
+                    </section>
+
+                    <section class="gitea-workflow-card git-semantic-runtime-panel" id="git-semantic-runtime-panel" tabindex="-1" data-git-support-panel="semantics" data-mc-component-id="git-tools.semantic-runtime.panel" data-mc-component-kind="evidence" data-mc-component-label="Git Tools Semantic Runtime" data-mc-component-owner="git-tools.git-server.workflow-layout" data-mc-feature-id="git-tools.feature.semantic-runtime" data-mc-consumes="repository-state preflight-decision semantic-receipt recovery-classification" data-mc-emits="state-refresh-intent push-preflight-intent recovery-guidance" data-mc-phase="action-planning proof-review" data-mc-presentation-set="operation-evidence status" data-mc-layout-affordance="semantic-evidence-card" data-mc-scroll-policy="owned-scroll">
+                      <div class="git-semantic-runtime-heading">
+                        <div>
+                          <span class="git-semantic-runtime-kicker">MCEL semantic runtime</span>
+                          <h3>Git semantic runtime</h3>
+                        </div>
+                        <strong id="git-semantic-runtime-status" class="git-semantic-runtime-badge">Core ready · partial coverage</strong>
+                      </div>
+                      <p class="git-semantic-runtime-copy">The runtime core is proven while intent-level coverage remains partial. Status refresh and confirmed Local Gitea push use governed execution, receipts, revalidation, and recovery guidance. Force-push and arbitrary commands remain disabled.</p>
+                      <dl class="git-semantic-runtime-grid">
+                        <div><dt>State</dt><dd id="git-semantic-state-freshness">Not observed</dd></div>
+                        <div><dt>Repository</dt><dd id="git-semantic-repository">No repository observed</dd></div>
+                        <div><dt>Branch</dt><dd id="git-semantic-branch">Unknown</dd></div>
+                        <div><dt>Ahead / behind</dt><dd id="git-semantic-divergence">Unknown</dd></div>
+                        <div><dt>Push decision</dt><dd id="git-semantic-push-decision">Not evaluated</dd></div>
+                        <div><dt>Receipts</dt><dd id="git-semantic-receipt-count">0 stored</dd></div>
+                        <div><dt>Execution scope</dt><dd id="git-semantic-execution-enabled">Refresh + governed push</dd></div>
+                        <div><dt>Runtime core</dt><dd id="git-semantic-runtime-core-ready">Ready</dd></div>
+                        <div><dt>Application coverage</dt><dd id="git-semantic-application-coverage">Partial</dd></div>
+                        <div><dt>Runtime scope</dt><dd id="git-semantic-runtime-scope">Governed Publish Partial</dd></div>
+                      </dl>
+                      <section class="git-semantic-intent-coverage" aria-labelledby="git-semantic-intent-coverage-heading">
+                        <div class="git-semantic-intent-coverage-heading">
+                          <div>
+                            <span class="git-semantic-runtime-kicker">Intent-level truth gate</span>
+                            <h4 id="git-semantic-intent-coverage-heading">Intent coverage matrix</h4>
+                          </div>
+                          <span id="git-semantic-intent-coverage-summary" class="git-semantic-intent-coverage-summary">2 executable · 1 preflight only · 3 declared only · 1 prohibited</span>
+                        </div>
+                        <pre id="git-semantic-intent-coverage-matrix" class="git-semantic-intent-coverage-matrix" aria-label="Intent coverage matrix">refreshStatus          | Executable      | git-tools-status-api.fetchStatus
+inspectWorkingTree     | Declared only   | not-registered
+inspectRemotes         | Declared only   | not-registered
+inspectPatchInventory  | Declared only   | not-registered
+preparePush            | Preflight only  | mcel-preflight
+pushCurrentBranch      | Executable      | git-tools-server-panel.serverPushLocal
+runManualCommand       | Prohibited      | policy-prohibited</pre>
+                      </section>
+                      <div class="git-tools-actions git-semantic-runtime-actions" role="toolbar" aria-label="Semantic runtime controls">
+                        <button type="button" id="git-semantic-refresh-state">Execute status refresh</button>
+                        <button type="button" id="git-semantic-run-push-preflight">Run push preflight</button>
+                        <button type="button" id="git-semantic-view-latest-receipt">View latest receipt</button>
+                        <button type="button" id="git-semantic-clear-receipts">Clear receipts</button>
+                      </div>
+                      <p id="git-semantic-runtime-message" class="git-semantic-runtime-message" role="status" aria-live="polite">Semantic state has not been refreshed.</p>
+                      <section class="git-semantic-recovery-guidance" id="git-semantic-recovery-guidance" aria-labelledby="git-semantic-recovery-heading">
+                        <div class="git-semantic-recovery-heading">
+                          <div>
+                            <span class="git-semantic-runtime-kicker">Receipt-linked recovery</span>
+                            <h4 id="git-semantic-recovery-heading">Recovery guidance</h4>
+                          </div>
+                          <span id="git-semantic-recovery-coverage" class="git-semantic-recovery-coverage">Verified coverage</span>
+                        </div>
+                        <dl class="git-semantic-runtime-grid git-semantic-recovery-grid">
+                          <div><dt>Failure class</dt><dd id="git-semantic-recovery-class">None</dd></div>
+                          <div><dt>Severity</dt><dd id="git-semantic-recovery-severity">None</dd></div>
+                          <div><dt>Retry safe</dt><dd id="git-semantic-recovery-retry-safe">Not applicable</dd></div>
+                          <div><dt>Refresh required</dt><dd id="git-semantic-recovery-refresh-required">Not applicable</dd></div>
+                          <div><dt>Source receipt</dt><dd id="git-semantic-recovery-source-receipt">None</dd></div>
+                          <div><dt>Prohibited actions</dt><dd id="git-semantic-recovery-prohibited">None</dd></div>
+                        </dl>
+                        <div class="git-semantic-recovery-copy">
+                          <strong>Recommended next step</strong>
+                          <p id="git-semantic-recovery-next-step">Run a governed action or preflight to produce recovery evidence.</p>
+                        </div>
+                        <pre id="git-semantic-recovery-options" class="git-semantic-recovery-options" aria-label="Recovery options">No recovery options are required for the selected receipt.</pre>
+                      </section>
+                      <pre id="git-semantic-receipt-output" class="git-semantic-receipt-output" aria-label="Latest semantic receipt">No receipt selected.</pre>
                     </section>
 
                     <section class="gitea-workflow-card gitea-activity-card" id="git-server-operation-panel" data-git-support-panel="evidence" data-mc-component-id="git-tools.git-server.activity" data-mc-component-kind="panel" data-mc-component-label="Git Server Activity" data-mc-component-owner="git-tools.git-server.workflow-layout" data-mc-feature-id="git-tools.feature.git-server-remotes" data-mc-consumes="git-operation-state command-output publish-result" data-mc-confirms="git-tools.git-server.workflow-steps" data-mc-proves="git-tools.git-server.publish-workflow" data-mc-phase="execution proof-review" data-mc-presentation-set="operation-evidence" data-mc-layout-affordance="secondary-proof-dock" data-mc-persistence="visible-during-operation" data-mc-growth="bounded-output-stream" data-mc-scroll-policy="owned-scroll" data-mc-hard-constraints="operation-evidence-accessible" data-mc-relationship-strength="confirms:strong proves:strong">

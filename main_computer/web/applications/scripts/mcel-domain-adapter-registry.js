@@ -2,7 +2,7 @@
   (function createMcelDomainAdapterRegistry(global) {
     if (!global) return;
 
-    const REGISTRY_VERSION = "mcel-domain-adapter-registry-v1";
+    const REGISTRY_VERSION = "mcel-domain-adapter-registry-v4";
     const AUTHORITY = "mcel-domain-adapter-registry";
 
     const REQUIRED_METHODS_BY_READINESS_FIELD = Object.freeze({
@@ -40,6 +40,226 @@
 
     function fieldReady(adapter, field) {
       return missingMethodsFor(adapter, field).length === 0;
+    }
+
+    function normalizedStringList(value) {
+      if (!Array.isArray(value)) return [];
+      return Array.from(new Set(
+        value.map((entry) => String(entry || "").trim()).filter(Boolean)
+      )).sort();
+    }
+
+    function validateRecoveryCoverage(coverage = {}) {
+      const requiredFailureClasses = normalizedStringList(
+        coverage.requiredFailureClasses
+      );
+      const coveredFailureClasses = normalizedStringList(
+        coverage.coveredFailureClasses
+      );
+      const unverifiedFailureClasses = normalizedStringList(
+        coverage.unverifiedFailureClasses
+      );
+      const missingFailureClasses = requiredFailureClasses.filter(
+        (failureClass) => !coveredFailureClasses.includes(failureClass)
+      );
+      const unexpectedFailureClasses = coveredFailureClasses.filter(
+        (failureClass) => !requiredFailureClasses.includes(failureClass)
+      );
+      const checks = {
+        adapterClaimsReady: coverage.coverageReady === true,
+        classificationReady: coverage.classificationReady === true,
+        guidanceReady: coverage.guidanceReady === true,
+        derivedAudit:
+          coverage.verificationMode === "derived-runtime-audit" &&
+          coverage.verification?.passed === true,
+        requiredClassesDeclared: requiredFailureClasses.length > 0,
+        requiredClassesCovered: missingFailureClasses.length === 0,
+        noUnexpectedClasses: unexpectedFailureClasses.length === 0,
+        noUnverifiedClasses: unverifiedFailureClasses.length === 0
+      };
+      return {
+        passed: Object.values(checks).every(Boolean),
+        checks,
+        requiredFailureClasses,
+        coveredFailureClasses,
+        unverifiedFailureClasses,
+        missingFailureClasses,
+        unexpectedFailureClasses
+      };
+    }
+
+    function recoveryCoverageFor(adapter) {
+      const classifierPresent = Boolean(adapter && fieldReady(adapter, "recoveryReady"));
+      if (!classifierPresent) {
+        return {
+          classifierPresent: false,
+          coverageReady: false,
+          source: "missing-recovery-classifier",
+          coverage: null,
+          validation: null,
+          error: null
+        };
+      }
+      if (!callable(adapter, "getRecoveryCoverage")) {
+        return {
+          classifierPresent: true,
+          coverageReady: false,
+          source: "missing-recovery-coverage-proof",
+          coverage: null,
+          validation: null,
+          error: null
+        };
+      }
+      try {
+        const coverage = clonePlain(adapter.getRecoveryCoverage()) || {};
+        const validation = validateRecoveryCoverage(coverage);
+        return {
+          classifierPresent: true,
+          coverageReady: validation.passed,
+          source: String(coverage.source || "adapter-recovery-coverage"),
+          coverage,
+          validation,
+          error: null
+        };
+      } catch (error) {
+        return {
+          classifierPresent: true,
+          coverageReady: false,
+          source: "recovery-coverage-error",
+          coverage: null,
+          validation: null,
+          error: {
+            name: error?.name || "Error",
+            message: error?.message || String(error)
+          }
+        };
+      }
+    }
+
+    const INTENT_COVERAGE_STATUSES = Object.freeze([
+      "executable",
+      "preflight-only",
+      "declared-only",
+      "prohibited"
+    ]);
+
+    function validateIntentCoverage(coverage = {}) {
+      const requiredIntentIds = normalizedStringList(coverage.requiredIntentIds);
+      const entries = Array.isArray(coverage.entries)
+        ? coverage.entries.map(clonePlain)
+        : [];
+      const classifiedIntentIds = normalizedStringList(
+        entries.map((entry) => entry?.intentId)
+      );
+      const missingIntentIds = requiredIntentIds.filter(
+        (intentId) => !classifiedIntentIds.includes(intentId)
+      );
+      const unexpectedIntentIds = classifiedIntentIds.filter(
+        (intentId) => !requiredIntentIds.includes(intentId)
+      );
+      const duplicateIntentIds = classifiedIntentIds.filter(
+        (intentId) => entries.filter((entry) => entry?.intentId === intentId).length > 1
+      );
+      const invalidEntries = entries
+        .filter((entry) => (
+          !entry ||
+          !requiredIntentIds.includes(String(entry.intentId || "")) ||
+          !INTENT_COVERAGE_STATUSES.includes(String(entry.status || "")) ||
+          typeof entry.label !== "string" ||
+          !entry.label.trim() ||
+          typeof entry.risk !== "string" ||
+          !entry.risk.trim() ||
+          typeof entry.executionBinding !== "string" ||
+          !entry.executionBinding.trim()
+        ))
+        .map((entry) => String(entry?.intentId || "unknown"));
+      const statusCounts = Object.fromEntries(
+        INTENT_COVERAGE_STATUSES.map((status) => [
+          status,
+          entries.filter((entry) => entry?.status === status).length
+        ])
+      );
+      const incompleteIntentIds = entries
+        .filter((entry) => ["declared-only", "preflight-only"].includes(entry?.status))
+        .map((entry) => String(entry.intentId))
+        .sort();
+      const derivedFullApplicationReady = Boolean(
+        requiredIntentIds.length > 0 &&
+        missingIntentIds.length === 0 &&
+        unexpectedIntentIds.length === 0 &&
+        duplicateIntentIds.length === 0 &&
+        invalidEntries.length === 0 &&
+        incompleteIntentIds.length === 0
+      );
+      const checks = {
+        derivedAudit:
+          coverage.verificationMode === "derived-intent-coverage-audit" &&
+          coverage.verification?.passed === true,
+        requiredIntentsDeclared: requiredIntentIds.length > 0,
+        allIntentsClassified: missingIntentIds.length === 0,
+        noUnexpectedIntents: unexpectedIntentIds.length === 0,
+        noDuplicateIntents: duplicateIntentIds.length === 0,
+        validEntries: invalidEntries.length === 0,
+        scopeDeclared: typeof coverage.semanticRuntimeScope === "string" &&
+          Boolean(coverage.semanticRuntimeScope.trim()),
+        fullReadinessClaimMatchesDerivation:
+          coverage.fullApplicationSemanticReady === derivedFullApplicationReady
+      };
+      const auditPassed = Object.values(checks).every(Boolean);
+      return {
+        passed: auditPassed,
+        coverageReady: Boolean(auditPassed && derivedFullApplicationReady),
+        fullApplicationSemanticReady: Boolean(auditPassed && derivedFullApplicationReady),
+        checks,
+        requiredIntentIds,
+        classifiedIntentIds,
+        missingIntentIds,
+        unexpectedIntentIds,
+        duplicateIntentIds,
+        invalidEntries,
+        incompleteIntentIds,
+        statusCounts
+      };
+    }
+
+    function intentCoverageFor(adapter) {
+      if (!adapter || !callable(adapter, "getIntentCoverage")) {
+        return {
+          available: false,
+          auditReady: false,
+          coverageReady: false,
+          semanticRuntimeScope: "unclassified",
+          coverage: null,
+          validation: null,
+          error: null
+        };
+      }
+      try {
+        const coverage = clonePlain(adapter.getIntentCoverage()) || {};
+        const validation = validateIntentCoverage(coverage);
+        return {
+          available: true,
+          auditReady: validation.passed,
+          coverageReady: validation.coverageReady,
+          semanticRuntimeScope: String(coverage.semanticRuntimeScope || "unclassified"),
+          coverage,
+          validation,
+          error: null
+        };
+      } catch (error) {
+        return {
+          available: true,
+          auditReady: false,
+          coverageReady: false,
+          semanticRuntimeScope: "coverage-error",
+          coverage: null,
+          validation: null,
+          error: {
+            name: error?.name || "Error",
+            message: error?.message || String(error)
+          }
+        };
+      }
     }
 
     function appIdFor(appOrPlan, maybePlan) {
@@ -111,9 +331,32 @@
         readiness[field] = Boolean(adapter && missing.length === 0);
       });
 
-      const missingSemantics = READINESS_FIELDS.filter((field) => !readiness[field]);
-      const semanticRuntimeReady = Boolean(adapter && missingSemantics.length === 0);
+      const recoveryCoverage = recoveryCoverageFor(adapter);
+      readiness.recoveryReady = Boolean(
+        recoveryCoverage.classifierPresent &&
+        recoveryCoverage.coverageReady
+      );
+
+      const missingCoreSemantics = READINESS_FIELDS.filter((field) => !readiness[field]);
+      const runtimeCoreReady = Boolean(adapter && missingCoreSemantics.length === 0);
+      const intentCoverage = intentCoverageFor(adapter);
+      const fullApplicationSemanticReady = Boolean(
+        runtimeCoreReady &&
+        intentCoverage.coverageReady
+      );
+      const semanticRuntimeReady = fullApplicationSemanticReady;
+      const coverageEntries = intentCoverage.coverage?.entries || [];
+      const statusCounts = intentCoverage.validation?.statusCounts || {};
+      const incompleteIntentIds =
+        intentCoverage.validation?.incompleteIntentIds || [];
       const summary = adapterSummary(adapter);
+      const adapterKind = fullApplicationSemanticReady
+        ? "executable-semantic-workbench"
+        : (
+          runtimeCoreReady
+            ? "scope-limited-executable-semantic-workbench"
+            : (summary?.kind || "missing-domain-adapter")
+        );
 
       return {
         version: REGISTRY_VERSION,
@@ -122,21 +365,49 @@
         appId,
         adapter: summary?.id || "",
         adapterId: summary?.id || "",
-        adapterKind: semanticRuntimeReady ? "executable-semantic-workbench" : (summary?.kind || "missing-domain-adapter"),
+        adapterKind,
         adapterVersion: summary?.version || "",
         registryAdapterPresent: Boolean(adapter),
         semanticRuntimeReady,
+        runtimeCoreReady,
+        fullApplicationSemanticReady,
+        semanticRuntimeScope: intentCoverage.semanticRuntimeScope,
+        executableIntentCount: Number(statusCounts.executable || 0),
+        preflightOnlyIntentCount: Number(statusCounts["preflight-only"] || 0),
+        declaredOnlyIntentCount: Number(statusCounts["declared-only"] || 0),
+        prohibitedIntentCount: Number(statusCounts.prohibited || 0),
+        blockedIntentCount: Number(
+          (statusCounts["declared-only"] || 0) +
+          (statusCounts.prohibited || 0)
+        ),
+        totalIntentCount: coverageEntries.length,
+        intentCoverageAuditReady: intentCoverage.auditReady,
+        intentCoverageReady: intentCoverage.coverageReady,
+        intentCoverage: clonePlain(intentCoverage.coverage),
+        intentCoverageValidation: clonePlain(intentCoverage.validation),
+        intentCoverageError: clonePlain(intentCoverage.error),
+        missingApplicationSemantics: clonePlain(incompleteIntentIds),
         adapterExecutable: readiness.adapterExecutable,
         stateMachineReady: readiness.stateMachineReady,
         actionPlannerReady: readiness.actionPlannerReady,
         capabilityProviderReady: readiness.capabilityProviderReady,
         recoveryReady: readiness.recoveryReady,
-        missingSemantics,
+        recoveryClassifierPresent: recoveryCoverage.classifierPresent,
+        recoveryCoverageReady: recoveryCoverage.coverageReady,
+        recoveryCoverageSource: recoveryCoverage.source,
+        recoveryCoverage: clonePlain(recoveryCoverage.coverage),
+        recoveryCoverageValidation: clonePlain(recoveryCoverage.validation),
+        recoveryCoverageError: clonePlain(recoveryCoverage.error),
+        missingSemantics: missingCoreSemantics,
         requiredMethods: clonePlain(REQUIRED_METHODS_BY_READINESS_FIELD),
         missingMethods,
-        claim: semanticRuntimeReady
-          ? "A registered MCEL domain adapter implements the executable semantic runtime interface."
-          : "No registered MCEL domain adapter currently proves executable semantic readiness."
+        claim: fullApplicationSemanticReady
+          ? "The registered MCEL domain adapter proves runtime-core and full intent-level semantic coverage."
+          : (
+            runtimeCoreReady
+              ? `Runtime core is ready, but application semantic coverage is partial (${intentCoverage.semanticRuntimeScope}).`
+              : "No registered MCEL domain adapter currently proves executable semantic runtime-core readiness."
+          )
       };
     }
 
@@ -186,6 +457,9 @@
       AUTHORITY,
       REQUIRED_METHODS_BY_READINESS_FIELD,
       READINESS_FIELDS,
+      INTENT_COVERAGE_STATUSES,
+      validateRecoveryCoverage,
+      validateIntentCoverage,
       registerAdapter,
       unregisterAdapter,
       clearAdapters,

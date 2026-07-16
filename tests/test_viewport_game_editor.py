@@ -95,6 +95,12 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(scene["metadata"]["controls"]["movement"], "bounded-first-person-walk")
         self.assertEqual(scene["metadata"]["controls"]["sprint"], "shift")
         self.assertEqual(scene["metadata"]["shuttle3d"]["mode"], "webgl-vertex-mesh")
+        starfield = scene["metadata"]["shuttle3d"]["starfieldSphere"]
+        self.assertEqual(starfield["mode"], "camera-centered-sphere")
+        self.assertEqual(starfield["radius"], 124)
+        self.assertEqual(starfield["count"], 420)
+        self.assertEqual(starfield["seed"], 73129)
+        self.assertTrue(starfield["fixedDistanceFromCamera"])
         geometry = scene["metadata"]["shuttle3d"]["geometry"]
         self.assertEqual(geometry["renderer"], "raw-webgl")
         self.assertEqual(geometry["primitive"], "triangles")
@@ -125,6 +131,10 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(objects["viewer-starfield"]["props"]["motion"], "starfall")
         self.assertEqual(objects["viewport-starfield"]["type"], "shuttle3d-starfield")
         self.assertTrue(objects["viewport-starfield"]["props"]["visibleThroughViewport"])
+        self.assertEqual(objects["viewport-starfield"]["props"]["distribution"], "camera-centered-sphere")
+        self.assertEqual(objects["viewport-starfield"]["props"]["sphereRadius"], 124)
+        self.assertEqual(objects["viewport-starfield"]["props"]["placeholderCount"], 420)
+        self.assertTrue(objects["viewport-starfield"]["props"]["fixedDistanceFromCamera"])
         self.assertEqual(objects["mother-ship"]["type"], "shuttle3d-mother-ship")
         self.assertTrue(objects["mother-ship"]["props"]["visibleThroughViewport"])
         self.assertEqual(objects["lookaround-camera"]["type"], "shuttle3d-camera")

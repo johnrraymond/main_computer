@@ -1,7 +1,7 @@
     (function (global) {
       "use strict";
 
-      const PLANNER_VERSION = "0.3.2";
+      const PLANNER_VERSION = "0.3.3";
 
 
       const MWSL_LANGUAGE_ID = "MWSL";
@@ -18,11 +18,13 @@
         noCompetingToolClusters: true
       });
 
-      const SEMANTIC_TRUTH_GATE_VERSION = "mcel-semantic-truth-gate-v1";
+      const SEMANTIC_TRUTH_GATE_VERSION = "mcel-semantic-truth-gate-v2";
       const SEMANTIC_READINESS_AUTHORITY = "mcel-domain-adapter-registry";
       const SEMANTIC_READINESS_FIELDS = Object.freeze([
         "structuralSpecReady",
         "semanticRuntimeReady",
+        "runtimeCoreReady",
+        "fullApplicationSemanticReady",
         "adapterExecutable",
         "stateMachineReady",
         "actionPlannerReady",
@@ -918,20 +920,44 @@
         const actionPlannerReady = Boolean(proofAuthorized && proof.actionPlannerReady === true);
         const capabilityProviderReady = Boolean(proofAuthorized && proof.capabilityProviderReady === true);
         const recoveryReady = Boolean(proofAuthorized && proof.recoveryReady === true);
-        const semanticRuntimeReady = Boolean(
-          structuralSpecReady &&
+        const recoveryClassifierPresent = Boolean(
+          proofAuthorized && proof.recoveryClassifierPresent === true
+        );
+        const recoveryCoverageReady = Boolean(
+          proofAuthorized && proof.recoveryCoverageReady === true
+        );
+        const runtimeCoreReady = Boolean(
+          proofAuthorized &&
+          proof.runtimeCoreReady === true &&
           adapterExecutable &&
           stateMachineReady &&
           actionPlannerReady &&
           capabilityProviderReady &&
           recoveryReady
         );
+        const fullApplicationSemanticReady = Boolean(
+          proofAuthorized &&
+          proof.fullApplicationSemanticReady === true &&
+          proof.semanticRuntimeReady === true
+        );
+        const semanticRuntimeReady = Boolean(
+          structuralSpecReady &&
+          runtimeCoreReady &&
+          fullApplicationSemanticReady
+        );
+        const semanticRuntimeScope = proofAuthorized
+          ? String(proof.semanticRuntimeScope || "unclassified")
+          : "unclassified";
         const adapterKind = genericAdapter
           ? "structural-intake"
           : (proofAuthorized && proof.adapterKind ? proof.adapterKind : "domain-enrichment");
         const semanticRuntimeStatus = semanticRuntimeReady
           ? "executable-semantic-workbench"
-          : (genericAdapter ? "structural-only" : "domain-enrichment-only");
+          : (
+            runtimeCoreReady
+              ? "scope-limited-semantic-runtime"
+              : (genericAdapter ? "structural-only" : "domain-enrichment-only")
+          );
         const missingSemantics = [
           ["adapterExecutable", adapterExecutable],
           ["stateMachineReady", stateMachineReady],
@@ -941,6 +967,9 @@
         ]
           .filter(([, ready]) => !ready)
           .map(([field]) => field);
+        if (runtimeCoreReady && !fullApplicationSemanticReady) {
+          missingSemantics.push("fullApplicationSemanticReady");
+        }
         const authoredClaims = authoredSemanticRuntimeClaims(explicit);
 
         return {
@@ -950,11 +979,28 @@
           genericAdapter,
           structuralSpecReady,
           semanticRuntimeReady,
+          runtimeCoreReady,
+          fullApplicationSemanticReady,
+          semanticRuntimeScope,
+          executableIntentCount: Number(proofAuthorized ? proof.executableIntentCount || 0 : 0),
+          preflightOnlyIntentCount: Number(proofAuthorized ? proof.preflightOnlyIntentCount || 0 : 0),
+          declaredOnlyIntentCount: Number(proofAuthorized ? proof.declaredOnlyIntentCount || 0 : 0),
+          prohibitedIntentCount: Number(proofAuthorized ? proof.prohibitedIntentCount || 0 : 0),
+          blockedIntentCount: Number(proofAuthorized ? proof.blockedIntentCount || 0 : 0),
+          totalIntentCount: Number(proofAuthorized ? proof.totalIntentCount || 0 : 0),
+          intentCoverageAuditReady: Boolean(proofAuthorized && proof.intentCoverageAuditReady === true),
+          intentCoverageReady: Boolean(proofAuthorized && proof.intentCoverageReady === true),
+          intentCoverage: proofAuthorized ? clone(proof.intentCoverage || null) : null,
+          missingApplicationSemantics: proofAuthorized
+            ? clone(proof.missingApplicationSemantics || [])
+            : [],
           adapterExecutable,
           stateMachineReady,
           actionPlannerReady,
           capabilityProviderReady,
           recoveryReady,
+          recoveryClassifierPresent,
+          recoveryCoverageReady,
           semanticRuntimeStatus,
           missingSemantics,
           semanticRuntimeAuthority: proofAuthorized ? SEMANTIC_READINESS_AUTHORITY : "none",
@@ -965,8 +1011,12 @@
           registryProofAuthorized: proofAuthorized,
           fields: SEMANTIC_READINESS_FIELDS.slice(),
           claim: semanticRuntimeReady
-            ? "MCEL spec is backed by adapter-registry executable semantic runtime proof."
-            : "MCEL is structurally classified only; authored labels, generic adapters, and semanticRuntime flags are not semantic intelligence."
+            ? "MCEL spec is backed by adapter-registry runtime-core and full intent-coverage proof."
+            : (
+              runtimeCoreReady
+                ? `MCEL runtime core is ready, but application intent coverage remains partial (${semanticRuntimeScope}).`
+                : "MCEL is structurally classified only; authored labels, generic adapters, and semanticRuntime flags are not semantic intelligence."
+            )
         };
       }
 
@@ -1105,6 +1155,9 @@
           highRisk: plans.filter((plan) => riskLevel(plan) === "high").length,
           semanticTruthGateVersion: SEMANTIC_TRUTH_GATE_VERSION,
           semanticRuntimeReady: plans.filter((plan) => semanticReadinessForPlan(plan).semanticRuntimeReady).length,
+          runtimeCoreReady: plans.filter((plan) => semanticReadinessForPlan(plan).runtimeCoreReady).length,
+          fullApplicationSemanticReady: plans.filter((plan) => semanticReadinessForPlan(plan).fullApplicationSemanticReady).length,
+          scopeLimitedSemanticRuntime: plans.filter((plan) => semanticReadinessForPlan(plan).semanticRuntimeStatus === "scope-limited-semantic-runtime").length,
           structuralOnly: plans.filter((plan) => semanticReadinessForPlan(plan).semanticRuntimeStatus === "structural-only").length,
           domainEnrichmentOnly: plans.filter((plan) => semanticReadinessForPlan(plan).semanticRuntimeStatus === "domain-enrichment-only").length,
           workbenchSpecReady: plans.filter((plan) => normalizeWorkbenchSpec(plan).language === MWSL_LANGUAGE_ID).length,
@@ -1191,6 +1244,15 @@
           semanticTruthGateVersion: SEMANTIC_TRUTH_GATE_VERSION,
           semanticRuntimeStatus: readiness.semanticRuntimeStatus,
           semanticRuntimeReady: readiness.semanticRuntimeReady,
+          runtimeCoreReady: readiness.runtimeCoreReady,
+          fullApplicationSemanticReady: readiness.fullApplicationSemanticReady,
+          semanticRuntimeScope: readiness.semanticRuntimeScope,
+          executableIntentCount: readiness.executableIntentCount,
+          preflightOnlyIntentCount: readiness.preflightOnlyIntentCount,
+          declaredOnlyIntentCount: readiness.declaredOnlyIntentCount,
+          prohibitedIntentCount: readiness.prohibitedIntentCount,
+          blockedIntentCount: readiness.blockedIntentCount,
+          totalIntentCount: readiness.totalIntentCount,
           adapterKind: readiness.adapterKind,
           adapterExecutable: readiness.adapterExecutable,
           semanticReadiness: readiness,
@@ -1336,6 +1398,15 @@
               semanticTruthGateVersion: SEMANTIC_TRUTH_GATE_VERSION,
               semanticRuntimeStatus: readiness.semanticRuntimeStatus,
               semanticRuntimeReady: readiness.semanticRuntimeReady,
+              runtimeCoreReady: readiness.runtimeCoreReady,
+              fullApplicationSemanticReady: readiness.fullApplicationSemanticReady,
+              semanticRuntimeScope: readiness.semanticRuntimeScope,
+              executableIntentCount: readiness.executableIntentCount,
+              preflightOnlyIntentCount: readiness.preflightOnlyIntentCount,
+              declaredOnlyIntentCount: readiness.declaredOnlyIntentCount,
+              prohibitedIntentCount: readiness.prohibitedIntentCount,
+              blockedIntentCount: readiness.blockedIntentCount,
+              totalIntentCount: readiness.totalIntentCount,
               adapterKind: readiness.adapterKind,
               adapterExecutable: readiness.adapterExecutable,
               stateMachineReady: readiness.stateMachineReady,

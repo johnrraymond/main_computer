@@ -75,13 +75,15 @@ def test_registry_requires_adapter_methods_before_authorizing_executable_readine
           actionPlannerReady: readiness.actionPlannerReady,
           capabilityProviderReady: readiness.capabilityProviderReady,
           recoveryReady: readiness.recoveryReady,
+          recoveryClassifierPresent: readiness.recoveryClassifierPresent,
+          recoveryCoverageReady: readiness.recoveryCoverageReady,
           missing: readiness.missingSemantics
         }}));
         """
     )
     result = run_node_json(script)
 
-    assert result["registryVersion"] == "mcel-domain-adapter-registry-v1"
+    assert result["registryVersion"] == "mcel-domain-adapter-registry-v4"
     assert result["requiredAuthority"] == "mcel-domain-adapter-registry"
     assert result["authority"] == "mcel-domain-adapter-registry"
     assert result["registryProofPresent"] is True
@@ -92,8 +94,10 @@ def test_registry_requires_adapter_methods_before_authorizing_executable_readine
     assert result["stateMachineReady"] is True
     assert result["actionPlannerReady"] is False
     assert result["capabilityProviderReady"] is True
-    assert result["recoveryReady"] is True
-    assert result["missing"] == ["actionPlannerReady"]
+    assert result["recoveryReady"] is False
+    assert result["recoveryClassifierPresent"] is True
+    assert result["recoveryCoverageReady"] is False
+    assert result["missing"] == ["actionPlannerReady", "recoveryReady"]
 
 
 def test_registry_can_authorize_readiness_only_for_a_complete_domain_adapter_shape() -> None:
@@ -123,6 +127,42 @@ def test_registry_can_authorize_readiness_only_for_a_complete_domain_adapter_sha
           buildReceipt() {{ return {{receiptId: "receipt-refreshStatus", status: "ok"}}; }},
           classifyFailure() {{ return {{class: "none"}}; }},
           buildRecoveryOptions() {{ return []; }},
+          getRecoveryCoverage() {{
+            return {{
+              source: "test-verified-recovery-coverage",
+              verificationMode: "derived-runtime-audit",
+              classificationReady: true,
+              guidanceReady: true,
+              coverageReady: true,
+              requiredFailureClasses: ["test-failure"],
+              coveredFailureClasses: ["test-failure"],
+              unverifiedFailureClasses: [],
+              verification: {{
+                passed: true,
+                checks: {{
+                  definitionsComplete: true,
+                  guidanceComplete: true
+                }}
+              }}
+            }};
+          }},
+          getIntentCoverage() {{
+            return {{
+              source: "test-derived-intent-coverage",
+              verificationMode: "derived-intent-coverage-audit",
+              semanticRuntimeScope: "safe-read-complete",
+              fullApplicationSemanticReady: true,
+              requiredIntentIds: ["refreshStatus"],
+              entries: [{{
+                intentId: "refreshStatus",
+                label: "Refresh status",
+                risk: "safe-read",
+                status: "executable",
+                executionBinding: "test.refresh"
+              }}],
+              verification: {{passed: true}}
+            }};
+          }},
           mapEvidence() {{ return [{{receiptId: "receipt-refreshStatus"}}]; }}
         }});
         const plan = planner.planFor("git-tools");
@@ -132,6 +172,9 @@ def test_registry_can_authorize_readiness_only_for_a_complete_domain_adapter_sha
           authority: readiness.semanticRuntimeAuthority,
           status: readiness.semanticRuntimeStatus,
           ready: readiness.semanticRuntimeReady,
+          runtimeCoreReady: readiness.runtimeCoreReady,
+          fullApplicationSemanticReady: readiness.fullApplicationSemanticReady,
+          semanticRuntimeScope: readiness.semanticRuntimeScope,
           adapterKind: readiness.adapterKind,
           missing: readiness.missingSemantics,
           stateSnapshotAvailable: snapshot.stateSnapshotAvailable,
@@ -146,9 +189,149 @@ def test_registry_can_authorize_readiness_only_for_a_complete_domain_adapter_sha
     assert result["authority"] == "mcel-domain-adapter-registry"
     assert result["status"] == "executable-semantic-workbench"
     assert result["ready"] is True
+    assert result["runtimeCoreReady"] is True
+    assert result["fullApplicationSemanticReady"] is True
+    assert result["semanticRuntimeScope"] == "safe-read-complete"
     assert result["adapterKind"] == "executable-semantic-workbench"
     assert result["missing"] == []
     assert result["stateSnapshotAvailable"] is True
     assert result["intentListAvailable"] is True
     assert result["stateBranch"] == "main"
     assert result["firstIntent"] == "refreshStatus"
+
+
+def test_registry_rejects_boolean_only_recovery_coverage_claim() -> None:
+    registry_path = WEB_APP / "scripts" / "mcel-domain-adapter-registry.js"
+    script = textwrap.dedent(
+        f"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const sandbox = {{console}};
+        sandbox.window = sandbox;
+        vm.runInNewContext(
+          fs.readFileSync({json.dumps(str(registry_path))}, "utf8"),
+          sandbox,
+          {{filename: "mcel-domain-adapter-registry.js"}}
+        );
+        const registry = sandbox.McelDomainAdapterRegistry;
+        registry.registerAdapter({{
+          id: "boolean-only",
+          appId: "git-tools",
+          getState() {{ return {{}}; }},
+          listObjects() {{ return []; }},
+          listIntents() {{ return []; }},
+          preflightIntent() {{ return {{}}; }},
+          executeIntent() {{ return {{}}; }},
+          buildReceipt() {{ return {{}}; }},
+          classifyFailure() {{ return {{}}; }},
+          buildRecoveryOptions() {{ return []; }},
+          mapEvidence() {{ return []; }},
+          getRecoveryCoverage() {{
+            return {{
+              source: "unverified-boolean",
+              coverageReady: true,
+              requiredFailureClasses: ["test-failure"],
+              coveredFailureClasses: ["test-failure"]
+            }};
+          }}
+        }});
+        console.log(JSON.stringify(
+          registry.evaluateAdapterReadiness("git-tools")
+        ));
+        """
+    )
+    readiness = run_node_json(script)
+    assert readiness["recoveryClassifierPresent"] is True
+    assert readiness["recoveryCoverageReady"] is False
+    assert readiness["recoveryReady"] is False
+    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["recoveryCoverageValidation"]["checks"]["derivedAudit"] is False
+
+
+def test_registry_separates_runtime_core_from_full_application_intent_coverage() -> None:
+    registry_path = WEB_APP / "scripts" / "mcel-domain-adapter-registry.js"
+    script = textwrap.dedent(
+        f"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const sandbox = {{console}};
+        sandbox.window = sandbox;
+        vm.runInNewContext(
+          fs.readFileSync({json.dumps(str(registry_path))}, "utf8"),
+          sandbox,
+          {{filename: "mcel-domain-adapter-registry.js"}}
+        );
+        const registry = sandbox.McelDomainAdapterRegistry;
+        registry.registerAdapter({{
+          id: "partial-intent-coverage",
+          appId: "git-tools",
+          getState() {{ return {{}}; }},
+          listObjects() {{ return []; }},
+          listIntents() {{ return []; }},
+          preflightIntent() {{ return {{}}; }},
+          executeIntent() {{ return {{}}; }},
+          buildReceipt() {{ return {{}}; }},
+          classifyFailure() {{ return {{}}; }},
+          buildRecoveryOptions() {{ return []; }},
+          mapEvidence() {{ return []; }},
+          getRecoveryCoverage() {{
+            return {{
+              source: "test-recovery",
+              verificationMode: "derived-runtime-audit",
+              classificationReady: true,
+              guidanceReady: true,
+              coverageReady: true,
+              requiredFailureClasses: ["test-failure"],
+              coveredFailureClasses: ["test-failure"],
+              unverifiedFailureClasses: [],
+              verification: {{passed: true}}
+            }};
+          }},
+          getIntentCoverage() {{
+            return {{
+              source: "test-intent-coverage",
+              verificationMode: "derived-intent-coverage-audit",
+              semanticRuntimeScope: "safe-read-partial",
+              fullApplicationSemanticReady: false,
+              requiredIntentIds: ["refreshStatus", "inspectWorkingTree"],
+              entries: [
+                {{
+                  intentId: "refreshStatus",
+                  label: "Refresh status",
+                  risk: "safe-read",
+                  status: "executable",
+                  executionBinding: "test.refresh"
+                }},
+                {{
+                  intentId: "inspectWorkingTree",
+                  label: "Inspect working tree",
+                  risk: "safe-read",
+                  status: "declared-only",
+                  executionBinding: "not-registered"
+                }}
+              ],
+              verification: {{passed: true}}
+            }};
+          }}
+        }});
+        console.log(JSON.stringify(
+          registry.evaluateAdapterReadiness("git-tools")
+        ));
+        """
+    )
+    readiness = run_node_json(script)
+
+    assert readiness["runtimeCoreReady"] is True
+    assert readiness["fullApplicationSemanticReady"] is False
+    assert readiness["semanticRuntimeReady"] is False
+    assert readiness["semanticRuntimeScope"] == "safe-read-partial"
+    assert readiness["executableIntentCount"] == 1
+    assert readiness["declaredOnlyIntentCount"] == 1
+    assert readiness["preflightOnlyIntentCount"] == 0
+    assert readiness["prohibitedIntentCount"] == 0
+    assert readiness["blockedIntentCount"] == 1
+    assert readiness["totalIntentCount"] == 2
+    assert readiness["intentCoverageAuditReady"] is True
+    assert readiness["intentCoverageReady"] is False
+    assert readiness["missingApplicationSemantics"] == ["inspectWorkingTree"]
+    assert readiness["adapterKind"] == "scope-limited-executable-semantic-workbench"

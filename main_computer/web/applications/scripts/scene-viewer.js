@@ -392,7 +392,12 @@
                                         "color": "#dbeafe",
                                         "z": 132,
                                         "visibleThroughViewport": true,
-                                        "twinkle": true
+                                        "twinkle": true,
+                                        "distribution": "camera-centered-sphere",
+                                        "sphereRadius": 124,
+                                        "placeholderCount": 420,
+                                        "seed": 73129,
+                                        "fixedDistanceFromCamera": true
                               }
                     },
                     {
@@ -519,6 +524,15 @@
                               "lookAround": true,
                               "viewport": "forward-viewer",
                               "starfield": "viewport-starfield",
+                              "starfieldSphere": {
+                                    "mode": "camera-centered-sphere",
+                                    "radius": 124,
+                                    "count": 420,
+                                    "seed": 73129,
+                                    "minimumSize": 0.12,
+                                    "maximumSize": 0.38,
+                                    "fixedDistanceFromCamera": true
+                              },
                               "motherShip": "mother-ship",
                               "motherShipLabel": "Mother Ship",
                               "playerAnchor": "hero-sprite",
@@ -1909,6 +1923,26 @@
         };
       }
 
+      function shuttle3dStarfieldConfig(scene) {
+        const supplied = scene?.metadata?.shuttle3d?.starfieldSphere;
+        const starfield = supplied && typeof supplied === "object" ? supplied : {};
+        const number = (value, fallback, minimum, maximum) => {
+          const parsed = Number(value);
+          if (!Number.isFinite(parsed)) return fallback;
+          return Math.min(maximum, Math.max(minimum, parsed));
+        };
+        const minimumSize = number(starfield.minimumSize, 0.12, 0.02, 2);
+        return {
+          mode: "camera-centered-sphere",
+          radius: number(starfield.radius, 124, 48, 500),
+          count: Math.round(number(starfield.count, 420, 24, 2400)),
+          seed: Math.floor(number(starfield.seed, 73129, 1, 4294967295)) >>> 0,
+          minimumSize,
+          maximumSize: Math.max(minimumSize, number(starfield.maximumSize, 0.38, 0.02, 3)),
+          fixedDistanceFromCamera: starfield.fixedDistanceFromCamera !== false
+        };
+      }
+
       class Shuttle3dGeometryWriter {
         constructor() {
           this.values = [];
@@ -2043,11 +2077,18 @@
           this.onCameraMoved = null;
           this.maxDpr = 2;
           this.compile();
+          this.starfield = shuttle3dStarfieldConfig(scene);
           this.geometry = this.buildGeometry();
-          this.vertexCount = this.geometry.length / 10;
+          this.worldVertexCount = this.geometry.length / 10;
+          this.starGeometry = this.buildStarfieldGeometry();
+          this.starVertexCount = this.starGeometry.length / 10;
+          this.vertexCount = this.worldVertexCount + this.starVertexCount;
           this.buffer = this.gl.createBuffer();
           this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
           this.gl.bufferData(this.gl.ARRAY_BUFFER, this.geometry, this.gl.STATIC_DRAW);
+          this.starBuffer = this.gl.createBuffer();
+          this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.starBuffer);
+          this.gl.bufferData(this.gl.ARRAY_BUFFER, this.starGeometry, this.gl.STATIC_DRAW);
           this.resizeObserver = typeof ResizeObserver === "function"
             ? new ResizeObserver(() => this.resize())
             : null;
@@ -2070,20 +2111,22 @@
             uniform mat4 u_projection;
             uniform mat4 u_view;
             uniform vec3 u_camera;
+            uniform vec3 u_offset;
             uniform float u_time;
             varying vec3 v_color;
             varying float v_emissive;
             varying float v_depth;
 
             void main() {
+              vec3 worldPosition = a_position + u_offset;
               vec3 lightDirection = normalize(vec3(-0.35, 0.82, 0.46));
               float diffuse = 0.34 + 0.66 * abs(dot(normalize(a_normal), lightDirection));
               float pulse = 0.88 + 0.12 * sin(u_time * 1.8 + a_position.x * 0.7 + a_position.z * 0.15);
               float light = mix(diffuse, pulse, a_color.a);
               v_color = a_color.rgb * light;
               v_emissive = a_color.a;
-              v_depth = length(a_position - u_camera);
-              gl_Position = u_projection * u_view * vec4(a_position, 1.0);
+              v_depth = length(worldPosition - u_camera);
+              gl_Position = u_projection * u_view * vec4(worldPosition, 1.0);
             }`;
 
           const fragmentSource = `
@@ -2107,6 +2150,7 @@
             projection: this.gl.getUniformLocation(this.program, "u_projection"),
             view: this.gl.getUniformLocation(this.program, "u_view"),
             camera: this.gl.getUniformLocation(this.program, "u_camera"),
+            offset: this.gl.getUniformLocation(this.program, "u_offset"),
             time: this.gl.getUniformLocation(this.program, "u_time")
           };
         }
@@ -2187,28 +2231,6 @@
             builder.box([x - 0.11, -1.38, -2.25], [x + 0.11, -1.05, -1.9], trim);
           });
 
-          const starColor = builder.color("#d9f4ff", true);
-          let seed = 73129;
-          const random = () => {
-            seed = (seed * 1664525 + 1013904223) >>> 0;
-            return seed / 4294967296;
-          };
-          for (let index = 0; index < 220; index += 1) {
-            const z = -22 - random() * 88;
-            const spread = Math.abs(z) * 0.43;
-            const x = (random() - 0.5) * spread;
-            const y = (random() - 0.5) * spread * 0.55 + 0.8;
-            const size = 0.018 + random() * 0.055;
-            builder.quad(
-              [x - size, y - size, z],
-              [x + size, y - size, z],
-              [x + size, y + size, z],
-              [x - size, y + size, z],
-              starColor,
-              [0, 0, 1]
-            );
-          }
-
           const shipHull = builder.color("#aebdca");
           const shipDark = builder.color("#66798e");
           const shipGlow = builder.color("#4da6ff", true);
@@ -2222,6 +2244,53 @@
           builder.box([-1.88, -0.34, -34.7], [3.58, -0.22, -34.45], shipHull);
 
           return builder.toFloat32Array();
+        }
+
+        buildStarfieldGeometry() {
+          const builder = new Shuttle3dGeometryWriter();
+          const {count, radius, seed, minimumSize, maximumSize} = this.starfield;
+          const palette = [
+            builder.color("#f8fbff", true),
+            builder.color("#d9f4ff", true),
+            builder.color("#b8d9ff", true),
+            builder.color("#fff1cf", true)
+          ];
+          let state = seed || 73129;
+          const random = () => {
+            state = (state * 1664525 + 1013904223) >>> 0;
+            return state / 4294967296;
+          };
+          for (let index = 0; index < count; index += 1) {
+            const vertical = 1 - random() * 2;
+            const azimuth = random() * Math.PI * 2;
+            const horizontal = Math.sqrt(Math.max(0, 1 - vertical * vertical));
+            const center = [
+              Math.cos(azimuth) * horizontal * radius,
+              vertical * radius,
+              Math.sin(azimuth) * horizontal * radius
+            ];
+            const size = minimumSize + random() * (maximumSize - minimumSize);
+            const half = size * 0.5;
+            const color = palette[Math.min(palette.length - 1, Math.floor(random() * palette.length))];
+            builder.box(
+              [center[0] - half, center[1] - half, center[2] - half],
+              [center[0] + half, center[1] + half, center[2] + half],
+              color
+            );
+          }
+          return builder.toFloat32Array();
+        }
+
+        bindGeometryBuffer(buffer) {
+          const gl = this.gl;
+          const stride = 10 * Float32Array.BYTES_PER_ELEMENT;
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+          gl.enableVertexAttribArray(this.locations.position);
+          gl.vertexAttribPointer(this.locations.position, 3, gl.FLOAT, false, stride, 0);
+          gl.enableVertexAttribArray(this.locations.normal);
+          gl.vertexAttribPointer(this.locations.normal, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
+          gl.enableVertexAttribArray(this.locations.color);
+          gl.vertexAttribPointer(this.locations.color, 4, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT);
         }
 
         resize() {
@@ -2328,7 +2397,8 @@
             this.camera[1] + direction[1],
             this.camera[2] + direction[2]
           ];
-          const projection = shuttle3dPerspectiveMatrix(66 * Math.PI / 180, this.aspect || 16 / 9, 0.08, 140);
+          const farPlane = Math.max(140, this.starfield.radius + this.starfield.maximumSize + 8);
+          const projection = shuttle3dPerspectiveMatrix(66 * Math.PI / 180, this.aspect || 16 / 9, 0.08, farPlane);
           const view = shuttle3dLookAtMatrix(this.camera, target, [0, 1, 0]);
 
           gl.clearColor(0.002, 0.006, 0.02, 1);
@@ -2338,20 +2408,18 @@
           gl.disable(gl.CULL_FACE);
           gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
           gl.useProgram(this.program);
-          gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-
-          const stride = 10 * Float32Array.BYTES_PER_ELEMENT;
-          gl.enableVertexAttribArray(this.locations.position);
-          gl.vertexAttribPointer(this.locations.position, 3, gl.FLOAT, false, stride, 0);
-          gl.enableVertexAttribArray(this.locations.normal);
-          gl.vertexAttribPointer(this.locations.normal, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT);
-          gl.enableVertexAttribArray(this.locations.color);
-          gl.vertexAttribPointer(this.locations.color, 4, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT);
           gl.uniformMatrix4fv(this.locations.projection, false, projection);
           gl.uniformMatrix4fv(this.locations.view, false, view);
           gl.uniform3fv(this.locations.camera, new Float32Array(this.camera));
           gl.uniform1f(this.locations.time, now / 1000);
-          gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+
+          this.bindGeometryBuffer(this.buffer);
+          gl.uniform3f(this.locations.offset, 0, 0, 0);
+          gl.drawArrays(gl.TRIANGLES, 0, this.worldVertexCount);
+
+          this.bindGeometryBuffer(this.starBuffer);
+          gl.uniform3fv(this.locations.offset, new Float32Array(this.camera));
+          gl.drawArrays(gl.TRIANGLES, 0, this.starVertexCount);
           this.animationFrame = requestAnimationFrame(this.draw);
         }
 
@@ -2363,6 +2431,7 @@
           this.clearMovementKeys();
           this.canvas.removeEventListener("webglcontextlost", this.handleContextLost);
           if (this.buffer) this.gl.deleteBuffer(this.buffer);
+          if (this.starBuffer) this.gl.deleteBuffer(this.starBuffer);
           if (this.program) this.gl.deleteProgram(this.program);
         }
       }
@@ -2528,8 +2597,11 @@
           const current = container.__mainComputerShuttle3dLook || shuttle3dCameraConfig(scene);
           renderer.setLook(current.yaw, current.pitch);
           canvas.dataset.shuttleVertexCount = String(renderer.vertexCount);
+          canvas.dataset.starfieldMode = renderer.starfield.mode;
+          canvas.dataset.starfieldCount = String(renderer.starfield.count);
+          canvas.dataset.starfieldRadius = String(renderer.starfield.radius);
           const updateMovementStatus = (camera) => {
-            status.textContent = `${renderer.vertexCount.toLocaleString()} vertices • x ${camera[0].toFixed(1)} • z ${camera[2].toFixed(1)} • WASD`;
+            status.textContent = `${renderer.worldVertexCount.toLocaleString()} shuttle vertices • ${renderer.starfield.count} stars at ${renderer.starfield.radius}u • x ${camera[0].toFixed(1)} • z ${camera[2].toFixed(1)}`;
             canvas.dataset.cameraX = camera[0].toFixed(3);
             canvas.dataset.cameraZ = camera[2].toFixed(3);
           };

@@ -558,7 +558,12 @@
                         "color": "#dbeafe",
                         "z": 132,
                         "visibleThroughViewport": true,
-                        "twinkle": true
+                        "twinkle": true,
+                        "distribution": "camera-centered-sphere",
+                        "sphereRadius": 124,
+                        "placeholderCount": 420,
+                        "seed": 73129,
+                        "fixedDistanceFromCamera": true
                   }
             },
             {
@@ -685,6 +690,15 @@
                   "lookAround": true,
                   "viewport": "forward-viewer",
                   "starfield": "viewport-starfield",
+                  "starfieldSphere": {
+                        "mode": "camera-centered-sphere",
+                        "radius": 124,
+                        "count": 420,
+                        "seed": 73129,
+                        "minimumSize": 0.12,
+                        "maximumSize": 0.38,
+                        "fixedDistanceFromCamera": true
+                  },
                   "motherShip": "mother-ship",
                   "motherShipLabel": "Mother Ship",
                   "playerAnchor": "hero-sprite",

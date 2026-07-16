@@ -458,6 +458,20 @@ def test_super_base_builder_status_from_logs_detects_ready_and_failure() -> None
     assert failed["ready"] is False
 
 
+def test_super_base_builder_script_rechecks_host_image_after_ready() -> None:
+    script = control.super_base_builder_command_script(
+        target_image="main-computer/allfather-super-base:test",
+        source_image="hyperledger/besu:latest",
+        force_rebuild=False,
+    )
+
+    assert 'docker image inspect "$TARGET_IMAGE"' in script
+    assert 'phase=missing target=$TARGET_IMAGE' in script
+    assert 'target image is not present on the host Docker daemon' in script
+    assert 'while true; do' in script
+    assert 'ensure_target_image || true' in script
+
+
 def test_application_records_from_service_detail_reads_service_applications_shape() -> None:
     detail = {
         "body": {
@@ -544,7 +558,7 @@ def test_wait_for_super_base_builder_ready_uses_builder_logs_before_http_probe(
     assert result["observed_by"] == "builder-logs"
 
 
-def test_ensure_super_base_image_skips_builder_deploy_when_existing_ready(
+def test_ensure_super_base_image_redeploys_ready_builder_to_verify_host_image(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -559,17 +573,19 @@ def test_ensure_super_base_image_skips_builder_deploy_when_existing_ready(
     )
 
     wait_calls: list[float] = []
+    deploy_calls: list[dict[str, object]] = []
 
     def fake_wait_for_super_base_builder_ready(*args: object, **kwargs: object) -> dict[str, object]:
         wait_calls.append(float(kwargs.get("wait_s", 0)))
         return {"ready": True, "reason": "managed super base image is ready", "observed_by": "private-probe"}
 
-    class FailingHubTool:
+    class RecordingHubTool:
         def trigger_deploy_service(self, *args: object, **kwargs: object) -> dict[str, object]:
-            raise AssertionError("ready existing base builder should not be redeployed")
+            deploy_calls.append(dict(kwargs))
+            return {"queued": True}
 
     monkeypatch.setattr(control, "wait_for_super_base_builder_ready", fake_wait_for_super_base_builder_ready)
-    monkeypatch.setattr(control, "hub_service_tool", lambda: FailingHubTool())
+    monkeypatch.setattr(control, "hub_service_tool", lambda: RecordingHubTool())
 
     args = type(
         "Args",
@@ -591,8 +607,9 @@ def test_ensure_super_base_image_skips_builder_deploy_when_existing_ready(
     result = control.ensure_super_base_image(plan, head, object(), args, {}, [])
 
     assert result["ready"] is True
-    assert result["deploy_response"] is None
-    assert wait_calls == [20.0]
+    assert result["deploy_response"] == "<hidden; pass --verbose>"
+    assert wait_calls == [20.0, 1800.0]
+    assert deploy_calls == [{"service_uuid": "builder-service-uuid", "force": False, "tried": []}]
 
 
 def test_ensure_super_base_image_waits_existing_live_builder_without_restart(
@@ -1076,8 +1093,25 @@ def test_add_node_contains_resume_path_for_incomplete_existing_node() -> None:
 
     assert "resume: existing" in source
     assert "resuming existing incomplete service" in source
-    assert "resume-existing-lower-ordinal" in source
+    assert "resume_existing_network_nodes" in source
     assert "add_node_super_ready_check(resume_status, resume_manifest)" in source
+
+
+def test_add_node_prepares_existing_validator_admission_endpoints() -> None:
+    source = (control.REPO_ROOT / "tools" / "allfather_control.py").read_text(encoding="utf-8")
+
+    assert "ensure_existing_validator_admission_endpoints" in source
+    assert "validator-admission: updating existing validator service" in source
+    assert "validator_admission_prep" in source
+    assert "/qbft/propose-validator" in source
+
+
+def test_super_guard_validator_admission_state_updates_do_not_duplicate_kwargs() -> None:
+    script = control.super_server_command_script()
+
+    assert "def validator_admission_state" in script
+    assert 'state("validator_admission", **base,' not in script
+    compile(script, "<allfather-super-guard>", "exec")
 
 
 def test_add_node_quiet_suppresses_operator_progress_logs(tmp_path: Path) -> None:
@@ -1139,9 +1173,22 @@ def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
     assert "deployed" in script
     assert "contracts: submitted contract=" in script
     assert "contracts: waiting receipt" in script
+    assert "def json_safe" in script
+    assert "json.dumps(json_safe(payload)" in script
+    assert "json.dumps(json_safe(body)" in script
+    assert "failed_receipt = json_safe" in script
     assert "pending_age_s" in script
     assert "/qbft/bootstrap" in script
     assert "fetch_shared_qbft_config" in script
+    assert "sync_joiner_shared_qbft_config" in script
+    assert "reset-mismatched-genesis" in script
+    assert "admin_addPeer" in script
+    assert "waiting-qbft-peer" in script
+    assert "peer_count" in script
+    assert "/qbft/propose-validator" in script
+    assert "qbft_proposeValidatorVote" in script
+    assert "ensure_joiner_validator_admission" in script
+    assert "validator_admission" in script
     assert "ready-for-bootstrap-command" not in script
     assert "0.0.0.0" in script
 
@@ -1380,6 +1427,9 @@ def test_super_guard_contract_deploy_is_resumable_and_uses_positive_gas_private_
     assert "tx_observed=" in script
     assert "tx_pending=" in script
     assert "chainGasPrice=" in script
+    assert "normalize_transaction_hash" in script
+    assert "Do not feed strings back into w3.to_hex()" in script
+    assert "normalize_transaction_hash(w3, tx_hash)" in script
     assert "wait_for_transaction_receipt" not in script
 
 
@@ -1767,6 +1817,75 @@ def test_add_node_second_fdb_node_joins_existing_cluster_before_reconfigure(tmp_
     assert payload["manifest"]["wallets"]["hub_admin"]["scope"] == "node"
 
 
+def test_network_inventory_collects_existing_super_nodes_across_hosts(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+
+    inventory = control.network_super_inventory_from_services_by_head(
+        plan,
+        "testnet",
+        {
+            "coolify-a": [{"name": "testneta-super1"}, {"name": "testneta-super2"}],
+            "coolify-b": [],
+        },
+    )
+
+    assert [item["service_name"] for item in inventory] == ["testneta-super1", "testneta-super2"]
+    assert {item["coolify_server"] for item in inventory} == {"coolify-a"}
+    assert inventory[0]["guard_url"] == "http://10.116.0.3:41500"
+    assert inventory[1]["p2p_endpoint"] == "10.116.0.3:45301"
+
+
+def test_cross_host_first_local_node_joins_existing_network_instead_of_initializing(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    state = control.load_yaml_mapping(path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head_a = control.choose_head_for_host(plan, "coolify-a")
+    head_b = control.choose_head_for_host(plan, "coolify-b")
+    existing = [
+        control.super_inventory_entry("testnet", head_a, 1, source="test-existing-network"),
+        control.super_inventory_entry("testnet", head_a, 2, source="test-existing-network"),
+    ]
+
+    state, wallets, updates = control.materialize_private_state_for_add_node(
+        state,
+        path,
+        "testnet",
+        ordinal=1,
+        cell_id="testnetb-super1",
+        no_contracts=True,
+        dry_run=True,
+    )
+    manifest = control.super_manifest(
+        "testnet",
+        head_b,
+        1,
+        wallets=wallets,
+        private_state=state,
+        existing_nodes=existing,
+        no_contracts=True,
+        publish_routes=False,
+    )
+
+    assert manifest["cell_id"] == "testnetb-super1"
+    assert manifest["bootstrap"]["contracts_requested"] is False
+    assert manifest["desired_counts"]["contracts"] == 0
+    assert updates["node_hub_admin_cell_id"] == "testnetb-super1"
+    fdb = manifest["foundationdb"]
+    assert fdb["action"] == "join-existing-cluster"
+    assert fdb["first_node"] is False
+    assert fdb["current_coordinators"] == ["10.116.0.3:44550", "10.116.0.3:44551"]
+    assert fdb["target_coordinators"] == ["10.116.0.3:44550", "10.116.0.3:44551", "10.124.0.3:44650"]
+    assert [item["service_name"] for item in fdb["existing_nodes"]] == ["testneta-super1", "testneta-super2"]
+
+
+def test_super_guard_treats_host_b_super1_as_joiner_when_fdb_joins_existing_network() -> None:
+    script = control.super_server_command_script()
+
+    assert 'return str(fdb_plan.get("action") or "") != "initialize-new-cluster"' in script
+    assert 'return ordinal != 1 and str(fdb_plan.get("action") or "") != "initialize-new-cluster"' not in script
+
+
 def test_add_node_uses_coolify_inventory_count_for_next_ordinal(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
     args = control.parse_args(
@@ -1916,6 +2035,10 @@ networks:
     assert payload["private_state_updates"]["seed_material_cleaned"] is True
     removed_kinds = {item["kind"] for item in payload["private_state_updates"]["removed"]}
     assert {"wallet_private_key", "foundationdb_seed", "network_seed"} <= removed_kinds
+    assert payload["runtime_cleanup"]["enabled"] is True
+    assert payload["runtime_cleanup"]["dry_run"] is True
+    assert payload["runtime_cleanup"]["moves_runtime_state_dirs"] is True
+    assert payload["runtime_cleanup"]["state_root_glob"].endswith("/testnet/coolify-a/testneta-super*")
     # Dry-run must not write secrets/state.
     assert "cluster_description: main-computer-testnet-allfather" in path.read_text(encoding="utf-8")
 
@@ -1944,6 +2067,59 @@ def test_remove_node_dry_run_removes_highest_existing_super_node_without_renumbe
     assert payload["remaining_host_super_nodes"] == 2
     assert payload["network_pristine_after_remove"] is False
     assert payload["private_state_updates"]["seed_material_cleaned"] is False
+    assert payload["runtime_cleanup"]["enabled"] is False
+
+
+def test_remove_node_keep_runtime_state_suppresses_last_node_runtime_cleanup(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    args = control.parse_args(
+        [
+            "remove-node",
+            "testnet",
+            "--host",
+            "coolify-a",
+            "--private-state",
+            str(path),
+            "--dry-run",
+            "--existing-count",
+            "1",
+            "--keep-runtime-state",
+        ]
+    )
+    plan = control.build_plan_from_args(args)
+
+    payload = control.remove_node(plan, args)
+
+    assert payload["network_pristine_after_remove"] is True
+    assert payload["runtime_cleanup"]["enabled"] is False
+    assert "--keep-runtime-state" in payload["runtime_cleanup"]["reason"]
+
+
+def test_super_runtime_cleanup_compose_moves_only_matching_super_state(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+
+    compose = control.render_super_runtime_cleanup_compose("testnet", head)
+
+    assert "allfather-super-runtime-cleanup-testnet-coolify-a" in compose
+    assert "/data/main-computer/allfather/supernodes:/host-supernodes" in compose
+    assert "SUPER_PREFIX='testneta'" in compose
+    assert '"$$NETWORK_ROOT"/"$$SUPER_PREFIX"-super[0-9]*' in compose
+    assert "docker image rm" not in compose
+    assert "main-computer/allfather-super-base" not in compose
+
+
+def test_super_runtime_cleanup_probe_target_is_private_to_host(tmp_path: Path) -> None:
+    path = write_private_state_with_wallets(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+
+    target = control.probe_target_for_super_runtime_cleanup("testnet", head)
+
+    assert target["kind"] == "super-runtime-cleanup"
+    assert target["service_name"] == "allfather-super-runtime-cleanup-testnet-coolify-a"
+    assert target["guard_url"] == "http://10.116.0.3:41800"
 
 
 def test_remove_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
@@ -2108,6 +2284,7 @@ def ready_internal_status_for_add_node(
     *,
     contracts_status: str = "deployed",
     validator_blocks: bool = True,
+    validator_admitted: bool = True,
 ) -> dict[str, object]:
     return {
         "observed": True,
@@ -2129,6 +2306,14 @@ def ready_internal_status_for_add_node(
                 "rpc_http_ok": True,
                 "block_number": 7 if validator_blocks else 0,
                 "block_production_ok": validator_blocks,
+            },
+            "validator_admission": {
+                "desired": True,
+                "required": True,
+                "running": validator_admitted,
+                "status": "admitted" if validator_admitted else "vote-requested",
+                "admitted": validator_admitted,
+                "validator_address": "0x31d79403d064ec1029b2472631a044fe7e3bf5a9",
             },
             "hub": {
                 "running": True,
@@ -2213,6 +2398,7 @@ def test_add_node_ready_check_reports_blocks_but_rpc_unreachable() -> None:
 
 def test_add_node_ready_check_accepts_second_node_without_contract_redeploy() -> None:
     manifest = {
+        "ordinal": 2,
         "bootstrap": {"contracts_requested": False},
     }
     status = ready_internal_status_for_add_node(contracts_status="not-required-existing-network")
@@ -2222,6 +2408,24 @@ def test_add_node_ready_check_accepts_second_node_without_contract_redeploy() ->
     assert ready["ready"] is True
     assert ready["contracts_requested"] is False
     assert ready["components"]["hub_admin"] == "bootstrapped"
+    assert ready["components"]["validator_admission"] == "admitted"
+
+
+def test_add_node_ready_check_requires_second_node_validator_admission() -> None:
+    manifest = {
+        "ordinal": 2,
+        "bootstrap": {"contracts_requested": False},
+    }
+    status = ready_internal_status_for_add_node(
+        contracts_status="not-required-existing-network",
+        validator_admitted=False,
+    )
+
+    not_ready = control.add_node_super_ready_check(status, manifest)
+
+    assert not_ready["ready"] is False
+    assert "validator admission not complete" in not_ready["reason"]
+    assert "0x31d79403d064ec1029b2472631a044fe7e3bf5a9" in not_ready["reason"]
 
 
 def test_add_node_parse_defaults_wait_for_remote_readiness(tmp_path: Path) -> None:

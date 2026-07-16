@@ -70,6 +70,9 @@ DEFAULT_SUPER_BASE_BUILDER_IMAGE = "docker:27-cli"
 DEFAULT_SUPER_BASE_BUILDER_PREFIX = "allfather-super-base-builder"
 DEFAULT_SUPER_BASE_BUILDER_CONTAINER_PORT = 41616
 DEFAULT_SUPER_BASE_BUILDER_HOST_BASE = 41700
+DEFAULT_SUPER_RUNTIME_CLEANUP_PREFIX = "allfather-super-runtime-cleanup"
+DEFAULT_SUPER_RUNTIME_CLEANUP_CONTAINER_PORT = 41617
+DEFAULT_SUPER_RUNTIME_CLEANUP_HOST_BASE = 41800
 DEFAULT_SUPER_ENVIRONMENT = "allfather-supernodes"
 DEFAULT_SUPER_STATE_ROOT_PREFIX = "/data/main-computer/allfather/supernodes"
 DEFAULT_SUPER_GUARD_CONTAINER_PORT = 41414
@@ -397,6 +400,26 @@ def super_base_builder_url(head: HeadNode) -> str:
     if not host:
         return ""
     return f"http://{host}:{super_base_builder_host_port(head)}"
+
+
+def super_runtime_cleanup_service_name(network_key: str, head: HeadNode) -> str:
+    return (
+        f"{DEFAULT_SUPER_RUNTIME_CLEANUP_PREFIX}-"
+        f"{clean_node_network_key(network_key)}-"
+        f"{docker_container_name_token(head.coolify_server or head.slot or 'host')}"
+    )
+
+
+def super_runtime_cleanup_host_port(network_key: str, head: HeadNode) -> int:
+    network_offset = 100 if clean_node_network_key(network_key) == "mainnet" else 0
+    return DEFAULT_SUPER_RUNTIME_CLEANUP_HOST_BASE + network_offset + host_slot_index(head.slot)
+
+
+def super_runtime_cleanup_url(network_key: str, head: HeadNode) -> str:
+    host = str(head.guard_publish_host or "").strip()
+    if not host:
+        return ""
+    return f"http://{host}:{super_runtime_cleanup_host_port(network_key, head)}"
 
 
 def shell_single_quote(value: Any) -> str:
@@ -3109,6 +3132,126 @@ def existing_super_inventory_from_services(
     ]
 
 
+
+def head_for_coolify_server(plan: HeadPlan, coolify_server: str) -> HeadNode:
+    wanted = str(coolify_server or "").strip().lower()
+    for item in plan.heads:
+        if str(item.coolify_server).lower() == wanted:
+            return item
+    raise AllfatherControlError(f"Unknown all-father Coolify host {coolify_server!r} in discovered super-node inventory.")
+
+
+def network_super_node_sort_key(node: Mapping[str, Any]) -> tuple[str, str, int, str]:
+    try:
+        ordinal = int(node.get("ordinal") or 0)
+    except Exception:
+        ordinal = 0
+    return (
+        str(node.get("host_slot") or "").lower(),
+        str(node.get("coolify_server") or "").lower(),
+        ordinal,
+        str(node.get("service_name") or ""),
+    )
+
+
+def network_super_inventory_from_services_by_head(
+    plan: HeadPlan,
+    network_key: str,
+    services_by_server: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Return all visible super-nodes for a network across every Coolify host.
+
+    Host-local ordinals intentionally remain host-local: coolify-b can have
+    ``testnetb-super1`` while the network already contains ``testneta-super1``.
+    This inventory is the network-global join context used for shared QBFT
+    genesis, FDB coordinators, bootnodes, and validator-admission voting.
+    """
+
+    nodes: list[dict[str, Any]] = []
+    for item in sorted(plan.heads, key=lambda head: (str(head.slot).lower(), str(head.coolify_server).lower())):
+        services = services_by_server.get(item.coolify_server, [])
+        nodes.extend(existing_super_inventory_from_services(services, network_key, item))
+    return sorted(nodes, key=network_super_node_sort_key)
+
+
+def discover_network_super_inventory_for_add_node(
+    plan: HeadPlan,
+    network_key: str,
+    selected_head: HeadNode,
+    selected_client: Any,
+    selected_services: Sequence[Mapping[str, Any]],
+    args: argparse.Namespace,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Discover network-global super-node inventory while preserving local slots.
+
+    The selected host controls the next service name/ordinal. Other hosts only
+    provide join context. If a non-primary host cannot inspect earlier hosts and
+    has no local super-node, fail closed instead of accidentally creating an
+    isolated first node on the new machine.
+    """
+
+    services_by_server: dict[str, list[Mapping[str, Any]]] = {
+        selected_head.coolify_server: list(selected_services),
+    }
+    errors: list[dict[str, Any]] = []
+    checked: list[str] = [selected_head.coolify_server]
+    for peer_head in plan.heads:
+        if peer_head.coolify_server == selected_head.coolify_server:
+            continue
+        try:
+            peer_client, _peer_token_source = fdb_tool().client_for_server(peer_head.coolify_server, args)
+            version = peer_client.request("GET", "/api/v1/version")
+            tried.append(
+                {
+                    "operation": "coolify-version-network-inventory",
+                    "host": peer_head.coolify_server,
+                    "response": hub_service_tool().response_to_dict(version),
+                }
+            )
+            if not version.ok:
+                raise AllfatherControlError(
+                    f"Coolify API version check failed for {peer_head.coolify_server!r} with HTTP {version.status}: {version.body}"
+                )
+            services_by_server[peer_head.coolify_server] = list(service_items_for_client(peer_client, tried))
+            checked.append(peer_head.coolify_server)
+        except Exception as exc:
+            errors.append(
+                {
+                    "host": peer_head.coolify_server,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
+    nodes = network_super_inventory_from_services_by_head(plan, network_key, services_by_server)
+    local_nodes = existing_super_inventory_from_services(selected_services, network_key, selected_head)
+    earlier_hosts = [
+        item.coolify_server
+        for item in sorted(plan.heads, key=lambda head: (str(head.slot).lower(), str(head.coolify_server).lower()))
+        if (str(item.slot).lower(), str(item.coolify_server).lower())
+        < (str(selected_head.slot).lower(), str(selected_head.coolify_server).lower())
+    ]
+    failed_earlier_hosts = [item for item in errors if str(item.get("host") or "") in set(earlier_hosts)]
+    if not local_nodes and not nodes and failed_earlier_hosts:
+        failed = ", ".join(f"{item['host']} ({item['error']})" for item in failed_earlier_hosts)
+        raise AllfatherControlError(
+            f"Cannot safely add {clean_node_network_key(network_key)} node on {selected_head.coolify_server}: "
+            f"no local super-node exists and earlier Coolify host inventory could not be checked: {failed}. "
+            "Refusing to create a possible isolated first node."
+        )
+
+    return {
+        "nodes": nodes,
+        "local_nodes": local_nodes,
+        "services_by_server": services_by_server,
+        "checked_hosts": checked,
+        "errors": errors,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
 def service_uuid_from_item(item: Mapping[str, Any]) -> str:
     value = str(item.get("uuid") or item.get("id") or "").strip()
     return value
@@ -3662,6 +3805,34 @@ component_state = {}
 
 child_log_echo_last = {}
 
+def json_safe(value):
+    # Return a JSON-serializable copy of Web3/Besu/HexBytes-style values.
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return "0x" + bytes(value).hex()
+    # HexBytes and similar Web3 byte wrappers expose .hex().
+    hex_method = getattr(value, "hex", None)
+    if callable(hex_method):
+        try:
+            hx = hex_method()
+            if isinstance(hx, str):
+                return hx if hx.startswith("0x") else "0x" + hx
+        except Exception:
+            pass
+    items_method = getattr(value, "items", None)
+    if callable(items_method):
+        try:
+            return {str(k): json_safe(v) for k, v in items_method()}
+        except Exception:
+            pass
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(item) for item in value]
+    try:
+        return str(value)
+    except Exception:
+        return f"<non-json:{type(value).__name__}>"
+
 def super_log(message: str) -> None:
     try:
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -3732,7 +3903,7 @@ def now_s() -> float:
 def state(component_key: str, **updates) -> None:
     with lock:
         current = component_state.setdefault(component_key, {})
-        current.update(updates)
+        current.update(json_safe(updates))
         current["updated_uptime_s"] = now_s()
 
 def command_exists(name: str) -> bool:
@@ -3794,6 +3965,208 @@ def rpc_block_number(url: str, timeout: float = 1.0) -> tuple[bool, int | None, 
         return False, None, f"invalid eth_blockNumber result: {type(exc).__name__}: {exc}"
     return False, None, f"invalid eth_blockNumber result: {result!r}"
 
+def rpc_peer_count(url: str, timeout: float = 1.0) -> tuple[bool, int | None, str]:
+    ok, result, error = rpc_json_call(url, "net_peerCount", timeout=timeout)
+    if not ok:
+        return False, None, error
+    try:
+        if isinstance(result, str):
+            return True, int(result, 16), ""
+        if isinstance(result, int):
+            return True, int(result), ""
+    except Exception as exc:
+        return False, None, f"invalid net_peerCount result: {type(exc).__name__}: {exc}"
+    return False, None, f"invalid net_peerCount result: {result!r}"
+
+def normalize_eth_address(value: str) -> str:
+    clean = str(value or "").strip()
+    if re.fullmatch(r"0x[0-9a-fA-F]{40}", clean):
+        return "0x" + clean[2:].lower()
+    return ""
+
+def local_validator_address_from_key(key_file: Path) -> tuple[str, str]:
+    try:
+        raw = key_file.read_text(encoding="utf-8").strip()
+        key = raw if raw.startswith("0x") else "0x" + raw
+        if not re.fullmatch(r"0x[0-9a-fA-F]{64}", key):
+            return "", "node key was not a 32-byte hex private key"
+        from eth_account import Account
+        return normalize_eth_address(Account.from_key(key).address), ""
+    except Exception as exc:
+        return "", f"{type(exc).__name__}: {exc}"
+
+def rpc_qbft_validators(url: str, timeout: float = 1.0) -> tuple[bool, list[str], str]:
+    ok, result, error = rpc_json_call(url, "qbft_getValidatorsByBlockNumber", ["latest"], timeout=timeout)
+    if not ok:
+        return False, [], error
+    if not isinstance(result, list):
+        return False, [], f"invalid qbft_getValidatorsByBlockNumber result: {result!r}"
+    validators = [normalize_eth_address(str(item)) for item in result]
+    return True, [item for item in validators if item], ""
+
+def validator_in_latest_set(url: str, address: str, timeout: float = 1.0) -> tuple[bool, bool, list[str], str]:
+    normalized = normalize_eth_address(address)
+    if not normalized:
+        return False, False, [], "invalid validator address"
+    ok, validators, error = rpc_qbft_validators(url, timeout=timeout)
+    if not ok:
+        return False, False, validators, error
+    return True, normalized in {item.lower() for item in validators}, validators, ""
+
+def post_json(url: str, payload: dict, timeout: float = 4.0) -> tuple[bool, dict, str]:
+    try:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+        decoded = json.loads(body.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            return False, {}, "response was not a JSON object"
+        return bool(decoded.get("ok")), decoded, str(decoded.get("error") or "")
+    except Exception as exc:
+        return False, {}, f"{type(exc).__name__}: {exc}"
+
+def request_validator_votes_from_existing_guards(address: str) -> tuple[int, list[dict], list[str]]:
+    attempts = 0
+    responses: list[dict] = []
+    errors: list[str] = []
+    normalized = normalize_eth_address(address)
+    if not normalized:
+        return 0, [], ["invalid validator address"]
+    for node in fdb_plan.get("existing_nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        guard_url = str(node.get("guard_url") or "").rstrip("/")
+        if not guard_url:
+            continue
+        attempts += 1
+        ok, payload, error = post_json(
+            f"{guard_url}/qbft/propose-validator",
+            {"address": normalized, "source": cell_id, "network_key": network_key},
+            timeout=4.0,
+        )
+        compact = {
+            "guard_url": guard_url,
+            "service_name": str(node.get("service_name") or ""),
+            "ok": bool(ok),
+            "status": str(payload.get("status") or ""),
+            "admitted": bool(payload.get("admitted")),
+            "vote_result": payload.get("vote_result"),
+        }
+        responses.append(compact)
+        if not ok:
+            errors.append(f"{guard_url}: {error or payload.get('error') or 'vote request failed'}")
+    return attempts, responses[:5], errors[:5]
+
+def propose_local_qbft_validator_vote(address: str) -> dict:
+    normalized = normalize_eth_address(address)
+    rpc_port = int(ports.get("rpc_container") or 8545)
+    rpc_url = f"http://127.0.0.1:{rpc_port}"
+    if not normalized:
+        return {"ok": False, "status": "invalid-address", "error": "invalid validator address", "address": str(address or "")}
+    if not child_running("validator_rpc"):
+        return {"ok": False, "status": "validator-rpc-not-running", "address": normalized}
+    ok, admitted, validators, error = validator_in_latest_set(rpc_url, normalized, timeout=2.0)
+    if ok and admitted:
+        return {"ok": True, "status": "already-admitted", "address": normalized, "admitted": True, "validators": validators}
+    vote_ok, vote_result, vote_error = rpc_json_call(rpc_url, "qbft_proposeValidatorVote", [normalized, True], timeout=4.0)
+    ok_after, admitted_after, validators_after, error_after = validator_in_latest_set(rpc_url, normalized, timeout=2.0)
+    accepted = bool(vote_ok and vote_result is True)
+    return {
+        "ok": bool(accepted or admitted_after),
+        "status": "vote-submitted" if accepted and not admitted_after else ("admitted" if admitted_after else "vote-failed"),
+        "address": normalized,
+        "admitted": bool(admitted_after),
+        "validators": validators_after or validators,
+        "vote_result": vote_result,
+        "vote_error": vote_error,
+        "validators_error": error_after or error,
+    }
+
+def ensure_joiner_validator_admission(rpc_url: str, key_file: Path, json_rpc_ok: bool, block_number: int | None, peer_count: int | None) -> bool:
+    if not existing_network_joiner():
+        state(
+            "validator_admission",
+            desired=False,
+            running=False,
+            status="not-required-first-node",
+            admitted=True,
+            required=False,
+        )
+        return True
+    address, address_error = local_validator_address_from_key(key_file)
+    base = {
+        "desired": True,
+        "required": True,
+        "running": False,
+        "status": "pending",
+        "admitted": False,
+        "validator_address": address,
+        "validator_address_error": address_error,
+    }
+
+    def validator_admission_state(**updates) -> None:
+        payload = dict(base)
+        payload.update(updates)
+        state("validator_admission", **payload)
+
+    if not address:
+        validator_admission_state(status="missing-validator-address")
+        return False
+    if not json_rpc_ok:
+        validator_admission_state(status="waiting-validator-json-rpc")
+        return False
+    if block_number is None or int(block_number) <= 0:
+        validator_admission_state(status="waiting-qbft-sync", block_number=block_number)
+        return False
+    if peer_count is None or int(peer_count) <= 0:
+        validator_admission_state(status="waiting-qbft-peer", block_number=block_number, peer_count=peer_count)
+        return False
+    ok, admitted, validators, error = validator_in_latest_set(rpc_url, address, timeout=1.5)
+    if ok and admitted:
+        validator_admission_state(
+            running=True,
+            status="admitted",
+            admitted=True,
+            validators=validators,
+            block_number=block_number,
+            peer_count=peer_count,
+        )
+        return True
+    vote_attempts, vote_responses, vote_errors = request_validator_votes_from_existing_guards(address)
+    ok_after, admitted_after, validators_after, error_after = validator_in_latest_set(rpc_url, address, timeout=1.5)
+    status = "admitted" if admitted_after else ("vote-requested" if vote_attempts else "waiting-existing-validator-guard")
+    validator_admission_state(
+        running=bool(admitted_after),
+        status=status,
+        admitted=bool(admitted_after),
+        validators=validators_after or validators,
+        validators_error=error_after or error,
+        block_number=block_number,
+        peer_count=peer_count,
+        vote_attempts=vote_attempts,
+        vote_responses=vote_responses,
+        vote_errors=vote_errors,
+    )
+    return bool(admitted_after)
+
+def add_qbft_bootnode_peers(url: str, bootnodes: list[str]) -> tuple[int, list[str]]:
+    attempts = 0
+    errors: list[str] = []
+    for enode in bootnodes:
+        clean = str(enode or "").strip()
+        if not clean:
+            continue
+        attempts += 1
+        ok, result, error = rpc_json_call(url, "admin_addPeer", [clean], timeout=1.5)
+        if not ok or result is False:
+            errors.append(f"{clean}: {error or result!r}")
+    return attempts, errors[:5]
+
 def latest_besu_log_block_number(log_text: str) -> int | None:
     latest: int | None = None
     for match in re.finditer(r"Produced empty block #(\d+)", str(log_text or "")):
@@ -3845,6 +4218,23 @@ def child_exit(name: str):
         return None
     code = proc.poll()
     return None if code is None else int(code)
+
+def stop_child(name: str, *, timeout_s: float = 8.0) -> None:
+    proc = children.get(name)
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+    except Exception:
+        return
+    deadline = time.time() + float(timeout_s)
+    while proc.poll() is None and time.time() < deadline:
+        time.sleep(0.1)
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 def child_uptime_s(name: str) -> float | None:
     started = children_started_at.get(name)
@@ -4153,13 +4543,70 @@ def fetch_shared_qbft_config() -> tuple[bool, str, dict, list[str]]:
             continue
     return False, "blocked-awaiting-shared-qbft-genesis", {}, []
 
+def existing_network_joiner() -> bool:
+    return str(fdb_plan.get("action") or "") != "initialize-new-cluster"
+
+def write_bootnodes_config(config_dir: Path, bootnodes: list[str]) -> None:
+    (config_dir / "bootnodes.json").write_text(json.dumps({"bootnodes": bootnodes}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+def load_json_object(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+def reset_qbft_joiner_data(reason: str) -> None:
+    data_dir = state_root / "qbft" / "data"
+    stop_child("validator_rpc")
+    if data_dir.exists():
+        stamp = str(int(time.time()))
+        backup = data_dir.with_name(f"{data_dir.name}.reset-{stamp}")
+        try:
+            if any(data_dir.iterdir()):
+                data_dir.rename(backup)
+                super_log(f"qbft_joiner_data_reset reason={reason} backup={backup}")
+            else:
+                try:
+                    data_dir.rmdir()
+                except Exception:
+                    pass
+        except Exception as exc:
+            super_log(f"qbft_joiner_data_reset_failed reason={reason} error={type(exc).__name__}: {exc}")
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+def sync_joiner_shared_qbft_config(config_dir: Path, genesis: Path, key_file: Path) -> tuple[bool, str]:
+    if not existing_network_joiner():
+        return True, "not-joiner"
+    ok, reason, shared_genesis, bootnodes = fetch_shared_qbft_config()
+    if not ok:
+        return False, reason
+    current_genesis = load_json_object(genesis) if genesis.exists() else {}
+    if current_genesis != shared_genesis:
+        if genesis.exists():
+            stamp = str(int(time.time()))
+            try:
+                genesis.rename(genesis.with_name(f"{genesis.name}.mismatch-{stamp}"))
+            except Exception:
+                pass
+        genesis.write_text(json.dumps(shared_genesis, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        reset_qbft_joiner_data(reason)
+        if not key_file.exists():
+            write_node_key(key_file, label="validator-rpc-joiner")
+        write_bootnodes_config(config_dir, bootnodes)
+        return True, f"{reason}; reset-mismatched-genesis"
+    if not key_file.exists():
+        write_node_key(key_file, label="validator-rpc-joiner")
+    write_bootnodes_config(config_dir, bootnodes)
+    return True, reason
+
 def refresh_existing_joiner_bootnodes(config_dir: Path) -> None:
-    if ordinal == 1 or str(fdb_plan.get("action") or "") == "initialize-new-cluster":
+    if not existing_network_joiner():
         return
     ok, _reason, _shared_genesis, bootnodes = fetch_shared_qbft_config()
     if not ok or not bootnodes:
         return
-    (config_dir / "bootnodes.json").write_text(json.dumps({"bootnodes": bootnodes}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_bootnodes_config(config_dir, bootnodes)
 
 def write_node_key(key_file: Path, *, label: str = "validator") -> None:
     if key_file.exists():
@@ -4384,7 +4831,7 @@ def read_contract_progress() -> dict:
 
 def write_contract_progress(payload: dict) -> None:
     path = deployment_state_path("contracts-progress")
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(json_safe(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 def contract_gas_limit() -> int:
     try:
@@ -4803,13 +5250,27 @@ def mark_contract_transaction_stale(existing: dict, progress_key: str, tx_hash: 
     else:
         super_log(f"contracts: stale pending transaction contract={progress_key} tx={tx_hash} pending_age_s={pending_age_s}; resubmitting")
 
+def normalize_transaction_hash(w3, tx_hash: object) -> str:
+    # Web3 returns HexBytes for RPC hashes, but our progress/resume path
+    # stores hashes as JSON strings.  Do not feed strings back into w3.to_hex();
+    # eth-utils treats that as an invalid primitive.
+    if isinstance(tx_hash, str):
+        return tx_hash if tx_hash.startswith("0x") else "0x" + tx_hash
+    try:
+        return w3.to_hex(tx_hash)
+    except Exception:
+        safe = json_safe(tx_hash)
+        if isinstance(safe, str):
+            return safe if safe.startswith("0x") else "0x" + safe
+        return str(safe)
+
 def signed_transaction_raw_and_hash(w3, account, tx: dict) -> tuple[bytes, str]:
     signed = account.sign_transaction(tx)
     raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
     tx_hash = getattr(signed, "hash", None)
     if not tx_hash:
         tx_hash = w3.keccak(raw)
-    return raw, w3.to_hex(tx_hash)
+    return raw, normalize_transaction_hash(w3, tx_hash)
 
 def receipt_contract_address(receipt) -> str:
     if isinstance(receipt, dict):
@@ -4884,7 +5345,7 @@ def wait_for_contract_deployment_receipt(w3, tx_hash: str, contract_name: str, t
     address = receipt_contract_address(receipt)
     if not address:
         raise RuntimeError(f"{contract_name} deployment did not return a contract address")
-    return {"address": address, "transaction_hash": w3.to_hex(tx_hash), "target": contract_name}
+    return {"address": address, "transaction_hash": normalize_transaction_hash(w3, tx_hash), "target": contract_name}
 
 
 def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name: str, args: list, progress: dict, progress_key: str) -> dict:
@@ -5037,7 +5498,7 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
                     )
                     raise PendingContractDeployment(f"{progress_key} transaction is still pending: {tx_hash}") from exc
                 except ContractDeploymentFailed as exc:
-                    failed_receipt = getattr(exc, "receipt", None)
+                    failed_receipt = json_safe(getattr(exc, "receipt", None))
                     stale_transactions = contract_progress_stale_transactions(existing)
                     stale_transactions.append({
                         "transaction_hash": tx_hash,
@@ -5232,7 +5693,7 @@ def deploy_contract(w3, account, compiled: dict, source_name: str, contract_name
         )
         raise PendingContractDeployment(f"{progress_key} transaction is still pending: {tx_hash}") from exc
     except ContractDeploymentFailed as exc:
-        failed_receipt = getattr(exc, "receipt", None)
+        failed_receipt = json_safe(getattr(exc, "receipt", None))
         contracts_progress[progress_key]["status"] = "deployment-failed"
         contracts_progress[progress_key]["last_error"] = f"{type(exc).__name__}: {exc}"
         contracts_progress[progress_key]["last_failed_receipt"] = failed_receipt
@@ -5386,15 +5847,19 @@ def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
     genesis = config_dir / "genesis.json"
     key_file = config_dir / "key"
     if genesis.exists() and key_file.exists():
+        if existing_network_joiner():
+            sync_ok, sync_reason = sync_joiner_shared_qbft_config(config_dir, genesis, key_file)
+            if sync_ok:
+                return True, sync_reason, genesis, key_file
         refresh_existing_joiner_bootnodes(config_dir)
         return True, "existing-qbft-config", genesis, key_file
-    if ordinal != 1 and str(fdb_plan.get("action") or "") != "initialize-new-cluster":
+    if existing_network_joiner():
         ok, reason, shared_genesis, bootnodes = fetch_shared_qbft_config()
         if not ok:
             return False, reason, None, None
         genesis.write_text(json.dumps(shared_genesis, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         write_node_key(key_file, label="validator-rpc-joiner")
-        (config_dir / "bootnodes.json").write_text(json.dumps({"bootnodes": bootnodes}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        write_bootnodes_config(config_dir, bootnodes)
         return True, reason, genesis, key_file
     if not command_exists("besu"):
         return False, "missing-besu", None, None
@@ -5497,16 +5962,29 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
     rpc_url = f"http://127.0.0.1:{rpc_port}"
     port_listening = port_open("127.0.0.1", rpc_port)
     json_rpc_ok, block_number, block_error = rpc_block_number(rpc_url, timeout=1.0)
+    peer_ok, peer_count, peer_error = rpc_peer_count(rpc_url, timeout=1.0) if json_rpc_ok else (False, None, "")
+    active_peer_attempts = 0
+    active_peer_errors: list[str] = []
+    if json_rpc_ok and bootnodes and (peer_count is None or int(peer_count) <= 0):
+        active_peer_attempts, active_peer_errors = add_qbft_bootnode_peers(rpc_url, bootnodes)
+        peer_ok, peer_count, peer_error = rpc_peer_count(rpc_url, timeout=1.0)
     log_tail = "" if json_rpc_ok else tail_log("validator_rpc")
     log_block_number = latest_besu_log_block_number(log_tail)
     log_block_production_ok = bool(log_block_number is not None and int(log_block_number) > 0)
     shutdown_observed = "Shutting down BFT event processor" in log_tail or "BesuCommand-Shutdown-Hook" in log_tail
     observed_block_number = block_number if block_number is not None else log_block_number
     block_production_ok = bool(json_rpc_ok and block_number is not None and int(block_number) > 0)
+    is_joiner = existing_network_joiner()
+    validator_admitted = ensure_joiner_validator_admission(rpc_url, key_file, json_rpc_ok, block_number, peer_count)
+    validator_address, validator_address_error = local_validator_address_from_key(key_file)
     if running and block_production_ok:
         status = "running"
     elif running and log_block_production_ok and not json_rpc_ok:
         status = "waiting-validator-json-rpc-after-block-production"
+    elif running and json_rpc_ok and is_joiner and bootnodes and (peer_count is None or int(peer_count) <= 0):
+        status = "waiting-qbft-peer"
+    elif running and json_rpc_ok and is_joiner:
+        status = "waiting-qbft-sync"
     elif running and json_rpc_ok:
         status = "waiting-qbft-block-production"
     elif running and port_listening:
@@ -5529,6 +6007,9 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         qbft_config=reason,
         genesis_file_present=genesis.exists(),
         node_key_present=key_file.exists(),
+        validator_address=validator_address,
+        validator_address_error=validator_address_error,
+        validator_admitted=bool(validator_admitted),
         rpc_http_ok=json_rpc_ok,
         json_rpc_ok=json_rpc_ok,
         rpc_port_listening=port_listening,
@@ -5537,8 +6018,13 @@ def ensure_validator_rpc(fdb_ready: bool) -> bool:
         log_block_number=log_block_number,
         block_production_ok=block_production_ok,
         log_block_production_ok=log_block_production_ok,
-        block_production_required=True,
+        block_production_required=not existing_network_joiner(),
         block_production_error=block_error,
+        peer_count=peer_count,
+        peer_count_ok=bool(peer_ok and peer_count is not None and int(peer_count) > 0),
+        peer_count_error=peer_error,
+        active_peer_attempts=active_peer_attempts,
+        active_peer_errors=active_peer_errors,
         shutdown_observed=shutdown_observed,
         bootnode_count=len(bootnodes),
         last_exit_code=child_exit("validator_rpc"),
@@ -5633,6 +6119,13 @@ def function_statuses() -> dict:
                 "p2p_port": ports.get("p2p_container"),
                 "besu_binary_present": bool(shutil.which("besu")),
             },
+            "validator_admission": {
+                "desired": bool(existing_network_joiner()),
+                "running": False,
+                "required": bool(existing_network_joiner()),
+                "status": "pending" if existing_network_joiner() else "not-required-first-node",
+                "admitted": not bool(existing_network_joiner()),
+            },
             "hub": {
                 "name": components.get("hub"),
                 "desired": True,
@@ -5684,7 +6177,7 @@ def payload(status: str = "running"):
 
 class Handler(BaseHTTPRequestHandler):
     def _send(self, status_code, body):
-        raw = json.dumps(body, sort_keys=True).encode("utf-8")
+        raw = json.dumps(json_safe(body), sort_keys=True).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
@@ -5711,6 +6204,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/wake":
             converge_once()
             self._send(200, {"ok": True, "wake": "all", "functions": function_statuses()})
+        elif path == "/qbft/propose-validator":
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                payload_in = json.loads(raw.decode("utf-8") or "{}")
+                address = str(payload_in.get("address") or "")
+            except Exception as exc:
+                self._send(400, {"ok": False, "error": f"invalid request body: {type(exc).__name__}: {exc}", "path": path})
+                return
+            self._send(200, propose_local_qbft_validator_vote(address))
         else:
             self._send(404, {"ok": False, "error": "not-found", "path": path})
 
@@ -6274,11 +6777,7 @@ start_status_server || true
 {write_dockerfile}
 {write_contract_sources}
 {write_contract_builder}
-if [ "$FORCE_REBUILD" != "1" ] && docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
-    echo "Base image already exists: $TARGET_IMAGE" > /work/build.log
-    log "phase=ready target=$TARGET_IMAGE already_exists=true"
-    write_status ready true ""
-else
+build_target_image() {{
     log "phase=building target=$TARGET_IMAGE source=$SOURCE_IMAGE"
     write_status building false ""
     set +e
@@ -6288,15 +6787,36 @@ else
     if [ "$rc" -eq 0 ]; then
         log "phase=ready target=$TARGET_IMAGE built=true"
         write_status ready true ""
-    else
-        tail -120 /work/build.log > /work/build-tail.log 2>/dev/null || true
-        error="$(tr '\\n"' '  ' < /work/build-tail.log | cut -c1-1200)"
-        log "phase=failed target=$TARGET_IMAGE rc=$rc"
-        write_status failed false "$error"
+        return 0
     fi
-fi
+    tail -120 /work/build.log > /work/build-tail.log 2>/dev/null || true
+    error="$(tr '\\n"' '  ' < /work/build-tail.log | cut -c1-1200)"
+    log "phase=failed target=$TARGET_IMAGE rc=$rc"
+    write_status failed false "$error"
+    return "$rc"
+}}
+ensure_target_image() {{
+    if [ "$FORCE_REBUILD" != "1" ] && docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
+        echo "Base image already exists: $TARGET_IMAGE" > /work/build.log
+        log "phase=ready target=$TARGET_IMAGE already_exists=true"
+        write_status ready true ""
+        return 0
+    fi
+    build_target_image
+}}
+ensure_target_image || true
+FORCE_REBUILD=0
 touch /work/build.log
-tail -f /work/build.log /dev/null
+while true; do
+    if docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
+        write_status ready true ""
+    else
+        log "phase=missing target=$TARGET_IMAGE"
+        write_status missing false "target image is not present on the host Docker daemon"
+        ensure_target_image || true
+    fi
+    sleep 30
+done
 """.strip()
 
 
@@ -6363,6 +6883,451 @@ def render_super_base_builder_compose(
         ]
     )
     return "\n".join(lines)
+
+
+def super_runtime_cleanup_state_root_glob(network_key: str, head: HeadNode) -> str:
+    return (
+        f"{DEFAULT_SUPER_STATE_ROOT_PREFIX.rstrip('/')}/"
+        f"{clean_node_network_key(network_key)}/"
+        f"{head.coolify_server}/"
+        f"{super_prefix(network_key, head)}-super*"
+    )
+
+
+def super_runtime_cleanup_command_script(network_key: str, head: HeadNode) -> str:
+    """Shell payload for last-node runtime cleanup on the Coolify Docker host."""
+
+    clean_network = clean_node_network_key(network_key)
+    clean_host = str(head.coolify_server or "").strip()
+    clean_prefix = super_prefix(clean_network, head)
+    service_name = super_runtime_cleanup_service_name(clean_network, head)
+    return f"""set -eu
+NETWORK_KEY={shell_single_quote(clean_network)}
+COOLIFY_SERVER={shell_single_quote(clean_host)}
+SUPER_PREFIX={shell_single_quote(clean_prefix)}
+SERVICE_NAME={shell_single_quote(service_name)}
+STATUS_PORT={shell_single_quote(str(DEFAULT_SUPER_RUNTIME_CLEANUP_CONTAINER_PORT))}
+HOST_SUPERNODES_ROOT=/host-supernodes
+NETWORK_ROOT="$HOST_SUPERNODES_ROOT/$NETWORK_KEY/$COOLIFY_SERVER"
+mkdir -p /work/www "$NETWORK_ROOT"
+log() {{
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+    printf '%s allfather-super-runtime-cleanup: %s\\n' "$ts" "$*"
+}}
+json_safe_string() {{
+    printf '%s' "$1" | tr '\\n\\r"' '   ' | cut -c1-1200
+}}
+write_status() {{
+    phase="$1"
+    ok="$2"
+    error="$(json_safe_string "${{3:-}}")"
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+    containers_removed="${{CONTAINERS_REMOVED:-0}}"
+    state_dirs_moved="${{STATE_DIRS_MOVED:-0}}"
+    archive_dir="${{ARCHIVE_DIR:-}}"
+    health_ok=true
+    if [ "$phase" = "failed" ]; then
+        health_ok=false
+    fi
+    cat > /work/www/status <<EOF
+{{"ok": $ok, "service": "$SERVICE_NAME", "status": "$phase", "phase": "$phase", "network_key": "$NETWORK_KEY", "coolify_server": "$COOLIFY_SERVER", "super_prefix": "$SUPER_PREFIX", "network_root": "$NETWORK_ROOT", "archive_dir": "$archive_dir", "containers_removed": $containers_removed, "state_dirs_moved": $state_dirs_moved, "error": "$error", "updated_at": "$ts", "public_guard_routes": false, "ssh_used": false, "direct_vpn_used": false}}
+EOF
+    cat > /work/www/healthz <<EOF
+{{"ok": $health_ok, "service": "$SERVICE_NAME", "status": "$phase", "phase": "$phase", "network_key": "$NETWORK_KEY", "error": "$error", "updated_at": "$ts", "public_guard_routes": false, "ssh_used": false, "direct_vpn_used": false}}
+EOF
+    cp /work/www/status /work/www/identity
+    cp /work/www/status /work/www/topology
+}}
+start_httpd_candidate() {{
+    label="$1"
+    shift
+    "$@" >>/work/httpd.log 2>&1 &
+    server_pid="$!"
+    sleep 1
+    if kill -0 "$server_pid" >/dev/null 2>&1; then
+        log "status_http=running method=$label pid=$server_pid port=$STATUS_PORT"
+        return 0
+    fi
+    log "status_http=failed method=$label port=$STATUS_PORT"
+    return 1
+}}
+start_status_server() {{
+    : > /work/httpd.log
+    if command -v httpd >/dev/null 2>&1; then
+        start_httpd_candidate httpd httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www && return 0
+    fi
+    if command -v busybox >/dev/null 2>&1; then
+        start_httpd_candidate busybox-httpd busybox httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www && return 0
+    fi
+    if command -v apk >/dev/null 2>&1; then
+        apk add --no-cache busybox-extras >>/work/httpd.log 2>&1 || true
+        if command -v httpd >/dev/null 2>&1; then
+            start_httpd_candidate apk-httpd httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www && return 0
+        fi
+        if command -v busybox >/dev/null 2>&1; then
+            start_httpd_candidate apk-busybox-httpd busybox httpd -f -p "0.0.0.0:$STATUS_PORT" -h /work/www && return 0
+        fi
+    fi
+    echo "no status HTTP server available in cleanup image" >>/work/httpd.log
+    log "status_http=unavailable port=$STATUS_PORT"
+    return 1
+}}
+cleanup_stale_containers() {{
+    : > /work/removed-containers.txt
+    if ! command -v docker >/dev/null 2>&1; then
+        log "docker command unavailable; skipping stale container cleanup"
+        CONTAINERS_REMOVED=0
+        export CONTAINERS_REMOVED
+        return 0
+    fi
+    docker ps -a --format '{{{{.ID}}}} {{{{.Names}}}}' 2>/dev/null | while read -r cid cname rest; do
+        case "$cname" in
+            "$SUPER_PREFIX"-super[0-9]*|*/"$SUPER_PREFIX"-super[0-9]*)
+                echo "$cname" >> /work/removed-containers.txt
+                docker rm -f "$cid" >>/work/docker-rm.log 2>&1 || true
+                ;;
+        esac
+    done
+    CONTAINERS_REMOVED="$(wc -l < /work/removed-containers.txt | tr -d ' ')"
+    export CONTAINERS_REMOVED
+}}
+cleanup_state_dirs() {{
+    : > /work/moved-state-dirs.txt
+    stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
+    ARCHIVE_DIR="$NETWORK_ROOT/.removed-$stamp"
+    export ARCHIVE_DIR
+    mkdir -p "$ARCHIVE_DIR"
+    for d in "$NETWORK_ROOT"/"$SUPER_PREFIX"-super[0-9]*; do
+        [ -e "$d" ] || continue
+        base="$(basename "$d")"
+        if [ "$base" = ".removed-$stamp" ]; then
+            continue
+        fi
+        target="$ARCHIVE_DIR/$base"
+        suffix=0
+        while [ -e "$target" ]; do
+            suffix=$((suffix + 1))
+            target="$ARCHIVE_DIR/$base.$suffix"
+        done
+        mv "$d" "$target"
+        echo "$d -> $target" >> /work/moved-state-dirs.txt
+    done
+    STATE_DIRS_MOVED="$(wc -l < /work/moved-state-dirs.txt | tr -d ' ')"
+    export STATE_DIRS_MOVED
+}}
+write_status starting false ""
+log "phase=starting network=$NETWORK_KEY host=$COOLIFY_SERVER prefix=$SUPER_PREFIX"
+start_status_server || true
+write_status cleaning false ""
+set +e
+cleanup_stale_containers
+containers_rc=$?
+cleanup_state_dirs
+state_rc=$?
+set -e
+if [ "$containers_rc" -ne 0 ] || [ "$state_rc" -ne 0 ]; then
+    log "phase=failed containers_rc=$containers_rc state_rc=$state_rc"
+    write_status failed false "runtime cleanup failed containers_rc=$containers_rc state_rc=$state_rc"
+else
+    log "phase=ready containers_removed=${{CONTAINERS_REMOVED:-0}} state_dirs_moved=${{STATE_DIRS_MOVED:-0}} archive=${{ARCHIVE_DIR:-}}"
+    write_status ready true ""
+fi
+while true; do
+    phase="$(cat /work/www/status 2>/dev/null | sed -n 's/.*\"phase\": \"\\([^\"]*\\)\".*/\\1/p' | head -1)"
+    if [ "$phase" = "failed" ]; then
+        write_status failed false "runtime cleanup failed"
+    else
+        write_status ready true ""
+    fi
+    sleep 30
+done
+""".strip()
+
+
+def render_super_runtime_cleanup_compose(
+    network_key: str,
+    head: HeadNode,
+    *,
+    cleanup_image: str = DEFAULT_SUPER_BASE_BUILDER_IMAGE,
+) -> str:
+    service_name = super_runtime_cleanup_service_name(network_key, head)
+    private_bind_host = str(head.guard_publish_host or "").strip()
+    host_port = super_runtime_cleanup_host_port(network_key, head)
+    container_port = DEFAULT_SUPER_RUNTIME_CLEANUP_CONTAINER_PORT
+    state_dir = f"{head.state_root.rstrip('/')}/super-runtime-cleanup-{clean_node_network_key(network_key)}"
+    host_supernodes_root = DEFAULT_SUPER_STATE_ROOT_PREFIX.rstrip("/")
+    command_script = super_runtime_cleanup_command_script(network_key, head)
+    healthcheck_command = "test -f /work/www/healthz && grep -q '\"ok\": true' /work/www/healthz"
+
+    def private_port_mapping() -> str:
+        if private_bind_host:
+            return f"{private_bind_host}:{host_port}:{container_port}/tcp"
+        return f"{host_port}:{container_port}/tcp"
+
+    lines = [
+        f"name: {service_name}",
+        "",
+        "services:",
+        f"  {service_name}:",
+        f"    image: {yaml_quote(cleanup_image)}",
+        "    restart: unless-stopped",
+        "    command:",
+        "      - /bin/sh",
+        "      - -lc",
+        "      - |",
+    ]
+    compose_command_script = command_script.replace("$", "$$")
+    lines.extend(f"        {line}" for line in compose_command_script.splitlines())
+    lines.extend(
+        [
+            "    environment:",
+            f"      MC_ALLFATHER_SUPER_RUNTIME_CLEANUP: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_NETWORK: {yaml_quote(clean_node_network_key(network_key))}",
+            f"      MC_ALLFATHER_COOLIFY_SERVER: {yaml_quote(str(head.coolify_server or ''))}",
+            f"      MC_ALLFATHER_SUPER_PREFIX: {yaml_quote(super_prefix(network_key, head))}",
+            "    expose:",
+            f"      - {yaml_quote(container_port)}",
+            "    ports:",
+            f"      - {yaml_quote(private_port_mapping())}",
+            "    volumes:",
+            f"      - {yaml_quote('/var/run/docker.sock:/var/run/docker.sock')}",
+            f"      - {yaml_quote(f'{state_dir}:/work')}",
+            f"      - {yaml_quote(f'{host_supernodes_root}:/host-supernodes')}",
+            "    healthcheck:",
+            "      test:",
+            "        - CMD-SHELL",
+            f"        - {yaml_quote(healthcheck_command)}",
+            "      interval: 10s",
+            "      timeout: 5s",
+            "      start_period: 5s",
+            "      retries: 6",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def super_runtime_cleanup_service_payload(
+    network_key: str,
+    head: HeadNode,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    service_name = super_runtime_cleanup_service_name(network_key, head)
+    compose = render_super_runtime_cleanup_compose(network_key, head)
+    payload = {
+        "server_uuid": (context or {}).get("server_uuid") or "",
+        "project_uuid": (context or {}).get("project_uuid") or "",
+        "environment_name": (context or {}).get("environment_name") or getattr(args, "coolify_environment_name", "") or DEFAULT_SUPER_ENVIRONMENT,
+        "environment_uuid": (context or {}).get("environment_uuid") or "",
+        "name": service_name,
+        "description": (
+            f"Main Computer last-node runtime cleanup for {clean_node_network_key(network_key)} on {head.coolify_server}. "
+            "Runs through Coolify with the host Docker socket and only moves all-father super-node state directories."
+        ),
+        "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        "instant_deploy": False,
+    }
+    destination_uuid = destination_uuid_for_host(head, args)
+    if destination_uuid:
+        payload["destination_uuid"] = destination_uuid
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def sync_super_runtime_cleanup_service(
+    client: Any,
+    network_key: str,
+    head: HeadNode,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+) -> tuple[str, str, dict[str, Any]]:
+    service_name = super_runtime_cleanup_service_name(network_key, head)
+    service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
+    compose = render_super_runtime_cleanup_compose(network_key, head)
+    if service_uuid:
+        fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
+        return service_uuid, "updated", existing
+    service_uuid = fdb_tool().create_service(client, super_runtime_cleanup_service_payload(network_key, head, args, context), tried)
+    return service_uuid, "created", existing
+
+
+def probe_target_for_super_runtime_cleanup(network_key: str, head: HeadNode) -> dict[str, Any]:
+    return {
+        "kind": "super-runtime-cleanup",
+        "guard_url": super_runtime_cleanup_url(network_key, head),
+        "service_name": super_runtime_cleanup_service_name(network_key, head),
+        "coolify_server": head.coolify_server,
+        "host_slot": head.slot,
+        "network_key": clean_node_network_key(network_key),
+        "scope": "remote-vpn-last-node-super-runtime-cleanup",
+    }
+
+
+def planned_super_runtime_cleanup_result(network_key: str, head: HeadNode, *, enabled: bool, dry_run: bool, reason: str) -> dict[str, Any]:
+    return {
+        "enabled": bool(enabled),
+        "ready": None,
+        "dry_run": bool(dry_run),
+        "reason": reason,
+        "service_name": super_runtime_cleanup_service_name(network_key, head),
+        "status_url": super_runtime_cleanup_url(network_key, head),
+        "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
+        "removes_stale_containers": bool(enabled),
+        "moves_runtime_state_dirs": bool(enabled),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
+def wait_for_super_runtime_cleanup_ready(
+    plan: HeadPlan,
+    network_key: str,
+    head: HeadNode,
+    client: Any,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+    *,
+    cleanup_service_uuid: str,
+    wait_s: float = 180.0,
+) -> dict[str, Any]:
+    service_name = super_runtime_cleanup_service_name(network_key, head)
+    target = probe_target_for_super_runtime_cleanup(network_key, head)
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    log_interval = operator_log_interval_s(args)
+    probe_service_uuid = ""
+    probe_action = ""
+    probe_started = False
+    last_target: dict[str, Any] = {}
+    last_signature = ""
+    last_log_at = 0.0
+    first = True
+
+    while first or time.time() < deadline:
+        first = False
+        if target.get("guard_url"):
+            if not probe_started:
+                probe_service_uuid, probe_action, _probe_existing = sync_probe_service(
+                    client,
+                    plan,
+                    head,
+                    args,
+                    context,
+                    tried,
+                    super_inventory=[target],
+                )
+                operator_log(
+                    args,
+                    f"runtime-cleanup: using private probe service {probe_service_uuid or '<unknown>'} ({probe_action or 'synced'}); waiting up to {float(wait_s or 0.0):.0f}s",
+                )
+                hub_service_tool().trigger_deploy_service(
+                    client,
+                    service_uuid=probe_service_uuid,
+                    force=True,
+                    tried=tried,
+                )
+                probe_started = True
+            detail = fetch_service_detail(client, probe_service_uuid, tried)
+            probe_result = probe_result_from_service_metadata(detail)
+            last_target = probe_result_target_by_service(probe_result, service_name)
+            phase = str(last_target.get("phase") or last_target.get("status_text") or "").strip().lower()
+            if last_target and bool(last_target.get("status_ok")) and bool(last_target.get("healthz_ok")) and phase == "ready":
+                operator_log(args, f"runtime-cleanup: ready ({service_name}; state={super_runtime_cleanup_state_root_glob(network_key, head)})")
+                return {
+                    "enabled": True,
+                    "ready": True,
+                    "reason": "last-node runtime cleanup completed",
+                    "service_name": service_name,
+                    "service_uuid": cleanup_service_uuid,
+                    "probe_service_uuid": probe_service_uuid,
+                    "probe_action": probe_action,
+                    "status_url": target.get("guard_url"),
+                    "observed_target": last_target,
+                    "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
+                    "public_guard_routes": False,
+                    "ssh_used": False,
+                    "direct_vpn_used": False,
+                }
+
+        signature = compact_wait_target_status(last_target) if last_target else "not-observed"
+        now = time.time()
+        if signature != last_signature or (now - last_log_at) >= log_interval:
+            remaining = max(0.0, deadline - now)
+            operator_log(args, f"runtime-cleanup: {signature}; remaining={remaining:.0f}s")
+            last_signature = signature
+            last_log_at = now
+
+        if time.time() >= deadline:
+            break
+        time.sleep(min(2.0, max(0.25, deadline - time.time())))
+
+    return {
+        "enabled": True,
+        "ready": False,
+        "reason": "last-node runtime cleanup did not report ready before timeout",
+        "service_name": service_name,
+        "service_uuid": cleanup_service_uuid,
+        "probe_service_uuid": probe_service_uuid,
+        "probe_action": probe_action,
+        "status_url": target.get("guard_url"),
+        "observed_target": last_target,
+        "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
+        "wait_s": float(wait_s or 0.0),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
+def run_super_runtime_cleanup(
+    plan: HeadPlan,
+    network_key: str,
+    head: HeadNode,
+    client: Any,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if bool(getattr(args, "keep_runtime_state", False)):
+        return planned_super_runtime_cleanup_result(
+            network_key,
+            head,
+            enabled=False,
+            dry_run=bool(getattr(args, "dry_run", False)),
+            reason="Runtime state was preserved because --keep-runtime-state was passed.",
+        )
+    if bool(getattr(args, "dry_run", False)):
+        return planned_super_runtime_cleanup_result(
+            network_key,
+            head,
+            enabled=True,
+            dry_run=True,
+            reason="Dry-run: last-node runtime cleanup would move super-node state directories and remove stale containers.",
+        )
+
+    service_uuid, service_action, _existing = sync_super_runtime_cleanup_service(client, network_key, head, args, context, tried)
+    operator_log(args, f"runtime-cleanup: deploying {super_runtime_cleanup_service_name(network_key, head)} uuid={service_uuid or '<unknown>'}")
+    hub_service_tool().trigger_deploy_service(
+        client,
+        service_uuid=service_uuid,
+        force=True,
+        tried=tried,
+    )
+    result = wait_for_super_runtime_cleanup_ready(
+        plan,
+        network_key,
+        head,
+        client,
+        args,
+        context,
+        tried,
+        cleanup_service_uuid=service_uuid,
+    )
+    result["service_action"] = service_action
+    return result
+
 
 
 def super_base_builder_service_payload(
@@ -6773,10 +7738,13 @@ def ensure_super_base_image(
     full_wait_s = float(getattr(args, "super_base_wait_s", DEFAULT_ADD_NODE_READY_WAIT_S))
     wait_result: dict[str, Any] | None = None
 
-    # Do not blindly redeploy the managed builder every add-node invocation.
-    # If the previous builder is already ready, continue immediately.  If it is
-    # already live and building, wait on that build instead of restarting it and
-    # pushing node creation farther out.
+    # A stale builder container can keep serving "ready" after the Docker host
+    # image has been deleted by cleanup/prune/remove-node activity.  Do not
+    # treat a ready precheck as proof that the image exists; redeploy the
+    # builder so its Docker-socket-side `docker image inspect` verifies or
+    # rebuilds the tag on the same host that will build the node service.  The
+    # only predeploy state we reuse is an already-live build, to avoid
+    # restarting a long-running build in progress.
     if service_uuid and not force_base:
         precheck_wait_s = float(getattr(args, "super_base_predeploy_wait_s", 20.0))
         operator_log(args, f"base-image: checking existing builder before deploy; wait up to {precheck_wait_s:.0f}s")
@@ -6790,10 +7758,7 @@ def ensure_super_base_image(
             wait_s=precheck_wait_s,
             builder_service_uuid=service_uuid,
         )
-        if bool(precheck.get("ready")):
-            operator_log(args, f"base-image: existing builder ready; skipping builder deploy")
-            wait_result = precheck
-        elif super_base_builder_target_is_live_building(precheck.get("observed_target") if isinstance(precheck.get("observed_target"), Mapping) else {}):
+        if super_base_builder_target_is_live_building(precheck.get("observed_target") if isinstance(precheck.get("observed_target"), Mapping) else {}):
             operator_log(args, "base-image: existing builder is already building; continuing without restart")
             wait_result = wait_for_super_base_builder_ready(
                 plan,
@@ -6805,6 +7770,8 @@ def ensure_super_base_image(
                 wait_s=full_wait_s,
                 builder_service_uuid=service_uuid,
             )
+        elif bool(precheck.get("ready")):
+            operator_log(args, "base-image: existing builder reported ready; redeploying builder to verify host image exists")
 
     if wait_result is None:
         if not bool(getattr(args, "no_deploy", False)):
@@ -7317,6 +8284,7 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
     components = {
         "foundationdb": _component_status(functions, "foundationdb"),
         "validator_rpc": _component_status(functions, "validator_rpc"),
+        "validator_admission": _component_status(functions, "validator_admission"),
         "hub": _component_status(functions, "hub"),
         "hub_admin": _component_status(functions, "hub_admin"),
         "contracts": _component_status(functions, "contracts"),
@@ -7371,6 +8339,22 @@ def add_node_super_ready_check(internal_status: Mapping[str, Any] | None, manife
     ):
         terminal = str(hub_admin.get("status") or "") in {"missing-or-invalid-hub-admin-key"}
         return {"ready": False, "terminal": terminal, "reason": f"hub_admin not bootstrapped: {components['hub_admin'] or 'missing'}", "components": components}
+
+    try:
+        ordinal = int(manifest.get("ordinal") or 0)
+    except Exception:
+        ordinal = 0
+    if ordinal > 1:
+        admission = _component_snapshot(functions, "validator_admission")
+        if not (str(admission.get("status") or "") == "admitted" and bool(admission.get("admitted"))):
+            reason = f"validator admission not complete: {components['validator_admission'] or 'missing'}"
+            validator_address = str(admission.get("validator_address") or "").strip()
+            if validator_address:
+                reason += f" validator_address={validator_address}"
+            vote_errors = admission.get("vote_errors")
+            if vote_errors:
+                reason += f" vote_errors={vote_errors}"
+            return {"ready": False, "terminal": False, "reason": reason, "components": components}
 
     contracts_requested = bool((manifest.get("bootstrap") or {}).get("contracts_requested")) if isinstance(manifest.get("bootstrap"), Mapping) else False
     contracts = _component_snapshot(functions, "contracts")
@@ -7577,6 +8561,168 @@ def wait_for_add_node_ready(
         "direct_vpn_used": False,
     }
 
+
+def ensure_existing_validator_admission_endpoints(
+    plan: HeadPlan,
+    head: HeadNode,
+    network_key: str,
+    existing_nodes: Sequence[Mapping[str, Any]],
+    private_state: Mapping[str, Any],
+    private_state_path: Path,
+    client: Any,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Redeploy existing validators so their private guards can vote in joiners.
+
+    The existing validators may live on a different Coolify host from the node being
+    added.  Host-local ordinals are preserved, but the manifest for each redeployed
+    validator is rendered with network-global lower nodes so a host-B ``super1`` is
+    never mistaken for a first network node when host-A validators already exist.
+    """
+
+    nodes: list[tuple[tuple[str, str, int, str], HeadNode, dict[str, Any]]] = []
+    for raw_node in existing_nodes:
+        if not isinstance(raw_node, Mapping):
+            continue
+        try:
+            ordinal = int(raw_node.get("ordinal") or 0)
+        except Exception:
+            ordinal = 0
+        if ordinal <= 0:
+            continue
+        node = dict(raw_node)
+        node_head = head_for_coolify_server(plan, str(node.get("coolify_server") or head.coolify_server))
+        node.setdefault("service_name", super_service_name(network_key, node_head, ordinal))
+        nodes.append((network_super_node_sort_key(node), node_head, node))
+    nodes.sort(key=lambda item: item[0])
+    if not nodes:
+        return {
+            "enabled": False,
+            "ready": None,
+            "reason": "no existing validators require admission endpoint prep",
+            "services": [],
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    clients: dict[str, Any] = {head.coolify_server: client}
+    contexts: dict[str, Mapping[str, Any]] = {head.coolify_server: context}
+
+    def client_and_context_for(node_head: HeadNode) -> tuple[Any, Mapping[str, Any]]:
+        if node_head.coolify_server not in clients:
+            node_client, _token_source = fdb_tool().client_for_server(node_head.coolify_server, args)
+            version = node_client.request("GET", "/api/v1/version")
+            tried.append(
+                {
+                    "operation": "coolify-version-validator-admission",
+                    "host": node_head.coolify_server,
+                    "response": hub_service_tool().response_to_dict(version),
+                }
+            )
+            if not version.ok:
+                raise AllfatherControlError(
+                    f"Coolify API version check failed for {node_head.coolify_server!r} with HTTP {version.status}: {version.body}"
+                )
+            clients[node_head.coolify_server] = node_client
+            contexts[node_head.coolify_server] = resolve_super_context(node_client, args, node_head, tried)
+        return clients[node_head.coolify_server], contexts[node_head.coolify_server]
+
+    services: list[dict[str, Any]] = []
+    for index, (_sort_key, node_head, node) in enumerate(nodes):
+        try:
+            ordinal = int(node.get("ordinal") or 0)
+        except Exception:
+            ordinal = 0
+        cell_id = str(node.get("service_name") or super_service_name(network_key, node_head, ordinal))
+        lower_nodes = [dict(item[2]) for item in nodes[:index]]
+        effective_no_contracts = bool(getattr(args, "no_contracts", False) or lower_nodes)
+        state_for_node, wallets, private_updates = materialize_private_state_for_add_node(
+            private_state,
+            private_state_path,
+            network_key,
+            ordinal=ordinal,
+            cell_id=cell_id,
+            no_contracts=effective_no_contracts,
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+        manifest = super_manifest(
+            network_key,
+            node_head,
+            ordinal,
+            wallets=wallets,
+            private_state=state_for_node,
+            existing_nodes=lower_nodes,
+            no_contracts=effective_no_contracts,
+            publish_routes=bool(getattr(args, "publish_routes", False)),
+        )
+        manifest["deployment_id"] = "dry-run" if getattr(args, "dry_run", False) else new_super_deployment_id()
+        hub_admin_key = wallet_private_key(wallets, "hub_admin")
+        deployer_key = wallet_private_key(wallets, "deployer") if manifest["bootstrap"]["contracts_requested"] else ""
+        node_client, node_context = client_and_context_for(node_head)
+        operator_log(args, f"validator-admission: updating existing validator service {cell_id} on {node_head.coolify_server}")
+        service_uuid, service_action, _existing = sync_super_node_service(
+            node_client,
+            manifest,
+            args,
+            node_context,
+            tried,
+            hub_admin_private_key=hub_admin_key,
+            deployer_private_key=deployer_key,
+        )
+        operator_log(args, f"validator-admission: redeploying existing validator service {cell_id} uuid={service_uuid or '<unknown>'}")
+        hub_service_tool().trigger_deploy_service(
+            node_client,
+            service_uuid=service_uuid,
+            force=bool(getattr(args, "force_deploy", False)),
+            tried=tried,
+        )
+        wait_result = wait_for_add_node_ready(
+            plan,
+            node_head,
+            manifest,
+            node_client,
+            args,
+            node_context,
+            tried,
+            service_uuid=service_uuid,
+        )
+        service_result = {
+            "service_name": cell_id,
+            "coolify_server": node_head.coolify_server,
+            "service_uuid": service_uuid,
+            "service_action": service_action,
+            "ready": bool(wait_result.get("ready")),
+            "reason": wait_result.get("reason"),
+            "deploy_wait": wait_result,
+            "private_state_updates": private_updates,
+        }
+        services.append(service_result)
+        if not bool(wait_result.get("ready")):
+            return {
+                "enabled": True,
+                "ready": False,
+                "reason": f"existing validator {cell_id} did not become ready: {wait_result.get('reason')}",
+                "services": services,
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+            }
+
+    return {
+        "enabled": True,
+        "ready": True,
+        "reason": "existing validator admission endpoints are ready",
+        "services": services,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
+
 def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     network_key = clean_node_network_key(args.network)
     if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
@@ -7629,6 +8775,13 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
 
     delete_confirmed_absent = False
     delete_wait_result: dict[str, Any] | None = None
+    runtime_cleanup: dict[str, Any] = planned_super_runtime_cleanup_result(
+        network_key,
+        head,
+        enabled=False,
+        dry_run=bool(getattr(args, "dry_run", False)),
+        reason="Runtime cleanup only runs when this removal leaves no super-nodes on the host.",
+    )
 
     if getattr(args, "dry_run", False):
         _new_state, private_state_updates = cleanup_private_state_for_remove_node(
@@ -7639,6 +8792,8 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             dry_run=True,
             keep_seed_material=bool(getattr(args, "keep_seed_material", False)),
         )
+        if remaining_count == 0:
+            runtime_cleanup = run_super_runtime_cleanup(plan, network_key, head, None, args, {}, tried)
     else:
         delete_response = delete_coolify_service(client, service_uuid=service_uuid, service_name=service_name, tried=tried)
         deleted = True
@@ -7665,6 +8820,14 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             dry_run=False,
             keep_seed_material=bool(getattr(args, "keep_seed_material", False)),
         )
+        if remaining_count == 0:
+            context = resolve_super_context(client, args, head, tried)
+            runtime_cleanup = run_super_runtime_cleanup(plan, network_key, head, client, args, context, tried)
+            if not bool(runtime_cleanup.get("ready")):
+                raise AllfatherControlError(
+                    f"Last-node runtime cleanup did not complete for {network_key} on {head.coolify_server}: "
+                    f"{runtime_cleanup.get('reason') or runtime_cleanup.get('error') or 'unknown error'}"
+                )
 
     result = {
         "ok": True,
@@ -7680,6 +8843,7 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "remaining_host_super_nodes": remaining_count,
         "network_pristine_after_remove": remaining_count == 0,
         "private_state_updates": private_state_updates,
+        "runtime_cleanup": runtime_cleanup,
         "service_deleted": deleted,
         "delete_confirmed_absent": delete_confirmed_absent,
         "delete_wait": (
@@ -7696,7 +8860,7 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "tried": tried if getattr(args, "verbose", False) else summarize_coolify_attempts(tried),
         "note": (
             "Removed the highest-numbered super-node for this network+host. "
-            "No renumbering is performed. Generated seed material is cleaned only when this removal leaves the network empty."
+            "No renumbering is performed. Generated seed material and runtime state are cleaned only when this removal leaves the network empty."
         ),
     }
     return result
@@ -7735,11 +8899,37 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "ssh_used": False,
         "direct_vpn_used": False,
     }
+    validator_admission_prep: dict[str, Any] = {
+        "enabled": False,
+        "ready": None,
+        "reason": "dry-run" if getattr(args, "dry_run", False) else "not run yet",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+    network_inventory: dict[str, Any] = {
+        "nodes": [],
+        "local_nodes": [],
+        "checked_hosts": [],
+        "errors": [],
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
     if getattr(args, "dry_run", False) and getattr(args, "existing_count", None) is not None:
         existing_count = max(0, int(args.existing_count))
         ordinal = existing_count + 1
         services = [{"name": super_service_name(network_key, head, item)} for item in range(1, existing_count + 1)]
         existing_nodes = [super_inventory_entry(network_key, head, item, source="dry-run-existing-count") for item in range(1, existing_count + 1)]
+        network_inventory = {
+            "nodes": list(existing_nodes),
+            "local_nodes": list(existing_nodes),
+            "checked_hosts": [head.coolify_server],
+            "errors": [],
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
         token_source = "dry-run:no-api"
         context: dict[str, Any] = {}
         service_uuid = ""
@@ -7753,6 +8943,16 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             raise AllfatherControlError(f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}")
         services = service_items_for_client(client, tried)
         ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
+        network_inventory = discover_network_super_inventory_for_add_node(
+            plan,
+            network_key,
+            head,
+            client,
+            services,
+            args,
+            tried,
+        )
+        network_existing_nodes = list(network_inventory.get("nodes") or [])
         context = resolve_super_context(client, args, head, tried)
         resume_existing = False
         resume_reason = ""
@@ -7787,7 +8987,17 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                     )
                     statuses = super_statuses_from_probe_result(probe_result)
                     resume_status = statuses.get(resume_cell_id, {})
-                    resume_manifest = {"bootstrap": {"contracts_requested": bool(resume_ordinal == 1 and not getattr(args, "no_contracts", False))}}
+                    resume_existing_network_nodes = [
+                        item
+                        for item in network_existing_nodes
+                        if str(item.get("service_name") or "") != resume_cell_id
+                    ]
+                    resume_contracts_requested = bool(
+                        resume_ordinal == 1
+                        and not getattr(args, "no_contracts", False)
+                        and not resume_existing_network_nodes
+                    )
+                    resume_manifest = {"bootstrap": {"contracts_requested": resume_contracts_requested}}
                     resume_check = add_node_super_ready_check(resume_status, resume_manifest)
                     resume_probe = {
                         "service_name": resume_cell_id,
@@ -7814,9 +9024,9 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             planned_cell_id = super_service_name(network_key, head, ordinal)
             operator_log(args, f"resume: existing {planned_cell_id} is not ready ({resume_reason}); updating and redeploying it")
             existing_nodes = [
-                super_inventory_entry(network_key, head, item, source="resume-existing-lower-ordinal")
-                for item in ordinals
-                if item < ordinal
+                dict(item, source=str(item.get("source") or "network-existing"))
+                for item in network_existing_nodes
+                if str(item.get("service_name") or "") != planned_cell_id
             ]
             require_fdb_seed_for_existing_super_nodes(state, private_state_path, network_key, head, existing_nodes)
             preflight = {
@@ -7855,7 +9065,17 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             operator_log(args, f"preflight: clean slot confirmed for {planned_cell_id}")
             services = list(preflight.get("services") or services)
             ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
-            existing_nodes = existing_super_inventory_from_services(services, network_key, head)
+            network_inventory = discover_network_super_inventory_for_add_node(
+                plan,
+                network_key,
+                head,
+                client,
+                services,
+                args,
+                tried,
+            )
+            network_existing_nodes = list(network_inventory.get("nodes") or [])
+            existing_nodes = network_existing_nodes
             require_fdb_seed_for_existing_super_nodes(state, private_state_path, network_key, head, existing_nodes)
             ordinal = (max(ordinals) + 1) if ordinals else 1
             if super_service_name(network_key, head, ordinal) != planned_cell_id:
@@ -7868,13 +9088,14 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         deployed = False
 
     cell_id = super_service_name(network_key, head, ordinal)
+    effective_no_contracts = bool(getattr(args, "no_contracts", False) or existing_nodes)
     state, wallets, private_state_updates = materialize_private_state_for_add_node(
         state,
         private_state_path,
         network_key,
         ordinal=ordinal,
         cell_id=cell_id,
-        no_contracts=bool(getattr(args, "no_contracts", False)),
+        no_contracts=effective_no_contracts,
         dry_run=bool(getattr(args, "dry_run", False)),
     )
 
@@ -7885,7 +9106,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         wallets=wallets,
         private_state=state,
         existing_nodes=existing_nodes,
-        no_contracts=bool(getattr(args, "no_contracts", False)),
+        no_contracts=effective_no_contracts,
         publish_routes=bool(getattr(args, "publish_routes", False)),
     )
     manifest["deployment_id"] = "dry-run" if getattr(args, "dry_run", False) else new_super_deployment_id()
@@ -7915,6 +9136,24 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                 raise AllfatherControlError(
                     f"Managed super base image is not ready on {head.coolify_server}: {super_base.get('reason')}"
                 )
+            if existing_nodes:
+                validator_admission_prep = ensure_existing_validator_admission_endpoints(
+                    plan,
+                    head,
+                    network_key,
+                    existing_nodes,
+                    state,
+                    private_state_path,
+                    client,
+                    args,
+                    context,
+                    tried,
+                )
+                if not bool(validator_admission_prep.get("ready")):
+                    operator_log(args, f"validator-admission: blocked: {validator_admission_prep.get('reason')}")
+                    raise AllfatherControlError(
+                        f"Existing validator admission endpoint prep failed on {head.coolify_server}: {validator_admission_prep.get('reason')}"
+                    )
         operator_log(args, f"node-service: syncing Coolify service {cell_id}")
         service_uuid, service_action, _existing = sync_super_node_service(
             client,
@@ -7996,6 +9235,18 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             "existing_node_count": len(manifest["foundationdb"].get("existing_nodes") or []),
             "target_coordinator_count": len(manifest["foundationdb"].get("target_coordinators") or []),
         },
+        "network_inventory": {
+            "existing_node_count": len(existing_nodes),
+            "local_existing_node_count": len(network_inventory.get("local_nodes") or []),
+            "cross_host_existing_node_count": max(0, len(existing_nodes) - len(network_inventory.get("local_nodes") or [])),
+            "checked_hosts": list(network_inventory.get("checked_hosts") or []),
+            "errors": list(network_inventory.get("errors") or []),
+            "existing_services": [str(item.get("service_name") or "") for item in existing_nodes],
+            "join_context": "network-global" if existing_nodes else "first-network-node",
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        },
         "hub_public_cutover_deferred": True,
         "public_guard_routes": False,
         "public_routes_enabled": bool(getattr(args, "publish_routes", False)),
@@ -8009,6 +9260,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "reason": "" if add_node_ready else str(deploy_wait.get("reason") or "add-node deploy wait did not reach readiness"),
         "preflight": {key: value for key, value in preflight.items() if key != "services"},
         "super_base": super_base,
+        "validator_admission_prep": validator_admission_prep,
         "predeploy_service_check": synced_service_predeploy,
         "deploy_wait": deploy_wait,
         "token_source": token_source,
@@ -8161,6 +9413,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     remove_node_parser.add_argument("--delete-wait-s", type=float, default=DEFAULT_REMOVE_DELETE_WAIT_S, help="Seconds to wait for Coolify inventory to stop reporting the deleted service before cleaning seed material.")
     remove_node_parser.add_argument("--delete-poll-s", type=float, default=DEFAULT_REMOVE_DELETE_POLL_S, help=argparse.SUPPRESS)
     remove_node_parser.add_argument("--keep-seed-material", action="store_true", help="Do not clean generated first-node keys/FDB identity when the network becomes empty.")
+    remove_node_parser.add_argument("--keep-runtime-state", action="store_true", help="Do not deploy the remote last-node runtime cleanup service that moves stale super-node state directories.")
 
     for subparser in (plan_parser, write_parser, boot_parser, discover_parser, add_node_parser, remove_node_parser):
         subparser.add_argument("--json", action="store_true", help="Print detailed compact JSON. Default discover output is an operator summary.")

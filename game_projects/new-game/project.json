@@ -399,7 +399,12 @@
             "color": "#dbeafe",
             "z": 132,
             "visibleThroughViewport": true,
-            "twinkle": true
+            "twinkle": true,
+            "distribution": "camera-centered-sphere",
+            "sphereRadius": 124,
+            "placeholderCount": 420,
+            "seed": 73129,
+            "fixedDistanceFromCamera": true
           }
         },
         {
@@ -678,6 +683,15 @@
                 "maxZ": 6.45
               }
             ]
+          },
+          "starfieldSphere": {
+            "mode": "camera-centered-sphere",
+            "radius": 124,
+            "count": 420,
+            "seed": 73129,
+            "minimumSize": 0.12,
+            "maximumSize": 0.38,
+            "fixedDistanceFromCamera": true
           }
         }
       }

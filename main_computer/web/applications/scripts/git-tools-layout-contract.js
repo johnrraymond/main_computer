@@ -358,7 +358,7 @@
 
   function normalizeSupportView(value) {
     const view = String(value || "");
-    return ["server", "evidence", "advanced"].includes(view) ? view : "server";
+    return ["server", "evidence", "semantics", "advanced"].includes(view) ? view : "server";
   }
 
   function normalizeStage(value) {
@@ -593,7 +593,7 @@
     const operationState = operationStateText(root).toLowerCase();
     if (/(running|queued|executing|starting|pushing|fetching|applying)/.test(operationState)) return "execution";
     if (state.supportEngaged && state.supportView === "advanced") return "recovery";
-    if (state.supportEngaged && state.supportView === "evidence") return "proof-review";
+    if (state.supportEngaged && ["evidence", "semantics"].includes(state.supportView)) return "proof-review";
     if (state.supportEngaged && state.supportView === "server") return "planning";
     return "selected-project-default";
   }
@@ -855,6 +855,7 @@
       const selectorByView = {
         server: "#git-server-publish-panel",
         evidence: "#git-server-operation-panel",
+        semantics: "#git-semantic-runtime-panel",
         advanced: "#git-server-recovery-panel",
       };
       return focusTarget(

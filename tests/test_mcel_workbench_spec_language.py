@@ -161,7 +161,7 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
     )
     result = run_node_json(script)
 
-    assert result["version"] == "0.3.2"
+    assert result["version"] == "0.3.3"
     assert result["slots"] == ["identity", "primary", "actions", "inspector", "evidence", "advanced", "status"]
     assert result["documentZones"] == ["menu", "toolbar", "navigation", "primary", "companion", "evidence", "status", "advanced"]
     assert result["gitObject"] == "Repository"
@@ -187,7 +187,7 @@ def test_mwsl_planner_projects_git_tools_code_editor_and_document_by_dominant_ob
     assert result["docFindings"] == []
     assert result["docWorkbenchFindings"] == []
     assert result["documentWorkbenchReady"] is True
-    assert result["semanticTruthGateVersion"] == "mcel-semantic-truth-gate-v1"
+    assert result["semanticTruthGateVersion"] == "mcel-semantic-truth-gate-v2"
     assert result["semanticRuntimeReady"] == 0
     assert result["structuralOnly"] >= 1
     assert result["domainEnrichmentOnly"] >= 1
