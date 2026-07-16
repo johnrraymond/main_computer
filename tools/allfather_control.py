@@ -3004,12 +3004,64 @@ def choose_head_for_host(plan: HeadPlan, host: str) -> HeadNode:
     return matches[0]
 
 
-def service_items_for_client(client: Any, tried: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    response, services = hub_service_tool().list_services(client)
-    tried.append({"operation": "list-services", "response": hub_service_tool().response_to_dict(response), "count": len(services)})
-    if not response.ok:
-        raise AllfatherControlError(f"Could not list Coolify services with HTTP {response.status}: {response.body}")
-    return services
+def coolify_response_is_transient_timeout(response: Any) -> bool:
+    """Return true for transport-level Coolify API timeouts worth retrying.
+
+    The Coolify helper wraps urllib/socket timeouts as status=0 request_failed
+    responses.  Treat those as transient so a slow host does not abort
+    remove-node/add-node before the node-management logic runs.
+    """
+
+    try:
+        status = int(getattr(response, "status", 0))
+    except Exception:
+        status = 0
+    if status != 0:
+        return False
+    body = getattr(response, "body", None)
+    if not isinstance(body, Mapping):
+        return False
+    if str(body.get("error") or "") != "request_failed":
+        return False
+    error_type = str(body.get("error_type") or "")
+    message = str(body.get("message") or "").lower()
+    return error_type in {"TimeoutError", "socket.timeout"} or "timed out" in message
+
+
+def service_items_for_client(
+    client: Any,
+    tried: list[dict[str, Any]],
+    *,
+    transient_attempts: int = 3,
+    transient_sleep_s: float = 5.0,
+) -> list[dict[str, Any]]:
+    attempts = max(1, int(transient_attempts))
+    sleep_s = max(0.0, float(transient_sleep_s))
+    last_response: Any | None = None
+    last_services: list[dict[str, Any]] = []
+    for attempt in range(1, attempts + 1):
+        response, services = hub_service_tool().list_services(client)
+        last_response = response
+        last_services = services
+        transient = coolify_response_is_transient_timeout(response)
+        tried.append(
+            {
+                "operation": "list-services",
+                "attempt": attempt,
+                "max_attempts": attempts,
+                "transient_timeout": bool(transient),
+                "response": hub_service_tool().response_to_dict(response),
+                "count": len(services),
+            }
+        )
+        if response.ok:
+            return services
+        if not transient or attempt >= attempts:
+            break
+        time.sleep(sleep_s)
+    assert last_response is not None
+    raise AllfatherControlError(f"Could not list Coolify services with HTTP {last_response.status}: {last_response.body}")
+
 
 
 def service_name_from_item(item: Mapping[str, Any]) -> str:
@@ -9323,9 +9375,9 @@ def add_remote_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--set-coolify-destination-uuid", action="append", default=[], help="Per-host destination UUID. Format: <host>:<uuid>")
     parser.add_argument("--coolify-service-uuid", default="")
     parser.add_argument("--set-coolify-service-uuid", action="append", default=[], help="Per-host existing service UUID. Format: <host>:<uuid>")
-    parser.add_argument("--coolify-timeout-s", type=float, default=30.0)
-    parser.add_argument("--coolify-retries", type=int, default=2)
-    parser.add_argument("--coolify-retry-sleep-s", type=float, default=1.0)
+    parser.add_argument("--coolify-timeout-s", type=float, default=60.0)
+    parser.add_argument("--coolify-retries", type=int, default=3)
+    parser.add_argument("--coolify-retry-sleep-s", type=float, default=2.0)
 
 
 def add_common_head_args(parser: argparse.ArgumentParser) -> None:

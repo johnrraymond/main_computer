@@ -1955,6 +1955,82 @@ def test_remove_node_waits_until_deleted_service_leaves_coolify_inventory(monkey
     assert result["confirmed_absent"] is True
     assert result["attempt_count"] == 2
 
+def test_service_items_for_client_retries_transient_coolify_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def __init__(self, ok: bool, status: int, body: object) -> None:
+            self.ok = ok
+            self.status = status
+            self.body = body
+            self.method = "GET"
+            self.path = "/api/v1/services"
+
+    class FakeHubTool:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_services(self, client: object) -> tuple[Response, list[dict[str, object]]]:
+            self.calls += 1
+            if self.calls == 1:
+                return (
+                    Response(
+                        False,
+                        0,
+                        {
+                            "error": "request_failed",
+                            "message": "Coolify API request failed: timed out",
+                            "error_type": "TimeoutError",
+                        },
+                    ),
+                    [],
+                )
+            return Response(True, 200, {"services": []}), [{"name": "testneta-super1"}]
+
+        def response_to_dict(self, response: Response) -> dict[str, object]:
+            return {"ok": response.ok, "status": response.status, "body": response.body}
+
+    fake = FakeHubTool()
+    sleeps: list[float] = []
+    monkeypatch.setattr(control, "hub_service_tool", lambda: fake)
+    monkeypatch.setattr(control.time, "sleep", lambda seconds: sleeps.append(float(seconds)))
+
+    tried: list[dict[str, object]] = []
+    services = control.service_items_for_client(object(), tried, transient_attempts=2, transient_sleep_s=0.25)
+
+    assert services == [{"name": "testneta-super1"}]
+    assert fake.calls == 2
+    assert sleeps == [0.25]
+    assert tried[0]["transient_timeout"] is True
+    assert tried[1]["transient_timeout"] is False
+
+
+def test_service_items_for_client_does_not_retry_non_timeout_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        ok = False
+        status = 401
+        body = {"error": "unauthorized"}
+        method = "GET"
+        path = "/api/v1/services"
+
+    class FakeHubTool:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_services(self, client: object) -> tuple[Response, list[dict[str, object]]]:
+            self.calls += 1
+            return Response(), []
+
+        def response_to_dict(self, response: Response) -> dict[str, object]:
+            return {"ok": response.ok, "status": response.status, "body": response.body}
+
+    fake = FakeHubTool()
+    monkeypatch.setattr(control, "hub_service_tool", lambda: fake)
+
+    with pytest.raises(control.AllfatherControlError, match="HTTP 401"):
+        control.service_items_for_client(object(), [], transient_attempts=3, transient_sleep_s=0)
+
+    assert fake.calls == 1
+
+
 
 def test_add_node_requires_mainnet_confirmation(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
