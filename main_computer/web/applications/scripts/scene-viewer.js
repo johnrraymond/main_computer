@@ -4,689 +4,849 @@
       function fallbackScene(sceneId = "default-empty-scene") {
         const scene = {
           "id": "default-empty-scene",
-          "name": "Shuttlecraft Walkaround",
-          "version": 9,
+          "name": "Shuttle Boarding Defense",
+          "version": 11,
           "background": "radial-gradient(circle at 50% 18%, rgba(59, 130, 246, 0.18), rgba(2, 6, 23, 0.98) 58%, #000 100%)",
           "objects": [
-                    {
-                              "id": "hero-sprite",
-                              "type": "sprite-actor",
-                              "x": 5.0,
-                              "y": 6.95,
-                              "width": 112,
-                              "height": 154,
-                              "props": {
-                                        "label": "Player Cadet",
-                                        "role": "player",
-                                        "spawn": true,
-                                        "color": "#93c5fd",
-                                        "z": 26,
-                                        "bob": 5,
-                                        "motion": "idle",
-                                        "spellState": "exploring-cabin",
-                                        "spriteSeries": [
-                                                  "stand",
-                                                  "scan",
-                                                  "tap",
-                                                  "ready"
-                                        ],
-                                        "spriteRig": {
-                                                  "style": "uniform-silhouette",
-                                                  "layers": [
-                                                            "shadow",
-                                                            "aura",
-                                                            "core",
-                                                            "mantle",
-                                                            "sparkles"
-                                                  ],
-                                                  "castFrames": [
-                                                            "stand",
-                                                            "scan",
-                                                            "tap",
-                                                            "ready"
-                                                  ],
-                                                  "finisher": false
-                                        },
-                                        "firstPerson": true,
-                                        "lookaroundAnchor": true
-                              }
-                    },
-                    {
-                              "id": "shuttle-floor",
-                              "type": "shuttle-deck",
-                              "x": 5.0,
-                              "y": 7.7,
-                              "width": 720,
-                              "height": 260,
-                              "props": {
-                                        "label": "3D Shuttle Deck",
-                                        "color": "#1e3a8a",
-                                        "z": 0,
-                                        "role": "walkable-floor",
-                                        "lookaroundLayer": "floor"
-                              }
-                    },
-                    {
-                              "id": "forward-viewer",
-                              "type": "shuttle-window",
-                              "x": 5.0,
-                              "y": 1.35,
-                              "width": 620,
-                              "height": 170,
-                              "props": {
-                                        "label": "Forward Viewport",
-                                        "color": "#38bdf8",
-                                        "z": 110,
-                                        "role": "viewport",
-                                        "showsStars": true,
-                                        "showsMotherShip": true,
-                                        "lookaroundLayer": "forward-view"
-                              }
-                    },
-                    {
-                              "id": "forward-bulkhead",
-                              "type": "shuttle-bulkhead",
-                              "x": 5.0,
-                              "y": 2.4,
-                              "width": 680,
-                              "height": 130,
-                              "props": {
-                                        "label": "Forward Bulkhead",
-                                        "color": "#475569",
-                                        "z": 70,
-                                        "role": "front-wall",
-                                        "lookaroundLayer": "bulkhead"
-                              }
-                    },
-                    {
-                              "id": "nav-console",
-                              "type": "shuttle-console",
-                              "x": 4.1,
-                              "y": 4.3,
-                              "width": 260,
-                              "height": 86,
-                              "props": {
-                                        "label": "Helm Console",
-                                        "color": "#f97316",
-                                        "z": 42,
-                                        "role": "helm",
-                                        "lookaroundLayer": "cockpit-controls"
-                              }
-                    },
-                    {
-                              "id": "science-console",
-                              "type": "shuttle-console",
-                              "x": 5.9,
-                              "y": 4.3,
-                              "width": 260,
-                              "height": 86,
-                              "props": {
-                                        "label": "Science Console",
-                                        "color": "#38bdf8",
-                                        "z": 42,
-                                        "role": "science",
-                                        "lookaroundLayer": "cockpit-controls"
-                              }
-                    },
-                    {
-                              "id": "port-side-console",
-                              "type": "shuttle-side-console",
-                              "x": 2.25,
-                              "y": 5.75,
-                              "width": 240,
-                              "height": 76,
-                              "props": {
-                                        "label": "Port Systems",
-                                        "color": "#facc15",
-                                        "z": 34,
-                                        "role": "port-panel",
-                                        "lookaroundLayer": "side-controls"
-                              }
-                    },
-                    {
-                              "id": "starboard-side-console",
-                              "type": "shuttle-side-console",
-                              "x": 7.75,
-                              "y": 5.75,
-                              "width": 240,
-                              "height": 76,
-                              "props": {
-                                        "label": "Starboard Ops",
-                                        "color": "#fb7185",
-                                        "z": 34,
-                                        "role": "starboard-panel",
-                                        "lookaroundLayer": "side-controls"
-                              }
-                    },
-                    {
-                              "id": "helm-seat",
-                              "type": "shuttle-seat",
-                              "x": 4.25,
-                              "y": 5.35,
-                              "width": 92,
-                              "height": 92,
-                              "props": {
-                                        "label": "Helm Seat",
-                                        "color": "#64748b",
-                                        "z": 24,
-                                        "role": "seat"
-                              }
-                    },
-                    {
-                              "id": "ops-seat",
-                              "type": "shuttle-seat",
-                              "x": 5.75,
-                              "y": 5.35,
-                              "width": 92,
-                              "height": 92,
-                              "props": {
-                                        "label": "Ops Seat",
-                                        "color": "#64748b",
-                                        "z": 24,
-                                        "role": "seat"
-                              }
-                    },
-                    {
-                              "id": "aft-hatch",
-                              "type": "shuttle-hatch",
-                              "x": 5.0,
-                              "y": 8.65,
-                              "width": 220,
-                              "height": 132,
-                              "props": {
-                                        "label": "Aft Hatch",
-                                        "color": "#94a3b8",
-                                        "z": 38,
-                                        "role": "aft-wall",
-                                        "lookaroundLayer": "aft"
-                              }
-                    },
-                    {
-                              "id": "port-hull-rib",
-                              "type": "shuttle-hull-rib",
-                              "x": 1.35,
-                              "y": 6.45,
-                              "width": 116,
-                              "height": 250,
-                              "props": {
-                                        "label": "Port Hull Rib",
-                                        "color": "#334155",
-                                        "z": 44,
-                                        "role": "hull"
-                              }
-                    },
-                    {
-                              "id": "starboard-hull-rib",
-                              "type": "shuttle-hull-rib",
-                              "x": 8.65,
-                              "y": 6.45,
-                              "width": 116,
-                              "height": 250,
-                              "props": {
-                                        "label": "Starboard Hull Rib",
-                                        "color": "#334155",
-                                        "z": 44,
-                                        "role": "hull"
-                              }
-                    },
-                    {
-                              "id": "hero-spell-aura",
-                              "type": "particle-emitter",
-                              "parentId": "hero-sprite",
-                              "x": 0,
-                              "y": 0,
-                              "width": 160,
-                              "height": 104,
-                              "props": {
-                                        "label": "Combadge Glow",
-                                        "role": "player-signal",
-                                        "color": "#7dd3fc",
-                                        "particleCount": 24,
-                                        "particleSize": 3,
-                                        "spread": 0.74,
-                                        "motion": "rune-ring",
-                                        "orbitRadius": 48,
-                                        "verticalLift": 14,
-                                        "zOffset": 44
-                              }
-                    },
-                    {
-                              "id": "console-status-glow",
-                              "type": "particle-emitter",
-                              "parentId": "nav-console",
-                              "x": 0,
-                              "y": 0,
-                              "width": 280,
-                              "height": 80,
-                              "props": {
-                                        "label": "Console Status Glow",
-                                        "role": "console-vfx",
-                                        "color": "#fb923c",
-                                        "particleCount": 38,
-                                        "particleSize": 3,
-                                        "spread": 0.88,
-                                        "motion": "stream",
-                                        "orbitRadius": 80,
-                                        "verticalLift": 18,
-                                        "zOffset": 22
-                              }
-                    },
-                    {
-                              "id": "science-status-glow",
-                              "type": "particle-emitter",
-                              "parentId": "science-console",
-                              "x": 0,
-                              "y": 0,
-                              "width": 280,
-                              "height": 80,
-                              "props": {
-                                        "label": "Science Status Glow",
-                                        "role": "console-vfx",
-                                        "color": "#22d3ee",
-                                        "particleCount": 34,
-                                        "particleSize": 3,
-                                        "spread": 0.82,
-                                        "motion": "stream",
-                                        "orbitRadius": 72,
-                                        "verticalLift": 16,
-                                        "zOffset": 22
-                              }
-                    },
-                    {
-                              "id": "hero-arc-bolt",
-                              "type": "particle-emitter",
-                              "parentId": "nav-console",
-                              "x": 0,
-                              "y": 0,
-                              "width": 420,
-                              "height": 74,
-                              "props": {
-                                        "label": "Forward Sensor Sweep",
-                                        "role": "sensor-pulse",
-                                        "color": "#f59e0b",
-                                        "particleCount": 52,
-                                        "particleSize": 4,
-                                        "spread": 0.92,
-                                        "motion": "spell-bolt",
-                                        "sourceId": "nav-console",
-                                        "targetId": "forward-viewer",
-                                        "sourceZOffset": 28,
-                                        "targetZOffset": 72,
-                                        "zOffset": 54
-                              }
-                    },
-                    {
-                              "id": "viewer-starfield",
-                              "type": "particle-emitter",
-                              "parentId": "forward-viewer",
-                              "x": 0,
-                              "y": 0,
-                              "width": 560,
-                              "height": 145,
-                              "props": {
-                                        "label": "Viewport Sparkle Layer",
-                                        "role": "window-vfx",
-                                        "color": "#bfdbfe",
-                                        "particleCount": 70,
-                                        "particleSize": 3,
-                                        "spread": 1.35,
-                                        "motion": "starfall",
-                                        "orbitRadius": 160,
-                                        "verticalLift": 42,
-                                        "zOffset": 12,
-                                        "pulseDelay": 260
-                              }
-                    },
-                    {
-                              "id": "warp-core-hum",
-                              "type": "particle-emitter",
-                              "x": 5.0,
-                              "y": 8.15,
-                              "width": 360,
-                              "height": 118,
-                              "props": {
-                                        "label": "Impulse Core Hum",
-                                        "role": "ambient-engine",
-                                        "color": "#a78bfa",
-                                        "particleCount": 44,
-                                        "particleSize": 4,
-                                        "spread": 1.08,
-                                        "motion": "nova-ring",
-                                        "orbitRadius": 84,
-                                        "verticalLift": 28,
-                                        "zOffset": 46,
-                                        "pulseDelay": 920
-                              }
-                    },
-                    {
-                              "id": "cabin-light-haze",
-                              "type": "particle-emitter",
-                              "x": 5.0,
-                              "y": 4.9,
-                              "width": 680,
-                              "height": 220,
-                              "props": {
-                                        "label": "Cabin Light Haze",
-                                        "role": "ambient-light",
-                                        "color": "#93c5fd",
-                                        "particleCount": 32,
-                                        "particleSize": 5,
-                                        "spread": 1.42,
-                                        "motion": "spell-swirl",
-                                        "orbitRadius": 210,
-                                        "verticalLift": 60,
-                                        "zOffset": 92,
-                                        "pulseDelay": -400
-                              }
-                    },
-                    {
-                              "id": "viewport-starfield",
-                              "type": "shuttle3d-starfield",
-                              "x": 5.0,
-                              "y": 0.95,
-                              "width": 620,
-                              "height": 170,
-                              "props": {
-                                        "label": "Stars Beyond Viewport",
-                                        "role": "starfield",
-                                        "color": "#dbeafe",
-                                        "z": 132,
-                                        "visibleThroughViewport": true,
-                                        "twinkle": true,
-                                        "distribution": "camera-centered-sphere",
-                                        "sphereRadius": 124,
-                                        "placeholderCount": 420,
-                                        "seed": 73129,
-                                        "fixedDistanceFromCamera": true
-                              }
-                    },
-                    {
-                              "id": "mother-ship",
-                              "type": "shuttle3d-mother-ship",
-                              "x": 5.55,
-                              "y": 1.25,
-                              "width": 310,
-                              "height": 96,
-                              "props": {
-                                        "label": "Mother Ship",
-                                        "role": "mothership",
-                                        "color": "#cbd5e1",
-                                        "z": 150,
-                                        "visibleThroughViewport": true,
-                                        "registry": "NCC-1701-inspired silhouette",
-                                        "dockingDistance": "2.4 km"
-                              }
-                    },
-                    {
-                              "id": "lookaround-camera",
-                              "type": "shuttle3d-camera",
-                              "x": 5.0,
-                              "y": 6.8,
-                              "width": 0,
-                              "height": 0,
-                              "props": {
-                                        "label": "First-person Camera",
-                                        "role": "player-camera",
-                                        "yaw": 0,
-                                        "pitch": -2,
-                                        "yawLimit": 180,
-                                        "pitchLimit": 28,
-                                        "instructions": "Drag or use arrow keys to look. Use W/A/S/D to walk and Shift to sprint."
-                              }
-                    }
+            {
+              "id": "hero-sprite",
+              "type": "sprite-actor",
+              "x": 5.0,
+              "y": 6.95,
+              "width": 112,
+              "height": 154,
+              "props": {
+                "label": "Player Cadet",
+                "role": "player",
+                "spawn": true,
+                "color": "#93c5fd",
+                "z": 26,
+                "bob": 5,
+                "motion": "idle",
+                "spellState": "boarding-defense",
+                "spriteSeries": [
+                  "stand",
+                  "scan",
+                  "tap",
+                  "ready"
+                ],
+                "spriteRig": {
+                  "style": "uniform-silhouette",
+                  "layers": [
+                    "shadow",
+                    "aura",
+                    "core",
+                    "mantle",
+                    "sparkles"
+                  ],
+                  "castFrames": [
+                    "stand",
+                    "scan",
+                    "tap",
+                    "ready"
+                  ],
+                  "finisher": false
+                },
+                "firstPerson": true,
+                "lookaroundAnchor": true
+              }
+            },
+            {
+              "id": "shuttle-floor",
+              "type": "shuttle-deck",
+              "x": 5.0,
+              "y": 7.7,
+              "width": 720,
+              "height": 260,
+              "props": {
+                "label": "3D Shuttle Deck",
+                "color": "#1e3a8a",
+                "z": 0,
+                "role": "walkable-floor",
+                "lookaroundLayer": "floor"
+              }
+            },
+            {
+              "id": "forward-viewer",
+              "type": "shuttle-window",
+              "x": 5.0,
+              "y": 1.35,
+              "width": 620,
+              "height": 170,
+              "props": {
+                "label": "Forward Viewport",
+                "color": "#38bdf8",
+                "z": 110,
+                "role": "viewport",
+                "showsStars": true,
+                "showsMotherShip": true,
+                "lookaroundLayer": "forward-view"
+              }
+            },
+            {
+              "id": "forward-bulkhead",
+              "type": "shuttle-bulkhead",
+              "x": 5.0,
+              "y": 2.4,
+              "width": 680,
+              "height": 130,
+              "props": {
+                "label": "Forward Bulkhead",
+                "color": "#475569",
+                "z": 70,
+                "role": "front-wall",
+                "lookaroundLayer": "bulkhead"
+              }
+            },
+            {
+              "id": "nav-console",
+              "type": "shuttle-console",
+              "x": 4.1,
+              "y": 4.3,
+              "width": 260,
+              "height": 86,
+              "props": {
+                "label": "Helm Console",
+                "color": "#f97316",
+                "z": 42,
+                "role": "helm",
+                "lookaroundLayer": "cockpit-controls"
+              }
+            },
+            {
+              "id": "science-console",
+              "type": "shuttle-console",
+              "x": 5.9,
+              "y": 4.3,
+              "width": 260,
+              "height": 86,
+              "props": {
+                "label": "Science Console",
+                "color": "#38bdf8",
+                "z": 42,
+                "role": "science",
+                "lookaroundLayer": "cockpit-controls"
+              }
+            },
+            {
+              "id": "port-side-console",
+              "type": "shuttle-side-console",
+              "x": 2.25,
+              "y": 5.75,
+              "width": 240,
+              "height": 76,
+              "props": {
+                "label": "Port Systems",
+                "color": "#facc15",
+                "z": 34,
+                "role": "port-panel",
+                "lookaroundLayer": "side-controls"
+              }
+            },
+            {
+              "id": "starboard-side-console",
+              "type": "shuttle-side-console",
+              "x": 7.75,
+              "y": 5.75,
+              "width": 240,
+              "height": 76,
+              "props": {
+                "label": "Starboard Ops",
+                "color": "#fb7185",
+                "z": 34,
+                "role": "starboard-panel",
+                "lookaroundLayer": "side-controls"
+              }
+            },
+            {
+              "id": "helm-seat",
+              "type": "shuttle-seat",
+              "x": 4.25,
+              "y": 5.35,
+              "width": 92,
+              "height": 92,
+              "props": {
+                "label": "Helm Seat",
+                "color": "#64748b",
+                "z": 24,
+                "role": "seat"
+              }
+            },
+            {
+              "id": "ops-seat",
+              "type": "shuttle-seat",
+              "x": 5.75,
+              "y": 5.35,
+              "width": 92,
+              "height": 92,
+              "props": {
+                "label": "Ops Seat",
+                "color": "#64748b",
+                "z": 24,
+                "role": "seat"
+              }
+            },
+            {
+              "id": "aft-hatch",
+              "type": "shuttle-hatch",
+              "x": 5.0,
+              "y": 8.65,
+              "width": 220,
+              "height": 132,
+              "props": {
+                "label": "Aft Hatch",
+                "color": "#94a3b8",
+                "z": 38,
+                "role": "aft-wall",
+                "lookaroundLayer": "aft"
+              }
+            },
+            {
+              "id": "port-hull-rib",
+              "type": "shuttle-hull-rib",
+              "x": 1.35,
+              "y": 6.45,
+              "width": 116,
+              "height": 250,
+              "props": {
+                "label": "Port Hull Rib",
+                "color": "#334155",
+                "z": 44,
+                "role": "hull"
+              }
+            },
+            {
+              "id": "starboard-hull-rib",
+              "type": "shuttle-hull-rib",
+              "x": 8.65,
+              "y": 6.45,
+              "width": 116,
+              "height": 250,
+              "props": {
+                "label": "Starboard Hull Rib",
+                "color": "#334155",
+                "z": 44,
+                "role": "hull"
+              }
+            },
+            {
+              "id": "hero-spell-aura",
+              "type": "particle-emitter",
+              "parentId": "hero-sprite",
+              "x": 0,
+              "y": 0,
+              "width": 160,
+              "height": 104,
+              "props": {
+                "label": "Combadge Glow",
+                "role": "player-signal",
+                "color": "#7dd3fc",
+                "particleCount": 24,
+                "particleSize": 3,
+                "spread": 0.74,
+                "motion": "rune-ring",
+                "orbitRadius": 48,
+                "verticalLift": 14,
+                "zOffset": 44
+              }
+            },
+            {
+              "id": "console-status-glow",
+              "type": "particle-emitter",
+              "parentId": "nav-console",
+              "x": 0,
+              "y": 0,
+              "width": 280,
+              "height": 80,
+              "props": {
+                "label": "Console Status Glow",
+                "role": "console-vfx",
+                "color": "#fb923c",
+                "particleCount": 38,
+                "particleSize": 3,
+                "spread": 0.88,
+                "motion": "stream",
+                "orbitRadius": 80,
+                "verticalLift": 18,
+                "zOffset": 22
+              }
+            },
+            {
+              "id": "science-status-glow",
+              "type": "particle-emitter",
+              "parentId": "science-console",
+              "x": 0,
+              "y": 0,
+              "width": 280,
+              "height": 80,
+              "props": {
+                "label": "Science Status Glow",
+                "role": "console-vfx",
+                "color": "#22d3ee",
+                "particleCount": 34,
+                "particleSize": 3,
+                "spread": 0.82,
+                "motion": "stream",
+                "orbitRadius": 72,
+                "verticalLift": 16,
+                "zOffset": 22
+              }
+            },
+            {
+              "id": "hero-arc-bolt",
+              "type": "particle-emitter",
+              "parentId": "nav-console",
+              "x": 0,
+              "y": 0,
+              "width": 420,
+              "height": 74,
+              "props": {
+                "label": "Forward Sensor Sweep",
+                "role": "sensor-pulse",
+                "color": "#f59e0b",
+                "particleCount": 52,
+                "particleSize": 4,
+                "spread": 0.92,
+                "motion": "spell-bolt",
+                "sourceId": "nav-console",
+                "targetId": "forward-viewer",
+                "sourceZOffset": 28,
+                "targetZOffset": 72,
+                "zOffset": 54
+              }
+            },
+            {
+              "id": "viewer-starfield",
+              "type": "particle-emitter",
+              "parentId": "forward-viewer",
+              "x": 0,
+              "y": 0,
+              "width": 560,
+              "height": 145,
+              "props": {
+                "label": "Viewport Sparkle Layer",
+                "role": "window-vfx",
+                "color": "#bfdbfe",
+                "particleCount": 70,
+                "particleSize": 3,
+                "spread": 1.35,
+                "motion": "starfall",
+                "orbitRadius": 160,
+                "verticalLift": 42,
+                "zOffset": 12,
+                "pulseDelay": 260
+              }
+            },
+            {
+              "id": "warp-core-hum",
+              "type": "particle-emitter",
+              "x": 5.0,
+              "y": 8.15,
+              "width": 360,
+              "height": 118,
+              "props": {
+                "label": "Impulse Core Hum",
+                "role": "ambient-engine",
+                "color": "#a78bfa",
+                "particleCount": 44,
+                "particleSize": 4,
+                "spread": 1.08,
+                "motion": "nova-ring",
+                "orbitRadius": 84,
+                "verticalLift": 28,
+                "zOffset": 46,
+                "pulseDelay": 920
+              }
+            },
+            {
+              "id": "cabin-light-haze",
+              "type": "particle-emitter",
+              "x": 5.0,
+              "y": 4.9,
+              "width": 680,
+              "height": 220,
+              "props": {
+                "label": "Cabin Light Haze",
+                "role": "ambient-light",
+                "color": "#93c5fd",
+                "particleCount": 32,
+                "particleSize": 5,
+                "spread": 1.42,
+                "motion": "spell-swirl",
+                "orbitRadius": 210,
+                "verticalLift": 60,
+                "zOffset": 92,
+                "pulseDelay": -400
+              }
+            },
+            {
+              "id": "viewport-starfield",
+              "type": "shuttle3d-starfield",
+              "x": 5.0,
+              "y": 0.95,
+              "width": 620,
+              "height": 170,
+              "props": {
+                "label": "Stars Beyond Viewport",
+                "role": "starfield",
+                "color": "#dbeafe",
+                "z": 132,
+                "visibleThroughViewport": true,
+                "twinkle": true,
+                "distribution": "camera-centered-sphere",
+                "sphereRadius": 124,
+                "placeholderCount": 420,
+                "seed": 73129,
+                "fixedDistanceFromCamera": true
+              }
+            },
+            {
+              "id": "mother-ship",
+              "type": "shuttle3d-mother-ship",
+              "x": 5.55,
+              "y": 1.25,
+              "width": 310,
+              "height": 96,
+              "props": {
+                "label": "Mother Ship",
+                "role": "mothership",
+                "color": "#cbd5e1",
+                "z": 150,
+                "visibleThroughViewport": true,
+                "registry": "NCC-1701-inspired silhouette",
+                "dockingDistance": "2.4 km"
+              }
+            },
+            {
+              "id": "lookaround-camera",
+              "type": "shuttle3d-camera",
+              "x": 5.0,
+              "y": 6.8,
+              "width": 0,
+              "height": 0,
+              "props": {
+                "label": "First-person Camera",
+                "role": "player-camera",
+                "yaw": 0,
+                "pitch": -2,
+                "yawLimit": 180,
+                "pitchLimit": 28,
+                "instructions": "Drag/arrows to look. W/A/S/D moves, Shift sprints, click/Space/F fires the phaser, and R restarts after defeat."
+              }
+            },
+            {
+              "id": "alien-raider",
+              "type": "shuttle3d-alien-ship",
+              "x": 2.1,
+              "y": 0.85,
+              "width": 250,
+              "height": 115,
+              "props": {
+                "label": "Alien Raider",
+                "role": "hostile-ship",
+                "color": "#a3e635",
+                "accent": "#ef4444",
+                "z": 149,
+                "visibleThroughViewport": true,
+                "registry": "unknown hostile vessel",
+                "threat": "boarding transport"
+              }
+            },
+            {
+              "id": "player-phaser",
+              "type": "shuttle3d-phaser",
+              "x": 8.55,
+              "y": 7.75,
+              "width": 118,
+              "height": 56,
+              "props": {
+                "label": "Type-II Phaser",
+                "role": "player-weapon",
+                "color": "#f59e0b",
+                "damage": 34,
+                "range": 28,
+                "fireControls": [
+                  "pointer-click",
+                  "Space",
+                  "KeyF"
+                ]
+              }
+            },
+            {
+              "id": "boarding-transporter",
+              "type": "shuttle3d-transporter",
+              "x": 5.0,
+              "y": 5.2,
+              "width": 180,
+              "height": 180,
+              "props": {
+                "label": "Hostile Transport Signatures",
+                "role": "enemy-spawner",
+                "color": "#84cc16",
+                "initialDelayMs": 2200,
+                "intervalMs": 5000,
+                "maxAlive": 4
+              }
+            },
+            {
+              "id": "player-health-hud",
+              "type": "shuttle3d-health-hud",
+              "x": 1.3,
+              "y": 0.75,
+              "width": 240,
+              "height": 50,
+              "props": {
+                "label": "Player Health",
+                "role": "health-hud",
+                "maximum": 100,
+                "starting": 100,
+                "color": "#22c55e"
+              }
+            }
           ],
           "metadata": {
-                    "starter": true,
-                    "projection": "shuttle-3d",
-                    "tileWidth": 92,
-                    "tileHeight": 46,
-                    "originX": 480,
-                    "originY": 118,
-                    "particleOnly": false,
-                    "includesDefaultPlayer": true,
-                    "isometric": false,
-                    "rolloutPhase": "phase-4-shuttle-first-person-movement",
-                    "setting": "federation-like shuttle craft interior with stars and mother ship visible through the forward viewport",
-                    "starterScene": "shuttlecraft-walkaround-spawn",
-                    "characterModel": "first-person-cadet-presence",
-                    "meshActorsEnabled": false,
-                    "parentedParticles": true,
-                    "linkedSpellProjectiles": false,
-                    "linkedSensorPulses": true,
-                    "targetedParticles": true,
-                    "shuttleInterior": true,
-                    "choreography": {
-                              "title": "Shuttle Walk-Around Boot",
-                              "durationMs": 7600,
-                              "cameraPulse": true,
-                              "beats": [
-                                        {
-                                                  "label": "Cabin lights",
-                                                  "timeMs": 0,
-                                                  "cue": "cabin-light-haze"
-                                        },
-                                        {
-                                                  "label": "Console boot",
-                                                  "timeMs": 1100,
-                                                  "cue": "console-status-glow"
-                                        },
-                                        {
-                                                  "label": "Viewport stars",
-                                                  "timeMs": 2100,
-                                                  "cue": "viewport-starfield"
-                                        },
-                                        {
-                                                  "label": "Mother ship contact",
-                                                  "timeMs": 3600,
-                                                  "cue": "mother-ship"
-                                        },
-                                        {
-                                                  "label": "Ready to explore",
-                                                  "timeMs": 6200,
-                                                  "cue": "lookaround-camera"
-                                        }
-                              ]
+            "starter": true,
+            "projection": "shuttle-3d",
+            "tileWidth": 92,
+            "tileHeight": 46,
+            "originX": 480,
+            "originY": 118,
+            "particleOnly": false,
+            "includesDefaultPlayer": true,
+            "isometric": false,
+            "rolloutPhase": "phase-5-shuttle-boarding-combat",
+            "setting": "short federation-like shuttle craft interior under attack by alien boarders, with stars, the mother ship, and an alien raider visible through the forward viewport",
+            "starterScene": "shuttlecraft-boarding-defense",
+            "characterModel": "first-person-cadet-combat-presence",
+            "meshActorsEnabled": false,
+            "parentedParticles": true,
+            "linkedSpellProjectiles": true,
+            "linkedSensorPulses": true,
+            "targetedParticles": true,
+            "shuttleInterior": true,
+            "choreography": {
+              "title": "Shuttle Boarding Alert",
+              "durationMs": 7600,
+              "cameraPulse": true,
+              "beats": [
+                {
+                  "label": "Cabin lights",
+                  "timeMs": 0,
+                  "cue": "cabin-light-haze"
+                },
+                {
+                  "label": "Console boot",
+                  "timeMs": 900,
+                  "cue": "console-status-glow"
+                },
+                {
+                  "label": "Alien ship contact",
+                  "timeMs": 1800,
+                  "cue": "alien-raider"
+                },
+                {
+                  "label": "Transport signature",
+                  "timeMs": 3000,
+                  "cue": "boarding-transporter"
+                },
+                {
+                  "label": "Phaser ready",
+                  "timeMs": 4300,
+                  "cue": "player-phaser"
+                },
+                {
+                  "label": "Defend the shuttle",
+                  "timeMs": 6000,
+                  "cue": "lookaround-camera"
+                }
+              ]
+            },
+            "controls": {
+              "mode": "first-person",
+              "pointerDrag": true,
+              "keyboard": "wasd-arrows-space-fire",
+              "movement": "bounded-first-person-walk",
+              "sprint": "shift",
+              "fire": "click-space-or-f",
+              "restart": "r"
+            },
+            "movementBounds": {
+              "minX": 1.1,
+              "maxX": 8.9,
+              "minY": 3.0,
+              "maxY": 8.4
+            },
+            "vfx": {
+              "particleMultiplier": 2,
+              "effectMultiplier": 1.5,
+              "maxParticlesPerEmitter": 360
+            },
+            "quadrupleParticles": false,
+            "uiParticleControls": true,
+            "lookAroundEnabled": true,
+            "viewportShowsStars": true,
+            "viewportShowsMotherShip": true,
+            "camera": {
+              "mode": "first-person",
+              "position": [
+                0.0,
+                0.75,
+                2.45
+              ],
+              "yaw": 0,
+              "pitch": -2,
+              "yawLimit": 180,
+              "pitchLimit": 28,
+              "hint": "Drag or use arrow keys to look. Use W/A/S/D to walk, Shift to sprint, and click, Space, or F to fire the phaser."
+            },
+            "shuttle3d": {
+              "mode": "webgl-vertex-mesh",
+              "lookAround": true,
+              "viewport": "forward-viewer",
+              "starfield": "viewport-starfield",
+              "motherShip": "mother-ship",
+              "motherShipLabel": "Mother Ship",
+              "playerAnchor": "hero-sprite",
+              "controlsHint": "Click to focus • Drag/arrows look • W/A/S/D move • Shift sprint • Click/Space/F fire • R restart",
+              "geometry": {
+                "renderer": "raw-webgl",
+                "primitive": "triangles",
+                "boundsVertexCount": 12,
+                "boundsVertices": [
+                  [
+                    -4.5,
+                    -1.45,
+                    -7.2
+                  ],
+                  [
+                    -4.5,
+                    2.05,
+                    -7.2
+                  ],
+                  [
+                    -3.55,
+                    3.15,
+                    -7.2
+                  ],
+                  [
+                    3.55,
+                    3.15,
+                    -7.2
+                  ],
+                  [
+                    4.5,
+                    2.05,
+                    -7.2
+                  ],
+                  [
+                    4.5,
+                    -1.45,
+                    -7.2
+                  ],
+                  [
+                    -4.5,
+                    -1.45,
+                    4.8
+                  ],
+                  [
+                    -4.5,
+                    2.05,
+                    4.8
+                  ],
+                  [
+                    -3.55,
+                    3.15,
+                    4.8
+                  ],
+                  [
+                    3.55,
+                    3.15,
+                    4.8
+                  ],
+                  [
+                    4.5,
+                    2.05,
+                    4.8
+                  ],
+                  [
+                    4.5,
+                    -1.45,
+                    4.8
+                  ]
+                ],
+                "viewportOpening": {
+                  "left": -2.92,
+                  "right": 2.92,
+                  "bottom": 0.0,
+                  "top": 2.32,
+                  "z": -7.2
+                },
+                "actualHullBounds": true,
+                "cabinLength": 12.0
+              },
+              "movement": {
+                "enabled": true,
+                "scheme": "wasd",
+                "walkSpeed": 2.65,
+                "sprintMultiplier": 1.7,
+                "radius": 0.28,
+                "eyeHeight": 0.75,
+                "start": [
+                  0.0,
+                  0.75,
+                  2.45
+                ],
+                "bounds": {
+                  "minX": -3.92,
+                  "maxX": 3.92,
+                  "minZ": -6.12,
+                  "maxZ": 3.72
+                },
+                "colliders": [
+                  {
+                    "id": "helm-console",
+                    "minX": -2.95,
+                    "maxX": -0.4,
+                    "minZ": -5.55,
+                    "maxZ": -3.55
+                  },
+                  {
+                    "id": "science-console",
+                    "minX": 0.4,
+                    "maxX": 2.95,
+                    "minZ": -5.55,
+                    "maxZ": -3.55
+                  },
+                  {
+                    "id": "port-console",
+                    "minX": -4.25,
+                    "maxX": -3.45,
+                    "minZ": -4.05,
+                    "maxZ": -0.95
+                  },
+                  {
+                    "id": "starboard-console",
+                    "minX": 3.45,
+                    "maxX": 4.25,
+                    "minZ": -4.05,
+                    "maxZ": -0.95
+                  },
+                  {
+                    "id": "port-seat",
+                    "minX": -2.15,
+                    "maxX": -0.7,
+                    "minZ": -3.0,
+                    "maxZ": -1.05
+                  },
+                  {
+                    "id": "starboard-seat",
+                    "minX": 0.7,
+                    "maxX": 2.15,
+                    "minZ": -3.0,
+                    "maxZ": -1.05
+                  },
+                  {
+                    "id": "aft-hatch",
+                    "minX": -1.45,
+                    "maxX": 1.45,
+                    "minZ": 3.55,
+                    "maxZ": 4.45
+                  }
+                ]
+              },
+              "starfieldSphere": {
+                "mode": "camera-centered-sphere",
+                "radius": 124,
+                "count": 420,
+                "seed": 73129,
+                "minimumSize": 0.12,
+                "maximumSize": 0.38,
+                "fixedDistanceFromCamera": true
+              },
+              "alienShip": "alien-raider",
+              "combat": {
+                "enabled": true,
+                "player": {
+                  "maxHealth": 100,
+                  "startingHealth": 100
+                },
+                "phaser": {
+                  "enabled": true,
+                  "damage": 34,
+                  "cooldownMs": 280,
+                  "range": 28,
+                  "beamDurationMs": 130
+                },
+                "alienShip": {
+                  "id": "alien-raider",
+                  "position": [
+                    -6.4,
+                    2.8,
+                    -48.0
+                  ],
+                  "scale": [
+                    3.8,
+                    0.9,
+                    2.5
+                  ]
+                },
+                "transport": {
+                  "initialDelayMs": 2200,
+                  "intervalMs": 5000,
+                  "beamDurationMs": 900,
+                  "maxAlive": 4,
+                  "spawnPoints": [
+                    {
+                      "id": "port-aft-pad",
+                      "position": [
+                        -2.9,
+                        -0.55,
+                        2.55
+                      ]
                     },
-                    "controls": {
-                              "mode": "first-person",
-                              "pointerDrag": true,
-                              "keyboard": "wasd-and-arrow-keys",
-                              "movement": "bounded-first-person-walk",
-                              "sprint": "shift"
+                    {
+                      "id": "starboard-aft-pad",
+                      "position": [
+                        2.9,
+                        -0.55,
+                        2.55
+                      ]
                     },
-                    "movementBounds": {
-                              "minX": 1.1,
-                              "maxX": 8.9,
-                              "minY": 3.0,
-                              "maxY": 8.4
+                    {
+                      "id": "center-pad",
+                      "position": [
+                        0.0,
+                        -0.55,
+                        0.3
+                      ]
                     },
-                    "vfx": {
-                              "particleMultiplier": 2,
-                              "effectMultiplier": 1.5,
-                              "maxParticlesPerEmitter": 360
-                    },
-                    "quadrupleParticles": false,
-                    "uiParticleControls": true,
-                    "lookAroundEnabled": true,
-                    "viewportShowsStars": true,
-                    "viewportShowsMotherShip": true,
-                    "camera": {
-                              "mode": "first-person",
-                              "position": [0.0, 0.75, 3.35],
-                              "yaw": 0,
-                              "pitch": -2,
-                              "yawLimit": 180,
-                              "pitchLimit": 28,
-                              "hint": "Drag or use arrow keys to look. Use W/A/S/D to walk, and hold Shift to sprint inside the shuttle."
-                    },
-                    "shuttle3d": {
-                              "mode": "webgl-vertex-mesh",
-                              "lookAround": true,
-                              "viewport": "forward-viewer",
-                              "starfield": "viewport-starfield",
-                              "starfieldSphere": {
-                                    "mode": "camera-centered-sphere",
-                                    "radius": 124,
-                                    "count": 420,
-                                    "seed": 73129,
-                                    "minimumSize": 0.12,
-                                    "maximumSize": 0.38,
-                                    "fixedDistanceFromCamera": true
-                              },
-                              "motherShip": "mother-ship",
-                              "motherShipLabel": "Mother Ship",
-                              "playerAnchor": "hero-sprite",
-                              "controlsHint": "Click to focus • Drag or arrows to look • W/A/S/D to walk • Shift to sprint",
-                              "movement": {
-                                "enabled": true,
-                                "scheme": "wasd",
-                                "walkSpeed": 2.65,
-                                "sprintMultiplier": 1.7,
-                                "radius": 0.28,
-                                "eyeHeight": 0.75,
-                                "start": [
-                                  0.0,
-                                  0.75,
-                                  3.35
-                                ],
-                                "bounds": {
-                                  "minX": -3.92,
-                                  "maxX": 3.92,
-                                  "minZ": -7.72,
-                                  "maxZ": 5.82
-                                },
-                                "colliders": [
-                                  {
-                                    "id": "helm-console",
-                                    "minX": -3.0,
-                                    "maxX": -0.3,
-                                    "minZ": -5.55,
-                                    "maxZ": -3.55
-                                  },
-                                  {
-                                    "id": "science-console",
-                                    "minX": 0.3,
-                                    "maxX": 3.0,
-                                    "minZ": -5.55,
-                                    "maxZ": -3.55
-                                  },
-                                  {
-                                    "id": "port-console",
-                                    "minX": -4.25,
-                                    "maxX": -3.45,
-                                    "minZ": -4.05,
-                                    "maxZ": -0.95
-                                  },
-                                  {
-                                    "id": "starboard-console",
-                                    "minX": 3.45,
-                                    "maxX": 4.25,
-                                    "minZ": -4.05,
-                                    "maxZ": -0.95
-                                  },
-                                  {
-                                    "id": "port-seat",
-                                    "minX": -2.15,
-                                    "maxX": -0.7,
-                                    "minZ": -3.0,
-                                    "maxZ": -1.05
-                                  },
-                                  {
-                                    "id": "starboard-seat",
-                                    "minX": 0.7,
-                                    "maxX": 2.15,
-                                    "minZ": -3.0,
-                                    "maxZ": -1.05
-                                  },
-                                  {
-                                    "id": "aft-hatch",
-                                    "minX": -1.45,
-                                    "maxX": 1.45,
-                                    "minZ": 5.7,
-                                    "maxZ": 6.45
-                                  }
-                                ]
-                              },
-                              "geometry": {
-                                  "renderer": "raw-webgl",
-                                  "primitive": "triangles",
-                                  "boundsVertexCount": 12,
-                                  "boundsVertices": [
-                                    [
-                                      -4.5,
-                                      -1.45,
-                                      -8.8
-                                    ],
-                                    [
-                                      -4.5,
-                                      2.05,
-                                      -8.8
-                                    ],
-                                    [
-                                      -3.55,
-                                      3.15,
-                                      -8.8
-                                    ],
-                                    [
-                                      3.55,
-                                      3.15,
-                                      -8.8
-                                    ],
-                                    [
-                                      4.5,
-                                      2.05,
-                                      -8.8
-                                    ],
-                                    [
-                                      4.5,
-                                      -1.45,
-                                      -8.8
-                                    ],
-                                    [
-                                      -4.5,
-                                      -1.45,
-                                      6.8
-                                    ],
-                                    [
-                                      -4.5,
-                                      2.05,
-                                      6.8
-                                    ],
-                                    [
-                                      -3.55,
-                                      3.15,
-                                      6.8
-                                    ],
-                                    [
-                                      3.55,
-                                      3.15,
-                                      6.8
-                                    ],
-                                    [
-                                      4.5,
-                                      2.05,
-                                      6.8
-                                    ],
-                                    [
-                                      4.5,
-                                      -1.45,
-                                      6.8
-                                    ]
-                                  ],
-                                  "viewportOpening": {
-                                    "left": -2.92,
-                                    "right": 2.92,
-                                    "bottom": 0.0,
-                                    "top": 2.32,
-                                    "z": -8.8
-                                  },
-                                  "actualHullBounds": true
-                              }
+                    {
+                      "id": "forward-pad",
+                      "position": [
+                        0.0,
+                        -0.55,
+                        -3.25
+                      ]
                     }
+                  ]
+                },
+                "alien": {
+                  "maxHealth": 60,
+                  "speed": 1.05,
+                  "radius": 0.38,
+                  "attackRange": 1.05,
+                  "damage": 8,
+                  "attackCooldownMs": 850
+                }
+              }
+            },
+            "combatEnabled": true,
+            "healthHud": true,
+            "playerWeapon": "hand-phaser"
           }
-};
+        };
         if (sceneId && sceneId !== scene.id) {
-          return {...scene, id: sceneId, name: scene.name || "Shuttlecraft Walkaround"};
+          return {...scene, id: sceneId, name: scene.name || "Shuttle Boarding Defense"};
         }
         return scene;
       }
@@ -1781,7 +1941,7 @@
           && suppliedPosition.length === 3
           && suppliedPosition.every((value) => Number.isFinite(Number(value)))
           ? suppliedPosition.map(Number)
-          : [0, 0.75, 3.35];
+          : [0, 0.75, 2.45];
         return {
           position,
           yaw: numericSceneProp(camera.yaw, 0, -180, 180),
@@ -1854,18 +2014,18 @@
           && supplied.every((vertex) => Array.isArray(vertex) && vertex.length === 3 && vertex.every(Number.isFinite));
         if (valid) return supplied.map((vertex) => vertex.map(Number));
         return [
-          [-4.5, -1.45, -8.8],
-          [-4.5, 2.05, -8.8],
-          [-3.55, 3.15, -8.8],
-          [3.55, 3.15, -8.8],
-          [4.5, 2.05, -8.8],
-          [4.5, -1.45, -8.8],
-          [-4.5, -1.45, 6.8],
-          [-4.5, 2.05, 6.8],
-          [-3.55, 3.15, 6.8],
-          [3.55, 3.15, 6.8],
-          [4.5, 2.05, 6.8],
-          [4.5, -1.45, 6.8]
+          [-4.5, -1.45, -7.2],
+          [-4.5, 2.05, -7.2],
+          [-3.55, 3.15, -7.2],
+          [3.55, 3.15, -7.2],
+          [4.5, 2.05, -7.2],
+          [4.5, -1.45, -7.2],
+          [-4.5, -1.45, 4.8],
+          [-4.5, 2.05, 4.8],
+          [-3.55, 3.15, 4.8],
+          [3.55, 3.15, 4.8],
+          [4.5, 2.05, 4.8],
+          [4.5, -1.45, 4.8]
         ];
       }
 
@@ -1888,8 +2048,8 @@
         const bounds = {
           minX: number(suppliedBounds.minX, -3.92, -20, 20),
           maxX: number(suppliedBounds.maxX, 3.92, -20, 20),
-          minZ: number(suppliedBounds.minZ, -7.72, -40, 40),
-          maxZ: number(suppliedBounds.maxZ, 5.82, -40, 40)
+          minZ: number(suppliedBounds.minZ, -6.12, -40, 40),
+          maxZ: number(suppliedBounds.maxZ, 3.72, -40, 40)
         };
         if (bounds.minX > bounds.maxX) [bounds.minX, bounds.maxX] = [bounds.maxX, bounds.minX];
         if (bounds.minZ > bounds.maxZ) [bounds.minZ, bounds.maxZ] = [bounds.maxZ, bounds.minZ];
@@ -1940,6 +2100,79 @@
           minimumSize,
           maximumSize: Math.max(minimumSize, number(starfield.maximumSize, 0.38, 0.02, 3)),
           fixedDistanceFromCamera: starfield.fixedDistanceFromCamera !== false
+        };
+      }
+
+
+      function shuttle3dCombatConfig(scene) {
+        const supplied = scene?.metadata?.shuttle3d?.combat;
+        const combat = supplied && typeof supplied === "object" ? supplied : {};
+        const player = combat.player && typeof combat.player === "object" ? combat.player : {};
+        const phaser = combat.phaser && typeof combat.phaser === "object" ? combat.phaser : {};
+        const transport = combat.transport && typeof combat.transport === "object" ? combat.transport : {};
+        const alien = combat.alien && typeof combat.alien === "object" ? combat.alien : {};
+        const alienShip = combat.alienShip && typeof combat.alienShip === "object" ? combat.alienShip : {};
+        const number = (value, fallback, minimum, maximum) => {
+          const parsed = Number(value);
+          if (!Number.isFinite(parsed)) return fallback;
+          return Math.min(maximum, Math.max(minimum, parsed));
+        };
+        const vector = (value, fallback) => (
+          Array.isArray(value)
+          && value.length === 3
+          && value.every((entry) => Number.isFinite(Number(entry)))
+            ? value.map(Number)
+            : fallback.slice()
+        );
+        const suppliedSpawnPoints = Array.isArray(transport.spawnPoints) ? transport.spawnPoints : [];
+        const spawnPoints = suppliedSpawnPoints
+          .filter((point) => point && typeof point === "object")
+          .map((point, index) => ({
+            id: String(point.id || `transport-pad-${index + 1}`),
+            position: vector(point.position, [0, -0.55, 0.3])
+          }));
+        if (!spawnPoints.length) {
+          spawnPoints.push(
+            {id: "port-aft-pad", position: [-2.9, -0.55, 2.55]},
+            {id: "starboard-aft-pad", position: [2.9, -0.55, 2.55]},
+            {id: "center-pad", position: [0, -0.55, 0.3]},
+            {id: "forward-pad", position: [0, -0.55, -3.25]}
+          );
+        }
+        const maxHealth = Math.round(number(player.maxHealth, 100, 1, 1000));
+        return {
+          enabled: combat.enabled !== false,
+          player: {
+            maxHealth,
+            startingHealth: Math.round(number(player.startingHealth, maxHealth, 1, maxHealth))
+          },
+          phaser: {
+            enabled: phaser.enabled !== false,
+            damage: number(phaser.damage, 34, 1, 500),
+            cooldownMs: number(phaser.cooldownMs, 280, 50, 5000),
+            range: number(phaser.range, 28, 2, 200),
+            beamDurationMs: number(phaser.beamDurationMs, 130, 30, 1200)
+          },
+          alienShip: {
+            id: String(alienShip.id || "alien-raider"),
+            position: vector(alienShip.position, [-6.4, 2.8, -48]),
+            scale: vector(alienShip.scale, [3.8, 0.9, 2.5]).map((value) => Math.max(0.25, Math.abs(value)))
+          },
+          transport: {
+            initialDelayMs: number(transport.initialDelayMs, 2200, 0, 60000),
+            intervalMs: number(transport.intervalMs, 5000, 500, 60000),
+            beamDurationMs: number(transport.beamDurationMs, 900, 100, 5000),
+            maxAlive: Math.round(number(transport.maxAlive, 4, 1, 24)),
+            spawnPoints
+          },
+          alien: {
+            maxHealth: number(alien.maxHealth, 60, 1, 1000),
+            speed: number(alien.speed, 1.05, 0.1, 8),
+            radius: number(alien.radius, 0.38, 0.12, 1.4),
+            attackRange: number(alien.attackRange, 1.05, 0.3, 5),
+            damage: number(alien.damage, 8, 1, 100),
+            attackCooldownMs: number(alien.attackCooldownMs, 850, 100, 5000)
+          }
         };
       }
 
@@ -1995,6 +2228,33 @@
           this.quad(p101, p100, p110, p111, color);
           this.quad(p010, p011, p111, p110, color);
           this.quad(p000, p100, p101, p001, color);
+        }
+
+
+        beam(start, end, radius, color) {
+          const axis = shuttle3dNormalizeVector(shuttle3dSubtract(end, start));
+          const guide = Math.abs(axis[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+          const right = shuttle3dNormalizeVector(shuttle3dCross(axis, guide));
+          const up = shuttle3dNormalizeVector(shuttle3dCross(right, axis));
+          const corner = (point, rightScale, upScale) => [
+            point[0] + right[0] * rightScale + up[0] * upScale,
+            point[1] + right[1] * rightScale + up[1] * upScale,
+            point[2] + right[2] * rightScale + up[2] * upScale
+          ];
+          const a = corner(start, -radius, -radius);
+          const b = corner(start, radius, -radius);
+          const c = corner(start, radius, radius);
+          const d = corner(start, -radius, radius);
+          const e = corner(end, -radius, -radius);
+          const f = corner(end, radius, -radius);
+          const g = corner(end, radius, radius);
+          const h = corner(end, -radius, radius);
+          this.quad(a, b, c, d, color);
+          this.quad(e, h, g, f, color);
+          this.quad(a, e, f, b, color);
+          this.quad(b, f, g, c, color);
+          this.quad(c, g, h, d, color);
+          this.quad(d, h, e, a, color);
         }
 
         consoleWedge(centerX, centerZ, width, depth, baseY, frontY, backY, color) {
@@ -2078,17 +2338,34 @@
           this.maxDpr = 2;
           this.compile();
           this.starfield = shuttle3dStarfieldConfig(scene);
+          this.combat = shuttle3dCombatConfig(scene);
+          this.playerHealth = this.combat.player.startingHealth;
+          this.aliens = [];
+          this.transportSequence = 0;
+          this.kills = 0;
+          this.gameOver = false;
+          this.combatClockMs = 0;
+          this.nextTransportAtMs = this.combat.transport.initialDelayMs;
+          this.lastPhaserShotAt = -Infinity;
+          this.phaserBeam = null;
+          this.lastCombatUiAt = -Infinity;
+          this.onCombatChanged = null;
           this.geometry = this.buildGeometry();
           this.worldVertexCount = this.geometry.length / 10;
           this.starGeometry = this.buildStarfieldGeometry();
           this.starVertexCount = this.starGeometry.length / 10;
-          this.vertexCount = this.worldVertexCount + this.starVertexCount;
+          this.dynamicGeometry = this.buildDynamicGeometry(0);
+          this.dynamicVertexCount = this.dynamicGeometry.length / 10;
+          this.vertexCount = this.worldVertexCount + this.starVertexCount + this.dynamicVertexCount;
           this.buffer = this.gl.createBuffer();
           this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
           this.gl.bufferData(this.gl.ARRAY_BUFFER, this.geometry, this.gl.STATIC_DRAW);
           this.starBuffer = this.gl.createBuffer();
           this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.starBuffer);
           this.gl.bufferData(this.gl.ARRAY_BUFFER, this.starGeometry, this.gl.STATIC_DRAW);
+          this.dynamicBuffer = this.gl.createBuffer();
+          this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.dynamicBuffer);
+          this.gl.bufferData(this.gl.ARRAY_BUFFER, this.dynamicGeometry, this.gl.DYNAMIC_DRAW);
           this.resizeObserver = typeof ResizeObserver === "function"
             ? new ResizeObserver(() => this.resize())
             : null;
@@ -2202,16 +2479,23 @@
           builder.box([-0.05, -1.2, aftZ - 0.27], [0.05, 1.48, aftZ - 0.01], glow);
           builder.box([-1.0, 1.28, aftZ - 0.28], [1.0, 1.42, aftZ - 0.01], builder.color("#70849b"));
 
-          [-7.0, -4.5, -2.0, 0.5, 3.0, 5.4].forEach((z) => {
+          const hullFrontZ = forward[0][2];
+          const hullAftZ = aft[0][2];
+          const ribStartZ = hullFrontZ + 0.85;
+          const ribEndZ = hullAftZ - 0.85;
+          const ribSpacing = (ribEndZ - ribStartZ) / 5;
+          Array.from({length: 6}, (_, index) => ribStartZ + ribSpacing * index).forEach((z) => {
             builder.box([-4.44, -1.34, z - 0.08], [-4.25, 2.1, z + 0.08], trim);
             builder.box([4.25, -1.34, z - 0.08], [4.44, 2.1, z + 0.08], trim);
             builder.box([-3.48, 3.0, z - 0.08], [3.48, 3.14, z + 0.08], trim);
           });
 
+          const deckFrontZ = hullFrontZ + 0.65;
+          const deckAftZ = hullAftZ - 0.7;
           [-2.55, -1.28, 0, 1.28, 2.55].forEach((x) => {
-            builder.box([x - 0.025, -1.405, -8.15], [x + 0.025, -1.365, 6.1], builder.color("#52708c"));
+            builder.box([x - 0.025, -1.405, deckFrontZ], [x + 0.025, -1.365, deckAftZ], builder.color("#52708c"));
           });
-          builder.box([-0.42, -1.39, -8.15], [0.42, -1.34, 6.1], builder.color("#315875"));
+          builder.box([-0.42, -1.39, deckFrontZ], [0.42, -1.34, deckAftZ], builder.color("#315875"));
 
           const consoleColor = builder.color("#213a52");
           const consoleGlow = builder.color("#24b7ef", true);
@@ -2242,6 +2526,49 @@
           builder.box([-2.3, -0.46, -32.0], [-1.73, -0.14, -31.55], shipGlow);
           builder.box([3.43, -0.46, -32.0], [4.0, -0.14, -31.55], shipGlow);
           builder.box([-1.88, -0.34, -34.7], [3.58, -0.22, -34.45], shipHull);
+
+          const alienHull = builder.color("#4d7c0f");
+          const alienDark = builder.color("#18240f");
+          const alienGlow = builder.color("#ef4444", true);
+          const alienShip = this.combat.alienShip;
+          const [alienX, alienY, alienZ] = alienShip.position;
+          const [alienScaleX, alienScaleY, alienScaleZ] = alienShip.scale;
+          builder.ellipsoid(
+            [alienX, alienY, alienZ],
+            [alienScaleX * 0.32, alienScaleY * 0.85, alienScaleZ],
+            16,
+            8,
+            alienDark
+          );
+          builder.ellipsoid(
+            [alienX - alienScaleX * 0.58, alienY, alienZ + alienScaleZ * 0.12],
+            [alienScaleX * 0.55, alienScaleY * 0.3, alienScaleZ * 0.58],
+            14,
+            6,
+            alienHull
+          );
+          builder.ellipsoid(
+            [alienX + alienScaleX * 0.58, alienY, alienZ + alienScaleZ * 0.12],
+            [alienScaleX * 0.55, alienScaleY * 0.3, alienScaleZ * 0.58],
+            14,
+            6,
+            alienHull
+          );
+          builder.box(
+            [alienX - alienScaleX * 0.12, alienY - alienScaleY * 0.22, alienZ - alienScaleZ * 0.96],
+            [alienX + alienScaleX * 0.12, alienY + alienScaleY * 0.22, alienZ - alienScaleZ * 0.72],
+            alienGlow
+          );
+          builder.box(
+            [alienX - alienScaleX * 0.85, alienY - alienScaleY * 0.12, alienZ + alienScaleZ * 0.46],
+            [alienX - alienScaleX * 0.54, alienY + alienScaleY * 0.12, alienZ + alienScaleZ * 0.66],
+            alienGlow
+          );
+          builder.box(
+            [alienX + alienScaleX * 0.54, alienY - alienScaleY * 0.12, alienZ + alienScaleZ * 0.46],
+            [alienX + alienScaleX * 0.85, alienY + alienScaleY * 0.12, alienZ + alienScaleZ * 0.66],
+            alienGlow
+          );
 
           return builder.toFloat32Array();
         }
@@ -2279,6 +2606,287 @@
             );
           }
           return builder.toFloat32Array();
+        }
+
+
+        cameraDirection() {
+          const yaw = this.look.yaw * Math.PI / 180;
+          const pitch = this.look.pitch * Math.PI / 180;
+          return shuttle3dNormalizeVector([
+            Math.sin(yaw) * Math.cos(pitch),
+            Math.sin(pitch),
+            -Math.cos(yaw) * Math.cos(pitch)
+          ]);
+        }
+
+        cameraBasis() {
+          const forward = this.cameraDirection();
+          const right = shuttle3dNormalizeVector(shuttle3dCross(forward, [0, 1, 0]));
+          const up = shuttle3dNormalizeVector(shuttle3dCross(right, forward));
+          return {forward, right, up};
+        }
+
+        appendPhaserViewModel(builder) {
+          if (!this.combat.enabled || !this.combat.phaser.enabled || this.gameOver) return;
+          const {forward, right, up} = this.cameraBasis();
+          const add = (origin, ...terms) => {
+            const point = origin.slice();
+            terms.forEach(([vector, scale]) => {
+              point[0] += vector[0] * scale;
+              point[1] += vector[1] * scale;
+              point[2] += vector[2] * scale;
+            });
+            return point;
+          };
+          const body = builder.color("#d8e2ea");
+          const grip = builder.color("#25364a");
+          const accent = builder.color("#f59e0b", true);
+          const base = add(this.camera, [forward, 0.48], [right, 0.28], [up, -0.23]);
+          const muzzle = add(base, [forward, 0.48]);
+          const gripStart = add(base, [forward, 0.08], [up, -0.025]);
+          const gripEnd = add(gripStart, [forward, -0.08], [up, -0.25]);
+          builder.beam(base, muzzle, 0.055, body);
+          builder.beam(gripStart, gripEnd, 0.07, grip);
+          builder.beam(add(muzzle, [forward, -0.04]), add(muzzle, [forward, 0.035]), 0.072, accent);
+        }
+
+        buildDynamicGeometry(nowMs) {
+          const builder = new Shuttle3dGeometryWriter();
+          const transportGlow = builder.color("#84cc16", true);
+          const alienBody = builder.color("#365314");
+          const alienArmor = builder.color("#1a2e05");
+          const alienHit = builder.color("#fef08a", true);
+          const alienEyes = builder.color("#ef4444", true);
+          const healthBack = builder.color("#111827");
+          const healthFill = builder.color("#84cc16", true);
+          this.appendPhaserViewModel(builder);
+
+          this.aliens.forEach((alien) => {
+            const [x, y, z] = alien.position;
+            const transporting = alien.state === "transporting";
+            if (transporting) {
+              builder.beam([x, -1.35, z], [x, 2.55, z], 0.12, transportGlow);
+              builder.beam([x - 0.23, -1.25, z], [x - 0.23, 2.25, z], 0.035, transportGlow);
+              builder.beam([x + 0.23, -1.25, z], [x + 0.23, 2.25, z], 0.035, transportGlow);
+              builder.beam([x, -1.25, z - 0.23], [x, 2.25, z - 0.23], 0.035, transportGlow);
+              builder.beam([x, -1.25, z + 0.23], [x, 2.25, z + 0.23], 0.035, transportGlow);
+            }
+
+            const bodyColor = nowMs < alien.hitFlashUntilMs ? alienHit : alienBody;
+            builder.ellipsoid([x, y + 0.22, z], [0.34, 0.72, 0.3], 10, 6, bodyColor);
+            builder.ellipsoid([x, y + 1.0, z], [0.32, 0.34, 0.3], 10, 6, bodyColor);
+            builder.box([x - 0.46, y + 0.2, z - 0.16], [x + 0.46, y + 0.42, z + 0.16], alienArmor);
+            builder.box([x - 0.2, y - 0.72, z - 0.15], [x - 0.05, y + 0.05, z + 0.15], alienArmor);
+            builder.box([x + 0.05, y - 0.72, z - 0.15], [x + 0.2, y + 0.05, z + 0.15], alienArmor);
+            builder.box([x - 0.18, y + 1.03, z - 0.32], [x - 0.05, y + 1.12, z - 0.27], alienEyes);
+            builder.box([x + 0.05, y + 1.03, z - 0.32], [x + 0.18, y + 1.12, z - 0.27], alienEyes);
+
+            if (!transporting) {
+              const ratio = Math.max(0, Math.min(1, alien.health / alien.maxHealth));
+              builder.box([x - 0.46, y + 1.48, z - 0.06], [x + 0.46, y + 1.56, z + 0.06], healthBack);
+              if (ratio > 0) {
+                builder.box(
+                  [x - 0.44, y + 1.49, z - 0.065],
+                  [x - 0.44 + 0.88 * ratio, y + 1.55, z + 0.065],
+                  healthFill
+                );
+              }
+            }
+          });
+
+          if (this.phaserBeam && nowMs <= this.phaserBeam.expiresAtMs) {
+            builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.025, builder.color("#f59e0b", true));
+            builder.beam(this.phaserBeam.start, this.phaserBeam.end, 0.009, builder.color("#fff7d6", true));
+          }
+          return builder.toFloat32Array();
+        }
+
+        combatSnapshot(nowMs = this.combatClockMs) {
+          const cooldownRemainingMs = Math.max(
+            0,
+            this.combat.phaser.cooldownMs - (nowMs - this.lastPhaserShotAt)
+          );
+          return {
+            enabled: this.combat.enabled,
+            health: Math.max(0, Math.round(this.playerHealth)),
+            maxHealth: this.combat.player.maxHealth,
+            alive: this.aliens.length,
+            active: this.aliens.filter((alien) => alien.state === "active").length,
+            transporting: this.aliens.filter((alien) => alien.state === "transporting").length,
+            kills: this.kills,
+            gameOver: this.gameOver,
+            phaserReady: !this.gameOver && cooldownRemainingMs <= 0,
+            cooldownRemainingMs: Math.ceil(cooldownRemainingMs)
+          };
+        }
+
+        emitCombatState(force = false) {
+          if (typeof this.onCombatChanged !== "function") return;
+          if (!force && this.combatClockMs - this.lastCombatUiAt < 80) return;
+          this.lastCombatUiAt = this.combatClockMs;
+          this.onCombatChanged(this.combatSnapshot());
+        }
+
+        spawnAlien(nowMs) {
+          if (!this.combat.enabled || this.gameOver || this.aliens.length >= this.combat.transport.maxAlive) return false;
+          const points = this.combat.transport.spawnPoints;
+          const point = points[this.transportSequence % points.length];
+          this.transportSequence += 1;
+          const alien = {
+            id: `boarding-alien-${this.transportSequence}`,
+            spawnId: point.id,
+            position: point.position.slice(),
+            health: this.combat.alien.maxHealth,
+            maxHealth: this.combat.alien.maxHealth,
+            state: "transporting",
+            transportUntilMs: nowMs + this.combat.transport.beamDurationMs,
+            nextAttackAtMs: nowMs + this.combat.transport.beamDurationMs + 400,
+            hitFlashUntilMs: 0
+          };
+          this.aliens.push(alien);
+          this.emitCombatState(true);
+          return true;
+        }
+
+        canAlienOccupy(alien, x, z) {
+          const {bounds, colliders} = this.movement;
+          const radius = this.combat.alien.radius;
+          if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
+          const blockedByFixture = colliders.some((collider) => (
+            x > collider.minX - radius
+            && x < collider.maxX + radius
+            && z > collider.minZ - radius
+            && z < collider.maxZ + radius
+          ));
+          if (blockedByFixture) return false;
+          return !this.aliens.some((other) => (
+            other !== alien
+            && other.state === "active"
+            && Math.hypot(x - other.position[0], z - other.position[2]) < radius * 1.65
+          ));
+        }
+
+        updateCombat(nowMs, deltaSeconds) {
+          if (!this.combat.enabled) return;
+          this.combatClockMs = nowMs;
+          if (this.phaserBeam && nowMs > this.phaserBeam.expiresAtMs) this.phaserBeam = null;
+          if (this.gameOver) {
+            this.emitCombatState();
+            return;
+          }
+
+          if (nowMs >= this.nextTransportAtMs) {
+            this.spawnAlien(nowMs);
+            this.nextTransportAtMs = nowMs + this.combat.transport.intervalMs;
+          }
+
+          let healthChanged = false;
+          this.aliens.forEach((alien) => {
+            if (alien.state === "transporting") {
+              if (nowMs >= alien.transportUntilMs) {
+                alien.state = "active";
+                this.emitCombatState(true);
+              } else {
+                return;
+              }
+            }
+
+            const dx = this.camera[0] - alien.position[0];
+            const dz = this.camera[2] - alien.position[2];
+            const distance = Math.hypot(dx, dz);
+            if (distance > this.combat.alien.attackRange) {
+              const step = Math.min(distance, this.combat.alien.speed * Math.min(0.05, deltaSeconds));
+              const moveX = distance > 0 ? dx / distance * step : 0;
+              const moveZ = distance > 0 ? dz / distance * step : 0;
+              const candidateX = alien.position[0] + moveX;
+              const candidateZ = alien.position[2] + moveZ;
+              if (this.canAlienOccupy(alien, candidateX, alien.position[2])) alien.position[0] = candidateX;
+              if (this.canAlienOccupy(alien, alien.position[0], candidateZ)) alien.position[2] = candidateZ;
+            } else if (nowMs >= alien.nextAttackAtMs) {
+              alien.nextAttackAtMs = nowMs + this.combat.alien.attackCooldownMs;
+              this.playerHealth = Math.max(0, this.playerHealth - this.combat.alien.damage);
+              healthChanged = true;
+            }
+          });
+
+          if (this.playerHealth <= 0) {
+            this.gameOver = true;
+            this.clearMovementKeys();
+            healthChanged = true;
+          }
+          this.emitCombatState(healthChanged);
+        }
+
+        firePhaser(nowMs = performance.now()) {
+          if (!this.combat.enabled || !this.combat.phaser.enabled || this.gameOver) return false;
+          this.combatClockMs = Math.max(this.combatClockMs, nowMs);
+          if (nowMs - this.lastPhaserShotAt < this.combat.phaser.cooldownMs) return false;
+          this.lastPhaserShotAt = nowMs;
+          const {forward, right, up} = this.cameraBasis();
+          const start = [
+            this.camera[0] + forward[0] * 0.42 + right[0] * 0.18 - up[0] * 0.1,
+            this.camera[1] + forward[1] * 0.42 + right[1] * 0.18 - up[1] * 0.1,
+            this.camera[2] + forward[2] * 0.42 + right[2] * 0.18 - up[2] * 0.1
+          ];
+          let hitAlien = null;
+          let hitDistance = this.combat.phaser.range;
+          this.aliens.forEach((alien) => {
+            if (alien.state !== "active") return;
+            const center = [alien.position[0], alien.position[1] + 0.78, alien.position[2]];
+            const toCenter = shuttle3dSubtract(center, this.camera);
+            const distanceAlongRay = shuttle3dDot(toCenter, forward);
+            if (distanceAlongRay <= 0 || distanceAlongRay >= hitDistance) return;
+            const closest = [
+              this.camera[0] + forward[0] * distanceAlongRay,
+              this.camera[1] + forward[1] * distanceAlongRay,
+              this.camera[2] + forward[2] * distanceAlongRay
+            ];
+            const missDistance = Math.hypot(
+              closest[0] - center[0],
+              closest[1] - center[1],
+              closest[2] - center[2]
+            );
+            if (missDistance <= Math.max(0.68, this.combat.alien.radius * 1.7)) {
+              hitAlien = alien;
+              hitDistance = distanceAlongRay;
+            }
+          });
+
+          const end = [
+            this.camera[0] + forward[0] * hitDistance,
+            this.camera[1] + forward[1] * hitDistance,
+            this.camera[2] + forward[2] * hitDistance
+          ];
+          this.phaserBeam = {
+            start,
+            end,
+            expiresAtMs: nowMs + this.combat.phaser.beamDurationMs
+          };
+
+          if (hitAlien) {
+            hitAlien.health -= this.combat.phaser.damage;
+            hitAlien.hitFlashUntilMs = nowMs + 120;
+            if (hitAlien.health <= 0) {
+              this.aliens = this.aliens.filter((alien) => alien !== hitAlien);
+              this.kills += 1;
+            }
+          }
+          this.emitCombatState(true);
+          return true;
+        }
+
+        resetCombat(nowMs = performance.now()) {
+          this.playerHealth = this.combat.player.startingHealth;
+          this.aliens = [];
+          this.transportSequence = 0;
+          this.kills = 0;
+          this.gameOver = false;
+          this.phaserBeam = null;
+          this.lastPhaserShotAt = -Infinity;
+          this.combatClockMs = nowMs;
+          this.nextTransportAtMs = nowMs + Math.min(900, this.combat.transport.initialDelayMs);
+          this.clearMovementKeys();
+          this.emitCombatState(true);
         }
 
         bindGeometryBuffer(buffer) {
@@ -2325,16 +2933,21 @@
         canOccupy(x, z) {
           const {bounds, radius, colliders} = this.movement;
           if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return false;
-          return !colliders.some((collider) => (
+          const blockedByFixture = colliders.some((collider) => (
             x > collider.minX - radius
             && x < collider.maxX + radius
             && z > collider.minZ - radius
             && z < collider.maxZ + radius
           ));
+          if (blockedByFixture) return false;
+          return !this.aliens.some((alien) => (
+            alien.state === "active"
+            && Math.hypot(x - alien.position[0], z - alien.position[2]) < radius + this.combat.alien.radius
+          ));
         }
 
         moveCamera(deltaX, deltaZ) {
-          if (!this.movement.enabled) return;
+          if (!this.movement.enabled || this.gameOver) return;
           const nextX = this.camera[0] + deltaX;
           const nextZ = this.camera[2] + deltaZ;
           let changed = false;
@@ -2383,15 +2996,15 @@
           const deltaSeconds = this.lastFrameTime === null ? 0 : Math.max(0, (frameTime - this.lastFrameTime) / 1000);
           this.lastFrameTime = frameTime;
           this.updateMovement(deltaSeconds);
+          this.updateCombat(frameTime, deltaSeconds);
+          this.dynamicGeometry = this.buildDynamicGeometry(frameTime);
+          this.dynamicVertexCount = this.dynamicGeometry.length / 10;
+          this.vertexCount = this.worldVertexCount + this.starVertexCount + this.dynamicVertexCount;
+          this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.dynamicBuffer);
+          this.gl.bufferData(this.gl.ARRAY_BUFFER, this.dynamicGeometry, this.gl.DYNAMIC_DRAW);
           this.resize();
           const gl = this.gl;
-          const yaw = this.look.yaw * Math.PI / 180;
-          const pitch = this.look.pitch * Math.PI / 180;
-          const direction = [
-            Math.sin(yaw) * Math.cos(pitch),
-            Math.sin(pitch),
-            -Math.cos(yaw) * Math.cos(pitch)
-          ];
+          const direction = this.cameraDirection();
           const target = [
             this.camera[0] + direction[0],
             this.camera[1] + direction[1],
@@ -2411,11 +3024,17 @@
           gl.uniformMatrix4fv(this.locations.projection, false, projection);
           gl.uniformMatrix4fv(this.locations.view, false, view);
           gl.uniform3fv(this.locations.camera, new Float32Array(this.camera));
-          gl.uniform1f(this.locations.time, now / 1000);
+          gl.uniform1f(this.locations.time, frameTime / 1000);
 
           this.bindGeometryBuffer(this.buffer);
           gl.uniform3f(this.locations.offset, 0, 0, 0);
           gl.drawArrays(gl.TRIANGLES, 0, this.worldVertexCount);
+
+          if (this.dynamicVertexCount) {
+            this.bindGeometryBuffer(this.dynamicBuffer);
+            gl.uniform3f(this.locations.offset, 0, 0, 0);
+            gl.drawArrays(gl.TRIANGLES, 0, this.dynamicVertexCount);
+          }
 
           this.bindGeometryBuffer(this.starBuffer);
           gl.uniform3fv(this.locations.offset, new Float32Array(this.camera));
@@ -2432,6 +3051,7 @@
           this.canvas.removeEventListener("webglcontextlost", this.handleContextLost);
           if (this.buffer) this.gl.deleteBuffer(this.buffer);
           if (this.starBuffer) this.gl.deleteBuffer(this.starBuffer);
+          if (this.dynamicBuffer) this.gl.deleteBuffer(this.dynamicBuffer);
           if (this.program) this.gl.deleteProgram(this.program);
         }
       }
@@ -2470,6 +3090,7 @@
         if (container?.dataset) {
           delete container.dataset.shuttle3dLookaround;
           delete container.dataset.shuttle3dMovement;
+          delete container.dataset.shuttle3dCombat;
           delete container.dataset.shuttle3dDragging;
         }
       }
@@ -2478,16 +3099,20 @@
         disposeShuttle3dLookaround(container);
         const config = shuttle3dCameraConfig(scene);
         const movementCodes = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight"]);
+        const firingCodes = new Set(["Space", "KeyF"]);
         setShuttle3dLook(container, config.yaw, config.pitch, config);
         container.dataset.shuttle3dLookaround = "enabled";
         container.dataset.shuttle3dMovement = "wasd";
+        container.dataset.shuttle3dCombat = "phaser";
         container.tabIndex = container.tabIndex >= 0 ? container.tabIndex : 0;
         let dragging = false;
+        let dragDistance = 0;
         let startX = 0;
         let startY = 0;
         let startYaw = config.yaw;
         let startPitch = config.pitch;
         const applyDelta = (dx, dy) => {
+          dragDistance = Math.max(dragDistance, Math.hypot(dx, dy));
           const nextYaw = startYaw + dx * 0.14;
           const nextPitch = startPitch - dy * 0.11;
           setShuttle3dLook(container, nextYaw, nextPitch, config);
@@ -2498,6 +3123,7 @@
           if (target?.closest?.("button, a, input, select, textarea")) return;
           event.preventDefault();
           dragging = true;
+          dragDistance = 0;
           startX = event.clientX;
           startY = event.clientY;
           const current = container.__mainComputerShuttle3dLook || {yaw: config.yaw, pitch: config.pitch};
@@ -2514,8 +3140,19 @@
           if (!dragging) return;
           dragging = false;
           delete container.dataset.shuttle3dDragging;
+          if (dragDistance < 5) container.__mainComputerShuttle3dRenderer?.firePhaser?.();
         };
         const keyDown = (event) => {
+          if (firingCodes.has(event.code)) {
+            event.preventDefault();
+            if (!event.repeat) container.__mainComputerShuttle3dRenderer?.firePhaser?.();
+            return;
+          }
+          if (event.code === "KeyR") {
+            event.preventDefault();
+            if (!event.repeat) container.__mainComputerShuttle3dRenderer?.resetCombat?.();
+            return;
+          }
           if (movementCodes.has(event.code)) {
             event.preventDefault();
             container.__mainComputerShuttle3dRenderer?.setMovementKey?.(event.code, true);
@@ -2539,6 +3176,7 @@
         };
         const blur = () => {
           dragging = false;
+          dragDistance = 0;
           delete container.dataset.shuttle3dDragging;
           container.__mainComputerShuttle3dRenderer?.clearMovementKeys?.();
         };
@@ -2560,14 +3198,18 @@
 
       function renderShuttle3dScene(container, scene, options = {}) {
         const shuttle = scene?.metadata?.shuttle3d && typeof scene.metadata.shuttle3d === "object" ? scene.metadata.shuttle3d : {};
-        container.dataset.sceneState = "shuttle3d-first-person";
+        container.dataset.sceneState = "shuttle3d-boarding-combat";
         container.dataset.shuttle3d = "webgl-vertex-mesh";
         container.dataset.sceneLookaround = "enabled";
+        container.dataset.sceneCombat = "enabled";
 
         const shell = document.createElement("div");
         shell.className = "scene-shuttle3d";
         shell.setAttribute("role", "application");
-        shell.setAttribute("aria-label", shuttle.controlsHint || "Vertex-built 3D shuttlecraft interior. Click to focus, use W A S D to walk, and drag or use arrow keys to look.");
+        shell.setAttribute(
+          "aria-label",
+          shuttle.controlsHint || "Vertex-built 3D shuttle defense. Walk with W A S D, look by dragging or using arrows, and fire the phaser with click, Space, or F."
+        );
         shell.tabIndex = 0;
 
         const canvas = document.createElement("canvas");
@@ -2576,18 +3218,65 @@
         canvas.setAttribute("role", "img");
         canvas.setAttribute(
           "aria-label",
-          `${shuttle3dObjectLabel(scene, "shuttle-floor", "Shuttle interior")} rendered from real hull vertices, with stars and ${shuttle3dObjectLabel(scene, String(shuttle.motherShip || "mother-ship"), "the mother ship")} beyond the forward viewport.`
+          `${shuttle3dObjectLabel(scene, "shuttle-floor", "Shuttle interior")} rendered from real hull vertices, with stars, ${shuttle3dObjectLabel(scene, String(shuttle.motherShip || "mother-ship"), "the mother ship")}, and ${shuttle3dObjectLabel(scene, String(shuttle.alienShip || "alien-raider"), "an alien raider")} beyond the forward viewport.`
         );
+
+        const hud = document.createElement("div");
+        hud.className = "scene-shuttle3d-hud";
+        hud.setAttribute("aria-live", "polite");
+
+        const healthPanel = document.createElement("div");
+        healthPanel.className = "scene-shuttle3d-health";
+        const healthLabel = document.createElement("span");
+        healthLabel.className = "scene-shuttle3d-health-label";
+        healthLabel.textContent = "HEALTH 100 / 100";
+        const healthTrack = document.createElement("span");
+        healthTrack.className = "scene-shuttle3d-health-track";
+        const healthFill = document.createElement("span");
+        healthFill.className = "scene-shuttle3d-health-fill";
+        healthTrack.append(healthFill);
+        healthPanel.append(healthLabel, healthTrack);
+
+        const combatLine = document.createElement("div");
+        combatLine.className = "scene-shuttle3d-combat-line";
+        combatLine.textContent = "BOARDERS 0 • KILLS 0";
+        const phaserLine = document.createElement("div");
+        phaserLine.className = "scene-shuttle3d-phaser-line";
+        phaserLine.textContent = "TYPE-II PHASER READY";
+        hud.append(healthPanel, combatLine, phaserLine);
+
+        const crosshair = document.createElement("div");
+        crosshair.className = "scene-shuttle3d-crosshair";
+        crosshair.setAttribute("aria-hidden", "true");
+        crosshair.append(
+          document.createElement("span"),
+          document.createElement("span"),
+          document.createElement("span"),
+          document.createElement("span")
+        );
+
+        const damageFlash = document.createElement("div");
+        damageFlash.className = "scene-shuttle3d-damage-flash";
+        damageFlash.setAttribute("aria-hidden", "true");
+
+        const gameOver = document.createElement("div");
+        gameOver.className = "scene-shuttle3d-game-over";
+        gameOver.hidden = true;
+        const gameOverTitle = document.createElement("strong");
+        gameOverTitle.textContent = "CADET DOWN";
+        const gameOverHint = document.createElement("span");
+        gameOverHint.textContent = "Press R to restart the boarding defense.";
+        gameOver.append(gameOverTitle, gameOverHint);
 
         const hint = document.createElement("div");
         hint.className = "scene-shuttle3d-look-hint";
-        hint.textContent = shuttle.controlsHint || "Click to focus • Drag or arrows to look • W/A/S/D to walk • Shift to sprint";
+        hint.textContent = shuttle.controlsHint || "Drag/arrows look • W/A/S/D move • Shift sprint • Click/Space/F fire • R restart";
 
         const status = document.createElement("div");
         status.className = "scene-shuttle3d-mesh-status";
-        status.textContent = "Building shuttle hull vertices…";
+        status.textContent = "Building shuttle combat vertices…";
 
-        shell.append(canvas, hint, status);
+        shell.append(canvas, hud, crosshair, damageFlash, gameOver, hint, status);
         container.append(shell);
         bindShuttle3dLookaround(container, scene);
 
@@ -2600,13 +3289,50 @@
           canvas.dataset.starfieldMode = renderer.starfield.mode;
           canvas.dataset.starfieldCount = String(renderer.starfield.count);
           canvas.dataset.starfieldRadius = String(renderer.starfield.radius);
+          canvas.dataset.combatEnabled = String(renderer.combat.enabled);
+          canvas.dataset.alienShip = renderer.combat.alienShip.id;
+          let lastHealth = renderer.combat.player.startingHealth;
+          let damageTimer = 0;
           const updateMovementStatus = (camera) => {
-            status.textContent = `${renderer.worldVertexCount.toLocaleString()} shuttle vertices • ${renderer.starfield.count} stars at ${renderer.starfield.radius}u • x ${camera[0].toFixed(1)} • z ${camera[2].toFixed(1)}`;
+            const combat = renderer.combatSnapshot();
+            status.textContent = `${renderer.worldVertexCount.toLocaleString()} fixed vertices • ${renderer.starfield.count} sphere stars • ${combat.alive} boarders • x ${camera[0].toFixed(1)} • z ${camera[2].toFixed(1)}`;
             canvas.dataset.cameraX = camera[0].toFixed(3);
             canvas.dataset.cameraZ = camera[2].toFixed(3);
           };
+          const updateCombatHud = (combat) => {
+            const ratio = combat.maxHealth > 0 ? Math.max(0, Math.min(1, combat.health / combat.maxHealth)) : 0;
+            healthLabel.textContent = `HEALTH ${combat.health} / ${combat.maxHealth}`;
+            healthFill.style.width = `${(ratio * 100).toFixed(1)}%`;
+            healthPanel.dataset.healthState = combat.health <= combat.maxHealth * 0.25
+              ? "critical"
+              : combat.health <= combat.maxHealth * 0.55
+                ? "warning"
+                : "nominal";
+            const transportText = combat.transporting ? ` • ${combat.transporting} TRANSPORTING` : "";
+            combatLine.textContent = `BOARDERS ${combat.active}${transportText} • KILLS ${combat.kills}`;
+            phaserLine.textContent = combat.phaserReady
+              ? "TYPE-II PHASER READY"
+              : `PHASER RECHARGING ${combat.cooldownRemainingMs}ms`;
+            phaserLine.dataset.phaserReady = String(combat.phaserReady);
+            gameOver.hidden = !combat.gameOver;
+            shell.dataset.playerState = combat.gameOver ? "defeated" : "active";
+            canvas.dataset.playerHealth = String(combat.health);
+            canvas.dataset.alienCount = String(combat.alive);
+            canvas.dataset.killCount = String(combat.kills);
+            if (combat.health < lastHealth) {
+              shell.classList.remove("scene-shuttle3d--damaged");
+              void shell.offsetWidth;
+              shell.classList.add("scene-shuttle3d--damaged");
+              window.clearTimeout(damageTimer);
+              damageTimer = window.setTimeout(() => shell.classList.remove("scene-shuttle3d--damaged"), 260);
+            }
+            lastHealth = combat.health;
+            updateMovementStatus(renderer.camera);
+          };
           renderer.onCameraMoved = updateMovementStatus;
+          renderer.onCombatChanged = updateCombatHud;
           updateMovementStatus(renderer.camera);
+          renderer.emitCombatState(true);
         } catch (error) {
           shell.dataset.rendererError = "true";
           status.textContent = "WebGL shuttle renderer unavailable";

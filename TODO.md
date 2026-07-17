@@ -1,5 +1,17 @@
 # TODO
 
+- Turn `pretty_docs/mcel-code-editor-requirements.md` into a parsed MCEL requirements source:
+  - validate `mcel-*` blocks in CI.
+  - compare Code Editor requirements against the live app blueprint and future domain adapter.
+  - create MCEL Lab findings for missing semantic intents, unsafe action placement, and unverified acceptance criteria.
+- Turn `pretty_docs/mcel-git-tools-requirements.md` into a parsed MCEL requirements source:
+  - validate Git Tools `mcel-*` blocks in CI.
+  - compare governed-push, read/inspect, file-triage, and recovery requirements against the live semantic adapter.
+  - create MCEL Lab findings for declared-only intents, project-card publishing gaps, and unverified remote-sync acceptance criteria.
+- Turn `pretty_docs/mcel-calculator-requirements.md` into a parsed MCEL requirements source:
+  - validate Calculator `mcel-*` blocks in CI.
+  - compare deterministic compute, graphing, Mathics, Q&A, and layout requirements against the live app and future semantic adapter.
+  - create MCEL Lab findings for missing adapter readiness, parser/evaluation boundaries, graph canvas ownership, and helper-panel layout semantics.
 - Expand diagnostics so every level displays the report in the viewport and records a consistent JSON artifact.
 - Add a full functional diagnostic path for the configured local Ollama model, with a clear skip/fail reason when the model is unavailable.
 - Bring `main_copmputer_production` test coverage up to parity with `main_computer_test`.

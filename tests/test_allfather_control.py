@@ -211,7 +211,7 @@ def test_discover_uses_coolify_patch_probe_and_leaves_probe_running(monkeypatch:
     def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
         return {
             "ok": True,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "head_service_uuid": f"head-{head.head_id}",
             "probe_service_uuid": f"probe-{head.head_id}",
             "probe_left_running": True,
@@ -240,11 +240,11 @@ def test_discover_uses_coolify_patch_probe_and_leaves_probe_running(monkeypatch:
     payload = control.discover_from_heads(plan, args)
 
     assert payload["ok"] is True
-    assert payload["operator_transport"] == "coolify-patch-probe"
+    assert payload["operator_transport"] == "coolify-head-agent"
     assert payload["public_guard_routes"] is False
     assert payload["ssh_used"] is False
     assert payload["direct_vpn_used"] is False
-    assert payload["probe_services_left_running"] is True
+    assert payload["probe_services_left_running"] is False
     assert payload["summary"]["probe_services_synced"] == 2
     assert payload["summary"]["probe_results_observed"] == 2
     assert payload["summary"]["topology_ready"] is True
@@ -268,7 +268,7 @@ def test_discover_includes_super_nodes_from_coolify_service_inventory(monkeypatc
             inventory.append(node)
         return {
             "ok": True,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "head_service_uuid": f"head-{head.head_id}",
             "probe_service_uuid": f"probe-{head.head_id}",
             "probe_left_running": True,
@@ -323,7 +323,7 @@ def test_discover_does_not_probe_vpn_urls_from_local(monkeypatch: pytest.MonkeyP
     def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
         return {
             "ok": True,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "head_service_uuid": f"head-{head.head_id}",
             "probe_service_uuid": f"probe-{head.head_id}",
             "probe_left_running": True,
@@ -370,7 +370,7 @@ def test_discover_dry_run_renders_private_probe_payloads(tmp_path: Path) -> None
     assert "[allfather add-node] start: network=testnet host=coolify-a slot=A" in result.stderr
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
-    assert payload["operator_transport"] == "coolify-patch-probe"
+    assert payload["operator_transport"] == "coolify-head-agent"
     assert payload["public_guard_routes"] is False
     assert payload["ssh_used"] is False
     assert payload["direct_vpn_used"] is False
@@ -558,7 +558,7 @@ def test_wait_for_super_base_builder_ready_uses_builder_logs_before_http_probe(
     assert result["observed_by"] == "builder-logs"
 
 
-def test_ensure_super_base_image_redeploys_ready_builder_to_verify_host_image(
+def test_ensure_super_base_image_does_not_create_builder_helper_in_sprawl_free_mode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -569,23 +569,8 @@ def test_ensure_super_base_image_redeploys_ready_builder_to_verify_host_image(
     monkeypatch.setattr(
         control,
         "sync_super_base_builder_service",
-        lambda *args, **kwargs: ("builder-service-uuid", "updated", {"name": "allfather-super-base-builder-coolify-a"}),
+        lambda *args, **kwargs: pytest.fail("sprawl-free add-node must not create a base-builder helper service"),
     )
-
-    wait_calls: list[float] = []
-    deploy_calls: list[dict[str, object]] = []
-
-    def fake_wait_for_super_base_builder_ready(*args: object, **kwargs: object) -> dict[str, object]:
-        wait_calls.append(float(kwargs.get("wait_s", 0)))
-        return {"ready": True, "reason": "managed super base image is ready", "observed_by": "private-probe"}
-
-    class RecordingHubTool:
-        def trigger_deploy_service(self, *args: object, **kwargs: object) -> dict[str, object]:
-            deploy_calls.append(dict(kwargs))
-            return {"queued": True}
-
-    monkeypatch.setattr(control, "wait_for_super_base_builder_ready", fake_wait_for_super_base_builder_ready)
-    monkeypatch.setattr(control, "hub_service_tool", lambda: RecordingHubTool())
 
     args = type(
         "Args",
@@ -607,67 +592,25 @@ def test_ensure_super_base_image_redeploys_ready_builder_to_verify_host_image(
     result = control.ensure_super_base_image(plan, head, object(), args, {}, [])
 
     assert result["ready"] is True
-    assert result["deploy_response"] == "<hidden; pass --verbose>"
-    assert wait_calls == [20.0, 1800.0]
-    assert deploy_calls == [{"service_uuid": "builder-service-uuid", "force": False, "tried": []}]
+    assert result["service_action"] == "not-created"
+    assert result["service_uuid"] == ""
+    assert "no base-image builder service created" in result["reason"]
 
 
-def test_ensure_super_base_image_waits_existing_live_builder_without_restart(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    path = write_private_state(tmp_path)
-    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
-    head = plan.heads[0]
 
-    monkeypatch.setattr(
-        control,
-        "sync_super_base_builder_service",
-        lambda *args, **kwargs: ("builder-service-uuid", "updated", {"name": "allfather-super-base-builder-coolify-a"}),
-    )
 
-    wait_calls: list[float] = []
+def test_super_node_dockerfile_is_self_contained_without_local_base_builder() -> None:
+    dockerfile = control.super_node_dockerfile_inline("main-computer/allfather-super-base:local")
 
-    def fake_wait_for_super_base_builder_ready(*args: object, **kwargs: object) -> dict[str, object]:
-        wait_s = float(kwargs.get("wait_s", 0))
-        wait_calls.append(wait_s)
-        if len(wait_calls) == 1:
-            return {
-                "ready": False,
-                "reason": "building",
-                "observed_target": {"phase": "building", "healthz_ok": True, "status_ok": False},
-            }
-        return {"ready": True, "reason": "managed super base image is ready", "observed_by": "private-probe"}
+    assert "FROM hyperledger/besu:latest" in dockerfile
+    assert "foundationdb-server_7.4.6-1_amd64.deb" in dockerfile
+    assert "web3==6.20.4" in dockerfile
+    assert "solc-static-linux" in dockerfile
+    assert "contracts-artifacts.json" in dockerfile
+    assert "allfather-super-base-builder" not in dockerfile
+    assert "MC_ALLFATHER_SHARED_BASE_BUILDER=disabled" in dockerfile
 
-    class FailingHubTool:
-        def trigger_deploy_service(self, *args: object, **kwargs: object) -> dict[str, object]:
-            raise AssertionError("already-running base build should not be restarted")
 
-    monkeypatch.setattr(control, "wait_for_super_base_builder_ready", fake_wait_for_super_base_builder_ready)
-    monkeypatch.setattr(control, "hub_service_tool", lambda: FailingHubTool())
-
-    args = type(
-        "Args",
-        (),
-        {
-            "quiet": True,
-            "command": "add-node",
-            "super_image": "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715",
-            "super_base_source_image": "hyperledger/besu:latest",
-            "force_super_base_rebuild": False,
-            "no_super_base_ensure": False,
-            "no_deploy": False,
-            "super_base_wait_s": 1800.0,
-            "super_base_predeploy_wait_s": 20.0,
-            "verbose": False,
-        },
-    )()
-
-    result = control.ensure_super_base_image(plan, head, object(), args, {}, [])
-
-    assert result["ready"] is True
-    assert result["deploy_response"] is None
-    assert wait_calls == [20.0, 1800.0]
 
 
 def test_probe_compose_can_publish_result_back_to_coolify_metadata(tmp_path: Path) -> None:
@@ -700,7 +643,7 @@ def test_discover_compacts_raw_coolify_api_records_by_default(monkeypatch: pytes
     def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
         return {
             "ok": True,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "head_service_uuid": f"head-{head.head_id}",
             "probe_service_uuid": f"probe-{head.head_id}",
             "probe_left_running": True,
@@ -750,7 +693,7 @@ def test_discover_default_summarizes_failed_coolify_attempts_without_lists(monke
     def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
         return {
             "ok": True,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "probe_left_running": True,
             "public_guard_routes": False,
             "ssh_used": False,
@@ -813,7 +756,7 @@ def test_discover_is_not_ok_until_probe_result_is_observed(monkeypatch: pytest.M
     def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
         return {
             "ok": True,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "head_service_name": f"head-{head.head_id}",
             "head_service_uuid": f"head-uuid-{head.head_id}",
             "probe_service_name": f"probe-{head.head_id}",
@@ -848,7 +791,7 @@ def test_default_discover_operator_summary_hides_probe_internals(monkeypatch: py
     def fake_sync_and_query_probe_for_head(plan: control.HeadPlan, head: control.HeadNode, args: object) -> dict[str, object]:
         return {
             "ok": True,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "token_source": "private-state:coolify.hosts.a.api_token",
             "head_service_name": f"head-{head.head_id}",
             "head_service_uuid": f"head-uuid-{head.head_id}",
@@ -1153,6 +1096,9 @@ def test_super_guard_script_supervises_fdb_besu_and_hub() -> None:
     assert "configure new single ssd" in script
     assert "def ensure_validator_rpc" in script
     assert "generate-blockchain-config" in script
+    assert "recovered-existing-operator-output" in script
+    assert "MC_ALLFATHER_QBFT_GENERATE_TIMEOUT_S" in script
+    assert "shutil.rmtree(out_dir, ignore_errors=True)" in script
     assert "rpc-http-enabled=true" in script
     assert "eth_blockNumber" in script
     assert "block_production_ok" in script
@@ -1538,6 +1484,264 @@ def test_add_node_publish_routes_labels_only_hub_and_rpc(tmp_path: Path) -> None
     assert "traefik.http.services.testneta-rpc1-svc.loadbalancer.server.port=8545" in compose
     assert "testneta-guard1.greatlibrary.io" not in compose
     assert "testneta-fdb1.greatlibrary.io" not in compose
+
+
+
+def test_traefik_dynamic_config_uses_live_allfather_super_topology(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    local_nodes = [
+        control.super_inventory_entry("mainnet", head, 1, source="test"),
+        control.super_inventory_entry("mainnet", head, 2, source="test"),
+    ]
+
+    config = control.render_allfather_hub_traefik_dynamic_config(
+        "mainnet",
+        head,
+        local_nodes,
+        domain_suffix="greatlibrary.io",
+    )
+
+    assert "Host(`mainneta-hub1.greatlibrary.io`)" in config
+    assert "Host(`mainneta-hub2.greatlibrary.io`)" in config
+    assert "Host(`mainnet-hub.greatlibrary.io`)" in config
+    assert 'url: "http://mainneta-super1:8785"' in config
+    assert 'url: "http://mainneta-super2:8785"' in config
+    assert "https://mainnet-hub1.greatlibrary.io" not in config
+    assert "https://mainnet-hub2.greatlibrary.io" not in config
+
+
+def test_traefik_propagator_compose_disables_legacy_public_entry_files(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    local_nodes = [control.super_inventory_entry("mainnet", head, 1, source="test")]
+    args = control.parse_args(
+        [
+            "traefik-propagate",
+            "mainnet",
+            "--allow-mainnet",
+            "--dry-run",
+            "--include-compose",
+            "--private-state",
+            str(path),
+        ]
+    )
+
+    compose = control.render_traefik_propagator_compose(
+        "mainnet",
+        head,
+        local_nodes,
+        args,
+        domain_suffix="greatlibrary.io",
+    )
+
+    assert "image: \"docker:27-cli\"" in compose
+    assert "/var/run/docker.sock:/var/run/docker.sock" in compose
+    assert "docker exec -i coolify-proxy" in compose
+    assert "/traefik/dynamic/main-computer-mainnet-hub-public-entry*.yml" in compose
+    assert "/traefik/dynamic/manual-mainnet-hub*.yml" in compose
+    assert "/traefik/dynamic/allfather-mainnet-hub-routes-*.yml" in compose
+    assert "mainneta-super1:8785" in compose
+    assert "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:" in compose
+
+
+
+def test_traefik_propagate_attempt_summary_redacts_compose_and_log_spam() -> None:
+    tried = [
+        {
+            "operation": "update-service",
+            "payload": {"docker_compose_raw": "BASE64-SPAM"},
+            "response": {"ok": True, "status": 200, "body": {"docker_compose_raw": "RAW-SPAM"}},
+        },
+        {
+            "operation": "get-allfather-probe-service-logs-fallback",
+            "response": {
+                "ok": False,
+                "status": 404,
+                "path": "/api/v1/services/example/logs",
+                "body": {"message": "Not found.", "docker_compose_raw": "MORE-SPAM"},
+            },
+        },
+        {
+            "operation": "get-allfather-probe-service-logs-fallback",
+            "response": {
+                "ok": False,
+                "status": 404,
+                "path": "/api/v1/services/example/docker/logs",
+                "body": {"message": "Not found."},
+            },
+        },
+    ]
+
+    summary = control.traefik_propagate_attempt_summary(tried)
+    rendered = json.dumps(summary, sort_keys=True)
+
+    assert summary["attempt_count"] == 3
+    assert summary["log_probe_attempt_count"] == 2
+    assert summary["compose_payload_redacted"] is True
+    assert "BASE64-SPAM" not in rendered
+    assert "RAW-SPAM" not in rendered
+    assert "MORE-SPAM" not in rendered
+
+
+
+def test_traefik_propagate_request_runs_inside_head_agent(tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    local_nodes = [control.super_inventory_entry("mainnet", head, 1, source="test")]
+    request = control.traefik_propagate_request_payload(
+        "mainnet",
+        head,
+        local_nodes,
+        domain_suffix="greatlibrary.io",
+    )
+
+    compose = control.render_head_compose(
+        plan,
+        head,
+        probe_targets=[],
+        callback_api_url="https://coolify-a.example.invalid",
+        callback_token="token-a",
+        callback_service_uuid="head-uuid",
+        traefik_propagate_request=request,
+    )
+
+    assert "MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64" in compose
+    assert "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:" in compose
+    assert "/traefik-propagate/status" in compose
+    assert "docker_exec_sh" in compose
+    assert "coolify-proxy" in compose
+    assert "mainneta-super1:8785" in json.dumps(request, sort_keys=True)
+
+
+def test_head_agent_traefik_cleanup_expands_and_verifies_legacy_globs() -> None:
+    source = Path(control.__file__).read_text(encoding="utf-8")
+
+    assert "for f in $pattern; do" in source
+    assert "remaining_legacy" in source
+    assert "stale Traefik hub dynamic files still active" in source
+    assert "allfather-traefik-disabled-globs.txt" in source
+    assert "for f in {quoted_globs}; do" not in source
+
+
+
+def test_sync_head_service_keeps_traefik_request_when_updating_existing_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = write_private_state(tmp_path)
+    plan = control.build_head_plan(control.load_private_hosts(path), private_state_path=path)
+    head = plan.heads[0]
+    local_nodes = [control.super_inventory_entry("mainnet", head, 1, source="test")]
+    request = control.traefik_propagate_request_payload(
+        "mainnet",
+        head,
+        local_nodes,
+        domain_suffix="greatlibrary.io",
+    )
+
+    class FakeHubTool:
+        def find_service(self, client: object, *, service_name: str, explicit_uuid: str, tried: list[dict[str, object]]) -> tuple[str, dict[str, object]]:
+            return "head-uuid", {"name": service_name}
+
+    class FakeFdbTool:
+        def __init__(self) -> None:
+            self.updated_compose = ""
+
+        def parse_binding_map(self, values: object, option_name: str) -> dict[str, str]:
+            return {}
+
+        def update_service(self, client: object, service_uuid: str, service_name: str, compose: str, tried: list[dict[str, object]]) -> None:
+            self.updated_compose = compose
+
+    fake_fdb = FakeFdbTool()
+    monkeypatch.setattr(control, "hub_service_tool", lambda: FakeHubTool())
+    monkeypatch.setattr(control, "fdb_tool", lambda: fake_fdb)
+
+    args = type(
+        "Args",
+        (),
+        {
+            "dockerfile": control.DEFAULT_DOCKERFILE,
+            "image": control.DEFAULT_IMAGE,
+            "set_coolify_service_uuid": [],
+            "coolify_service_uuid": "",
+        },
+    )()
+    client = type("Client", (), {"base_url": "https://coolify-a.example.invalid", "token": "token-a"})()
+
+    service_uuid, action, _existing = control.sync_head_service(
+        client,
+        plan,
+        head,
+        args,
+        context={},
+        tried=[],
+        probe_targets=[],
+        traefik_propagate_request=request,
+    )
+
+    assert service_uuid == "head-uuid"
+    assert action == "updated"
+    line = next(
+        item for item in fake_fdb.updated_compose.splitlines()
+        if "MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64:" in item
+    )
+    encoded = json.loads(line.split(": ", 1)[1])
+    decoded = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    assert decoded["request_id"] == request["request_id"]
+    assert decoded["target_path"].endswith("allfather-mainnet-hub-routes-coolify-a.yml")
+    assert decoded["health_urls"] == ["http://mainneta-super1:8785/api/hub/v1/health"]
+
+
+def test_wait_for_head_traefik_propagate_ready_ignores_stale_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    stale_payload = {"ok": True, "phase": "ready", "status": "ready", "request_id": "old"}
+    current_payload = {"ok": True, "phase": "ready", "status": "ready", "request_id": "new"}
+    encoded_stale = base64.b64encode(json.dumps(stale_payload, sort_keys=True).encode("utf-8")).decode("ascii")
+    encoded_current = base64.b64encode(json.dumps(current_payload, sort_keys=True).encode("utf-8")).decode("ascii")
+    details = [
+        {"body": {"description": control.TRAEFIK_PROPAGATE_CALLBACK_MARKER + encoded_stale}},
+        {"body": {"description": control.TRAEFIK_PROPAGATE_CALLBACK_MARKER + encoded_current}},
+    ]
+
+    def fake_fetch_service_detail(client: object, service_uuid: str, tried: list[dict[str, object]]) -> dict[str, object]:
+        return details.pop(0)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(control, "fetch_service_detail", fake_fetch_service_detail)
+    monkeypatch.setattr(control.time, "sleep", lambda seconds: sleeps.append(float(seconds)))
+
+    result = control.wait_for_head_traefik_propagate_ready(
+        object(),
+        "head-uuid",
+        [],
+        wait_s=5,
+        poll_s=0.1,
+        expected_request_id="new",
+    )
+
+    assert result["observed"] is True
+    assert result["ready"] is True
+    assert result["result"]["request_id"] == "new"
+    assert sleeps
+
+
+def test_traefik_propagate_result_from_head_metadata() -> None:
+    payload = {
+        "ok": True,
+        "phase": "ready",
+        "status": "ready",
+        "target_path": "/traefik/dynamic/allfather-mainnet-hub-routes-coolify-a.yml",
+    }
+    encoded = base64.b64encode(json.dumps(payload, sort_keys=True).encode("utf-8")).decode("ascii")
+    detail = {"body": {"description": "x\n" + control.TRAEFIK_PROPAGATE_CALLBACK_MARKER + encoded + "\n"}}
+
+    result = control.traefik_propagate_result_from_service_metadata(detail)
+
+    assert result["ok"] is True
+    assert result["source"] == "coolify-service-description"
+    assert result["result"]["phase"] == "ready"
+    assert result["result"]["target_path"].endswith("coolify-a.yml")
 
 def test_add_node_no_contracts_disables_first_node_contract_bootstrap(tmp_path: Path) -> None:
     path = write_private_state_with_wallets(tmp_path)
@@ -1936,7 +2140,7 @@ def test_live_add_node_rejects_existing_inventory_without_fdb_seed(tmp_path: Pat
 def test_remove_node_waits_until_deleted_service_leaves_coolify_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"count": 0}
 
-    def fake_service_items_for_client(client: object, tried: list[dict[str, object]]) -> list[dict[str, object]]:
+    def fake_service_items_for_client(client: object, tried: list[dict[str, object]], **kwargs: object) -> list[dict[str, object]]:
         calls["count"] += 1
         if calls["count"] == 1:
             return [{"name": "testneta-super1", "uuid": "still-visible", "status": "deleting"}]
@@ -2636,7 +2840,7 @@ def test_add_node_wait_does_not_treat_transient_exited_as_terminal(monkeypatch: 
     head = control.choose_head_for_host(plan, "coolify-a")
     calls = {"services": 0, "probe": 0}
 
-    def fake_service_items_for_client(client: object, tried: list[dict[str, object]]) -> list[dict[str, object]]:
+    def fake_service_items_for_client(client: object, tried: list[dict[str, object]], **kwargs: object) -> list[dict[str, object]]:
         calls["services"] += 1
         if calls["services"] == 1:
             return [{"name": "testneta-super1", "uuid": "service-uuid", "status": "exited"}]
@@ -2723,7 +2927,7 @@ def test_add_node_preflight_waits_for_stable_clean_slot(monkeypatch: pytest.Monk
     head = plan.heads[0]
     calls = {"count": 0}
 
-    def fake_service_items_for_client(client: object, tried: list[dict[str, object]]) -> list[dict[str, object]]:
+    def fake_service_items_for_client(client: object, tried: list[dict[str, object]], **kwargs: object) -> list[dict[str, object]]:
         calls["count"] += 1
         if calls["count"] == 1:
             return [{"name": "testneta-super1", "uuid": "stale-service", "status": "deleting"}]

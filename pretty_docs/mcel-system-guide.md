@@ -24,6 +24,12 @@ The user-facing contract is documented in `pretty_docs/mcel-user-space-contract.
 
 The application-authoring model across HTML, application contract data, JavaScript behavior, layout hints, user layout operations, themes, chrome, and FLOG is documented in `pretty_docs/mcel-application-authoring.md`.
 
+The Code Editor requirements contract is documented in `pretty_docs/mcel-code-editor-requirements.md`. It is the documentation-first source for Code Editor product laws, regions, intents, safety boundaries, and acceptance criteria.
+
+The Git Tools requirements contract is documented in `pretty_docs/mcel-git-tools-requirements.md`. It is the documentation-first source for repository evidence, governed push, project-level publishing, remote-sync boundaries, file triage, recovery receipts, semantic intent coverage, and the current scope-limited adapter status.
+
+The Calculator requirements contract is documented in `pretty_docs/mcel-calculator-requirements.md`. It is the documentation-first source for deterministic local compute, graph canvas ownership, Mathics evaluation boundaries, model-helper boundaries, result evidence, and the planned small full-semantic reference adapter.
+
 Application-local layout contracts are now live in Code Editor and Git Tools. They parse `data-mc-layout-*` hints, resolve dock trees, persist semantic preferences, and expose app-specific controllers. They are not yet generic `window.MCEL` guarantees. The authoring guide documents that boundary and the rules for promoting a proven application behavior into the platform contract.
 
 Use the user-space contract, not internal law names, when deciding whether a builder workflow can rely on MCEL. The current planning rule is: source traits are the durable input, generated runtime structure is discardable, serialization is the source firewall, repair is bounded regeneration, reports are gates, browser facts are snapshots, and adoption is narrow and reversible.

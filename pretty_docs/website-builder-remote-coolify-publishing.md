@@ -169,16 +169,18 @@ cat /etc/os-release
 curl --version
 ```
 
-Run the official quick installer:
-
-```bash
-curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
-```
-
-If the shell is not root, use:
+Run the official quick installer. This is the documented Coolify install
+command and should be the default form used in setup notes and handoffs:
 
 ```bash
 curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash
+```
+
+If you are already in a root shell on a minimal host where `sudo` is
+unavailable, run the same installer under root:
+
+```bash
+curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
 ```
 
 After installation, check the containers:

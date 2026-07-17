@@ -16,6 +16,8 @@ save/export is blocked by contract failures
 
 React, Vue, Svelte, and Web Components are better choices when the main problem is ordinary application rendering. MCEL is useful here because a live editor, agent workflow, proof system, and dock manager must coexist without corrupting the saved source artifact.
 
+For the requirements contract that should drive future Code Editor implementation work, see `pretty_docs/mcel-code-editor-requirements.md`. The example document explains the live app; the requirements document defines the stable MCEL product laws, region contracts, semantic intents, safety boundaries, and acceptance criteria.
+
 ## The example use case
 
 The use case is named:

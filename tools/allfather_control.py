@@ -62,6 +62,7 @@ DEFAULT_ADD_NODE_PREFLIGHT_POLL_S = 2.0
 DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S = 6.0
 DEFAULT_PROBE_SERVICE_PREFIX = "allfather-control-probe"
 PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
+RUNTIME_CLEANUP_CALLBACK_MARKER = "ALLFATHER_RUNTIME_CLEANUP_RESULT_B64:"
 DEFAULT_STATE_ROOT_PREFIX = "/data/main-computer/allfather/control-plane"
 DEFAULT_SUPER_BASE_SOURCE_IMAGE = "hyperledger/besu:latest"
 DEFAULT_SUPER_BASE_IMAGE = "main-computer/allfather-super-base:besu-fdb-web3-solc-contracts-paris-20260715"
@@ -80,6 +81,10 @@ DEFAULT_SUPER_HUB_CONTAINER_PORT = 8785
 DEFAULT_SUPER_RPC_CONTAINER_PORT = 8545
 DEFAULT_SUPER_FDB_CONTAINER_PORT = 4550
 DEFAULT_SUPER_P2P_CONTAINER_PORT = 30303
+DEFAULT_PUBLIC_DOMAIN_SUFFIX = "greatlibrary.io"
+DEFAULT_TRAEFIK_PROPAGATOR_IMAGE = "docker:27-cli"
+DEFAULT_TRAEFIK_PROPAGATE_WAIT_S = 30.0
+TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
 DEFAULT_TESTNET_SUPER_GUARD_BASE = 41500
 DEFAULT_MAINNET_SUPER_GUARD_BASE = 41600
 DEFAULT_TESTNET_FDB_BASE = 44550
@@ -740,15 +745,30 @@ def head_manifest(plan: HeadPlan, head: HeadNode) -> dict[str, Any]:
 def head_server_command_script() -> str:
     return r"""
 import base64
+import glob
+import hashlib
+import http.client
 import json
 import os
+import shutil
+import socket
+import threading
 import time
-import textwrap
-import zlib
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 PORT = int(os.environ.get("MC_ALLFATHER_GUARD_PORT", "41414"))
 MANIFEST_B64 = os.environ.get("MC_ALLFATHER_MANIFEST_B64", "")
+CELL_ID = os.environ.get("MC_ALLFATHER_CELL_ID", "")
+COOLIFY_SERVER = os.environ.get("MC_ALLFATHER_COOLIFY_SERVER", "")
+if not COOLIFY_SERVER:
+    try:
+        COOLIFY_SERVER = (json.loads(base64.b64decode(MANIFEST_B64).decode("utf-8")).get("identity") or {}).get("coolify_server") or ""
+    except Exception:
+        COOLIFY_SERVER = ""
+
 try:
     MANIFEST = json.loads(base64.b64decode(MANIFEST_B64).decode("utf-8")) if MANIFEST_B64 else {}
 except Exception as exc:
@@ -756,19 +776,582 @@ except Exception as exc:
 
 STARTED_AT = time.time()
 
+PROBE_TARGETS_B64 = os.environ.get("MC_ALLFATHER_PROBE_TARGETS_B64", "")
+PROBE_INTERVAL_S = float(os.environ.get("MC_ALLFATHER_PROBE_INTERVAL_S", "15"))
+PROBE_TIMEOUT_S = float(os.environ.get("MC_ALLFATHER_PROBE_TIMEOUT_S", "4"))
+CALLBACK_API_URL = os.environ.get("MC_ALLFATHER_AGENT_CALLBACK_API_URL", "").strip().rstrip("/")
+CALLBACK_TOKEN = os.environ.get("MC_ALLFATHER_AGENT_CALLBACK_TOKEN", "").strip()
+CALLBACK_SERVICE_UUID = os.environ.get("MC_ALLFATHER_AGENT_CALLBACK_SERVICE_UUID", "").strip()
+CALLBACK_INTERVAL_S = float(os.environ.get("MC_ALLFATHER_AGENT_CALLBACK_INTERVAL_S", "15"))
+PROBE_CALLBACK_MARKER = "ALLFATHER_PROBE_RESULT_B64:"
+RUNTIME_CLEANUP_CALLBACK_MARKER = "ALLFATHER_RUNTIME_CLEANUP_RESULT_B64:"
+TRAEFIK_PROPAGATE_CALLBACK_MARKER = "ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64:"
+RUNTIME_CLEANUP_REQUEST_B64 = os.environ.get("MC_ALLFATHER_RUNTIME_CLEANUP_REQUEST_B64", "")
+TRAEFIK_PROPAGATE_REQUEST_B64 = os.environ.get("MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64", "")
+SUPERNODES_ROOT = Path(os.environ.get("MC_ALLFATHER_SUPERNODES_ROOT", "/host-supernodes"))
+
+LAST_CALLBACK_DIGEST = ""
+LAST_CALLBACK_AT = 0.0
+LATEST_PROBE = {
+    "ok": False,
+    "service": "main-computer-allfather-host-agent",
+    "cell_id": CELL_ID,
+    "coolify_server": COOLIFY_SERVER,
+    "targets": [],
+    "target_count": 0,
+    "updated_at": None,
+}
+LATEST_CLEANUP = {
+    "ok": False,
+    "service": "main-computer-allfather-host-agent",
+    "status": "not-requested",
+    "phase": "not-requested",
+    "updated_at": None,
+}
+LATEST_TRAEFIK_PROPAGATE = {
+    "ok": False,
+    "service": "main-computer-allfather-host-agent",
+    "status": "not-requested",
+    "phase": "not-requested",
+    "updated_at": None,
+}
+
+def decode_json_b64(text, default):
+    if not text:
+        return default
+    try:
+        value = json.loads(base64.b64decode(text).decode("utf-8"))
+        return value if value is not None else default
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+TARGETS = decode_json_b64(PROBE_TARGETS_B64, [])
+if not isinstance(TARGETS, list):
+    TARGETS = []
+CLEANUP_REQUEST = decode_json_b64(RUNTIME_CLEANUP_REQUEST_B64, {})
+if not isinstance(CLEANUP_REQUEST, dict):
+    CLEANUP_REQUEST = {}
+TRAEFIK_PROPAGATE_REQUEST = decode_json_b64(TRAEFIK_PROPAGATE_REQUEST_B64, {})
+if not isinstance(TRAEFIK_PROPAGATE_REQUEST, dict):
+    TRAEFIK_PROPAGATE_REQUEST = {}
+
+def fetch_json(url: str) -> dict:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT_S) as response:
+            raw = response.read()
+    except Exception as exc:
+        return {"ok": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "url": url,
+            "error": f"invalid-json: {exc}",
+            "body_preview": raw[:240].decode("utf-8", "replace"),
+        }
+    if isinstance(payload, dict):
+        payload.setdefault("ok", True)
+        payload.setdefault("url", url)
+        return payload
+    return {"ok": False, "url": url, "error": "json payload was not an object"}
+
+def run_probe_once() -> dict:
+    results = []
+    for target in TARGETS:
+        if isinstance(target, dict):
+            meta = dict(target)
+            clean = str(meta.get("guard_url") or meta.get("url") or "").rstrip("/")
+        else:
+            meta = {"kind": "legacy", "guard_url": str(target or "").rstrip("/")}
+            clean = str(target or "").rstrip("/")
+        if not clean:
+            continue
+        identity = fetch_json(f"{clean}/identity")
+        topology = fetch_json(f"{clean}/topology")
+        status = fetch_json(f"{clean}/status")
+        healthz = fetch_json(f"{clean}/healthz")
+        results.append(
+            {
+                **meta,
+                "guard_url": clean,
+                "ok": bool(identity.get("ok") or topology.get("ok") or status.get("ok") or healthz.get("ok")),
+                "identity": identity,
+                "topology": topology,
+                "status": status,
+                "healthz": healthz,
+            }
+        )
+    return {
+        "ok": any(item.get("ok") for item in results) if TARGETS else True,
+        "service": "main-computer-allfather-host-agent",
+        "cell_id": CELL_ID,
+        "coolify_server": COOLIFY_SERVER,
+        "transport": "allfather-head-host-agent",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "target_count": len(TARGETS),
+        "targets": results,
+        "updated_at": time.time(),
+        "uptime_s": round(time.time() - STARTED_AT, 3),
+    }
+
+def compact_probe_result(result: dict) -> dict:
+    compact_targets = []
+    for target in result.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        identity = target.get("identity") if isinstance(target.get("identity"), dict) else {}
+        topology = target.get("topology") if isinstance(target.get("topology"), dict) else {}
+        status = target.get("status") if isinstance(target.get("status"), dict) else {}
+        healthz = target.get("healthz") if isinstance(target.get("healthz"), dict) else {}
+        compact_targets.append(
+            {
+                "kind": target.get("kind") or target.get("target_kind") or "",
+                "guard_url": target.get("guard_url"),
+                "service_name": target.get("service_name") or identity.get("cell_id") or status.get("cell_id") or "",
+                "head_id": target.get("head_id") or "",
+                "cell_id": identity.get("cell_id") or status.get("cell_id") or topology.get("cell_id") or "",
+                "coolify_server": target.get("coolify_server") or identity.get("coolify_server") or status.get("coolify_server") or "",
+                "network_key": target.get("network_key") or identity.get("network_key") or status.get("network_key") or topology.get("network_key") or "",
+                "ordinal": target.get("ordinal") or identity.get("ordinal") or status.get("ordinal") or "",
+                "components": status.get("components") if isinstance(status.get("components"), dict) else target.get("components") if isinstance(target.get("components"), dict) else {},
+                "functions": status.get("functions") if isinstance(status.get("functions"), dict) else identity.get("functions") if isinstance(identity.get("functions"), dict) else {},
+                "ok": bool(target.get("ok")),
+                "identity_ok": bool(identity.get("ok")),
+                "topology_ok": bool(topology.get("ok")),
+                "status_ok": bool(status.get("ok")),
+                "healthz_ok": bool(healthz.get("ok")),
+                "phase": status.get("phase") or status.get("status") or healthz.get("phase") or healthz.get("status") or "",
+                "status_text": status.get("status") or status.get("phase") or "",
+                "image": status.get("image") or healthz.get("image") or "",
+                "identity_network_key": identity.get("network_key", ""),
+                "topology_network_key": topology.get("network_key", ""),
+                "status_network_key": status.get("network_key", ""),
+                "error": identity.get("error") or topology.get("error") or status.get("error") or healthz.get("error") or "",
+            }
+        )
+    return {
+        "ok": bool(result.get("ok")),
+        "service": result.get("service"),
+        "cell_id": result.get("cell_id"),
+        "coolify_server": result.get("coolify_server"),
+        "transport": result.get("transport"),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "target_count": result.get("target_count"),
+        "targets": compact_targets,
+        "updated_at": result.get("updated_at"),
+        "uptime_s": result.get("uptime_s"),
+    }
+
+class UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, socket_path: str):
+        super().__init__("localhost")
+        self.socket_path = socket_path
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(self.socket_path)
+        self.sock = sock
+
+def docker_api(method: str, path: str, body: bytes | None = None, headers: dict | None = None) -> tuple[int, bytes]:
+    conn = UnixHTTPConnection("/var/run/docker.sock")
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        response = conn.getresponse()
+        raw = response.read()
+        return int(response.status), raw
+    finally:
+        conn.close()
+
+def docker_json(method: str, path: str) -> tuple[int, object]:
+    status, raw = docker_api(method, path)
+    if not raw:
+        return status, None
+    try:
+        return status, json.loads(raw.decode("utf-8"))
+    except Exception:
+        return status, raw.decode("utf-8", "replace")
+
+def cleanup_stale_containers(super_prefix: str) -> tuple[int, list[str], list[str]]:
+    removed = []
+    errors = []
+    try:
+        status, payload = docker_json("GET", "/containers/json?all=1")
+    except Exception as exc:
+        return 0, removed, [f"docker-api-unavailable: {type(exc).__name__}: {exc}"]
+    if status >= 400 or not isinstance(payload, list):
+        return 0, removed, [f"docker-api-list-failed: status={status}"]
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("Id") or "")
+        names = [str(name).lstrip("/") for name in item.get("Names") or []]
+        if not cid:
+            continue
+        if not any(name == super_prefix or name.startswith(f"{super_prefix}-super") or f"/{super_prefix}-super" in name for name in names):
+            continue
+        try:
+            status, raw = docker_api("DELETE", f"/containers/{urllib.parse.quote(cid, safe='') }?force=1&v=1")
+            if status < 400:
+                removed.extend(names or [cid[:12]])
+            else:
+                errors.append(f"remove-failed {names or [cid[:12]]}: status={status} {raw[:200].decode('utf-8', 'replace')}")
+        except Exception as exc:
+            errors.append(f"remove-error {names or [cid[:12]]}: {type(exc).__name__}: {exc}")
+    return len(removed), removed, errors
+
+def cleanup_state_dirs(network_key: str, coolify_server: str, super_prefix: str) -> tuple[int, str, list[str], list[str]]:
+    moved = []
+    errors = []
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    network_root = SUPERNODES_ROOT / network_key / coolify_server
+    archive_dir = network_root / f".removed-{stamp}"
+    try:
+        network_root.mkdir(parents=True, exist_ok=True)
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        for raw in glob.glob(str(network_root / f"{super_prefix}-super[0-9]*")):
+            source = Path(raw)
+            if not source.exists() or not source.name.startswith(f"{super_prefix}-super"):
+                continue
+            target = archive_dir / source.name
+            suffix = 0
+            while target.exists():
+                suffix += 1
+                target = archive_dir / f"{source.name}.{suffix}"
+            shutil.move(str(source), str(target))
+            moved.append(f"{source} -> {target}")
+    except Exception as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+    return len(moved), str(archive_dir), moved, errors
+
+def run_runtime_cleanup_once() -> dict:
+    if not CLEANUP_REQUEST:
+        return {
+            "ok": True,
+            "service": "main-computer-allfather-host-agent",
+            "status": "not-requested",
+            "phase": "not-requested",
+            "updated_at": time.time(),
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+    network_key = str(CLEANUP_REQUEST.get("network_key") or "").strip()
+    coolify_server = str(CLEANUP_REQUEST.get("coolify_server") or COOLIFY_SERVER or "").strip()
+    super_prefix = str(CLEANUP_REQUEST.get("super_prefix") or "").strip()
+    service_name = str(CLEANUP_REQUEST.get("service_name") or "allfather-head-runtime-cleanup").strip()
+    result = {
+        "ok": False,
+        "service": service_name,
+        "host_agent_service": "main-computer-allfather-host-agent",
+        "status": "cleaning",
+        "phase": "cleaning",
+        "network_key": network_key,
+        "coolify_server": coolify_server,
+        "super_prefix": super_prefix,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+    if not (network_key and coolify_server and super_prefix):
+        result.update({"status": "failed", "phase": "failed", "error": "cleanup request missing network_key/coolify_server/super_prefix"})
+        return result
+    containers_removed, removed_names, container_errors = cleanup_stale_containers(super_prefix)
+    state_dirs_moved, archive_dir, moved_dirs, state_errors = cleanup_state_dirs(network_key, coolify_server, super_prefix)
+    errors = container_errors + state_errors
+    result.update(
+        {
+            "ok": not bool(errors),
+            "status": "ready" if not errors else "failed",
+            "phase": "ready" if not errors else "failed",
+            "containers_removed": containers_removed,
+            "removed_containers": removed_names[:50],
+            "state_dirs_moved": state_dirs_moved,
+            "moved_state_dirs": moved_dirs[:50],
+            "archive_dir": archive_dir,
+            "network_root": str(SUPERNODES_ROOT / network_key / coolify_server),
+            "error": "; ".join(errors)[:1200],
+            "updated_at": time.time(),
+        }
+    )
+    return result
+
+
+def docker_exec_sh(container_name: str, script: str) -> dict:
+    result = {
+        "ok": False,
+        "container": container_name,
+        "exit_code": None,
+        "output_preview": "",
+        "error": "",
+    }
+    try:
+        create_body = json.dumps(
+            {
+                "AttachStdout": True,
+                "AttachStderr": True,
+                "Cmd": ["sh", "-lc", script],
+            }
+        ).encode("utf-8")
+        status, raw = docker_api(
+            "POST",
+            f"/containers/{urllib.parse.quote(container_name, safe='')}/exec",
+            body=create_body,
+            headers={"Content-Type": "application/json"},
+        )
+        if status >= 400:
+            result["error"] = f"docker exec create failed: status={status} body={raw[:500].decode('utf-8', 'replace')}"
+            return result
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+        exec_id = str(payload.get("Id") or "")
+        if not exec_id:
+            result["error"] = "docker exec create did not return Id"
+            return result
+        start_body = json.dumps({"Detach": False, "Tty": False}).encode("utf-8")
+        status, raw = docker_api(
+            "POST",
+            f"/exec/{urllib.parse.quote(exec_id, safe='')}/start",
+            body=start_body,
+            headers={"Content-Type": "application/json"},
+        )
+        result["output_preview"] = raw[:1200].decode("utf-8", "replace") if raw else ""
+        if status >= 400:
+            result["error"] = f"docker exec start failed: status={status}"
+            return result
+        inspect_status, inspect_payload = docker_json("GET", f"/exec/{urllib.parse.quote(exec_id, safe='')}/json")
+        if inspect_status >= 400 or not isinstance(inspect_payload, dict):
+            result["error"] = f"docker exec inspect failed: status={inspect_status}"
+            return result
+        exit_code = inspect_payload.get("ExitCode")
+        result["exit_code"] = exit_code
+        result["ok"] = exit_code == 0
+        if not result["ok"]:
+            result["error"] = f"docker exec exit_code={exit_code}"
+        return result
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+def run_traefik_propagate_once() -> dict:
+    if not TRAEFIK_PROPAGATE_REQUEST:
+        return {
+            "ok": True,
+            "service": "main-computer-allfather-host-agent",
+            "status": "not-requested",
+            "phase": "not-requested",
+            "updated_at": time.time(),
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+        }
+
+    network_key = str(TRAEFIK_PROPAGATE_REQUEST.get("network_key") or "").strip()
+    coolify_server = str(TRAEFIK_PROPAGATE_REQUEST.get("coolify_server") or COOLIFY_SERVER or "").strip()
+    target_path = str(TRAEFIK_PROPAGATE_REQUEST.get("target_path") or "").strip()
+    dynamic_config_b64 = str(TRAEFIK_PROPAGATE_REQUEST.get("dynamic_config_b64") or "").strip()
+    request_id = str(TRAEFIK_PROPAGATE_REQUEST.get("request_id") or "").strip()
+    dynamic_config_sha256 = str(TRAEFIK_PROPAGATE_REQUEST.get("dynamic_config_sha256") or "").strip()
+    health_urls = TRAEFIK_PROPAGATE_REQUEST.get("health_urls") or []
+    route_domains = TRAEFIK_PROPAGATE_REQUEST.get("route_domains") or []
+    disabled_legacy_globs = TRAEFIK_PROPAGATE_REQUEST.get("disabled_legacy_globs") or []
+    service_name = str(TRAEFIK_PROPAGATE_REQUEST.get("service_name") or "allfather-traefik-propagate").strip()
+
+    result = {
+        "ok": False,
+        "service": service_name,
+        "host_agent_service": "main-computer-allfather-host-agent",
+        "status": "propagating",
+        "phase": "propagating",
+        "network_key": network_key,
+        "coolify_server": coolify_server,
+        "target_path": target_path,
+        "request_id": request_id,
+        "dynamic_config_sha256": dynamic_config_sha256,
+        "route_domains": list(route_domains) if isinstance(route_domains, list) else [],
+        "health_urls": list(health_urls) if isinstance(health_urls, list) else [],
+        "disabled_legacy_globs": list(disabled_legacy_globs) if isinstance(disabled_legacy_globs, list) else [],
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+        "updated_at": time.time(),
+    }
+
+    if not (network_key and coolify_server and target_path and dynamic_config_b64):
+        result.update({"status": "failed", "phase": "failed", "error": "Traefik request missing network_key/coolify_server/target_path/dynamic_config_b64"})
+        return result
+
+    if not isinstance(health_urls, list):
+        health_urls = []
+    if not isinstance(disabled_legacy_globs, list) or not disabled_legacy_globs:
+        disabled_legacy_globs = [
+            f"/traefik/dynamic/main-computer-{network_key}-hub-public-entry*.yml",
+            f"/traefik/dynamic/manual-{network_key}-hub*.yml",
+            f"/traefik/dynamic/allfather-{network_key}-hub-routes-*.yml",
+        ]
+
+    globs_text = "\n".join(str(item) for item in disabled_legacy_globs)
+    globs_b64 = base64.b64encode(globs_text.encode("utf-8")).decode("ascii")
+    quoted_health_urls = " ".join("'" + str(item).replace("'", "'\\''") + "'" for item in health_urls)
+    target_quoted = "'" + target_path.replace("'", "'\\''") + "'"
+    config_quoted = "'" + dynamic_config_b64.replace("'", "'\\''") + "'"
+    globs_quoted = "'" + globs_b64.replace("'", "'\\''") + "'"
+    script = f\'\'\'
+set -eu
+mkdir -p /traefik/dynamic /traefik/disabled-dynamic
+stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
+target={target_quoted}
+globs_file=/tmp/allfather-traefik-disabled-globs.txt
+printf "%s" {globs_quoted} | base64 -d > "$globs_file"
+while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    case "$pattern" in
+        /traefik/dynamic/*) ;;
+        *) echo "unsafe Traefik cleanup glob: $pattern" >&2; exit 1 ;;
+    esac
+    for f in $pattern; do
+        [ -e "$f" ] || continue
+        [ "$f" = "$target" ] && continue
+        mv "$f" "/traefik/disabled-dynamic/$(basename "$f").$stamp.disabled"
+    done
+done < "$globs_file"
+printf "%s" {config_quoted} | base64 -d > "$target.tmp"
+mv "$target.tmp" "$target"
+chmod 0644 "$target"
+remaining_legacy=""
+while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    for f in $pattern; do
+        [ -e "$f" ] || continue
+        [ "$f" = "$target" ] && continue
+        remaining_legacy="$remaining_legacy $f"
+    done
+done < "$globs_file"
+if [ -n "$remaining_legacy" ]; then
+    echo "stale Traefik hub dynamic files still active:$remaining_legacy" >&2
+    exit 1
+fi
+for url in {quoted_health_urls}; do
+    [ -n "$url" ] || continue
+    wget -q -O- --timeout=5 "$url" | grep -q \'"ok"[[:space:]]*:[[:space:]]*true\'
+done
+test -s "$target"
+\'\'\'
+    exec_result = docker_exec_sh("coolify-proxy", script)
+    result["docker_exec"] = exec_result
+    if exec_result.get("ok"):
+        result.update(
+            {
+                "ok": True,
+                "status": "ready",
+                "phase": "ready",
+                "backend_count": len(health_urls),
+                "updated_at": time.time(),
+            }
+        )
+    else:
+        result.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "phase": "failed",
+                "error": str(exec_result.get("error") or "docker exec into coolify-proxy failed"),
+                "updated_at": time.time(),
+            }
+        )
+    return result
+
+def traefik_propagate_thread() -> None:
+    global LATEST_TRAEFIK_PROPAGATE
+    LATEST_TRAEFIK_PROPAGATE = run_traefik_propagate_once()
+    print("ALLFATHER_TRAEFIK_PROPAGATE_RESULT " + json.dumps(LATEST_TRAEFIK_PROPAGATE, sort_keys=True), flush=True)
+    publish_to_coolify_metadata()
+
+def encode_marker_payload(payload: dict) -> str:
+    return base64.b64encode(json.dumps(payload, sort_keys=True).encode("utf-8")).decode("ascii")
+
+def publish_to_coolify_metadata() -> None:
+    global LAST_CALLBACK_DIGEST, LAST_CALLBACK_AT
+    if not (CALLBACK_API_URL and CALLBACK_TOKEN and CALLBACK_SERVICE_UUID):
+        return
+    now = time.time()
+    probe_encoded = encode_marker_payload(compact_probe_result(LATEST_PROBE)) if LATEST_PROBE.get("updated_at") is not None else ""
+    cleanup_encoded = encode_marker_payload(LATEST_CLEANUP) if LATEST_CLEANUP.get("updated_at") is not None else ""
+    traefik_encoded = encode_marker_payload(LATEST_TRAEFIK_PROPAGATE) if LATEST_TRAEFIK_PROPAGATE.get("updated_at") is not None else ""
+    description = "Main Computer all-father host agent. This is the single per-host control container.\n\n"
+    if probe_encoded:
+        description += PROBE_CALLBACK_MARKER + probe_encoded + "\n"
+    if cleanup_encoded:
+        description += RUNTIME_CLEANUP_CALLBACK_MARKER + cleanup_encoded + "\n"
+    if traefik_encoded:
+        description += TRAEFIK_PROPAGATE_CALLBACK_MARKER + traefik_encoded + "\n"
+    digest = hashlib.sha256(description.encode("utf-8")).hexdigest()
+    if digest == LAST_CALLBACK_DIGEST and (now - LAST_CALLBACK_AT) < max(5.0, CALLBACK_INTERVAL_S):
+        return
+    payload = json.dumps({"description": description}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{CALLBACK_API_URL}/api/v1/services/{CALLBACK_SERVICE_UUID}",
+        data=payload,
+        method="PATCH",
+        headers={
+            "Accept": "application/json,text/plain,*/*",
+            "Authorization": f"Bearer {CALLBACK_TOKEN}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT_S) as response:
+            response.read()
+        LAST_CALLBACK_DIGEST = digest
+        LAST_CALLBACK_AT = now
+    except Exception as exc:
+        print("ALLFATHER_HEAD_AGENT_CALLBACK_ERROR " + repr(exc), flush=True)
+
+def probe_loop() -> None:
+    global LATEST_PROBE
+    while True:
+        try:
+            LATEST_PROBE = run_probe_once()
+        except Exception as exc:
+            LATEST_PROBE = {
+                "ok": False,
+                "service": "main-computer-allfather-host-agent",
+                "cell_id": CELL_ID,
+                "coolify_server": COOLIFY_SERVER,
+                "transport": "allfather-head-host-agent",
+                "public_guard_routes": False,
+                "ssh_used": False,
+                "direct_vpn_used": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "updated_at": time.time(),
+            }
+        print("ALLFATHER_PROBE_RESULT " + json.dumps(LATEST_PROBE, sort_keys=True), flush=True)
+        publish_to_coolify_metadata()
+        time.sleep(max(1.0, PROBE_INTERVAL_S))
+
+def cleanup_thread() -> None:
+    global LATEST_CLEANUP
+    LATEST_CLEANUP = run_runtime_cleanup_once()
+    print("ALLFATHER_RUNTIME_CLEANUP_RESULT " + json.dumps(LATEST_CLEANUP, sort_keys=True), flush=True)
+    publish_to_coolify_metadata()
 
 def payload_for_path(path: str) -> tuple[int, dict]:
     base = {
         "ok": True,
         "service": "main-computer-allfather-head",
+        "agent": True,
         "head_only": True,
         "network_key": "control-plane",
-        "cell_id": os.environ.get("MC_ALLFATHER_CELL_ID", ""),
+        "cell_id": CELL_ID,
         "guard_port": PORT,
         "uptime_s": round(time.time() - STARTED_AT, 3),
     }
     if path == "/healthz":
-        return 200, {"ok": True, "status": "healthy", "head_only": True}
+        return 200, {"ok": True, "status": "healthy", "agent": True, "head_only": True}
     if path == "/identity":
         identity = dict(MANIFEST.get("identity") or {})
         return 200, {**base, **identity, "manifest": MANIFEST}
@@ -786,11 +1369,17 @@ def payload_for_path(path: str) -> tuple[int, dict]:
             "desired_counts": MANIFEST.get("desired_counts") or {},
             "active_counts": MANIFEST.get("active_counts") or {},
             "guardrails": MANIFEST.get("guardrails") or {},
+            "probe_target_count": len(TARGETS),
+            "runtime_cleanup": LATEST_CLEANUP,
+            "traefik_propagate": LATEST_TRAEFIK_PROPAGATE,
         }
-    if path == "/processes":
-        return 200, {**base, "processes": MANIFEST.get("processes") or []}
+    if path in {"/processes", "/result", "/probe/result"}:
+        return 200, {**base, "processes": MANIFEST.get("processes") or [], "probe": LATEST_PROBE}
+    if path in {"/runtime-cleanup/status", "/runtime-cleanup/result"}:
+        return 200, {**base, "runtime_cleanup": LATEST_CLEANUP}
+    if path in {"/traefik-propagate/status", "/traefik-propagate/result"}:
+        return 200, {**base, "traefik_propagate": LATEST_TRAEFIK_PROPAGATE}
     return 404, {**base, "ok": False, "error": "not-found", "path": path}
-
 
 class Handler(BaseHTTPRequestHandler):
     def _send(self, status: int, payload: dict) -> None:
@@ -813,17 +1402,33 @@ class Handler(BaseHTTPRequestHandler):
                 "accepted": True,
                 "head_only": True,
                 "operation": path.strip("/"),
-                "note": "control-plane head accepted the request but no workload is managed by this bootstrap container",
+                "note": "host-agent accepted the request; workload nodes are separate Coolify services",
             })
+            return
+        if path == "/runtime-cleanup":
+            cleanup_thread()
+            self._send(200, dict(LATEST_CLEANUP))
+            return
+        if path == "/traefik-propagate":
+            traefik_propagate_thread()
+            self._send(200, dict(LATEST_TRAEFIK_PROPAGATE))
             return
         self._send(404, {"ok": False, "error": "not-found", "path": path})
 
     def log_message(self, fmt: str, *args: object) -> None:
         print("%s - %s" % (self.address_string(), fmt % args), flush=True)
 
+if TARGETS:
+    threading.Thread(target=probe_loop, daemon=True).start()
+else:
+    LATEST_PROBE = run_probe_once()
+if CLEANUP_REQUEST:
+    threading.Thread(target=cleanup_thread, daemon=True).start()
+if TRAEFIK_PROPAGATE_REQUEST:
+    threading.Thread(target=traefik_propagate_thread, daemon=True).start()
 
-print(f"all-father control head listening on 0.0.0.0:{PORT}", flush=True)
-HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+print(f"all-father host agent listening on 0.0.0.0:{PORT}", flush=True)
+ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 """.strip()
 
 
@@ -837,6 +1442,12 @@ def render_head_compose(
     *,
     dockerfile: str = DEFAULT_DOCKERFILE,
     image: str = DEFAULT_IMAGE,
+    probe_targets: Sequence[Mapping[str, Any]] | None = None,
+    callback_api_url: str = "",
+    callback_token: str = "",
+    callback_service_uuid: str = "",
+    runtime_cleanup_request: Mapping[str, Any] | None = None,
+    traefik_propagate_request: Mapping[str, Any] | None = None,
 ) -> str:
     # The control head must be bootstrappable through Coolify raw compose with no
     # repository build context and no private image registry.  It therefore uses
@@ -851,6 +1462,13 @@ def render_head_compose(
     )
     parent = str(Path(head.state_root).parent).replace("\\", "/")
     command_script = head_server_command_script()
+    probe_targets_b64_value = base64.b64encode(json.dumps(list(probe_targets or []), sort_keys=True).encode("utf-8")).decode("ascii")
+    runtime_cleanup_request_b64_value = base64.b64encode(
+        json.dumps(dict(runtime_cleanup_request or {}), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    traefik_propagate_request_b64_value = base64.b64encode(
+        json.dumps(dict(traefik_propagate_request or {}), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
     lines = [
         f"name: {head.service_name}",
         "",
@@ -870,10 +1488,12 @@ def render_head_compose(
         [
             "    environment:",
             f"      MC_ALLFATHER_CONTROL_PLANE: {yaml_quote('1')}",
+            f"      MC_ALLFATHER_HOST_AGENT: {yaml_quote('1')}",
             f"      MC_ALLFATHER_HEAD_ONLY: {yaml_quote('1')}",
             f"      MC_ALLFATHER_NETWORK: {yaml_quote('control-plane')}",
             f"      MC_ALLFATHER_SET_ID: {yaml_quote('allfather-control')}",
             f"      MC_ALLFATHER_CELL_ID: {yaml_quote(head.head_id)}",
+            f"      MC_ALLFATHER_COOLIFY_SERVER: {yaml_quote(head.coolify_server)}",
             f"      MC_ALLFATHER_GUARD_PORT: {yaml_quote(head.guard_container_port)}",
             f"      MC_ALLFATHER_GUARD_HOST_PORT: {yaml_quote(head.guard_host_port)}",
             f"      MC_ALLFATHER_STATE_ROOT: {yaml_quote(head.state_root)}",
@@ -881,10 +1501,21 @@ def render_head_compose(
             f"      MC_ALLFATHER_PEER_GUARDS: {yaml_quote(','.join(peer['guard_url'] for peer in head.peers))}",
             f"      MC_ALLFATHER_GUARDRAILS: {yaml_quote(json.dumps(plan.guardrails, sort_keys=True))}",
             f"      MC_ALLFATHER_MANIFEST_B64: {yaml_quote(manifest_b64(manifest))}",
+            f"      MC_ALLFATHER_PROBE_TARGETS_B64: {yaml_quote(probe_targets_b64_value)}",
+            f"      MC_ALLFATHER_PROBE_INTERVAL_S: {yaml_quote(DEFAULT_PROBE_INTERVAL_S)}",
+            f"      MC_ALLFATHER_AGENT_CALLBACK_API_URL: {yaml_quote(callback_api_url)}",
+            f"      MC_ALLFATHER_AGENT_CALLBACK_TOKEN: {yaml_quote(callback_token)}",
+            f"      MC_ALLFATHER_AGENT_CALLBACK_SERVICE_UUID: {yaml_quote(callback_service_uuid)}",
+            f"      MC_ALLFATHER_AGENT_CALLBACK_INTERVAL_S: {yaml_quote(DEFAULT_PROBE_INTERVAL_S)}",
+            f"      MC_ALLFATHER_RUNTIME_CLEANUP_REQUEST_B64: {yaml_quote(runtime_cleanup_request_b64_value)}",
+            f"      MC_ALLFATHER_TRAEFIK_PROPAGATE_REQUEST_B64: {yaml_quote(traefik_propagate_request_b64_value)}",
+            f"      MC_ALLFATHER_SUPERNODES_ROOT: {yaml_quote('/host-supernodes')}",
             "    ports:",
             f"      - {yaml_quote(port_spec)}",
             "    volumes:",
             f"      - {yaml_quote(f'{parent}:{parent}')}",
+            f"      - {yaml_quote('/var/run/docker.sock:/var/run/docker.sock')}",
+            f"      - {yaml_quote(f'{DEFAULT_SUPER_STATE_ROOT_PREFIX.rstrip(chr(47))}:/host-supernodes')}",
             "    healthcheck:",
             "      test:",
             "        - CMD-SHELL",
@@ -1391,20 +2022,24 @@ def sync_probe_service(
     *,
     super_inventory: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
-    service_name = probe_service_name(head)
-    service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
-    if service_uuid:
-        compose = render_probe_compose_for_client(plan, head, args, client, callback_service_uuid=service_uuid, super_inventory=super_inventory)
-        fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
-        return service_uuid, "updated", existing
+    """Sync the single per-host allfather head as the private probe agent.
 
-    service_uuid = fdb_tool().create_service(client, probe_service_payload(plan, head, args, context=context, super_inventory=super_inventory), tried)
-    # A newly-created probe cannot know its own Coolify service UUID until after
-    # creation. Patch the compose once more so the long-running private probe can
-    # publish results back into its own service metadata.
-    compose = render_probe_compose_for_client(plan, head, args, client, callback_service_uuid=service_uuid)
-    fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
-    return service_uuid, "created", existing
+    Older snapshots created an allfather-control-probe-* helper service here.
+    The host-agent architecture folds that probe loop into allfather-head-* so
+    add/discover/remove never create a separate probe container.
+    """
+
+    probe_targets = probe_target_records_for_plan(plan, super_inventory=super_inventory)
+    service_uuid, action, existing = sync_head_service(
+        client,
+        plan,
+        head,
+        args,
+        context,
+        tried,
+        probe_targets=probe_targets,
+    )
+    return service_uuid, f"head-agent-{action}", existing
 
 
 def application_records_from_service_detail(detail: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -1573,6 +2208,130 @@ def probe_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, A
     return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
 
 
+
+
+def runtime_cleanup_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the runtime-cleanup result callback from the allfather head metadata."""
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "service detail body was not an object"}
+    description = str(body.get("description") or "")
+    if RUNTIME_CLEANUP_CALLBACK_MARKER not in description:
+        return {"ok": False, "source": "coolify-service-description", "error": "no ALLFATHER_RUNTIME_CLEANUP_RESULT_B64 entry found"}
+    encoded = description.split(RUNTIME_CLEANUP_CALLBACK_MARKER, 1)[1].strip().split()[0]
+    try:
+        result = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "source": "coolify-service-description", "error": f"invalid metadata callback: {type(exc).__name__}: {exc}"}
+    if not isinstance(result, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
+    return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+
+def traefik_propagate_result_from_service_metadata(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the Traefik propagation result callback from the allfather head metadata."""
+
+    body = detail.get("body") if isinstance(detail, Mapping) else {}
+    if not isinstance(body, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "service detail body was not an object"}
+    description = str(body.get("description") or "")
+    if TRAEFIK_PROPAGATE_CALLBACK_MARKER not in description:
+        return {"ok": False, "source": "coolify-service-description", "error": "no ALLFATHER_TRAEFIK_PROPAGATE_RESULT_B64 entry found"}
+    encoded = description.split(TRAEFIK_PROPAGATE_CALLBACK_MARKER, 1)[1].strip().split()[0]
+    try:
+        result = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "source": "coolify-service-description", "error": f"invalid metadata callback: {type(exc).__name__}: {exc}"}
+    if not isinstance(result, Mapping):
+        return {"ok": False, "source": "coolify-service-description", "error": "metadata callback was not an object"}
+    return {"ok": True, "source": "coolify-service-description", "result": dict(result), "result_count": 1}
+
+
+def wait_for_head_traefik_propagate_ready(
+    client: Any,
+    head_service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+    poll_s: float = 2.0,
+    expected_request_id: str = "",
+) -> dict[str, Any]:
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
+    first = True
+    while first or time.time() < deadline:
+        first = False
+        detail = fetch_service_detail(client, head_service_uuid, tried)
+        last_result = traefik_propagate_result_from_service_metadata(detail)
+        result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+        phase = str(result.get("phase") or result.get("status") or "")
+        if last_result.get("ok") and phase in {"ready", "failed"}:
+            observed_request_id = str(result.get("request_id") or "")
+            if expected_request_id and observed_request_id != expected_request_id:
+                last_result = {
+                    **last_result,
+                    "error": f"stale Traefik propagation marker observed for request_id={observed_request_id or '<missing>'}; waiting for request_id={expected_request_id}",
+                }
+            else:
+                return {
+                    "observed": True,
+                    "ready": bool(result.get("ok")) and phase == "ready",
+                    "reason": str(result.get("error") or ("Traefik propagation completed" if phase == "ready" else "Traefik propagation failed")),
+                    "result": dict(result),
+                    "source": last_result.get("source"),
+                }
+        if time.time() >= deadline:
+            break
+        time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+    result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+    return {
+        "observed": bool(last_result.get("ok")),
+        "ready": False,
+        "reason": str(result.get("error") or last_result.get("error") or "Traefik propagation metadata callback was not observed"),
+        "result": dict(result),
+        "source": last_result.get("source"),
+    }
+
+
+def wait_for_head_runtime_cleanup_ready(
+    client: Any,
+    head_service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+    poll_s: float,
+) -> dict[str, Any]:
+    deadline = time.time() + max(0.0, float(wait_s or 0.0))
+    last_result: dict[str, Any] = {"ok": False, "result": {"phase": "not-observed", "status": "not-observed"}}
+    first = True
+    while first or time.time() < deadline:
+        first = False
+        detail = fetch_service_detail(client, head_service_uuid, tried)
+        last_result = runtime_cleanup_result_from_service_metadata(detail)
+        result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+        phase = str(result.get("phase") or result.get("status") or "")
+        if last_result.get("ok") and phase in {"ready", "failed"}:
+            return {
+                "observed": True,
+                "ready": bool(result.get("ok")) and phase == "ready",
+                "reason": str(result.get("error") or ("runtime cleanup completed" if phase == "ready" else "runtime cleanup failed")),
+                "result": dict(result),
+                "source": last_result.get("source"),
+            }
+        if time.time() >= deadline:
+            break
+        time.sleep(min(max(0.25, float(poll_s or 1.0)), max(0.25, deadline - time.time())))
+    result = last_result.get("result") if isinstance(last_result.get("result"), Mapping) else {}
+    return {
+        "observed": bool(last_result.get("ok")),
+        "ready": False,
+        "reason": str(result.get("error") or last_result.get("error") or "runtime cleanup metadata callback was not observed"),
+        "result": dict(result),
+        "source": last_result.get("source"),
+    }
+
 def probe_result_targets(probe_result: Mapping[str, Any]) -> list[dict[str, Any]]:
     result = probe_result.get("result") if isinstance(probe_result, Mapping) else None
     if not isinstance(result, Mapping):
@@ -1665,12 +2424,24 @@ def service_payload(
     args: argparse.Namespace,
     *,
     context: Mapping[str, Any] | None = None,
+    probe_targets: Sequence[Mapping[str, Any]] | None = None,
+    callback_api_url: str = "",
+    callback_token: str = "",
+    callback_service_uuid: str = "",
+    runtime_cleanup_request: Mapping[str, Any] | None = None,
+    traefik_propagate_request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     compose = render_head_compose(
         plan,
         head,
         dockerfile=getattr(args, "dockerfile", DEFAULT_DOCKERFILE),
         image=getattr(args, "image", DEFAULT_IMAGE),
+        probe_targets=probe_targets,
+        callback_api_url=callback_api_url,
+        callback_token=callback_token,
+        callback_service_uuid=callback_service_uuid,
+        runtime_cleanup_request=runtime_cleanup_request,
+        traefik_propagate_request=traefik_propagate_request,
     )
     payload = {
         "server_uuid": (context or {}).get("server_uuid") or "",
@@ -1733,18 +2504,71 @@ def dry_run_payload(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def sync_head_service(client: Any, plan: HeadPlan, head: HeadNode, args: argparse.Namespace, context: Mapping[str, Any], tried: list[dict[str, Any]]) -> tuple[str, str, dict[str, Any]]:
+def sync_head_service(
+    client: Any,
+    plan: HeadPlan,
+    head: HeadNode,
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+    *,
+    probe_targets: Sequence[Mapping[str, Any]] | None = None,
+    runtime_cleanup_request: Mapping[str, Any] | None = None,
+    traefik_propagate_request: Mapping[str, Any] | None = None,
+) -> tuple[str, str, dict[str, Any]]:
     explicit_uuid = explicit_service_uuid_for_host(head, args)
     service_uuid = explicit_uuid
     existing: dict[str, Any] = {}
     if not service_uuid:
         service_uuid, existing = hub_service_tool().find_service(client, service_name=head.service_name, explicit_uuid="", tried=tried)
+
+    callback_api_url = str(getattr(client, "base_url", "") or "")
+    callback_token = str(getattr(client, "token", "") or "")
+
     if service_uuid:
-        compose = render_head_compose(plan, head, dockerfile=args.dockerfile, image=args.image)
+        compose = render_head_compose(
+            plan,
+            head,
+            dockerfile=args.dockerfile,
+            image=args.image,
+            probe_targets=probe_targets,
+            callback_api_url=callback_api_url,
+            callback_token=callback_token,
+            callback_service_uuid=service_uuid,
+            runtime_cleanup_request=runtime_cleanup_request,
+            traefik_propagate_request=traefik_propagate_request,
+        )
         fdb_tool().update_service(client, service_uuid, head.service_name, compose, tried)
         return service_uuid, "updated", existing
-    payload = service_payload(plan, head, args, context=context)
+
+    payload = service_payload(
+        plan,
+        head,
+        args,
+        context=context,
+        probe_targets=probe_targets,
+        callback_api_url=callback_api_url,
+        callback_token=callback_token,
+        callback_service_uuid="",
+        runtime_cleanup_request=runtime_cleanup_request,
+        traefik_propagate_request=traefik_propagate_request,
+    )
     service_uuid = fdb_tool().create_service(client, payload, tried)
+    # Patch the new head once its UUID is known so the single host-agent can
+    # publish probe/cleanup results back into its own Coolify metadata.
+    compose = render_head_compose(
+        plan,
+        head,
+        dockerfile=args.dockerfile,
+        image=args.image,
+        probe_targets=probe_targets,
+        callback_api_url=callback_api_url,
+        callback_token=callback_token,
+        callback_service_uuid=service_uuid,
+        runtime_cleanup_request=runtime_cleanup_request,
+        traefik_propagate_request=traefik_propagate_request,
+    )
+    fdb_tool().update_service(client, service_uuid, head.service_name, compose, tried)
     return service_uuid, "created", existing
 
 
@@ -1757,8 +2581,7 @@ def apply_bootstrap_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str,
         tried: list[dict[str, Any]] = []
         operator_log(args, f"coolify: checking API and inventory on {head.coolify_server}")
         client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
-        version = client.request("GET", "/api/v1/version")
-        tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
+        version = request_coolify_version(client, tried, args=args, host=head.coolify_server)
         if not version.ok:
             raise AllfatherControlError(
                 f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
@@ -1948,8 +2771,7 @@ def discover_head_via_coolify(plan: HeadPlan, head: HeadNode, args: argparse.Nam
 
     try:
         client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
-        version = client.request("GET", "/api/v1/version")
-        tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
+        version = request_coolify_version(client, tried, args=args, host=head.coolify_server)
         if not version.ok:
             return {
                 "ok": False,
@@ -2049,10 +2871,10 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
         return {
             "ok": True,
             "dry_run": True,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "token_source": "",
             "head_service_name": head.service_name,
-            "probe_service_name": probe_service_name(head),
+            "probe_service_name": head.service_name,
             "peer_guard_url": head.guard_url,
             "probe_targets": probe_target_records_for_plan(plan),
             "super_inventory": [],
@@ -2067,17 +2889,16 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
             "public_guard_routes": False,
             "ssh_used": False,
             "direct_vpn_used": False,
-            "probe_left_running": True,
+            "probe_left_running": False,
         }
 
     try:
         client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
-        version = client.request("GET", "/api/v1/version")
-        tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
+        version = request_coolify_version(client, tried, args=args, host=head.coolify_server)
         if not version.ok:
             return {
                 "ok": False,
-                "method": "coolify-patch-probe",
+                "method": "coolify-head-agent",
                 "token_source": token_source,
                 "tried": tried,
                 "error": f"Coolify API version check failed with HTTP {version.status}",
@@ -2089,7 +2910,7 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
         context = resolve_context(client, args, head, tried)
 
         try:
-            service_inventory_items = service_items_for_client(client, tried)
+            service_inventory_items = service_items_for_client(client, tried, args=args)
             super_inventory = all_super_inventory_from_services(service_inventory_items, head)
         except Exception as exc:
             super_inventory_error = f"{type(exc).__name__}: {exc}"
@@ -2143,13 +2964,13 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
                 probe_logs = {"ok": True, "source": "coolify-service-description", "body": None}
             return {
                 "ok": True,
-                "method": "coolify-patch-probe",
+                "method": "coolify-head-agent",
                 "token_source": token_source,
                 "head_service_name": head.service_name,
                 "head_service_uuid": head_service_uuid,
                 "head_existing": head_existing,
                 "head_detail": head_detail,
-                "probe_service_name": probe_service_name(head),
+                "probe_service_name": head.service_name,
                 "probe_service_uuid": probe_service_uuid,
                 "probe_action": action,
                 "probe_existing": probe_existing,
@@ -2163,8 +2984,8 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
                 "probe_targets": expected_targets,
                 "super_inventory": super_inventory,
                 "super_inventory_error": super_inventory_error,
-                "probe_left_running": True,
-                "finalization_action": "future: stop/remove probes after control discovery is proven stable",
+                "probe_left_running": False,
+                "finalization_action": "not needed; probe is an internal job inside the head agent",
                 "public_guard_routes": False,
                 "ssh_used": False,
                 "direct_vpn_used": False,
@@ -2173,13 +2994,13 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
 
         return {
             "ok": bool(head_service_uuid),
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "token_source": token_source,
             "head_service_name": head.service_name,
             "head_service_uuid": head_service_uuid,
             "head_existing": head_existing,
             "head_detail": head_detail,
-            "probe_service_name": probe_service_name(head),
+            "probe_service_name": head.service_name,
             "probe_service_uuid": probe_service_uuid,
             "probe_result": probe_result,
             "probe_targets": probe_target_records_for_plan(plan, super_inventory=super_inventory),
@@ -2195,11 +3016,11 @@ def sync_and_query_probe_for_head(plan: HeadPlan, head: HeadNode, args: argparse
     except Exception as exc:
         return {
             "ok": False,
-            "method": "coolify-patch-probe",
+            "method": "coolify-head-agent",
             "token_source": token_source,
             "head_service_name": head.service_name,
             "head_service_uuid": head_service_uuid,
-            "probe_service_name": probe_service_name(head),
+            "probe_service_name": head.service_name,
             "probe_service_uuid": probe_service_uuid,
             "probe_result": probe_result,
             "super_inventory": super_inventory,
@@ -2332,6 +3153,52 @@ def summarize_coolify_attempts(tried: Any) -> dict[str, Any]:
         summary["operations_truncated"] = True
     if last_error:
         summary["last_error"] = last_error
+    return summary
+
+
+def traefik_propagate_attempt_summary(tried: Any) -> dict[str, Any]:
+    """Summarize Traefik propagate Coolify API attempts without dumping compose/log spam.
+
+    The Traefik propagator syncs a Docker Compose payload and then probes several
+    Coolify log endpoints while waiting for the result marker.  In verbose mode a
+    raw attempt dump can include full base64 compose payloads plus dozens of 404
+    log-path fallbacks.  This command should report enough to diagnose routing
+    failures without flooding the terminal.
+    """
+
+    summary = summarize_coolify_attempts(tried)
+    if not isinstance(tried, list):
+        return summary
+
+    log_fallback_attempts = 0
+    compose_payload_attempts = 0
+    failed_paths: list[str] = []
+    for item in tried:
+        if not isinstance(item, Mapping):
+            continue
+        operation = str(item.get("operation") or item.get("action") or "").strip()
+        if "logs" in operation:
+            log_fallback_attempts += 1
+
+        payload = item.get("payload")
+        if isinstance(payload, Mapping) and "docker_compose_raw" in payload:
+            compose_payload_attempts += 1
+
+        response = item.get("response")
+        if isinstance(response, Mapping) and not bool(response.get("ok", True)):
+            path = str(response.get("path") or "").strip()
+            if path and path not in failed_paths:
+                failed_paths.append(path)
+
+    if log_fallback_attempts:
+        summary["log_probe_attempt_count"] = log_fallback_attempts
+    if compose_payload_attempts:
+        summary["compose_payload_attempt_count"] = compose_payload_attempts
+        summary["compose_payload_redacted"] = True
+    if failed_paths:
+        summary["failed_paths"] = failed_paths[:5]
+        if len(failed_paths) > 5:
+            summary["failed_paths_truncated"] = True
     return summary
 
 
@@ -2515,7 +3382,7 @@ def discover_from_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str, A
             "server": head.coolify_server,
             "peer_guard_url": head.guard_url,
             "peer_guard_url_scope": "remote-vpn-peer-only",
-            "operator_transport": "coolify-patch-probe",
+            "operator_transport": "coolify-head-agent",
             "public_guard_routes": False,
             "ssh_used": False,
             "direct_vpn_used": False,
@@ -2547,19 +3414,19 @@ def discover_from_heads(plan: HeadPlan, args: argparse.Namespace) -> dict[str, A
     elif not plan.heads:
         reason = "no all-father heads are planned"
     elif not all_probes_synced:
-        reason = "one or more Coolify-managed discovery probes could not be synced"
+        reason = "one or more allfather head agents could not be synced"
     else:
-        reason = "Coolify probes are synced, but no probe result has been observed yet"
+        reason = "allfather head agents are synced, but no probe result has been observed yet"
     return {
         "ok": ok,
         "operation": "discover",
-        "operator_transport": "coolify-patch-probe",
-        "topology_source": "coolify-api-plus-private-probe-logs",
+        "operator_transport": "coolify-head-agent",
+        "topology_source": "coolify-api-plus-head-agent-metadata",
         "public_guard_routes": False,
         "ssh_used": False,
         "direct_vpn_used": False,
-        "probe_services_left_running": True,
-        "finalization_action": "not run; probes remain active for diagnosis",
+        "probe_services_left_running": False,
+        "finalization_action": "not needed; probe runs inside the existing allfather head agent",
         "summary": {
             "planned_heads": len(plan.heads),
             "coolify_seen_heads": coolify_head_count,
@@ -3028,15 +3895,65 @@ def coolify_response_is_transient_timeout(response: Any) -> bool:
     return error_type in {"TimeoutError", "socket.timeout"} or "timed out" in message
 
 
+
+
+def coolify_retry_attempts_from_args(args: argparse.Namespace | None) -> int:
+    value = getattr(args, "coolify_retries", 3) if args is not None else 3
+    try:
+        return max(1, int(value))
+    except Exception:
+        return 3
+
+
+def coolify_retry_sleep_from_args(args: argparse.Namespace | None) -> float:
+    value = getattr(args, "coolify_retry_sleep_s", 5.0) if args is not None else 5.0
+    try:
+        return max(0.0, float(value))
+    except Exception:
+        return 5.0
+
+
+def request_coolify_version(
+    client: Any,
+    tried: list[dict[str, Any]],
+    *,
+    args: argparse.Namespace | None = None,
+    host: str = "",
+    operation: str = "coolify-version",
+) -> Any:
+    attempts = coolify_retry_attempts_from_args(args)
+    sleep_s = coolify_retry_sleep_from_args(args)
+    last_response: Any | None = None
+    for attempt in range(1, attempts + 1):
+        response = client.request("GET", "/api/v1/version")
+        last_response = response
+        transient = coolify_response_is_transient_timeout(response)
+        tried.append(
+            {
+                "operation": operation,
+                "host": host,
+                "attempt": attempt,
+                "max_attempts": attempts,
+                "transient_timeout": bool(transient),
+                "response": hub_service_tool().response_to_dict(response),
+            }
+        )
+        if response.ok or not transient or attempt >= attempts:
+            return response
+        time.sleep(sleep_s)
+    assert last_response is not None
+    return last_response
+
 def service_items_for_client(
     client: Any,
     tried: list[dict[str, Any]],
     *,
-    transient_attempts: int = 3,
-    transient_sleep_s: float = 5.0,
+    args: argparse.Namespace | None = None,
+    transient_attempts: int | None = None,
+    transient_sleep_s: float | None = None,
 ) -> list[dict[str, Any]]:
-    attempts = max(1, int(transient_attempts))
-    sleep_s = max(0.0, float(transient_sleep_s))
+    attempts = max(1, int(transient_attempts)) if transient_attempts is not None else coolify_retry_attempts_from_args(args)
+    sleep_s = max(0.0, float(transient_sleep_s)) if transient_sleep_s is not None else coolify_retry_sleep_from_args(args)
     last_response: Any | None = None
     last_services: list[dict[str, Any]] = []
     for attempt in range(1, attempts + 1):
@@ -3253,19 +4170,18 @@ def discover_network_super_inventory_for_add_node(
             continue
         try:
             peer_client, _peer_token_source = fdb_tool().client_for_server(peer_head.coolify_server, args)
-            version = peer_client.request("GET", "/api/v1/version")
-            tried.append(
-                {
-                    "operation": "coolify-version-network-inventory",
-                    "host": peer_head.coolify_server,
-                    "response": hub_service_tool().response_to_dict(version),
-                }
+            version = request_coolify_version(
+                peer_client,
+                tried,
+                args=args,
+                host=peer_head.coolify_server,
+                operation="coolify-version-network-inventory",
             )
             if not version.ok:
                 raise AllfatherControlError(
                     f"Coolify API version check failed for {peer_head.coolify_server!r} with HTTP {version.status}: {version.body}"
                 )
-            services_by_server[peer_head.coolify_server] = list(service_items_for_client(peer_client, tried))
+            services_by_server[peer_head.coolify_server] = list(service_items_for_client(peer_client, tried, args=args))
             checked.append(peer_head.coolify_server)
         except Exception as exc:
             errors.append(
@@ -3364,6 +4280,7 @@ def wait_for_add_node_slot_preflight(
     wait_s: float,
     poll_s: float,
     stable_s: float,
+    args: argparse.Namespace | None = None,
 ) -> dict[str, Any]:
     """Verify the target Coolify service slot is stably clean before add-node deploys.
 
@@ -3388,7 +4305,7 @@ def wait_for_add_node_slot_preflight(
 
     while True:
         attempts += 1
-        last_services = service_items_for_client(client, tried)
+        last_services = service_items_for_client(client, tried, args=args)
         try:
             last_ordinals = require_contiguous_super_ordinals(existing_super_ordinals(last_services, network_key, head), network_key, head)
         except AllfatherControlError as exc:
@@ -3479,10 +4396,11 @@ def require_synced_super_service_ready_for_deploy(
     service_name: str,
     service_uuid: str,
     tried: list[dict[str, Any]],
+    args: argparse.Namespace | None = None,
 ) -> dict[str, Any]:
     """Verify the service we are about to deploy is the only Coolify match."""
 
-    services = service_items_for_client(client, tried)
+    services = service_items_for_client(client, tried, args=args)
     matches = matching_service_items(services, service_name)
     summaries = service_item_summaries(matches)
     if len(matches) != 1:
@@ -5942,7 +6860,27 @@ def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
     operator_file = config_dir / "qbft-config.json"
     operator_file.write_text(json.dumps(operator_config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     out_dir = config_dir / "operator-output"
-    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def generated_qbft_key_candidates() -> list[Path]:
+        return sorted(out_dir.glob("keys/*/key"))
+
+    def install_generated_qbft_output(reason: str) -> tuple[bool, str, Path | None, Path | None]:
+        generated_genesis = out_dir / "genesis.json"
+        generated_keys = generated_qbft_key_candidates()
+        if not generated_genesis.exists() or not generated_keys:
+            return False, "qbft-config-generation-missing-output", None, None
+        genesis.write_text(generated_genesis.read_text(encoding="utf-8"), encoding="utf-8")
+        fund_genesis_accounts(genesis)
+        key_file.write_text(generated_keys[0].read_text(encoding="utf-8").strip() + "\n", encoding="utf-8")
+        return True, reason, genesis, key_file
+
+    if out_dir.exists():
+        recovered_ok, recovered_reason, recovered_genesis, recovered_key = install_generated_qbft_output("recovered-existing-operator-output")
+        if recovered_ok:
+            return True, recovered_reason, recovered_genesis, recovered_key
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+    timeout_s = int(os.environ.get("MC_ALLFATHER_QBFT_GENERATE_TIMEOUT_S", "240") or "240")
     ok, output = run_once(
         "besu-qbft-generate",
         [
@@ -5953,19 +6891,18 @@ def write_qbft_config() -> tuple[bool, str, Path | None, Path | None]:
             "--to", str(out_dir),
             "--private-key-file-name", "key",
         ],
-        timeout=60,
+        timeout=timeout_s,
     )
-    if not ok:
-        return False, "qbft-config-generation-failed: " + output, None, None
+    if ok:
+        return install_generated_qbft_output("generated-single-validator-qbft-config")
 
-    generated_genesis = out_dir / "genesis.json"
-    generated_keys = sorted(out_dir.glob("keys/*/key"))
-    if not generated_genesis.exists() or not generated_keys:
-        return False, "qbft-config-generation-missing-output", None, None
-    genesis.write_text(generated_genesis.read_text(encoding="utf-8"), encoding="utf-8")
-    fund_genesis_accounts(genesis)
-    key_file.write_text(generated_keys[0].read_text(encoding="utf-8").strip() + "\n", encoding="utf-8")
-    return True, "generated-single-validator-qbft-config", genesis, key_file
+    recovered_ok, recovered_reason, recovered_genesis, recovered_key = install_generated_qbft_output(
+        "recovered-operator-output-after-generate-failure"
+    )
+    if recovered_ok:
+        return True, recovered_reason, recovered_genesis, recovered_key
+    shutil.rmtree(out_dir, ignore_errors=True)
+    return False, "qbft-config-generation-failed: " + output, None, None
 
 def ensure_validator_rpc(fdb_ready: bool) -> bool:
     rpc_port = int(ports.get("rpc_container") or 8545)
@@ -6681,33 +7618,117 @@ ENV PATH="/opt/allfather-super-venv/bin:$PATH"
 
 
 def super_node_dockerfile_inline(base_image: str, guard_script: str | None = None) -> str:
-    """Return the small per-node Dockerfile for the all-father super-node image.
+    """Return a self-contained per-node Dockerfile.
 
-    The heavy dependency layer is built by the managed
-    allfather-super-base-builder Coolify service.  Per-node deployments only bake
-    in the current generated guard/supervisor payload, which keeps deploy jobs
-    below Coolify worker timeouts and avoids manual host-side image builds.
+    Sprawl-free host-agent mode deliberately avoids the old
+    allfather-super-base-builder-* helper service.  Each super-node build starts
+    from the public Besu source image and installs the FDB/Python/web3/solc layer
+    directly into that node image.  This is slower than a shared local base image,
+    but it keeps the Coolify service model clean: one allfather head per machine
+    plus the actual super-node services, with no builder/probe/cleanup helpers.
     """
 
-    base = str(base_image or DEFAULT_SUPER_BASE_IMAGE).strip() or DEFAULT_SUPER_BASE_IMAGE
+    requested = str(base_image or "").strip()
+    local_base_requested = (
+        not requested
+        or requested == DEFAULT_SUPER_BASE_IMAGE
+        or requested.startswith("main-computer/allfather-super-base:")
+    )
+    source = DEFAULT_SUPER_BASE_SOURCE_IMAGE if local_base_requested else requested
+    contract_sources_b64 = base64.b64encode(
+        zlib.compress((json.dumps(allfather_contract_sources_b64(), sort_keys=True) + "\n").encode("utf-8"))
+    ).decode("ascii")
+    contract_builder_b64 = base64.b64encode(
+        zlib.compress(allfather_contract_artifact_builder_script().encode("utf-8"))
+    ).decode("ascii")
     guard_script_b64 = base64.b64encode(zlib.compress((guard_script or super_server_command_script()).encode("utf-8"))).decode("ascii")
     wrapper_script_b64 = base64.b64encode(zlib.compress(super_node_entrypoint_wrapper_script().encode("utf-8"))).decode("ascii")
     payload_install = dockerfile_payload_install_run(
         {
+            "/opt/allfather-contracts/contract-sources-b64.json": contract_sources_b64,
+            "/opt/allfather-contracts/build-contract-artifacts.py": contract_builder_b64,
             "/usr/local/bin/allfather-super-guard.py": guard_script_b64,
             "/usr/local/bin/allfather-super-entrypoint.py": wrapper_script_b64,
         }
     )
     return f"""
-FROM {base}
+FROM {source}
 
 USER root
 
+RUN set -eux; \
+    if ! command -v apt-get >/dev/null 2>&1; then \
+        echo "The all-father super-node image currently requires a Debian/Ubuntu Besu base so FoundationDB server .deb packages can be installed." >&2; \
+        exit 1; \
+    fi; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        bash build-essential ca-certificates curl python3 python3-dev python3-pip python3-venv procps netcat-openbsd; \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+        curl -fsSL -o /tmp/foundationdb-clients.deb \
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-clients_7.4.6-1_amd64.deb"; \
+        curl -fsSL -o /tmp/foundationdb-server.deb \
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-server_7.4.6-1_amd64.deb"; \
+    elif [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+        curl -fsSL -o /tmp/foundationdb-clients.deb \
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-clients_7.4.6-1_arm64.deb"; \
+        curl -fsSL -o /tmp/foundationdb-server.deb \
+            "https://github.com/apple/foundationdb/releases/download/7.4.6/foundationdb-server_7.4.6-1_arm64.deb"; \
+    else \
+        echo "Unsupported FoundationDB architecture: $(dpkg --print-architecture)" >&2; \
+        exit 1; \
+    fi; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \
+    rm -f /tmp/foundationdb-clients.deb /tmp/foundationdb-server.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    python3 -m venv /opt/allfather-super-venv; \
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir --upgrade pip setuptools wheel; \
+    /opt/allfather-super-venv/bin/python -m pip install --no-cache-dir "foundationdb==7.4.6" "web3==6.20.4"; \
+    curl -fsSL -o /usr/local/bin/solc \
+        "https://github.com/ethereum/solidity/releases/download/v0.8.24/solc-static-linux"; \
+    chmod 0755 /usr/local/bin/solc; \
+    solc --version; \
+    mkdir -p /opt/allfather-contracts; \
+    ln -sf /opt/allfather-super-venv/bin/python /usr/local/bin/python; \
+    ln -sf /opt/allfather-super-venv/bin/pip /usr/local/bin/pip; \
+    if [ -x /usr/sbin/fdbserver ]; then \
+        ln -sf /usr/sbin/fdbserver /usr/local/bin/fdbserver; \
+    elif [ -x /usr/bin/fdbserver ]; then \
+        ln -sf /usr/bin/fdbserver /usr/local/bin/fdbserver; \
+    else \
+        echo "FoundationDB server binary was not found after package install" >&2; \
+        exit 1; \
+    fi; \
+    if [ -x /usr/bin/fdbcli ]; then \
+        ln -sf /usr/bin/fdbcli /usr/local/bin/fdbcli; \
+    elif [ -x /usr/sbin/fdbcli ]; then \
+        ln -sf /usr/sbin/fdbcli /usr/local/bin/fdbcli; \
+    else \
+        echo "FoundationDB CLI binary was not found after package install" >&2; \
+        exit 1; \
+    fi; \
+    if ! command -v besu >/dev/null 2>&1; then \
+        echo "Besu binary is required in the all-father super-node image" >&2; \
+        exit 1; \
+    fi; \
+    besu --version; \
+    fdbserver --version; \
+    fdbcli --version
+
 {payload_install}
 
-ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super \\
-    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets \\
-    MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint
+RUN set -eux; \
+    python3 /opt/allfather-contracts/build-contract-artifacts.py \
+        /opt/allfather-contracts/contract-sources-b64.json \
+        /opt/allfather-contracts/contracts-artifacts.json; \
+    test -s /opt/allfather-contracts/contracts-artifacts.json
+
+ENV MC_ALLFATHER_IMAGE_KIND=besu-qbft-fdb-allfather-super \
+    MC_ALLFATHER_IMAGE_CAPABILITIES=guard,supervisor,hub-bootstrap,hub-admin-bootstrap,contract-deploy,fdb,validator-rpc,besu,qbft,traefik-targets,sprawl-free-host-agent-build \
+    MC_ALLFATHER_IMAGE_ENTRYPOINT=allfather-super-entrypoint \
+    MC_ALLFATHER_IMAGE_SOURCE={source} \
+    MC_ALLFATHER_SHARED_BASE_BUILDER=disabled
 
 EXPOSE {DEFAULT_SUPER_GUARD_CONTAINER_PORT} {DEFAULT_SUPER_HUB_CONTAINER_PORT} {DEFAULT_SUPER_RPC_CONTAINER_PORT} {DEFAULT_SUPER_FDB_CONTAINER_PORT} {DEFAULT_SUPER_P2P_CONTAINER_PORT}
 
@@ -6715,9 +7736,6 @@ ENV PATH="/opt/allfather-super-venv/bin:$PATH"
 
 ENTRYPOINT ["/opt/allfather-super-venv/bin/python", "-u", "/usr/local/bin/allfather-super-entrypoint.py"]
 """.strip()
-
-
-
 def escape_compose_interpolation(text: str) -> str:
     """Escape Docker Compose interpolation inside literal inline payloads.
 
@@ -7356,30 +8374,65 @@ def run_super_runtime_cleanup(
             head,
             enabled=True,
             dry_run=True,
-            reason="Dry-run: last-node runtime cleanup would move super-node state directories and remove stale containers.",
+            reason="Dry-run: the allfather head host-agent would move super-node state directories and remove stale containers.",
         )
 
-    service_uuid, service_action, _existing = sync_super_runtime_cleanup_service(client, network_key, head, args, context, tried)
-    operator_log(args, f"runtime-cleanup: deploying {super_runtime_cleanup_service_name(network_key, head)} uuid={service_uuid or '<unknown>'}")
+    cleanup_request = {
+        "network_key": clean_node_network_key(network_key),
+        "coolify_server": str(head.coolify_server or ""),
+        "super_prefix": super_prefix(network_key, head),
+        "service_name": super_runtime_cleanup_service_name(network_key, head),
+        "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
+    }
+    service_uuid, service_action, _existing = sync_head_service(
+        client,
+        plan,
+        head,
+        args,
+        context,
+        tried,
+        runtime_cleanup_request=cleanup_request,
+    )
+    operator_log(
+        args,
+        f"runtime-cleanup: using head host-agent {head.service_name} uuid={service_uuid or '<unknown>'}; no cleanup helper service will be created",
+    )
     hub_service_tool().trigger_deploy_service(
         client,
         service_uuid=service_uuid,
         force=True,
         tried=tried,
     )
-    result = wait_for_super_runtime_cleanup_ready(
-        plan,
-        network_key,
-        head,
+    wait_result = wait_for_head_runtime_cleanup_ready(
         client,
-        args,
-        context,
+        service_uuid,
         tried,
-        cleanup_service_uuid=service_uuid,
+        wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S)),
+        poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
     )
-    result["service_action"] = service_action
-    return result
-
+    payload = wait_result.get("result") if isinstance(wait_result.get("result"), Mapping) else {}
+    return {
+        "enabled": True,
+        "ready": bool(wait_result.get("ready")),
+        "dry_run": False,
+        "reason": wait_result.get("reason") or ("last-node runtime cleanup completed" if wait_result.get("ready") else "runtime cleanup did not complete"),
+        "service_name": head.service_name,
+        "service_uuid": service_uuid,
+        "service_action": f"head-agent-{service_action}",
+        "legacy_helper_service_name": super_runtime_cleanup_service_name(network_key, head),
+        "status_url": head.guard_url,
+        "state_root_glob": super_runtime_cleanup_state_root_glob(network_key, head),
+        "moves_runtime_state_dirs": True,
+        "removes_stale_containers": True,
+        "containers_removed": payload.get("containers_removed"),
+        "state_dirs_moved": payload.get("state_dirs_moved"),
+        "archive_dir": payload.get("archive_dir"),
+        "observed": bool(wait_result.get("observed")),
+        "observed_result": dict(payload),
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
 
 
 def super_base_builder_service_payload(
@@ -7772,88 +8825,34 @@ def ensure_super_base_image(
     context: Mapping[str, Any],
     tried: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if bool(getattr(args, "no_super_base_ensure", False)):
-        return {
-            "enabled": False,
-            "ready": None,
-            "reason": "disabled by --no-super-base-ensure",
-            "public_guard_routes": False,
-            "ssh_used": False,
-            "direct_vpn_used": False,
-        }
+    """Sprawl-free mode does not create a base-image builder service.
+
+    The super-node Dockerfile is self-contained now, so add-node never needs an
+    allfather-super-base-builder-* Coolify service.  This intentionally trades a
+    slower per-node image build for the requested service model: one durable
+    allfather head per machine and zero disposable helper containers.
+    """
+
     target_image = getattr(args, "super_image", DEFAULT_SUPER_IMAGE)
-    operator_log(args, f"base-image: ensuring {target_image} via managed Coolify builder on {head.coolify_server}")
-    service_uuid, action, existing = sync_super_base_builder_service(client, head, args, context, tried)
-    operator_log(args, f"base-image: builder service {action} uuid={service_uuid or '<unknown>'}")
-    deploy_response = None
-    force_base = bool(getattr(args, "force_super_base_rebuild", False))
-    full_wait_s = float(getattr(args, "super_base_wait_s", DEFAULT_ADD_NODE_READY_WAIT_S))
-    wait_result: dict[str, Any] | None = None
-
-    # A stale builder container can keep serving "ready" after the Docker host
-    # image has been deleted by cleanup/prune/remove-node activity.  Do not
-    # treat a ready precheck as proof that the image exists; redeploy the
-    # builder so its Docker-socket-side `docker image inspect` verifies or
-    # rebuilds the tag on the same host that will build the node service.  The
-    # only predeploy state we reuse is an already-live build, to avoid
-    # restarting a long-running build in progress.
-    if service_uuid and not force_base:
-        precheck_wait_s = float(getattr(args, "super_base_predeploy_wait_s", 20.0))
-        operator_log(args, f"base-image: checking existing builder before deploy; wait up to {precheck_wait_s:.0f}s")
-        precheck = wait_for_super_base_builder_ready(
-            plan,
-            head,
-            client,
-            args,
-            context,
-            tried,
-            wait_s=precheck_wait_s,
-            builder_service_uuid=service_uuid,
-        )
-        if super_base_builder_target_is_live_building(precheck.get("observed_target") if isinstance(precheck.get("observed_target"), Mapping) else {}):
-            operator_log(args, "base-image: existing builder is already building; continuing without restart")
-            wait_result = wait_for_super_base_builder_ready(
-                plan,
-                head,
-                client,
-                args,
-                context,
-                tried,
-                wait_s=full_wait_s,
-                builder_service_uuid=service_uuid,
-            )
-        elif bool(precheck.get("ready")):
-            operator_log(args, "base-image: existing builder reported ready; redeploying builder to verify host image exists")
-
-    if wait_result is None:
-        if not bool(getattr(args, "no_deploy", False)):
-            operator_log(args, f"base-image: triggering builder deploy force={str(force_base).lower()}")
-            deploy_response = hub_service_tool().trigger_deploy_service(
-                client,
-                service_uuid=service_uuid,
-                force=force_base,
-                tried=tried,
-            )
-        wait_result = wait_for_super_base_builder_ready(
-            plan,
-            head,
-            client,
-            args,
-            context,
-            tried,
-            wait_s=full_wait_s,
-            builder_service_uuid=service_uuid,
-        )
-    wait_result.update(
-        {
-            "service_uuid": service_uuid,
-            "service_action": action,
-            "existing": existing if bool(getattr(args, "verbose", False)) else "<hidden; pass --verbose>",
-            "deploy_response": deploy_response if bool(getattr(args, "verbose", False)) else ("<hidden; pass --verbose>" if deploy_response else None),
-        }
+    operator_log(
+        args,
+        "base-image: sprawl-free mode; no allfather-super-base-builder service will be created "
+        "(super-node build is self-contained)",
     )
-    return wait_result
-
+    return {
+        "enabled": False,
+        "ready": True,
+        "reason": "sprawl-free host-agent mode: super-node Dockerfile is self-contained; no base-image builder service created",
+        "target_image": target_image,
+        "source_image": getattr(args, "super_base_source_image", DEFAULT_SUPER_BASE_SOURCE_IMAGE),
+        "service_name": "",
+        "service_uuid": "",
+        "service_action": "not-created",
+        "observed_by": "not-required",
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
 
 
 def render_super_node_compose(
@@ -8222,6 +9221,7 @@ def wait_for_coolify_service_absent(
     tried: list[dict[str, Any]],
     wait_s: float,
     poll_s: float,
+    args: argparse.Namespace | None = None,
 ) -> dict[str, Any]:
     """Poll Coolify inventory until a deleted service no longer appears.
 
@@ -8240,7 +9240,7 @@ def wait_for_coolify_service_absent(
 
     while True:
         attempts += 1
-        last_services = service_items_for_client(client, tried)
+        last_services = service_items_for_client(client, tried, args=args)
         last_matches = [item for item in last_services if service_name_from_item(item) == service_name]
         if not last_matches:
             return {
@@ -8477,7 +9477,7 @@ def wait_for_add_node_ready(
     while True:
         attempts += 1
         remaining = max(0.0, deadline - time.monotonic())
-        services = service_items_for_client(client, tried)
+        services = service_items_for_client(client, tried, args=args)
         inventory = all_super_inventory_from_services(services, head)
         inventory = replace_or_append_super_inventory_node(inventory, target_node)
         target_inventory = next((node for node in inventory if str(node.get("service_name") or "") == service_name), dict(target_node))
@@ -8666,13 +9666,12 @@ def ensure_existing_validator_admission_endpoints(
     def client_and_context_for(node_head: HeadNode) -> tuple[Any, Mapping[str, Any]]:
         if node_head.coolify_server not in clients:
             node_client, _token_source = fdb_tool().client_for_server(node_head.coolify_server, args)
-            version = node_client.request("GET", "/api/v1/version")
-            tried.append(
-                {
-                    "operation": "coolify-version-validator-admission",
-                    "host": node_head.coolify_server,
-                    "response": hub_service_tool().response_to_dict(version),
-                }
+            version = request_coolify_version(
+                node_client,
+                tried,
+                args=args,
+                host=node_head.coolify_server,
+                operation="coolify-version-validator-admission",
             )
             if not version.ok:
                 raise AllfatherControlError(
@@ -8775,6 +9774,813 @@ def ensure_existing_validator_admission_endpoints(
 
 
 
+def helper_service_names_for_head(
+    network_key: str,
+    head: HeadNode,
+    *,
+    include_host_helpers: bool,
+    include_runtime_cleanup: bool,
+) -> list[str]:
+    """Return legacy disposable helper services for one Coolify host.
+
+    The durable allfather-head service is intentionally not included.  New
+    sprawl-free code no longer creates these services, but remove-node prunes
+    leftovers from older runs.
+    """
+
+    names: list[str] = []
+    if include_host_helpers:
+        names.extend(
+            [
+                probe_service_name(head),
+                super_base_builder_service_name(head),
+            ]
+        )
+    if include_runtime_cleanup:
+        names.append(super_runtime_cleanup_service_name(network_key, head))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for name in names:
+        clean = str(name or "").strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            unique.append(clean)
+    return unique
+
+
+def prune_allfather_helper_services(
+    client: Any,
+    network_key: str,
+    head: HeadNode,
+    args: argparse.Namespace,
+    tried: list[dict[str, Any]],
+    *,
+    services: Sequence[Mapping[str, Any]] | None = None,
+    host_super_nodes_remaining: bool,
+) -> dict[str, Any]:
+    """Delete legacy helper services after a host has no workload nodes.
+
+    New code folds probe, base-image preparation, and runtime cleanup into the
+    single allfather-head host-agent.  This function removes older helper
+    services so the host converges to one head container plus workload nodes.
+    """
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    include_host_helpers = not bool(host_super_nodes_remaining)
+    candidates = helper_service_names_for_head(
+        network_key,
+        head,
+        include_host_helpers=include_host_helpers,
+        include_runtime_cleanup=True,
+    )
+    result: dict[str, Any] = {
+        "enabled": True,
+        "ready": None,
+        "dry_run": dry_run,
+        "reason": (
+            "Dry-run: legacy helper services would be pruned."
+            if dry_run
+            else "Legacy helper services pruned; host-agent is the only allfather helper."
+        ),
+        "preserved_head_service": head.service_name,
+        "host_super_nodes_remaining": bool(host_super_nodes_remaining),
+        "host_helpers_pruned": include_host_helpers,
+        "delete_candidates": candidates,
+        "deleted": [],
+        "missing": [],
+        "errors": [],
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+    if dry_run:
+        result["ready"] = True
+        result["would_delete"] = candidates
+        return result
+
+    inventory = list(services) if services is not None else list(service_items_for_client(client, tried, args=args))
+    for service_name in candidates:
+        item = find_service_item_by_name(inventory, service_name)
+        service_uuid = service_uuid_from_item(item) if item is not None else ""
+        if not service_uuid:
+            result["missing"].append({"service_name": service_name})
+            continue
+        try:
+            operator_log(args, f"helper-cleanup: deleting legacy helper service {service_name} uuid={service_uuid}")
+            delete_response = delete_coolify_service(client, service_uuid=service_uuid, service_name=service_name, tried=tried)
+            wait_result = wait_for_coolify_service_absent(
+                client,
+                service_name=service_name,
+                tried=tried,
+                wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S)),
+                poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
+                args=args,
+            )
+            result["deleted"].append(
+                {
+                    "service_name": service_name,
+                    "service_uuid": service_uuid,
+                    "delete_confirmed_absent": bool(wait_result.get("confirmed_absent")),
+                    "delete_response": delete_response if getattr(args, "verbose", False) else "<hidden; pass --verbose>",
+                    "wait": {key: value for key, value in wait_result.items() if key != "services"},
+                }
+            )
+            if not bool(wait_result.get("confirmed_absent")):
+                result["errors"].append(
+                    {
+                        "service_name": service_name,
+                        "error": "delete accepted but service remained visible before timeout",
+                        "wait": {key: value for key, value in wait_result.items() if key != "services"},
+                    }
+                )
+        except Exception as exc:
+            result["errors"].append({"service_name": service_name, "error": f"{type(exc).__name__}: {exc}"})
+
+    result["ready"] = not bool(result["errors"])
+    if result["errors"]:
+        result["reason"] = "One or more legacy helper services could not be pruned."
+    return result
+
+
+
+def public_domain_suffix(args: argparse.Namespace | None = None) -> str:
+    suffix = str(getattr(args, "traefik_domain_suffix", DEFAULT_PUBLIC_DOMAIN_SUFFIX) if args is not None else DEFAULT_PUBLIC_DOMAIN_SUFFIX).strip().strip(".")
+    if not suffix:
+        raise AllfatherControlError("Public Traefik domain suffix must not be empty.")
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", suffix) or ".." in suffix:
+        raise AllfatherControlError(f"Public Traefik domain suffix contains unsafe characters: {suffix!r}")
+    return suffix.lower()
+
+
+def public_component_domain(component_name: str, domain_suffix: str) -> str:
+    component = safe_id(str(component_name or "").strip(), field="public_route_component")
+    suffix = str(domain_suffix or "").strip().strip(".")
+    if not suffix:
+        raise AllfatherControlError("Public route domain suffix must not be empty.")
+    return f"{component}.{suffix}"
+
+
+def public_network_hub_domain(network_key: str, domain_suffix: str) -> str:
+    return f"{clean_node_network_key(network_key)}-hub.{str(domain_suffix).strip().strip('.').lower()}"
+
+
+def traefik_resource_id(*parts: Any) -> str:
+    return safe_id("-".join(str(part or "") for part in parts if str(part or "").strip()), field="traefik_resource_id").replace(".", "-")
+
+
+def local_hub_route_records(
+    network_key: str,
+    head: HeadNode,
+    local_nodes: Sequence[Mapping[str, Any]],
+    *,
+    domain_suffix: str,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for node in sorted(local_nodes, key=network_super_node_sort_key):
+        if not isinstance(node, Mapping):
+            continue
+        try:
+            ordinal = int(node.get("ordinal") or 0)
+        except Exception:
+            ordinal = 0
+        if ordinal <= 0:
+            continue
+        service_name = str(node.get("service_name") or super_service_name(network_key, head, ordinal)).strip()
+        if not service_name:
+            continue
+        components = node.get("components") if isinstance(node.get("components"), Mapping) else {}
+        hub_component = str(components.get("hub") or super_component_names(network_key, head, ordinal)["hub"]).strip()
+        domain = public_component_domain(hub_component, domain_suffix)
+        records.append(
+            {
+                "kind": "node-hub",
+                "network_key": clean_node_network_key(network_key),
+                "coolify_server": head.coolify_server,
+                "host_slot": head.slot,
+                "ordinal": ordinal,
+                "service_name": service_name,
+                "hub_component": hub_component,
+                "domain": domain,
+                "backend_url": f"http://{service_name}:{DEFAULT_SUPER_HUB_CONTAINER_PORT}",
+                "health_url": f"http://{service_name}:{DEFAULT_SUPER_HUB_CONTAINER_PORT}/api/hub/v1/health",
+            }
+        )
+    return records
+
+
+def render_allfather_hub_traefik_dynamic_config(
+    network_key: str,
+    head: HeadNode,
+    local_nodes: Sequence[Mapping[str, Any]],
+    *,
+    domain_suffix: str,
+) -> str:
+    """Render host-local public Hub routes from live Allfather super-node topology.
+
+    The backends are Docker aliases reachable from ``coolify-proxy`` on the same
+    host.  Do not point the aggregate route at public HTTPS names such as
+    ``mainnet-hub1``; that creates a public recursive dependency and goes stale
+    when the Allfather topology is host-slot based (mainneta/mainnetc).
+    """
+
+    network = clean_node_network_key(network_key)
+    records = local_hub_route_records(network, head, local_nodes, domain_suffix=domain_suffix)
+    aggregate_domain = public_network_hub_domain(network, domain_suffix)
+    aggregate_service = traefik_resource_id("allfather", network, "hub", "local", head.coolify_server)
+    gzip_middleware = traefik_resource_id("allfather", network, "hub", "gzip", head.coolify_server)
+
+    lines: list[str] = [
+        "# Generated by tools/allfather_control.py traefik-propagate.",
+        "# Source of truth: live Coolify all-father super-node inventory on this host.",
+        "# Do not edit by hand; rerun `python tools/allfather_control.py traefik-propagate ...`.",
+        "http:",
+        "  middlewares:",
+        f"    {gzip_middleware}:",
+        "      compress: {}",
+        "  routers:",
+    ]
+
+    if not records:
+        lines.extend(
+            [
+                "    allfather-no-local-hub-routes:",
+                "      rule: \"Host(`allfather-no-local-hub-routes.invalid`)\"",
+                "      entryPoints:",
+                "        - http",
+                "      service: noop@internal",
+            ]
+        )
+    else:
+        for record in records:
+            route_id = traefik_resource_id("allfather", network, record["hub_component"], head.coolify_server)
+            service_id = traefik_resource_id("allfather", network, record["hub_component"], "svc", head.coolify_server)
+            for entrypoint in ("http", "https"):
+                router_id = f"{route_id}-{entrypoint}"
+                lines.extend(
+                    [
+                        f"    {router_id}:",
+                        "      entryPoints:",
+                        f"        - {entrypoint}",
+                        f"      rule: \"Host(`{record['domain']}`)\"",
+                        f"      service: {service_id}",
+                        "      middlewares:",
+                        f"        - {gzip_middleware}",
+                    ]
+                )
+                if entrypoint == "https":
+                    lines.extend(["      tls:", "        certResolver: letsencrypt"])
+
+        for entrypoint in ("http", "https"):
+            router_id = traefik_resource_id("allfather", network, "hub", "aggregate", head.coolify_server, entrypoint)
+            lines.extend(
+                [
+                    f"    {router_id}:",
+                    "      entryPoints:",
+                    f"        - {entrypoint}",
+                    f"      rule: \"Host(`{aggregate_domain}`)\"",
+                    f"      service: {aggregate_service}",
+                    "      middlewares:",
+                    f"        - {gzip_middleware}",
+                ]
+            )
+            if entrypoint == "https":
+                lines.extend(["      tls:", "        certResolver: letsencrypt"])
+
+    if not records:
+        lines.append("  services: {}")
+    else:
+        lines.append("  services:")
+        for record in records:
+            service_id = traefik_resource_id("allfather", network, record["hub_component"], "svc", head.coolify_server)
+            lines.extend(
+                [
+                    f"    {service_id}:",
+                    "      loadBalancer:",
+                    "        passHostHeader: false",
+                    "        servers:",
+                    f"          - url: {yaml_quote(record['backend_url'])}",
+                ]
+            )
+        lines.extend(
+            [
+                f"    {aggregate_service}:",
+                "      loadBalancer:",
+                "        passHostHeader: false",
+                "        servers:",
+            ]
+        )
+        for record in records:
+            lines.append(f"          - url: {yaml_quote(record['backend_url'])}")
+    return "\n".join(lines) + "\n"
+
+
+def traefik_dynamic_file_name(network_key: str, head: HeadNode) -> str:
+    return f"allfather-{clean_node_network_key(network_key)}-hub-routes-{safe_id(head.coolify_server, field='coolify_server')}.yml"
+
+
+def traefik_propagator_service_name(network_key: str, head: HeadNode) -> str:
+    return safe_id(f"allfather-traefik-propagate-{clean_node_network_key(network_key)}-{head.coolify_server}", field="traefik_propagator_service_name")
+
+
+
+def traefik_propagate_request_payload(
+    network_key: str,
+    head: HeadNode,
+    local_nodes: Sequence[Mapping[str, Any]],
+    *,
+    domain_suffix: str,
+) -> dict[str, Any]:
+    network = clean_node_network_key(network_key)
+    dynamic_config = render_allfather_hub_traefik_dynamic_config(network, head, local_nodes, domain_suffix=domain_suffix)
+    records = local_hub_route_records(network, head, local_nodes, domain_suffix=domain_suffix)
+    route_domains = [str(record["domain"]) for record in records] + [public_network_hub_domain(network, domain_suffix)]
+    dynamic_config_sha256 = hashlib.sha256(dynamic_config.encode("utf-8")).hexdigest()
+    request_id = hashlib.sha256(
+        json.dumps(
+            {
+                "network_key": network,
+                "coolify_server": str(head.coolify_server or ""),
+                "target_path": f"/traefik/dynamic/{traefik_dynamic_file_name(network, head)}",
+                "dynamic_config_sha256": dynamic_config_sha256,
+                "route_domains": route_domains,
+                "health_urls": [str(record["health_url"]) for record in records],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    return {
+        "network_key": network,
+        "coolify_server": str(head.coolify_server or ""),
+        "host_slot": str(head.slot or ""),
+        "target_path": f"/traefik/dynamic/{traefik_dynamic_file_name(network, head)}",
+        "dynamic_file": traefik_dynamic_file_name(network, head),
+        "dynamic_config_b64": base64.b64encode(dynamic_config.encode("utf-8")).decode("ascii"),
+        "dynamic_config_sha256": dynamic_config_sha256,
+        "request_id": request_id,
+        "route_domains": route_domains,
+        "health_urls": [str(record["health_url"]) for record in records],
+        "backend_count": len(records),
+        "disabled_legacy_globs": [
+            f"/traefik/dynamic/main-computer-{network}-hub-public-entry*.yml",
+            f"/traefik/dynamic/manual-{network}-hub*.yml",
+            f"/traefik/dynamic/allfather-{network}-hub-routes-*.yml",
+        ],
+        "service_name": traefik_propagator_service_name(network, head),
+    }
+
+
+def render_traefik_propagator_script(
+    network_key: str,
+    head: HeadNode,
+    local_nodes: Sequence[Mapping[str, Any]],
+    *,
+    domain_suffix: str,
+) -> str:
+    network = clean_node_network_key(network_key)
+    dynamic_config = render_allfather_hub_traefik_dynamic_config(network, head, local_nodes, domain_suffix=domain_suffix)
+    dynamic_file = traefik_dynamic_file_name(network, head)
+    target_path = f"/traefik/dynamic/{dynamic_file}"
+    records = local_hub_route_records(network, head, local_nodes, domain_suffix=domain_suffix)
+    health_urls = [str(record["health_url"]) for record in records]
+    route_domains = [str(record["domain"]) for record in records] + [public_network_hub_domain(network, domain_suffix)]
+    write_config = "\n".join(shell_write_text_file_command("/tmp/allfather-traefik-dynamic.yml", dynamic_config))
+    health_urls_json = json.dumps(health_urls, sort_keys=True)
+    route_domains_json = json.dumps(route_domains, sort_keys=True)
+    target_path_json = json.dumps(target_path)
+    network_json = json.dumps(network)
+    host_json = json.dumps(head.coolify_server)
+    marker_json = json.dumps(TRAEFIK_PROPAGATE_CALLBACK_MARKER)
+    return f"""set -u
+mkdir -p /tmp/allfather-traefik
+{write_config}
+target_path={shell_single_quote(target_path)}
+network={shell_single_quote(network)}
+host={shell_single_quote(head.coolify_server)}
+health_urls={shell_single_quote(health_urls_json)}
+route_domains={shell_single_quote(route_domains_json)}
+ok=true
+error=""
+
+if ! docker inspect coolify-proxy >/dev/null 2>&1; then
+    ok=false
+    error="coolify-proxy container not found"
+else
+    if ! docker exec -i coolify-proxy sh -lc '
+        set -eu
+        mkdir -p /traefik/dynamic /traefik/disabled-dynamic
+        stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
+        target={shell_single_quote(target_path)}
+        for f in /traefik/dynamic/main-computer-{network}-hub-public-entry*.yml /traefik/dynamic/manual-{network}-hub*.yml /traefik/dynamic/allfather-{network}-hub-routes-*.yml; do
+            [ -e "$f" ] || continue
+            [ "$f" = "$target" ] && continue
+            mv "$f" "/traefik/disabled-dynamic/$(basename "$f").$stamp.disabled"
+        done
+        cat > "$target.tmp"
+        mv "$target.tmp" "$target"
+        chmod 0644 "$target"
+    ' < /tmp/allfather-traefik-dynamic.yml; then
+        ok=false
+        error="failed to write Traefik dynamic config through coolify-proxy"
+    fi
+fi
+
+verified_backends=""
+if [ "$ok" = true ]; then
+    for url in $(printf "%s" "$health_urls" | tr -d "[]\\\"" | tr "," " "); do
+        [ -n "$url" ] || continue
+        if docker exec coolify-proxy sh -lc "wget -q -O- --timeout=5 '$url' | grep -q '\\\"ok\\\"[[:space:]]*:[[:space:]]*true'" >/dev/null 2>&1; then
+            verified_backends="$verified_backends $url"
+        else
+            ok=false
+            error="hub backend health check failed: $url"
+            break
+        fi
+    done
+fi
+
+if [ "$ok" = true ]; then
+    touch /tmp/allfather-traefik/propagated.ok
+else
+    rm -f /tmp/allfather-traefik/propagated.ok
+fi
+
+result="$(printf '{{"ok":%s,"network":%s,"host":%s,"target_path":%s,"route_domains":%s,"backend_count":%s,"error":%s}}' \
+    "$ok" \
+    {network_json} \
+    {host_json} \
+    {target_path_json} \
+    "$route_domains" \
+    "$(printf "%s" "$health_urls" | grep -o "http" | wc -l | tr -d " ")" \
+    "$(printf "%s" "$error" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')")"
+encoded="$(printf "%s" "$result" | base64 | tr -d "\\n")"
+printf "%s%s\\n" {marker_json} "$encoded"
+printf "%s\\n" "$result"
+tail -f /dev/null
+"""
+
+
+def render_traefik_propagator_compose(
+    network_key: str,
+    head: HeadNode,
+    local_nodes: Sequence[Mapping[str, Any]],
+    args: argparse.Namespace,
+    *,
+    domain_suffix: str,
+) -> str:
+    service_name = traefik_propagator_service_name(network_key, head)
+    command_script = render_traefik_propagator_script(network_key, head, local_nodes, domain_suffix=domain_suffix)
+    image = str(getattr(args, "traefik_propagator_image", DEFAULT_TRAEFIK_PROPAGATOR_IMAGE) or DEFAULT_TRAEFIK_PROPAGATOR_IMAGE)
+    lines = [
+        f"name: {service_name}",
+        "",
+        "services:",
+        f"  {service_name}:",
+        f"    image: {yaml_quote(image)}",
+        "    restart: unless-stopped",
+        "    command:",
+        "      - sh",
+        "      - -lc",
+        "      - |",
+    ]
+    lines.extend(yaml_block_scalar(command_script, 8))
+    lines.extend(
+        [
+            "    volumes:",
+            f"      - {yaml_quote('/var/run/docker.sock:/var/run/docker.sock')}",
+            "    healthcheck:",
+            "      test:",
+            "        - CMD-SHELL",
+            "        - test -f /tmp/allfather-traefik/propagated.ok",
+            "      interval: 10s",
+            "      timeout: 5s",
+            "      start_period: 5s",
+            "      retries: 3",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def traefik_propagator_service_payload(
+    network_key: str,
+    head: HeadNode,
+    local_nodes: Sequence[Mapping[str, Any]],
+    args: argparse.Namespace,
+    *,
+    context: Mapping[str, Any],
+    domain_suffix: str,
+) -> dict[str, Any]:
+    service_name = traefik_propagator_service_name(network_key, head)
+    compose = render_traefik_propagator_compose(network_key, head, local_nodes, args, domain_suffix=domain_suffix)
+    payload = {
+        "server_uuid": (context or {}).get("server_uuid") or "",
+        "project_uuid": (context or {}).get("project_uuid") or "",
+        "environment_name": (context or {}).get("environment_name") or getattr(args, "coolify_environment_name", "") or DEFAULT_CONTROL_ENVIRONMENT,
+        "environment_uuid": (context or {}).get("environment_uuid") or "",
+        "name": service_name,
+        "description": (
+            f"Main Computer all-father Traefik route propagator for {clean_node_network_key(network_key)} on {head.coolify_server}. "
+            "Owns host-local public Hub routes from live super-node inventory."
+        ),
+        "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
+        "instant_deploy": False,
+    }
+    destination_uuid = destination_uuid_for_host(head, args)
+    if destination_uuid:
+        payload["destination_uuid"] = destination_uuid
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def sync_traefik_propagator_service(
+    client: Any,
+    network_key: str,
+    head: HeadNode,
+    local_nodes: Sequence[Mapping[str, Any]],
+    args: argparse.Namespace,
+    context: Mapping[str, Any],
+    tried: list[dict[str, Any]],
+    *,
+    domain_suffix: str,
+) -> tuple[str, str, dict[str, Any]]:
+    service_name = traefik_propagator_service_name(network_key, head)
+    service_uuid, existing = hub_service_tool().find_service(client, service_name=service_name, explicit_uuid="", tried=tried)
+    compose = render_traefik_propagator_compose(network_key, head, local_nodes, args, domain_suffix=domain_suffix)
+    if service_uuid:
+        fdb_tool().update_service(client, service_uuid, service_name, compose, tried)
+        return service_uuid, "updated", existing
+    payload = traefik_propagator_service_payload(network_key, head, local_nodes, args, context=context, domain_suffix=domain_suffix)
+    service_uuid = fdb_tool().create_service(client, payload, tried)
+    return service_uuid, "created", existing
+
+
+def traefik_propagate_result_from_logs_body(body: Any) -> dict[str, Any]:
+    for text in _strings_from_nested(body):
+        for line in reversed(str(text).splitlines()):
+            if TRAEFIK_PROPAGATE_CALLBACK_MARKER not in line:
+                continue
+            encoded = line.split(TRAEFIK_PROPAGATE_CALLBACK_MARKER, 1)[1].strip()
+            try:
+                payload = json.loads(base64.b64decode(encoded).decode("utf-8"))
+            except Exception as exc:
+                return {"ok": False, "error": f"invalid traefik propagate result marker: {type(exc).__name__}: {exc}"}
+            if isinstance(payload, Mapping):
+                return dict(payload)
+            return {"ok": False, "error": "traefik propagate result marker was not a JSON object"}
+    return {"ok": False, "error": "no traefik propagate result marker found"}
+
+
+def wait_for_traefik_propagator_result(
+    client: Any,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+    *,
+    wait_s: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + max(0.0, float(wait_s or 0.0))
+    last_logs: dict[str, Any] = {"ok": False, "error": "not fetched yet"}
+    while True:
+        detail = fetch_service_detail(client, service_uuid, tried)
+        applications = application_records_from_service_detail(detail)
+        application_uuid = applications[0]["uuid"] if applications else ""
+        last_logs = fetch_probe_logs(client, service_uuid, tried, application_uuid=application_uuid)
+        result = traefik_propagate_result_from_logs_body(last_logs.get("body"))
+        if result.get("ok") or "no traefik propagate result marker" not in str(result.get("error") or ""):
+            result["logs"] = _small_mapping(last_logs, ["ok", "source", "error"])
+            return result
+        if time.monotonic() >= deadline:
+            result["logs"] = _small_mapping(last_logs, ["ok", "source", "error"])
+            result["wait_s"] = wait_s
+            return result
+        time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+
+
+def heads_selected_for_traefik(plan: HeadPlan, raw_hosts: Any = None) -> list[HeadNode]:
+    if raw_hosts in (None, "", []):
+        return list(plan.heads)
+    if isinstance(raw_hosts, str):
+        values = [raw_hosts]
+    else:
+        values = list(raw_hosts)
+    selected: list[HeadNode] = []
+    seen: set[str] = set()
+    for value in values:
+        head = choose_head_for_host(plan, str(value))
+        if head.coolify_server not in seen:
+            selected.append(head)
+            seen.add(head.coolify_server)
+    return selected
+
+
+def collect_network_super_inventory_for_traefik(
+    plan: HeadPlan,
+    network_key: str,
+    args: argparse.Namespace,
+    tried_by_host: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    services_by_server: dict[str, list[Mapping[str, Any]]] = {}
+    errors: list[dict[str, Any]] = []
+    token_sources: dict[str, str] = {}
+    for head in plan.heads:
+        tried = tried_by_host.setdefault(head.coolify_server, [])
+        try:
+            client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+            token_sources[head.coolify_server] = token_source
+            version = request_coolify_version(
+                client,
+                tried,
+                args=args,
+                host=head.coolify_server,
+                operation="coolify-version-traefik-propagate-inventory",
+            )
+            if not version.ok:
+                raise AllfatherControlError(
+                    f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
+                )
+            services_by_server[head.coolify_server] = list(service_items_for_client(client, tried, args=args))
+        except Exception as exc:
+            errors.append({"host": head.coolify_server, "error": f"{type(exc).__name__}: {exc}"})
+            services_by_server[head.coolify_server] = []
+    nodes = network_super_inventory_from_services_by_head(plan, network_key, services_by_server)
+    local_by_host: dict[str, list[dict[str, Any]]] = {}
+    for head in plan.heads:
+        local_by_host[head.coolify_server] = existing_super_inventory_from_services(
+            services_by_server.get(head.coolify_server, []),
+            network_key,
+            head,
+        )
+    return {
+        "nodes": nodes,
+        "local_nodes_by_host": local_by_host,
+        "services_by_server": services_by_server,
+        "checked_hosts": [head.coolify_server for head in plan.heads],
+        "errors": errors,
+        "token_sources": token_sources,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
+def propagate_traefik_for_network(
+    plan: HeadPlan,
+    args: argparse.Namespace,
+    *,
+    network_key: str,
+    selected_hosts: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    network = clean_node_network_key(network_key)
+    domain_suffix = public_domain_suffix(args)
+    selected_heads = heads_selected_for_traefik(plan, selected_hosts)
+    tried_by_host: dict[str, list[dict[str, Any]]] = {}
+    inventory = collect_network_super_inventory_for_traefik(plan, network, args, tried_by_host)
+    propagations: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = list(inventory.get("errors") or [])
+
+    for head in selected_heads:
+        tried = tried_by_host.setdefault(head.coolify_server, [])
+        local_nodes = list((inventory.get("local_nodes_by_host") or {}).get(head.coolify_server, []))
+        dynamic_config = render_allfather_hub_traefik_dynamic_config(network, head, local_nodes, domain_suffix=domain_suffix)
+        route_records = local_hub_route_records(network, head, local_nodes, domain_suffix=domain_suffix)
+        request_payload = traefik_propagate_request_payload(network, head, local_nodes, domain_suffix=domain_suffix)
+        entry: dict[str, Any] = {
+            "host": head.coolify_server,
+            "host_slot": head.slot,
+            "local_super_node_count": len(local_nodes),
+            "service_name": head.service_name,
+            "legacy_helper_service_name": traefik_propagator_service_name(network, head),
+            "dynamic_file": f"/traefik/dynamic/{traefik_dynamic_file_name(network, head)}",
+            "routes": route_records,
+            "aggregate_domain": public_network_hub_domain(network, domain_suffix),
+            "disabled_legacy_globs": request_payload.get("disabled_legacy_globs") or [],
+            "public_guard_routes": False,
+            "ssh_used": False,
+            "direct_vpn_used": False,
+            "propagation_transport": "allfather-head-host-agent",
+        }
+        if getattr(args, "include_compose", False):
+            entry["head_traefik_request"] = {
+                key: value for key, value in request_payload.items() if key != "dynamic_config_b64"
+            }
+            entry["dynamic_config"] = dynamic_config
+        if not local_nodes:
+            entry.update(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "no local super-nodes for this network on this Coolify host; leaving host routes untouched",
+                    "service_uuid": "",
+                    "service_action": "skipped",
+                    "deployed": False,
+                }
+            )
+            propagations.append(entry)
+            continue
+        if getattr(args, "dry_run", False):
+            entry.update({"ok": True, "dry_run": True, "service_uuid": "", "service_action": "planned", "deployed": False})
+            propagations.append(entry)
+            continue
+        try:
+            client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
+            entry["token_source"] = token_source
+            version = request_coolify_version(
+                client,
+                tried,
+                args=args,
+                host=head.coolify_server,
+                operation="coolify-version-traefik-propagate-sync",
+            )
+            if not version.ok:
+                raise AllfatherControlError(
+                    f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}"
+                )
+            context = resolve_context(client, args, head, tried)
+            service_uuid, action, _existing = sync_head_service(
+                client,
+                plan,
+                head,
+                args,
+                context,
+                tried,
+                probe_targets=probe_target_records_for_plan(plan, super_inventory=inventory.get("nodes") or []),
+                traefik_propagate_request=request_payload,
+            )
+            entry["service_uuid"] = service_uuid
+            entry["service_action"] = f"head-agent-{action}"
+            if not getattr(args, "no_deploy", False):
+                hub_service_tool().trigger_deploy_service(
+                    client,
+                    service_uuid=service_uuid,
+                    force=True,
+                    tried=tried,
+                )
+                entry["deployed"] = True
+                wait_result = wait_for_head_traefik_propagate_ready(
+                    client,
+                    service_uuid,
+                    tried,
+                    wait_s=float(getattr(args, "traefik_propagate_wait_s", DEFAULT_TRAEFIK_PROPAGATE_WAIT_S) or 0.0),
+                    poll_s=2.0,
+                    expected_request_id=str(request_payload.get("request_id") or ""),
+                )
+                payload = wait_result.get("result") if isinstance(wait_result.get("result"), Mapping) else {}
+                entry["propagator_result"] = {
+                    "ok": bool(wait_result.get("ready")),
+                    "observed": bool(wait_result.get("observed")),
+                    "source": wait_result.get("source"),
+                    "reason": wait_result.get("reason"),
+                    "result": dict(payload),
+                }
+                entry["ok"] = bool(wait_result.get("ready"))
+            else:
+                entry["deployed"] = False
+                entry["ok"] = True
+                entry["propagator_result"] = {"ok": None, "reason": "deployment disabled by --no-deploy"}
+            if not entry["ok"]:
+                errors.append({"host": head.coolify_server, "error": str((entry.get("propagator_result") or {}).get("reason") or "Traefik propagation did not report ready")})
+        except Exception as exc:
+            entry["ok"] = False
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            errors.append({"host": head.coolify_server, "error": entry["error"]})
+        finally:
+            entry["coolify_api"] = traefik_propagate_attempt_summary(tried)
+            propagations.append(entry)
+
+    ok = not errors and all(bool(item.get("ok")) for item in propagations)
+    return {
+        "ok": ok,
+        "operation": "traefik-propagate",
+        "network": network,
+        "route_authority": "live-coolify-super-node-inventory",
+        "domain_suffix": domain_suffix,
+        "selected_hosts": [head.coolify_server for head in selected_heads],
+        "inventory": {
+            "checked_hosts": inventory.get("checked_hosts"),
+            "super_node_count": len(inventory.get("nodes") or []),
+            "super_nodes": inventory.get("nodes") or [],
+            "errors": inventory.get("errors"),
+        },
+        "propagations": propagations,
+        "errors": errors,
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+
+
+def traefik_propagate(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
+    network = clean_node_network_key(args.network)
+    if network == "mainnet" and not getattr(args, "allow_mainnet", False):
+        raise AllfatherControlError("Refusing to publish or rewrite mainnet Traefik routes without --allow-mainnet.")
+    return propagate_traefik_for_network(
+        plan,
+        args,
+        network_key=network,
+        selected_hosts=getattr(args, "host", []) or None,
+    )
+
+
 def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
     network_key = clean_node_network_key(args.network)
     if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
@@ -8799,11 +10605,10 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         services = [{"name": super_service_name(network_key, head, item), "uuid": f"dry-run-{item}", "status": "dry-run"} for item in range(1, existing_count + 1)]
     else:
         client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
-        version = client.request("GET", "/api/v1/version")
-        tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
+        version = request_coolify_version(client, tried, args=args, host=head.coolify_server)
         if not version.ok:
             raise AllfatherControlError(f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}")
-        services = service_items_for_client(client, tried)
+        services = service_items_for_client(client, tried, args=args)
 
     ordinals = existing_super_ordinals(services, network_key, head)
     if not ordinals:
@@ -8834,6 +10639,24 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         dry_run=bool(getattr(args, "dry_run", False)),
         reason="Runtime cleanup only runs when this removal leaves no super-nodes on the host.",
     )
+    helper_cleanup: dict[str, Any] = {
+        "enabled": False,
+        "ready": None,
+        "reason": "Legacy helper cleanup only runs when this removal leaves no super-nodes on the host.",
+        "preserved_head_service": head.service_name,
+        "delete_candidates": [],
+        "deleted": [],
+        "missing": [],
+        "errors": [],
+        "public_guard_routes": False,
+        "ssh_used": False,
+        "direct_vpn_used": False,
+    }
+    traefik_propagation: dict[str, Any] = {
+        "enabled": bool(getattr(args, "traefik_propagate", False)),
+        "ok": None,
+        "reason": "not requested",
+    }
 
     if getattr(args, "dry_run", False):
         _new_state, private_state_updates = cleanup_private_state_for_remove_node(
@@ -8846,6 +10669,15 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         )
         if remaining_count == 0:
             runtime_cleanup = run_super_runtime_cleanup(plan, network_key, head, None, args, {}, tried)
+            helper_cleanup = prune_allfather_helper_services(
+                None,
+                network_key,
+                head,
+                args,
+                tried,
+                services=services,
+                host_super_nodes_remaining=False,
+            )
     else:
         delete_response = delete_coolify_service(client, service_uuid=service_uuid, service_name=service_name, tried=tried)
         deleted = True
@@ -8855,6 +10687,7 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             tried=tried,
             wait_s=float(getattr(args, "delete_wait_s", DEFAULT_REMOVE_DELETE_WAIT_S)),
             poll_s=float(getattr(args, "delete_poll_s", DEFAULT_REMOVE_DELETE_POLL_S)),
+            args=args,
         )
         delete_confirmed_absent = bool(delete_wait_result.get("confirmed_absent"))
         if not delete_confirmed_absent:
@@ -8880,9 +10713,31 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                     f"Last-node runtime cleanup did not complete for {network_key} on {head.coolify_server}: "
                     f"{runtime_cleanup.get('reason') or runtime_cleanup.get('error') or 'unknown error'}"
                 )
+            helper_cleanup = prune_allfather_helper_services(
+                client,
+                network_key,
+                head,
+                args,
+                tried,
+                services=delete_wait_result.get("services", []),
+                host_super_nodes_remaining=False,
+            )
+
+    if bool(getattr(args, "traefik_propagate", False)):
+        if network_key == "mainnet" and not getattr(args, "allow_mainnet", False):
+            raise AllfatherControlError("Refusing to rewrite mainnet Traefik routes without --allow-mainnet.")
+        if getattr(args, "dry_run", False):
+            traefik_propagation = {
+                "enabled": True,
+                "ok": None,
+                "reason": "dry-run; run traefik-propagate after the live topology changes",
+            }
+        else:
+            traefik_propagation = propagate_traefik_for_network(plan, args, network_key=network_key)
+    remove_ready = (not bool(getattr(args, "traefik_propagate", False))) or getattr(args, "dry_run", False) or bool(traefik_propagation.get("ok"))
 
     result = {
-        "ok": True,
+        "ok": bool(remove_ready),
         "operation": "remove-node",
         "network": network_key,
         "host": head.coolify_server,
@@ -8896,6 +10751,8 @@ def remove_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "network_pristine_after_remove": remaining_count == 0,
         "private_state_updates": private_state_updates,
         "runtime_cleanup": runtime_cleanup,
+        "helper_cleanup": helper_cleanup,
+        "traefik_propagation": traefik_propagation,
         "service_deleted": deleted,
         "delete_confirmed_absent": delete_confirmed_absent,
         "delete_wait": (
@@ -8959,6 +10816,11 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "ssh_used": False,
         "direct_vpn_used": False,
     }
+    traefik_propagation: dict[str, Any] = {
+        "enabled": bool(getattr(args, "traefik_propagate", False) or getattr(args, "publish_routes", False)),
+        "ok": None,
+        "reason": "not requested",
+    }
     network_inventory: dict[str, Any] = {
         "nodes": [],
         "local_nodes": [],
@@ -8989,11 +10851,10 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         deployed = False
     else:
         client, token_source = fdb_tool().client_for_server(head.coolify_server, args)
-        version = client.request("GET", "/api/v1/version")
-        tried.append({"operation": "coolify-version", "response": hub_service_tool().response_to_dict(version)})
+        version = request_coolify_version(client, tried, args=args, host=head.coolify_server)
         if not version.ok:
             raise AllfatherControlError(f"Coolify API version check failed for {head.coolify_server!r} with HTTP {version.status}: {version.body}")
-        services = service_items_for_client(client, tried)
+        services = service_items_for_client(client, tried, args=args)
         ordinals = require_contiguous_super_ordinals(existing_super_ordinals(services, network_key, head), network_key, head)
         network_inventory = discover_network_super_inventory_for_add_node(
             plan,
@@ -9108,6 +10969,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
                 wait_s=float(getattr(args, "preflight_wait_s", DEFAULT_ADD_NODE_PREFLIGHT_WAIT_S)),
                 poll_s=float(getattr(args, "preflight_poll_s", DEFAULT_ADD_NODE_PREFLIGHT_POLL_S)),
                 stable_s=float(getattr(args, "preflight_stable_s", DEFAULT_ADD_NODE_PREFLIGHT_STABLE_S)),
+                args=args,
             )
             if not bool(preflight.get("ready")):
                 operator_log(args, f"preflight: blocked for {planned_cell_id}: {preflight.get('reason')}")
@@ -9222,6 +11084,7 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
             service_name=manifest["cell_id"],
             service_uuid=service_uuid,
             tried=tried,
+            args=args,
         )
         synced_service_predeploy["enabled"] = True
         synced_service_predeploy["ready"] = True
@@ -9265,8 +11128,20 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         }
 
     add_node_ready = not bool(deploy_wait.get("enabled")) or bool(deploy_wait.get("ready"))
+    traefik_requested = bool(getattr(args, "traefik_propagate", False) or getattr(args, "publish_routes", False))
+    if add_node_ready and traefik_requested:
+        if getattr(args, "dry_run", False):
+            traefik_propagation = {
+                "enabled": True,
+                "ok": None,
+                "reason": "dry-run; run traefik-propagate after the live topology exists",
+            }
+        else:
+            traefik_propagation = propagate_traefik_for_network(plan, args, network_key=network_key)
+    route_ready = (not traefik_requested) or getattr(args, "dry_run", False) or bool(traefik_propagation.get("ok"))
+    operation_ready = bool(add_node_ready and route_ready)
     result = {
-        "ok": add_node_ready,
+        "ok": operation_ready,
         "operation": "add-node",
         "network": network_key,
         "host": head.coolify_server,
@@ -9302,14 +11177,24 @@ def add_node(plan: HeadPlan, args: argparse.Namespace) -> dict[str, Any]:
         "hub_public_cutover_deferred": True,
         "public_guard_routes": False,
         "public_routes_enabled": bool(getattr(args, "publish_routes", False)),
+        "traefik_propagation": traefik_propagation,
         "ssh_used": False,
         "direct_vpn_used": False,
         "private_state_is_topology": False,
         "service_uuid": service_uuid,
         "service_action": service_action,
         "deployed": deployed,
-        "ready": add_node_ready,
-        "reason": "" if add_node_ready else str(deploy_wait.get("reason") or "add-node deploy wait did not reach readiness"),
+        "ready": operation_ready,
+        "node_ready": add_node_ready,
+        "reason": (
+            ""
+            if operation_ready
+            else (
+                str(deploy_wait.get("reason") or "add-node deploy wait did not reach readiness")
+                if not add_node_ready
+                else str(traefik_propagation.get("reason") or "traefik propagation did not report ready")
+            )
+        ),
         "preflight": {key: value for key, value in preflight.items() if key != "services"},
         "super_base": super_base,
         "validator_admission_prep": validator_admission_prep,
@@ -9388,6 +11273,13 @@ def add_common_head_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--image", default=DEFAULT_IMAGE)
 
 
+def add_traefik_propagate_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--traefik-domain-suffix", default=DEFAULT_PUBLIC_DOMAIN_SUFFIX, help="Public DNS suffix for generated Hub routes.")
+    parser.add_argument("--traefik-propagator-image", default=DEFAULT_TRAEFIK_PROPAGATOR_IMAGE, help="Image used for the Docker-socket Traefik propagation helper.")
+    parser.add_argument("--traefik-propagate-wait-s", type=float, default=DEFAULT_TRAEFIK_PROPAGATE_WAIT_S, help="Seconds to wait for the propagation helper to report success.")
+
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bootstrap and query the all-father control plane.", allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -9429,6 +11321,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
 
+    traefik_parser = subparsers.add_parser("traefik-propagate", help="Reconcile public Hub Traefik routes from live all-father super-node topology.")
+    add_remote_args(traefik_parser)
+    add_common_head_args(traefik_parser)
+    add_traefik_propagate_options(traefik_parser)
+    traefik_parser.add_argument("network", choices=SUPPORTED_NODE_NETWORKS, help="Network whose public Hub routes should be reconciled.")
+    traefik_parser.add_argument("--host", action="append", default=[], help="Restrict propagation to one Coolify host/slot. Repeat for multiple hosts. Default: all planned hosts.")
+    traefik_parser.add_argument("--allow-mainnet", action="store_true", help="Required before rewriting mainnet Traefik routes.")
+    traefik_parser.add_argument("--dry-run", action="store_true", help="Discover topology and render route plans without syncing/deploying the propagator service.")
+    traefik_parser.add_argument("--include-compose", action="store_true", help="Include generated propagator compose and Traefik dynamic YAML in the JSON output.")
+    traefik_parser.add_argument("--no-deploy", action="store_true", help="Create/update the propagator service but do not trigger deploy.")
+    traefik_parser.add_argument("--force-deploy", action="store_true", help="Force Coolify deployment after propagator service sync.")
+
     add_node_parser = subparsers.add_parser("add-node", help="Add one all-father super-node to mainnet or testnet on one Coolify host.")
     add_remote_args(add_node_parser)
     add_common_head_args(add_node_parser)
@@ -9438,8 +11342,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_node_parser.add_argument("--dry-run", action="store_true", help="Plan and render the next super-node without creating/updating Coolify.")
     add_node_parser.add_argument("--existing-count", type=int, default=None, help=argparse.SUPPRESS)
     add_node_parser.add_argument("--no-contracts", action="store_true", help="Do not request first-node contract bootstrap.")
-    add_node_parser.add_argument("--publish-routes", action="store_true", help="Publish Hub/RPC Traefik routes immediately. Default defers public cutover.")
+    add_node_parser.add_argument("--publish-routes", action="store_true", help="Publish Hub/RPC Traefik routes immediately and reconcile public Hub Traefik routes after readiness. Default defers public cutover.")
+    add_node_parser.add_argument("--traefik-propagate", action="store_true", help="After the node is ready, reconcile public Hub Traefik routes from live topology.")
     add_node_parser.add_argument("--include-compose", action="store_true", help="Include rendered compose with private keys redacted.")
+    add_traefik_propagate_options(add_node_parser)
     add_node_parser.add_argument("--super-image", default=DEFAULT_SUPER_IMAGE, help="Managed all-father super-node dependency base image used by the generated per-node image.")
     add_node_parser.add_argument("--super-base-source-image", default=DEFAULT_SUPER_BASE_SOURCE_IMAGE, help="Besu/QBFT source image used by the managed Coolify super-base-builder service.")
     add_node_parser.add_argument("--super-base-builder-image", default=DEFAULT_SUPER_BASE_BUILDER_IMAGE, help=argparse.SUPPRESS)
@@ -9466,8 +11372,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     remove_node_parser.add_argument("--delete-poll-s", type=float, default=DEFAULT_REMOVE_DELETE_POLL_S, help=argparse.SUPPRESS)
     remove_node_parser.add_argument("--keep-seed-material", action="store_true", help="Do not clean generated first-node keys/FDB identity when the network becomes empty.")
     remove_node_parser.add_argument("--keep-runtime-state", action="store_true", help="Do not deploy the remote last-node runtime cleanup service that moves stale super-node state directories.")
+    remove_node_parser.add_argument("--traefik-propagate", action="store_true", help="After removal, reconcile public Hub Traefik routes from live topology.")
+    add_traefik_propagate_options(remove_node_parser)
 
-    for subparser in (plan_parser, write_parser, boot_parser, discover_parser, add_node_parser, remove_node_parser):
+    for subparser in (plan_parser, write_parser, boot_parser, discover_parser, traefik_parser, add_node_parser, remove_node_parser):
         subparser.add_argument("--json", action="store_true", help="Print detailed compact JSON. Default discover output is an operator summary.")
         subparser.add_argument("--verbose", action="store_true", help="Include raw Coolify diagnostics and large API records in JSON output.")
         subparser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs on stderr.")
@@ -9523,6 +11431,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print_json(compact_discover_for_operator(payload))
             return 0
+        if args.command == "traefik-propagate":
+            payload = traefik_propagate(plan, args)
+            print_json(payload)
+            return 0 if bool(payload.get("ok", True)) else 1
         if args.command == "add-node":
             payload = add_node(plan, args)
             print_json(payload)

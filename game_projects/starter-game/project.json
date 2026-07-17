@@ -2,7 +2,7 @@
   "version": 1,
   "id": "starter-game",
   "name": "Starter Game",
-  "description": "Vertex-built 3D shuttlecraft starter scene: walk around a federation-like shuttle hull in first person, look freely, and view stars plus the mother ship through the forward viewport.",
+  "description": "Vertex-built first-person shuttle defense: explore a compact shuttle, watch a camera-centered spherical starfield, and repel aliens transporting in from a hostile ship with a phaser.",
   "activeSceneId": "default-empty-scene",
   "settings": {
     "targetWidth": 960,
@@ -11,8 +11,8 @@
   "scenes": [
     {
       "id": "default-empty-scene",
-      "name": "Shuttlecraft Walkaround",
-      "version": 9,
+      "name": "Shuttle Boarding Defense",
+      "version": 11,
       "background": "radial-gradient(circle at 50% 18%, rgba(59, 130, 246, 0.18), rgba(2, 6, 23, 0.98) 58%, #000 100%)",
       "objects": [
         {
@@ -30,7 +30,7 @@
             "z": 26,
             "bob": 5,
             "motion": "idle",
-            "spellState": "exploring-cabin",
+            "spellState": "boarding-defense",
             "spriteSeries": [
               "stand",
               "scan",
@@ -438,7 +438,76 @@
             "pitch": -2,
             "yawLimit": 180,
             "pitchLimit": 28,
-            "instructions": "Drag or use arrow keys to look. Use W/A/S/D to walk and Shift to sprint."
+            "instructions": "Drag/arrows to look. W/A/S/D moves, Shift sprints, click/Space/F fires the phaser, and R restarts after defeat."
+          }
+        },
+        {
+          "id": "alien-raider",
+          "type": "shuttle3d-alien-ship",
+          "x": 2.1,
+          "y": 0.85,
+          "width": 250,
+          "height": 115,
+          "props": {
+            "label": "Alien Raider",
+            "role": "hostile-ship",
+            "color": "#a3e635",
+            "accent": "#ef4444",
+            "z": 149,
+            "visibleThroughViewport": true,
+            "registry": "unknown hostile vessel",
+            "threat": "boarding transport"
+          }
+        },
+        {
+          "id": "player-phaser",
+          "type": "shuttle3d-phaser",
+          "x": 8.55,
+          "y": 7.75,
+          "width": 118,
+          "height": 56,
+          "props": {
+            "label": "Type-II Phaser",
+            "role": "player-weapon",
+            "color": "#f59e0b",
+            "damage": 34,
+            "range": 28,
+            "fireControls": [
+              "pointer-click",
+              "Space",
+              "KeyF"
+            ]
+          }
+        },
+        {
+          "id": "boarding-transporter",
+          "type": "shuttle3d-transporter",
+          "x": 5.0,
+          "y": 5.2,
+          "width": 180,
+          "height": 180,
+          "props": {
+            "label": "Hostile Transport Signatures",
+            "role": "enemy-spawner",
+            "color": "#84cc16",
+            "initialDelayMs": 2200,
+            "intervalMs": 5000,
+            "maxAlive": 4
+          }
+        },
+        {
+          "id": "player-health-hud",
+          "type": "shuttle3d-health-hud",
+          "x": 1.3,
+          "y": 0.75,
+          "width": 240,
+          "height": 50,
+          "props": {
+            "label": "Player Health",
+            "role": "health-hud",
+            "maximum": 100,
+            "starting": 100,
+            "color": "#22c55e"
           }
         }
       ],
@@ -452,18 +521,18 @@
         "particleOnly": false,
         "includesDefaultPlayer": true,
         "isometric": false,
-        "rolloutPhase": "phase-4-shuttle-first-person-movement",
-        "setting": "federation-like shuttle craft interior with stars and mother ship visible through the forward viewport",
-        "starterScene": "shuttlecraft-walkaround-spawn",
-        "characterModel": "first-person-cadet-presence",
+        "rolloutPhase": "phase-5-shuttle-boarding-combat",
+        "setting": "short federation-like shuttle craft interior under attack by alien boarders, with stars, the mother ship, and an alien raider visible through the forward viewport",
+        "starterScene": "shuttlecraft-boarding-defense",
+        "characterModel": "first-person-cadet-combat-presence",
         "meshActorsEnabled": false,
         "parentedParticles": true,
-        "linkedSpellProjectiles": false,
+        "linkedSpellProjectiles": true,
         "linkedSensorPulses": true,
         "targetedParticles": true,
         "shuttleInterior": true,
         "choreography": {
-          "title": "Shuttle Walk-Around Boot",
+          "title": "Shuttle Boarding Alert",
           "durationMs": 7600,
           "cameraPulse": true,
           "beats": [
@@ -474,22 +543,27 @@
             },
             {
               "label": "Console boot",
-              "timeMs": 1100,
+              "timeMs": 900,
               "cue": "console-status-glow"
             },
             {
-              "label": "Viewport stars",
-              "timeMs": 2100,
-              "cue": "viewport-starfield"
+              "label": "Alien ship contact",
+              "timeMs": 1800,
+              "cue": "alien-raider"
             },
             {
-              "label": "Mother ship contact",
-              "timeMs": 3600,
-              "cue": "mother-ship"
+              "label": "Transport signature",
+              "timeMs": 3000,
+              "cue": "boarding-transporter"
             },
             {
-              "label": "Ready to explore",
-              "timeMs": 6200,
+              "label": "Phaser ready",
+              "timeMs": 4300,
+              "cue": "player-phaser"
+            },
+            {
+              "label": "Defend the shuttle",
+              "timeMs": 6000,
               "cue": "lookaround-camera"
             }
           ]
@@ -497,9 +571,11 @@
         "controls": {
           "mode": "first-person",
           "pointerDrag": true,
-          "keyboard": "wasd-and-arrow-keys",
+          "keyboard": "wasd-arrows-space-fire",
           "movement": "bounded-first-person-walk",
-          "sprint": "shift"
+          "sprint": "shift",
+          "fire": "click-space-or-f",
+          "restart": "r"
         },
         "movementBounds": {
           "minX": 1.1,
@@ -522,13 +598,13 @@
           "position": [
             0.0,
             0.75,
-            3.35
+            2.45
           ],
           "yaw": 0,
           "pitch": -2,
           "yawLimit": 180,
           "pitchLimit": 28,
-          "hint": "Drag or use arrow keys to look. Use W/A/S/D to walk, and hold Shift to sprint inside the shuttle."
+          "hint": "Drag or use arrow keys to look. Use W/A/S/D to walk, Shift to sprint, and click, Space, or F to fire the phaser."
         },
         "shuttle3d": {
           "mode": "webgl-vertex-mesh",
@@ -538,7 +614,7 @@
           "motherShip": "mother-ship",
           "motherShipLabel": "Mother Ship",
           "playerAnchor": "hero-sprite",
-          "controlsHint": "Click to focus • Drag or arrows to look • W/A/S/D to walk • Shift to sprint",
+          "controlsHint": "Click to focus • Drag/arrows look • W/A/S/D move • Shift sprint • Click/Space/F fire • R restart",
           "geometry": {
             "renderer": "raw-webgl",
             "primitive": "triangles",
@@ -547,62 +623,62 @@
               [
                 -4.5,
                 -1.45,
-                -8.8
+                -7.2
               ],
               [
                 -4.5,
                 2.05,
-                -8.8
+                -7.2
               ],
               [
                 -3.55,
                 3.15,
-                -8.8
+                -7.2
               ],
               [
                 3.55,
                 3.15,
-                -8.8
+                -7.2
               ],
               [
                 4.5,
                 2.05,
-                -8.8
+                -7.2
               ],
               [
                 4.5,
                 -1.45,
-                -8.8
+                -7.2
               ],
               [
                 -4.5,
                 -1.45,
-                6.8
+                4.8
               ],
               [
                 -4.5,
                 2.05,
-                6.8
+                4.8
               ],
               [
                 -3.55,
                 3.15,
-                6.8
+                4.8
               ],
               [
                 3.55,
                 3.15,
-                6.8
+                4.8
               ],
               [
                 4.5,
                 2.05,
-                6.8
+                4.8
               ],
               [
                 4.5,
                 -1.45,
-                6.8
+                4.8
               ]
             ],
             "viewportOpening": {
@@ -610,9 +686,10 @@
               "right": 2.92,
               "bottom": 0.0,
               "top": 2.32,
-              "z": -8.8
+              "z": -7.2
             },
-            "actualHullBounds": true
+            "actualHullBounds": true,
+            "cabinLength": 12.0
           },
           "movement": {
             "enabled": true,
@@ -624,13 +701,13 @@
             "start": [
               0.0,
               0.75,
-              3.35
+              2.45
             ],
             "bounds": {
               "minX": -3.92,
               "maxX": 3.92,
-              "minZ": -7.72,
-              "maxZ": 5.82
+              "minZ": -6.12,
+              "maxZ": 3.72
             },
             "colliders": [
               {
@@ -679,8 +756,8 @@
                 "id": "aft-hatch",
                 "minX": -1.45,
                 "maxX": 1.45,
-                "minZ": 5.7,
-                "maxZ": 6.45
+                "minZ": 3.55,
+                "maxZ": 4.45
               }
             ]
           },
@@ -692,8 +769,87 @@
             "minimumSize": 0.12,
             "maximumSize": 0.38,
             "fixedDistanceFromCamera": true
+          },
+          "alienShip": "alien-raider",
+          "combat": {
+            "enabled": true,
+            "player": {
+              "maxHealth": 100,
+              "startingHealth": 100
+            },
+            "phaser": {
+              "enabled": true,
+              "damage": 34,
+              "cooldownMs": 280,
+              "range": 28,
+              "beamDurationMs": 130
+            },
+            "alienShip": {
+              "id": "alien-raider",
+              "position": [
+                -6.4,
+                2.8,
+                -48.0
+              ],
+              "scale": [
+                3.8,
+                0.9,
+                2.5
+              ]
+            },
+            "transport": {
+              "initialDelayMs": 2200,
+              "intervalMs": 5000,
+              "beamDurationMs": 900,
+              "maxAlive": 4,
+              "spawnPoints": [
+                {
+                  "id": "port-aft-pad",
+                  "position": [
+                    -2.9,
+                    -0.55,
+                    2.55
+                  ]
+                },
+                {
+                  "id": "starboard-aft-pad",
+                  "position": [
+                    2.9,
+                    -0.55,
+                    2.55
+                  ]
+                },
+                {
+                  "id": "center-pad",
+                  "position": [
+                    0.0,
+                    -0.55,
+                    0.3
+                  ]
+                },
+                {
+                  "id": "forward-pad",
+                  "position": [
+                    0.0,
+                    -0.55,
+                    -3.25
+                  ]
+                }
+              ]
+            },
+            "alien": {
+              "maxHealth": 60,
+              "speed": 1.05,
+              "radius": 0.38,
+              "attackRange": 1.05,
+              "damage": 8,
+              "attackCooldownMs": 850
+            }
           }
-        }
+        },
+        "combatEnabled": true,
+        "healthHud": true,
+        "playerWeapon": "hand-phaser"
       }
     }
   ],
@@ -701,10 +857,10 @@
   "scripts": [],
   "metadata": {
     "createdBy": "Main Computer Scene Store",
-    "revision": 12,
-    "phase": "phase-4-shuttle-first-person-movement",
-    "controlScheme": "pointer-look-wasd-movement",
-    "starterScene": "shuttlecraft-walkaround-spawn",
+    "revision": 13,
+    "phase": "phase-5-shuttle-boarding-combat",
+    "controlScheme": "pointer-look-wasd-phaser-combat",
+    "starterScene": "shuttlecraft-boarding-defense",
     "projection": "shuttle-3d",
     "lookAroundEnabled": true,
     "viewportShowsMotherShip": true,
@@ -712,6 +868,9 @@
     "renderer": "raw-webgl-vertex-mesh",
     "actualHullBounds": true,
     "movementEnabled": true,
-    "movementBounds": "shuttle3d-collision-bounds"
+    "movementBounds": "shuttle3d-collision-bounds",
+    "combatEnabled": true,
+    "healthHud": true,
+    "alienTransportEnabled": true
   }
 }

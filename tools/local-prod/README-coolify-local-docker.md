@@ -234,4 +234,12 @@ smoke project and `runtime/coolify-local-docker/`.
 
 ## Notes
 
-Coolify's official quick installer is still the recommended production Linux-server install path. This smoke is intentionally narrower: it tests whether local Docker can host a useful local-prod Coolify controller for Main Computer development.
+Coolify's official quick installer is still the recommended production
+Linux-server install path:
+
+```bash
+curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash
+```
+
+This smoke is intentionally narrower: it tests whether local Docker can host a
+useful local-prod Coolify controller for Main Computer development.

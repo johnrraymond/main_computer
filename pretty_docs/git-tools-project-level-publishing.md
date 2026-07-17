@@ -1,6 +1,6 @@
 # Git Tools Project-Level Publishing Requirements
 
-This document captures the next desired Git Tools interaction model. It is a product and implementation planning note, not a claim that the current UI already behaves this way.
+This document captures one next desired Git Tools interaction model: project-level publishing and file triage. It is a product and implementation planning note, not a claim that the current UI already behaves this way. The broader documentation-first MCEL requirements contract for Git Tools lives in `pretty_docs/mcel-git-tools-requirements.md`; that contract records the app-level product laws, semantic intents, runtime status, safety boundaries, receipts, recovery, and acceptance criteria.
 
 ## Problem statement
 
