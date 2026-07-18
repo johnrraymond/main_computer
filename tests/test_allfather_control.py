@@ -646,6 +646,50 @@ def test_full_hub_runtime_archive_contains_hub_and_contract_config() -> None:
     assert "main_computer/hub_bridge_backend.py" in names
 
 
+def test_full_hub_runtime_archive_contains_hub_remote_manifest() -> None:
+    raw_zip = zlib.decompress(base64.b64decode(control.allfather_full_hub_runtime_archive_b64()))
+    with zipfile.ZipFile(io.BytesIO(raw_zip)) as archive:
+        names = set(archive.namelist())
+        manifest = json.loads(archive.read("main_computer/config/allfather_hub_remote_manifest.json").decode("utf-8"))
+
+    assert "main_computer/config/allfather_hub_remote_manifest.json" in names
+    assert manifest["kind"] == "main_computer.allfather.hub_remote_manifest.v1"
+    assert "current_directory_dirty_in_hub_remote_manifest" in manifest["observed"]
+    assert "current_directory_dirty_vs_remote_main" in manifest["comparison"]
+
+
+def test_hub_remote_manifest_observes_dirty_current_directory_against_origin_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_git_capture(repo_root: Path, args: list[str], *, timeout_s: float = 10.0) -> dict[str, object]:
+        command = tuple(args)
+        if command == ("rev-parse", "--show-toplevel"):
+            return {"ok": True, "returncode": 0, "stdout": f"{control.REPO_ROOT}\n", "stderr": ""}
+        if command == ("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"):
+            return {"ok": True, "returncode": 0, "stdout": "origin/main\n", "stderr": ""}
+        if command == ("rev-parse", "--verify", "HEAD^{commit}"):
+            return {"ok": True, "returncode": 0, "stdout": "localhead123\n", "stderr": ""}
+        if command == ("rev-parse", "--verify", "origin/main^{commit}"):
+            return {"ok": True, "returncode": 0, "stdout": "originmain456\n", "stderr": ""}
+        if command == ("status", "--porcelain=v1", "--untracked-files=all"):
+            return {"ok": True, "returncode": 0, "stdout": " M main_computer/hub.py\n?? local-only.txt\n", "stderr": ""}
+        if command == ("diff", "--name-status", "origin/main", "--"):
+            return {"ok": True, "returncode": 0, "stdout": "M\tmain_computer/hub.py\n", "stderr": ""}
+        if command == ("rev-list", "--left-right", "--count", "origin/main...HEAD"):
+            return {"ok": True, "returncode": 0, "stdout": "1\t2\n", "stderr": ""}
+        return {"ok": False, "returncode": 1, "stdout": "", "stderr": "unexpected git command"}
+
+    monkeypatch.setattr(control, "_git_capture", fake_git_capture)
+
+    manifest = control.allfather_hub_remote_manifest()
+
+    assert manifest["repository"]["selected_remote_main_ref"] == "origin/main"
+    assert manifest["observed"]["current_directory_dirty_in_hub_remote_manifest"] is True
+    assert manifest["observed"]["current_directory_compared_to_remote_main"] is True
+    assert manifest["comparison"]["current_directory_dirty_vs_remote_main"] is True
+    assert manifest["comparison"]["diff_name_status"] == ["M\tmain_computer/hub.py"]
+    assert manifest["comparison"]["ahead"] == 2
+    assert manifest["comparison"]["behind"] == 1
+
+
 def test_super_server_prefers_full_hub_runtime_when_available() -> None:
     script = control.super_server_command_script()
 
@@ -662,6 +706,7 @@ def test_full_hub_health_endpoint_reports_non_bootstrap_runtime() -> None:
     assert '"service": "main-computer-hub"' in source
     assert '"bootstrap_hub": False' in source
     assert '"full_main_computer_hub": True' in source
+    assert '"hub_remote_manifest": load_allfather_hub_remote_manifest()' in source
 
 
 def test_probe_compose_can_publish_result_back_to_coolify_metadata(tmp_path: Path) -> None:
@@ -3546,8 +3591,48 @@ def test_head_agent_full_hub_runtime_diagnostics_marker_and_env_present() -> Non
     assert "ALLFATHER_FULL_HUB_RUNTIME_DIAG_RESULT_B64:" in script
     assert "MC_ALLFATHER_FULL_HUB_RUNTIME_DIAG_REQUEST_B64" in script
     assert "inspect_full_hub_runtime_container" in script
-    assert "/opt/main_computer_src.zip" in script
+    assert "/opt/main-computer-src.zip" in script
+    assert "/opt/main-computer-src/main_computer/hub.py" in script
     assert "main_computer.hub" in script
+
+
+def test_full_hub_runtime_diag_summary_includes_container_runtime_facts() -> None:
+    summary = control.compact_full_hub_runtime_diag_node_summary(
+        {
+            "service_name": "mainneta-super1",
+            "ok": True,
+            "container_id": "abc123",
+            "runtime_requested_env": "1",
+            "deployment_id_file": "dep-1",
+            "docker": {
+                "state_status": "running",
+                "health_status": "healthy",
+                "env": {"MC_ALLFATHER_DEPLOYMENT_ID": "dep-1"},
+            },
+            "runtime": {
+                "paths": {
+                    "/opt/main-computer-src.zip": {"exists": True},
+                    "/opt/main-computer-src/main_computer/hub.py": {"exists": True},
+                },
+                "imports": {"main_computer.hub": {"ok": True, "has_serve_hub": True}},
+                "local_health": {"json": {"bootstrap_hub": False, "full_main_computer_hub": True}},
+            },
+        }
+    )
+
+    assert "mainneta-super1" in summary
+    assert "src_zip=True" in summary
+    assert "hub_py=True" in summary
+    assert "hub_import=True" in summary
+    assert "serve_hub=True" in summary
+    assert "local_full=True" in summary
+
+
+def test_hub_propagate_source_contains_full_runtime_failure_skip() -> None:
+    source = Path(control.__file__).read_text(encoding="utf-8")
+    assert "skipping Traefik/admin handoff because full hub runtime sync failed" in source
+    assert "see full_hub_runtime_container_diagnostics" in source
+
 
 
 def test_full_hub_runtime_diag_request_selects_failed_nodes() -> None:

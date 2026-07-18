@@ -63,6 +63,61 @@ DEFAULT_HUB_WORKER_PORT = 8771
 HUB_WORKER_CHAT_PATH = "/api/hub/worker/chat"
 HUB_WORKER_SESSION_START_PATH = "/api/hub/worker/sessions/start"
 HUB_WORKER_SESSION_CHAT_PATH = "/api/hub/worker/sessions/chat"
+
+ALLFATHER_HUB_REMOTE_MANIFEST_PATH = Path(__file__).resolve().parent / "config" / "allfather_hub_remote_manifest.json"
+
+
+def load_allfather_hub_remote_manifest() -> dict[str, Any]:
+    """Load the allfather build-time source manifest embedded with this Hub."""
+
+    path = ALLFATHER_HUB_REMOTE_MANIFEST_PATH
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {
+            "available": False,
+            "path": str(path),
+            "reason": "allfather hub remote manifest is not present",
+            "observed": {
+                "current_directory_dirty_in_hub_remote_manifest": None,
+                "current_directory_compared_to_remote_main": False,
+            },
+            "comparison": {
+                "current_directory_dirty_vs_remote_main": None,
+            },
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "path": str(path),
+            "reason": str(exc),
+            "observed": {
+                "current_directory_dirty_in_hub_remote_manifest": None,
+                "current_directory_compared_to_remote_main": False,
+            },
+            "comparison": {
+                "current_directory_dirty_vs_remote_main": None,
+            },
+        }
+    if not isinstance(payload, dict):
+        return {
+            "available": False,
+            "path": str(path),
+            "reason": "manifest was not a JSON object",
+            "observed": {
+                "current_directory_dirty_in_hub_remote_manifest": None,
+                "current_directory_compared_to_remote_main": False,
+            },
+            "comparison": {
+                "current_directory_dirty_vs_remote_main": None,
+            },
+        }
+    payload = dict(payload)
+    payload["available"] = True
+    payload.setdefault("path", str(path))
+    return payload
+
+
 HUB_WORKER_STALE_AFTER_SECONDS = 90.0
 HUB_WORKER_LEASE_SECONDS = 600.0
 HUB_WORKER_INSTANCE_SLOT_LIMIT = 1
@@ -3408,6 +3463,7 @@ class HubServerHandler(_JsonHandler):
                     "cell_id": os.environ.get("MC_ALLFATHER_CELL_ID", ""),
                     "bootstrap_hub": False,
                     "full_main_computer_hub": True,
+                    "hub_remote_manifest": load_allfather_hub_remote_manifest(),
                 }
             )
             return
@@ -3445,6 +3501,7 @@ class HubServerHandler(_JsonHandler):
                 "suppressed_write_failure_count"
             ]
             status["ring_admission_rejection_audit_last_write_failure"] = ring_audit_diag["last_write_failure"]
+            status["hub_remote_manifest"] = load_allfather_hub_remote_manifest()
             status["security"] = {
                 "high_security_default": self.server.config.hub_high_security,
                 "hub_blind_envelopes": self.server.config.hub_high_security,

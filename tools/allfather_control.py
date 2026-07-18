@@ -141,6 +141,204 @@ ALLFATHER_FULL_HUB_RUNTIME_FILES = (
 )
 
 
+ALLFATHER_HUB_REMOTE_MANIFEST_FILENAME = "allfather_hub_remote_manifest.json"
+ALLFATHER_HUB_REMOTE_MANIFEST_ARCNAME = f"main_computer/config/{ALLFATHER_HUB_REMOTE_MANIFEST_FILENAME}"
+ALLFATHER_HUB_REMOTE_MAIN_REF_CANDIDATES = (
+    "origin/HEAD",
+    "origin/main",
+    "origin/master",
+    "main",
+    "master",
+)
+ALLFATHER_HUB_REMOTE_MANIFEST_MAX_STATUS = 200
+ALLFATHER_HUB_REMOTE_MANIFEST_MAX_DIFF = 200
+
+
+def _git_capture(repo_root: Path, args: Sequence[str], *, timeout_s: float = 10.0) -> dict[str, Any]:
+    """Run a read-only git command and return a JSON-safe result."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": str(exc),
+            "args": list(args),
+        }
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout or "",
+        "stderr": completed.stderr or "",
+        "args": list(args),
+    }
+
+
+def _git_stdout_lines(result: Mapping[str, Any], *, limit: int | None = None) -> list[str]:
+    lines = [line.rstrip("\n") for line in str(result.get("stdout") or "").splitlines()]
+    if limit is not None and len(lines) > limit:
+        return lines[:limit]
+    return lines
+
+
+def _git_commit(repo_root: Path, ref: str) -> str:
+    result = _git_capture(repo_root, ["rev-parse", "--verify", f"{ref}^{{commit}}"])
+    if not result.get("ok"):
+        return ""
+    return str(result.get("stdout") or "").strip()
+
+
+def _git_short_remote_head(repo_root: Path) -> str:
+    result = _git_capture(repo_root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+    if not result.get("ok"):
+        return ""
+    return str(result.get("stdout") or "").strip()
+
+
+def _select_hub_remote_main_ref(repo_root: Path) -> dict[str, Any]:
+    symbolic = _git_short_remote_head(repo_root)
+    candidates: list[str] = []
+    if symbolic:
+        candidates.append(symbolic)
+    candidates.extend(ALLFATHER_HUB_REMOTE_MAIN_REF_CANDIDATES)
+
+    seen: set[str] = set()
+    attempts: list[dict[str, Any]] = []
+    for candidate in candidates:
+        ref = str(candidate or "").strip()
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        commit = _git_commit(repo_root, ref)
+        attempts.append({"ref": ref, "commit": commit, "ok": bool(commit)})
+        if commit:
+            return {"ok": True, "ref": ref, "commit": commit, "attempts": attempts}
+    return {"ok": False, "ref": "", "commit": "", "attempts": attempts}
+
+
+def _parse_ahead_behind(text: str) -> dict[str, int | None]:
+    parts = str(text or "").strip().split()
+    if len(parts) < 2:
+        return {"ahead": None, "behind": None}
+    try:
+        return {"ahead": int(parts[1]), "behind": int(parts[0])}
+    except ValueError:
+        return {"ahead": None, "behind": None}
+
+
+def allfather_hub_remote_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
+    """Describe the local checkout embedded into the remote Hub runtime.
+
+    The all-father super-node image is built from the operator's current working
+    tree, not from an implicit clean clone on the remote host.  This manifest is
+    embedded beside ``main_computer.hub`` so the remote Hub can report whether
+    the runtime came from a dirty local directory and how that directory compared
+    with the selected remote main ref at build time.
+    """
+
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    root_result = _git_capture(repo_root, ["rev-parse", "--show-toplevel"])
+    git_available = bool(root_result.get("ok"))
+    git_root = str(root_result.get("stdout") or "").strip() if git_available else ""
+
+    status_result = _git_capture(repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]) if git_available else {
+        "ok": False,
+        "stdout": "",
+        "stderr": str(root_result.get("stderr") or "git repository not available"),
+    }
+    status_entries = _git_stdout_lines(status_result, limit=ALLFATHER_HUB_REMOTE_MANIFEST_MAX_STATUS)
+    status_truncated = len(_git_stdout_lines(status_result)) > len(status_entries)
+    current_directory_dirty = bool(status_entries)
+
+    head_commit = _git_commit(repo_root, "HEAD") if git_available else ""
+    remote_selection = _select_hub_remote_main_ref(repo_root) if git_available else {
+        "ok": False,
+        "ref": "",
+        "commit": "",
+        "attempts": [],
+    }
+    remote_ref = str(remote_selection.get("ref") or "")
+    remote_commit = str(remote_selection.get("commit") or "")
+
+    if remote_ref:
+        diff_result = _git_capture(
+            repo_root,
+            ["diff", "--name-status", remote_ref, "--"],
+        )
+        diff_entries = _git_stdout_lines(diff_result, limit=ALLFATHER_HUB_REMOTE_MANIFEST_MAX_DIFF)
+        diff_truncated = len(_git_stdout_lines(diff_result)) > len(diff_entries)
+        rev_list_result = _git_capture(repo_root, ["rev-list", "--left-right", "--count", f"{remote_ref}...HEAD"])
+        ahead_behind = _parse_ahead_behind(str(rev_list_result.get("stdout") or ""))
+    else:
+        diff_result = {"ok": False, "stdout": "", "stderr": "remote main ref not available"}
+        diff_entries = []
+        diff_truncated = False
+        ahead_behind = {"ahead": None, "behind": None}
+
+    current_directory_dirty_vs_remote_main = bool(current_directory_dirty or diff_entries)
+
+    manifest = {
+        "kind": "main_computer.allfather.hub_remote_manifest.v1",
+        "generated_at": generated_at,
+        "repository": {
+            "local_root": git_root or display_path(repo_root),
+            "git_available": git_available,
+            "head_commit": head_commit,
+            "selected_remote_main_ref": remote_ref,
+            "selected_remote_main_commit": remote_commit,
+            "remote_main_selection": remote_selection,
+        },
+        "observed": {
+            "current_directory_dirty_in_hub_remote_manifest": current_directory_dirty,
+            "current_directory_compared_to_remote_main": bool(remote_ref),
+            "remote_main_ref_selected": bool(remote_ref),
+        },
+        "working_tree": {
+            "dirty": current_directory_dirty,
+            "status_porcelain_v1": status_entries,
+            "status_entry_count": len(_git_stdout_lines(status_result)),
+            "status_truncated": status_truncated,
+            "status_ok": bool(status_result.get("ok")),
+            "status_error": str(status_result.get("stderr") or "").strip(),
+        },
+        "comparison": {
+            "basis": "selected-remote-main-ref-vs-current-working-tree",
+            "selected_remote_main_ref": remote_ref,
+            "selected_remote_main_commit": remote_commit,
+            "head_commit": head_commit,
+            "ahead": ahead_behind["ahead"],
+            "behind": ahead_behind["behind"],
+            "current_directory_dirty_vs_remote_main": current_directory_dirty_vs_remote_main,
+            "diff_name_status": diff_entries,
+            "diff_entry_count": len(_git_stdout_lines(diff_result)),
+            "diff_truncated": diff_truncated,
+            "diff_ok": bool(diff_result.get("ok")),
+            "diff_error": str(diff_result.get("stderr") or "").strip(),
+        },
+        "notes": [
+            "This manifest is generated by allfather while building the embedded Hub runtime archive.",
+            "It records the operator checkout that is shipped to the remote Hub image.",
+            "A dirty current directory is intentional evidence that the remote Hub is not just reporting origin/main.",
+        ],
+    }
+    return manifest
+
+
+def _zip_writestr_deterministic(archive: zipfile.ZipFile, arcname: str, data: bytes) -> None:
+    info = zipfile.ZipInfo(arcname)
+    info.date_time = (2020, 1, 1, 0, 0, 0)
+    archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
+
+
 def allfather_contract_sources_b64() -> dict[str, str]:
     """Return contract sources embedded into the self-contained super-node image."""
 
@@ -167,18 +365,18 @@ def allfather_full_hub_runtime_archive_b64() -> str:
             if not source.exists() or not source.is_file():
                 raise AllfatherControlError(f"Full hub runtime source file is missing: {source}")
             arcname = f"main_computer/{rel_name.replace(chr(92), '/')}"
-            info = zipfile.ZipInfo(arcname)
-            info.date_time = (2020, 1, 1, 0, 0, 0)
-            archive.writestr(info, source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+            _zip_writestr_deterministic(archive, arcname, source.read_bytes())
             written.add(arcname)
+        manifest = allfather_hub_remote_manifest(REPO_ROOT)
+        manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        _zip_writestr_deterministic(archive, ALLFATHER_HUB_REMOTE_MANIFEST_ARCNAME, manifest_bytes)
+        written.add(ALLFATHER_HUB_REMOTE_MANIFEST_ARCNAME)
         config_dir = package_root / "config"
         for source in sorted(config_dir.glob("*.json")):
             arcname = f"main_computer/config/{source.name}"
             if arcname in written:
                 continue
-            info = zipfile.ZipInfo(arcname)
-            info.date_time = (2020, 1, 1, 0, 0, 0)
-            archive.writestr(info, source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+            _zip_writestr_deterministic(archive, arcname, source.read_bytes())
             written.add(arcname)
     return base64.b64encode(zlib.compress(buffer.getvalue())).decode("ascii")
 
@@ -1541,6 +1739,10 @@ out = {
         ]
     },
     "paths": {
+        "/opt/main-computer-src.zip": path_info("/opt/main-computer-src.zip"),
+        "/opt/main-computer-src": path_info("/opt/main-computer-src"),
+        "/opt/main-computer-src/main_computer": path_info("/opt/main-computer-src/main_computer"),
+        "/opt/main-computer-src/main_computer/hub.py": path_info("/opt/main-computer-src/main_computer/hub.py"),
         "/opt/main_computer_src.zip": path_info("/opt/main_computer_src.zip"),
         "/opt/main_computer": path_info("/opt/main_computer"),
         "/opt/main_computer/main_computer": path_info("/opt/main_computer/main_computer"),
@@ -1567,6 +1769,7 @@ for name in ["main_computer", "main_computer.hub"]:
             mod = importlib.import_module(name)
             out["imports"][name]["module_file"] = getattr(mod, "__file__", None)
             out["imports"][name]["has_app"] = hasattr(mod, "app")
+            out["imports"][name]["has_serve_hub"] = hasattr(mod, "serve_hub")
     except Exception as exc:
         out["imports"][name] = {"ok": False, "error": type(exc).__name__ + ": " + str(exc)}
 try:
@@ -1604,6 +1807,18 @@ PY
         result["runtime_requested_env"] = (parsed.get("env") or {}).get("MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED")
         dep_file = ((parsed.get("files") or {}).get("/opt/allfather-build/deployment-id") or {}).get("text")
         result["deployment_id_file"] = str(dep_file or "").strip()
+        paths = parsed.get("paths") if isinstance(parsed.get("paths"), dict) else {}
+        imports = parsed.get("imports") if isinstance(parsed.get("imports"), dict) else {}
+        hub_import = imports.get("main_computer.hub") if isinstance(imports.get("main_computer.hub"), dict) else {}
+        pkg_import = imports.get("main_computer") if isinstance(imports.get("main_computer"), dict) else {}
+        result["source_zip_exists"] = bool((paths.get("/opt/main-computer-src.zip") or paths.get("/opt/main_computer_src.zip") or {}).get("exists"))
+        result["source_dir_exists"] = bool((paths.get("/opt/main-computer-src") or paths.get("/opt/main_computer") or {}).get("exists"))
+        result["hub_py_exists"] = bool((paths.get("/opt/main-computer-src/main_computer/hub.py") or paths.get("/opt/main_computer/main_computer/hub.py") or {}).get("exists"))
+        result["main_computer_import_ok"] = bool(pkg_import.get("ok"))
+        result["hub_import_ok"] = bool(hub_import.get("ok"))
+        result["hub_import_error"] = str(hub_import.get("error") or "")
+        result["hub_module_file"] = str(hub_import.get("module_file") or hub_import.get("origin") or "")
+        result["hub_has_serve_hub"] = bool(hub_import.get("has_serve_hub"))
     result["ok"] = bool(exec_result.get("ok")) and isinstance(parsed, dict)
     result["phase"] = "ready" if result["ok"] else "failed"
     result["status"] = result["phase"]
@@ -12767,6 +12982,52 @@ def wait_for_head_full_hub_runtime_diag_ready(
     }
 
 
+def compact_full_hub_runtime_diag_node_summary(node: Mapping[str, Any]) -> str:
+    """Return a one-line operator summary for a container-side full-hub diagnostic."""
+
+    runtime = node.get("runtime") if isinstance(node.get("runtime"), Mapping) else {}
+    imports = runtime.get("imports") if isinstance(runtime.get("imports"), Mapping) else {}
+    hub_import = imports.get("main_computer.hub") if isinstance(imports.get("main_computer.hub"), Mapping) else {}
+    paths = runtime.get("paths") if isinstance(runtime.get("paths"), Mapping) else {}
+    local_health = runtime.get("local_health") if isinstance(runtime.get("local_health"), Mapping) else {}
+    health_json = local_health.get("json") if isinstance(local_health.get("json"), Mapping) else {}
+    docker_info = node.get("docker") if isinstance(node.get("docker"), Mapping) else {}
+    env = docker_info.get("env") if isinstance(docker_info.get("env"), Mapping) else {}
+    dep_env = str(env.get("MC_ALLFATHER_DEPLOYMENT_ID") or "")
+    dep_file = str(node.get("deployment_id_file") or "")
+    return (
+        f"{node.get('service_name') or '<unknown>'}: "
+        f"ok={bool(node.get('ok'))} "
+        f"container={node.get('container_id') or '<missing>'} "
+        f"state={docker_info.get('state_status') or '<unknown>'}/{docker_info.get('health_status') or '<no-health>'} "
+        f"env_full={node.get('runtime_requested_env') or env.get('MC_ALLFATHER_FULL_HUB_RUNTIME_REQUESTED') or '<missing>'} "
+        f"dep_env={dep_env or '<missing>'} dep_file={dep_file or '<missing>'} "
+        f"src_zip={bool((paths.get('/opt/main-computer-src.zip') or paths.get('/opt/main_computer_src.zip') or {}).get('exists'))} "
+        f"hub_py={bool((paths.get('/opt/main-computer-src/main_computer/hub.py') or paths.get('/opt/main_computer/main_computer/hub.py') or {}).get('exists'))} "
+        f"hub_import={bool(hub_import.get('ok'))} serve_hub={bool(hub_import.get('has_serve_hub'))} "
+        f"local_bootstrap={bool(health_json.get('bootstrap_hub'))} local_full={bool(health_json.get('full_main_computer_hub'))} "
+        f"error={str(node.get('error') or node.get('hub_import_error') or hub_import.get('error') or '')[:180]}"
+    )
+
+
+def operator_log_full_hub_runtime_diag_summary(args: argparse.Namespace, diag: Mapping[str, Any]) -> None:
+    """Emit compact container-side diagnostic lines as soon as the marker is observed."""
+
+    result = diag.get("result") if isinstance(diag.get("result"), Mapping) else {}
+    nodes = result.get("nodes") if isinstance(result.get("nodes"), list) else []
+    if not nodes:
+        operator_log(args, f"full-hub-sync: container diag: no node diagnostics returned reason={diag.get('reason') or diag.get('error') or ''}")
+        return
+    operator_log(
+        args,
+        f"full-hub-sync: container diag result: ready={bool(diag.get('ready'))} "
+        f"observed={bool(diag.get('observed'))} nodes={len(nodes)} reason={str(diag.get('reason') or '')[:240]}",
+    )
+    for node in nodes:
+        if isinstance(node, Mapping):
+            operator_log(args, "full-hub-sync: container diag " + compact_full_hub_runtime_diag_node_summary(node))
+
+
 def expected_deployment_id_from_node_result(node_result: Mapping[str, Any]) -> str:
     diagnostics = node_result.get("diagnostics") if isinstance(node_result.get("diagnostics"), Mapping) else {}
     for step in diagnostics.get("steps") or []:
@@ -12867,8 +13128,9 @@ def run_full_hub_runtime_container_diagnostics(
         result["ready"] = bool(wait.get("ready"))
         result["wait"] = wait
         result["result"] = wait.get("result") if isinstance(wait.get("result"), Mapping) else {}
-        result["ok"] = bool(wait.get("observed"))
+        result["ok"] = bool(wait.get("ready"))
         result["reason"] = str(wait.get("reason") or "")
+        operator_log_full_hub_runtime_diag_summary(args, result)
     except Exception as exc:
         result.update({"ok": False, "error": f"{type(exc).__name__}: {exc}", "reason": f"{type(exc).__name__}: {exc}"})
     return result
@@ -13490,7 +13752,8 @@ def propagate_hub_for_network(
             entry["full_hub_runtime_sync"] = full_hub_runtime_sync
             if full_hub_runtime_sync.get("ok") is False:
                 entry["ok"] = False
-                errors.append({"host": head.coolify_server, "error": str(full_hub_runtime_sync.get("reason") or "full hub runtime sync failed")})
+                runtime_failure_reason = str(full_hub_runtime_sync.get("reason") or "full hub runtime sync failed")
+                errors.append({"host": head.coolify_server, "error": runtime_failure_reason})
                 entry["full_hub_runtime_container_diagnostics"] = run_full_hub_runtime_container_diagnostics(
                     plan,
                     network,
@@ -13502,6 +13765,20 @@ def propagate_hub_for_network(
                     tried=tried,
                     inventory_nodes=inventory.get("nodes") or [],
                 )
+                entry["propagator_result"] = {
+                    "ok": None,
+                    "observed": False,
+                    "reason": "skipped because full hub runtime sync failed; see full_hub_runtime_container_diagnostics",
+                }
+                if head_admin_sync_request:
+                    entry["hub_admin_contract_sync"] = {
+                        **entry.get("hub_admin_contract_sync", {}),
+                        "ok": None,
+                        "observed": False,
+                        "reason": "skipped because full hub runtime sync failed; see full_hub_runtime_container_diagnostics",
+                    }
+                operator_log(args, f"hub-propagate: host={head.coolify_server} skipping Traefik/admin handoff because full hub runtime sync failed")
+                continue
             operator_log(args, f"hub-propagate: host={head.coolify_server} updating head host-agent service")
             service_uuid, action, _existing = sync_head_service(
                 client,
